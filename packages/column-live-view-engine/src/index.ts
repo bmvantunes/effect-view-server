@@ -119,16 +119,65 @@ type MutableHealthTopics<Topics extends DecodableTopicDefinitions> = {
   -readonly [Topic in Extract<keyof Topics, string>]: ColumnLiveViewTopicHealth;
 };
 
+type AnyTopicRow<Topics extends DecodableTopicDefinitions> = TopicRow<
+  Topics,
+  Extract<keyof Topics, string>
+>;
+
 type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
+
+type IsUnion<Value, Candidate = Value> = Value extends unknown
+  ? [Candidate] extends [Value]
+    ? false
+    : true
+  : false;
+
+type TupleHasUnionElement<Tuple extends ReadonlyArray<unknown>> = Tuple extends readonly [
+  infer Head,
+  ...infer Tail,
+]
+  ? IsUnion<Head> extends true
+    ? true
+    : TupleHasUnionElement<Tail>
+  : false;
 
 type ExactRawQuery<Row, Query> = Query &
   RejectExtraKeys<Query, RawQuery<Row>> & {
     readonly groupBy?: never;
     readonly aggregates?: never;
   } & ExactWhere<Row, Query> &
-  ExactOrderBy<Row, Query>;
+  ExactOrderBy<Row, Query> &
+  RejectDynamicRawFields<Row, Query>;
+
+type RejectDynamicRawFields<Row, Query> = "fields" extends keyof Query
+  ? Query extends { readonly fields?: infer Fields }
+    ? NonNullable<Fields> extends ReadonlyArray<unknown>
+      ? undefined extends Query["fields"]
+        ? {
+            readonly fields: never;
+          }
+        : IsUnion<NonNullable<Fields>> extends true
+          ? {
+              readonly fields: never;
+            }
+          : number extends NonNullable<Fields>["length"]
+            ? {
+                readonly fields: never;
+              }
+            : TupleHasUnionElement<NonNullable<Fields>> extends true
+              ? {
+                  readonly fields: never;
+                }
+              : NonNullable<Fields>[number] extends FieldKey<Row>
+                ? unknown
+                : {
+                    readonly fields: never;
+                  }
+      : unknown
+    : unknown
+  : unknown;
 
 type ExactWhere<Row, Query> = Query extends {
   readonly where: infer Where;
@@ -245,25 +294,33 @@ type SchemaWithFields = Schema.Decoder<object> & {
   readonly fields: Record<string, unknown>;
 };
 
-type StoredRow = {
+type StoredRowOf<Row extends RowObject> = {
   readonly key: string;
-  readonly row: RowObject;
+  readonly row: Row;
 };
 
-type QueryEvaluation = {
-  readonly rows: ReadonlyArray<RowObject>;
+type QueryEvaluation<ResultRow extends RowObject> = {
+  readonly rows: ReadonlyArray<ResultRow>;
   readonly keys: ReadonlyArray<string>;
-  readonly window: ReadonlyArray<StoredRow>;
+  readonly window: ReadonlyArray<StoredRowOf<ResultRow>>;
   readonly totalRows: number;
   readonly version: number;
 };
 
-type Subscriber = {
+type CompiledRawQuery<Row extends RowObject, ResultRow extends RowObject> = {
+  readonly matches: (row: Row) => boolean;
+  readonly compare: (left: StoredRowOf<Row>, right: StoredRowOf<Row>) => number;
+  readonly project: (row: Row) => ResultRow;
+  readonly offset: number;
+  readonly limit: number | undefined;
+};
+
+type TopicSubscriber<Row extends RowObject> = {
   readonly topic: string;
   readonly queryId: string;
-  readonly query: RuntimeRawQuery;
-  readonly queue: Queue.Queue<ColumnLiveViewEngineEvent<RowObject>, Cause.Done>;
-  lastEvaluation: QueryEvaluation;
+  readonly notify: (store: TopicStore<Row>) => Effect.Effect<void>;
+  readonly queuedEvents: Effect.Effect<number>;
+  readonly end: Effect.Effect<void>;
   maxQueueDepth: number;
   backpressureEvents: number;
   closed: boolean;
@@ -292,9 +349,9 @@ const isDenseArray = (value: ReadonlyArray<unknown>): boolean => {
   return true;
 };
 
-class TopicStore {
-  readonly rows = new Map<string, RowObject>();
-  readonly subscribers = new Set<Subscriber>();
+class TopicStore<Row extends RowObject> {
+  readonly rows = new Map<string, Row>();
+  readonly subscribers = new Set<TopicSubscriber<Row>>();
   readonly mutationSemaphore = Semaphore.makeUnsafe(1);
   version = 0;
   maxQueueDepth = 0;
@@ -302,7 +359,7 @@ class TopicStore {
 
   constructor(
     readonly topic: string,
-    readonly schema: Schema.Decoder<RowObject>,
+    readonly schema: Schema.Decoder<object>,
     readonly keyField: string,
     readonly fieldNames: ReadonlySet<string>,
     readonly structuredFieldNames: ReadonlySet<string>,
@@ -371,18 +428,17 @@ const cloneRecord = (value: Record<string, unknown>): Record<string, unknown> =>
   return cloned;
 };
 
-const cloneRow = (row: RowObject): RowObject => {
+const cloneRow = <Row extends RowObject>(row: Row): Row => {
   const cloned: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(row)) {
     cloned[key] = cloneUnknown(entry);
   }
-  return cloned;
+  return cloned as Row;
 };
 
-const safeCloneRow = Effect.fn("ColumnLiveViewEngine.safeCloneRow")(function* (
-  store: TopicStore,
-  row: RowObject,
-) {
+const safeCloneRow = Effect.fn("ColumnLiveViewEngine.safeCloneRow")(function* <
+  Row extends RowObject,
+>(store: TopicStore<Row>, row: Row) {
   return yield* Effect.try({
     try: () => cloneRow(row),
     catch: (cause) =>
@@ -559,8 +615,8 @@ const decodeRawQuery = (
   return Effect.succeed(decoded);
 };
 
-const validateRuntimeQueryAgainstStore = (
-  store: TopicStore,
+const validateRuntimeQueryAgainstStore = <Row extends RowObject>(
+  store: TopicStore<Row>,
   query: RuntimeRawQuery,
 ): Effect.Effect<void, InvalidQueryError> =>
   Effect.gen(function* () {
@@ -731,24 +787,28 @@ const matchesFilter = (value: unknown, filter: unknown): boolean => {
     if (equalsValue(value, filter)) {
       return true;
     }
-    const filterKeys = Object.keys(filter);
-    const eq = filter["eq"];
-    if (filterKeys.length === 1 && eq !== undefined) {
-      return equalsValue(value, eq);
-    }
     const oneOf = filter["in"];
-    if (filterKeys.length === 1 && Array.isArray(oneOf)) {
-      return (
-        isDenseArray(oneOf) &&
-        !oneOf.some((candidate) => candidate === undefined) &&
-        includesValue(oneOf, value)
-      );
+    if (oneOf !== undefined) {
+      if (
+        !Array.isArray(oneOf) ||
+        !isDenseArray(oneOf) ||
+        oneOf.some((candidate) => candidate === undefined)
+      ) {
+        return false;
+      }
+      if (!includesValue(oneOf, value)) {
+        return false;
+      }
+    }
+    const eq = filter["eq"];
+    if (eq !== undefined && !equalsValue(value, eq)) {
+      return false;
     }
     const notEqual = filter["neq"];
-    if (filterKeys.length === 1 && notEqual !== undefined) {
-      return !equalsValue(value, notEqual);
+    if (notEqual !== undefined && equalsValue(value, notEqual)) {
+      return false;
     }
-    return false;
+    return eq !== undefined || oneOf !== undefined || notEqual !== undefined;
   }
   /* v8 ignore next -- runtime validation rejects scalar object filters before evaluation. */
   if (!isOperatorFilterObject(filter)) {
@@ -816,23 +876,27 @@ const matchesFilter = (value: unknown, filter: unknown): boolean => {
   return true;
 };
 
-const matchesWhere = (row: RowObject, query: RuntimeRawQuery): boolean => {
-  if (query.where === undefined) {
-    return true;
+const compileMatches = <Row extends RowObject>(
+  where: RuntimeRawQuery["where"],
+): ((row: Row) => boolean) => {
+  if (where === undefined) {
+    return () => true;
   }
 
-  for (const [field, filter] of Object.entries(query.where)) {
-    if (!matchesFilter(fieldValue(row, field), filter)) {
-      return false;
+  const filters = Object.entries(where);
+  return (row) => {
+    for (const [field, filter] of filters) {
+      if (!matchesFilter(fieldValue(row, field), filter)) {
+        return false;
+      }
     }
-  }
-
-  return true;
+    return true;
+  };
 };
 
-const compareRows = (
-  left: StoredRow,
-  right: StoredRow,
+const compareRows = <Row extends RowObject>(
+  left: StoredRowOf<Row>,
+  right: StoredRowOf<Row>,
   orderBy: ReadonlyArray<OrderBy<Record<string, unknown>>>,
 ): number => {
   for (const order of orderBy) {
@@ -862,7 +926,36 @@ const projectRow = (
   return projected;
 };
 
-const rowEquals = (left: RowObject, right: RowObject): boolean => {
+const projectCompiledRow = <ResultRow extends RowObject>(
+  row: RowObject,
+  fields: ReadonlyArray<FieldKey<Record<string, unknown>>> | undefined,
+): ResultRow => projectRow(row, fields) as ResultRow;
+
+const compileProjection = <Row extends RowObject, ResultRow extends RowObject>(
+  fields: RuntimeRawQuery["fields"],
+): ((row: Row) => ResultRow) => {
+  if (fields === undefined) {
+    return (row) => projectCompiledRow(row, undefined);
+  }
+
+  const selectedFields = [...fields];
+  return (row) => projectCompiledRow(row, selectedFields);
+};
+
+const compileRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
+  query: RuntimeRawQuery,
+): CompiledRawQuery<Row, ResultRow> => {
+  const orderBy = query.orderBy ?? [];
+  return {
+    matches: compileMatches(query.where),
+    compare: (left, right) => compareRows(left, right, orderBy),
+    project: compileProjection(query.fields),
+    offset: query.offset ?? 0,
+    limit: query.limit,
+  };
+};
+
+const rowEquals = <Row extends RowObject>(left: Row, right: Row): boolean => {
   const leftEntries = Object.entries(left);
   const rightEntries = Object.entries(right);
   if (leftEntries.length !== rightEntries.length) {
@@ -876,19 +969,22 @@ const rowEquals = (left: RowObject, right: RowObject): boolean => {
   return true;
 };
 
-const evaluateRawQuery = (store: TopicStore, query: RuntimeRawQuery): QueryEvaluation => {
+const evaluateCompiledRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicStore<Row>,
+  compiled: CompiledRawQuery<Row, ResultRow>,
+): QueryEvaluation<ResultRow> => {
   const filtered = Array.from(store.rows, ([key, row]) => ({ key, row })).filter((entry) =>
-    matchesWhere(entry.row, query),
+    compiled.matches(entry.row),
   );
-  const ordered = filtered.toSorted((left, right) => compareRows(left, right, query.orderBy ?? []));
-  const offset = query.offset ?? 0;
+  const ordered = filtered.toSorted(compiled.compare);
+  const offset = compiled.offset;
   const windowed = ordered.slice(
     offset,
-    query.limit === undefined ? undefined : offset + query.limit,
+    compiled.limit === undefined ? undefined : offset + compiled.limit,
   );
   const window = windowed.map((entry) => ({
     key: entry.key,
-    row: projectRow(entry.row, query.fields),
+    row: compiled.project(entry.row),
   }));
 
   return {
@@ -900,19 +996,20 @@ const evaluateRawQuery = (store: TopicStore, query: RuntimeRawQuery): QueryEvalu
   };
 };
 
-const liveQueryResult = <Row>(evaluation: QueryEvaluation): LiveQueryResult<Row> =>
-  ({
-    rows: evaluation.rows,
-    totalRows: evaluation.totalRows,
-    version: evaluation.version,
-  }) as LiveQueryResult<Row>;
+const liveQueryResult = <Row extends RowObject>(
+  evaluation: QueryEvaluation<Row>,
+): LiveQueryResult<Row> => ({
+  rows: evaluation.rows,
+  totalRows: evaluation.totalRows,
+  version: evaluation.version,
+});
 
-const decodeRow = Effect.fn("ColumnLiveViewEngine.decodeRow")(function* (
-  store: TopicStore,
+const decodeRow = Effect.fn("ColumnLiveViewEngine.decodeRow")(function* <Row extends RowObject>(
+  store: TopicStore<Row>,
   row: RowObject,
 ) {
   return yield* Effect.try({
-    try: () => Schema.decodeUnknownSync(store.schema)(row),
+    try: () => Schema.decodeUnknownSync(store.schema)(row) as Row,
     catch: (cause) =>
       InvalidRowError.make({
         topic: store.topic,
@@ -921,9 +1018,9 @@ const decodeRow = Effect.fn("ColumnLiveViewEngine.decodeRow")(function* (
   });
 });
 
-const rowKey = Effect.fn("ColumnLiveViewEngine.rowKey")(function* (
-  store: TopicStore,
-  row: RowObject,
+const rowKey = Effect.fn("ColumnLiveViewEngine.rowKey")(function* <Row extends RowObject>(
+  store: TopicStore<Row>,
+  row: Row,
 ) {
   const key = fieldValue(row, store.keyField);
   if (typeof key !== "string") {
@@ -935,11 +1032,11 @@ const rowKey = Effect.fn("ColumnLiveViewEngine.rowKey")(function* (
   return key;
 });
 
-const snapshotEvent = (
-  store: TopicStore,
+const snapshotEvent = <Row extends RowObject>(
+  store: { readonly topic: string },
   queryId: string,
-  evaluation: QueryEvaluation,
-): SnapshotEvent<RowObject> => ({
+  evaluation: QueryEvaluation<Row>,
+): SnapshotEvent<Row> => ({
   type: "snapshot",
   topic: store.topic,
   queryId,
@@ -949,11 +1046,11 @@ const snapshotEvent = (
   totalRows: evaluation.totalRows,
 });
 
-const deltaOperations = (
-  previous: QueryEvaluation,
-  next: QueryEvaluation,
-): ReadonlyArray<DeltaOperation<RowObject>> => {
-  const operations: Array<DeltaOperation<RowObject>> = [];
+const deltaOperations = <Row extends RowObject>(
+  previous: QueryEvaluation<Row>,
+  next: QueryEvaluation<Row>,
+): ReadonlyArray<DeltaOperation<Row>> => {
+  const operations: Array<DeltaOperation<Row>> = [];
   const nextKeys = new Set(next.keys);
   const currentKeys = [...previous.keys];
   const currentRows = [...previous.rows];
@@ -1013,9 +1110,9 @@ const deltaOperations = (
   return operations;
 };
 
-const cloneDeltaOperations = (
-  operations: ReadonlyArray<DeltaOperation<RowObject>>,
-): ReadonlyArray<DeltaOperation<RowObject>> =>
+const cloneDeltaOperations = <Row extends RowObject>(
+  operations: ReadonlyArray<DeltaOperation<Row>>,
+): ReadonlyArray<DeltaOperation<Row>> =>
   operations.map((operation) => {
     if (operation.type === "insert" || operation.type === "update") {
       return {
@@ -1026,22 +1123,26 @@ const cloneDeltaOperations = (
     return operation;
   });
 
-const deltaEvent = (
-  store: TopicStore,
-  subscriber: Subscriber,
-  next: QueryEvaluation,
-  operations: ReadonlyArray<DeltaOperation<RowObject>>,
-): DeltaEvent<RowObject> => ({
+const deltaEvent = <Row extends RowObject>(
+  store: { readonly topic: string },
+  queryId: string,
+  fromVersion: number,
+  next: QueryEvaluation<Row>,
+  operations: ReadonlyArray<DeltaOperation<Row>>,
+): DeltaEvent<Row> => ({
   type: "delta",
   topic: store.topic,
-  queryId: subscriber.queryId,
-  fromVersion: subscriber.lastEvaluation.version,
+  queryId,
+  fromVersion,
   toVersion: next.version,
   operations: cloneDeltaOperations(operations),
   totalRows: next.totalRows,
 });
 
-const backpressureStatusEvent = (store: TopicStore, subscriber: Subscriber): StatusEvent => ({
+const backpressureStatusEvent = <Row extends RowObject>(
+  store: TopicStore<Row>,
+  subscriber: TopicSubscriber<Row>,
+): StatusEvent => ({
   type: "status",
   topic: store.topic,
   queryId: subscriber.queryId,
@@ -1053,7 +1154,7 @@ const backpressureStatusEvent = (store: TopicStore, subscriber: Subscriber): Sta
 class InMemoryColumnLiveViewEngine<
   Topics extends DecodableTopicDefinitions,
 > implements ColumnLiveViewEngine<Topics> {
-  private readonly stores = new Map<string, TopicStore>();
+  private readonly stores = new Map<string, TopicStore<AnyTopicRow<Topics>>>();
   private readonly subscriptionQueueCapacity: number;
   private engineVersion = 0;
   private nextQueryId = 0;
@@ -1068,7 +1169,7 @@ class InMemoryColumnLiveViewEngine<
     for (const [topic, definition] of Object.entries(config.topics)) {
       this.stores.set(
         topic,
-        new TopicStore(
+        new TopicStore<AnyTopicRow<Topics>>(
           topic,
           definition.schema,
           definition.key,
@@ -1079,7 +1180,9 @@ class InMemoryColumnLiveViewEngine<
     }
   }
 
-  private getStore(topic: string): Effect.Effect<TopicStore, InvalidTopicError> {
+  private getStore<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): Effect.Effect<TopicStore<TopicRow<Topics, Topic>>, InvalidTopicError> {
     return Effect.gen({ self: this }, function* () {
       const store = this.stores.get(topic);
       if (store === undefined) {
@@ -1088,7 +1191,7 @@ class InMemoryColumnLiveViewEngine<
           message: `Unknown topic: ${topic}`,
         });
       }
-      return store;
+      return store as TopicStore<TopicRow<Topics, Topic>>;
     });
   }
 
@@ -1102,41 +1205,15 @@ class InMemoryColumnLiveViewEngine<
     });
   }
 
-  private notifySubscribers = Effect.fn("ColumnLiveViewEngine.notifySubscribers")(function* (
-    store: TopicStore,
-  ) {
-    for (const subscriber of store.subscribers) {
-      const next = evaluateRawQuery(store, subscriber.query);
-      const operations = deltaOperations(subscriber.lastEvaluation, next);
-      if (operations.length === 0 && subscriber.lastEvaluation.totalRows === next.totalRows) {
-        continue;
+  private notifySubscribers<Row extends RowObject>(store: TopicStore<Row>): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      for (const subscriber of store.subscribers) {
+        yield* subscriber.notify(store);
       }
+    });
+  }
 
-      const offered = yield* Queue.offer(
-        subscriber.queue,
-        deltaEvent(store, subscriber, next, operations),
-      );
-      if (!offered) {
-        subscriber.backpressureEvents += 1;
-        store.backpressureEvents += 1;
-        subscriber.closed = true;
-        store.subscribers.delete(subscriber);
-        yield* Queue.takeAll(subscriber.queue).pipe(Effect.ignore);
-        yield* Queue.offer(subscriber.queue, backpressureStatusEvent(store, subscriber)).pipe(
-          Effect.ignore,
-        );
-        yield* Queue.end(subscriber.queue);
-        continue;
-      }
-
-      const queueDepth = yield* Queue.size(subscriber.queue);
-      subscriber.maxQueueDepth = Math.max(subscriber.maxQueueDepth, queueDepth);
-      store.maxQueueDepth = Math.max(store.maxQueueDepth, subscriber.maxQueueDepth);
-      subscriber.lastEvaluation = next;
-    }
-  });
-
-  private commit(store: TopicStore): Effect.Effect<void> {
+  private commit<Row extends RowObject>(store: TopicStore<Row>): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       store.version += 1;
       this.engineVersion += 1;
@@ -1237,9 +1314,9 @@ class InMemoryColumnLiveViewEngine<
       const store = yield* this.getStore(topic);
       const rawQuery = yield* decodeRawQuery(topic, store.fieldNames, query);
       yield* validateRuntimeQueryAgainstStore(store, rawQuery);
-      return liveQueryResult<LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>>(
-        evaluateRawQuery(store, rawQuery),
-      );
+      type ResultRow = LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>;
+      const compiled = compileRawQuery<TopicRow<Topics, typeof topic>, ResultRow>(rawQuery);
+      return liveQueryResult(evaluateCompiledRawQuery(store, compiled));
     });
   };
 
@@ -1257,16 +1334,52 @@ class InMemoryColumnLiveViewEngine<
       yield* validateRuntimeQueryAgainstStore(store, rawQuery);
       const queryId = `query-${this.nextQueryId}`;
       this.nextQueryId += 1;
-      const queue = yield* Queue.dropping<ColumnLiveViewEngineEvent<RowObject>, Cause.Done>(
+      type StoreRow = TopicRow<Topics, typeof topic>;
+      type ResultRow = LiveQueryRow<StoreRow, typeof query>;
+      const compiled = compileRawQuery<StoreRow, ResultRow>(rawQuery);
+      const queue = yield* Queue.dropping<ColumnLiveViewEngineEvent<ResultRow>, Cause.Done>(
         this.subscriptionQueueCapacity,
       );
-      const evaluation = evaluateRawQuery(store, rawQuery);
-      const subscriber: Subscriber = {
+      let evaluation = evaluateCompiledRawQuery(store, compiled);
+      const subscriber: TopicSubscriber<StoreRow> = {
         topic,
         queryId,
-        query: rawQuery,
-        queue,
-        lastEvaluation: evaluation,
+        notify: (currentStore) =>
+          Effect.gen(function* () {
+            const previous = evaluation;
+            const next = evaluateCompiledRawQuery(currentStore, compiled);
+            const operations = deltaOperations(previous, next);
+            if (operations.length === 0 && previous.totalRows === next.totalRows) {
+              return;
+            }
+
+            const offered = yield* Queue.offer(
+              queue,
+              deltaEvent(currentStore, queryId, previous.version, next, operations),
+            );
+            if (!offered) {
+              subscriber.backpressureEvents += 1;
+              currentStore.backpressureEvents += 1;
+              subscriber.closed = true;
+              currentStore.subscribers.delete(subscriber);
+              yield* Queue.takeAll(queue).pipe(Effect.ignore);
+              yield* Queue.offer(queue, backpressureStatusEvent(currentStore, subscriber)).pipe(
+                Effect.ignore,
+              );
+              yield* Queue.end(queue);
+              return;
+            }
+
+            const queueDepth = yield* Queue.size(queue);
+            subscriber.maxQueueDepth = Math.max(subscriber.maxQueueDepth, queueDepth);
+            currentStore.maxQueueDepth = Math.max(
+              currentStore.maxQueueDepth,
+              subscriber.maxQueueDepth,
+            );
+            evaluation = next;
+          }),
+        queuedEvents: Queue.size(queue),
+        end: Queue.end(queue),
         maxQueueDepth: 0,
         backpressureEvents: 0,
         closed: false,
@@ -1281,14 +1394,12 @@ class InMemoryColumnLiveViewEngine<
         if (!subscriber.closed) {
           subscriber.closed = true;
           store.subscribers.delete(subscriber);
-          yield* Queue.end(queue);
+          yield* subscriber.end;
         }
       });
 
       return {
-        events: Stream.fromQueue(queue).pipe(Stream.ensuring(close())) as Stream.Stream<
-          ColumnLiveViewEngineEvent<LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>>
-        >,
+        events: Stream.fromQueue(queue).pipe(Stream.ensuring(close())),
         close,
       };
     });
@@ -1307,7 +1418,7 @@ class InMemoryColumnLiveViewEngine<
         let topicMaxQueueDepth = store.maxQueueDepth;
         let topicBackpressureEvents = store.backpressureEvents;
         for (const subscriber of store.subscribers) {
-          const subscriberQueueDepth = yield* Queue.size(subscriber.queue);
+          const subscriberQueueDepth = yield* subscriber.queuedEvents;
           topicQueuedEvents += subscriberQueueDepth;
           topicMaxQueueDepth = Math.max(topicMaxQueueDepth, subscriber.maxQueueDepth);
           topicBackpressureEvents += subscriber.backpressureEvents;
@@ -1344,7 +1455,7 @@ class InMemoryColumnLiveViewEngine<
       for (const store of this.stores.values()) {
         for (const subscriber of store.subscribers) {
           subscriber.closed = true;
-          yield* Queue.end(subscriber.queue);
+          yield* subscriber.end;
         }
         store.subscribers.clear();
         store.rows.clear();
@@ -1363,7 +1474,7 @@ class InMemoryColumnLiveViewEngine<
         for (const store of this.stores.values()) {
           for (const subscriber of store.subscribers) {
             subscriber.closed = true;
-            yield* Queue.end(subscriber.queue);
+            yield* subscriber.end;
           }
           store.subscribers.clear();
         }

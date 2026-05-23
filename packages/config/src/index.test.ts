@@ -280,6 +280,44 @@ describe("public type surface", () => {
 
   it("derives query result rows from fields and grouped aggregates", () => {
     const assertQueryTypes = (react: ReactHookContracts<typeof viewServer.topics>) => {
+      const fullRawResult = react.useLiveQuery("orders", {
+        where: {
+          status: { eq: "open" },
+        },
+      });
+
+      expectTypeOf(fullRawResult).toEqualTypeOf<{
+        readonly rows: ReadonlyArray<{
+          readonly id: string;
+          readonly customerId: string;
+          readonly status: "open" | "closed" | "cancelled";
+          readonly price: number;
+          readonly region: string;
+          readonly updatedAt: number;
+        }>;
+        readonly totalRows?: number;
+        readonly version: number;
+      }>();
+
+      const selectedResult = react.useLiveQuery("orders", {
+        fields: ["customerId", "status", "updatedAt"],
+        where: {
+          customerId: { startsWith: "customer-" },
+          status: "open",
+          updatedAt: { gte: 1, lte: 10 },
+        },
+      });
+
+      expectTypeOf(selectedResult).toEqualTypeOf<{
+        readonly rows: ReadonlyArray<{
+          readonly customerId: string;
+          readonly status: "open" | "closed" | "cancelled";
+          readonly updatedAt: number;
+        }>;
+        readonly totalRows?: number;
+        readonly version: number;
+      }>();
+
       const rawRows = react.useLiveQuery("orders", {
         fields: ["id", "price"],
         where: {
@@ -312,6 +350,20 @@ describe("public type surface", () => {
         readonly totalPrice: BigDecimal.BigDecimal;
         readonly averageUpdatedAt: BigDecimal.BigDecimal;
         readonly firstStatus: "open" | "closed" | "cancelled";
+      }>();
+
+      const singleAggregateResult = react.useLiveQuery("orders", {
+        groupBy: ["region"],
+        aggregates: [{ type: "countDistinct", field: "customerId", as: "uniqueCustomers" }],
+      });
+
+      expectTypeOf(singleAggregateResult).toEqualTypeOf<{
+        readonly rows: ReadonlyArray<{
+          readonly region: string;
+          readonly uniqueCustomers: bigint;
+        }>;
+        readonly totalRows?: number;
+        readonly version: number;
       }>();
 
       const positionRows = react.useLiveQuery("positions", {

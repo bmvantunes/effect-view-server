@@ -210,12 +210,34 @@ type RejectBroadAggregateAliases<Query> = Query extends {
     : unknown
   : unknown;
 
+type AggregateAliases<Query> = Query extends {
+  readonly aggregates: ReadonlyArray<infer Agg>;
+}
+  ? Agg extends { readonly as: infer Alias extends string }
+    ? Alias
+    : never
+  : never;
+
+type GroupedFields<Query> = Query extends {
+  readonly groupBy: ReadonlyArray<infer Field>;
+}
+  ? Extract<Field, string>
+  : never;
+
+type RejectAggregateAliasCollisions<Query> =
+  Extract<AggregateAliases<Query>, GroupedFields<Query>> extends never
+    ? unknown
+    : { readonly aggregates: never };
+
+type ValidateLiveQuery<Query> = RejectBroadAggregateAliases<Query> &
+  RejectAggregateAliasCollisions<Query>;
+
 export type UseLiveQuery<Topics extends object> = <
   Topic extends Extract<keyof Topics, string>,
   const Query extends LiveQuery<TopicRow<Topics, Topic>>,
 >(
   topic: Topic,
-  query: Query & RejectBroadAggregateAliases<Query>,
+  query: Query & ValidateLiveQuery<Query>,
 ) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
 
 export type ViewServerProviderOptions = {
@@ -279,7 +301,7 @@ export type ViewServerInMemoryRuntime<Topics extends object> = {
     const Query extends LiveQuery<TopicRow<Topics, Topic>>,
   >(
     topic: Topic,
-    query: Query,
+    query: Query & ValidateLiveQuery<Query>,
   ) => Effect.Effect<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError
@@ -423,14 +445,34 @@ export type KafkaTopicDefinition<
   ProtoKey = unknown,
   TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>> =
     NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
-  Mapping extends (
+  MappingWithoutProtoKey extends (
+    input: KafkaMappingInput<Topics, ViewTopic, TopicRegions[number], ProtoValue, undefined>,
+  ) => TopicRow<Topics, ViewTopic> = (
+    input: KafkaMappingInput<Topics, ViewTopic, TopicRegions[number], ProtoValue, undefined>,
+  ) => TopicRow<Topics, ViewTopic>,
+  MappingWithProtoKey extends (
     input: KafkaMappingInput<Topics, ViewTopic, TopicRegions[number], ProtoValue, ProtoKey>,
   ) => TopicRow<Topics, ViewTopic> = (
     input: KafkaMappingInput<Topics, ViewTopic, TopicRegions[number], ProtoValue, ProtoKey>,
   ) => TopicRow<Topics, ViewTopic>,
 > =
-  | KafkaTopicWithoutProtoKey<Topics, Regions, ViewTopic, ProtoValue, TopicRegions>
-  | KafkaTopicWithProtoKey<Topics, Regions, ViewTopic, ProtoValue, ProtoKey, TopicRegions, Mapping>;
+  | KafkaTopicWithoutProtoKey<
+      Topics,
+      Regions,
+      ViewTopic,
+      ProtoValue,
+      TopicRegions,
+      MappingWithoutProtoKey
+    >
+  | KafkaTopicWithProtoKey<
+      Topics,
+      Regions,
+      ViewTopic,
+      ProtoValue,
+      ProtoKey,
+      TopicRegions,
+      MappingWithProtoKey
+    >;
 
 type ValidateKafkaTopic<
   Topics extends object,

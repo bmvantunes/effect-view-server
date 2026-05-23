@@ -727,6 +727,17 @@ const assertCompileTimeContracts = () => {
         price: "not-a-number",
       },
     });
+    const dynamicSnapshotAlias = "dynamicTotal" as string;
+    const invalidSnapshotDynamicAlias = runtime.snapshot("orders", {
+      groupBy: ["status"],
+      // @ts-expect-error runtime snapshot aggregate aliases must be string literals
+      aggregates: [{ type: "sum", field: "price", as: dynamicSnapshotAlias }],
+    });
+    const invalidSnapshotAliasCollision = runtime.snapshot("orders", {
+      groupBy: ["status"],
+      // @ts-expect-error runtime snapshot aggregate aliases cannot collide with groupBy fields
+      aggregates: [{ type: "count", as: "status" }],
+    });
 
     expectTypeOf<
       Effect.Error<typeof invalidPublishWrongField>
@@ -744,6 +755,12 @@ const assertCompileTimeContracts = () => {
     >().toEqualTypeOf<ViewServerRuntimeError>();
     expectTypeOf<
       Effect.Error<typeof invalidSnapshotFilter>
+    >().toEqualTypeOf<ViewServerRuntimeError>();
+    expectTypeOf<
+      Effect.Error<typeof invalidSnapshotDynamicAlias>
+    >().toEqualTypeOf<ViewServerRuntimeError>();
+    expectTypeOf<
+      Effect.Error<typeof invalidSnapshotAliasCollision>
     >().toEqualTypeOf<ViewServerRuntimeError>();
   };
 
@@ -1167,6 +1184,12 @@ const assertCompileTimeContracts = () => {
       // @ts-expect-error grouped queries reject groupBy fields not present on the topic row
       groupBy: ["missing"],
       aggregates: [{ type: "count", as: "count" }],
+    });
+
+    react.useLiveQuery("orders", {
+      groupBy: ["status"],
+      // @ts-expect-error aggregate aliases cannot collide with groupBy fields
+      aggregates: [{ type: "count", as: "status" }],
     });
 
     react.useLiveQuery("orders", {

@@ -1,9 +1,10 @@
 import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import type { Clock, Config, Effect, Schema } from "effect";
+import type * as BigDecimal from "effect/BigDecimal";
 
 export type TopicName = string;
 export type SortDirection = "asc" | "desc";
-export type AggregateKind = "count" | "sum" | "min" | "max" | "avg";
+export type AggregateKind = "count" | "countDistinct" | "sum" | "min" | "max" | "avg";
 export type RuntimeStatus = "ready" | "degraded" | "starting" | "stopping";
 export type TopicHealthStatus = "ready" | "degraded" | "starting";
 export type KafkaRegionStatus = "connected" | "disconnected" | "degraded" | "starting";
@@ -22,7 +23,9 @@ export type StringFieldKey<Row> = Extract<
 
 export type NumericFieldKey<Row> = Extract<
   {
-    readonly [Key in keyof Row]-?: Row[Key] extends number ? Key : never;
+    readonly [Key in keyof Row]-?: Row[Key] extends number | bigint | BigDecimal.BigDecimal
+      ? Key
+      : never;
   }[keyof Row],
   string
 >;
@@ -46,7 +49,15 @@ export type TopicRow<Topics, Topic extends keyof Topics> = RowFromSchema<
   TopicSchema<Topics, Topic>
 >;
 
-export type FieldFilter<Value> =
+export type EqualityFilter<Value> =
+  | Value
+  | {
+      readonly eq?: Value;
+      readonly neq?: Value;
+      readonly in?: ReadonlyArray<Value>;
+    };
+
+export type RangeFilter<Value> =
   | Value
   | {
       readonly eq?: Value;
@@ -57,6 +68,21 @@ export type FieldFilter<Value> =
       readonly lt?: Value;
       readonly lte?: Value;
     };
+
+export type StringFilter<Value extends string> =
+  | Value
+  | {
+      readonly eq?: Value;
+      readonly neq?: Value;
+      readonly in?: ReadonlyArray<Value>;
+      readonly startsWith?: string;
+    };
+
+export type FieldFilter<Value> = Value extends string
+  ? StringFilter<Value>
+  : Value extends number | bigint | BigDecimal.BigDecimal
+    ? RangeFilter<Value>
+    : EqualityFilter<Value>;
 
 export type Where<Row> = {
   readonly [Field in FieldKey<Row>]?: FieldFilter<Row[Field]>;
@@ -80,8 +106,20 @@ export type CountAggregate<Alias extends string = string> = {
   readonly as: Alias;
 };
 
-export type NumericAggregate<Row, Alias extends string = string> = {
-  readonly type: "sum" | "avg";
+export type CountDistinctAggregate<Row, Alias extends string = string> = {
+  readonly type: "countDistinct";
+  readonly field: FieldKey<Row>;
+  readonly as: Alias;
+};
+
+export type SumAggregate<Row, Alias extends string = string> = {
+  readonly type: "sum";
+  readonly field: NumericFieldKey<Row>;
+  readonly as: Alias;
+};
+
+export type AverageAggregate<Row, Alias extends string = string> = {
+  readonly type: "avg";
   readonly field: NumericFieldKey<Row>;
   readonly as: Alias;
 };
@@ -94,7 +132,9 @@ export type ComparableAggregate<Row, Alias extends string = string> = {
 
 export type Aggregate<Row, Alias extends string = string> =
   | CountAggregate<Alias>
-  | NumericAggregate<Row, Alias>
+  | CountDistinctAggregate<Row, Alias>
+  | SumAggregate<Row, Alias>
+  | AverageAggregate<Row, Alias>
   | ComparableAggregate<Row, Alias>;
 
 export type GroupedQuery<Row> = {
@@ -111,13 +151,23 @@ type PickRawFields<Row, Query> = Query extends { readonly fields: ReadonlyArray<
   ? Pick<Row, Extract<Field, keyof Row>>
   : Row;
 
-type AggregateResultValue<Row, Agg> = Agg extends { readonly type: "count" | "sum" | "avg" }
-  ? number
-  : Agg extends { readonly type: "min" | "max"; readonly field: infer Field }
+type AggregateResultValue<Row, Agg> = Agg extends { readonly type: "count" | "countDistinct" }
+  ? bigint
+  : Agg extends { readonly type: "sum"; readonly field: infer Field }
     ? Field extends keyof Row
-      ? Row[Field]
+      ? Row[Field] extends bigint
+        ? bigint
+        : Row[Field] extends BigDecimal.BigDecimal
+          ? BigDecimal.BigDecimal
+          : number
       : never
-    : never;
+    : Agg extends { readonly type: "avg" }
+      ? BigDecimal.BigDecimal
+      : Agg extends { readonly type: "min" | "max"; readonly field: infer Field }
+        ? Field extends keyof Row
+          ? Row[Field]
+          : never
+        : never;
 
 type AggregateResultObject<Row, Agg> = Agg extends { readonly as: infer Alias extends string }
   ? {

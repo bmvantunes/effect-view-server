@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import type { GenMessage } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 import type { Effect } from "effect";
+import type * as BigDecimal from "effect/BigDecimal";
 import { Config, Schema } from "effect";
 import {
   defineProto,
@@ -40,6 +41,18 @@ const Trade = Schema.Struct({
   price: Schema.Number,
   region: Schema.String,
 });
+
+const Position = Schema.Struct({
+  id: Schema.String,
+  accountId: Schema.String,
+  symbol: Schema.String,
+  active: Schema.Boolean,
+  quantity: Schema.BigInt,
+  price: Schema.BigDecimal,
+  notional: Schema.Number,
+});
+
+declare const decimal: (value: string) => BigDecimal.BigDecimal;
 
 const ordersValueProto = defineProto<{
   readonly customerId: string;
@@ -97,6 +110,10 @@ const viewServer = defineViewServerConfig({
     },
     trades: {
       schema: Trade,
+      key: "id",
+    },
+    positions: {
+      schema: Position,
       key: "id",
     },
   },
@@ -291,10 +308,60 @@ describe("public type surface", () => {
       type GroupedRow = (typeof groupedRows)[number];
       expectTypeOf<GroupedRow>().toMatchTypeOf<{
         readonly status: "open" | "closed" | "cancelled";
-        readonly count: number;
+        readonly count: bigint;
         readonly totalPrice: number;
-        readonly averageUpdatedAt: number;
+        readonly averageUpdatedAt: BigDecimal.BigDecimal;
         readonly firstStatus: "open" | "closed" | "cancelled";
+      }>();
+
+      const positionRows = react.useLiveQuery("positions", {
+        fields: ["id", "price", "quantity"],
+        where: {
+          accountId: { startsWith: "acct-" },
+          active: true,
+          quantity: { gte: 1n, lte: 100n },
+          price: { gt: decimal("10.00") },
+          notional: { lt: 1_000_000 },
+        },
+        orderBy: [
+          { field: "price", direction: "desc" },
+          { field: "quantity", direction: "asc" },
+        ],
+      }).rows;
+
+      expectTypeOf(positionRows).toEqualTypeOf<
+        ReadonlyArray<{
+          readonly id: string;
+          readonly price: BigDecimal.BigDecimal;
+          readonly quantity: bigint;
+        }>
+      >();
+
+      const groupedPositionRows = react.useLiveQuery("positions", {
+        groupBy: ["accountId", "active"],
+        aggregates: [
+          { type: "count", as: "rowCount" },
+          { type: "countDistinct", field: "symbol", as: "symbolCount" },
+          { type: "sum", field: "quantity", as: "totalQuantity" },
+          { type: "sum", field: "price", as: "totalPrice" },
+          { type: "sum", field: "notional", as: "totalNotional" },
+          { type: "avg", field: "price", as: "averagePrice" },
+          { type: "min", field: "accountId", as: "firstAccountId" },
+          { type: "max", field: "quantity", as: "maxQuantity" },
+        ],
+      }).rows;
+
+      expectTypeOf<(typeof groupedPositionRows)[number]>().toMatchTypeOf<{
+        readonly accountId: string;
+        readonly active: boolean;
+        readonly rowCount: bigint;
+        readonly symbolCount: bigint;
+        readonly totalQuantity: bigint;
+        readonly totalPrice: BigDecimal.BigDecimal;
+        readonly totalNotional: number;
+        readonly averagePrice: BigDecimal.BigDecimal;
+        readonly firstAccountId: string;
+        readonly maxQuantity: bigint;
       }>();
     };
 
@@ -937,8 +1004,71 @@ const assertCompileTimeContracts = () => {
     react.useLiveQuery("orders", {
       where: {
         status: {
+          // @ts-expect-error string filters do not accept range operators
+          gte: "open",
+        },
+      },
+    });
+
+    react.useLiveQuery("orders", {
+      where: {
+        status: {
           // @ts-expect-error filter arrays must contain selected field values
           in: ["open", "pending"],
+        },
+      },
+    });
+
+    react.useLiveQuery("orders", {
+      where: {
+        price: {
+          // @ts-expect-error number filters do not accept string-only operators
+          startsWith: "1",
+        },
+      },
+    });
+
+    react.useLiveQuery("positions", {
+      where: {
+        active: {
+          // @ts-expect-error boolean filters do not accept range operators
+          gte: true,
+        },
+      },
+    });
+
+    react.useLiveQuery("positions", {
+      where: {
+        active: {
+          // @ts-expect-error boolean filters do not accept string-only operators
+          startsWith: "t",
+        },
+      },
+    });
+
+    react.useLiveQuery("positions", {
+      where: {
+        price: {
+          // @ts-expect-error BigDecimal filters require BigDecimal values, not strings
+          gte: "10.00",
+        },
+      },
+    });
+
+    react.useLiveQuery("positions", {
+      where: {
+        price: {
+          // @ts-expect-error BigDecimal filters do not accept string-only operators
+          startsWith: "10",
+        },
+      },
+    });
+
+    react.useLiveQuery("positions", {
+      where: {
+        quantity: {
+          // @ts-expect-error bigint filters require bigint values, not numbers
+          gte: 1,
         },
       },
     });
@@ -986,6 +1116,18 @@ const assertCompileTimeContracts = () => {
       ],
     });
 
+    react.useLiveQuery("positions", {
+      groupBy: ["accountId"],
+      aggregates: [
+        {
+          type: "sum",
+          // @ts-expect-error sum aggregate fields must be numeric, bigint, or BigDecimal
+          field: "symbol",
+          as: "badSymbolTotal",
+        },
+      ],
+    });
+
     react.useLiveQuery("orders", {
       groupBy: ["status"],
       aggregates: [
@@ -994,6 +1136,18 @@ const assertCompileTimeContracts = () => {
           // @ts-expect-error avg aggregate fields must be numeric
           field: "status",
           as: "badAverage",
+        },
+      ],
+    });
+
+    react.useLiveQuery("positions", {
+      groupBy: ["accountId"],
+      aggregates: [
+        {
+          type: "avg",
+          // @ts-expect-error avg aggregate fields must be numeric, bigint, or BigDecimal
+          field: "symbol",
+          as: "badSymbolAverage",
         },
       ],
     });

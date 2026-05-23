@@ -68,8 +68,8 @@ const viewServer = defineViewServerConfig({
 
 type Topics = typeof viewServer.topics;
 type Engine = ColumnLiveViewEngine<Topics>;
-type OrderRow = Schema.Schema.Type<typeof Order>;
-type InstrumentRow = Schema.Schema.Type<typeof Instrument>;
+type OrderRow = typeof Order.Type;
+type InstrumentRow = typeof Instrument.Type;
 
 const order = (
   id: string,
@@ -179,6 +179,11 @@ const expectSnapshotRows = <Row>(
   expect(event.rows).toEqual(rows);
 };
 
+const expectDefined = <Value>(value: Value | undefined): Value => {
+  expect(value).not.toBeUndefined();
+  return value!;
+};
+
 type ClientState<Row> = {
   readonly keys: ReadonlyArray<string>;
   readonly rows: ReadonlyArray<Row>;
@@ -191,10 +196,9 @@ const applyDelta = <Row>(state: ClientState<Row>, event: DeltaEvent<Row>): Clien
   for (const operation of event.operations) {
     if (operation.type === "remove") {
       const index = keys.indexOf(operation.key);
-      if (index >= 0) {
-        keys.splice(index, 1);
-        rows.splice(index, 1);
-      }
+      expect(index).toBeGreaterThanOrEqual(0);
+      keys.splice(index, 1);
+      rows.splice(index, 1);
     }
     if (operation.type === "insert") {
       keys.splice(operation.index, 0, operation.key);
@@ -202,19 +206,17 @@ const applyDelta = <Row>(state: ClientState<Row>, event: DeltaEvent<Row>): Clien
     }
     if (operation.type === "update") {
       const index = keys.indexOf(operation.key);
-      if (index >= 0) {
-        rows[index] = operation.row;
-      }
+      expect(index).toBeGreaterThanOrEqual(0);
+      rows[index] = operation.row;
     }
     if (operation.type === "move") {
       const index = keys.indexOf(operation.key);
-      const row = rows[index];
-      if (index >= 0 && row !== undefined) {
-        keys.splice(index, 1);
-        rows.splice(index, 1);
-        keys.splice(operation.toIndex, 0, operation.key);
-        rows.splice(operation.toIndex, 0, row);
-      }
+      expect(index).toBeGreaterThanOrEqual(0);
+      const row = expectDefined(rows[index]);
+      keys.splice(index, 1);
+      rows.splice(index, 1);
+      keys.splice(operation.toIndex, 0, operation.key);
+      rows.splice(operation.toIndex, 0, row);
     }
   }
 
@@ -443,6 +445,16 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         },
       });
       expect(rowIds(objectInQuery.rows)).toEqual(["2"]);
+
+      const invalidObjectInQuery = yield* engine.snapshot("instruments", {
+        where: {
+          operatorLike: {
+            // @ts-expect-error runtime validation handles hostile untyped structured filters.
+            in: [undefined],
+          },
+        },
+      });
+      expect(rowIds(invalidObjectInQuery.rows)).toEqual([]);
 
       const fullSnapshot = yield* engine.snapshot("instruments", {});
       expect(fullSnapshot.rows).toHaveLength(2);
@@ -797,6 +809,65 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         { customerId: "customer-b", status: "open" },
       ]);
       expect(state.keys).toEqual(["b"]);
+      yield* subscription.close();
+    }),
+  );
+
+  it.effect("emits projected rows in subscription delta operations", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publish("orders", order("a", "open", 10, 1));
+
+      const subscription = yield* engine.subscribe("orders", {
+        fields: ["customerId", "status"],
+      });
+      const take = yield* makeEventReader(subscription);
+      yield* take(1);
+
+      yield* engine.patch("orders", "a", { status: "closed", price: 99 });
+      const firstDelta = firstEvent(yield* take(1));
+      expectDeltaEvent(firstDelta);
+      expect(firstDelta.operations).toEqual([
+        {
+          type: "update",
+          key: "a",
+          row: {
+            customerId: "customer-a",
+            status: "closed",
+          },
+          index: 0,
+        },
+      ]);
+      yield* engine.publish("orders", order("b", "open", 20, 2));
+      const secondDelta = firstEvent(yield* take(1));
+      expectDeltaEvent(secondDelta);
+      expect(secondDelta.operations).toEqual([
+        {
+          type: "insert",
+          key: "b",
+          row: {
+            customerId: "customer-b",
+            status: "open",
+          },
+          index: 1,
+        },
+      ]);
+      yield* subscription.close();
+    }),
+  );
+
+  it.effect("reports queued events for active subscribers", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      const subscription = yield* engine.subscribe("orders", {});
+
+      yield* engine.publish("orders", order("1", "open", 10, 1));
+
+      const health = yield* engine.health();
+      expect(health.activeSubscriptions).toBe(1);
+      expect(health.queuedEvents).toBe(2);
+      expect(health.topics["orders"].queuedEvents).toBe(2);
+
       yield* subscription.close();
     }),
   );
@@ -1639,9 +1710,11 @@ describe("ColumnLiveViewEngine validation and health", () => {
       );
       expect(invalidWhereArray._tag).toBe("InvalidQueryError");
 
+      // @ts-expect-error runtime validation still rejects hostile untyped inputs.
       const invalidTopLevelArray = yield* Effect.flip(engine.snapshot("orders", []));
       expect(invalidTopLevelArray._tag).toBe("InvalidQueryError");
 
+      // @ts-expect-error runtime validation still rejects hostile untyped inputs.
       const invalidTopLevelMap = yield* Effect.flip(engine.snapshot("orders", new Map()));
       expect(invalidTopLevelMap).toMatchObject({
         _tag: "InvalidQueryError",

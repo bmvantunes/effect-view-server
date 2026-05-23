@@ -68,8 +68,8 @@ const viewServer = defineViewServerConfig({
 
 type Topics = typeof viewServer.topics;
 type Engine = ColumnLiveViewEngine<Topics>;
-type OrderRow = Schema.Schema.Type<typeof Order>;
-type InstrumentRow = Schema.Schema.Type<typeof Instrument>;
+type OrderRow = typeof Order.Type;
+type InstrumentRow = typeof Instrument.Type;
 
 const order = (
   id: string,

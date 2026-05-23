@@ -42,7 +42,7 @@ const viewServer = defineViewServerConfig({
 
 type Topics = typeof viewServer.topics;
 type Engine = ColumnLiveViewEngine<Topics>;
-type OrderRow = Schema.Schema.Type<typeof Order>;
+type OrderRow = typeof Order.Type;
 type EffectSuccess<Value> =
   Value extends Effect.Effect<infer Success, infer _Error, infer _Services> ? Success : never;
 type SubscriptionRow<Value> = Value extends ColumnLiveViewSubscription<infer Row> ? Row : never;

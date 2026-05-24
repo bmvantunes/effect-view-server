@@ -3,7 +3,6 @@
     "noEmit": true,
     "module": "preserve",
     "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "plugins": [
       {

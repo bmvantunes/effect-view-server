@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig, type ViewServerInMemoryRuntime } from "@view-server/config";
 import { Effect, Schema } from "effect";
-import type { ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { page } from "vitest/browser";
+import { cleanup, render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
 
 const Order = Schema.Struct({
@@ -58,34 +56,9 @@ const getRuntime = (
   return runtime as ViewServerInMemoryRuntime<Topics>;
 };
 
-const roots = new Set<Root>();
-
-const mount = (children: ReactNode) => {
-  const container = document.createElement("main");
-  document.body.append(container);
-  const root = createRoot(container);
-  roots.add(root);
-  root.render(children);
-
-  return {
-    rerender: (nextChildren: ReactNode) => {
-      root.render(nextChildren);
-    },
-    unmount: () => {
-      root.unmount();
-      roots.delete(root);
-      container.remove();
-    },
-  };
-};
-
 describe("createViewServerReact", () => {
-  afterEach(() => {
-    for (const root of roots) {
-      root.unmount();
-    }
-    roots.clear();
-    document.body.replaceChildren();
+  afterEach(async () => {
+    await cleanup();
   });
 
   it("streams runtime-published snapshots and live deltas in browser providers", async () => {
@@ -116,15 +89,15 @@ describe("createViewServerReact", () => {
       );
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
         <OrdersView />
         <HealthView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = page.getByRole("status", { name: "orders" });
-    const health = page.getByRole("status", { name: "health" });
+    const orders = view.getByRole("status", { name: "orders" });
+    const health = view.getByRole("status", { name: "health" });
     await expect.element(orders).toHaveTextContent("");
 
     Effect.runSync(getRuntime(runtime).publishMany("orders", [order("b", 20), order("a", 10)]));
@@ -136,7 +109,7 @@ describe("createViewServerReact", () => {
 
     await expect.element(orders).toHaveTextContent("c:5|a:10|b:20");
     await expect.element(health).toHaveTextContent("3");
-    view.unmount();
+    await view.unmount();
   });
 
   it("closes live subscriptions when browser components unmount", async () => {
@@ -159,19 +132,19 @@ describe("createViewServerReact", () => {
       );
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = page.getByRole("status", { name: "orders" });
+    const orders = view.getByRole("status", { name: "orders" });
     await expect.element(orders).toHaveTextContent("");
 
     Effect.runSync(getRuntime(runtime).publish("orders", order("a", 10)));
     await expect.element(orders).toHaveTextContent("a");
 
-    view.rerender(
+    await view.rerender(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
       </ViewServerInMemoryProvider>,
@@ -182,7 +155,7 @@ describe("createViewServerReact", () => {
         () => Effect.runSync(getRuntime(runtime).health()).engine.topics.orders.activeSubscriptions,
       )
       .toBe(0);
-    view.unmount();
+    await view.unmount();
   });
 
   it("applies update, move, remove, patch, snapshot, and reset paths", async () => {
@@ -205,13 +178,13 @@ describe("createViewServerReact", () => {
       );
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = page.getByRole("status", { name: "orders" });
+    const orders = view.getByRole("status", { name: "orders" });
     await expect.element(orders).toHaveTextContent("");
 
     Effect.runSync(getRuntime(runtime).publishMany("orders", [order("a", 10), order("b", 20)]));
@@ -236,7 +209,7 @@ describe("createViewServerReact", () => {
 
     Effect.runSync(getRuntime(runtime).reset());
     expect(Effect.runSync(getRuntime(runtime).health()).engine.topics.orders.rowCount).toBe(0);
-    view.unmount();
+    await view.unmount();
   });
 
   it("maps runtime errors", async () => {
@@ -247,7 +220,7 @@ describe("createViewServerReact", () => {
       return null;
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
       </ViewServerInMemoryProvider>,
@@ -290,7 +263,7 @@ describe("createViewServerReact", () => {
     expect(invalidRow._tag).toBe("Failure");
     expect(groupedSnapshot._tag).toBe("Failure");
     expect(invalidQuery._tag).toBe("Failure");
-    view.unmount();
+    await view.unmount();
   });
 
   it("keeps query memoization safe for bigint query values", async () => {
@@ -315,13 +288,13 @@ describe("createViewServerReact", () => {
       );
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
         <TradesView />
       </ViewServerInMemoryProvider>,
     );
-    const trades = page.getByRole("status", { name: "trades" });
+    const trades = view.getByRole("status", { name: "trades" });
     await expect.element(trades).toHaveTextContent("");
 
     Effect.runSync(
@@ -332,7 +305,7 @@ describe("createViewServerReact", () => {
     );
 
     await expect.element(trades).toHaveTextContent("b:10");
-    view.unmount();
+    await view.unmount();
   });
 
   it("surfaces runtime unavailable after provider disposal", async () => {
@@ -343,14 +316,14 @@ describe("createViewServerReact", () => {
       return null;
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider>
         <RuntimeCapture />
       </ViewServerInMemoryProvider>,
     );
     await expect.poll(() => runtime).not.toBeUndefined();
 
-    view.unmount();
+    await view.unmount();
     await expect
       .poll(() => Effect.runSyncExit(getRuntime(runtime).publish("orders", order("a", 10)))._tag)
       .toBe("Failure");
@@ -376,13 +349,13 @@ describe("createViewServerReact", () => {
       );
     }
 
-    const view = mount(
+    const view = await render(
       <ViewServerInMemoryProvider subscriptionQueueCapacity={1}>
         <RuntimeCapture />
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = page.getByRole("status", { name: "orders" });
+    const orders = view.getByRole("status", { name: "orders" });
     await expect.poll(() => runtime).not.toBeUndefined();
 
     Effect.runSync(getRuntime(runtime).publish("orders", order("a", 10)));
@@ -394,6 +367,6 @@ describe("createViewServerReact", () => {
 
     expect(Effect.runSync(getRuntime(runtime).health()).transport.backpressureEvents).toBe(1);
     await expect.element(orders).toHaveTextContent("closed:BackpressureExceeded");
-    view.unmount();
+    await view.unmount();
   });
 });

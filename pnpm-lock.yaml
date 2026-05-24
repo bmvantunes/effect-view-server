@@ -36,6 +36,9 @@ catalogs:
     vite-plus:
       specifier: latest
       version: 0.1.22
+    vitest-browser-react:
+      specifier: 2.2.0
+      version: 2.2.0
 
 overrides:
   vite: npm:@voidzero-dev/vite-plus-core@latest
@@ -168,6 +171,9 @@ importers:
       vitest:
         specifier: npm:@voidzero-dev/vite-plus-test@latest
         version: '@voidzero-dev/vite-plus-test@0.1.22(@vitest/coverage-istanbul@4.1.6)(@vitest/coverage-v8@4.1.6)(typescript@6.0.3)(vite@8.0.14(yaml@2.9.0))(yaml@2.9.0)'
+      vitest-browser-react:
+        specifier: 'catalog:'
+        version: 2.2.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(@voidzero-dev/vite-plus-test@0.1.22)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
 
 packages:
 
@@ -1365,6 +1371,20 @@ packages:
       yaml:
         optional: true
 
+  vitest-browser-react@2.2.0:
+    resolution: {integrity: sha512-oY3KM6305kwJMa6nHo92vVtkOsih7mjEf12dLKuphaF+9ywWPEc+qanIBd394SZ6m5LadVEaG6dicvvizOzmjA==}
+    peerDependencies:
+      '@types/react': ^18.0.0 || ^19.0.0
+      '@types/react-dom': ^18.0.0 || ^19.0.0
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
+      vitest: ^4.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      '@types/react-dom':
+        optional: true
+
   ws@8.20.1:
     resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
     engines: {node: '>=10.0.0'}
@@ -2356,6 +2376,15 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.3
       yaml: 2.9.0
+
+  vitest-browser-react@2.2.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(@voidzero-dev/vite-plus-test@0.1.22)(react-dom@19.2.6(react@19.2.6))(react@19.2.6):
+    dependencies:
+      react: 19.2.6
+      react-dom: 19.2.6(react@19.2.6)
+      vitest: '@voidzero-dev/vite-plus-test@0.1.22(@vitest/coverage-istanbul@4.1.6)(@vitest/coverage-v8@4.1.6)(typescript@6.0.3)(vite@8.0.14(yaml@2.9.0))(yaml@2.9.0)'
+    optionalDependencies:
+      '@types/react': 19.2.15
+      '@types/react-dom': 19.2.3(@types/react@19.2.15)
 
   ws@8.20.1: {}
 

@@ -35,7 +35,8 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "vitest-browser-react": "catalog:"
   },
   "peerDependencies": {
     "react": "19.2.6",

@@ -1,4 +1,3 @@
-/* v8 ignore file -- public type contract only */
 import type {
   DeltaEvent,
   FieldKey,

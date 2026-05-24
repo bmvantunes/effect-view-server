@@ -304,6 +304,9 @@ class InMemoryColumnLiveViewEngine<
         ? configuredCapacity
         : defaultSubscriptionQueueCapacity;
     for (const topic in config.topics) {
+      if (!Object.hasOwn(config.topics, topic)) {
+        continue;
+      }
       const definition = config.topics[topic];
       this.stores.set(
         topic,

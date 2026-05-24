@@ -1670,6 +1670,27 @@ describe("ColumnLiveViewEngine validation and health", () => {
     }),
   );
 
+  it.effect("creates stores only for own topic definitions", () =>
+    Effect.gen(function* () {
+      const topicsWithInheritedDefinition: Record<string, Topics["orders"]> = Object.create({
+        inherited: viewServer.topics.orders,
+      });
+      topicsWithInheritedDefinition["orders"] = viewServer.topics.orders;
+
+      const engine = yield* createColumnLiveViewEngine({
+        topics: topicsWithInheritedDefinition,
+      });
+      const health = yield* engine.health();
+      expect(Object.keys(health.topics)).toEqual(["orders"]);
+
+      const inherited = yield* Effect.flip(engine.snapshot("inherited", {}));
+      expect(inherited).toMatchObject({
+        _tag: "InvalidTopicError",
+        topic: "inherited",
+      });
+    }),
+  );
+
   it.effect("falls back to the default queue capacity when configured capacity is invalid", () =>
     Effect.gen(function* () {
       const engine = yield* createColumnLiveViewEngine({

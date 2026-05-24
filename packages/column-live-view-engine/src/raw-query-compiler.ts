@@ -9,7 +9,7 @@ import {
   isPlainRecord,
   isRecord,
   valuesEqual,
-} from "./row-values.js";
+} from "./row-values.ts";
 
 type RowObject = object;
 

@@ -27,7 +27,7 @@ const { ViewServerInMemoryProvider, useLiveQuery, useViewServerHealth, useViewSe
 describe("React type contracts", () => {
   it("preserves selected row result types", () => {
     const selected = useLiveQuery("orders", {
-      fields: ["id", "price"],
+      select: ["id", "price"],
       orderBy: [{ field: "price", direction: "desc" }],
       limit: 5,
     });
@@ -40,8 +40,9 @@ describe("React type contracts", () => {
     >();
   });
 
-  it("preserves full row result types", () => {
-    const fullRows = useLiveQuery("orders", {
+  it("requires explicit selected row result types", () => {
+    const selectedRows = useLiveQuery("orders", {
+      select: ["id", "customerId", "status", "price", "region", "updatedAt"],
       where: {
         status: { eq: "open" },
         customerId: { startsWith: "customer-" },
@@ -51,7 +52,7 @@ describe("React type contracts", () => {
       limit: 10,
     });
 
-    expectTypeOf(fullRows.rows[0]).toEqualTypeOf<
+    expectTypeOf(selectedRows.rows[0]).toEqualTypeOf<
       | {
           readonly id: string;
           readonly customerId: string;
@@ -62,10 +63,10 @@ describe("React type contracts", () => {
         }
       | undefined
     >();
-    expectTypeOf(fullRows.status).toEqualTypeOf<
+    expectTypeOf(selectedRows.status).toEqualTypeOf<
       "loading" | "ready" | "stale" | "closed" | "error"
     >();
-    expectTypeOf(fullRows.statusCode).toEqualTypeOf<
+    expectTypeOf(selectedRows.statusCode).toEqualTypeOf<
       | "Ready"
       | "SnapshotStale"
       | "SubscriptionClosed"
@@ -75,8 +76,21 @@ describe("React type contracts", () => {
     >();
   });
 
-  it("rejects invalid raw query fields", () => {
+  it("rejects invalid raw query select", () => {
+    // @ts-expect-error raw queries must explicitly select columns.
     useLiveQuery("orders", {
+      where: {
+        status: "open",
+      },
+    });
+
+    useLiveQuery("orders", {
+      // @ts-expect-error raw queries must select at least one column.
+      select: [],
+    });
+
+    useLiveQuery("orders", {
+      select: ["id"],
       where: {
         // @ts-expect-error unknown where fields are rejected.
         prcie: 10,
@@ -84,6 +98,7 @@ describe("React type contracts", () => {
     });
 
     useLiveQuery("orders", {
+      select: ["id"],
       orderBy: [
         {
           // @ts-expect-error unknown orderBy fields are rejected.
@@ -95,12 +110,13 @@ describe("React type contracts", () => {
 
     useLiveQuery("orders", {
       // @ts-expect-error unknown projected fields are rejected.
-      fields: ["id", "prcie"],
+      select: ["id", "prcie"],
     });
   });
 
   it("rejects invalid raw query operators", () => {
     useLiveQuery("orders", {
+      select: ["id"],
       where: {
         status: {
           // @ts-expect-error string fields do not support range filters.
@@ -110,6 +126,7 @@ describe("React type contracts", () => {
     });
 
     useLiveQuery("orders", {
+      select: ["id"],
       where: {
         price: {
           // @ts-expect-error numeric fields do not support string filters.

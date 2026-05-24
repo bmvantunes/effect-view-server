@@ -71,7 +71,7 @@ describe("createViewServerReact", () => {
     function OrdersView() {
       const result = useLiveQuery("orders", {
         orderBy: [{ field: "price", direction: "asc" }],
-        fields: ["id", "price"],
+        select: ["id", "price"],
         limit: 10,
       });
       return (
@@ -114,6 +114,7 @@ describe("createViewServerReact", () => {
     }
     function OrdersView() {
       const result = useLiveQuery("orders", {
+        select: ["id"],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -153,7 +154,7 @@ describe("createViewServerReact", () => {
     function OrdersView() {
       const result = useLiveQuery("orders", {
         orderBy: [{ field: "price", direction: "asc" }],
-        fields: ["id", "price"],
+        select: ["id", "price"],
         limit: 10,
       });
       return (
@@ -184,7 +185,7 @@ describe("createViewServerReact", () => {
 
     const snapshot = Effect.runSync(
       getRuntime(runtime).snapshot("orders", {
-        fields: ["id", "price"],
+        select: ["id", "price"],
         limit: 10,
       }),
     );
@@ -237,7 +238,7 @@ describe("createViewServerReact", () => {
     const invalidQuery = Effect.runSyncExit(
       getRuntime(runtime).snapshot("orders", {
         // @ts-expect-error hostile runtime callers can still send unknown projected fields.
-        fields: ["prcie"],
+        select: ["prcie"],
       }),
     );
 
@@ -260,7 +261,7 @@ describe("createViewServerReact", () => {
         where: {
           quantity: { gte: 10n },
         },
-        fields: ["id", "quantity"],
+        select: ["id", "quantity"],
         limit: 10,
       });
       return (
@@ -320,6 +321,7 @@ describe("createViewServerReact", () => {
     }
     function OrdersView() {
       const result = useLiveQuery("orders", {
+        select: ["id"],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });

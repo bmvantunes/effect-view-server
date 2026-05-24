@@ -71,7 +71,10 @@ export type ViewServerInMemoryRuntime<Topics extends object> = {
     const Query extends RawQuery<TopicRow<Topics, Topic>>,
   >(
     topic: Topic,
-    query: ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+    query: Query &
+      RawQuery<TopicRow<Topics, Topic>> &
+      ExactRawQuery<TopicRow<Topics, Topic>, Query> &
+      ValidateLiveQuery<Query>,
   ) => Effect.Effect<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError

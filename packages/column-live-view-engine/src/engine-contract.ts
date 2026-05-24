@@ -79,7 +79,9 @@ export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
     const Query extends RawQuery<TopicRow<Topics, Topic>>,
   >(
     topic: Topic,
-    query: ExactRawQuery<TopicRow<Topics, Topic>, Query>,
+    query: Query &
+      RawQuery<TopicRow<Topics, Topic>> &
+      ExactRawQuery<TopicRow<Topics, Topic>, Query>,
   ) => Effect.Effect<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
@@ -89,7 +91,9 @@ export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
     const Query extends RawQuery<TopicRow<Topics, Topic>>,
   >(
     topic: Topic,
-    query: ExactRawQuery<TopicRow<Topics, Topic>, Query>,
+    query: Query &
+      RawQuery<TopicRow<Topics, Topic>> &
+      ExactRawQuery<TopicRow<Topics, Topic>, Query>,
   ) => Effect.Effect<
     ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError

@@ -3,7 +3,6 @@ import { Effect, Schema } from "effect";
 import { isBigDecimal, Order } from "effect/BigDecimal";
 import {
   cloneRecord,
-  cloneRow,
   cloneUnknown,
   fieldValue,
   isPlainRecord,
@@ -22,6 +21,7 @@ export class InvalidQueryError extends Schema.TaggedErrorClass<InvalidQueryError
 ) {}
 
 export type RuntimeRawQuery = {
+  readonly select: ReadonlyArray<string>;
   readonly where?: object;
   readonly orderBy?: ReadonlyArray<{
     readonly field: string;
@@ -29,7 +29,6 @@ export type RuntimeRawQuery = {
   }>;
   readonly offset?: number;
   readonly limit?: number;
-  readonly fields?: ReadonlyArray<string>;
 };
 
 type SchemaWithFields = Schema.Decoder<object> & {
@@ -78,7 +77,7 @@ type FilterObject = {
   readonly startsWith?: string;
 };
 
-const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "fields"]);
+const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "select"]);
 const filterOperatorKeys = new Set(["eq", "neq", "in", "gt", "gte", "lt", "lte", "startsWith"]);
 
 const isDenseArray = (value: ReadonlyArray<unknown>): boolean => {
@@ -127,7 +126,10 @@ const decodeRawQuery = (
   query: unknown,
 ): Effect.Effect<RuntimeRawQuery, InvalidQueryError> => {
   if (query === undefined) {
-    return Effect.succeed({});
+    return InvalidQueryError.make({
+      topic,
+      message: "Raw query select must be a non-empty array of strings.",
+    });
   }
   if (!isPlainRecord(query)) {
     return InvalidQueryError.make({
@@ -170,24 +172,23 @@ const decodeRawQuery = (
     });
   }
 
-  const fields = query["fields"];
+  const select = query["select"];
   if (
-    fields !== undefined &&
-    (!Array.isArray(fields) || !fields.every((field) => typeof field === "string"))
+    !Array.isArray(select) ||
+    select.length === 0 ||
+    !select.every((field) => typeof field === "string")
   ) {
     return InvalidQueryError.make({
       topic,
-      message: "Raw query fields must be an array of strings.",
+      message: "Raw query select must be a non-empty array of strings.",
     });
   }
-  if (Array.isArray(fields)) {
-    for (const field of fields) {
-      if (!metadata.fieldNames.has(field)) {
-        return InvalidQueryError.make({
-          topic,
-          message: `Raw query fields contains unknown field: ${field}.`,
-        });
-      }
+  for (const field of select) {
+    if (!metadata.fieldNames.has(field)) {
+      return InvalidQueryError.make({
+        topic,
+        message: `Raw query select contains unknown field: ${field}.`,
+      });
     }
   }
 
@@ -208,12 +209,14 @@ const decodeRawQuery = (
   }
 
   const decoded: {
+    select: Array<string>;
     where?: object;
     orderBy?: Array<{ readonly field: string; readonly direction: "asc" | "desc" }>;
     offset?: number;
     limit?: number;
-    fields?: Array<string>;
-  } = {};
+  } = {
+    select: [...select],
+  };
 
   if (where !== undefined) {
     let clonedWhere: Record<string, unknown>;
@@ -233,10 +236,6 @@ const decodeRawQuery = (
   if (limit !== undefined) {
     decoded.limit = limit;
   }
-  if (Array.isArray(fields)) {
-    decoded.fields = [...fields];
-  }
-
   const clonedOrderBy: Array<{ readonly field: string; readonly direction: "asc" | "desc" }> = [];
   if (Array.isArray(orderBy)) {
     for (const entry of orderBy) {
@@ -564,14 +563,10 @@ const compareRows = <Row extends RowObject>(
 
 const projectRow = (
   row: RowObject,
-  fields: ReadonlyArray<FieldKey<Record<string, unknown>>> | undefined,
+  select: ReadonlyArray<FieldKey<Record<string, unknown>>>,
 ): RowObject => {
-  if (fields === undefined) {
-    return cloneRow(row);
-  }
-
   const projected: Record<string, unknown> = {};
-  for (const field of fields) {
+  for (const field of select) {
     projected[field] = cloneUnknown(fieldValue(row, field));
   }
   return projected;
@@ -579,17 +574,13 @@ const projectRow = (
 
 const projectCompiledRow = <ResultRow extends RowObject>(
   row: RowObject,
-  fields: ReadonlyArray<FieldKey<Record<string, unknown>>> | undefined,
-): ResultRow => projectRow(row, fields) as ResultRow;
+  select: ReadonlyArray<FieldKey<Record<string, unknown>>>,
+): ResultRow => projectRow(row, select) as ResultRow;
 
 const compileProjection = <Row extends RowObject, ResultRow extends RowObject>(
-  fields: RuntimeRawQuery["fields"],
+  select: ReadonlyArray<string>,
 ): ((row: Row) => ResultRow) => {
-  if (fields === undefined) {
-    return (row) => projectCompiledRow(row, undefined);
-  }
-
-  const selectedFields = [...fields];
+  const selectedFields = [...select];
   return (row) => projectCompiledRow(row, selectedFields);
 };
 
@@ -600,7 +591,7 @@ const compileRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
   return {
     matches: compileMatches(query.where),
     compare: (left, right) => compareRows(left, right, orderBy),
-    project: compileProjection(query.fields),
+    project: compileProjection(query.select),
     offset: query.offset ?? 0,
     limit: query.limit,
   };

@@ -18,6 +18,7 @@ import {
   type ColumnLiveViewEngineEvent,
   type ColumnLiveViewSubscription,
 } from "./index";
+import { rowsEqual } from "./row-values";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -74,6 +75,9 @@ type Topics = typeof viewServer.topics;
 type Engine = ColumnLiveViewEngine<Topics>;
 type OrderRow = typeof Order.Type;
 type InstrumentRow = typeof Instrument.Type;
+
+const orderSelect = ["id", "customerId", "status", "price", "region", "updatedAt"] as const;
+const instrumentSelect = ["id", "metadata", "operatorLike", "tags"] as const;
 
 const order = (
   id: string,
@@ -264,6 +268,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const snapshot = yield* engine.snapshot("orders", {
+        select: orderSelect,
         where: {
           customerId: { startsWith: "customer-" },
           status: "open",
@@ -285,6 +290,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       });
 
       const equalStringSort = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           status: "open",
         },
@@ -298,6 +304,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         order("a", "open", 20, 2),
       ]);
       const equalStringSortReverseInsert = yield* reverseInsertEngine.snapshot("orders", {
+        select: ["id"],
         orderBy: [{ field: "status", direction: "asc" }],
       });
       expect(rowIds(equalStringSortReverseInsert.rows)).toEqual(["a", "b"]);
@@ -311,7 +318,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
       const snapshot = yield* engine.snapshot("orders", {
-        fields: ["customerId", "status", "updatedAt"],
+        select: ["customerId", "status", "updatedAt"],
         where: {
           status: "open",
         },
@@ -332,11 +339,11 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
-      const snapshot = yield* engine.snapshot("orders", {});
+      const snapshot = yield* engine.snapshot("orders", { select: orderSelect });
       expect(snapshot.rows).toHaveLength(1);
       Object.assign(snapshot.rows[0]!, { price: 999 });
 
-      const fresh = yield* engine.snapshot("orders", {});
+      const fresh = yield* engine.snapshot("orders", { select: orderSelect });
       expect(fresh.rows).toEqual([order("1", "open", 10, 1)]);
     }),
   );
@@ -345,6 +352,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       const emptyStructuredQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           metadata: {
             venue: "xnys",
@@ -363,6 +371,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const metadataQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           metadata: {
             venue: "xnys",
@@ -376,6 +385,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(metadataQuery.rows)).toEqual(["1"]);
 
       const arrayQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           tags: ["equity", "us"],
         },
@@ -383,6 +393,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(arrayQuery.rows)).toEqual(["1"]);
 
       const operatorObjectQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           metadata: {
             eq: {
@@ -398,6 +409,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(operatorObjectQuery.rows)).toEqual(["2"]);
 
       const operatorLikeDirectObjectQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           operatorLike: {
             eq: "xnys",
@@ -407,6 +419,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(operatorLikeDirectObjectQuery.rows)).toEqual(["1"]);
 
       const operatorLikeWrappedObjectQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           operatorLike: {
             eq: {
@@ -418,6 +431,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(operatorLikeWrappedObjectQuery.rows)).toEqual(["2"]);
 
       const operatorLikeObjectNeq = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           operatorLike: {
             neq: {
@@ -429,6 +443,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(operatorLikeObjectNeq.rows)).toEqual(["1", "2"]);
 
       const operatorLikeObjectNeqEqual = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           operatorLike: {
             neq: {
@@ -440,6 +455,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(operatorLikeObjectNeqEqual.rows)).toEqual(["2"]);
 
       const objectInQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
           operatorLike: {
             in: [
@@ -453,22 +469,23 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(objectInQuery.rows)).toEqual(["2"]);
 
       const invalidObjectInQuery = yield* engine.snapshot("instruments", {
+        select: ["id"],
         where: {
-          operatorLike: {
-            // @ts-expect-error runtime validation handles hostile untyped structured filters.
-            in: [undefined],
-          },
+          // @ts-expect-error runtime validation handles hostile untyped structured filters.
+          operatorLike: { in: [undefined] },
         },
       });
       expect(rowIds(invalidObjectInQuery.rows)).toEqual([]);
 
-      const fullSnapshot = yield* engine.snapshot("instruments", {});
+      const fullSnapshot = yield* engine.snapshot("instruments", {
+        select: ["id", "metadata", "tags"],
+      });
       expect(fullSnapshot.rows).toHaveLength(2);
       Object.assign(Object(fullSnapshot.rows[0]).metadata.risk, { tier: 999 });
       Object(fullSnapshot.rows[0]).tags.push("mutated");
 
       const projectedSnapshot = yield* engine.snapshot("instruments", {
-        fields: ["metadata", "tags"],
+        select: ["metadata", "tags"],
         where: {
           id: "1",
         },
@@ -489,6 +506,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       Object(projectedSnapshot.rows[0]).tags.push("projected-mutation");
 
       const fresh = yield* engine.snapshot("instruments", {
+        select: instrumentSelect,
         where: {
           id: "1",
         },
@@ -506,7 +524,9 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       Object.assign(original.metadata.risk, { tier: 999 });
       Object(original.tags).push("mutated-after-publish");
 
-      const afterPublishMutation = yield* engine.snapshot("instruments", {});
+      const afterPublishMutation = yield* engine.snapshot("instruments", {
+        select: instrumentSelect,
+      });
       expect(afterPublishMutation.rows).toEqual([instrument("1", "xnys", 1, ["equity", "us"])]);
 
       const patch = {
@@ -528,7 +548,9 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       patch.operatorLike.eq = "mutated-after-patch";
       patch.tags.push("mutated-after-patch");
 
-      const afterPatchMutation = yield* engine.snapshot("instruments", {});
+      const afterPatchMutation = yield* engine.snapshot("instruments", {
+        select: instrumentSelect,
+      });
       expect(afterPatchMutation.rows).toEqual([instrument("1", "xlon", 2, ["equity", "uk"])]);
     }),
   );
@@ -573,6 +595,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const snapshot = yield* engine.snapshot("positions", {
+        select: ["id"],
         where: {
           quantity: { gt: 9n },
           price: { gte: fromStringUnsafe("2.00") },
@@ -586,6 +609,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(snapshot.rows)).toEqual(["position-2", "position-1"]);
 
       const fallbackOrdered = yield* engine.snapshot("positions", {
+        select: ["id"],
         orderBy: [{ field: "active", direction: "asc" }],
       });
       expect(rowIds(fallbackOrdered.rows)).toEqual([
@@ -596,6 +620,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const symbolOrdered = yield* engine.snapshot("positions", {
+        select: ["id"],
         orderBy: [{ field: "symbol", direction: "desc" }],
         where: {
           price: { eq: fromStringUnsafe("1.00") },
@@ -604,6 +629,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(symbolOrdered.rows)).toEqual(["position-3", "position-4"]);
 
       const quantityOrdered = yield* engine.snapshot("positions", {
+        select: ["id"],
         orderBy: [{ field: "quantity", direction: "asc" }],
       });
       expect(rowIds(quantityOrdered.rows)).toEqual([
@@ -614,6 +640,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const booleanNotEqual = yield* engine.snapshot("positions", {
+        select: ["id"],
         where: {
           active: { neq: false },
         },
@@ -622,6 +649,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(booleanNotEqual.rows)).toEqual(["position-1", "position-4", "position-3"]);
 
       const decimalNotEqual = yield* engine.snapshot("positions", {
+        select: ["id"],
         where: {
           price: { neq: fromStringUnsafe("2.00") },
         },
@@ -641,11 +669,13 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const objectOrdered = yield* engine.snapshot("instruments", {
+        select: ["id"],
         orderBy: [{ field: "metadata", direction: "asc" }],
       });
       expect(rowIds(objectOrdered.rows)).toEqual(["1", "2", "3"]);
 
       const arrayOrdered = yield* engine.snapshot("instruments", {
+        select: ["id"],
         orderBy: [{ field: "tags", direction: "desc" }],
       });
       expect(rowIds(arrayOrdered.rows)).toEqual(["1", "2", "3"]);
@@ -654,6 +684,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       yield* engine.publish("orders", { ...order("2", "open", 20, 2), note: "visible" });
       yield* engine.publish("orders", order("3", "open", 30, 3));
       const missingOrdered = yield* engine.snapshot("orders", {
+        select: ["id"],
         orderBy: [{ field: "note", direction: "asc" }],
       });
       expect(rowIds(missingOrdered.rows)).toEqual(["1", "3", "2"]);
@@ -661,7 +692,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
   );
 
   it.effect(
-    "uses the configured row key as the final tiebreaker for equal ascending sort fields",
+    "uses the configured row key as the final tiebreaker for equal ascending sort select",
     () =>
       Effect.gen(function* () {
         const engine = yield* makeEngine();
@@ -672,6 +703,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         ]);
 
         const snapshot = yield* engine.snapshot("orders", {
+          select: ["id"],
           orderBy: [{ field: "price", direction: "asc" }],
         });
 
@@ -679,7 +711,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       }),
   );
 
-  it.effect("uses the configured row key as the default order without explicit sort fields", () =>
+  it.effect("uses the configured row key as the default order without explicit sort select", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [
@@ -688,14 +720,14 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         order("b", "cancelled", 20, 2),
       ]);
 
-      const snapshot = yield* engine.snapshot("orders", {});
+      const snapshot = yield* engine.snapshot("orders", { select: ["id"] });
 
       expect(rowIds(snapshot.rows)).toEqual(["a", "b", "c"]);
     }),
   );
 
   it.effect(
-    "uses the configured row key as the final tiebreaker for equal descending sort fields",
+    "uses the configured row key as the final tiebreaker for equal descending sort select",
     () =>
       Effect.gen(function* () {
         const engine = yield* makeEngine();
@@ -706,6 +738,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         ]);
 
         const snapshot = yield* engine.snapshot("orders", {
+          select: ["id"],
           orderBy: [{ field: "price", direction: "desc" }],
         });
 
@@ -713,7 +746,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       }),
   );
 
-  it.effect("uses the configured row key after all sort fields compare equal", () =>
+  it.effect("uses the configured row key after all sort select compare equal", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [
@@ -723,6 +756,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       ]);
 
       const snapshot = yield* engine.snapshot("orders", {
+        select: ["id"],
         orderBy: [
           { field: "price", direction: "desc" },
           { field: "status", direction: "asc" },
@@ -748,10 +782,11 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         order("7", "open", 10, 1, "emea"),
       ]);
 
-      const allRows = yield* engine.snapshot("orders", {});
+      const allRows = yield* engine.snapshot("orders", { select: ["id"] });
       expect(allRows.totalRows).toBe(7);
 
       const snapshot = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           customerId: { startsWith: "customer-" },
           price: { gt: 9 },
@@ -763,6 +798,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(snapshot.rows)).toEqual(["7"]);
 
       const notOpen = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           status: { neq: "open" },
         },
@@ -779,6 +815,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
       const subscription = yield* engine.subscribe("orders", {
+        select: orderSelect,
         where: {
           status: "open",
         },
@@ -790,13 +827,13 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
-  it.effect("emits snapshot keys for projected subscriptions without selected id fields", () =>
+  it.effect("emits snapshot keys for projected subscriptions without selected id select", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [order("b", "open", 10, 1), order("a", "open", 10, 1)]);
 
       const subscription = yield* engine.subscribe("orders", {
-        fields: ["customerId", "status"],
+        select: ["customerId", "status"],
       });
       const take = yield* makeEventReader(subscription);
       const initialEvents = yield* take(1);
@@ -825,7 +862,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("orders", order("a", "open", 10, 1));
 
       const subscription = yield* engine.subscribe("orders", {
-        fields: ["customerId", "status"],
+        select: ["customerId", "status"],
       });
       const take = yield* makeEventReader(subscription);
       yield* take(1);
@@ -865,7 +902,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
   it.effect("reports queued events for active subscribers", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: orderSelect });
 
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
@@ -884,6 +921,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "closed", 20, 2)]);
 
       const query = {
+        select: orderSelect,
         where: {
           status: "open",
         },
@@ -917,7 +955,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
   it.effect("serializes concurrent publishes before notifying subscribers", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: orderSelect });
       const take = yield* makeEventReader(subscription);
       yield* take(1);
 
@@ -929,7 +967,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       );
 
       yield* take(3);
-      const fresh = yield* engine.snapshot("orders", {});
+      const fresh = yield* engine.snapshot("orders", { select: orderSelect });
       expect(rowIds(fresh.rows)).toEqual(["a", "b", "c"]);
       expect(fresh.version).toBe(3);
       yield* subscription.close();
@@ -940,7 +978,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [order("a", "open", 10, 1), order("b", "open", 20, 2)]);
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: ["id"] });
       const take = yield* makeEventReader(subscription);
       yield* take(1);
 
@@ -953,8 +991,8 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         { concurrency: "unbounded" },
       );
 
-      yield* take(3);
-      const fresh = yield* engine.snapshot("orders", {});
+      yield* take(1);
+      const fresh = yield* engine.snapshot("orders", { select: orderSelect });
       expect(fresh.version).toBe(4);
       expect(rowIds(fresh.rows)).toEqual(["a", "c"]);
       expect(fresh.rows).toEqual([order("a", "open", 30, 1), order("c", "closed", 40, 3)]);
@@ -965,7 +1003,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
   it.effect("idempotent subscription close removes active subscribers from health", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: ["id"] });
 
       const active = yield* engine.health();
       expect(active.topics["orders"].activeSubscriptions).toBe(1);
@@ -983,7 +1021,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
   it.effect("stream finalization releases active subscribers", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: ["id"] });
 
       const events = yield* takeEvents(subscription, 1);
       expect(events.map((event) => event.type)).toEqual(["snapshot"]);
@@ -999,6 +1037,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "closed", 20, 2)]);
       const subscription = yield* engine.subscribe("orders", {
+        select: orderSelect,
         where: {
           status: "open",
         },
@@ -1020,9 +1059,10 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
-      const query: { where: { status: OrderRow["status"] } } = {
+      const query = {
+        select: orderSelect,
         where: {
-          status: "open",
+          status: "open" as OrderRow["status"],
         },
       };
       const subscription = yield* engine.subscribe("orders", query);
@@ -1050,6 +1090,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("instruments", instrument("1", "xnys", 1, ["equity", "us"]));
 
       const subscription = yield* engine.subscribe("instruments", {
+        select: instrumentSelect,
         orderBy: [{ field: "id", direction: "asc" }],
       });
       const take = yield* makeEventReader(subscription);
@@ -1081,16 +1122,16 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
       const invalidGt = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
-          price: {
-            // @ts-expect-error malformed runtime queries must not broaden results.
-            gt: "9",
-          },
+          // @ts-expect-error malformed runtime queries must not broaden results.
+          price: { gt: "9" },
         },
       });
       expect(invalidGt.rows).toEqual([]);
 
       const invalidGtNaN = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           price: {
             gt: Number.NaN,
@@ -1100,36 +1141,34 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(invalidGtNaN.rows).toEqual([]);
 
       const invalidGte = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
-          price: {
-            // @ts-expect-error malformed runtime queries must not broaden results.
-            gte: "9",
-          },
+          // @ts-expect-error malformed runtime queries must not broaden results.
+          price: { gte: "9" },
         },
       });
       expect(invalidGte.rows).toEqual([]);
 
       const invalidLt = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
-          price: {
-            // @ts-expect-error malformed runtime queries must not broaden results.
-            lt: "11",
-          },
+          // @ts-expect-error malformed runtime queries must not broaden results.
+          price: { lt: "11" },
         },
       });
       expect(invalidLt.rows).toEqual([]);
 
       const invalidLte = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
-          price: {
-            // @ts-expect-error malformed runtime queries must not broaden results.
-            lte: "11",
-          },
+          // @ts-expect-error malformed runtime queries must not broaden results.
+          price: { lte: "11" },
         },
       });
       expect(invalidLte.rows).toEqual([]);
 
       const invalidIn = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           status: {
             // @ts-expect-error malformed runtime queries must not throw or broaden results.
@@ -1140,6 +1179,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(invalidIn.rows).toEqual([]);
 
       const invalidStartsWith = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           customerId: {
             // @ts-expect-error malformed runtime queries must not throw or broaden results.
@@ -1150,16 +1190,16 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(invalidStartsWith.rows).toEqual([]);
 
       const invalidNeq = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
-          price: {
-            // @ts-expect-error malformed runtime queries must not broaden results.
-            neq: "10",
-          },
+          // @ts-expect-error malformed runtime queries must not broaden results.
+          price: { neq: "10" },
         },
       });
       expect(invalidNeq.rows).toEqual([]);
 
       const invalidNeqNaN = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           price: {
             neq: Number.NaN,
@@ -1169,6 +1209,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(invalidNeqNaN.rows).toEqual([]);
 
       const undefinedEquals = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           // @ts-expect-error malformed runtime queries must not broaden results.
           status: {
@@ -1179,12 +1220,15 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(undefinedEquals.rows).toEqual([]);
 
       const undefinedDirectRuntimeQuery: object = {
+        select: ["id"],
         where: Object.fromEntries([["status", undefined]]),
       };
+      // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
       const undefinedDirectFilter = yield* engine.snapshot("orders", undefinedDirectRuntimeQuery);
       expect(undefinedDirectFilter.rows).toEqual([]);
 
       const undefinedInFilter = yield* engine.snapshot("orders", {
+        select: ["id"],
         where: {
           // @ts-expect-error malformed runtime queries must not broaden results.
           status: { in: [undefined] },
@@ -1195,15 +1239,18 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const sparseValues = Array<string>();
       sparseValues[1] = "open";
       const sparseRuntimeQuery: object = {
+        select: ["id"],
         where: {
           status: { in: sparseValues },
         },
       };
+      // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
       const sparseInFilter = yield* engine.snapshot("orders", sparseRuntimeQuery);
       expect(sparseInFilter.rows).toEqual([]);
 
       const emptyFilter = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           where: {
             status: {},
           },
@@ -1216,6 +1263,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const unknownOperator = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           where: {
             status: {
               // @ts-expect-error malformed runtime queries must not broaden results.
@@ -1231,8 +1279,9 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const typoFieldEmptyFilter = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           where: {
-            // @ts-expect-error malformed runtime query fields must be rejected.
+            // @ts-expect-error malformed runtime query select must be rejected.
             statuz: {},
           },
         }),
@@ -1249,6 +1298,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "open", 20, 2)]);
       const subscription = yield* engine.subscribe("orders", {
+        select: orderSelect,
         orderBy: [{ field: "price", direction: "asc" }],
       });
       const take = yield* makeEventReader(subscription);
@@ -1293,6 +1343,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         order("b", "open", 10, 1),
       ]);
       const subscription = yield* engine.subscribe("orders", {
+        select: orderSelect,
         orderBy: [{ field: "price", direction: "asc" }],
       });
       const take = yield* makeEventReader(subscription);
@@ -1329,6 +1380,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
       const query = {
+        select: [...orderSelect, "note"] as const,
         where: {
           status: "open",
         },
@@ -1377,6 +1429,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         order("3", "open", 30, 3),
       ]);
       const query = {
+        select: orderSelect,
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 2,
       } satisfies RawQuery<OrderRow>;
@@ -1418,7 +1471,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         topics: viewServer.topics,
         subscriptionQueueCapacity: 1,
       });
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: orderSelect });
 
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
@@ -1444,7 +1497,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         topics: viewServer.topics,
         subscriptionQueueCapacity: Number.NaN,
       });
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: orderSelect });
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
       const health = yield* engine.health();
@@ -1458,21 +1511,15 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: ["id"] });
       const take = yield* makeEventReader(subscription);
       yield* take(1);
 
       yield* engine.patch("orders", "1", { price: 20 });
       yield* engine.reset();
 
-      const events = yield* take(1);
-      expect(events).toHaveLength(1);
-      const event = firstEvent(events);
-      expect(event).toMatchObject({
-        type: "delta",
-        fromVersion: 1,
-        toVersion: 2,
-      });
+      const closedRead = yield* Effect.exit(take(1));
+      expect(closedRead._tag).toBe("Failure");
 
       const health = yield* engine.health();
       expect(health.version).toBe(0);
@@ -1482,6 +1529,10 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 });
 
 describe("ColumnLiveViewEngine validation and health", () => {
+  it("treats rows with different selected column counts as different", () => {
+    expect(rowsEqual({ id: "1" }, { id: "1", note: "new" })).toBe(false);
+  });
+
   it.effect("fails invalid row publishes with a typed schema error", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
@@ -1514,6 +1565,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
       const payload = new Map([["venue", "xnys"]]);
 
       const emptyObjectKeywordFilter = yield* engine.snapshot("payloads", {
+        select: ["id"],
         where: {
           payload: { venue: "xlon" },
         },
@@ -1523,11 +1575,12 @@ describe("ColumnLiveViewEngine validation and health", () => {
       yield* engine.publish("payloads", { id: "1", payload });
       yield* engine.publish("payloads", { id: "2", payload: { venue: "xlon" } });
 
-      const snapshot = yield* engine.snapshot("payloads", {});
+      const snapshot = yield* engine.snapshot("payloads", { select: ["id", "payload"] });
       expect(snapshot.rows[0]?.payload).toEqual(payload);
       expect(snapshot.rows[0]?.payload).not.toBe(payload);
 
       const objectFilter = yield* engine.snapshot("payloads", {
+        select: ["id", "payload"],
         where: {
           payload: { venue: "xlon" },
         },
@@ -1559,6 +1612,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
       yield* engine.publish("payloads", { id: "2", payload: { venue: "xnys" } });
       const queryError = yield* Effect.flip(
         engine.snapshot("payloads", {
+          select: ["id"],
           where: {
             payload: new WeakMap(),
           },
@@ -1598,7 +1652,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
           topics: {
             loose: {
               schema: Schema.ObjectKeyword,
-              // @ts-expect-error ObjectKeyword has no known string fields; this exercises runtime fallback only.
+              // @ts-expect-error ObjectKeyword has no known string select; this exercises runtime fallback only.
               key: "id",
             },
           },
@@ -1690,7 +1744,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
       const health = yield* engine.health();
       expect(Object.keys(health.topics)).toEqual(["orders"]);
 
-      const inherited = yield* Effect.flip(engine.snapshot("inherited", {}));
+      const inherited = yield* Effect.flip(engine.snapshot("inherited", { select: ["id"] }));
       expect(inherited).toMatchObject({
         _tag: "InvalidTopicError",
         topic: "inherited",
@@ -1704,7 +1758,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
         topics: viewServer.topics,
         subscriptionQueueCapacity: 0,
       });
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: ["id"] });
 
       yield* subscription.close();
 
@@ -1721,7 +1775,10 @@ describe("ColumnLiveViewEngine validation and health", () => {
         aggregates: [{ type: "count", as: "count" }],
       };
 
-      const error = yield* Effect.flip(engine.snapshot("orders", groupedRuntimeQuery));
+      const error = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.snapshot("orders", groupedRuntimeQuery),
+      );
 
       expect(error).toMatchObject({
         _tag: "UnsupportedQueryError",
@@ -1729,7 +1786,10 @@ describe("ColumnLiveViewEngine validation and health", () => {
       });
       expect(error).toBeInstanceOf(UnsupportedQueryError);
 
-      const subscribeError = yield* Effect.flip(engine.subscribe("orders", groupedRuntimeQuery));
+      const subscribeError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.subscribe("orders", groupedRuntimeQuery),
+      );
       expect(subscribeError._tag).toBe("UnsupportedQueryError");
     }),
   );
@@ -1753,12 +1813,11 @@ describe("ColumnLiveViewEngine validation and health", () => {
       );
       expect(undefinedError._tag).toBe("InvalidQueryError");
 
-      const undefinedSnapshot = yield* engine.snapshot(
-        "orders",
-        // @ts-expect-error undefined is normalized to the empty raw query at runtime.
-        undefined,
+      const undefinedSnapshot = yield* Effect.flip(
+        // @ts-expect-error undefined is rejected because raw queries must select columns.
+        engine.snapshot("orders", undefined),
       );
-      expect(undefinedSnapshot.rows).toEqual([]);
+      expect(undefinedSnapshot._tag).toBe("InvalidQueryError");
     }),
   );
 
@@ -1769,6 +1828,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidWhere = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           // @ts-expect-error malformed runtime query where must be rejected.
           where: "bad",
         }),
@@ -1781,6 +1841,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidWhereArray = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           // @ts-expect-error malformed runtime query where array must be rejected.
           where: [],
         }),
@@ -1799,8 +1860,10 @@ describe("ColumnLiveViewEngine validation and health", () => {
       });
 
       const invalidWhereMapQuery: object = {
+        select: ["id"],
         where: new Map([["status", "open"]]),
       };
+      // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
       const invalidWhereMap = yield* Effect.flip(engine.snapshot("orders", invalidWhereMapQuery));
       expect(invalidWhereMap).toMatchObject({
         _tag: "InvalidQueryError",
@@ -1808,6 +1871,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
       });
 
       const unknownTopLevelRawQuery: object = {
+        select: ["id"],
         where: {
           status: "open",
         },
@@ -1816,6 +1880,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
         },
       };
       const unknownTopLevelKey = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
         engine.snapshot("orders", unknownTopLevelRawQuery),
       );
       expect(unknownTopLevelKey).toMatchObject({
@@ -1826,6 +1891,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOrderBy = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           // @ts-expect-error malformed runtime query orderBy must be rejected.
           orderBy: "bad",
         }),
@@ -1834,8 +1900,8 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidFields = yield* Effect.flip(
         engine.snapshot("orders", {
-          // @ts-expect-error malformed runtime query fields must be rejected.
-          fields: "id",
+          // @ts-expect-error malformed runtime query select must be rejected.
+          select: "id",
         }),
       );
       expect(invalidFields._tag).toBe("InvalidQueryError");
@@ -1843,13 +1909,14 @@ describe("ColumnLiveViewEngine validation and health", () => {
       const invalidFieldEntry = yield* Effect.flip(
         engine.snapshot("orders", {
           // @ts-expect-error malformed runtime query field entries must be rejected.
-          fields: [1],
+          select: [1],
         }),
       );
       expect(invalidFieldEntry._tag).toBe("InvalidQueryError");
 
       const invalidOffset = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           // @ts-expect-error malformed runtime query offset must be rejected.
           offset: "0",
         }),
@@ -1861,6 +1928,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOffsetNaN = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           offset: Number.NaN,
         }),
       );
@@ -1871,6 +1939,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOffsetNegative = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           offset: -1,
         }),
       );
@@ -1881,6 +1950,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOffsetFraction = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           offset: 0.5,
         }),
       );
@@ -1891,6 +1961,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidLimit = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           // @ts-expect-error malformed runtime query limit must be rejected.
           limit: "1",
         }),
@@ -1902,6 +1973,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidLimitInfinity = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           limit: Number.POSITIVE_INFINITY,
         }),
       );
@@ -1912,15 +1984,15 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOrderByEntry = yield* Effect.flip(
         engine.snapshot("orders", {
-          orderBy: [
-            // @ts-expect-error malformed runtime query orderBy entry must be rejected.
-            "bad",
-          ],
+          select: ["id"],
+          // @ts-expect-error malformed runtime query orderBy entry must be rejected.
+          orderBy: ["bad"],
         }),
       );
       expect(invalidOrderByEntry._tag).toBe("InvalidQueryError");
 
       const invalidOrderByExtraKeyQuery: object = {
+        select: ["id"],
         orderBy: [
           {
             field: "price",
@@ -1930,6 +2002,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
         ],
       };
       const invalidOrderByExtraKey = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
         engine.snapshot("orders", invalidOrderByExtraKeyQuery),
       );
       expect(invalidOrderByExtraKey).toMatchObject({
@@ -1939,6 +2012,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOrderByField = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           orderBy: [
             // @ts-expect-error malformed runtime query orderBy field must be rejected.
             {
@@ -1951,6 +2025,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const unknownOrderByField = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           orderBy: [
             {
               // @ts-expect-error runtime query unknown orderBy fields must be rejected.
@@ -1968,16 +2043,17 @@ describe("ColumnLiveViewEngine validation and health", () => {
       const unknownProjectionField = yield* Effect.flip(
         engine.snapshot("orders", {
           // @ts-expect-error runtime query unknown projected fields must be rejected.
-          fields: ["prcie"],
+          select: ["prcie"],
         }),
       );
       expect(unknownProjectionField).toMatchObject({
         _tag: "InvalidQueryError",
-        message: expect.stringContaining("fields"),
+        message: expect.stringContaining("select"),
       });
 
       const unknownWhereField = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           where: {
             // @ts-expect-error runtime query unknown where fields must be rejected.
             prcie: 10,
@@ -1991,6 +2067,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const unknownFilterOperator = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           where: {
             // @ts-expect-error runtime query unknown filter operators must be rejected.
             status: { equals: "open" },
@@ -2004,6 +2081,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const mixedKnownAndUnknownFilterOperator = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           where: {
             // @ts-expect-error runtime query unknown filter operators must be rejected.
             status: { eq: "open", typo: true },
@@ -2017,6 +2095,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const invalidOrderByDirection = yield* Effect.flip(
         engine.snapshot("orders", {
+          select: ["id"],
           orderBy: [
             {
               field: "price",
@@ -2034,7 +2113,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
     Effect.gen(function* () {
       const looseConfig: ColumnLiveViewEngineConfig<Topics> = { topics: viewServer.topics };
       const engine = yield* createColumnLiveViewEngine(looseConfig);
-      const subscription = yield* engine.subscribe("orders", {});
+      const subscription = yield* engine.subscribe("orders", { select: ["id"] });
 
       const missingTopicConfig: ColumnLiveViewEngineConfig<Record<string, Topics["orders"]>> = {
         topics: {
@@ -2042,7 +2121,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
         },
       };
       const looseEngine = yield* createColumnLiveViewEngine(missingTopicConfig);
-      const missing = yield* Effect.flip(looseEngine.snapshot("missing", {}));
+      const missing = yield* Effect.flip(looseEngine.snapshot("missing", { select: ["id"] }));
       expect(missing._tag).toBe("InvalidTopicError");
       expect(missing).toBeInstanceOf(InvalidTopicError);
 

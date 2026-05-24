@@ -15,6 +15,7 @@ export type {
   CountAggregate,
   CountDistinctAggregate,
   EqualityFilter,
+  ExactGroupedQuery,
   ExactPatch,
   ExactRawQuery,
   FieldFilter,

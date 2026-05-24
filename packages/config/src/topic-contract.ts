@@ -89,31 +89,16 @@ export type OrderBy<Row> = {
 };
 
 export type RawQuery<Row> = {
+  readonly select: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
   readonly where?: Where<Row>;
   readonly orderBy?: ReadonlyArray<OrderBy<Row>>;
   readonly offset?: number;
   readonly limit?: number;
-  readonly fields?: ReadonlyArray<FieldKey<Row>>;
 };
 
 type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
-
-type IsUnion<Value, Candidate = Value> = Value extends unknown
-  ? [Candidate] extends [Value]
-    ? false
-    : true
-  : false;
-
-type TupleHasUnionElement<Tuple extends ReadonlyArray<unknown>> = Tuple extends readonly [
-  infer Head,
-  ...infer Tail,
-]
-  ? IsUnion<Head> extends true
-    ? true
-    : TupleHasUnionElement<Tail>
-  : false;
 
 type FieldFilterShape<Value> = Value extends string
   ? {
@@ -164,41 +149,12 @@ type ExactOrderBy<Row, Query> = Query extends {
     }
   : unknown;
 
-type RejectDynamicRawFields<Row, Query> = "fields" extends keyof Query
-  ? Query extends { readonly fields?: infer Fields }
-    ? NonNullable<Fields> extends ReadonlyArray<unknown>
-      ? undefined extends Query["fields"]
-        ? {
-            readonly fields: never;
-          }
-        : IsUnion<NonNullable<Fields>> extends true
-          ? {
-              readonly fields: never;
-            }
-          : number extends NonNullable<Fields>["length"]
-            ? {
-                readonly fields: never;
-              }
-            : TupleHasUnionElement<NonNullable<Fields>> extends true
-              ? {
-                  readonly fields: never;
-                }
-              : NonNullable<Fields>[number] extends FieldKey<Row>
-                ? unknown
-                : {
-                    readonly fields: never;
-                  }
-      : unknown
-    : unknown
-  : unknown;
-
 export type ExactRawQuery<Row, Query> = Query &
   RejectExtraKeys<Query, RawQuery<Row>> & {
     readonly groupBy?: never;
     readonly aggregates?: never;
   } & ExactWhere<Row, Query> &
-  ExactOrderBy<Row, Query> &
-  RejectDynamicRawFields<Row, Query>;
+  ExactOrderBy<Row, Query>;
 
 export type ExactPatch<Row, Patch> = Patch & RejectExtraKeys<Patch, Partial<Row>>;
 
@@ -239,18 +195,44 @@ export type Aggregate<Row, Alias extends string = string> =
   | ComparableAggregate<Row, Alias>;
 
 export type GroupedQuery<Row> = {
-  readonly groupBy: ReadonlyArray<FieldKey<Row>>;
-  readonly aggregates: ReadonlyArray<Aggregate<Row>>;
+  readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
+  readonly aggregates: readonly [Aggregate<Row>, ...Array<Aggregate<Row>>];
+  readonly select?: never;
   readonly where?: Where<Row>;
   readonly offset?: number;
   readonly limit?: number;
 };
 
+type NonEmptyFieldTuple<Row, Tuple> = Tuple extends readonly [unknown, ...Array<unknown>]
+  ? { readonly [Index in keyof Tuple]: Tuple[Index] & FieldKey<Row> }
+  : never;
+
+type NonEmptyAggregateTuple<Row, Tuple> = Tuple extends readonly [unknown, ...Array<unknown>]
+  ? { readonly [Index in keyof Tuple]: Tuple[Index] & Aggregate<Row> }
+  : never;
+
+export type ExactGroupedQuery<Row, Query> = Query &
+  RejectExtraKeys<Query, GroupedQuery<Row>> & {
+    readonly select?: never;
+  } & ExactWhere<Row, Query> &
+  (Query extends {
+    readonly groupBy: infer GroupBy;
+    readonly aggregates: infer Aggregates;
+  }
+    ? {
+        readonly groupBy: NonEmptyFieldTuple<Row, GroupBy>;
+        readonly aggregates: NonEmptyAggregateTuple<Row, Aggregates>;
+      }
+    : {
+        readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
+        readonly aggregates: readonly [Aggregate<Row>, ...Array<Aggregate<Row>>];
+      });
+
 export type LiveQuery<Row> = RawQuery<Row> | GroupedQuery<Row>;
 
-type PickRawFields<Row, Query> = Query extends { readonly fields: ReadonlyArray<infer Field> }
+type PickRawFields<Row, Query> = Query extends { readonly select: ReadonlyArray<infer Field> }
   ? Pick<Row, Extract<Field, keyof Row>>
-  : Row;
+  : never;
 
 type AggregateResultValue<Row, Agg> = Agg extends { readonly type: "count" | "countDistinct" }
   ? bigint
@@ -342,10 +324,16 @@ type RejectAggregateAliasCollisions<Query> =
 export type ValidateLiveQuery<Query> = RejectBroadAggregateAliases<Query> &
   RejectAggregateAliasCollisions<Query>;
 
-export type UseLiveQuery<Topics extends object> = <
-  Topic extends Extract<keyof Topics, string>,
-  const Query extends LiveQuery<TopicRow<Topics, Topic>>,
->(
-  topic: Topic,
-  query: Query & ValidateLiveQuery<Query>,
-) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+export type UseLiveQuery<Topics extends object> = {
+  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
+    topic: Topic,
+    query: ExactGroupedQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+};

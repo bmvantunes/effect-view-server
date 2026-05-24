@@ -49,7 +49,10 @@ export type UseLiveQueryHook<Topics extends DecodableTopicDefinitions> = <
   const Query extends RawQuery<TopicRow<Topics, Topic>>,
 >(
   topic: Topic,
-  query: ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+  query: Query &
+    RawQuery<TopicRow<Topics, Topic>> &
+    ExactRawQuery<TopicRow<Topics, Topic>, Query> &
+    ValidateLiveQuery<Query>,
 ) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
 
 type ProviderState<Topics extends DecodableTopicDefinitions> = {

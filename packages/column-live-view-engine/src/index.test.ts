@@ -1772,7 +1772,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
       const engine = yield* makeEngine();
       const groupedRuntimeQuery: object = {
         groupBy: ["status"],
-        aggregates: [{ type: "count", as: "count" }],
+        aggregates: { count: { aggFunc: "count" } },
       };
 
       const error = yield* Effect.flip(

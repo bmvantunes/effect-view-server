@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig, type ViewServerInMemoryRuntime } from "@view-server/config";
 import { Effect, Schema } from "effect";
-import { cleanup, render } from "vitest-browser-react";
+import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
 
 const Order = Schema.Struct({
@@ -57,10 +57,6 @@ const getRuntime = (
 };
 
 describe("createViewServerReact", () => {
-  afterEach(async () => {
-    await cleanup();
-  });
-
   it("streams runtime-published snapshots and live deltas in browser providers", async () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
@@ -249,7 +245,7 @@ describe("createViewServerReact", () => {
         // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
         groupBy: ["status"],
         // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-        aggregates: [{ type: "count", as: "count" }],
+        aggregates: { count: { aggFunc: "count" } },
       }),
     );
     const invalidQuery = Effect.runSyncExit(

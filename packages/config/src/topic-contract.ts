@@ -158,45 +158,42 @@ export type ExactRawQuery<Row, Query> = Query &
 
 export type ExactPatch<Row, Patch> = Patch & RejectExtraKeys<Patch, Partial<Row>>;
 
-export type CountAggregate<Alias extends string = string> = {
-  readonly type: "count";
-  readonly as: Alias;
+export type CountAggregate = {
+  readonly aggFunc: "count";
 };
 
-export type CountDistinctAggregate<Row, Alias extends string = string> = {
-  readonly type: "countDistinct";
+export type CountDistinctAggregate<Row> = {
+  readonly aggFunc: "countDistinct";
   readonly field: FieldKey<Row>;
-  readonly as: Alias;
 };
 
-export type SumAggregate<Row, Alias extends string = string> = {
-  readonly type: "sum";
+export type SumAggregate<Row> = {
+  readonly aggFunc: "sum";
   readonly field: NumericFieldKey<Row>;
-  readonly as: Alias;
 };
 
-export type AverageAggregate<Row, Alias extends string = string> = {
-  readonly type: "avg";
+export type AverageAggregate<Row> = {
+  readonly aggFunc: "avg";
   readonly field: NumericFieldKey<Row>;
-  readonly as: Alias;
 };
 
-export type ComparableAggregate<Row, Alias extends string = string> = {
-  readonly type: "min" | "max";
+export type ComparableAggregate<Row> = {
+  readonly aggFunc: "min" | "max";
   readonly field: FieldKey<Row>;
-  readonly as: Alias;
 };
 
-export type Aggregate<Row, Alias extends string = string> =
-  | CountAggregate<Alias>
-  | CountDistinctAggregate<Row, Alias>
-  | SumAggregate<Row, Alias>
-  | AverageAggregate<Row, Alias>
-  | ComparableAggregate<Row, Alias>;
+export type Aggregate<Row> =
+  | CountAggregate
+  | CountDistinctAggregate<Row>
+  | SumAggregate<Row>
+  | AverageAggregate<Row>
+  | ComparableAggregate<Row>;
+
+export type Aggregates<Row> = Readonly<Record<string, Aggregate<Row>>>;
 
 export type GroupedQuery<Row> = {
   readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
-  readonly aggregates: readonly [Aggregate<Row>, ...Array<Aggregate<Row>>];
+  readonly aggregates: Aggregates<Row>;
   readonly select?: never;
   readonly where?: Where<Row>;
   readonly offset?: number;
@@ -207,9 +204,9 @@ type NonEmptyFieldTuple<Row, Tuple> = Tuple extends readonly [unknown, ...Array<
   ? { readonly [Index in keyof Tuple]: Tuple[Index] & FieldKey<Row> }
   : never;
 
-type NonEmptyAggregateTuple<Row, Tuple> = Tuple extends readonly [unknown, ...Array<unknown>]
-  ? { readonly [Index in keyof Tuple]: Tuple[Index] & Aggregate<Row> }
-  : never;
+type ExactAggregates<Row, Candidate> = {
+  readonly [Alias in keyof Candidate]: Candidate[Alias] & Aggregate<Row>;
+};
 
 export type ExactGroupedQuery<Row, Query> = Query &
   RejectExtraKeys<Query, GroupedQuery<Row>> & {
@@ -221,11 +218,11 @@ export type ExactGroupedQuery<Row, Query> = Query &
   }
     ? {
         readonly groupBy: NonEmptyFieldTuple<Row, GroupBy>;
-        readonly aggregates: NonEmptyAggregateTuple<Row, Aggregates>;
+        readonly aggregates: ExactAggregates<Row, Aggregates>;
       }
     : {
         readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
-        readonly aggregates: readonly [Aggregate<Row>, ...Array<Aggregate<Row>>];
+        readonly aggregates: Aggregates<Row>;
       });
 
 export type LiveQuery<Row> = RawQuery<Row> | GroupedQuery<Row>;
@@ -234,43 +231,32 @@ type PickRawFields<Row, Query> = Query extends { readonly select: ReadonlyArray<
   ? Pick<Row, Extract<Field, keyof Row>>
   : never;
 
-type AggregateResultValue<Row, Agg> = Agg extends { readonly type: "count" | "countDistinct" }
+type AggregateResultValue<Row, Agg> = Agg extends { readonly aggFunc: "count" | "countDistinct" }
   ? bigint
-  : Agg extends { readonly type: "sum"; readonly field: infer Field }
+  : Agg extends { readonly aggFunc: "sum"; readonly field: infer Field }
     ? Field extends keyof Row
       ? Row[Field] extends bigint
         ? bigint
         : BigDecimal.BigDecimal
       : never
-    : Agg extends { readonly type: "avg" }
+    : Agg extends { readonly aggFunc: "avg" }
       ? BigDecimal.BigDecimal
-      : Agg extends { readonly type: "min" | "max"; readonly field: infer Field }
+      : Agg extends { readonly aggFunc: "min" | "max"; readonly field: infer Field }
         ? Field extends keyof Row
           ? Row[Field]
           : never
         : never;
 
-type AggregateResultObject<Row, Agg> = Agg extends { readonly as: infer Alias extends string }
-  ? {
-      readonly [Key in Alias]: AggregateResultValue<Row, Agg>;
-    }
-  : object;
-
-type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
-  value: infer Intersection,
-) => void
-  ? Intersection
-  : never;
-
 type Simplify<T> = { readonly [Key in keyof T]: T[Key] };
 
 type GroupedResult<Row, Query> = Query extends {
   readonly groupBy: ReadonlyArray<infer GroupField>;
-  readonly aggregates: ReadonlyArray<infer Agg>;
+  readonly aggregates: infer Aggs;
 }
   ? Simplify<
-      Pick<Row, Extract<GroupField, keyof Row>> &
-        UnionToIntersection<AggregateResultObject<Row, Agg>>
+      Pick<Row, Extract<GroupField, keyof Row>> & {
+        readonly [Alias in keyof Aggs]: AggregateResultValue<Row, Aggs[Alias]>;
+      }
     >
   : never;
 
@@ -292,22 +278,10 @@ export type LiveQueryResult<Row> = {
   readonly message?: string | undefined;
 };
 
-type RejectBroadAggregateAliases<Query> = Query extends {
-  readonly aggregates: ReadonlyArray<infer Agg>;
-}
-  ? Agg extends { readonly as: infer Alias extends string }
-    ? string extends Alias
-      ? { readonly aggregates: never }
-      : unknown
-    : unknown
-  : unknown;
-
 type AggregateAliases<Query> = Query extends {
-  readonly aggregates: ReadonlyArray<infer Agg>;
+  readonly aggregates: infer Aggs;
 }
-  ? Agg extends { readonly as: infer Alias extends string }
-    ? Alias
-    : never
+  ? Extract<keyof Aggs, string>
   : never;
 
 type GroupedFields<Query> = Query extends {
@@ -321,8 +295,16 @@ type RejectAggregateAliasCollisions<Query> =
     ? unknown
     : { readonly aggregates: never };
 
-export type ValidateLiveQuery<Query> = RejectBroadAggregateAliases<Query> &
-  RejectAggregateAliasCollisions<Query>;
+type RejectBroadAggregateAliases<Query> = Query extends {
+  readonly aggregates: infer Aggs;
+}
+  ? string extends keyof Aggs
+    ? { readonly aggregates: never }
+    : unknown
+  : unknown;
+
+export type ValidateLiveQuery<Query> = RejectAggregateAliasCollisions<Query> &
+  RejectBroadAggregateAliases<Query>;
 
 export type UseLiveQuery<Topics extends object> = {
   <Topic extends Extract<keyof Topics, string>, const Query extends object>(

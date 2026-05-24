@@ -9,6 +9,7 @@ import type { RowFromSchema, RowSchema, StringFieldKey, TopicDefinition } from "
 
 export type {
   Aggregate,
+  Aggregates,
   AggregateKind,
   AverageAggregate,
   ComparableAggregate,

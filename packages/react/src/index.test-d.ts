@@ -158,7 +158,7 @@ describe("React type contracts", () => {
     const runtime = useViewServerTestRuntime();
     const groupedQuery = {
       groupBy: ["status"],
-      aggregates: [{ type: "count", as: "count" }],
+      aggregates: { count: { aggFunc: "count" } },
     };
 
     const invalidGroupedSnapshot =

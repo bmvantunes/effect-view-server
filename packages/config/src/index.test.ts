@@ -358,12 +358,12 @@ describe("public type surface", () => {
 
       const groupedRows = react.useLiveQuery("orders", {
         groupBy: ["status"],
-        aggregates: [
-          { type: "count", as: "count" },
-          { type: "sum", field: "price", as: "totalPrice" },
-          { type: "avg", field: "updatedAt", as: "averageUpdatedAt" },
-          { type: "min", field: "status", as: "firstStatus" },
-        ],
+        aggregates: {
+          count: { aggFunc: "count" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+          averageUpdatedAt: { aggFunc: "avg", field: "updatedAt" },
+          firstStatus: { aggFunc: "min", field: "status" },
+        },
         where: {
           region: "london",
         },
@@ -383,7 +383,7 @@ describe("public type surface", () => {
 
       const singleAggregateResult = react.useLiveQuery("orders", {
         groupBy: ["region"],
-        aggregates: [{ type: "countDistinct", field: "customerId", as: "uniqueCustomers" }],
+        aggregates: { uniqueCustomers: { aggFunc: "countDistinct", field: "customerId" } },
       });
 
       expectTypeOf(singleAggregateResult).toEqualTypeOf<{
@@ -429,16 +429,16 @@ describe("public type surface", () => {
 
       const groupedPositionRows = react.useLiveQuery("positions", {
         groupBy: ["accountId", "active"],
-        aggregates: [
-          { type: "count", as: "rowCount" },
-          { type: "countDistinct", field: "symbol", as: "symbolCount" },
-          { type: "sum", field: "quantity", as: "totalQuantity" },
-          { type: "sum", field: "price", as: "totalPrice" },
-          { type: "sum", field: "notional", as: "totalNotional" },
-          { type: "avg", field: "price", as: "averagePrice" },
-          { type: "min", field: "accountId", as: "firstAccountId" },
-          { type: "max", field: "quantity", as: "maxQuantity" },
-        ],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+          symbolCount: { aggFunc: "countDistinct", field: "symbol" },
+          totalQuantity: { aggFunc: "sum", field: "quantity" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+          totalNotional: { aggFunc: "sum", field: "notional" },
+          averagePrice: { aggFunc: "avg", field: "price" },
+          firstAccountId: { aggFunc: "min", field: "accountId" },
+          maxQuantity: { aggFunc: "max", field: "quantity" },
+        },
       }).rows;
 
       expectTypeOf<(typeof groupedPositionRows)[number]>().toEqualTypeOf<{
@@ -457,20 +457,18 @@ describe("public type surface", () => {
       const dynamicAggregateAlias = "dynamicTotal" as string;
       const dynamicAggregateQuery = {
         groupBy: ["status"],
-        aggregates: [
-          {
-            type: "sum",
-            field: "price",
-            as: dynamicAggregateAlias,
-          },
-        ],
+        aggregates: {
+          [dynamicAggregateAlias]: { aggFunc: "sum", field: "price" },
+        },
       } as const;
-      // @ts-expect-error aggregate aliases must be string literals for typed result rows
+      // @ts-expect-error aggregate aliases must be literal object keys.
       const _invalidDynamicAggregateAlias: ExactGroupedQuery<
         typeof Order.Type,
         typeof dynamicAggregateQuery
       > &
         ValidateLiveQuery<typeof dynamicAggregateQuery> = dynamicAggregateQuery;
+
+      void _invalidDynamicAggregateAlias;
     };
 
     expect(assertQueryTypes).toBeTypeOf("function");
@@ -1157,7 +1155,7 @@ const assertCompileTimeContracts = () => {
 
     const invalidGroupByField = {
       groupBy: ["missing"],
-      aggregates: [{ type: "count", as: "count" }],
+      aggregates: { count: { aggFunc: "count" } },
     } as const;
     // @ts-expect-error grouped queries reject groupBy fields not present on the topic row
     const _invalidGroupByField: ExactGroupedQuery<typeof Order.Type, typeof invalidGroupByField> =
@@ -1166,7 +1164,7 @@ const assertCompileTimeContracts = () => {
     const invalidGroupedSelect = {
       groupBy: ["status"],
       select: ["id"],
-      aggregates: [{ type: "count", as: "count" }],
+      aggregates: { count: { aggFunc: "count" } },
     } as const;
     // @ts-expect-error grouped queries cannot select raw fields.
     const _invalidGroupedSelect: ExactGroupedQuery<typeof Order.Type, typeof invalidGroupedSelect> =
@@ -1174,7 +1172,7 @@ const assertCompileTimeContracts = () => {
 
     const invalidAggregateAliasCollision = {
       groupBy: ["status"],
-      aggregates: [{ type: "count", as: "status" }],
+      aggregates: { status: { aggFunc: "count" } },
     } as const;
     // @ts-expect-error aggregate aliases cannot collide with groupBy fields
     const _invalidAggregateAliasCollision: ExactGroupedQuery<
@@ -1185,13 +1183,9 @@ const assertCompileTimeContracts = () => {
 
     const invalidOrderSumField = {
       groupBy: ["status"],
-      aggregates: [
-        {
-          type: "sum",
-          field: "status",
-          as: "badTotal",
-        },
-      ],
+      aggregates: {
+        badTotal: { aggFunc: "sum", field: "status" },
+      },
     } as const;
     // @ts-expect-error sum and avg aggregate fields must be numeric
     const _invalidOrderSumField: ExactGroupedQuery<typeof Order.Type, typeof invalidOrderSumField> =
@@ -1199,13 +1193,9 @@ const assertCompileTimeContracts = () => {
 
     const invalidPositionSumField = {
       groupBy: ["accountId"],
-      aggregates: [
-        {
-          type: "sum",
-          field: "symbol",
-          as: "badSymbolTotal",
-        },
-      ],
+      aggregates: {
+        badSymbolTotal: { aggFunc: "sum", field: "symbol" },
+      },
     } as const;
     // @ts-expect-error sum aggregate fields must be numeric, bigint, or BigDecimal
     const _invalidPositionSumField: ExactGroupedQuery<
@@ -1215,13 +1205,9 @@ const assertCompileTimeContracts = () => {
 
     const invalidOrderAverageField = {
       groupBy: ["status"],
-      aggregates: [
-        {
-          type: "avg",
-          field: "status",
-          as: "badAverage",
-        },
-      ],
+      aggregates: {
+        badAverage: { aggFunc: "avg", field: "status" },
+      },
     } as const;
     // @ts-expect-error avg aggregate fields must be numeric
     const _invalidOrderAverageField: ExactGroupedQuery<
@@ -1231,13 +1217,9 @@ const assertCompileTimeContracts = () => {
 
     const invalidPositionAverageField = {
       groupBy: ["accountId"],
-      aggregates: [
-        {
-          type: "avg",
-          field: "symbol",
-          as: "badSymbolAverage",
-        },
-      ],
+      aggregates: {
+        badSymbolAverage: { aggFunc: "avg", field: "symbol" },
+      },
     } as const;
     // @ts-expect-error avg aggregate fields must be numeric, bigint, or BigDecimal
     const _invalidPositionAverageField: ExactGroupedQuery<

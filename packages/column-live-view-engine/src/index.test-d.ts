@@ -305,19 +305,19 @@ describe("ColumnLiveViewEngine type contract", () => {
       // @ts-expect-error grouped queries are not part of this raw-only slice.
       groupBy: ["status"],
       // @ts-expect-error grouped queries are not part of this raw-only slice.
-      aggregates: [{ type: "count", as: "count" }],
+      aggregates: { count: { aggFunc: "count" } },
     });
 
     const _groupedSubscription = engine.subscribe("orders", {
       // @ts-expect-error grouped subscriptions are not part of this raw-only slice.
       groupBy: ["status"],
       // @ts-expect-error grouped subscriptions are not part of this raw-only slice.
-      aggregates: [{ type: "count", as: "count" }],
+      aggregates: { count: { aggFunc: "count" } },
     });
 
     const groupedVariable: LiveQuery<OrderRow> = {
       groupBy: ["status"],
-      aggregates: [{ type: "count", as: "count" }],
+      aggregates: { count: { aggFunc: "count" } },
     };
     // @ts-expect-error widened grouped query variables are rejected.
     const _groupedVariableSnapshot = engine.snapshot("orders", groupedVariable);

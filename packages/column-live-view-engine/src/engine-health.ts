@@ -1,22 +1,17 @@
 import type { LiveTopicSubscriber } from "./live-subscription";
 import { Effect } from "effect";
+import type { TopicRuntimeHealth } from "@view-server/config";
 
 type RowObject = object;
 
-export type ColumnLiveViewTopicHealth = {
-  readonly status: "ready" | "degraded";
-  readonly rowCount: number;
-  readonly version: number;
-  readonly activeSubscriptions: number;
-  readonly queuedEvents: number;
-  readonly maxQueueDepth: number;
-  readonly backpressureEvents: number;
-};
+export type ColumnLiveViewTopicHealth = TopicRuntimeHealth;
 
 export type ColumnLiveViewEngineHealth<Topics extends object = Record<string, object>> = {
   readonly status: "ready" | "stopping";
   readonly version: number;
-  readonly topics: Readonly<Record<Extract<keyof Topics, string>, ColumnLiveViewTopicHealth>>;
+  readonly topics: {
+    readonly [Topic in Extract<keyof Topics, string>]: ColumnLiveViewTopicHealth;
+  };
   readonly activeSubscriptions: number;
   readonly queuedEvents: number;
   readonly maxQueueDepth: number;
@@ -68,11 +63,21 @@ export const collectColumnLiveViewEngineHealth = Effect.fn("ColumnLiveViewEngine
       topics[topic] = {
         status: closed ? "degraded" : "ready",
         rowCount: store.rows.size,
+        liveRowCount: store.rows.size,
+        deletedRowCount: 0,
         version: store.version,
+        lastMutationAt: null,
+        mutationsPerSecond: 0,
+        rowsPerSecond: 0,
+        pendingMutationBatches: 0,
+        activeViews: store.subscribers.size,
         activeSubscriptions: store.subscribers.size,
         queuedEvents: topicQueuedEvents,
         maxQueueDepth: topicMaxQueueDepth,
         backpressureEvents: topicBackpressureEvents,
+        memoryBytes: 0,
+        tombstoneCount: 0,
+        compactionPending: false,
       };
     }
 

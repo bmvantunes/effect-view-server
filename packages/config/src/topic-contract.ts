@@ -96,6 +96,112 @@ export type RawQuery<Row> = {
   readonly fields?: ReadonlyArray<FieldKey<Row>>;
 };
 
+type RejectExtraKeys<Candidate, Shape> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+};
+
+type IsUnion<Value, Candidate = Value> = Value extends unknown
+  ? [Candidate] extends [Value]
+    ? false
+    : true
+  : false;
+
+type TupleHasUnionElement<Tuple extends ReadonlyArray<unknown>> = Tuple extends readonly [
+  infer Head,
+  ...infer Tail,
+]
+  ? IsUnion<Head> extends true
+    ? true
+    : TupleHasUnionElement<Tail>
+  : false;
+
+type FieldFilterShape<Value> = Value extends string
+  ? {
+      readonly eq?: Value;
+      readonly neq?: Value;
+      readonly in?: ReadonlyArray<Value>;
+      readonly startsWith?: string;
+    }
+  : {
+      readonly eq?: Value;
+      readonly neq?: Value;
+      readonly in?: ReadonlyArray<Value>;
+      readonly gt?: Value;
+      readonly gte?: Value;
+      readonly lt?: Value;
+      readonly lte?: Value;
+    };
+
+type ExactOperatorFilter<Value, Filter> = Filter extends object
+  ? Filter extends ReadonlyArray<unknown>
+    ? unknown
+    : Filter & RejectExtraKeys<Filter, FieldFilterShape<Value>>
+  : unknown;
+
+type ExactFilter<Value, Filter> = Value extends object
+  ? unknown
+  : ExactOperatorFilter<Value, Filter>;
+
+type ExactWhere<Row, Query> = Query extends {
+  readonly where: infer QueryWhere;
+}
+  ? {
+      readonly where: QueryWhere &
+        RejectExtraKeys<QueryWhere, { readonly [Field in FieldKey<Row>]?: unknown }> & {
+          readonly [Field in Extract<keyof QueryWhere, FieldKey<Row>>]: ExactFilter<
+            Row[Field],
+            QueryWhere[Field]
+          >;
+        };
+    }
+  : unknown;
+
+type ExactOrderBy<Row, Query> = Query extends {
+  readonly orderBy: ReadonlyArray<infer Entry>;
+}
+  ? {
+      readonly orderBy: ReadonlyArray<Entry & RejectExtraKeys<Entry, OrderBy<Row>>>;
+    }
+  : unknown;
+
+type RejectDynamicRawFields<Row, Query> = "fields" extends keyof Query
+  ? Query extends { readonly fields?: infer Fields }
+    ? NonNullable<Fields> extends ReadonlyArray<unknown>
+      ? undefined extends Query["fields"]
+        ? {
+            readonly fields: never;
+          }
+        : IsUnion<NonNullable<Fields>> extends true
+          ? {
+              readonly fields: never;
+            }
+          : number extends NonNullable<Fields>["length"]
+            ? {
+                readonly fields: never;
+              }
+            : TupleHasUnionElement<NonNullable<Fields>> extends true
+              ? {
+                  readonly fields: never;
+                }
+              : NonNullable<Fields>[number] extends FieldKey<Row>
+                ? unknown
+                : {
+                    readonly fields: never;
+                  }
+      : unknown
+    : unknown
+  : unknown;
+
+export type ExactRawQuery<Row, Query> = Query &
+  RejectExtraKeys<Query, RawQuery<Row>> & {
+    readonly groupBy?: never;
+    readonly aggregates?: never;
+  } & ExactWhere<Row, Query> &
+  ExactOrderBy<Row, Query> &
+  RejectDynamicRawFields<Row, Query>;
+
+export type ExactPatch<Row, Patch> = Patch & RejectExtraKeys<Patch, Partial<Row>>;
+
 export type CountAggregate<Alias extends string = string> = {
   readonly type: "count";
   readonly as: Alias;
@@ -191,8 +297,17 @@ export type LiveQueryRow<Row, Query> =
 
 export type LiveQueryResult<Row> = {
   readonly rows: ReadonlyArray<Row>;
-  readonly totalRows?: number;
+  readonly totalRows: number;
   readonly version: number;
+  readonly status: "loading" | "ready" | "stale" | "closed" | "error";
+  readonly statusCode?:
+    | "Ready"
+    | "SnapshotStale"
+    | "SubscriptionClosed"
+    | "TransportError"
+    | "BackpressureExceeded"
+    | undefined;
+  readonly message?: string | undefined;
 };
 
 type RejectBroadAggregateAliases<Query> = Query extends {

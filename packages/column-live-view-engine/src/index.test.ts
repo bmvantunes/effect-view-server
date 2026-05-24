@@ -280,6 +280,8 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         rows: [order("1", "open", 10, 1, "emea")],
         totalRows: 2,
         version: 1,
+        status: "ready",
+        statusCode: "Ready",
       });
 
       const equalStringSort = yield* engine.snapshot("orders", {

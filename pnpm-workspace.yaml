@@ -19,6 +19,11 @@ catalog:
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vitest: npm:@voidzero-dev/vite-plus-test@latest
   vite-plus: latest
+  "@effect/atom-react": 4.0.0-beta.70
+  scheduler: 0.27.0
+  "@vitest/coverage-istanbul": 4.1.6
+  "@testing-library/dom": 10.4.1
+  "@testing-library/react": 16.3.2
 overrides:
   vite: "catalog:"
   vitest: "catalog:"

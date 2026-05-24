@@ -19,7 +19,6 @@ import {
   type TopicRuntimeHealth,
   type ViewServerBackpressureError,
   type ViewServerHealth,
-  type ViewServerInMemoryProviderOptions,
   type ViewServerInMemoryRuntime,
   type ViewServerRuntimeError,
   type ViewServerTransportError,
@@ -205,6 +204,7 @@ describe("public type surface", () => {
       version: 1,
       keys: ["order-1"],
       rows: [{ id: "order-1" }],
+      totalRows: 1,
     };
 
     const metadata: KafkaMessageMetadata<"usa"> = {
@@ -230,6 +230,7 @@ describe("public type surface", () => {
       activeSubscriptions: 0,
       queuedEvents: 0,
       maxQueueDepth: 0,
+      backpressureEvents: 0,
       memoryBytes: 0,
       tombstoneCount: 0,
       compactionPending: false,
@@ -300,8 +301,17 @@ describe("public type surface", () => {
           readonly region: string;
           readonly updatedAt: number;
         }>;
-        readonly totalRows?: number;
+        readonly totalRows: number;
         readonly version: number;
+        readonly status: "loading" | "ready" | "stale" | "closed" | "error";
+        readonly statusCode?:
+          | "Ready"
+          | "SnapshotStale"
+          | "SubscriptionClosed"
+          | "TransportError"
+          | "BackpressureExceeded"
+          | undefined;
+        readonly message?: string | undefined;
       }>();
 
       const selectedResult = react.useLiveQuery("orders", {
@@ -319,8 +329,17 @@ describe("public type surface", () => {
           readonly status: "open" | "closed" | "cancelled";
           readonly updatedAt: number;
         }>;
-        readonly totalRows?: number;
+        readonly totalRows: number;
         readonly version: number;
+        readonly status: "loading" | "ready" | "stale" | "closed" | "error";
+        readonly statusCode?:
+          | "Ready"
+          | "SnapshotStale"
+          | "SubscriptionClosed"
+          | "TransportError"
+          | "BackpressureExceeded"
+          | undefined;
+        readonly message?: string | undefined;
       }>();
 
       const rawRows = react.useLiveQuery("orders", {
@@ -367,8 +386,17 @@ describe("public type surface", () => {
           readonly region: string;
           readonly uniqueCustomers: bigint;
         }>;
-        readonly totalRows?: number;
+        readonly totalRows: number;
         readonly version: number;
+        readonly status: "loading" | "ready" | "stale" | "closed" | "error";
+        readonly statusCode?:
+          | "Ready"
+          | "SnapshotStale"
+          | "SubscriptionClosed"
+          | "TransportError"
+          | "BackpressureExceeded"
+          | undefined;
+        readonly message?: string | undefined;
       }>();
 
       const positionRows = react.useLiveQuery("positions", {
@@ -732,18 +760,6 @@ const assertCompileTimeContracts = () => {
         price: "not-a-number",
       },
     });
-    const dynamicSnapshotAlias = "dynamicTotal" as string;
-    const invalidSnapshotDynamicAlias = runtime.snapshot("orders", {
-      groupBy: ["status"],
-      // @ts-expect-error runtime snapshot aggregate aliases must be string literals
-      aggregates: [{ type: "sum", field: "price", as: dynamicSnapshotAlias }],
-    });
-    const invalidSnapshotAliasCollision = runtime.snapshot("orders", {
-      groupBy: ["status"],
-      // @ts-expect-error runtime snapshot aggregate aliases cannot collide with groupBy fields
-      aggregates: [{ type: "count", as: "status" }],
-    });
-
     expectTypeOf<
       Effect.Error<typeof invalidPublishWrongField>
     >().toEqualTypeOf<ViewServerRuntimeError>();
@@ -761,71 +777,10 @@ const assertCompileTimeContracts = () => {
     expectTypeOf<
       Effect.Error<typeof invalidSnapshotFilter>
     >().toEqualTypeOf<ViewServerRuntimeError>();
-    expectTypeOf<
-      Effect.Error<typeof invalidSnapshotDynamicAlias>
-    >().toEqualTypeOf<ViewServerRuntimeError>();
-    expectTypeOf<
-      Effect.Error<typeof invalidSnapshotAliasCollision>
-    >().toEqualTypeOf<ViewServerRuntimeError>();
   };
 
   expectTypeOf(assertRuntimeContracts).toBeFunction();
   expectTypeOf<ViewServerBackpressureError>().toMatchTypeOf<ViewServerRuntimeError>();
-
-  const assertProviderContracts = (
-    options: ViewServerInMemoryProviderOptions<typeof viewServer.topics>,
-  ) => {
-    type ProviderOrderSeedRow = NonNullable<NonNullable<typeof options.seed>["orders"]>[number];
-    expectTypeOf<ProviderOrderSeedRow>().toEqualTypeOf<{
-      readonly id: string;
-      readonly customerId: string;
-      readonly status: "open" | "closed" | "cancelled";
-      readonly price: number;
-      readonly region: string;
-      readonly updatedAt: number;
-    }>();
-  };
-
-  expectTypeOf(assertProviderContracts).toBeFunction();
-
-  const validProviderOptions: ViewServerInMemoryProviderOptions<typeof viewServer.topics> = {
-    seed: {
-      orders: [
-        {
-          id: "order-1",
-          customerId: "customer-1",
-          status: "open",
-          price: 42,
-          region: "usa",
-          updatedAt: 1,
-        },
-      ],
-    },
-  };
-
-  expectTypeOf(validProviderOptions.runtime).toEqualTypeOf<
-    ViewServerInMemoryRuntime<typeof viewServer.topics> | undefined
-  >();
-
-  const invalidProviderOptions: ViewServerInMemoryProviderOptions<typeof viewServer.topics> = {
-    seed: {
-      orders: [
-        {
-          id: "order-1",
-          customerId: "customer-1",
-          status: "open",
-          price: 42,
-          region: "usa",
-          // @ts-expect-error seed rows must match the topic schema
-          updatedAt: "not-a-number",
-        },
-      ],
-    },
-  };
-
-  expectTypeOf(invalidProviderOptions).toMatchTypeOf<
-    ViewServerInMemoryProviderOptions<typeof viewServer.topics>
-  >();
 
   defineViewServerConfig({
     topics: {

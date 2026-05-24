@@ -15,6 +15,8 @@ export type {
   CountAggregate,
   CountDistinctAggregate,
   EqualityFilter,
+  ExactPatch,
+  ExactRawQuery,
   FieldFilter,
   FieldKey,
   GroupedQuery,
@@ -56,9 +58,7 @@ export type {
 export type {
   ReactHookContracts,
   ViewServerBackpressureError,
-  ViewServerInMemoryProviderOptions,
   ViewServerInMemoryRuntime,
-  ViewServerProviderOptions,
   RuntimeEnvironmentConfig,
   ViewServerRuntimeError,
   ViewServerTransportError,
@@ -92,7 +92,7 @@ export type {
 } from "./kafka-contract";
 
 export type ViewServerConfig<Topics extends object> = {
-  readonly topics: Topics;
+  readonly topics: Topics & ValidateTopicDefinitions<Topics>;
   readonly defineRuntimeOptions: <const Options extends RuntimeOptionsCandidate>(
     options: ExactRuntimeOptions<Topics, Options>,
   ) => RuntimeOptionsDefinition<Topics, Options>;

@@ -5,12 +5,14 @@ import type { KafkaMappingInput } from "@view-server/config/kafka";
 import type { LiveSubscription } from "@view-server/config/live-protocol";
 import type { RawQuery } from "@view-server/config/query";
 import type { RuntimeEnvironmentConfig } from "@view-server/config/runtime";
+import { createViewServerReact } from "@view-server/react";
 import * as configPackage from "@view-server/config";
 import * as healthPackage from "@view-server/config/health";
 import * as kafkaPackage from "@view-server/config/kafka";
 import * as liveProtocolPackage from "@view-server/config/live-protocol";
 import * as queryPackage from "@view-server/config/query";
 import * as runtimePackage from "@view-server/config/runtime";
+import * as reactPackage from "@view-server/react";
 
 const requireExport = (moduleName: string, moduleValue: object, exportName: string) => {
   if (!(exportName in moduleValue)) {
@@ -36,6 +38,7 @@ requireExport("@view-server/config/runtime", runtimePackage, "runtimeConfig");
 requireExport("@view-server/config/runtime", runtimePackage, "runtimeEnvironmentConfig");
 requireExport("@view-server/column-live-view-engine", enginePackage, "createColumnLiveViewEngine");
 requireExport("@view-server/column-live-view-engine", enginePackage, "InvalidTopicError");
+requireExport("@view-server/react", reactPackage, "createViewServerReact");
 
 const _engineType: ColumnLiveViewEngine<Record<string, never>> | undefined = undefined;
 const _runtimeConfigType: RuntimeEnvironmentConfig | undefined = undefined;
@@ -59,3 +62,4 @@ void _queryType;
 void _healthType;
 void _subscriptionType;
 void _mappingInputType;
+void createViewServerReact;

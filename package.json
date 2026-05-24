@@ -12,6 +12,7 @@
     "@effect/language-service": "catalog:",
     "@view-server/column-live-view-engine": "workspace:*",
     "@view-server/config": "workspace:*",
+    "@view-server/react": "workspace:*",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   },

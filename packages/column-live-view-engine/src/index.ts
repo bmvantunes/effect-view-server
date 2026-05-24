@@ -61,6 +61,8 @@ const liveQueryResult = <Row extends RowObject>(
   rows: evaluation.rows,
   totalRows: evaluation.totalRows,
   version: evaluation.version,
+  status: "ready",
+  statusCode: "Ready",
 });
 
 const invalidRow = (topic: string, message: string) =>

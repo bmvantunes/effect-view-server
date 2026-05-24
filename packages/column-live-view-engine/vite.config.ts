@@ -1,4 +1,5 @@
 import { defineConfig } from "vite-plus";
+import { libraryPack } from "../../vite.pack";
 
 export default defineConfig({
   test: {
@@ -12,12 +13,7 @@ export default defineConfig({
       },
     },
   },
-  pack: {
-    entry: "src/index.ts",
-    dts: true,
-    fixedExtension: false,
-    exports: false,
-  },
+  pack: libraryPack("src/index.ts"),
   lint: {
     options: {
       typeAware: true,

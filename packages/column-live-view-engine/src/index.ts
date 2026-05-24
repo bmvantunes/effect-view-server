@@ -22,7 +22,6 @@ import {
 import {
   closeTopicStoreSubscriptions,
   deleteTopicStoreRow,
-  notifyTopicStoreSubscribers,
   patchTopicStoreRow,
   publishTopicStoreRow,
   publishTopicStoreRows,
@@ -95,7 +94,9 @@ class InMemoryColumnLiveViewEngine<
       const definition = config.topics[topic];
       this.stores.set(
         topic,
-        new TopicStore<AnyTopicRow<Topics>>(topic, definition.schema, definition.key),
+        new TopicStore<AnyTopicRow<Topics>>(topic, definition.schema, definition.key, () => {
+          this.engineVersion += 1;
+        }),
       );
     }
   }
@@ -125,21 +126,11 @@ class InMemoryColumnLiveViewEngine<
     });
   }
 
-  private commit<Row extends RowObject>(store: TopicStore<Row>): Effect.Effect<void> {
-    return Effect.gen({ self: this }, function* () {
-      store.version += 1;
-      this.engineVersion += 1;
-      yield* notifyTopicStoreSubscribers(store);
-    });
-  }
-
   readonly publish: ColumnLiveViewEngine<Topics>["publish"] = (topic, row) => {
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
-      yield* publishTopicStoreRow(store, row, invalidRow, (committedStore) =>
-        this.commit(committedStore),
-      );
+      yield* publishTopicStoreRow(store, row, invalidRow);
     });
   };
 
@@ -147,9 +138,7 @@ class InMemoryColumnLiveViewEngine<
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
-      yield* publishTopicStoreRows(store, rows, invalidRow, (committedStore) =>
-        this.commit(committedStore),
-      );
+      yield* publishTopicStoreRows(store, rows, invalidRow);
     });
   };
 
@@ -157,9 +146,7 @@ class InMemoryColumnLiveViewEngine<
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
-      yield* patchTopicStoreRow(store, key, patch, invalidRow, (committedStore) =>
-        this.commit(committedStore),
-      );
+      yield* patchTopicStoreRow(store, key, patch, invalidRow);
     });
   };
 
@@ -167,7 +154,7 @@ class InMemoryColumnLiveViewEngine<
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
-      yield* deleteTopicStoreRow(store, key, (committedStore) => this.commit(committedStore));
+      yield* deleteTopicStoreRow(store, key);
     });
   };
 

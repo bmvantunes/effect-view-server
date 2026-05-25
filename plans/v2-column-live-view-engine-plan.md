@@ -186,24 +186,22 @@ export function AppRoot() {
 Test/browser-in-memory shape:
 
 ```tsx
-import { ViewServerInMemoryProvider } from "./view-server.config";
+import { createInMemoryViewServer } from "./view-server.config";
+
+const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
+
+client.publish("orders", {
+  id: "order-1",
+  customerId: "customer-1",
+  status: "open",
+  price: 42,
+  region: "usa",
+  updatedAt: 1,
+});
 
 export function TestRoot() {
   return (
-    <ViewServerInMemoryProvider
-      seed={{
-        orders: [
-          {
-            id: "order-1",
-            customerId: "customer-1",
-            status: "open",
-            price: 42,
-            region: "usa",
-            updatedAt: 1,
-          },
-        ],
-      }}
-    >
+    <ViewServerInMemoryProvider>
       <App />
     </ViewServerInMemoryProvider>
   );
@@ -324,77 +322,56 @@ Effect.runPromise(runtime);
 The in-memory API should be generated from the same config:
 
 ```ts
-export const {
-  ViewServerProvider,
-  ViewServerInMemoryProvider,
-  useLiveQuery,
-  useViewServerInMemoryRuntime,
-} = viewServer.react;
+export const { ViewServerProvider, useLiveQuery, createInMemoryViewServer } = viewServer.react;
 ```
 
 Recommended test usage:
 
 ```tsx
 import { Effect } from "effect";
-import {
-  ViewServerInMemoryProvider,
-  useLiveQuery,
-  useViewServerInMemoryRuntime,
-} from "./view-server.config";
-
-function PublishButton() {
-  const runtime = useViewServerInMemoryRuntime();
-
-  return (
-    <button
-      onClick={() => {
-        Effect.runPromise(
-          runtime.publish("orders", {
-            id: "order-2",
-            customerId: "customer-2",
-            status: "open",
-            price: 99,
-            region: "london",
-            updatedAt: 2,
-          }),
-        );
-      }}
-    >
-      publish
-    </button>
-  );
-}
+import { createInMemoryViewServer, useLiveQuery } from "./view-server.config";
 
 function Orders() {
   const result = useLiveQuery("orders", {
     where: { status: "open" },
     orderBy: [{ field: "price", direction: "desc" }],
+    select: ["id", "price"],
     limit: 50,
   });
 
   return <div>{result.rows.length}</div>;
 }
 
-export function TestApp() {
-  return (
-    <ViewServerInMemoryProvider seed={{ orders: [] }}>
-      <PublishButton />
-      <Orders />
-    </ViewServerInMemoryProvider>
-  );
-}
+const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
+
+render(
+  <ViewServerInMemoryProvider>
+    <Orders />
+  </ViewServerInMemoryProvider>,
+);
+
+Effect.runPromise(
+  client.publish("orders", {
+    id: "order-2",
+    customerId: "customer-2",
+    status: "open",
+    price: 99,
+    region: "london",
+    updatedAt: 2,
+  }),
+);
 ```
 
-The in-memory runtime should expose test-only publishing helpers:
+The in-memory client should expose typed publishing helpers:
 
 ```ts
-runtime.publish(topic, row);
-runtime.publishMany(topic, rows);
-runtime.patch(topic, key, patch);
-runtime.delete(topic, key);
-runtime.snapshot(topic, query);
-runtime.health();
-runtime.reset();
+client.publish(topic, row);
+client.publishMany(topic, rows);
+client.patch(topic, key, patch);
+client.delete(topic, key);
+client.snapshot(topic, query);
+client.health();
+client.reset();
 ```
 
 These helpers must be fully typed from `defineViewServerConfig`.
@@ -404,27 +381,28 @@ Important boundary:
 - `ViewServerInMemoryProvider` is public for tests, demos, Storybook, and local browser benchmarks.
 - It must not import server-only Kafka/TCP/gRPC adapters.
 - It should be backed by the same core engine package used by the server runtime.
-- Each provider instance owns a fresh engine unless an explicit runtime instance is passed.
+- `useLiveQuery` must not know whether it is under `ViewServerProvider` or `ViewServerInMemoryProvider`.
+- Test setup should publish through the external `client`, not through a React hook.
 
 Provider options:
 
 ```tsx
-<ViewServerInMemoryProvider
-  seed={{ orders, trades }}
-  clock={testClock}
-  runtime={optionalPrecreatedRuntime}
-  onRuntime={captureRuntime}
->
+const { ViewServerInMemoryProvider, client } = createInMemoryViewServer({
+  subscriptionQueueCapacity: 1,
+});
+
+<ViewServerInMemoryProvider>
   <App />
-</ViewServerInMemoryProvider>
+</ViewServerInMemoryProvider>;
 ```
 
 Default behavior:
 
-- Creates a fresh engine on mount.
-- Seeds typed rows before children subscribe.
+- `createInMemoryViewServer()` creates a fresh engine and typed client.
+- Provider supplies that engine to hooks.
+- Setup data goes through `client.publish` / `client.publishMany`; provider seed data is not supported.
 - Disposes all subscriptions and engine state on unmount.
-- Does not share state across tests unless `runtime` is explicitly provided.
+- Does not share state across tests unless the same in-memory instance is explicitly reused.
 
 This is also the correct path for real browser benchmarks. There is no external database process, no production-only snapshot backend, and no external database requirement, so Vitest browser mode can benchmark real `useLiveQuery` behavior end to end.
 

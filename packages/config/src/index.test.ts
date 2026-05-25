@@ -1335,7 +1335,7 @@ const assertCompileTimeContracts = () => {
     // @ts-expect-error the map key is the topic identity; values do not duplicate it.
     expectTypeOf<typeof health.engine.topics.orders.topic>().toEqualTypeOf<"orders">();
 
-    expectTypeOf(react.useViewServerInMemoryRuntime()).toHaveProperty("publish");
+    expectTypeOf(react.createInMemoryViewServer().client).toHaveProperty("publish");
   };
 
   expectTypeOf(assertReactContracts).toBeFunction();

@@ -21,12 +21,8 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const {
-  ViewServerInMemoryProvider,
-  useLiveQuery,
-  useViewServerHealth,
-  useViewServerInMemoryRuntime,
-} = createViewServerReact(viewServer);
+const { createInMemoryViewServer, useLiveQuery, useViewServerHealth } =
+  createViewServerReact(viewServer);
 
 describe("React type contracts", () => {
   it("preserves selected row result types", () => {
@@ -140,18 +136,20 @@ describe("React type contracts", () => {
     });
   });
 
-  it("keeps health and test runtime keyed by configured topics", () => {
+  it("keeps health and in-memory client keyed by configured topics", () => {
     const health = useViewServerHealth();
-    type Runtime = ReturnType<typeof useViewServerInMemoryRuntime>;
+    const inMemoryViewServer = createInMemoryViewServer();
+    type Client = typeof inMemoryViewServer.client;
 
     expectTypeOf(health.engine.topics.orders.rowCount).toEqualTypeOf<number>();
-    expectTypeOf<Parameters<Runtime["publish"]>>().toEqualTypeOf<
+    expectTypeOf<Parameters<Client["publish"]>>().toEqualTypeOf<
       [topic: "orders", row: typeof Order.Type]
     >();
   });
 
   it("rejects provider seed data", () => {
-    void ViewServerInMemoryProvider({
+    const inMemoryViewServer = createInMemoryViewServer();
+    void inMemoryViewServer.ViewServerInMemoryProvider({
       children: null,
       // @ts-expect-error setup data must go through runtime.publish or runtime.publishMany.
       seed: {},
@@ -159,7 +157,7 @@ describe("React type contracts", () => {
   });
 
   it("rejects grouped queries for the in-memory runtime slice", () => {
-    const runtime = useViewServerInMemoryRuntime();
+    const { client } = createInMemoryViewServer();
     const groupedQuery = {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
@@ -167,9 +165,9 @@ describe("React type contracts", () => {
 
     const invalidGroupedSnapshot =
       // @ts-expect-error grouped queries are not part of the raw in-memory runtime slice yet.
-      runtime.snapshot("orders", groupedQuery);
+      client.snapshot("orders", groupedQuery);
 
-    const invalidPatch = runtime.patch("orders", "order-1", {
+    const invalidPatch = client.patch("orders", "order-1", {
       price: 10,
       // @ts-expect-error patches cannot contain fields outside the topic schema.
       prcie: 10,

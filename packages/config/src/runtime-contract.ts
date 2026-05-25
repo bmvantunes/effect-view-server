@@ -82,7 +82,9 @@ export type ViewServerInMemoryRuntime<Topics extends object> = {
 export type ReactHookContracts<Topics extends object> = {
   readonly useLiveQuery: UseLiveQuery<Topics>;
   readonly useViewServerHealth: () => ViewServerHealth<Topics>;
-  readonly useViewServerInMemoryRuntime: () => ViewServerInMemoryRuntime<Topics>;
+  readonly createInMemoryViewServer: () => {
+    readonly client: ViewServerInMemoryRuntime<Topics>;
+  };
 };
 
 export type RuntimeEnvironmentConfig = {

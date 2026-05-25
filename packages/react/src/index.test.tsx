@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type ViewServerInMemoryRuntime } from "@view-server/config";
+import { defineViewServerConfig } from "@view-server/config";
 import { Effect, Schema } from "effect";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
@@ -35,14 +35,9 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const {
-  ViewServerInMemoryProvider,
-  useLiveQuery,
-  useViewServerHealth,
-  useViewServerInMemoryRuntime,
-} = createViewServerReact(viewServer);
+const { createInMemoryViewServer, useLiveQuery, useViewServerHealth } =
+  createViewServerReact(viewServer);
 
-type Topics = typeof viewServer.topics;
 type OrderRow = typeof Order.Type;
 
 const order = (id: string, price: number): OrderRow => ({
@@ -53,13 +48,6 @@ const order = (id: string, price: number): OrderRow => ({
   region: "usa",
   updatedAt: price,
 });
-
-const getRuntime = (
-  runtime: ViewServerInMemoryRuntime<Topics> | undefined,
-): ViewServerInMemoryRuntime<Topics> => {
-  expect(runtime).toBeDefined();
-  return runtime!;
-};
 
 describe("createViewServerReact", () => {
   it("applies remove delta operations in the client reducer", () => {
@@ -89,12 +77,8 @@ describe("createViewServerReact", () => {
   });
 
   it("streams runtime-published snapshots and live deltas in browser providers", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
-    }
     function OrdersView() {
       const result = useLiveQuery("orders", {
         orderBy: [{ field: "price", direction: "asc" }],
@@ -118,7 +102,6 @@ describe("createViewServerReact", () => {
 
     const view = await render(
       <ViewServerInMemoryProvider>
-        <RuntimeCapture />
         <OrdersView />
         <HealthView />
       </ViewServerInMemoryProvider>,
@@ -127,12 +110,12 @@ describe("createViewServerReact", () => {
     const health = view.getByRole("status", { name: "health" });
     await expect.element(orders).toHaveTextContent("");
 
-    Effect.runSync(getRuntime(runtime).publishMany("orders", [order("b", 20), order("a", 10)]));
+    Effect.runSync(client.publishMany("orders", [order("b", 20), order("a", 10)]));
 
     await expect.element(orders).toHaveTextContent("a:10|b:20");
     await expect.element(health).toHaveTextContent("2");
 
-    Effect.runSync(getRuntime(runtime).publish("orders", order("c", 5)));
+    Effect.runSync(client.publish("orders", order("c", 5)));
 
     await expect.element(orders).toHaveTextContent("c:5|a:10|b:20");
     await expect.element(health).toHaveTextContent("3");
@@ -140,12 +123,8 @@ describe("createViewServerReact", () => {
   });
 
   it("closes live subscriptions when browser components unmount", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
-    }
     function OrdersView() {
       const result = useLiveQuery("orders", {
         select: ["id"],
@@ -161,37 +140,26 @@ describe("createViewServerReact", () => {
 
     const view = await render(
       <ViewServerInMemoryProvider>
-        <RuntimeCapture />
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
     const orders = view.getByRole("status", { name: "orders" });
     await expect.element(orders).toHaveTextContent("");
 
-    Effect.runSync(getRuntime(runtime).publish("orders", order("a", 10)));
+    Effect.runSync(client.publish("orders", order("a", 10)));
     await expect.element(orders).toHaveTextContent("a");
 
-    await view.rerender(
-      <ViewServerInMemoryProvider>
-        <RuntimeCapture />
-      </ViewServerInMemoryProvider>,
-    );
+    await view.rerender(<ViewServerInMemoryProvider></ViewServerInMemoryProvider>);
 
     await expect
-      .poll(
-        () => Effect.runSync(getRuntime(runtime).health()).engine.topics.orders.activeSubscriptions,
-      )
+      .poll(() => Effect.runSync(client.health()).engine.topics.orders.activeSubscriptions)
       .toBe(0);
     await view.unmount();
   });
 
   it("applies update, move, remove, patch, snapshot, and reset paths", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
-    }
     function OrdersView() {
       const result = useLiveQuery("orders", {
         orderBy: [{ field: "price", direction: "asc" }],
@@ -207,40 +175,41 @@ describe("createViewServerReact", () => {
 
     const view = await render(
       <ViewServerInMemoryProvider>
-        <RuntimeCapture />
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
     const orders = view.getByRole("status", { name: "orders" });
     await expect.element(orders).toHaveTextContent("");
 
-    Effect.runSync(getRuntime(runtime).publishMany("orders", [order("a", 10), order("b", 20)]));
+    Effect.runSync(client.publishMany("orders", [order("a", 10), order("b", 20)]));
     await expect.element(orders).toHaveTextContent("a:10|b:20");
 
-    Effect.runSync(getRuntime(runtime).publish("orders", order("a", 30)));
+    Effect.runSync(client.publish("orders", order("a", 30)));
     await expect.element(orders).toHaveTextContent("b:20|a:30");
 
-    Effect.runSync(getRuntime(runtime).patch("orders", "a", { price: 5 }));
+    Effect.runSync(client.patch("orders", "a", { price: 5 }));
     await expect.element(orders).toHaveTextContent("a:5|b:20");
 
-    Effect.runSync(getRuntime(runtime).delete("orders", "a"));
+    Effect.runSync(client.delete("orders", "a"));
     await expect.element(orders).toHaveTextContent("b:20");
 
     const snapshot = Effect.runSync(
-      getRuntime(runtime).snapshot("orders", {
+      client.snapshot("orders", {
         select: ["id", "price"],
         limit: 10,
       }),
     );
     expect(snapshot.rows).toEqual([{ id: "b", price: 20 }]);
 
-    Effect.runSync(getRuntime(runtime).reset());
-    expect(Effect.runSync(getRuntime(runtime).health()).engine.topics.orders.rowCount).toBe(0);
+    Effect.runSync(client.reset());
+    expect(Effect.runSync(client.health()).engine.topics.orders.rowCount).toBe(0);
     await expect.element(orders).toHaveTextContent("");
     await view.unmount();
   });
 
   it("surfaces live query failures as error results", async () => {
+    const { ViewServerInMemoryProvider } = createInMemoryViewServer();
+
     function BrokenOrdersView() {
       const result = useLiveQuery("orders", {
         // @ts-expect-error invalid selected fields are still surfaced through the hook result.
@@ -265,28 +234,18 @@ describe("createViewServerReact", () => {
   });
 
   it("maps runtime errors", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
-    }
+    const view = await render(<ViewServerInMemoryProvider></ViewServerInMemoryProvider>);
 
-    const view = await render(
-      <ViewServerInMemoryProvider>
-        <RuntimeCapture />
-      </ViewServerInMemoryProvider>,
-    );
-    await expect.poll(() => runtime).not.toBeUndefined();
-
-    Effect.runSync(getRuntime(runtime).publish("orders", order("a", 10)));
+    Effect.runSync(client.publish("orders", order("a", 10)));
 
     const invalidTopic = Effect.runSyncExit(
       // @ts-expect-error hostile runtime callers can still send unknown topics.
-      getRuntime(runtime).publish("missing", order("b", 20)),
+      client.publish("missing", order("b", 20)),
     );
     const invalidRow = Effect.runSyncExit(
-      getRuntime(runtime).publish("orders", {
+      client.publish("orders", {
         id: "bad",
         customerId: "customer-bad",
         // @ts-expect-error hostile runtime callers can still send malformed rows.
@@ -297,7 +256,7 @@ describe("createViewServerReact", () => {
       }),
     );
     const groupedSnapshot = Effect.runSyncExit(
-      getRuntime(runtime).snapshot("orders", {
+      client.snapshot("orders", {
         // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
         groupBy: ["status"],
         // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
@@ -305,7 +264,7 @@ describe("createViewServerReact", () => {
       }),
     );
     const invalidQuery = Effect.runSyncExit(
-      getRuntime(runtime).snapshot("orders", {
+      client.snapshot("orders", {
         // @ts-expect-error hostile runtime callers can still send unknown projected fields.
         select: ["prcie"],
       }),
@@ -319,12 +278,8 @@ describe("createViewServerReact", () => {
   });
 
   it("keeps query memoization safe for bigint query values", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
-    }
     function TradesView() {
       const result = useLiveQuery("trades", {
         where: {
@@ -342,7 +297,6 @@ describe("createViewServerReact", () => {
 
     const view = await render(
       <ViewServerInMemoryProvider>
-        <RuntimeCapture />
         <TradesView />
       </ViewServerInMemoryProvider>,
     );
@@ -350,7 +304,7 @@ describe("createViewServerReact", () => {
     await expect.element(trades).toHaveTextContent("");
 
     Effect.runSync(
-      getRuntime(runtime).publishMany("trades", [
+      client.publishMany("trades", [
         { id: "a", symbol: "AAPL", quantity: 5n, price: 100, region: "usa" },
         { id: "b", symbol: "MSFT", quantity: 10n, price: 200, region: "usa" },
       ]),
@@ -361,33 +315,35 @@ describe("createViewServerReact", () => {
   });
 
   it("surfaces runtime unavailable after provider disposal", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
+    function HealthView() {
+      const health = useViewServerHealth();
+      return (
+        <output aria-label="health" role="status">
+          {health.status}
+        </output>
+      );
     }
 
     const view = await render(
       <ViewServerInMemoryProvider>
-        <RuntimeCapture />
+        <HealthView />
       </ViewServerInMemoryProvider>,
     );
-    await expect.poll(() => runtime).not.toBeUndefined();
+    await expect.element(view.getByRole("status", { name: "health" })).toHaveTextContent("ready");
 
     await view.unmount();
     await expect
-      .poll(() => Effect.runSyncExit(getRuntime(runtime).publish("orders", order("a", 10)))._tag)
+      .poll(() => Effect.runSyncExit(client.publish("orders", order("a", 10)))._tag)
       .toBe("Failure");
   });
 
   it("surfaces status events from bounded subscription queues", async () => {
-    let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
+    const { ViewServerInMemoryProvider, client } = createInMemoryViewServer({
+      subscriptionQueueCapacity: 1,
+    });
 
-    function RuntimeCapture() {
-      runtime = useViewServerInMemoryRuntime();
-      return null;
-    }
     function OrdersView() {
       const result = useLiveQuery("orders", {
         select: ["id"],
@@ -402,22 +358,20 @@ describe("createViewServerReact", () => {
     }
 
     const view = await render(
-      <ViewServerInMemoryProvider subscriptionQueueCapacity={1}>
-        <RuntimeCapture />
+      <ViewServerInMemoryProvider>
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
     const orders = view.getByRole("status", { name: "orders" });
-    await expect.poll(() => runtime).not.toBeUndefined();
 
-    Effect.runSync(getRuntime(runtime).publish("orders", order("a", 10)));
+    Effect.runSync(client.publish("orders", order("a", 10)));
     await expect.element(orders).toHaveTextContent("ready:Ready");
 
     for (let index = 0; index < 50; index += 1) {
-      Effect.runSync(getRuntime(runtime).publish("orders", order(`burst-${index}`, index)));
+      Effect.runSync(client.publish("orders", order(`burst-${index}`, index)));
     }
 
-    expect(Effect.runSync(getRuntime(runtime).health()).transport.backpressureEvents).toBe(1);
+    expect(Effect.runSync(client.health()).transport.backpressureEvents).toBe(1);
     await expect.element(orders).toHaveTextContent("closed:BackpressureExceeded");
     await view.unmount();
   });

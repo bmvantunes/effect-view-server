@@ -1,10 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@view-server/config";
-import { Deferred, Effect, Schema } from "effect";
+import { Cause, Deferred, Effect, Schema } from "effect";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { render } from "vitest-browser-react";
+import { liveQueryFailureResult } from "./hook-error";
+import { liveQueryResultFromAsyncResult } from "./hook-result";
 import { createViewServerReact } from "./index";
 import { makeHealthRefreshScheduler } from "./in-memory-runtime";
-import { applyEvent, initialClientState } from "./live-query-state";
+import { applyEvent, initialClientState, type ClientState } from "./live-query-state";
+import { stableQueryKey } from "./query-key";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -259,8 +263,147 @@ describe("createViewServerReact", () => {
     );
     const orders = view.getByRole("status", { name: "orders" });
 
-    await expect.element(orders).toHaveTextContent("error:TransportError");
+    await expect.element(orders).toHaveTextContent("error:SnapshotStale");
     await view.unmount();
+  });
+
+  it("distinguishes non-plain object query values in stable query keys", () => {
+    class FilterValue {
+      readonly label = "same";
+    }
+
+    const firstFilter = new FilterValue();
+    const secondFilter = new FilterValue();
+
+    expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).toBe(
+      stableQueryKey({ where: { custom: { eq: firstFilter } } }),
+    );
+    expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).not.toBe(
+      stableQueryKey({ where: { custom: { eq: secondFilter } } }),
+    );
+    expect(
+      stableQueryKey({
+        where: {
+          custom: {
+            eq: new Map<string, number>([
+              ["b", 1],
+              ["a", 2],
+            ]),
+          },
+        },
+      }),
+    ).toBe(
+      stableQueryKey({
+        where: {
+          custom: {
+            eq: new Map<string, number>([
+              ["a", 2],
+              ["b", 1],
+            ]),
+          },
+        },
+      }),
+    );
+    expect(stableQueryKey({ where: { custom: { eq: new Set(["b", "a"]) } } })).toBe(
+      stableQueryKey({ where: { custom: { eq: new Set(["a", "b"]) } } }),
+    );
+  });
+
+  it("preserves typed hook failure status codes", () => {
+    for (const code of [
+      "Ready",
+      "SnapshotStale",
+      "SubscriptionClosed",
+      "TransportError",
+      "BackpressureExceeded",
+      "InvalidTopic",
+      "InvalidRow",
+      "RuntimeUnavailable",
+      "RuntimeResetFailed",
+    ]) {
+      expect(
+        liveQueryFailureResult<never>(
+          Cause.fail({
+            _tag: "ViewServerRuntimeError",
+            code,
+            message: code,
+          }),
+        ),
+      ).toMatchObject({
+        status: "error",
+        statusCode: code,
+        message: code,
+      });
+    }
+    expect(
+      liveQueryFailureResult<never>(
+        Cause.fail({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidRow",
+          message: "invalid row",
+        }),
+      ),
+    ).toMatchObject({
+      status: "error",
+      statusCode: "InvalidRow",
+      message: "invalid row",
+    });
+    expect(
+      liveQueryFailureResult<never>(
+        Cause.fail({
+          _tag: "UnknownFailure",
+          code: "UnexpectedCode",
+          message: "unexpected",
+        }),
+      ),
+    ).toMatchObject({
+      status: "error",
+      statusCode: "TransportError",
+      message: "unexpected",
+    });
+    expect(liveQueryFailureResult<never>(Cause.fail("plain failure"))).toMatchObject({
+      status: "error",
+      statusCode: "TransportError",
+      message: "plain failure",
+    });
+    expect(liveQueryFailureResult<never>(Cause.fail({ code: "InvalidRow" }))).toMatchObject({
+      status: "error",
+      statusCode: "TransportError",
+      message: "[object Object]",
+    });
+  });
+
+  it("maps async atom lifecycle states into live query results", () => {
+    expect(liveQueryResultFromAsyncResult(AsyncResult.initial())).toMatchObject({
+      status: "loading",
+      rows: [],
+      totalRows: 0,
+    });
+    expect(
+      liveQueryResultFromAsyncResult(
+        AsyncResult.success({
+          ...initialClientState<{ readonly id: string }>(),
+          rows: [{ id: "a" }],
+          keys: ["a"],
+          totalRows: 1,
+          version: 1,
+          status: "ready",
+        }),
+      ),
+    ).toMatchObject({
+      status: "ready",
+      rows: [{ id: "a" }],
+      totalRows: 1,
+    });
+    expect(
+      liveQueryResultFromAsyncResult(
+        AsyncResult.failure<ClientState<{ readonly id: string }>, string>(Cause.fail("boom")),
+      ),
+    ).toMatchObject({
+      status: "error",
+      statusCode: "TransportError",
+      message: "boom",
+    });
   });
 
   it("maps runtime errors", async () => {

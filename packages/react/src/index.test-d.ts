@@ -72,6 +72,10 @@ describe("React type contracts", () => {
       | "SubscriptionClosed"
       | "TransportError"
       | "BackpressureExceeded"
+      | "InvalidTopic"
+      | "InvalidRow"
+      | "RuntimeUnavailable"
+      | "RuntimeResetFailed"
       | undefined
     >();
   });

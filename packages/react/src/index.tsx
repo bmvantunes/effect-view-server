@@ -10,12 +10,12 @@ import type {
   ViewServerHealth,
   ViewServerInMemoryRuntime,
 } from "@view-server/config";
-import { Cause, Effect, Stream } from "effect";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { Effect, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import { createElement, useMemo, type ReactNode } from "react";
+import { liveQueryResultFromAsyncResult } from "./hook-result";
 import { makeProviderState } from "./in-memory-runtime";
-import { applyEvent, initialClientState, liveQueryResult } from "./live-query-state";
+import { applyEvent, initialClientState } from "./live-query-state";
 import type { ViewServerReactClient } from "./react-client";
 import { stableQueryKey } from "./query-key";
 
@@ -108,17 +108,7 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
       [client, topic, queryKey],
     );
     const result = AtomReact.useAtomValue(liveAtom);
-    const emptyState = () => initialClientState<Row>();
-    if (AsyncResult.isFailure(result)) {
-      const defect = Cause.squash(result.cause);
-      return {
-        ...liveQueryResult(emptyState()),
-        status: "error",
-        statusCode: "TransportError",
-        message: String(defect),
-      };
-    }
-    return liveQueryResult(AsyncResult.getOrElse(result, emptyState));
+    return liveQueryResultFromAsyncResult<Row>(result);
   };
 
   const useViewServerHealth = (): ViewServerHealth<Topics> => {

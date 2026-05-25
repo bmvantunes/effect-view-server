@@ -315,6 +315,10 @@ describe("public type surface", () => {
           | "SubscriptionClosed"
           | "TransportError"
           | "BackpressureExceeded"
+          | "InvalidTopic"
+          | "InvalidRow"
+          | "RuntimeUnavailable"
+          | "RuntimeResetFailed"
           | undefined;
         readonly message?: string | undefined;
       }>();
@@ -343,6 +347,10 @@ describe("public type surface", () => {
           | "SubscriptionClosed"
           | "TransportError"
           | "BackpressureExceeded"
+          | "InvalidTopic"
+          | "InvalidRow"
+          | "RuntimeUnavailable"
+          | "RuntimeResetFailed"
           | undefined;
         readonly message?: string | undefined;
       }>();
@@ -404,6 +412,10 @@ describe("public type surface", () => {
           | "SubscriptionClosed"
           | "TransportError"
           | "BackpressureExceeded"
+          | "InvalidTopic"
+          | "InvalidRow"
+          | "RuntimeUnavailable"
+          | "RuntimeResetFailed"
           | undefined;
         readonly message?: string | undefined;
       }>();

@@ -18,6 +18,10 @@ export type LiveQueryResult<Row> = {
     | "SubscriptionClosed"
     | "TransportError"
     | "BackpressureExceeded"
+    | "InvalidTopic"
+    | "InvalidRow"
+    | "RuntimeUnavailable"
+    | "RuntimeResetFailed"
     | undefined;
   readonly message?: string | undefined;
 };

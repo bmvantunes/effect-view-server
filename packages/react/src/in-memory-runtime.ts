@@ -17,11 +17,11 @@ import type {
 } from "@view-server/config";
 import { Effect } from "effect";
 import * as AtomRef from "effect/unstable/reactivity/AtomRef";
+import type { ViewServerReactClient } from "./react-client";
 
-export type ProviderState<Topics extends DecodableTopicDefinitions> = {
-  readonly engine: ColumnLiveViewEngine<Topics>;
+export type InMemoryViewServerState<Topics extends DecodableTopicDefinitions> = {
+  readonly reactClient: ViewServerReactClient<Topics>;
   readonly runtime: ViewServerInMemoryRuntime<Topics>;
-  readonly health: AtomRef.AtomRef<ViewServerHealth<Topics>>;
 };
 
 export type ProviderInput = {
@@ -150,10 +150,27 @@ const makeRuntime = <Topics extends DecodableTopicDefinitions>(
       ),
 });
 
+const makeReactClient = <Topics extends DecodableTopicDefinitions>(
+  engine: ColumnLiveViewEngine<Topics>,
+  health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
+): ViewServerReactClient<Topics> => ({
+  subscribe: (topic, query) =>
+    engine.subscribe(topic, query).pipe(
+      Effect.map((subscription) => ({
+        events: subscription.events,
+        close: () => subscription.close().pipe(Effect.andThen(refreshHealth(engine, health))),
+      })),
+      Effect.tap(() => refreshHealth(engine, health)),
+      Effect.mapError(engineErrorToRuntimeError),
+    ),
+  health,
+  close: engine.close(),
+});
+
 export const makeProviderState = <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   input: ProviderInput,
-): ProviderState<Topics> => {
+): InMemoryViewServerState<Topics> => {
   const engineConfig =
     input.subscriptionQueueCapacity === undefined
       ? { topics: config.topics }
@@ -165,9 +182,9 @@ export const makeProviderState = <const Topics extends DecodableTopicDefinitions
   const initialHealth = Effect.runSync(engine.health().pipe(Effect.map(healthFromEngine)));
   const health = AtomRef.make(initialHealth);
   const runtime = makeRuntime(engine, health);
+  const reactClient = makeReactClient(engine, health);
   return {
-    engine,
+    reactClient,
     runtime,
-    health,
   };
 };

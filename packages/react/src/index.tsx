@@ -5,18 +5,18 @@ import type {
   LiveQueryResult,
   LiveQueryRow,
   TopicRow,
-  TopicSchema,
   ValidateLiveQuery,
   ViewServerConfig,
   ViewServerHealth,
   ViewServerInMemoryRuntime,
 } from "@view-server/config";
-import { Cause, Effect, Stream, type Schema } from "effect";
+import { Cause, Effect, Stream } from "effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import { createElement, useMemo, type ReactNode } from "react";
-import { makeProviderState, refreshHealth, type ProviderState } from "./in-memory-runtime";
+import { makeProviderState } from "./in-memory-runtime";
 import { applyEvent, initialClientState, liveQueryResult } from "./live-query-state";
+import type { ViewServerReactClient } from "./react-client";
 import { stableQueryKey } from "./query-key";
 
 type ReactBindings<Topics extends DecodableTopicDefinitions> = {
@@ -56,16 +56,16 @@ export type UseLiveQueryHook<Topics extends DecodableTopicDefinitions> = <
 export const createViewServerReact = <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerConfig<Topics>,
 ): ReactBindings<Topics> => {
-  const ProviderAtom = AtomReact.make((providerState: ProviderState<Topics>) =>
+  const ProviderAtom = AtomReact.make((client: ViewServerReactClient<Topics>) =>
     Atom.make((get) => {
       get.addFinalizer(() => {
-        Effect.runFork(providerState.engine.close());
+        Effect.runFork(client.close);
       });
-      return providerState;
+      return client;
     }),
   );
 
-  const useProviderState = (): ProviderState<Topics> => AtomReact.useAtomValue(ProviderAtom.use());
+  const useClient = (): ViewServerReactClient<Topics> => AtomReact.useAtomValue(ProviderAtom.use());
 
   const createInMemoryViewServer = (
     options: ViewServerInMemoryOptions = {},
@@ -76,7 +76,7 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
       return createElement(
         AtomReact.RegistryProvider,
         { defaultIdleTTL: 0 },
-        createElement(ProviderAtom.Provider, { value: providerState }, props.children),
+        createElement(ProviderAtom.Provider, { value: providerState.reactClient }, props.children),
       );
     }
 
@@ -87,8 +87,8 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
   };
 
   const useLiveQuery: UseLiveQueryHook<Topics> = (topic, query) => {
-    const providerState = useProviderState();
-    type Row = LiveQueryRow<Schema.Schema.Type<TopicSchema<Topics, typeof topic>>, typeof query>;
+    const client = useClient();
+    type Row = LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>;
     const queryKey = stableQueryKey(query);
     const liveAtom = useMemo(
       () =>
@@ -96,23 +96,16 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
           Stream.scoped(
             Stream.unwrap(
               Effect.gen(function* () {
-                const subscription = yield* providerState.engine.subscribe(topic, query);
-                yield* refreshHealth(providerState.engine, providerState.health);
+                const subscription = yield* client.subscribe(topic, query);
                 return subscription.events.pipe(
                   Stream.scan(initialClientState<Row>(), applyEvent),
-                  Stream.ensuring(
-                    subscription
-                      .close()
-                      .pipe(
-                        Effect.andThen(refreshHealth(providerState.engine, providerState.health)),
-                      ),
-                  ),
+                  Stream.ensuring(subscription.close().pipe(Effect.ignore)),
                 );
               }),
             ),
           ),
         ),
-      [providerState, topic, queryKey],
+      [client, topic, queryKey],
     );
     const result = AtomReact.useAtomValue(liveAtom);
     const emptyState = () => initialClientState<Row>();
@@ -129,8 +122,8 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
   };
 
   const useViewServerHealth = (): ViewServerHealth<Topics> => {
-    const providerState = useProviderState();
-    return AtomReact.useAtomRef(providerState.health);
+    const client = useClient();
+    return AtomReact.useAtomRef(client.health);
   };
 
   return {

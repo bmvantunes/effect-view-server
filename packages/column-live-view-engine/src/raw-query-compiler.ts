@@ -108,7 +108,7 @@ export const rawQueryCompilerMetadata = (
   structuredFieldNames: schemaStructuredFieldNames(schema),
 });
 
-const decodeRawQuery = (
+const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")((
   topic: string,
   metadata: RawQueryCompilerMetadata,
   query: unknown,
@@ -282,38 +282,37 @@ const decodeRawQuery = (
   }
 
   return Effect.succeed(decoded);
-};
+});
 
-const validateRuntimeQuery = (
+const validateRuntimeQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.validate")(function* (
   topic: string,
   metadata: RawQueryCompilerMetadata,
   query: RuntimeRawQuery,
-): Effect.Effect<void, InvalidQueryError> =>
-  Effect.gen(function* () {
-    if (query.where === undefined) {
-      return;
-    }
+) {
+  if (query.where === undefined) {
+    return;
+  }
 
-    for (const [field, filter] of Object.entries(query.where)) {
-      if (!isPlainRecord(filter) || isBigDecimal(filter)) {
-        continue;
-      }
-      const keys = Object.keys(filter);
-      const operatorKeyCount = keys.filter((key) => filterOperatorKeys.has(key)).length;
-      if (operatorKeyCount > 0 && operatorKeyCount !== keys.length) {
-        return yield* InvalidQueryError.make({
-          topic,
-          message: `Raw query where field ${field} contains unsupported filter operator.`,
-        });
-      }
-      if (operatorKeyCount === 0 && !metadata.structuredFieldNames.has(field)) {
-        return yield* InvalidQueryError.make({
-          topic,
-          message: `Raw query where field ${field} contains unsupported filter operator.`,
-        });
-      }
+  for (const [field, filter] of Object.entries(query.where)) {
+    if (!isPlainRecord(filter) || isBigDecimal(filter)) {
+      continue;
     }
-  });
+    const keys = Object.keys(filter);
+    const operatorKeyCount = keys.filter((key) => filterOperatorKeys.has(key)).length;
+    if (operatorKeyCount > 0 && operatorKeyCount !== keys.length) {
+      return yield* InvalidQueryError.make({
+        topic,
+        message: `Raw query where field ${field} contains unsupported filter operator.`,
+      });
+    }
+    if (operatorKeyCount === 0 && !metadata.structuredFieldNames.has(field)) {
+      return yield* InvalidQueryError.make({
+        topic,
+        message: `Raw query where field ${field} contains unsupported filter operator.`,
+      });
+    }
+  }
+});
 
 const stableValueString = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -601,16 +600,14 @@ const compileRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
   };
 };
 
-export const prepareRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
-  topic: string,
-  metadata: RawQueryCompilerMetadata,
-  query: unknown,
-): Effect.Effect<CompiledRawQuery<Row, ResultRow>, InvalidQueryError> =>
-  Effect.gen(function* () {
-    const decoded = yield* decodeRawQuery(topic, metadata, query);
-    yield* validateRuntimeQuery(topic, metadata, decoded);
-    return compileRawQuery<Row, ResultRow>(decoded);
-  });
+export const prepareRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.prepare")(function* <
+  Row extends RowObject,
+  ResultRow extends RowObject,
+>(topic: string, metadata: RawQueryCompilerMetadata, query: unknown) {
+  const decoded = yield* decodeRawQuery(topic, metadata, query);
+  yield* validateRuntimeQuery(topic, metadata, decoded);
+  return compileRawQuery<Row, ResultRow>(decoded);
+});
 
 export const evaluateCompiledRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
   store: RawQueryRowStore<Row>,

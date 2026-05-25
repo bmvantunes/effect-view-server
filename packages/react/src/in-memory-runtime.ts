@@ -119,7 +119,7 @@ export const makeHealthRefreshScheduler = (refresh: Effect.Effect<void>) => {
     }
   });
 
-  return Effect.gen(function* () {
+  const requestRefresh = Effect.fn("ViewServerReact.healthRefreshScheduler.request")(function* () {
     if (running) {
       pending = true;
       return;
@@ -134,14 +134,18 @@ export const makeHealthRefreshScheduler = (refresh: Effect.Effect<void>) => {
       Effect.forkDetach({ startImmediately: true }),
     );
   });
+
+  return requestRefresh();
 };
 
-const makeRuntime = <Topics extends DecodableTopicDefinitions>(
+const makeRuntime = Effect.fn("ViewServerReact.runtime.make")(<
+  const Topics extends DecodableTopicDefinitions,
+>(
   engine: ColumnLiveViewEngine<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
-): ViewServerInMemoryRuntime<Topics> => {
+): Effect.Effect<ViewServerInMemoryRuntime<Topics>> => {
   const requestHealthRefresh = makeHealthRefreshScheduler(refreshHealth(engine, health));
-  return {
+  return Effect.succeed<ViewServerInMemoryRuntime<Topics>>({
     publish: (topic, row) =>
       engine.publish(topic, row).pipe(
         Effect.tap(() => requestHealthRefresh),
@@ -170,32 +174,33 @@ const makeRuntime = <Topics extends DecodableTopicDefinitions>(
         Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-  };
-};
+  });
+});
 
-const makeReactClient = <Topics extends DecodableTopicDefinitions>(
+const makeReactClient = Effect.fn("ViewServerReact.client.make")(<
+  const Topics extends DecodableTopicDefinitions,
+>(
   engine: ColumnLiveViewEngine<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
-): ViewServerReactClient<Topics> => ({
-  subscribe: (topic, query) =>
-    engine.subscribe(topic, query).pipe(
-      Effect.map((subscription) => ({
-        events: subscription.events,
-        close: () => subscription.close().pipe(Effect.andThen(refreshHealth(engine, health))),
-      })),
-      Effect.tap(() => refreshHealth(engine, health)),
-      Effect.mapError(engineErrorToRuntimeError),
-    ),
-  health,
-  close: engine.close(),
+): Effect.Effect<ViewServerReactClient<Topics>> => {
+  return Effect.succeed<ViewServerReactClient<Topics>>({
+    subscribe: (topic, query) =>
+      engine.subscribe(topic, query).pipe(
+        Effect.map((subscription) => ({
+          events: subscription.events,
+          close: () => subscription.close().pipe(Effect.andThen(refreshHealth(engine, health))),
+        })),
+        Effect.tap(() => refreshHealth(engine, health)),
+        Effect.mapError(engineErrorToRuntimeError),
+      ),
+    health,
+    close: engine.close(),
+  });
 });
 
 export const makeProviderState = Effect.fn("ViewServerReact.makeProviderState")(function* <
   const Topics extends DecodableTopicDefinitions,
->(
-  config: ViewServerConfig<Topics>,
-  input: ProviderInput,
-): Effect.fn.Return<InMemoryViewServerState<Topics>> {
+>(config: ViewServerConfig<Topics>, input: ProviderInput) {
   const engineConfig =
     input.subscriptionQueueCapacity === undefined
       ? { topics: config.topics }
@@ -206,8 +211,8 @@ export const makeProviderState = Effect.fn("ViewServerReact.makeProviderState")(
   const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
   const engineHealth = yield* engine.health();
   const health = AtomRef.make(healthFromEngine(engineHealth));
-  const runtime = makeRuntime(engine, health);
-  const reactClient = makeReactClient(engine, health);
+  const runtime = yield* makeRuntime(engine, health);
+  const reactClient = yield* makeReactClient(engine, health);
   return {
     reactClient,
     runtime,

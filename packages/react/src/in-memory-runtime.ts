@@ -190,9 +190,15 @@ const makeReactClient = <Topics extends DecodableTopicDefinitions>(
   close: engine.close(),
 });
 
-export const makeProviderState = Effect.fn("ViewServerReact.makeProviderState")(function* <
-  const Topics extends DecodableTopicDefinitions,
->(config: ViewServerConfig<Topics>, input: ProviderInput) {
+export const makeProviderState: <const Topics extends DecodableTopicDefinitions>(
+  config: ViewServerConfig<Topics>,
+  input: ProviderInput,
+) => Effect.Effect<InMemoryViewServerState<Topics>> = Effect.fn(
+  "ViewServerReact.makeProviderState",
+)(function* <const Topics extends DecodableTopicDefinitions>(
+  config: ViewServerConfig<Topics>,
+  input: ProviderInput,
+) {
   const engineConfig =
     input.subscriptionQueueCapacity === undefined
       ? { topics: config.topics }

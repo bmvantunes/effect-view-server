@@ -228,10 +228,13 @@ export function OrdersGrid() {
 
 The hook must be fully type-safe from `defineViewServerConfig` without requiring users to define indexes.
 
-`ViewServerProvider` and `ViewServerInMemoryProvider` must expose the same hook behavior. The only difference is transport:
+`ViewServerProvider` and `ViewServerInMemoryProvider` must expose the same hook behavior. The only difference is the provider adapter behind the shared React client seam:
 
 - `ViewServerProvider` connects to a real server through the configured URL.
 - `ViewServerInMemoryProvider` creates a real in-memory `ColumnLiveViewEngine` inside the browser/test process.
+- `useLiveQuery` and `useViewServerHealth` must depend only on the internal transport-neutral React client contract.
+- The in-memory provider supplies that client from the in-memory engine.
+- The real provider supplies that client from the WebSocket/Effect RPC transport.
 
 No mock query engine should exist. Browser tests should exercise the same query compiler, columnar store, snapshot logic, delta logic, and grouped accumulator as production.
 
@@ -383,6 +386,7 @@ Important boundary:
 - It should be backed by the same core engine package used by the server runtime.
 - `useLiveQuery` must not know whether it is under `ViewServerProvider` or `ViewServerInMemoryProvider`.
 - Test setup should publish through the external `client`, not through a React hook.
+- Do not expose a runtime/test hook from the React API. Publishing into the in-memory server happens through the `client` returned by `createInMemoryViewServer()`.
 
 Provider options:
 
@@ -1019,7 +1023,7 @@ Responsibilities:
 - `packages/config`: `defineViewServerConfig`, query DSL types, schema/topic typing, shared public types.
 - `packages/column-live-view-engine`: in-memory columnar store, snapshot, subscribe, deltas, grouped aggregates, health core.
 - `packages/runtime`: server runtime, Effect RPC/WebSocket adapter, HTTP `/health`, `/metrics`, TCP publish, Kafka ingest, graceful shutdown.
-- `packages/react`: `ViewServerProvider`, `ViewServerInMemoryProvider`, `useLiveQuery`, `useViewServerHealth`.
+- `packages/react`: `ViewServerProvider`, `createInMemoryViewServer`, `ViewServerInMemoryProvider`, `useLiveQuery`, `useViewServerHealth`.
 - `packages/testing`: test helpers only, no production-only shortcuts.
 - `apps/examples`: minimal real app proving browser usage and runtime URL injection.
 
@@ -1181,11 +1185,13 @@ TCP publish tests should cover:
 
 `ViewServerInMemoryProvider`:
 
-- creates fresh engine by default
-- seeds rows before children subscribe
-- exposes test runtime
+- is created by `createInMemoryViewServer()`
+- uses the same internal React client contract as `ViewServerProvider`
+- supports setup data through the external `client.publish` / `client.publishMany` API
 - disposes engine on unmount
 - never imports Kafka/TCP/WebSocket server code
+
+Do not add `seed`, `onRuntime`, `runtime`, or `testing` props to the provider. Those make the provider too smart and couple app components to test setup concerns.
 
 React tests must run in browser mode and prove real hook behavior.
 

@@ -1947,17 +1947,6 @@ describe("ColumnLiveViewEngine validation and health", () => {
       );
       expect(invalidEmptySelect._tag).toBe("InvalidQueryError");
 
-      const duplicateSelect = yield* Effect.flip(
-        engine.snapshot("orders", {
-          // @ts-expect-error duplicate selected fields are rejected by type and runtime guards.
-          select: ["id", "id"],
-        }),
-      );
-      expect(duplicateSelect).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("duplicate"),
-      });
-
       const invalidOffset = yield* Effect.flip(
         engine.snapshot("orders", {
           select: ["id"],

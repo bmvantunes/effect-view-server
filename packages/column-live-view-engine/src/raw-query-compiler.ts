@@ -174,7 +174,6 @@ const decodeRawQuery = (
     });
   }
   const selectedFields: Array<string> = [];
-  const seenFields = new Set<string>();
   for (const field of select) {
     if (typeof field !== "string") {
       return InvalidQueryError.make({
@@ -188,13 +187,6 @@ const decodeRawQuery = (
         message: `Raw query select contains unknown field: ${field}.`,
       });
     }
-    if (seenFields.has(field)) {
-      return InvalidQueryError.make({
-        topic,
-        message: `Raw query select contains duplicate field: ${field}.`,
-      });
-    }
-    seenFields.add(field);
     selectedFields.push(field);
   }
 

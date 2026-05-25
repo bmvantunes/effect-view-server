@@ -14,15 +14,6 @@ type RejectBroadSelect<Select> =
 
 type RejectEmptySelect<Select> = Select extends readonly [] ? never : unknown;
 
-type RejectDuplicateSelect<Select, Seen = never> = Select extends readonly [
-  infer Head,
-  ...infer Tail,
-]
-  ? Head extends Seen
-    ? never
-    : RejectDuplicateSelect<Tail, Seen | Head>
-  : unknown;
-
 type ExactRawSelectFields<Row, Select> =
   Select extends ReadonlyArray<unknown>
     ? {
@@ -37,7 +28,6 @@ type ExactRawSelect<Row, Query> = Query extends {
       readonly select: Select &
         RejectBroadSelect<Select> &
         RejectEmptySelect<Select> &
-        RejectDuplicateSelect<Select> &
         ExactRawSelectFields<Row, Select>;
     }
   : {

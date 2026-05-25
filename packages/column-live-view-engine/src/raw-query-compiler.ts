@@ -9,6 +9,7 @@ import {
   isRecord,
   valuesEqual,
 } from "./row-values";
+import type { QueryEvaluation, StoredRowOf } from "./query-result";
 
 type RowObject = object;
 
@@ -38,19 +39,6 @@ type SchemaWithFields = Schema.Decoder<object> & {
 export type RawQueryCompilerMetadata = {
   readonly fieldNames: ReadonlySet<string>;
   readonly structuredFieldNames: ReadonlySet<string>;
-};
-
-export type StoredRowOf<Row extends RowObject> = {
-  readonly key: string;
-  readonly row: Row;
-};
-
-export type QueryEvaluation<ResultRow extends RowObject> = {
-  readonly rows: ReadonlyArray<ResultRow>;
-  readonly keys: ReadonlyArray<string>;
-  readonly window: ReadonlyArray<StoredRowOf<ResultRow>>;
-  readonly totalRows: number;
-  readonly version: number;
 };
 
 export type CompiledRawQuery<Row extends RowObject, ResultRow extends RowObject> = {

@@ -1,4 +1,4 @@
-import type { LiveQueryRow, LiveQueryResult, TopicRow } from "@view-server/config";
+import type { TopicRow } from "@view-server/config";
 import { Effect } from "effect";
 import type {
   AnyTopicRow,
@@ -6,19 +6,9 @@ import type {
   ColumnLiveViewEngineConfig,
   DecodableTopicDefinitions,
 } from "./engine-contract";
-import {
-  EngineClosedError,
-  InvalidRowError,
-  InvalidTopicError,
-  UnsupportedQueryError,
-} from "./engine-errors";
+import { EngineClosedError, InvalidRowError, InvalidTopicError } from "./engine-errors";
 import { collectColumnLiveViewEngineHealth } from "./engine-health";
-import { makeLiveSubscription } from "./live-subscription";
-import {
-  evaluateCompiledRawQuery,
-  prepareRawQuery,
-  type QueryEvaluation,
-} from "./raw-query-compiler";
+import { snapshotExecutableQuery, subscribeExecutableQuery } from "./query-execution";
 import {
   closeTopicStoreSubscriptions,
   deleteTopicStoreRow,
@@ -46,24 +36,7 @@ export type {
 } from "./engine-contract";
 export type { ColumnLiveViewEngineHealth, ColumnLiveViewTopicHealth } from "./engine-health";
 
-type RowObject = object;
 const defaultSubscriptionQueueCapacity = 1_024;
-
-const isGroupedQuery = (query: unknown): boolean =>
-  typeof query === "object" &&
-  query !== null &&
-  !Array.isArray(query) &&
-  ("groupBy" in query || "aggregates" in query);
-
-const liveQueryResult = <Row extends RowObject>(
-  evaluation: QueryEvaluation<Row>,
-): LiveQueryResult<Row> => ({
-  rows: evaluation.rows,
-  totalRows: evaluation.totalRows,
-  version: evaluation.version,
-  status: "ready",
-  statusCode: "Ready",
-});
 
 const invalidRow = (topic: string, message: string) =>
   new InvalidRowError({
@@ -163,48 +136,27 @@ class InMemoryColumnLiveViewEngine<
   readonly snapshot: ColumnLiveViewEngine<Topics>["snapshot"] = (topic, query) => {
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
-      if (isGroupedQuery(query)) {
-        return yield* UnsupportedQueryError.make({
-          topic,
-          message: "Grouped aggregate queries are not implemented in this slice.",
-        });
-      }
       const store = yield* this.getStore(topic);
-      type ResultRow = LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>;
-      const compiled = yield* prepareRawQuery<TopicRow<Topics, typeof topic>, ResultRow>(
+      return yield* snapshotExecutableQuery<Topics, typeof topic, typeof query>(
         topic,
-        store.rawQueryMetadata,
+        store,
         query,
       );
-      return liveQueryResult(evaluateCompiledRawQuery(store, compiled));
     });
   };
 
   readonly subscribe: ColumnLiveViewEngine<Topics>["subscribe"] = (topic, query) => {
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
-      if (isGroupedQuery(query)) {
-        return yield* UnsupportedQueryError.make({
-          topic,
-          message: "Grouped aggregate queries are not implemented in this slice.",
-        });
-      }
       const store = yield* this.getStore(topic);
       const queryId = `query-${this.nextQueryId}`;
       this.nextQueryId += 1;
-      type StoreRow = TopicRow<Topics, typeof topic>;
-      type ResultRow = LiveQueryRow<StoreRow, typeof query>;
-      const compiled = yield* prepareRawQuery<StoreRow, ResultRow>(
+      const subscription = yield* subscribeExecutableQuery<Topics, typeof topic, typeof query>(
         topic,
-        store.rawQueryMetadata,
-        query,
-      );
-      const subscription = yield* makeLiveSubscription({
         store,
-        queryId,
-        compiled,
-        queueCapacity: this.subscriptionQueueCapacity,
-      });
+        query,
+        { queryId, queueCapacity: this.subscriptionQueueCapacity },
+      );
 
       return {
         events: subscription.events,

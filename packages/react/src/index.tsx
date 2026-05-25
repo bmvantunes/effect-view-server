@@ -70,7 +70,7 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
   const createInMemoryViewServer = (
     options: ViewServerInMemoryOptions = {},
   ): ViewServerInMemoryInstance<Topics> => {
-    const providerState = makeProviderState(config, options);
+    const providerState = Effect.runSync(makeProviderState(config, options));
 
     function ViewServerInMemoryProvider(props: ViewServerInMemoryProviderProps): ReactNode {
       return createElement(

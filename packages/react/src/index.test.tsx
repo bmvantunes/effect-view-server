@@ -1,8 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@view-server/config";
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Schema } from "effect";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
+import { makeHealthRefreshScheduler } from "./in-memory-runtime";
 import { applyEvent, initialClientState } from "./live-query-state";
 
 const Order = Schema.Struct({
@@ -110,12 +111,12 @@ describe("createViewServerReact", () => {
     const health = view.getByRole("status", { name: "health" });
     await expect.element(orders).toHaveTextContent("");
 
-    Effect.runSync(client.publishMany("orders", [order("b", 20), order("a", 10)]));
+    await Effect.runPromise(client.publishMany("orders", [order("b", 20), order("a", 10)]));
 
     await expect.element(orders).toHaveTextContent("a:10|b:20");
     await expect.element(health).toHaveTextContent("2");
 
-    Effect.runSync(client.publish("orders", order("c", 5)));
+    await Effect.runPromise(client.publish("orders", order("c", 5)));
 
     await expect.element(orders).toHaveTextContent("c:5|a:10|b:20");
     await expect.element(health).toHaveTextContent("3");
@@ -146,13 +147,16 @@ describe("createViewServerReact", () => {
     const orders = view.getByRole("status", { name: "orders" });
     await expect.element(orders).toHaveTextContent("");
 
-    Effect.runSync(client.publish("orders", order("a", 10)));
+    await Effect.runPromise(client.publish("orders", order("a", 10)));
     await expect.element(orders).toHaveTextContent("a");
 
     await view.rerender(<ViewServerInMemoryProvider></ViewServerInMemoryProvider>);
 
     await expect
-      .poll(() => Effect.runSync(client.health()).engine.topics.orders.activeSubscriptions)
+      .poll(async () => {
+        const health = await Effect.runPromise(client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
       .toBe(0);
     await view.unmount();
   });
@@ -181,19 +185,19 @@ describe("createViewServerReact", () => {
     const orders = view.getByRole("status", { name: "orders" });
     await expect.element(orders).toHaveTextContent("");
 
-    Effect.runSync(client.publishMany("orders", [order("a", 10), order("b", 20)]));
+    await Effect.runPromise(client.publishMany("orders", [order("a", 10), order("b", 20)]));
     await expect.element(orders).toHaveTextContent("a:10|b:20");
 
-    Effect.runSync(client.publish("orders", order("a", 30)));
+    await Effect.runPromise(client.publish("orders", order("a", 30)));
     await expect.element(orders).toHaveTextContent("b:20|a:30");
 
-    Effect.runSync(client.patch("orders", "a", { price: 5 }));
+    await Effect.runPromise(client.patch("orders", "a", { price: 5 }));
     await expect.element(orders).toHaveTextContent("a:5|b:20");
 
-    Effect.runSync(client.delete("orders", "a"));
+    await Effect.runPromise(client.delete("orders", "a"));
     await expect.element(orders).toHaveTextContent("b:20");
 
-    const snapshot = Effect.runSync(
+    const snapshot = await Effect.runPromise(
       client.snapshot("orders", {
         select: ["id", "price"],
         limit: 10,
@@ -201,10 +205,36 @@ describe("createViewServerReact", () => {
     );
     expect(snapshot.rows).toEqual([{ id: "b", price: 20 }]);
 
-    Effect.runSync(client.reset());
-    expect(Effect.runSync(client.health()).engine.topics.orders.rowCount).toBe(0);
+    await Effect.runPromise(client.reset());
+    expect((await Effect.runPromise(client.health())).engine.topics.orders.rowCount).toBe(0);
     await expect.element(orders).toHaveTextContent("");
     await view.unmount();
+  });
+
+  it("coalesces in-memory health refreshes under concurrent publishes", async () => {
+    const { client } = createInMemoryViewServer();
+
+    await Promise.all(
+      Array.from({ length: 50 }, (_, index) =>
+        Effect.runPromise(client.publish("orders", order(`coalesced-${index}`, index))),
+      ),
+    );
+
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(client.health());
+        return health.engine.topics.orders.rowCount;
+      })
+      .toBe(50);
+  });
+
+  it("coalesces health scheduler requests while refresh is already pending", async () => {
+    const refreshFinished = await Effect.runPromise(Deferred.make<void>());
+    const requestRefresh = makeHealthRefreshScheduler(Deferred.await(refreshFinished));
+
+    await Effect.runPromise(requestRefresh);
+    await Effect.runPromise(requestRefresh);
+    await Effect.runPromise(Deferred.succeed(refreshFinished, undefined));
   });
 
   it("surfaces live query failures as error results", async () => {
@@ -238,13 +268,13 @@ describe("createViewServerReact", () => {
 
     const view = await render(<ViewServerInMemoryProvider></ViewServerInMemoryProvider>);
 
-    Effect.runSync(client.publish("orders", order("a", 10)));
+    await Effect.runPromise(client.publish("orders", order("a", 10)));
 
-    const invalidTopic = Effect.runSyncExit(
+    const invalidTopic = await Effect.runPromiseExit(
       // @ts-expect-error hostile runtime callers can still send unknown topics.
       client.publish("missing", order("b", 20)),
     );
-    const invalidRow = Effect.runSyncExit(
+    const invalidRow = await Effect.runPromiseExit(
       client.publish("orders", {
         id: "bad",
         customerId: "customer-bad",
@@ -255,7 +285,7 @@ describe("createViewServerReact", () => {
         updatedAt: 20,
       }),
     );
-    const groupedSnapshot = Effect.runSyncExit(
+    const groupedSnapshot = await Effect.runPromiseExit(
       client.snapshot("orders", {
         // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
         groupBy: ["status"],
@@ -263,7 +293,7 @@ describe("createViewServerReact", () => {
         aggregates: { count: { aggFunc: "count" } },
       }),
     );
-    const invalidQuery = Effect.runSyncExit(
+    const invalidQuery = await Effect.runPromiseExit(
       client.snapshot("orders", {
         // @ts-expect-error hostile runtime callers can still send unknown projected fields.
         select: ["prcie"],
@@ -303,7 +333,7 @@ describe("createViewServerReact", () => {
     const trades = view.getByRole("status", { name: "trades" });
     await expect.element(trades).toHaveTextContent("");
 
-    Effect.runSync(
+    await Effect.runPromise(
       client.publishMany("trades", [
         { id: "a", symbol: "AAPL", quantity: 5n, price: 100, region: "usa" },
         { id: "b", symbol: "MSFT", quantity: 10n, price: 200, region: "usa" },
@@ -335,7 +365,10 @@ describe("createViewServerReact", () => {
 
     await view.unmount();
     await expect
-      .poll(() => Effect.runSyncExit(client.publish("orders", order("a", 10)))._tag)
+      .poll(async () => {
+        const exit = await Effect.runPromiseExit(client.publish("orders", order("a", 10)));
+        return exit._tag;
+      })
       .toBe("Failure");
   });
 
@@ -364,14 +397,14 @@ describe("createViewServerReact", () => {
     );
     const orders = view.getByRole("status", { name: "orders" });
 
-    Effect.runSync(client.publish("orders", order("a", 10)));
+    await Effect.runPromise(client.publish("orders", order("a", 10)));
     await expect.element(orders).toHaveTextContent("ready:Ready");
 
     for (let index = 0; index < 50; index += 1) {
-      Effect.runSync(client.publish("orders", order(`burst-${index}`, index)));
+      await Effect.runPromise(client.publish("orders", order(`burst-${index}`, index)));
     }
 
-    expect(Effect.runSync(client.health()).transport.backpressureEvents).toBe(1);
+    expect((await Effect.runPromise(client.health())).transport.backpressureEvents).toBe(1);
     await expect.element(orders).toHaveTextContent("closed:BackpressureExceeded");
     await view.unmount();
   });

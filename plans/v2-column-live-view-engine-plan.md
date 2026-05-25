@@ -407,6 +407,8 @@ Default behavior:
 - Setup data goes through `client.publish` / `client.publishMany`; provider seed data is not supported.
 - Disposes all subscriptions and engine state on unmount.
 - Does not share state across tests unless the same in-memory instance is explicitly reused.
+- Mutation helpers must not synchronously rebuild the full health snapshot on every publish.
+- `client.health()` may read fresh engine health on demand, while provider health updates should use cached/coalesced refreshes so hot publish paths stay cheap.
 
 This is also the correct path for real browser benchmarks. There is no external database process, no production-only snapshot backend, and no external database requirement, so Vitest browser mode can benchmark real `useLiveQuery` behavior end to end.
 

@@ -106,49 +106,60 @@ export const refreshHealth = <Topics extends DecodableTopicDefinitions>(
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
 ) => readHealth(engine, health).pipe(Effect.asVoid);
 
+export const makeHealthRefreshScheduler = (refresh: Effect.Effect<void>) => {
+  let queued = false;
+  return Effect.gen(function* () {
+    if (queued) {
+      return;
+    }
+    queued = true;
+    yield* refresh.pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          queued = false;
+        }),
+      ),
+      Effect.forkDetach({ startImmediately: true }),
+    );
+  });
+};
+
 const makeRuntime = <Topics extends DecodableTopicDefinitions>(
   engine: ColumnLiveViewEngine<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
-): ViewServerInMemoryRuntime<Topics> => ({
-  publish: (topic, row) =>
-    engine
-      .publish(topic, row)
-      .pipe(
-        Effect.andThen(refreshHealth(engine, health)),
+): ViewServerInMemoryRuntime<Topics> => {
+  const requestHealthRefresh = makeHealthRefreshScheduler(refreshHealth(engine, health));
+  return {
+    publish: (topic, row) =>
+      engine.publish(topic, row).pipe(
+        Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-  publishMany: (topic, rows) =>
-    engine
-      .publishMany(topic, rows)
-      .pipe(
-        Effect.andThen(refreshHealth(engine, health)),
+    publishMany: (topic, rows) =>
+      engine.publishMany(topic, rows).pipe(
+        Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-  patch: (topic, key, patch) =>
-    engine
-      .patch(topic, key, patch)
-      .pipe(
-        Effect.andThen(refreshHealth(engine, health)),
+    patch: (topic, key, patch) =>
+      engine.patch(topic, key, patch).pipe(
+        Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-  delete: (topic, key) =>
-    engine
-      .delete(topic, key)
-      .pipe(
-        Effect.andThen(refreshHealth(engine, health)),
+    delete: (topic, key) =>
+      engine.delete(topic, key).pipe(
+        Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-  snapshot: (topic, query) =>
-    engine.snapshot(topic, query).pipe(Effect.mapError(engineErrorToRuntimeError)),
-  health: () => readHealth(engine, health).pipe(Effect.mapError(engineErrorToRuntimeError)),
-  reset: () =>
-    engine
-      .reset()
-      .pipe(
-        Effect.andThen(refreshHealth(engine, health)),
+    snapshot: (topic, query) =>
+      engine.snapshot(topic, query).pipe(Effect.mapError(engineErrorToRuntimeError)),
+    health: () => readHealth(engine, health).pipe(Effect.mapError(engineErrorToRuntimeError)),
+    reset: () =>
+      engine.reset().pipe(
+        Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-});
+  };
+};
 
 const makeReactClient = <Topics extends DecodableTopicDefinitions>(
   engine: ColumnLiveViewEngine<Topics>,
@@ -170,21 +181,22 @@ const makeReactClient = <Topics extends DecodableTopicDefinitions>(
 export const makeProviderState = <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   input: ProviderInput,
-): InMemoryViewServerState<Topics> => {
-  const engineConfig =
-    input.subscriptionQueueCapacity === undefined
-      ? { topics: config.topics }
-      : {
-          topics: config.topics,
-          subscriptionQueueCapacity: input.subscriptionQueueCapacity,
-        };
-  const engine = Effect.runSync(createColumnLiveViewEngine<Topics>(engineConfig));
-  const initialHealth = Effect.runSync(engine.health().pipe(Effect.map(healthFromEngine)));
-  const health = AtomRef.make(initialHealth);
-  const runtime = makeRuntime(engine, health);
-  const reactClient = makeReactClient(engine, health);
-  return {
-    reactClient,
-    runtime,
-  };
-};
+): Effect.Effect<InMemoryViewServerState<Topics>> =>
+  Effect.gen(function* () {
+    const engineConfig =
+      input.subscriptionQueueCapacity === undefined
+        ? { topics: config.topics }
+        : {
+            topics: config.topics,
+            subscriptionQueueCapacity: input.subscriptionQueueCapacity,
+          };
+    const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
+    const initialHealth = yield* engine.health().pipe(Effect.map(healthFromEngine));
+    const health = AtomRef.make(initialHealth);
+    const runtime = makeRuntime(engine, health);
+    const reactClient = makeReactClient(engine, health);
+    return {
+      reactClient,
+      runtime,
+    };
+  });

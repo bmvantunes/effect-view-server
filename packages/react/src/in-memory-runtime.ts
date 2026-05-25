@@ -10,9 +10,6 @@ import {
   type DecodableTopicDefinitions,
 } from "@view-server/column-live-view-engine";
 import type {
-  ExactPatch,
-  ExactRawQuery,
-  TopicRow,
   ViewServerConfig,
   ViewServerHealth,
   ViewServerInMemoryRuntime,
@@ -129,7 +126,7 @@ const makeRuntime = <Topics extends DecodableTopicDefinitions>(
       ),
   patch: (topic, key, patch) =>
     engine
-      .patch(topic, key, patch as ExactPatch<TopicRow<Topics, typeof topic>, typeof patch>)
+      .patch(topic, key, patch)
       .pipe(
         Effect.andThen(refreshHealth(engine, health)),
         Effect.mapError(engineErrorToRuntimeError),
@@ -142,9 +139,7 @@ const makeRuntime = <Topics extends DecodableTopicDefinitions>(
         Effect.mapError(engineErrorToRuntimeError),
       ),
   snapshot: (topic, query) =>
-    engine
-      .snapshot(topic, query as ExactRawQuery<TopicRow<Topics, typeof topic>, typeof query>)
-      .pipe(Effect.mapError(engineErrorToRuntimeError)),
+    engine.snapshot(topic, query).pipe(Effect.mapError(engineErrorToRuntimeError)),
   health: () => readHealth(engine, health).pipe(Effect.mapError(engineErrorToRuntimeError)),
   reset: () =>
     engine

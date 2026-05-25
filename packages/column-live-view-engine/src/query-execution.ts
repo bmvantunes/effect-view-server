@@ -1,7 +1,5 @@
-import type { LiveQueryRow, TopicRow } from "@view-server/config";
 import { Effect } from "effect";
 import { UnsupportedQueryError } from "./engine-errors";
-import type { DecodableTopicDefinitions } from "./engine-contract";
 import { makeLiveSubscription } from "./live-subscription";
 import {
   evaluateCompiledRawQuery,
@@ -57,34 +55,26 @@ export const evaluateExecutableQuery = <StoreRow extends RowObject, ResultRow ex
 ): QueryEvaluation<ResultRow> => evaluateCompiledRawQuery(store, executable.compiled);
 
 export const snapshotExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExecution.snapshot")(
-  function* <
-    Topics extends DecodableTopicDefinitions,
-    Topic extends Extract<keyof Topics, string>,
-    const Query,
-  >(topic: Topic, store: TopicStore<TopicRow<Topics, Topic>>, query: Query) {
-    type StoreRow = TopicRow<Topics, Topic>;
-    type ResultRow = LiveQueryRow<StoreRow, Query>;
+  function* <StoreRow extends RowObject, ResultRow extends RowObject>(
+    topic: string,
+    store: TopicStore<StoreRow>,
+    query: unknown,
+  ) {
     const executable = yield* prepareExecutableQuery<StoreRow, ResultRow>(topic, store, query);
     return liveQueryResult(evaluateExecutableQuery(store, executable));
   },
 );
 
 export const subscribeExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExecution.subscribe")(
-  function* <
-    Topics extends DecodableTopicDefinitions,
-    Topic extends Extract<keyof Topics, string>,
-    const Query,
-  >(
-    topic: Topic,
-    store: TopicStore<TopicRow<Topics, Topic>>,
-    query: Query,
+  function* <StoreRow extends RowObject, ResultRow extends RowObject>(
+    topic: string,
+    store: TopicStore<StoreRow>,
+    query: unknown,
     input: {
       readonly queryId: string;
       readonly queueCapacity: number;
     },
   ) {
-    type StoreRow = TopicRow<Topics, Topic>;
-    type ResultRow = LiveQueryRow<StoreRow, Query>;
     const executable = yield* prepareExecutableQuery<StoreRow, ResultRow>(topic, store, query);
     return yield* makeLiveSubscription({
       store,

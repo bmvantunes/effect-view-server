@@ -563,7 +563,7 @@ const projectRow = (
 const projectCompiledRow = <ResultRow extends RowObject>(
   row: RowObject,
   select: ReadonlyArray<FieldKey<Record<string, unknown>>>,
-): ResultRow => projectRow(row, select) as ResultRow;
+): ResultRow => Object.assign(Object.create(null), projectRow(row, select));
 
 const compileProjection = <Row extends RowObject, ResultRow extends RowObject>(
   select: ReadonlyArray<string>,

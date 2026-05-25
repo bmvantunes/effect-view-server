@@ -462,7 +462,7 @@ describe("public type surface", () => {
         readonly maxQuantity: bigint;
       }>();
 
-      const dynamicAggregateAlias = "dynamicTotal" as string;
+      const dynamicAggregateAlias: string = "dynamicTotal";
       const dynamicAggregateQuery = {
         groupBy: ["status"],
         aggregates: {

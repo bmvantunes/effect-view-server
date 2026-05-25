@@ -81,10 +81,7 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
           Stream.scoped(
             Stream.unwrap(
               Effect.gen(function* () {
-                const subscription = yield* providerState.engine.subscribe(
-                  topic,
-                  query as ExactRawQuery<TopicRow<Topics, typeof topic>, typeof query>,
-                );
+                const subscription = yield* providerState.engine.subscribe(topic, query);
                 yield* refreshHealth(providerState.engine, providerState.health);
                 return subscription.events.pipe(
                   Stream.scan(initialClientState<Row>(), applyEvent),

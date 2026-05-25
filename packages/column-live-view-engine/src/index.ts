@@ -1,4 +1,4 @@
-import type { TopicRow } from "@view-server/config";
+import type { LiveQueryRow, TopicRow } from "@view-server/config";
 import { Effect } from "effect";
 import type {
   AnyTopicRow,
@@ -78,7 +78,7 @@ class InMemoryColumnLiveViewEngine<
 
   private getStore<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
-  ): Effect.Effect<TopicStore<TopicRow<Topics, Topic>>, InvalidTopicError> {
+  ): Effect.Effect<TopicStore<AnyTopicRow<Topics>>, InvalidTopicError> {
     return Effect.gen({ self: this }, function* () {
       const store = this.stores.get(topic);
       if (store === undefined) {
@@ -87,7 +87,7 @@ class InMemoryColumnLiveViewEngine<
           message: `Unknown topic: ${topic}`,
         });
       }
-      return store as TopicStore<TopicRow<Topics, Topic>>;
+      return store;
     });
   }
 
@@ -137,11 +137,10 @@ class InMemoryColumnLiveViewEngine<
     return Effect.gen({ self: this }, function* () {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
-      return yield* snapshotExecutableQuery<Topics, typeof topic, typeof query>(
-        topic,
-        store,
-        query,
-      );
+      return yield* snapshotExecutableQuery<
+        AnyTopicRow<Topics>,
+        LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>
+      >(topic, store, query);
     });
   };
 
@@ -151,12 +150,10 @@ class InMemoryColumnLiveViewEngine<
       const store = yield* this.getStore(topic);
       const queryId = `query-${this.nextQueryId}`;
       this.nextQueryId += 1;
-      const subscription = yield* subscribeExecutableQuery<Topics, typeof topic, typeof query>(
-        topic,
-        store,
-        query,
-        { queryId, queueCapacity: this.subscriptionQueueCapacity },
-      );
+      const subscription = yield* subscribeExecutableQuery<
+        AnyTopicRow<Topics>,
+        LiveQueryRow<TopicRow<Topics, typeof topic>, typeof query>
+      >(topic, store, query, { queryId, queueCapacity: this.subscriptionQueueCapacity });
 
       return {
         events: subscription.events,

@@ -78,7 +78,10 @@ const decodeRow = Effect.fn("ColumnLiveViewEngine.topicStore.decodeRow")(functio
   Error,
 >(store: TopicStore<Row>, row: RowObject, invalidRow: InvalidRowErrorFactory<Error>) {
   return yield* Effect.try({
-    try: () => Schema.decodeUnknownSync(store.schema)(row) as Row,
+    try: () => {
+      const decoded = Schema.decodeUnknownSync(store.schema)(row);
+      return Object.assign(Object.create(Object.getPrototypeOf(decoded)), decoded);
+    },
     catch: (cause) => invalidRow(store.topic, String(cause)),
   });
 });

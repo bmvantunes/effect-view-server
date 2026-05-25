@@ -1058,11 +1058,17 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
+      const openStatus: OrderRow["status"] = "open";
 
-      const query = {
+      const query: {
+        select: typeof orderSelect;
+        where: {
+          status: OrderRow["status"];
+        };
+      } = {
         select: orderSelect,
         where: {
-          status: "open" as OrderRow["status"],
+          status: openStatus,
         },
       };
       const subscription = yield* engine.subscribe("orders", query);

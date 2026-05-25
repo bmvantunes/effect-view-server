@@ -53,7 +53,7 @@ const getRuntime = (
   runtime: ViewServerInMemoryRuntime<Topics> | undefined,
 ): ViewServerInMemoryRuntime<Topics> => {
   expect(runtime).toBeDefined();
-  return runtime as ViewServerInMemoryRuntime<Topics>;
+  return runtime!;
 };
 
 describe("createViewServerReact", () => {

@@ -36,7 +36,9 @@ export const collectColumnLiveViewEngineHealth = Effect.fn("ColumnLiveViewEngine
     stores: ReadonlyMap<Extract<keyof Topics, string>, HealthTopicStoreState<Row>>,
     engineState: EngineHealthRuntimeState,
   ) {
-    const topics = {} as Record<Extract<keyof Topics, string>, ColumnLiveViewTopicHealth>;
+    const topics: Record<Extract<keyof Topics, string>, ColumnLiveViewTopicHealth> = Object.create(
+      null,
+    );
     let activeSubscriptions = 0;
     let queuedEvents = 0;
     let maxQueueDepth = 0;

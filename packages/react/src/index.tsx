@@ -28,7 +28,7 @@ type ReactBindings<Topics extends DecodableTopicDefinitions> = {
   readonly ViewServerInMemoryProvider: (props: ViewServerInMemoryProviderProps) => ReactNode;
   readonly useLiveQuery: UseLiveQueryHook<Topics>;
   readonly useViewServerHealth: () => ViewServerHealth<Topics>;
-  readonly useViewServerTestRuntime: () => ViewServerInMemoryRuntime<Topics>;
+  readonly useViewServerInMemoryRuntime: () => ViewServerInMemoryRuntime<Topics>;
 };
 
 export type ViewServerInMemoryProviderProps = {
@@ -120,13 +120,13 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
     return AtomReact.useAtomRef(providerState.health);
   };
 
-  const useViewServerTestRuntime = (): ViewServerInMemoryRuntime<Topics> =>
+  const useViewServerInMemoryRuntime = (): ViewServerInMemoryRuntime<Topics> =>
     useProviderState().runtime;
 
   return {
     ViewServerInMemoryProvider,
     useLiveQuery,
     useViewServerHealth,
-    useViewServerTestRuntime,
+    useViewServerInMemoryRuntime,
   };
 };

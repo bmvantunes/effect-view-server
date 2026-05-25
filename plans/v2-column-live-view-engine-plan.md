@@ -328,7 +328,7 @@ export const {
   ViewServerProvider,
   ViewServerInMemoryProvider,
   useLiveQuery,
-  useViewServerTestRuntime,
+  useViewServerInMemoryRuntime,
 } = viewServer.react;
 ```
 
@@ -339,11 +339,11 @@ import { Effect } from "effect";
 import {
   ViewServerInMemoryProvider,
   useLiveQuery,
-  useViewServerTestRuntime,
+  useViewServerInMemoryRuntime,
 } from "./view-server.config";
 
 function PublishButton() {
-  const runtime = useViewServerTestRuntime();
+  const runtime = useViewServerInMemoryRuntime();
 
   return (
     <button

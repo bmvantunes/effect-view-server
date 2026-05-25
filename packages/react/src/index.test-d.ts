@@ -21,8 +21,12 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const { ViewServerInMemoryProvider, useLiveQuery, useViewServerHealth, useViewServerTestRuntime } =
-  createViewServerReact(viewServer);
+const {
+  ViewServerInMemoryProvider,
+  useLiveQuery,
+  useViewServerHealth,
+  useViewServerInMemoryRuntime,
+} = createViewServerReact(viewServer);
 
 describe("React type contracts", () => {
   it("preserves selected row result types", () => {
@@ -138,7 +142,7 @@ describe("React type contracts", () => {
 
   it("keeps health and test runtime keyed by configured topics", () => {
     const health = useViewServerHealth();
-    type Runtime = ReturnType<typeof useViewServerTestRuntime>;
+    type Runtime = ReturnType<typeof useViewServerInMemoryRuntime>;
 
     expectTypeOf(health.engine.topics.orders.rowCount).toEqualTypeOf<number>();
     expectTypeOf<Parameters<Runtime["publish"]>>().toEqualTypeOf<
@@ -155,7 +159,7 @@ describe("React type contracts", () => {
   });
 
   it("rejects grouped queries for the in-memory runtime slice", () => {
-    const runtime = useViewServerTestRuntime();
+    const runtime = useViewServerInMemoryRuntime();
     const groupedQuery = {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },

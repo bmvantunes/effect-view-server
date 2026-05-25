@@ -35,8 +35,12 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const { ViewServerInMemoryProvider, useLiveQuery, useViewServerHealth, useViewServerTestRuntime } =
-  createViewServerReact(viewServer);
+const {
+  ViewServerInMemoryProvider,
+  useLiveQuery,
+  useViewServerHealth,
+  useViewServerInMemoryRuntime,
+} = createViewServerReact(viewServer);
 
 type Topics = typeof viewServer.topics;
 type OrderRow = typeof Order.Type;
@@ -88,7 +92,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
     function OrdersView() {
@@ -139,7 +143,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
     function OrdersView() {
@@ -185,7 +189,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
     function OrdersView() {
@@ -264,7 +268,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
 
@@ -318,7 +322,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
     function TradesView() {
@@ -360,7 +364,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
 
@@ -381,7 +385,7 @@ describe("createViewServerReact", () => {
     let runtime: ViewServerInMemoryRuntime<Topics> | undefined;
 
     function RuntimeCapture() {
-      runtime = useViewServerTestRuntime();
+      runtime = useViewServerInMemoryRuntime();
       return null;
     }
     function OrdersView() {

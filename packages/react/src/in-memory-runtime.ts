@@ -181,29 +181,22 @@ const makeReactClient = <Topics extends DecodableTopicDefinitions>(
 export const makeProviderState = <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   input: ProviderInput,
-): Effect.Effect<InMemoryViewServerState<Topics>> => {
-  const engineConfig =
-    input.subscriptionQueueCapacity === undefined
-      ? { topics: config.topics }
-      : {
-          topics: config.topics,
-          subscriptionQueueCapacity: input.subscriptionQueueCapacity,
-        };
-
-  return createColumnLiveViewEngine<Topics>(engineConfig).pipe(
-    Effect.flatMap((engine) =>
-      engine.health().pipe(
-        Effect.map(healthFromEngine),
-        Effect.map((initialHealth) => {
-          const health = AtomRef.make(initialHealth);
-          const runtime = makeRuntime(engine, health);
-          const reactClient = makeReactClient(engine, health);
-          return {
-            reactClient,
-            runtime,
+): Effect.Effect<InMemoryViewServerState<Topics>> =>
+  Effect.gen(function* () {
+    const engineConfig =
+      input.subscriptionQueueCapacity === undefined
+        ? { topics: config.topics }
+        : {
+            topics: config.topics,
+            subscriptionQueueCapacity: input.subscriptionQueueCapacity,
           };
-        }),
-      ),
-    ),
-  );
-};
+    const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
+    const engineHealth = yield* engine.health();
+    const health = AtomRef.make(healthFromEngine(engineHealth));
+    const runtime = makeRuntime(engine, health);
+    const reactClient = makeReactClient(engine, health);
+    return yield* Effect.succeed({
+      reactClient,
+      runtime,
+    });
+  });

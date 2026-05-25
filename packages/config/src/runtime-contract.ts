@@ -6,7 +6,6 @@ import type {
   LiveQueryResult,
   LiveQueryRow,
   TopicRow,
-  UseLiveQuery,
   ValidateLiveQuery,
 } from "./topic-contract";
 
@@ -27,6 +26,8 @@ export type ViewServerRuntimeError =
       readonly code:
         | "InvalidTopic"
         | "InvalidRow"
+        | "InvalidQuery"
+        | "UnsupportedQuery"
         | "SnapshotStale"
         | "RuntimeUnavailable"
         | "RuntimeResetFailed";
@@ -77,14 +78,6 @@ export type ViewServerInMemoryRuntime<Topics extends object> = {
   >;
   readonly health: () => Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;
   readonly reset: () => Effect.Effect<void, ViewServerRuntimeError>;
-};
-
-export type ReactHookContracts<Topics extends object> = {
-  readonly useLiveQuery: UseLiveQuery<Topics>;
-  readonly useViewServerHealth: () => ViewServerHealth<Topics>;
-  readonly createInMemoryViewServer: () => {
-    readonly client: ViewServerInMemoryRuntime<Topics>;
-  };
 };
 
 export type RuntimeEnvironmentConfig = {

@@ -1,5 +1,5 @@
 import type { FieldKey, OrderBy } from "@view-server/config";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaAST } from "effect";
 import { isBigDecimal, Order } from "effect/BigDecimal";
 import {
   cloneRecord,
@@ -86,6 +86,14 @@ const isSchemaWithFields = (schema: Schema.Decoder<object>): schema is SchemaWit
 const schemaFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> =>
   isSchemaWithFields(schema) ? new Set(Object.keys(schema.fields)) : new Set();
 
+const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
+  if (!isRecord(schema)) {
+    return undefined;
+  }
+  const ast = schema["ast"];
+  return SchemaAST.isAST(ast) ? ast : undefined;
+};
+
 const schemaStructuredFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -93,8 +101,11 @@ const schemaStructuredFieldNames = (schema: Schema.Decoder<object>): ReadonlySet
 
   const fields = new Set<string>();
   for (const [field, fieldSchema] of Object.entries(schema.fields)) {
-    const tag = Object(Object(fieldSchema)["ast"])["_tag"];
-    if (tag === "Objects" || tag === "Arrays" || tag === "ObjectKeyword") {
+    const ast = schemaAst(fieldSchema);
+    if (
+      ast !== undefined &&
+      (SchemaAST.isObjects(ast) || SchemaAST.isArrays(ast) || SchemaAST.isObjectKeyword(ast))
+    ) {
       fields.add(field);
     }
   }

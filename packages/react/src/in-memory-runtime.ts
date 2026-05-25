@@ -48,7 +48,7 @@ const engineErrorToRuntimeError = (error: ColumnLiveViewEngineError): ViewServer
   if (error instanceof InvalidQueryError) {
     return {
       _tag: "ViewServerRuntimeError",
-      code: "SnapshotStale",
+      code: "InvalidQuery",
       message: error.message,
       topic: error.topic,
     };
@@ -56,7 +56,7 @@ const engineErrorToRuntimeError = (error: ColumnLiveViewEngineError): ViewServer
   if (error instanceof UnsupportedQueryError) {
     return {
       _tag: "ViewServerRuntimeError",
-      code: "SnapshotStale",
+      code: "UnsupportedQuery",
       message: error.message,
       topic: error.topic,
     };

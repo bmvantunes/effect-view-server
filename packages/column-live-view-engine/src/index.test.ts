@@ -1685,6 +1685,24 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
         const health = yield* engine.health();
         expect(health.topics["loose"].rowCount).toBe(0);
+
+        const fakeFieldMetadataEngine = yield* createColumnLiveViewEngine({
+          topics: {
+            fake: {
+              schema: {
+                // @ts-expect-error fake decoder metadata can still reach runtime through untyped callers.
+                fields: {
+                  id: "not-a-schema",
+                  metadata: { ast: "not-an-ast" },
+                },
+              },
+              // @ts-expect-error fake decoder metadata can still reach runtime through untyped callers.
+              key: "id",
+            },
+          },
+        });
+        const fakeHealth = yield* fakeFieldMetadataEngine.health();
+        expect(fakeHealth.topics["fake"]?.rowCount).toBe(0);
       }),
   );
 
@@ -1699,11 +1717,45 @@ describe("ColumnLiveViewEngine validation and health", () => {
       });
 
       yield* engine.publish("orders", order("1", "open", 10, 1));
+      const nonPlainPatch = yield* Effect.flip(
+        // @ts-expect-error hostile runtime callers can still send non-object patches.
+        engine.patch("orders", "1", null),
+      );
+      expect(nonPlainPatch).toMatchObject({
+        _tag: "InvalidRowError",
+        message: expect.stringContaining("Patch must be a plain object"),
+      });
+
+      const symbolPatch = yield* Effect.flip(
+        // @ts-expect-error hostile runtime callers can still send symbol patch fields.
+        engine.patch("orders", "1", {
+          [Symbol("bad")]: 20,
+        }),
+      );
+      expect(symbolPatch).toMatchObject({
+        _tag: "InvalidRowError",
+        message: expect.stringContaining("Patch contains unknown field: Symbol(bad)"),
+      });
+
       const changedKey = yield* Effect.flip(engine.patch("orders", "1", { id: "2" }));
       expect(changedKey).toMatchObject({
         _tag: "InvalidRowError",
         message: expect.stringContaining("must not change"),
       });
+
+      const beforeUnknownPatch = yield* engine.health();
+      const unknownField = yield* Effect.flip(
+        engine.patch("orders", "1", {
+          // @ts-expect-error hostile runtime callers can still send unknown patch fields.
+          prcie: 20,
+        }),
+      );
+      const afterUnknownPatch = yield* engine.health();
+      expect(unknownField).toMatchObject({
+        _tag: "InvalidRowError",
+        message: expect.stringContaining("Patch contains unknown field: prcie"),
+      });
+      expect(afterUnknownPatch.version).toBe(beforeUnknownPatch.version);
     }),
   );
 

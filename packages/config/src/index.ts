@@ -44,7 +44,6 @@ export type {
   TopicName,
   TopicRow,
   TopicSchema,
-  UseLiveQuery,
   ValidateLiveQuery,
   Where,
 } from "./topic-contract";
@@ -61,7 +60,6 @@ export type {
   ViewServerHealth,
 } from "./health-contract";
 export type {
-  ReactHookContracts,
   ViewServerBackpressureError,
   ViewServerInMemoryRuntime,
   RuntimeEnvironmentConfig,

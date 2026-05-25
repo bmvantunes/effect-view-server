@@ -11,11 +11,13 @@ import type { Effect, Stream } from "effect";
 import { Schema } from "effect";
 import type {
   ColumnLiveViewEngine,
+  ColumnLiveViewEngineError,
   ColumnLiveViewEngineConfig,
   ColumnLiveViewEngineEvent,
   ColumnLiveViewEngineHealth,
   ColumnLiveViewSubscription,
   ColumnLiveViewTopicHealth,
+  EngineClosedError,
 } from "./index";
 
 const Order = Schema.Struct({
@@ -142,11 +144,28 @@ describe("ColumnLiveViewEngine type contract", () => {
   });
 
   it("types valid mutation calls", () => {
+    const validPublish = engine.publish("orders", {
+      id: "order-1",
+      customerId: "customer-1",
+      status: "open",
+      price: 42,
+      region: "usa",
+      updatedAt: 1,
+    });
     const validPatch = engine.patch("orders", "order-1", {
       price: 42,
       status: "closed",
     });
+    const validReset = engine.reset();
+    const validClose = engine.close();
+    const validHealth = engine.health();
+
+    expectTypeOf<Effect.Error<typeof validPublish>>().toEqualTypeOf<ColumnLiveViewEngineError>();
     expectTypeOf<EffectSuccess<typeof validPatch>>().toEqualTypeOf<void>();
+    expectTypeOf<Effect.Error<typeof validPatch>>().toEqualTypeOf<ColumnLiveViewEngineError>();
+    expectTypeOf<Effect.Error<typeof validReset>>().toEqualTypeOf<EngineClosedError>();
+    expectTypeOf<Effect.Error<typeof validClose>>().toEqualTypeOf<never>();
+    expectTypeOf<Effect.Error<typeof validHealth>>().toEqualTypeOf<never>();
   });
 
   it("rejects invalid raw query select and topics", () => {
@@ -230,6 +249,9 @@ describe("ColumnLiveViewEngine type contract", () => {
       "orders",
       dynamicSingleTupleSelectedFieldsQuery,
     );
+    expectTypeOf<
+      EffectSuccess<typeof _dynamicSingleTupleSelectedFieldsSnapshot>["rows"][number]
+    >().toEqualTypeOf<Partial<{ readonly id: string; readonly price: number }>>();
 
     const broadSelectedFields: ReadonlyArray<"id" | "price"> = ["id", "price"];
     const broadSelectedFieldsQuery = {

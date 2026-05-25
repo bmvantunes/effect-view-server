@@ -79,7 +79,7 @@ export const createViewServerReact = <const Topics extends DecodableTopicDefinit
 
     function ViewServerInMemoryProvider(props: ViewServerInMemoryProviderProps): ReactNode {
       return (
-        <AtomReact.RegistryProvider defaultIdleTTL={0}>
+        <AtomReact.RegistryProvider>
           <ProviderAtom.Provider value={providerState.reactClient}>
             <ProviderClientMount />
             {props.children}

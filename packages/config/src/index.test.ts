@@ -12,14 +12,16 @@ import {
   type KafkaTopicDefinition,
   type ExactGroupedQuery,
   type ExactRawQuery,
+  type LiveQueryResult,
+  type LiveQueryRow,
   type LiveSubscription,
   type LiveTransportAdapter,
   type ProtobufEsGeneratedMessageDescriptor,
   type RawQuery,
-  type ReactHookContracts,
   type SnapshotEvent,
   type StatusEvent,
   type TopicRuntimeHealth,
+  type TopicRow,
   type ValidateLiveQuery,
   type ViewServerBackpressureError,
   type ViewServerHealth,
@@ -122,6 +124,17 @@ const viewServer = defineViewServerConfig({
     },
   },
 });
+
+type LiveQueryCall<Topics extends object> = {
+  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
+    topic: Topic,
+    query: ExactGroupedQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
+    topic: Topic,
+    query: ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+};
 
 const kafkaRegions = {
   usa: runtimeConfig.kafkaBootstrapServers("VIEW_SERVER_KAFKA_USA_BOOTSTRAP_SERVERS"),
@@ -289,8 +302,8 @@ describe("public type surface", () => {
   });
 
   it("derives query result rows from select and grouped aggregates", () => {
-    const assertQueryTypes = (react: ReactHookContracts<typeof viewServer.topics>) => {
-      const selectedRawResult = react.useLiveQuery("orders", {
+    const assertQueryTypes = (useLiveQuery: LiveQueryCall<typeof viewServer.topics>) => {
+      const selectedRawResult = useLiveQuery("orders", {
         select: ["id", "customerId", "status", "price", "region", "updatedAt"],
         where: {
           status: { eq: "open" },
@@ -317,13 +330,15 @@ describe("public type surface", () => {
           | "BackpressureExceeded"
           | "InvalidTopic"
           | "InvalidRow"
+          | "InvalidQuery"
+          | "UnsupportedQuery"
           | "RuntimeUnavailable"
           | "RuntimeResetFailed"
           | undefined;
         readonly message?: string | undefined;
       }>();
 
-      const selectedResult = react.useLiveQuery("orders", {
+      const selectedResult = useLiveQuery("orders", {
         select: ["customerId", "status", "updatedAt"],
         where: {
           customerId: { startsWith: "customer-" },
@@ -349,13 +364,15 @@ describe("public type surface", () => {
           | "BackpressureExceeded"
           | "InvalidTopic"
           | "InvalidRow"
+          | "InvalidQuery"
+          | "UnsupportedQuery"
           | "RuntimeUnavailable"
           | "RuntimeResetFailed"
           | undefined;
         readonly message?: string | undefined;
       }>();
 
-      const rawRows = react.useLiveQuery("orders", {
+      const rawRows = useLiveQuery("orders", {
         select: ["id", "price"],
         where: {
           status: "open",
@@ -364,7 +381,7 @@ describe("public type surface", () => {
         limit: 50,
       }).rows;
 
-      const groupedRows = react.useLiveQuery("orders", {
+      const groupedRows = useLiveQuery("orders", {
         groupBy: ["status"],
         aggregates: {
           count: { aggFunc: "count" },
@@ -393,7 +410,7 @@ describe("public type surface", () => {
         readonly firstStatus: "open" | "closed" | "cancelled";
       }>();
 
-      const singleAggregateResult = react.useLiveQuery("orders", {
+      const singleAggregateResult = useLiveQuery("orders", {
         groupBy: ["region"],
         aggregates: { uniqueCustomers: { aggFunc: "countDistinct", field: "customerId" } },
       });
@@ -414,13 +431,15 @@ describe("public type surface", () => {
           | "BackpressureExceeded"
           | "InvalidTopic"
           | "InvalidRow"
+          | "InvalidQuery"
+          | "UnsupportedQuery"
           | "RuntimeUnavailable"
           | "RuntimeResetFailed"
           | undefined;
         readonly message?: string | undefined;
       }>();
 
-      const positionRows = react.useLiveQuery("positions", {
+      const positionRows = useLiveQuery("positions", {
         select: ["id", "price", "quantity"],
         where: {
           accountId: { startsWith: "acct-" },
@@ -443,7 +462,7 @@ describe("public type surface", () => {
         }>
       >();
 
-      const groupedPositionRows = react.useLiveQuery("positions", {
+      const groupedPositionRows = useLiveQuery("positions", {
         groupBy: ["accountId", "active"],
         aggregates: {
           rowCount: { aggFunc: "count" },
@@ -1058,13 +1077,13 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  const assertReactContracts = (react: ReactHookContracts<typeof viewServer.topics>) => {
+  const assertLiveQueryContracts = (useLiveQuery: LiveQueryCall<typeof viewServer.topics>) => {
     // @ts-expect-error raw queries must explicitly select projected fields.
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       where: { status: "open" },
     });
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       where: {
         // @ts-expect-error raw queries reject fields not present on the selected topic
@@ -1072,7 +1091,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       where: {
         // @ts-expect-error filter values must match the selected field type
@@ -1080,7 +1099,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       where: {
         // @ts-expect-error string filters do not accept range operators
@@ -1098,7 +1117,7 @@ const assertCompileTimeContracts = () => {
     const _invalidStatusInFilter: RawQuery<typeof Order.Type> &
       ExactRawQuery<typeof Order.Type, typeof invalidStatusInFilter> = invalidStatusInFilter;
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       where: {
         // @ts-expect-error number filters do not accept string-only operators
@@ -1106,7 +1125,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("positions", {
+    useLiveQuery("positions", {
       select: ["id"],
       where: {
         // @ts-expect-error boolean filters do not accept range operators
@@ -1114,7 +1133,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("positions", {
+    useLiveQuery("positions", {
       select: ["id"],
       where: {
         // @ts-expect-error boolean filters do not accept string-only operators
@@ -1122,7 +1141,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("positions", {
+    useLiveQuery("positions", {
       select: ["id"],
       where: {
         // @ts-expect-error BigDecimal filters require BigDecimal values, not strings
@@ -1130,7 +1149,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("positions", {
+    useLiveQuery("positions", {
       select: ["id"],
       where: {
         // @ts-expect-error BigDecimal filters do not accept string-only operators
@@ -1138,7 +1157,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("positions", {
+    useLiveQuery("positions", {
       select: ["id"],
       where: {
         // @ts-expect-error bigint filters require bigint values, not numbers
@@ -1146,7 +1165,7 @@ const assertCompileTimeContracts = () => {
       },
     });
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       // @ts-expect-error orderBy fields are constrained to the selected topic row
       orderBy: [
@@ -1157,7 +1176,7 @@ const assertCompileTimeContracts = () => {
       ],
     });
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       // @ts-expect-error sort direction is constrained to asc or desc
       orderBy: [
@@ -1168,7 +1187,7 @@ const assertCompileTimeContracts = () => {
       ],
     });
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       // @ts-expect-error raw orderBy cannot reference aggregate aliases.
       orderBy: [
@@ -1183,7 +1202,7 @@ const assertCompileTimeContracts = () => {
       select: ["id", "missing"],
     } as const;
     // @ts-expect-error projected fields are constrained to the selected topic row
-    react.useLiveQuery("orders", invalidSelectedFields);
+    useLiveQuery("orders", invalidSelectedFields);
 
     const invalidGroupByField = {
       groupBy: ["missing"],
@@ -1279,7 +1298,7 @@ const assertCompileTimeContracts = () => {
       typeof invalidGroupedOrderByBothFieldAndAggregate
     > = invalidGroupedOrderByBothFieldAndAggregate;
 
-    react.useLiveQuery("orders", {
+    useLiveQuery("orders", {
       select: ["id"],
       // @ts-expect-error raw orderBy entries cannot also include aggregate.
       orderBy: [
@@ -1336,21 +1355,9 @@ const assertCompileTimeContracts = () => {
       typeof Position.Type,
       typeof invalidPositionAverageField
     > = invalidPositionAverageField;
-
-    const health = react.useViewServerHealth();
-    expectTypeOf<typeof health>().toEqualTypeOf<ViewServerHealth<typeof viewServer.topics>>();
-    expectTypeOf<typeof health.engine.topics.orders>().toEqualTypeOf<TopicRuntimeHealth>();
-    expectTypeOf<typeof health.engine.topics.trades>().toEqualTypeOf<TopicRuntimeHealth>();
-    expectTypeOf<typeof health.engine.topics.positions>().toEqualTypeOf<TopicRuntimeHealth>();
-    // @ts-expect-error health topics preserve configured topic keys.
-    expectTypeOf<typeof health.engine.topics.missing>().toEqualTypeOf<TopicRuntimeHealth>();
-    // @ts-expect-error the map key is the topic identity; values do not duplicate it.
-    expectTypeOf<typeof health.engine.topics.orders.topic>().toEqualTypeOf<"orders">();
-
-    expectTypeOf(react.createInMemoryViewServer().client).toHaveProperty("publish");
   };
 
-  expectTypeOf(assertReactContracts).toBeFunction();
+  expectTypeOf(assertLiveQueryContracts).toBeFunction();
 
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,

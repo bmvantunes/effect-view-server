@@ -333,7 +333,7 @@ describe("createViewServerReact", () => {
     );
     const orders = view.getByRole("status", { name: "orders" });
 
-    await expect.element(orders).toHaveTextContent("error:SnapshotStale");
+    await expect.element(orders).toHaveTextContent("error:InvalidQuery");
     await view.unmount();
   });
 
@@ -388,6 +388,8 @@ describe("createViewServerReact", () => {
       "BackpressureExceeded",
       "InvalidTopic",
       "InvalidRow",
+      "InvalidQuery",
+      "UnsupportedQuery",
       "RuntimeUnavailable",
       "RuntimeResetFailed",
     ]) {
@@ -483,40 +485,48 @@ describe("createViewServerReact", () => {
 
     await Effect.runPromise(client.publish("orders", order("a", 10)));
 
-    const invalidTopic = await Effect.runPromiseExit(
-      // @ts-expect-error hostile runtime callers can still send unknown topics.
-      client.publish("missing", order("b", 20)),
+    const invalidTopic = await Effect.runPromise(
+      Effect.flip(
+        // @ts-expect-error hostile runtime callers can still send unknown topics.
+        client.publish("missing", order("b", 20)),
+      ),
     );
-    const invalidRow = await Effect.runPromiseExit(
-      client.publish("orders", {
-        id: "bad",
-        customerId: "customer-bad",
-        // @ts-expect-error hostile runtime callers can still send malformed rows.
-        status: "unknown",
-        price: 20,
-        region: "usa",
-        updatedAt: 20,
-      }),
+    const invalidRow = await Effect.runPromise(
+      Effect.flip(
+        client.publish("orders", {
+          id: "bad",
+          customerId: "customer-bad",
+          // @ts-expect-error hostile runtime callers can still send malformed rows.
+          status: "unknown",
+          price: 20,
+          region: "usa",
+          updatedAt: 20,
+        }),
+      ),
     );
-    const groupedSnapshot = await Effect.runPromiseExit(
-      client.snapshot("orders", {
-        // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-        groupBy: ["status"],
-        // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-        aggregates: { count: { aggFunc: "count" } },
-      }),
+    const groupedSnapshot = await Effect.runPromise(
+      Effect.flip(
+        client.snapshot("orders", {
+          // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
+          groupBy: ["status"],
+          // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
+          aggregates: { count: { aggFunc: "count" } },
+        }),
+      ),
     );
-    const invalidQuery = await Effect.runPromiseExit(
-      client.snapshot("orders", {
-        // @ts-expect-error hostile runtime callers can still send unknown projected fields.
-        select: ["prcie"],
-      }),
+    const invalidQuery = await Effect.runPromise(
+      Effect.flip(
+        client.snapshot("orders", {
+          // @ts-expect-error hostile runtime callers can still send unknown projected fields.
+          select: ["prcie"],
+        }),
+      ),
     );
 
-    expect(invalidTopic._tag).toBe("Failure");
-    expect(invalidRow._tag).toBe("Failure");
-    expect(groupedSnapshot._tag).toBe("Failure");
-    expect(invalidQuery._tag).toBe("Failure");
+    expect(invalidTopic.code).toBe("InvalidTopic");
+    expect(invalidRow.code).toBe("InvalidRow");
+    expect(groupedSnapshot.code).toBe("UnsupportedQuery");
+    expect(invalidQuery.code).toBe("InvalidQuery");
     await view.unmount();
   });
 
@@ -579,10 +589,12 @@ describe("createViewServerReact", () => {
     await view.unmount();
     await expect
       .poll(async () => {
-        const exit = await Effect.runPromiseExit(client.publish("orders", order("a", 10)));
-        return exit._tag;
+        return Effect.runPromise(Effect.flip(client.publish("orders", order("a", 10)))).then(
+          (error) => error.code,
+          () => "success",
+        );
       })
-      .toBe("Failure");
+      .toBe("RuntimeUnavailable");
   });
 
   it("surfaces status events from bounded subscription queues", async () => {

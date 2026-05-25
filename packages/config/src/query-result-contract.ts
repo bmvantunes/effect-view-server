@@ -1,6 +1,5 @@
-import type { ExactGroupedQuery, GroupedQuery, GroupedResult } from "./grouped-query-contract";
-import type { TopicRow } from "./query-core";
-import type { ExactRawQuery, PickRawFields, RawQuery } from "./raw-query-contract";
+import type { GroupedQuery, GroupedResult } from "./grouped-query-contract";
+import type { PickRawFields, RawQuery } from "./raw-query-contract";
 
 export type LiveQuery<Row> = RawQuery<Row> | GroupedQuery<Row>;
 
@@ -20,6 +19,8 @@ export type LiveQueryResult<Row> = {
     | "BackpressureExceeded"
     | "InvalidTopic"
     | "InvalidRow"
+    | "InvalidQuery"
+    | "UnsupportedQuery"
     | "RuntimeUnavailable"
     | "RuntimeResetFailed"
     | undefined;
@@ -53,14 +54,3 @@ type RejectBroadAggregateAliases<Query> = Query extends {
 
 export type ValidateLiveQuery<Query> = RejectAggregateAliasCollisions<Query> &
   RejectBroadAggregateAliases<Query>;
-
-export type UseLiveQuery<Topics extends object> = {
-  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
-    topic: Topic,
-    query: ExactGroupedQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
-  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
-  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
-    topic: Topic,
-    query: ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
-  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
-};

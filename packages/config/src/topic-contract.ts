@@ -48,6 +48,5 @@ export type {
   LiveQuery,
   LiveQueryResult,
   LiveQueryRow,
-  UseLiveQuery,
   ValidateLiveQuery,
 } from "./query-result-contract";

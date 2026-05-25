@@ -25,6 +25,8 @@ const statusCodeFromFailureCode = (
     code === "BackpressureExceeded" ||
     code === "InvalidTopic" ||
     code === "InvalidRow" ||
+    code === "InvalidQuery" ||
+    code === "UnsupportedQuery" ||
     code === "RuntimeUnavailable" ||
     code === "RuntimeResetFailed"
   ) {

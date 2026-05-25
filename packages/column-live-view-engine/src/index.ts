@@ -182,12 +182,14 @@ class InMemoryColumnLiveViewEngine<
     };
   });
 
-  readonly health: ColumnLiveViewEngine<Topics>["health"] = () => {
-    return collectColumnLiveViewEngineHealth<Topics, object>(this.stores, {
+  readonly health: ColumnLiveViewEngine<Topics>["health"] = Effect.fn(
+    "ColumnLiveViewEngine.health",
+  )({ self: this }, function* (this: InMemoryColumnLiveViewEngine<Topics>) {
+    return yield* collectColumnLiveViewEngineHealth<Topics, object>(this.stores, {
       version: () => this.engineVersion,
       closed: () => this.closed,
     });
-  };
+  });
 
   readonly reset: ColumnLiveViewEngine<Topics>["reset"] = Effect.fn("ColumnLiveViewEngine.reset")(
     { self: this },

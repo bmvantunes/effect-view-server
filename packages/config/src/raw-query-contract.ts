@@ -14,10 +14,29 @@ type RejectBroadSelect<Select> =
 
 type RejectEmptySelect<Select> = Select extends readonly [] ? never : unknown;
 
+type IsUnion<Value, Candidate = Value> = Value extends unknown
+  ? [Candidate] extends [Value]
+    ? false
+    : true
+  : false;
+
+type ExactRawSelectField<Row, Field> = [Field] extends [FieldKey<Row>] ? Field : never;
+
+type TupleIndexKeys<Select extends ReadonlyArray<unknown>> = Exclude<
+  keyof Select,
+  keyof ReadonlyArray<unknown>
+>;
+
+type SelectHasUnionField<Select extends ReadonlyArray<unknown>> = true extends {
+  readonly [Index in TupleIndexKeys<Select>]: IsUnion<Select[Index]>;
+}[TupleIndexKeys<Select>]
+  ? true
+  : false;
+
 type ExactRawSelectFields<Row, Select> =
   Select extends ReadonlyArray<unknown>
     ? {
-        readonly [Index in keyof Select]: Select[Index] & FieldKey<Row>;
+        readonly [Index in keyof Select]: ExactRawSelectField<Row, Select[Index]>;
       }
     : never;
 
@@ -55,5 +74,7 @@ export type ExactPatch<Row, Patch> = Patch & RejectExtraKeys<Patch, Partial<Row>
 export type PickRawFields<Row, Query> = Query extends {
   readonly select: infer Select extends ReadonlyArray<unknown>;
 }
-  ? Pick<Row, Extract<Select[number], keyof Row>>
+  ? SelectHasUnionField<Select> extends true
+    ? Partial<Pick<Row, Extract<Select[number], keyof Row>>>
+    : Pick<Row, Extract<Select[number], keyof Row>>
   : never;

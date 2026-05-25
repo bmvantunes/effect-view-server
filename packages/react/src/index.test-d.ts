@@ -1,5 +1,10 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig, type LiveQueryResult } from "@view-server/config";
+import {
+  defineViewServerConfig,
+  type LiveQueryResult,
+  type ViewServerRuntimeError,
+} from "@view-server/config";
+import type { Effect } from "effect";
 import { Schema } from "effect";
 import { createViewServerReact } from "./index";
 
@@ -23,6 +28,8 @@ const viewServer = defineViewServerConfig({
 
 const { createInMemoryViewServer, useLiveQuery, useViewServerHealth } =
   createViewServerReact(viewServer);
+
+declare const dynamicSingleField: "id" | "price";
 
 describe("React type contracts", () => {
   it("preserves selected row result types", () => {
@@ -74,6 +81,8 @@ describe("React type contracts", () => {
       | "BackpressureExceeded"
       | "InvalidTopic"
       | "InvalidRow"
+      | "InvalidQuery"
+      | "UnsupportedQuery"
       | "RuntimeUnavailable"
       | "RuntimeResetFailed"
       | undefined
@@ -116,6 +125,14 @@ describe("React type contracts", () => {
       // @ts-expect-error unknown projected fields are rejected.
       select: ["id", "prcie"],
     });
+
+    const dynamicSingleTupleSelectedFieldsQuery = {
+      select: [dynamicSingleField],
+    } as const;
+    const dynamicSelected = useLiveQuery("orders", dynamicSingleTupleSelectedFieldsQuery);
+    expectTypeOf(dynamicSelected.rows[0]).toEqualTypeOf<
+      Partial<{ readonly id: string; readonly price: number }> | undefined
+    >();
   });
 
   it("rejects invalid raw query operators", () => {
@@ -142,13 +159,22 @@ describe("React type contracts", () => {
 
   it("keeps health and in-memory client keyed by configured topics", () => {
     const health = useViewServerHealth();
-    const inMemoryViewServer = createInMemoryViewServer();
+    const inMemoryViewServer = createInMemoryViewServer({ subscriptionQueueCapacity: 1 });
     type Client = typeof inMemoryViewServer.client;
+    const publish = inMemoryViewServer.client.publish("orders", {
+      id: "order-1",
+      customerId: "customer-1",
+      status: "open",
+      price: 42,
+      region: "usa",
+      updatedAt: 1,
+    });
 
     expectTypeOf(health.engine.topics.orders.rowCount).toEqualTypeOf<number>();
     expectTypeOf<Parameters<Client["publish"]>>().toEqualTypeOf<
       [topic: "orders", row: typeof Order.Type]
     >();
+    expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
   });
 
   it("rejects provider seed data", () => {

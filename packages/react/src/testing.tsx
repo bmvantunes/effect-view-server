@@ -9,7 +9,7 @@ import { Effect } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import type { ReactNode } from "react";
 import type { ViewServerReactBindings } from "./index";
-import { ViewServerReactConfig } from "./internal";
+import { ViewServerReactClientProvider, ViewServerReactConfig } from "./internal";
 
 export type { ViewServerInMemoryOptions } from "@view-server/in-memory";
 
@@ -36,7 +36,7 @@ export const createInMemoryViewServerReact = <const Topics extends DecodableTopi
   react: ViewServerReactBindings<Topics>,
   options: ViewServerInMemoryOptions = {},
 ): ViewServerInMemoryReactInstance<Topics> => {
-  const { ViewServerProvider } = react;
+  const ViewServerClientProvider = react[ViewServerReactClientProvider];
   const inMemory = createInMemoryViewServer(react[ViewServerReactConfig], options);
 
   function InMemoryLifetimeMount(): null {
@@ -47,10 +47,10 @@ export const createInMemoryViewServerReact = <const Topics extends DecodableTopi
   function ViewServerInMemoryProvider(props: ViewServerInMemoryProviderProps): ReactNode {
     return (
       <InMemoryLifetimeAtom.Provider value={inMemory.close}>
-        <ViewServerProvider client={inMemory.liveClient}>
+        <ViewServerClientProvider client={inMemory.liveClient}>
           <InMemoryLifetimeMount />
           {props.children}
-        </ViewServerProvider>
+        </ViewServerClientProvider>
       </InMemoryLifetimeAtom.Provider>
     );
   }

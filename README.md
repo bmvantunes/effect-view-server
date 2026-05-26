@@ -25,19 +25,14 @@ console.log(server.url);
 Browser React code keeps using the normal provider and hooks:
 
 ```tsx
-import { createViewServerClient } from "@view-server/client/remote";
 import { createViewServerReact } from "@view-server/react";
-import { Effect } from "effect";
 import { viewServer } from "./view-server-config";
 
 const react = createViewServerReact(viewServer);
-const client = await Effect.runPromise(
-  createViewServerClient(viewServer, { url: "ws://127.0.0.1:3000/rpc" }),
-);
 
 export function App() {
   return (
-    <react.ViewServerProvider client={client}>
+    <react.ViewServerProvider url={window.__APP_CONFIG__.VIEW_SERVER_URL}>
       <Orders />
     </react.ViewServerProvider>
   );

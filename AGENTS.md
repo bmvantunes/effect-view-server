@@ -80,6 +80,7 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 - Use `toStrictEqual`, not `toEqual`, for structural equality. Exact shape matters for public contracts and wire/runtime events.
 - Use the Vitest skill before changing type tests, browser tests, coverage, or Vite/Vite+ config.
 - Tests should be dumb and explicit. Avoid branching assertions such as `if (_tag === ...) { expect(...) }`.
+- Do not use `try` / `catch` / `finally` in tests. Keep tests linear; put explicit cleanup at the end or use fixtures/helpers.
 - Prefer e2e-style tests for the column live view engine: publish rows, subscribe, assert snapshot, publish/patch/delete, assert deltas and convergence.
 - Do not add narrow implementation unit tests that would block future SIMD/Rust/native rewrites unless the behavior is a stable public contract.
 - Type tests must cover both good and bad examples, including `@ts-expect-error` negative cases.
@@ -141,6 +142,7 @@ These issues block merge until fixed or explicitly accepted by the user:
 - Browser tests import directly from `vitest`, Testing Library, or use `act`, `flushSync`, `getByTestId`, or `data-testid`.
 - Tests use `assert.*` instead of `expect` / `expectTypeOf`.
 - Tests use `toEqual` instead of `toStrictEqual`.
+- Tests use `try`, `catch`, or `finally` blocks instead of linear assertions and explicit cleanup.
 - Tests use substring assertions where stale/extra rows could still pass.
 - Implementation or tests add coverage ignore comments such as `c8 ignore`, `v8 ignore`, or `istanbul ignore`.
 - Implementation adds casts, especially broad casts (`as any`, `as unknown`, `as never`), or hides type erasure behind casts.

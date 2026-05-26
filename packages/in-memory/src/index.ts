@@ -23,7 +23,7 @@ import {
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
 } from "@view-server/config";
-import { Cause, Clock, Effect, Queue, Stream } from "effect";
+import { Cause, Clock, Effect, Exit, Queue, Scope, Stream } from "effect";
 import * as AtomRef from "effect/unstable/reactivity/AtomRef";
 import { healthFromEngine, makeHealthRefreshScheduler, readHealth, refreshHealth } from "./health";
 
@@ -136,11 +136,9 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(<
       updatedAtNanos: bigint,
     ) => ReadonlyArray<Row>,
   ) {
-    const services = yield* Effect.context();
     const queue = yield* Queue.bounded<ViewServerLiveEvent<Row>, Cause.Done>(64);
-    const latestHealth = yield* readHealth(engine, health).pipe(
-      Effect.mapError(engineErrorToRuntimeError),
-    );
+    const updates = yield* Queue.sliding<ViewServerHealth<Topics>, Cause.Done>(1);
+    const scope = yield* Scope.make("parallel");
     let closed = false;
     const offerSnapshot = Effect.fn("ViewServerInMemory.health.snapshot.offer")(function* (
       nextHealth: ViewServerHealth<Topics>,
@@ -157,10 +155,18 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(<
         totalRows: rows.length,
       });
     });
-    yield* offerSnapshot(latestHealth);
     const unsubscribe = health.subscribe((nextHealth) => {
-      Effect.runForkWith(services)(offerSnapshot(nextHealth));
+      Queue.offerUnsafe(updates, nextHealth);
     });
+    const latestHealth = yield* readHealth(engine, health).pipe(
+      Effect.mapError(engineErrorToRuntimeError),
+    );
+    yield* offerSnapshot(latestHealth);
+    yield* Stream.fromQueue(updates).pipe(
+      Stream.runForEach(offerSnapshot),
+      Effect.forkIn(scope, { startImmediately: true }),
+      Effect.ignore,
+    );
     const closeSubscription = Effect.gen(function* () {
       const shouldClose = yield* Effect.sync(() => {
         if (closed) {
@@ -171,6 +177,8 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(<
         return true;
       });
       if (shouldClose) {
+        yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
+        yield* Queue.end(updates).pipe(Effect.ignore);
         yield* Queue.end(queue);
       }
     });

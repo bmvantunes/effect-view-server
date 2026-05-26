@@ -104,56 +104,55 @@ const TransportHealthSchema: Schema.Codec<TransportHealth> = Schema.Struct({
   lastError: StringOrNull,
 });
 
-export const ViewServerHealthSchema: Schema.Codec<ViewServerHealth<Record<string, object>>> =
-  Schema.Struct({
-    status: Schema.Literals(["ready", "degraded", "starting", "stopping"]),
-    version: Schema.Number,
-    uptimeMs: Schema.Number,
-    engine: Schema.Struct({
-      topics: Schema.Record(Schema.String, TopicRuntimeHealthSchema),
+export const ViewServerHealthSchema = Schema.Struct({
+  status: Schema.Literals(["ready", "degraded", "starting", "stopping"]),
+  version: Schema.Number,
+  uptimeMs: Schema.Number,
+  engine: Schema.Struct({
+    topics: Schema.Record(Schema.String, TopicRuntimeHealthSchema),
+  }),
+  kafka: Schema.optionalKey(
+    Schema.Struct({
+      regions: Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          status: Schema.Literals(["connected", "disconnected", "degraded", "starting"]),
+          brokers: Schema.String,
+          lastConnectedAt: NumberOrNull,
+          lastError: StringOrNull,
+        }),
+      ),
+      topics: Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          status: Schema.Literals(["ready", "degraded", "starting", "stalled"]),
+          sourceTopic: Schema.String,
+          viewServerTopic: Schema.String,
+          regions: Schema.Record(
+            Schema.String,
+            Schema.Struct({
+              connected: Schema.Boolean,
+              assignedPartitions: Schema.Number,
+              messagesPerSecond: Schema.Number,
+              bytesPerSecond: Schema.Number,
+              decodedMessagesPerSecond: Schema.Number,
+              decodeFailuresPerSecond: Schema.Number,
+              lastMessageAt: NumberOrNull,
+              lastCommitAt: NumberOrNull,
+              consumerLagMessages: Schema.NullOr(BigIntString),
+              consumerLagMs: NumberOrNull,
+              lagSampledAt: NumberOrNull,
+              highWatermarkOffset: StringOrNull,
+              committedOffset: StringOrNull,
+              lastError: StringOrNull,
+            }),
+          ),
+        }),
+      ),
     }),
-    kafka: Schema.optionalKey(
-      Schema.Struct({
-        regions: Schema.Record(
-          Schema.String,
-          Schema.Struct({
-            status: Schema.Literals(["connected", "disconnected", "degraded", "starting"]),
-            brokers: Schema.String,
-            lastConnectedAt: NumberOrNull,
-            lastError: StringOrNull,
-          }),
-        ),
-        topics: Schema.Record(
-          Schema.String,
-          Schema.Struct({
-            status: Schema.Literals(["ready", "degraded", "starting", "stalled"]),
-            sourceTopic: Schema.String,
-            viewServerTopic: Schema.String,
-            regions: Schema.Record(
-              Schema.String,
-              Schema.Struct({
-                connected: Schema.Boolean,
-                assignedPartitions: Schema.Number,
-                messagesPerSecond: Schema.Number,
-                bytesPerSecond: Schema.Number,
-                decodedMessagesPerSecond: Schema.Number,
-                decodeFailuresPerSecond: Schema.Number,
-                lastMessageAt: NumberOrNull,
-                lastCommitAt: NumberOrNull,
-                consumerLagMessages: NumberOrNull,
-                consumerLagMs: NumberOrNull,
-                lagSampledAt: NumberOrNull,
-                highWatermarkOffset: StringOrNull,
-                committedOffset: StringOrNull,
-                lastError: StringOrNull,
-              }),
-            ),
-          }),
-        ),
-      }),
-    ),
-    transport: TransportHealthSchema,
-  });
+  ),
+  transport: TransportHealthSchema,
+});
 
 export type ViewServerWireHealth = typeof ViewServerHealthSchema.Type;
 
@@ -295,6 +294,7 @@ export const ViewServerHealthTopicRowSchema: Schema.Codec<
   liveRowCount: Schema.Number,
   deletedRowCount: Schema.Number,
   version: Schema.Number,
+  lastMutationAt: NumberOrNull,
   mutationsPerSecond: Schema.Number,
   rowsPerSecond: Schema.Number,
   pendingMutationBatches: Schema.Number,
@@ -331,6 +331,10 @@ export const ViewServerSubscribePayloadSchema = Schema.Struct({
   topic: Schema.String,
   // Keep this loose so excess query keys survive RPC decoding and can be rejected by strict query validation.
   query: Schema.Record(Schema.String, Schema.Unknown),
+});
+
+export const ViewServerHealthQuerySchema = Schema.Struct({
+  select: Schema.Array(Schema.String),
 });
 
 export const ViewServerRpcs = RpcGroup.make(
@@ -458,6 +462,19 @@ export const viewServerDecodeTopic = Effect.fn("ViewServerProtocol.topic.decode"
   }
   return yield* Effect.fail(invalidTopic(topic));
 });
+
+export const viewServerDecodeHealthQuery = Effect.fn("ViewServerProtocol.healthQuery.decode")(
+  function* (topic: string, query: unknown) {
+    const decoded = yield* Schema.decodeUnknownEffect(ViewServerHealthQuerySchema)(
+      query,
+      strictParseOptions,
+    ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+    if (decoded.select.length !== 1 || decoded.select[0] !== "id") {
+      return yield* Effect.fail(invalidQuery(topic, "Health query select must be exactly: id"));
+    }
+    return decoded;
+  },
+);
 
 const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.field.encode")(function* (
   topic: string,
@@ -1042,6 +1059,143 @@ const decodeSystemLiveEvent = Effect.fn("ViewServerProtocol.system.event.decode"
   };
 });
 
+const validateHealthTopicName = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  systemTopic: string,
+  topic: string,
+): Effect.Effect<string, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (!hasTopic(config, topic)) {
+      return yield* Effect.fail(
+        invalidRow(systemTopic, `Health payload references unknown topic: ${topic}`),
+      );
+    }
+    return topic;
+  });
+
+const validateHealthSummaryRow = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  row: ViewServerHealthSummaryRow,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    for (const topic of row.unhealthyTopics) {
+      yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_SUMMARY_TOPIC, topic);
+    }
+  });
+
+const validateHealthSummaryEvent = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  event: ViewServerProtocolEvent<ViewServerHealthSummaryRow>,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (event.type === "snapshot") {
+      for (const row of event.rows) {
+        yield* validateHealthSummaryRow(config, row);
+      }
+      return;
+    }
+    if (event.type === "delta") {
+      for (const operation of event.operations) {
+        if (operation.type === "insert" || operation.type === "update") {
+          yield* validateHealthSummaryRow(config, operation.row);
+        }
+      }
+    }
+  });
+
+const validateHealthTopicRow = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  row: ViewServerHealthTopicRow,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, row.id);
+
+const validateHealthTopicEvent = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  event: ViewServerProtocolEvent<ViewServerHealthTopicRow>,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (event.type === "snapshot") {
+      for (const key of event.keys) {
+        yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, key);
+      }
+      for (const row of event.rows) {
+        yield* validateHealthTopicRow(config, row);
+      }
+      return;
+    }
+    if (event.type === "delta") {
+      for (const operation of event.operations) {
+        yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, operation.key);
+        if (operation.type === "insert" || operation.type === "update") {
+          yield* validateHealthTopicRow(config, operation.row);
+        }
+      }
+    }
+  });
+
+const isStringArray = (value: unknown): value is ReadonlyArray<string> =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+const validateWireHealthSummaryEvent = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  event: ViewServerWireEvent,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (event.type === "snapshot") {
+      for (const row of event.rows) {
+        const unhealthyTopics = row["unhealthyTopics"];
+        if (isStringArray(unhealthyTopics)) {
+          for (const topic of unhealthyTopics) {
+            yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_SUMMARY_TOPIC, topic);
+          }
+        }
+      }
+      return;
+    }
+    if (event.type === "delta") {
+      for (const operation of event.operations) {
+        if (operation.type === "insert" || operation.type === "update") {
+          const unhealthyTopics = operation.row["unhealthyTopics"];
+          if (isStringArray(unhealthyTopics)) {
+            for (const topic of unhealthyTopics) {
+              yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_SUMMARY_TOPIC, topic);
+            }
+          }
+        }
+      }
+    }
+  });
+
+const validateWireHealthTopicEvent = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  event: ViewServerWireEvent,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (event.type === "snapshot") {
+      for (const key of event.keys) {
+        yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, key);
+      }
+      for (const row of event.rows) {
+        const id = row["id"];
+        if (typeof id === "string") {
+          yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, id);
+        }
+      }
+      return;
+    }
+    if (event.type === "delta") {
+      for (const operation of event.operations) {
+        yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, operation.key);
+        if (operation.type === "insert" || operation.type === "update") {
+          const id = operation.row["id"];
+          if (typeof id === "string") {
+            yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, id);
+          }
+        }
+      }
+    }
+  });
+
 function typedHealthSummaryEvent<Topics extends TopicDefinitions>(
   event: ViewServerProtocolEvent<ViewServerHealthSummaryRow>,
 ): ViewServerProtocolEvent<ViewServerHealthSummaryRow<Topics>>;
@@ -1072,12 +1226,17 @@ export const viewServerEncodeHealthSummaryEvent = Effect.fn(
 
 export const viewServerDecodeHealthSummaryEvent = Effect.fn(
   "ViewServerProtocol.healthSummary.event.decode",
-)(function* <const Topics extends TopicDefinitions>(event: ViewServerWireEvent) {
+)(function* <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  event: ViewServerWireEvent,
+) {
+  yield* validateWireHealthSummaryEvent(config, event);
   const decoded = yield* decodeSystemLiveEvent(
     VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
     ViewServerHealthSummaryRowSchema,
     event,
   );
+  yield* validateHealthSummaryEvent(config, decoded);
   return typedHealthSummaryEvent<Topics>(decoded);
 });
 
@@ -1093,12 +1252,17 @@ export const viewServerEncodeHealthTopicEvent = Effect.fn(
 
 export const viewServerDecodeHealthTopicEvent = Effect.fn(
   "ViewServerProtocol.healthTopic.event.decode",
-)(function* <const Topics extends TopicDefinitions>(event: ViewServerWireEvent) {
+)(function* <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  event: ViewServerWireEvent,
+) {
+  yield* validateWireHealthTopicEvent(config, event);
   const decoded = yield* decodeSystemLiveEvent(
     VIEW_SERVER_HEALTH_TOPIC,
     ViewServerHealthTopicRowSchema,
     event,
   );
+  yield* validateHealthTopicEvent(config, decoded);
   return typedHealthTopicEvent<Topics>(decoded);
 });
 

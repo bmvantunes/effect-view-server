@@ -217,6 +217,7 @@ describe("@view-server/in-memory", () => {
         liveRowCount: 0,
         deletedRowCount: 0,
         version: 0,
+        lastMutationAt: null,
         mutationsPerSecond: 0,
         rowsPerSecond: 0,
         pendingMutationBatches: 0,

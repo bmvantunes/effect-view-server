@@ -9,6 +9,8 @@ import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
+  viewServerReservedTopicNames,
+  viewServerTopicNameIsReserved,
   viewServerHealthSummaryFromHealth,
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
@@ -369,7 +371,7 @@ describe("public type surface", () => {
                 decodeFailuresPerSecond: 0,
                 lastMessageAt: null,
                 lastCommitAt: null,
-                consumerLagMessages: 5,
+                consumerLagMessages: 5n,
                 consumerLagMs: null,
                 lagSampledAt: null,
                 highWatermarkOffset: "10",
@@ -408,7 +410,7 @@ describe("public type surface", () => {
                 decodeFailuresPerSecond: 0,
                 lastMessageAt: null,
                 lastCommitAt: null,
-                consumerLagMessages: 11,
+                consumerLagMessages: 11n,
                 consumerLagMs: null,
                 lagSampledAt: null,
                 highWatermarkOffset: "20",
@@ -482,6 +484,12 @@ describe("public type surface", () => {
     ]);
     expect(VIEW_SERVER_HEALTH_SUMMARY_TOPIC).toBe("__view_server_health_summary");
     expect(VIEW_SERVER_HEALTH_TOPIC).toBe("__view_server_health");
+    expect(viewServerTopicNameIsReserved(VIEW_SERVER_HEALTH_TOPIC)).toBe(true);
+    expect(viewServerTopicNameIsReserved("orders")).toBe(false);
+    expect(viewServerReservedTopicNames).toStrictEqual([
+      VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+      VIEW_SERVER_HEALTH_TOPIC,
+    ]);
     expectTypeOf(summary).toEqualTypeOf<ViewServerHealthSummary<typeof viewServer.topics>>();
     expectTypeOf(summaryRow).toEqualTypeOf<ViewServerHealthSummaryRow<typeof viewServer.topics>>();
     expectTypeOf(rows[0]).toEqualTypeOf<
@@ -1046,6 +1054,16 @@ const assertCompileTimeContracts = () => {
         // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
         schema: Schema.Record(Schema.String, Schema.String),
         // @ts-expect-error non-field schemas cannot provide a valid string row key
+        key: "id",
+      },
+    },
+  });
+
+  defineViewServerConfig({
+    topics: {
+      // @ts-expect-error system health topic names are reserved
+      __view_server_health: {
+        schema: Order,
         key: "id",
       },
     },
@@ -1839,5 +1857,21 @@ const assertCompileTimeContracts = () => {
 describe("compile-time contract assertions", () => {
   it("keeps negative type tests typechecked without executing placeholders", () => {
     expect(assertCompileTimeContracts).toBeTypeOf("function");
+  });
+});
+
+describe("reserved system topic validation", () => {
+  it("rejects reserved health topic names at runtime", () => {
+    const reservedTopicName: string = VIEW_SERVER_HEALTH_SUMMARY_TOPIC;
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          [reservedTopicName]: {
+            schema: Order,
+            key: "id",
+          },
+        },
+      }),
+    ).toThrow("View Server topic name is reserved for system health streams");
   });
 });

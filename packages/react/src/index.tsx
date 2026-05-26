@@ -168,22 +168,6 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     return "disconnected";
   };
 
-  const runtimeStatusFromHealthRows = (
-    rows: ReadonlyArray<ViewServerHealthTopicRow<Extract<keyof Topics, string>>>,
-    subscriptionStatus: LiveQueryResult<unknown>["status"],
-  ) => {
-    if (rows.some((row) => row.status === "stopping")) {
-      return "stopping";
-    }
-    if (rows.some((row) => row.status === "degraded")) {
-      return "degraded";
-    }
-    if (rows.some((row) => row.status === "starting")) {
-      return "starting";
-    }
-    return subscriptionStatus === "loading" ? "starting" : "ready";
-  };
-
   const emptySummary = (
     connectionStatus: ViewServerHealthConnectionStatus,
   ): ViewServerHealthSummary<Topics> => ({
@@ -222,16 +206,18 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
 
   const useViewServerHealth = (): ViewServerHealthDetails<Extract<keyof Topics, string>> => {
     const client = useClient();
+    const summary = useViewServerHealthSummary();
     const result = useSubscription<ViewServerHealthTopicRow<Extract<keyof Topics, string>>>(
       `${client.health.key}:health`,
       client.subscribeHealth,
     );
-    const connectionStatus = connectionStatusFromLiveQueryStatus(result.status);
-    const runtimeStatus = runtimeStatusFromHealthRows(result.rows, result.status);
+    const detailConnectionStatus = connectionStatusFromLiveQueryStatus(result.status);
+    const connectionStatus =
+      summary.connectionStatus === "connected" ? detailConnectionStatus : summary.connectionStatus;
     return {
       ...result,
-      runtimeStatus,
-      status: connectionStatus === "connected" ? runtimeStatus : connectionStatus,
+      runtimeStatus: summary.runtimeStatus,
+      status: connectionStatus === "connected" ? summary.runtimeStatus : connectionStatus,
       connectionStatus,
     };
   };

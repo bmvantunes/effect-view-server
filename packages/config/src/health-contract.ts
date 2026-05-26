@@ -10,6 +10,18 @@ export type ViewServerHealthStatus = RuntimeStatus | ViewServerHealthConnectionS
 export const VIEW_SERVER_HEALTH_SUMMARY_TOPIC = "__view_server_health_summary";
 export const VIEW_SERVER_HEALTH_TOPIC = "__view_server_health";
 
+export type ViewServerSystemTopicName =
+  | typeof VIEW_SERVER_HEALTH_SUMMARY_TOPIC
+  | typeof VIEW_SERVER_HEALTH_TOPIC;
+
+export const viewServerReservedTopicNames: ReadonlyArray<ViewServerSystemTopicName> = [
+  VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+  VIEW_SERVER_HEALTH_TOPIC,
+];
+
+export const viewServerTopicNameIsReserved = (topic: string): topic is ViewServerSystemTopicName =>
+  viewServerReservedTopicNames.some((reservedTopic) => reservedTopic === topic);
+
 export type TopicRuntimeHealth = {
   readonly status: TopicHealthStatus;
   readonly rowCount: number;
@@ -46,7 +58,7 @@ export type KafkaTopicRegionHealth = {
   readonly decodeFailuresPerSecond: number;
   readonly lastMessageAt: number | null;
   readonly lastCommitAt: number | null;
-  readonly consumerLagMessages: number | null;
+  readonly consumerLagMessages: bigint | null;
   readonly consumerLagMs: number | null;
   readonly lagSampledAt: number | null;
   readonly highWatermarkOffset: string | null;
@@ -112,6 +124,7 @@ export type ViewServerHealthTopicRow<Topic extends string = string> = {
   readonly liveRowCount: number;
   readonly deletedRowCount: number;
   readonly version: number;
+  readonly lastMutationAt: number | null;
   readonly mutationsPerSecond: number;
   readonly rowsPerSecond: number;
   readonly pendingMutationBatches: number;
@@ -155,7 +168,7 @@ function typedHealthTopicRows(
 const topicIsUnhealthy = (topic: TopicRuntimeHealth): boolean => topic.status !== "ready";
 
 const kafkaRegionLag = (region: KafkaTopicRegionHealth): bigint =>
-  region.consumerLagMessages === null ? 0n : BigInt(region.consumerLagMessages);
+  region.consumerLagMessages === null ? 0n : region.consumerLagMessages;
 
 const maxKafkaLagForViewTopic = (
   health: Pick<ViewServerHealth, "kafka">,
@@ -224,6 +237,7 @@ export const viewServerHealthTopicRowsFromHealth = <Topics extends object>(
       liveRowCount: topic.liveRowCount,
       deletedRowCount: topic.deletedRowCount,
       version: topic.version,
+      lastMutationAt: topic.lastMutationAt,
       mutationsPerSecond: topic.mutationsPerSecond,
       rowsPerSecond: topic.rowsPerSecond,
       pendingMutationBatches: topic.pendingMutationBatches,

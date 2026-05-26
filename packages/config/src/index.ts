@@ -1,3 +1,4 @@
+import { type ViewServerSystemTopicName, viewServerTopicNameIsReserved } from "./health-contract";
 import {
   defineKafkaTopic,
   type ExactRuntimeOptions,
@@ -68,10 +69,13 @@ export type {
 export {
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
+  viewServerReservedTopicNames,
+  viewServerTopicNameIsReserved,
   viewServerHealthSummaryFromHealth,
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
 } from "./health-contract";
+export type { ViewServerSystemTopicName } from "./health-contract";
 export type {
   ViewServerBackpressureError,
   ViewServerInMemoryRuntime,
@@ -117,12 +121,14 @@ export type ViewServerConfig<Topics extends object> = {
 };
 
 type ValidateTopicDefinitions<Topics extends object> = {
-  readonly [Topic in keyof Topics]: Topics[Topic] extends {
-    readonly schema: infer S extends RowSchema;
-    readonly key: infer Key extends string;
-  }
-    ? TopicDefinition<S, Key & StringFieldKey<RowFromSchema<S>>>
-    : never;
+  readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
+    ? never
+    : Topics[Topic] extends {
+          readonly schema: infer S extends RowSchema;
+          readonly key: infer Key extends string;
+        }
+      ? TopicDefinition<S, Key & StringFieldKey<RowFromSchema<S>>>
+      : never;
 };
 
 export type DefineViewServerConfigInput<Topics extends object> = {
@@ -139,8 +145,15 @@ export const defineViewServerConfig = <
   >,
 >(
   input: DefineViewServerConfigInput<Topics>,
-): ViewServerConfig<Topics> => ({
-  topics: input.topics,
-  defineRuntimeOptions: (options) => options,
-  kafkaTopic: defineKafkaTopic<Topics>(),
-});
+): ViewServerConfig<Topics> => {
+  for (const topic of Object.keys(input.topics)) {
+    if (viewServerTopicNameIsReserved(topic)) {
+      throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
+    }
+  }
+  return {
+    topics: input.topics,
+    defineRuntimeOptions: (options) => options,
+    kafkaTopic: defineKafkaTopic<Topics>(),
+  };
+};

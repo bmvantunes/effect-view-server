@@ -5,6 +5,7 @@ import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
+  type ViewServerHealthSummaryRow,
   type ViewServerHealthTopicRow,
 } from "@view-server/config";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@view-server/in-memory";
@@ -78,6 +79,7 @@ const healthTopicRow = (
   liveRowCount: 0,
   deletedRowCount: 0,
   version: 0,
+  lastMutationAt: null,
   mutationsPerSecond: 0,
   rowsPerSecond: 0,
   pendingMutationBatches: 0,
@@ -93,6 +95,18 @@ const healthTopicRow = (
   updatedAtNanos: 1n,
 });
 
+const healthSummaryRow = (
+  runtimeStatus: "ready" | "degraded" | "starting" | "stopping",
+): ViewServerHealthSummaryRow<typeof viewServer.topics> => ({
+  id: "summary",
+  status: runtimeStatus,
+  runtimeStatus,
+  connectionStatus: "connected",
+  unhealthyTopics: runtimeStatus === "ready" ? [] : ["orders"],
+  updatedAtNanos: 1n,
+  maxKafkaLag: 0n,
+});
+
 const fakeHealthClient = (
   status: "ready" | "degraded" | "starting" | "stopping",
 ): {
@@ -104,6 +118,19 @@ const fakeHealthClient = (
     close: inMemory.close,
     client: {
       ...inMemory.liveClient,
+      subscribeHealthSummary: () =>
+        Effect.succeed({
+          events: Stream.make({
+            type: "snapshot",
+            topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+            queryId: "health-summary",
+            version: 1,
+            keys: ["summary"],
+            rows: [healthSummaryRow(status)],
+            totalRows: 1,
+          }),
+          close: () => Effect.void,
+        }),
       subscribeHealth: () =>
         Effect.succeed({
           events: Stream.make({
@@ -426,13 +453,27 @@ describe("createViewServerReact", () => {
       .toBeVisible();
     await summaryDisconnectedView.unmount();
 
+    const detailSummaryDisconnectedView = await render(
+      <ViewServerClientProvider client={summaryDisconnectedWithRowClient}>
+        <DetailedHealthView />
+      </ViewServerClientProvider>,
+    );
+    await expect
+      .element(
+        detailSummaryDisconnectedView.getByText("degraded:disconnected:disconnected", {
+          exact: true,
+        }),
+      )
+      .toBeVisible();
+    await detailSummaryDisconnectedView.unmount();
+
     const detailConnectingView = await render(
       <ViewServerClientProvider client={detailConnectingClient}>
         <DetailedHealthView />
       </ViewServerClientProvider>,
     );
     await expect
-      .element(detailConnectingView.getByText("starting:connecting:connecting", { exact: true }))
+      .element(detailConnectingView.getByText("ready:connecting:connecting", { exact: true }))
       .toBeVisible();
     await detailConnectingView.unmount();
 

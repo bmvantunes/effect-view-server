@@ -8,6 +8,7 @@ import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC, VIEW_SERVER_HEALTH_TOPIC } from "@vie
 import type { ViewServerLiveClient } from "@view-server/client";
 import {
   ViewServerRpcs,
+  viewServerDecodeHealthQuery,
   viewServerDecodeRawQuery,
   viewServerDecodeTopic,
   viewServerEncodeHealthSummaryEvent,
@@ -50,6 +51,7 @@ const makeHandlers = <const Topics extends TopicDefinitions>(
       Stream.unwrap(
         Effect.gen(function* () {
           if (payload.topic === VIEW_SERVER_HEALTH_SUMMARY_TOPIC) {
+            yield* viewServerDecodeHealthQuery(payload.topic, payload.query);
             const subscription = yield* input.liveClient.subscribeHealthSummary();
             return subscription.events.pipe(
               Stream.mapEffect(viewServerEncodeHealthSummaryEvent),
@@ -57,6 +59,7 @@ const makeHandlers = <const Topics extends TopicDefinitions>(
             );
           }
           if (payload.topic === VIEW_SERVER_HEALTH_TOPIC) {
+            yield* viewServerDecodeHealthQuery(payload.topic, payload.query);
             const subscription = yield* input.liveClient.subscribeHealth();
             return subscription.events.pipe(
               Stream.mapEffect(viewServerEncodeHealthTopicEvent),

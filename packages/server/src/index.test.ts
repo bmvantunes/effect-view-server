@@ -2,7 +2,7 @@ import { NodeSocket } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerLiveEvent } from "@view-server/client";
 import { makeViewServerClient } from "@view-server/client/remote";
-import { defineViewServerConfig } from "@view-server/config";
+import { defineViewServerConfig, VIEW_SERVER_HEALTH_TOPIC } from "@view-server/config";
 import { createInMemoryViewServer } from "@view-server/in-memory";
 import { ViewServerRpcErrorSchema, ViewServerRpcs } from "@view-server/protocol";
 import {
@@ -211,6 +211,15 @@ describe("@view-server/server", () => {
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
       expect(unknownSubscribeTopic.code).toBe("InvalidTopic");
+
+      const malformedHealthQuery = yield* Effect.flip(
+        raw.rpc["ViewServer.Subscribe"]({
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          query: { select: ["rowCount"] },
+        }).pipe(Stream.runDrain),
+      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
+      expect(malformedHealthQuery.code).toBe("InvalidQuery");
+      expect(malformedHealthQuery.message).toBe("Health query select must be exactly: id");
 
       const unknownSelect = yield* Effect.flip(
         raw.rpc["ViewServer.Subscribe"]({

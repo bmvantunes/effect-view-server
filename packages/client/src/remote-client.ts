@@ -3,10 +3,12 @@ import type {
   ExactRawQuery,
   LiveQueryRow,
   StatusEvent,
+  TopicRuntimeHealth,
   TopicDefinitions,
   TopicRow,
   ValidateLiveQuery,
   ViewServerConfig,
+  ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
   ViewServerRuntimeError,
@@ -16,6 +18,7 @@ import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC, VIEW_SERVER_HEALTH_TOPIC } from "@vie
 import {
   ViewServerRpcs,
   viewServerDecodeHealth,
+  viewServerDecodeHealthQuery,
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerDecodeLiveEvent,
@@ -60,6 +63,15 @@ const transportError = (error: Error): ViewServerTransportError => ({
   code: "TransportError",
   message: error.message,
 });
+
+function typedHealthTopics<Topics extends TopicDefinitions>(
+  topics: Record<string, TopicRuntimeHealth>,
+): ViewServerHealth<Topics>["engine"]["topics"];
+function typedHealthTopics(
+  topics: Record<string, TopicRuntimeHealth>,
+): Record<string, TopicRuntimeHealth> {
+  return topics;
+}
 
 export const mapViewServerRemoteError = (
   error: ViewServerRpcError | Error,
@@ -205,23 +217,84 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
   const subscribeHealthSummary = Effect.fn("ViewServerClient.remote.healthSummary.subscribe")(
     function* () {
       type Row = ViewServerHealthSummaryRow<Topics>;
+      yield* viewServerDecodeHealthQuery(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, { select: ["id"] });
       const stream = subscribeRpc<Row>(
         VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
         { select: ["id"] },
-        viewServerDecodeHealthSummaryEvent<Topics>,
+        (event) => viewServerDecodeHealthSummaryEvent(config, event),
       );
-      return yield* streamToSubscription(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, stream);
+      const subscription = yield* streamToSubscription(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, stream);
+      const events = subscription.events.pipe(
+        Stream.tap((event) =>
+          Effect.sync(() => {
+            if (event.type === "snapshot") {
+              const row = event.rows[0];
+              if (row !== undefined) {
+                health.update((current) => ({
+                  ...current,
+                  status: row.runtimeStatus,
+                }));
+              }
+            }
+          }),
+        ),
+      );
+      return {
+        events,
+        close: subscription.close,
+      };
     },
   );
 
   const subscribeHealth = Effect.fn("ViewServerClient.remote.health.subscribe")(function* () {
     type Row = ViewServerHealthTopicRow<Extract<keyof Topics, string>>;
-    const stream = subscribeRpc<Row>(
-      VIEW_SERVER_HEALTH_TOPIC,
-      { select: ["id"] },
-      viewServerDecodeHealthTopicEvent<Topics>,
+    yield* viewServerDecodeHealthQuery(VIEW_SERVER_HEALTH_TOPIC, { select: ["id"] });
+    const stream = subscribeRpc<Row>(VIEW_SERVER_HEALTH_TOPIC, { select: ["id"] }, (event) =>
+      viewServerDecodeHealthTopicEvent(config, event),
     );
-    return yield* streamToSubscription(VIEW_SERVER_HEALTH_TOPIC, stream);
+    const subscription = yield* streamToSubscription(VIEW_SERVER_HEALTH_TOPIC, stream);
+    const events = subscription.events.pipe(
+      Stream.tap((event) =>
+        Effect.sync(() => {
+          if (event.type === "snapshot") {
+            health.update((current) => ({
+              ...current,
+              engine: {
+                topics: typedHealthTopics<Topics>(
+                  event.rows.reduce<Record<string, TopicRuntimeHealth>>((topics, row) => {
+                    const existing = current.engine.topics[row.id];
+                    topics[row.id] = {
+                      status: row.status === "stopping" ? existing.status : row.status,
+                      rowCount: row.rowCount,
+                      liveRowCount: row.liveRowCount,
+                      deletedRowCount: row.deletedRowCount,
+                      version: row.version,
+                      lastMutationAt: row.lastMutationAt,
+                      mutationsPerSecond: row.mutationsPerSecond,
+                      rowsPerSecond: row.rowsPerSecond,
+                      pendingMutationBatches: row.pendingMutationBatches,
+                      activeViews: row.activeViews,
+                      activeSubscriptions: row.activeSubscriptions,
+                      queuedEvents: row.queuedEvents,
+                      maxQueueDepth: row.maxQueueDepth,
+                      backpressureEvents: row.backpressureEvents,
+                      memoryBytes: row.memoryBytes,
+                      tombstoneCount: row.tombstoneCount,
+                      compactionPending: row.compactionPending,
+                    };
+                    return topics;
+                  }, {}),
+                ),
+              },
+            }));
+          }
+        }),
+      ),
+    );
+    return {
+      events,
+      close: subscription.close,
+    };
   });
 
   return {

@@ -134,6 +134,7 @@ const healthTopicWireRow = (): typeof ViewServerWireRowSchema.Type => ({
   liveRowCount: 0,
   deletedRowCount: 0,
   version: 0,
+  lastMutationAt: null,
   mutationsPerSecond: 0,
   rowsPerSecond: 0,
   pendingMutationBatches: 0,
@@ -182,6 +183,12 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
   let activeSubscriptions = 0;
   let healthRequests = 0;
   let healthOverride: ViewServerWireHealth | undefined = undefined;
+  let healthSummaryRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [
+    healthSummaryWireRow(),
+  ];
+  let healthTopicRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [healthTopicWireRow()];
+  let healthSummaryError: ViewServerRpcError | undefined = undefined;
+  let healthTopicError: ViewServerRpcError | undefined = undefined;
 
   const handlers = ViewServerRpcs.toLayer(
     Effect.succeed(
@@ -194,10 +201,13 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
         "ViewServer.Subscribe": (payload) => {
           lastSubscribeQuery = payload.query;
           if (payload.topic === VIEW_SERVER_HEALTH_SUMMARY_TOPIC) {
+            if (healthSummaryError !== undefined) {
+              return Stream.fail(healthSummaryError);
+            }
             return Stream.unwrap(
               Effect.sync(() => {
                 activeSubscriptions += 1;
-                return Stream.succeed(snapshotEvent(payload.topic, [healthSummaryWireRow()])).pipe(
+                return Stream.succeed(snapshotEvent(payload.topic, healthSummaryRows)).pipe(
                   Stream.ensuring(
                     Effect.sync(() => {
                       activeSubscriptions -= 1;
@@ -208,10 +218,13 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
             );
           }
           if (payload.topic === VIEW_SERVER_HEALTH_TOPIC) {
+            if (healthTopicError !== undefined) {
+              return Stream.fail(healthTopicError);
+            }
             return Stream.unwrap(
               Effect.sync(() => {
                 activeSubscriptions += 1;
-                return Stream.succeed(snapshotEvent(payload.topic, [healthTopicWireRow()])).pipe(
+                return Stream.succeed(snapshotEvent(payload.topic, healthTopicRows)).pipe(
                   Stream.ensuring(
                     Effect.sync(() => {
                       activeSubscriptions -= 1;
@@ -340,6 +353,18 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
     },
     setHealth: (nextHealth: ViewServerWireHealth) => {
       healthOverride = nextHealth;
+    },
+    setHealthSummaryRows: (nextRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type>) => {
+      healthSummaryRows = nextRows;
+    },
+    setHealthTopicRows: (nextRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type>) => {
+      healthTopicRows = nextRows;
+    },
+    failHealthSummary: (error: ViewServerRpcError) => {
+      healthSummaryError = error;
+    },
+    failHealthTopic: (error: ViewServerRpcError) => {
+      healthTopicError = error;
     },
     url: `ws://127.0.0.1:${address.port}${path}`,
   };
@@ -499,6 +524,7 @@ describe("remote ViewServer client", () => {
             liveRowCount: 0,
             deletedRowCount: 0,
             version: 0,
+            lastMutationAt: null,
             mutationsPerSecond: 0,
             rowsPerSecond: 0,
             pendingMutationBatches: 0,
@@ -520,6 +546,65 @@ describe("remote ViewServer client", () => {
       yield* subscription.close();
       yield* client.close;
       yield* server.close;
+    }),
+  );
+
+  it.live("updates remote health refs from pushed health streams", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.setHealthSummaryRows([{ ...healthSummaryWireRow(), runtimeStatus: "degraded" }]);
+      server.setHealthTopicRows([{ ...healthTopicWireRow(), status: "stopping" }]);
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+
+      const summarySubscription = yield* client.subscribeHealthSummary();
+      yield* summarySubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(client.health.value.status).toBe("degraded");
+      yield* summarySubscription.close();
+
+      const healthSubscription = yield* client.subscribeHealth();
+      yield* healthSubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(client.health.value.engine.topics.orders.status).toBe("ready");
+      yield* healthSubscription.close();
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("ignores non-snapshot and empty pushed health events for health refs", () =>
+    Effect.gen(function* () {
+      const summaryServer = yield* makeTestRpcServer();
+      summaryServer.failHealthSummary({
+        _tag: "ViewServerTransportError",
+        code: "TransportError",
+        message: "summary stream failed",
+      });
+      const summaryClient = yield* makeViewServerClient(viewServer, { url: summaryServer.url });
+      const summarySubscription = yield* summaryClient.subscribeHealthSummary();
+      yield* summarySubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(summaryClient.health.value.status).toBe("ready");
+      yield* summarySubscription.close();
+      yield* summaryClient.close;
+      yield* summaryServer.close;
+
+      const detailServer = yield* makeTestRpcServer();
+      detailServer.setHealthSummaryRows([]);
+      detailServer.failHealthTopic({
+        _tag: "ViewServerTransportError",
+        code: "TransportError",
+        message: "detail stream failed",
+      });
+      const detailClient = yield* makeViewServerClient(viewServer, { url: detailServer.url });
+      const emptySummarySubscription = yield* detailClient.subscribeHealthSummary();
+      yield* emptySummarySubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(detailClient.health.value.status).toBe("ready");
+      yield* emptySummarySubscription.close();
+      const detailSubscription = yield* detailClient.subscribeHealth();
+      yield* detailSubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(detailClient.health.value.engine.topics.orders.status).toBe("ready");
+      yield* detailSubscription.close();
+      yield* detailClient.close;
+      yield* detailServer.close;
     }),
   );
 

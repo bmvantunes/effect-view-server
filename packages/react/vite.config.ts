@@ -5,6 +5,7 @@ import { libraryPack } from "../../vite.pack";
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    globalSetup: ["./test/remote-global-setup.ts"],
     typecheck: {
       enabled: true,
       checker: "tsc",

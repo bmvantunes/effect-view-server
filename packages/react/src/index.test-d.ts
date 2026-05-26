@@ -155,7 +155,9 @@ describe("React type contracts", () => {
 
     const dynamicSingleTupleSelectedFieldsQuery = {
       select: [dynamicSingleField],
-    } as const;
+    } satisfies {
+      readonly select: readonly [typeof dynamicSingleField];
+    };
     const dynamicSelected = useLiveQuery("orders", dynamicSingleTupleSelectedFieldsQuery);
     expectTypeOf(dynamicSelected.rows[0]).toEqualTypeOf<
       Partial<{ readonly id: string; readonly price: number }> | undefined

@@ -203,7 +203,10 @@ describe("ColumnLiveViewEngine type contract", () => {
     const extraRawQuery = {
       select: ["id"],
       typo: true,
-    } as const;
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly typo: true;
+    };
     // @ts-expect-error extra raw query keys are rejected through variables.
     const _invalidExtraRawQueryKey = engine.snapshot("orders", extraRawQuery);
 
@@ -213,7 +216,13 @@ describe("ColumnLiveViewEngine type contract", () => {
         status: "open",
         missing: "x",
       },
-    } as const;
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: {
+        readonly status: "open";
+        readonly missing: "x";
+      };
+    };
     // @ts-expect-error extra where fields are rejected through variables.
     const _invalidExtraWhereField = engine.snapshot("orders", extraWhereField);
 
@@ -225,7 +234,15 @@ describe("ColumnLiveViewEngine type contract", () => {
           typo: true,
         },
       },
-    } as const;
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: {
+        readonly status: {
+          readonly eq: "open";
+          readonly typo: true;
+        };
+      };
+    };
     // @ts-expect-error extra filter operator keys are rejected through variables.
     const _invalidExtraFilterOperator = engine.snapshot("orders", extraFilterOperator);
 
@@ -238,13 +255,24 @@ describe("ColumnLiveViewEngine type contract", () => {
           typo: true,
         },
       ],
-    } as const;
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [
+        {
+          readonly field: "id";
+          readonly direction: "asc";
+          readonly typo: true;
+        },
+      ];
+    };
     // @ts-expect-error extra orderBy entry keys are rejected through variables.
     const _invalidExtraOrderByEntry = engine.snapshot("orders", extraOrderByEntry);
 
     const dynamicSingleTupleSelectedFieldsQuery = {
       select: [dynamicSingleField],
-    } as const;
+    } satisfies {
+      readonly select: readonly [typeof dynamicSingleField];
+    };
     const _dynamicSingleTupleSelectedFieldsSnapshot = engine.snapshot(
       "orders",
       dynamicSingleTupleSelectedFieldsQuery,

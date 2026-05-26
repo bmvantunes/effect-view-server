@@ -208,7 +208,7 @@ describe("defineViewServerConfig", () => {
   });
 
   it("does not expose executable React or runtime placeholders from config", () => {
-    expect(Object.keys(viewServer)).toEqual(["topics", "defineRuntimeOptions", "kafkaTopic"]);
+    expect(Object.keys(viewServer)).toStrictEqual(["topics", "defineRuntimeOptions", "kafkaTopic"]);
   });
 });
 
@@ -499,7 +499,15 @@ describe("public type surface", () => {
         aggregates: {
           [dynamicAggregateAlias]: { aggFunc: "sum", field: "price" },
         },
-      } as const;
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: {
+          readonly [key: string]: {
+            readonly aggFunc: "sum";
+            readonly field: "price";
+          };
+        };
+      };
       // @ts-expect-error aggregate aliases must be literal object keys.
       const _invalidDynamicAggregateAlias: ExactGroupedQuery<
         typeof Order.Type,
@@ -841,6 +849,17 @@ const assertCompileTimeContracts = () => {
     },
   });
 
+  defineViewServerConfig({
+    topics: {
+      loose: {
+        // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
+        schema: Schema.Record(Schema.String, Schema.String),
+        // @ts-expect-error non-field schemas cannot provide a valid string row key
+        key: "id",
+      },
+    },
+  });
+
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,
     tcpPublishPort: 8081,
@@ -1112,7 +1131,14 @@ const assertCompileTimeContracts = () => {
       where: {
         status: { in: ["open", "pending"] },
       },
-    } as const;
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: {
+        readonly status: {
+          readonly in: readonly ["open", "pending"];
+        };
+      };
+    };
     // @ts-expect-error filter arrays must contain selected field values
     const _invalidStatusInFilter: RawQuery<typeof Order.Type> &
       ExactRawQuery<typeof Order.Type, typeof invalidStatusInFilter> = invalidStatusInFilter;
@@ -1200,14 +1226,23 @@ const assertCompileTimeContracts = () => {
 
     const invalidSelectedFields = {
       select: ["id", "missing"],
-    } as const;
+    } satisfies {
+      readonly select: readonly ["id", "missing"];
+    };
     // @ts-expect-error projected fields are constrained to the selected topic row
     useLiveQuery("orders", invalidSelectedFields);
 
     const invalidGroupByField = {
       groupBy: ["missing"],
       aggregates: { count: { aggFunc: "count" } },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["missing"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+    };
     // @ts-expect-error grouped queries reject groupBy fields not present on the topic row
     const _invalidGroupByField: ExactGroupedQuery<typeof Order.Type, typeof invalidGroupByField> =
       invalidGroupByField;
@@ -1216,7 +1251,15 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       select: ["id"],
       aggregates: { count: { aggFunc: "count" } },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly select: readonly ["id"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+    };
     // @ts-expect-error grouped queries cannot select raw fields.
     const _invalidGroupedSelect: ExactGroupedQuery<typeof Order.Type, typeof invalidGroupedSelect> =
       invalidGroupedSelect;
@@ -1224,7 +1267,14 @@ const assertCompileTimeContracts = () => {
     const invalidAggregateAliasCollision = {
       groupBy: ["status"],
       aggregates: { status: { aggFunc: "count" } },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly status: {
+          readonly aggFunc: "count";
+        };
+      };
+    };
     // @ts-expect-error aggregate aliases cannot collide with groupBy fields
     const _invalidAggregateAliasCollision: ExactGroupedQuery<
       typeof Order.Type,
@@ -1236,7 +1286,20 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
       orderBy: [{ field: "price", direction: "desc" }],
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+      readonly orderBy: readonly [
+        {
+          readonly field: "price";
+          readonly direction: "desc";
+        },
+      ];
+    };
     // @ts-expect-error grouped orderBy only accepts groupBy fields or aggregate aliases.
     const _invalidGroupedOrderByRawField: ExactGroupedQuery<
       typeof Order.Type,
@@ -1247,7 +1310,20 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
       orderBy: [{ aggregate: "count", direction: "descending" }],
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+      readonly orderBy: readonly [
+        {
+          readonly aggregate: "count";
+          readonly direction: "descending";
+        },
+      ];
+    };
     // @ts-expect-error grouped orderBy direction is constrained to asc or desc.
     const _invalidGroupedOrderByDirection: ExactGroupedQuery<
       typeof Order.Type,
@@ -1258,7 +1334,20 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
       orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+      readonly orderBy: readonly [
+        {
+          readonly aggregate: "totalPrice";
+          readonly direction: "desc";
+        },
+      ];
+    };
     // @ts-expect-error grouped orderBy aggregate aliases must exist in aggregates.
     const _invalidGroupedOrderByAggregate: ExactGroupedQuery<
       typeof Order.Type,
@@ -1269,7 +1358,20 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
       orderBy: [{ orderByField: "status", direction: "asc" }],
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+      readonly orderBy: readonly [
+        {
+          readonly orderByField: "status";
+          readonly direction: "asc";
+        },
+      ];
+    };
     // @ts-expect-error grouped orderBy group fields use field, not orderByField.
     const _invalidGroupedOrderByFieldKey: ExactGroupedQuery<
       typeof Order.Type,
@@ -1280,7 +1382,20 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
       orderBy: [{ field: "count", direction: "desc" }],
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+      readonly orderBy: readonly [
+        {
+          readonly field: "count";
+          readonly direction: "desc";
+        },
+      ];
+    };
     // @ts-expect-error grouped orderBy aggregate aliases use aggregate, not field.
     const _invalidGroupedOrderByAggregateKey: ExactGroupedQuery<
       typeof Order.Type,
@@ -1291,7 +1406,21 @@ const assertCompileTimeContracts = () => {
       groupBy: ["status"],
       aggregates: { count: { aggFunc: "count" } },
       orderBy: [{ field: "status", aggregate: "count", direction: "desc" }],
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly count: {
+          readonly aggFunc: "count";
+        };
+      };
+      readonly orderBy: readonly [
+        {
+          readonly field: "status";
+          readonly aggregate: "count";
+          readonly direction: "desc";
+        },
+      ];
+    };
     // @ts-expect-error grouped orderBy entries must choose field or aggregate, not both.
     const _invalidGroupedOrderByBothFieldAndAggregate: ExactGroupedQuery<
       typeof Order.Type,
@@ -1315,7 +1444,15 @@ const assertCompileTimeContracts = () => {
       aggregates: {
         badTotal: { aggFunc: "sum", field: "status" },
       },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly badTotal: {
+          readonly aggFunc: "sum";
+          readonly field: "status";
+        };
+      };
+    };
     // @ts-expect-error sum and avg aggregate fields must be numeric
     const _invalidOrderSumField: ExactGroupedQuery<typeof Order.Type, typeof invalidOrderSumField> =
       invalidOrderSumField;
@@ -1325,7 +1462,15 @@ const assertCompileTimeContracts = () => {
       aggregates: {
         badSymbolTotal: { aggFunc: "sum", field: "symbol" },
       },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["accountId"];
+      readonly aggregates: {
+        readonly badSymbolTotal: {
+          readonly aggFunc: "sum";
+          readonly field: "symbol";
+        };
+      };
+    };
     // @ts-expect-error sum aggregate fields must be numeric, bigint, or BigDecimal
     const _invalidPositionSumField: ExactGroupedQuery<
       typeof Position.Type,
@@ -1337,7 +1482,15 @@ const assertCompileTimeContracts = () => {
       aggregates: {
         badAverage: { aggFunc: "avg", field: "status" },
       },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly badAverage: {
+          readonly aggFunc: "avg";
+          readonly field: "status";
+        };
+      };
+    };
     // @ts-expect-error avg aggregate fields must be numeric
     const _invalidOrderAverageField: ExactGroupedQuery<
       typeof Order.Type,
@@ -1349,7 +1502,15 @@ const assertCompileTimeContracts = () => {
       aggregates: {
         badSymbolAverage: { aggFunc: "avg", field: "symbol" },
       },
-    } as const;
+    } satisfies {
+      readonly groupBy: readonly ["accountId"];
+      readonly aggregates: {
+        readonly badSymbolAverage: {
+          readonly aggFunc: "avg";
+          readonly field: "symbol";
+        };
+      };
+    };
     // @ts-expect-error avg aggregate fields must be numeric, bigint, or BigDecimal
     const _invalidPositionAverageField: ExactGroupedQuery<
       typeof Position.Type,

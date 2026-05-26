@@ -1,5 +1,5 @@
 {
-  "name": "@view-server/column-live-view-engine",
+  "name": "@view-server/server",
   "version": "0.0.0",
   "private": true,
   "files": [
@@ -14,14 +14,19 @@
   },
   "scripts": {
     "build": "vp pack",
-    "test": "vp test run --coverage --typecheck"
+    "test": "vp run -t @view-server/in-memory#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
+    "@effect/platform-node": "catalog:",
     "@view-server/config": "workspace:*",
+    "@view-server/protocol": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@view-server/client": "workspace:*",
+    "@view-server/in-memory": "workspace:*",
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",
     "typescript": "catalog:",

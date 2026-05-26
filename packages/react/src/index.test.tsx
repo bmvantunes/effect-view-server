@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "@effect/vitest";
+import { describe, expect, inject, it, vi } from "@effect/vitest";
+import { makeViewServerClient } from "@view-server/client/remote";
 import { defineViewServerConfig } from "@view-server/config";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@view-server/in-memory";
 import { Effect, Schema } from "effect";
@@ -6,6 +7,12 @@ import { Component, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
 import { createInMemoryViewServerReact, type ViewServerInMemoryOptions } from "./testing";
+
+declare module "vitest" {
+  export interface ProvidedContext {
+    readonly viewServerRemoteUrl: string;
+  }
+}
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -92,7 +99,7 @@ describe("createViewServerReact", () => {
       });
       return (
         <output aria-label="orders" role="status">
-          {result.rows.map((row) => row.id).join("|")}
+          orders: {result.rows.map((row) => row.id).join("|")}
         </output>
       );
     }
@@ -102,10 +109,8 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </react.ViewServerProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
-    await expect.element(orders).toHaveTextContent(/^a$/);
+    await expect.element(view.getByText("orders: a", { exact: true })).toBeVisible();
 
     await view.unmount();
 
@@ -137,8 +142,11 @@ describe("createViewServerReact", () => {
           <HealthView />
         </ProviderErrorBoundary>,
       );
-      const error = missingProvider.getByRole("alert", { name: "provider error" });
-      await expect.element(error).toHaveTextContent(/^ViewServerProvider is missing a client\.$/);
+      await expect
+        .element(
+          missingProvider.getByText("ViewServerProvider is missing a client.", { exact: true }),
+        )
+        .toBeVisible();
       await missingProvider.unmount();
     } finally {
       consoleError.mockRestore();
@@ -157,7 +165,7 @@ describe("createViewServerReact", () => {
       });
       return (
         <output aria-label="orders" role="status">
-          {result.rows.map((row) => row.id).join("|")}
+          orders: {result.rows.map((row) => row.id).join("|")}
         </output>
       );
     }
@@ -167,10 +175,8 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </react.ViewServerProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-
     await Effect.runPromise(first.client.publish("orders", order("first", 10)));
-    await expect.element(orders).toHaveTextContent(/^first$/);
+    await expect.element(view.getByText("orders: first", { exact: true })).toBeVisible();
 
     await view.rerender(
       <react.ViewServerProvider client={second.liveClient}>
@@ -178,7 +184,7 @@ describe("createViewServerReact", () => {
       </react.ViewServerProvider>,
     );
     await Effect.runPromise(second.client.publish("orders", order("second", 20)));
-    await expect.element(orders).toHaveTextContent(/^second$/);
+    await expect.element(view.getByText("orders: second", { exact: true })).toBeVisible();
 
     await expect
       .poll(async () => {
@@ -236,10 +242,8 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(outer.client.publish("orders", order("outer", 10)));
     await Effect.runPromise(inner.client.publish("orders", order("inner", 20)));
 
-    const outerOrders = view.getByRole("status", { name: "outer orders" });
-    const innerOrders = view.getByRole("status", { name: "inner orders" });
-    await expect.element(outerOrders).toHaveTextContent(/^outer orders: outer$/);
-    await expect.element(innerOrders).toHaveTextContent(/^inner orders: inner$/);
+    await expect.element(view.getByText("outer orders: outer", { exact: true })).toBeVisible();
+    await expect.element(view.getByText("inner orders: inner", { exact: true })).toBeVisible();
 
     await view.unmount();
   });
@@ -275,20 +279,89 @@ describe("createViewServerReact", () => {
         <HealthView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-    const health = view.getByRole("status", { name: "health" });
-    await expect.element(orders).toHaveTextContent(/^orders: none$/);
+    await expect.element(view.getByText("orders: none", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.publishMany("orders", [order("b", 20), order("a", 10)]));
 
-    await expect.element(orders).toHaveTextContent(/^orders: a:10\|b:20$/);
-    await expect.element(health).toHaveTextContent(/^2$/);
+    await expect.element(view.getByText("orders: a:10|b:20", { exact: true })).toBeVisible();
+    await expect.element(view.getByText("2", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.publish("orders", order("c", 5)));
 
-    await expect.element(orders).toHaveTextContent(/^orders: c:5\|a:10\|b:20$/);
-    await expect.element(health).toHaveTextContent(/^3$/);
+    await expect.element(view.getByText("orders: c:5|a:10|b:20", { exact: true })).toBeVisible();
+    await expect.element(view.getByText("3", { exact: true })).toBeVisible();
     await view.unmount();
+  });
+
+  it("uses the same component with in-memory and remote providers", async () => {
+    function OrdersView(props: { readonly id: string }) {
+      const result = useLiveQuery("orders", {
+        where: {
+          id: { eq: props.id },
+        },
+        orderBy: [{ field: "price", direction: "asc" }],
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const rows = result.rows.map((row) => `${row.id}:${row.price}`).join("|");
+      return (
+        <output aria-label={`orders ${props.id}`} role="status">
+          {rows === "" ? `orders ${props.id}: none` : `orders ${props.id}: ${rows}`}
+        </output>
+      );
+    }
+    function HealthView(props: { readonly label: string }) {
+      const health = useViewServerHealth();
+      return (
+        <output aria-label={props.label} role="status">
+          {props.label}: {health.status}
+        </output>
+      );
+    }
+
+    const local = createInMemoryViewServer();
+    const localId = `local-${crypto.randomUUID()}`;
+    const localView = await render(
+      <local.ViewServerInMemoryProvider>
+        <OrdersView id={localId} />
+        <HealthView label={`local health ${localId}`} />
+      </local.ViewServerInMemoryProvider>,
+    );
+    await expect
+      .element(localView.getByText(`orders ${localId}: none`, { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(localView.getByText(`local health ${localId}: ready`, { exact: true }))
+      .toBeVisible();
+
+    await Effect.runPromise(local.client.publish("orders", order(localId, 10)));
+    await expect
+      .element(localView.getByText(`orders ${localId}: ${localId}:10`, { exact: true }))
+      .toBeVisible();
+    await localView.unmount();
+
+    const remote = await Effect.runPromise(
+      makeViewServerClient(viewServer, { url: inject("viewServerRemoteUrl") }),
+    );
+    const remoteId = `remote-${crypto.randomUUID()}`;
+    const remoteView = await render(
+      <react.ViewServerProvider client={remote}>
+        <OrdersView id={remoteId} />
+        <HealthView label={`remote health ${remoteId}`} />
+      </react.ViewServerProvider>,
+    );
+    await expect
+      .element(remoteView.getByText(`orders ${remoteId}: none`, { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(remoteView.getByText(`remote health ${remoteId}: ready`, { exact: true }))
+      .toBeVisible();
+
+    await expect.poll(() => remote.health.value.engine.topics.orders.activeSubscriptions).toBe(1);
+
+    await remoteView.unmount();
+    await expect.poll(() => remote.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
+    await Effect.runPromise(remote.close);
   });
 
   it("closes live subscriptions when browser components unmount", async () => {
@@ -313,11 +386,10 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-    await expect.element(orders).toHaveTextContent(/^orders: none$/);
+    await expect.element(view.getByText("orders: none", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.publish("orders", order("a", 10)));
-    await expect.element(orders).toHaveTextContent(/^orders: a$/);
+    await expect.element(view.getByText("orders: a", { exact: true })).toBeVisible();
 
     await view.rerender(<ViewServerInMemoryProvider></ViewServerInMemoryProvider>);
 
@@ -352,10 +424,8 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-
     await Effect.runPromise(client.publish("orders", order("a", 10)));
-    await expect.element(orders).toHaveTextContent(/^orders: a:10$/);
+    await expect.element(view.getByText("orders: a:10", { exact: true })).toBeVisible();
 
     await view.rerender(<ViewServerInMemoryProvider></ViewServerInMemoryProvider>);
     await expect
@@ -372,7 +442,7 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    await expect.element(orders).toHaveTextContent(/^orders: a:10\|b:20$/);
+    await expect.element(view.getByText("orders: a:10|b:20", { exact: true })).toBeVisible();
     await view.unmount();
   });
 
@@ -398,20 +468,19 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-    await expect.element(orders).toHaveTextContent(/^orders: none$/);
+    await expect.element(view.getByText("orders: none", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.publishMany("orders", [order("a", 10), order("b", 20)]));
-    await expect.element(orders).toHaveTextContent(/^orders: a:10\|b:20$/);
+    await expect.element(view.getByText("orders: a:10|b:20", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.publish("orders", order("a", 30)));
-    await expect.element(orders).toHaveTextContent(/^orders: b:20\|a:30$/);
+    await expect.element(view.getByText("orders: b:20|a:30", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.patch("orders", "a", { price: 5 }));
-    await expect.element(orders).toHaveTextContent(/^orders: a:5\|b:20$/);
+    await expect.element(view.getByText("orders: a:5|b:20", { exact: true })).toBeVisible();
 
     await Effect.runPromise(client.delete("orders", "a"));
-    await expect.element(orders).toHaveTextContent(/^orders: b:20$/);
+    await expect.element(view.getByText("orders: b:20", { exact: true })).toBeVisible();
 
     const snapshot = await Effect.runPromise(
       client.snapshot("orders", {
@@ -419,11 +488,11 @@ describe("createViewServerReact", () => {
         limit: 10,
       }),
     );
-    expect(snapshot.rows).toEqual([{ id: "b", price: 20 }]);
+    expect(snapshot.rows).toStrictEqual([{ id: "b", price: 20 }]);
 
     await Effect.runPromise(client.reset());
     expect((await Effect.runPromise(client.health())).engine.topics.orders.rowCount).toBe(0);
-    await expect.element(orders).toHaveTextContent(/^orders: none$/);
+    await expect.element(view.getByText("orders: none", { exact: true })).toBeVisible();
     await view.unmount();
   });
 
@@ -464,9 +533,7 @@ describe("createViewServerReact", () => {
         <BrokenOrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
-
-    await expect.element(orders).toHaveTextContent(/^error:InvalidQuery$/);
+    await expect.element(view.getByText("error:InvalidQuery", { exact: true })).toBeVisible();
     await view.unmount();
   });
 
@@ -546,8 +613,7 @@ describe("createViewServerReact", () => {
         <TradesView />
       </ViewServerInMemoryProvider>,
     );
-    const trades = view.getByRole("status", { name: "trades" });
-    await expect.element(trades).toHaveTextContent(/^trades: none$/);
+    await expect.element(view.getByText("trades: none", { exact: true })).toBeVisible();
 
     await Effect.runPromise(
       client.publishMany("trades", [
@@ -556,7 +622,7 @@ describe("createViewServerReact", () => {
       ]),
     );
 
-    await expect.element(trades).toHaveTextContent(/^trades: b:10$/);
+    await expect.element(view.getByText("trades: b:10", { exact: true })).toBeVisible();
     await view.unmount();
   });
 
@@ -577,8 +643,7 @@ describe("createViewServerReact", () => {
         <HealthView />
       </ViewServerInMemoryProvider>,
     );
-    const health = view.getByRole("status", { name: "health" });
-    await expect.element(health).toHaveTextContent(/^ready$/);
+    await expect.element(view.getByText("ready", { exact: true })).toBeVisible();
 
     await view.unmount();
     await expect
@@ -612,14 +677,15 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
 
     await Effect.runPromise(client.publish("orders", order("a", 10)));
-    await expect.element(orders).toHaveTextContent(/^ready:Ready:a$/);
+    await expect.element(view.getByText("ready:Ready:a", { exact: true })).toBeVisible();
 
     await Effect.runPromise(close);
 
-    await expect.element(orders).toHaveTextContent(/^closed:SubscriptionClosed:$/);
+    await expect
+      .element(view.getByText("closed:SubscriptionClosed:", { exact: true }))
+      .toBeVisible();
     await view.unmount();
   });
 
@@ -665,17 +731,18 @@ describe("createViewServerReact", () => {
         <OrdersView />
       </ViewServerInMemoryProvider>,
     );
-    const orders = view.getByRole("status", { name: "orders" });
 
     await Effect.runPromise(client.publish("orders", order("a", 10)));
-    await expect.element(orders).toHaveTextContent(/^ready:Ready$/);
+    await expect.element(view.getByText("ready:Ready", { exact: true })).toBeVisible();
 
     for (let index = 0; index < 50; index += 1) {
       await Effect.runPromise(client.publish("orders", order(`burst-${index}`, index)));
     }
 
     expect((await Effect.runPromise(client.health())).transport.backpressureEvents).toBe(1);
-    await expect.element(orders).toHaveTextContent(/^closed:BackpressureExceeded$/);
+    await expect
+      .element(view.getByText("closed:BackpressureExceeded", { exact: true }))
+      .toBeVisible();
     await view.unmount();
   });
 });

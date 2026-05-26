@@ -1,5 +1,5 @@
 {
-  "name": "@view-server/column-live-view-engine",
+  "name": "@view-server/protocol",
   "version": "0.0.0",
   "private": true,
   "files": [

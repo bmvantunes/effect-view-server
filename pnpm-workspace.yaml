@@ -9,10 +9,12 @@ onlyBuiltDependencies:
   - msgpackr-extract
 
 catalog:
+  "@effect/platform-browser": 4.0.0-beta.70
+  "@effect/platform-node": 4.0.0-beta.70
   "@effect/language-service": 0.86.2
   "@effect/vitest": 4.0.0-beta.70
   "@types/node": 25.9.1
-  "@vitest/coverage-v8": 4.1.6
+  "@vitest/coverage-istanbul": 4.1.6
   "@vitest/runner": 4.1.6
   effect: 4.0.0-beta.70
   typescript: 6.0.3
@@ -21,7 +23,6 @@ catalog:
   vite-plus: latest
   "@effect/atom-react": 4.0.0-beta.70
   scheduler: 0.27.0
-  "@vitest/coverage-istanbul": 4.1.6
   vitest-browser-react: 2.2.0
 overrides:
   vite: "catalog:"

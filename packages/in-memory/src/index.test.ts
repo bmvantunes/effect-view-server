@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import type { ColumnLiveViewEngineHealth } from "@view-server/column-live-view-engine";
 import { defineViewServerConfig } from "@view-server/config";
 import { Deferred, Effect, Fiber, Schema, Stream } from "effect";
@@ -80,7 +80,7 @@ describe("@view-server/in-memory", () => {
       });
 
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
-      assert.deepStrictEqual(events[0], {
+      expect(events[0]).toStrictEqual({
         type: "snapshot",
         topic: "orders",
         queryId: "query-0",
@@ -100,18 +100,18 @@ describe("@view-server/in-memory", () => {
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
-      assert.deepStrictEqual(snapshot.rows, [
+      expect(snapshot.rows).toStrictEqual([
         { id: "c", price: 5 },
         { id: "b", price: 20 },
       ]);
 
       const health = yield* inMemory.client.health();
-      assert.strictEqual(health.engine.topics.orders.rowCount, 2);
+      expect(health.engine.topics.orders.rowCount).toBe(2);
 
       yield* subscription.close();
       yield* inMemory.client.reset();
       const resetHealth = yield* inMemory.client.health();
-      assert.strictEqual(resetHealth.engine.topics.orders.rowCount, 0);
+      expect(resetHealth.engine.topics.orders.rowCount).toBe(0);
       yield* inMemory.close;
     }),
   );
@@ -119,13 +119,25 @@ describe("@view-server/in-memory", () => {
   it.effect("supports the synchronous in-memory constructor", () =>
     Effect.gen(function* () {
       const inMemory = createInMemoryViewServer(viewServer, { subscriptionQueueCapacity: 1 });
-      assert.strictEqual("set" in inMemory.liveClient.health, false);
-      assert.strictEqual(inMemory.liveClient.health.value.status, "ready");
+      expect("set" in inMemory.liveClient.health).toBe(false);
+      expect(inMemory.liveClient.health.value.status).toBe("ready");
 
       yield* inMemory.client.publish("orders", order("a", 10));
       const health = yield* inMemory.client.health();
 
-      assert.strictEqual(health.engine.topics.orders.rowCount, 1);
+      expect(health.engine.topics.orders.rowCount).toBe(1);
+      yield* inMemory.close;
+    }),
+  );
+
+  it.effect("supports the synchronous in-memory constructor defaults", () =>
+    Effect.gen(function* () {
+      const inMemory = createInMemoryViewServer(viewServer);
+
+      yield* inMemory.client.publish("orders", order("a", 10));
+      const health = yield* inMemory.client.health();
+
+      expect(health.engine.topics.orders.rowCount).toBe(1);
       yield* inMemory.close;
     }),
   );
@@ -136,13 +148,13 @@ describe("@view-server/in-memory", () => {
       yield* inMemory.client.publish("orders", order("a", 10));
 
       const ready = yield* inMemory.client.health();
-      assert.strictEqual(ready.status, "ready");
+      expect(ready.status).toBe("ready");
 
       yield* inMemory.liveClient.close;
 
       const closed = yield* inMemory.client.health();
-      assert.strictEqual(closed.status, "stopping");
-      assert.strictEqual(closed.engine.topics.orders.activeSubscriptions, 0);
+      expect(closed.status).toBe("stopping");
+      expect(closed.engine.topics.orders.activeSubscriptions).toBe(0);
     }),
   );
 
@@ -174,11 +186,11 @@ describe("@view-server/in-memory", () => {
       yield* Deferred.await(firstReadStarted);
 
       const closed = yield* readHealth(engine, health);
-      assert.strictEqual(closed.status, "stopping");
+      expect(closed.status).toBe("stopping");
 
       yield* Deferred.succeed(releaseFirstRead, undefined);
       yield* Fiber.join(staleRefresh);
-      assert.strictEqual(health.value.status, "stopping");
+      expect(health.value.status).toBe("stopping");
     }),
   );
 
@@ -222,11 +234,11 @@ describe("@view-server/in-memory", () => {
         inMemory.client.publish("orders", order("closed", 30)),
       );
 
-      assert.strictEqual(invalidTopic.code, "InvalidTopic");
-      assert.strictEqual(invalidRow.code, "InvalidRow");
-      assert.strictEqual(unsupportedQuery.code, "UnsupportedQuery");
-      assert.strictEqual(invalidQuery.code, "InvalidQuery");
-      assert.strictEqual(runtimeUnavailable.code, "RuntimeUnavailable");
+      expect(invalidTopic.code).toBe("InvalidTopic");
+      expect(invalidRow.code).toBe("InvalidRow");
+      expect(unsupportedQuery.code).toBe("UnsupportedQuery");
+      expect(invalidQuery.code).toBe("InvalidQuery");
+      expect(runtimeUnavailable.code).toBe("RuntimeUnavailable");
     }),
   );
 
@@ -263,7 +275,7 @@ describe("@view-server/in-memory", () => {
         yield* Deferred.succeed(firstFinished, undefined);
         yield* Deferred.await(secondStarted);
 
-        assert.strictEqual(refreshCount, 2);
+        expect(refreshCount).toBe(2);
         yield* Deferred.succeed(secondFinished, undefined);
       }),
   );

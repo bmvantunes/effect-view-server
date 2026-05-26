@@ -11,6 +11,7 @@ export default defineConfig({
       tsconfig: "./tsconfig.json",
     },
     coverage: {
+      provider: "istanbul",
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/**/*.test-d.ts"],
       reporter: ["text"],
@@ -19,7 +20,7 @@ export default defineConfig({
       },
     },
   },
-  pack: libraryPack("src/index.ts"),
+  pack: libraryPack(["src/index.ts", "src/remote.ts"]),
   lint: {
     options: {
       typeAware: true,

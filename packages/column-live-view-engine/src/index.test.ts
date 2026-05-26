@@ -77,8 +77,20 @@ type Engine = ColumnLiveViewEngine<Topics>;
 type OrderRow = typeof Order.Type;
 type InstrumentRow = typeof Instrument.Type;
 
-const orderSelect = ["id", "customerId", "status", "price", "region", "updatedAt"] as const;
-const instrumentSelect = ["id", "metadata", "operatorLike", "tags"] as const;
+const orderSelect: readonly ["id", "customerId", "status", "price", "region", "updatedAt"] = [
+  "id",
+  "customerId",
+  "status",
+  "price",
+  "region",
+  "updatedAt",
+];
+const instrumentSelect: readonly ["id", "metadata", "operatorLike", "tags"] = [
+  "id",
+  "metadata",
+  "operatorLike",
+  "tags",
+];
 
 const order = (
   id: string,
@@ -164,7 +176,7 @@ const collectEvents = <Row>(
 const firstEvent = <Row>(
   events: ReadonlyArray<ColumnLiveViewEngineEvent<Row>>,
 ): ColumnLiveViewEngineEvent<Row> => {
-  expect(events).not.toEqual([]);
+  expect(events).not.toStrictEqual([]);
   return events[0]!;
 };
 
@@ -191,7 +203,7 @@ const expectSnapshotRows = <Row>(
   rows: ReadonlyArray<Row>,
 ) => {
   expectSnapshotEvent(event);
-  expect(event.rows).toEqual(rows);
+  expect(event.rows).toStrictEqual(rows);
 };
 
 const expectDefined = <Value>(value: Value | undefined): Value => {
@@ -253,7 +265,7 @@ const expectDeltaConverges = <Row>(
 ): ClientState<Row> => {
   expectDeltaEvent(event);
   const nextState = applyDelta(state, event);
-  expect(nextState.rows).toEqual(freshRows);
+  expect(nextState.rows).toStrictEqual(freshRows);
   return nextState;
 };
 
@@ -288,7 +300,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         limit: 1,
       });
 
-      expect(snapshot).toEqual({
+      expect(snapshot).toStrictEqual({
         rows: [order("1", "open", 10, 1, "emea")],
         totalRows: 2,
         version: 1,
@@ -303,7 +315,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         },
         orderBy: [{ field: "status", direction: "asc" }],
       });
-      expect(rowIds(equalStringSort.rows)).toEqual(["1", "2", "4", "5", "6"]);
+      expect(rowIds(equalStringSort.rows)).toStrictEqual(["1", "2", "4", "5", "6"]);
 
       const reverseInsertEngine = yield* makeEngine();
       yield* reverseInsertEngine.publishMany("orders", [
@@ -314,7 +326,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         select: ["id"],
         orderBy: [{ field: "status", direction: "asc" }],
       });
-      expect(rowIds(equalStringSortReverseInsert.rows)).toEqual(["a", "b"]);
+      expect(rowIds(equalStringSortReverseInsert.rows)).toStrictEqual(["a", "b"]);
     }),
   );
 
@@ -331,7 +343,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         },
       });
 
-      expect(snapshot.rows).toEqual([
+      expect(snapshot.rows).toStrictEqual([
         {
           customerId: "customer-1",
           status: "open",
@@ -351,7 +363,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       Object.assign(snapshot.rows[0]!, { price: 999 });
 
       const fresh = yield* engine.snapshot("orders", { select: orderSelect });
-      expect(fresh.rows).toEqual([order("1", "open", 10, 1)]);
+      expect(fresh.rows).toStrictEqual([order("1", "open", 10, 1)]);
     }),
   );
 
@@ -370,7 +382,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(emptyStructuredQuery.rows).toEqual([]);
+      expect(emptyStructuredQuery.rows).toStrictEqual([]);
 
       yield* engine.publishMany("instruments", [
         instrument("1", "xnys", 1, ["equity", "us"]),
@@ -389,7 +401,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(metadataQuery.rows)).toEqual(["1"]);
+      expect(rowIds(metadataQuery.rows)).toStrictEqual(["1"]);
 
       const arrayQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -397,7 +409,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           tags: ["equity", "us"],
         },
       });
-      expect(rowIds(arrayQuery.rows)).toEqual(["1"]);
+      expect(rowIds(arrayQuery.rows)).toStrictEqual(["1"]);
 
       const operatorObjectQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -413,7 +425,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(operatorObjectQuery.rows)).toEqual(["2"]);
+      expect(rowIds(operatorObjectQuery.rows)).toStrictEqual(["2"]);
 
       const operatorLikeDirectObjectQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -423,7 +435,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(operatorLikeDirectObjectQuery.rows)).toEqual(["1"]);
+      expect(rowIds(operatorLikeDirectObjectQuery.rows)).toStrictEqual(["1"]);
 
       const operatorLikeWrappedObjectQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -435,7 +447,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(operatorLikeWrappedObjectQuery.rows)).toEqual(["2"]);
+      expect(rowIds(operatorLikeWrappedObjectQuery.rows)).toStrictEqual(["2"]);
 
       const operatorLikeObjectNeq = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -447,7 +459,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(operatorLikeObjectNeq.rows)).toEqual(["1", "2"]);
+      expect(rowIds(operatorLikeObjectNeq.rows)).toStrictEqual(["1", "2"]);
 
       const operatorLikeObjectNeqEqual = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -459,7 +471,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(operatorLikeObjectNeqEqual.rows)).toEqual(["2"]);
+      expect(rowIds(operatorLikeObjectNeqEqual.rows)).toStrictEqual(["2"]);
 
       const objectInQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -473,7 +485,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       });
-      expect(rowIds(objectInQuery.rows)).toEqual(["2"]);
+      expect(rowIds(objectInQuery.rows)).toStrictEqual(["2"]);
 
       const invalidObjectInQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
@@ -482,7 +494,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           operatorLike: { in: [undefined] },
         },
       });
-      expect(rowIds(invalidObjectInQuery.rows)).toEqual([]);
+      expect(rowIds(invalidObjectInQuery.rows)).toStrictEqual([]);
 
       const fullSnapshot = yield* engine.snapshot("instruments", {
         select: ["id", "metadata", "tags"],
@@ -497,7 +509,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           id: "1",
         },
       });
-      expect(projectedSnapshot.rows).toEqual([
+      expect(projectedSnapshot.rows).toStrictEqual([
         {
           metadata: {
             venue: "xnys",
@@ -518,7 +530,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           id: "1",
         },
       });
-      expect(fresh.rows).toEqual([instrument("1", "xnys", 1, ["equity", "us"])]);
+      expect(fresh.rows).toStrictEqual([instrument("1", "xnys", 1, ["equity", "us"])]);
     }),
   );
 
@@ -534,7 +546,9 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       const afterPublishMutation = yield* engine.snapshot("instruments", {
         select: instrumentSelect,
       });
-      expect(afterPublishMutation.rows).toEqual([instrument("1", "xnys", 1, ["equity", "us"])]);
+      expect(afterPublishMutation.rows).toStrictEqual([
+        instrument("1", "xnys", 1, ["equity", "us"]),
+      ]);
 
       const patch = {
         metadata: {
@@ -558,7 +572,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       const afterPatchMutation = yield* engine.snapshot("instruments", {
         select: instrumentSelect,
       });
-      expect(afterPatchMutation.rows).toEqual([instrument("1", "xlon", 2, ["equity", "uk"])]);
+      expect(afterPatchMutation.rows).toStrictEqual([instrument("1", "xlon", 2, ["equity", "uk"])]);
     }),
   );
 
@@ -613,13 +627,13 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         ],
       });
 
-      expect(rowIds(snapshot.rows)).toEqual(["position-2", "position-1"]);
+      expect(rowIds(snapshot.rows)).toStrictEqual(["position-2", "position-1"]);
 
       const fallbackOrdered = yield* engine.snapshot("positions", {
         select: ["id"],
         orderBy: [{ field: "active", direction: "asc" }],
       });
-      expect(rowIds(fallbackOrdered.rows)).toEqual([
+      expect(rowIds(fallbackOrdered.rows)).toStrictEqual([
         "position-2",
         "position-1",
         "position-3",
@@ -633,13 +647,13 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           price: { eq: fromStringUnsafe("1.00") },
         },
       });
-      expect(rowIds(symbolOrdered.rows)).toEqual(["position-3", "position-4"]);
+      expect(rowIds(symbolOrdered.rows)).toStrictEqual(["position-3", "position-4"]);
 
       const quantityOrdered = yield* engine.snapshot("positions", {
         select: ["id"],
         orderBy: [{ field: "quantity", direction: "asc" }],
       });
-      expect(rowIds(quantityOrdered.rows)).toEqual([
+      expect(rowIds(quantityOrdered.rows)).toStrictEqual([
         "position-3",
         "position-1",
         "position-4",
@@ -653,7 +667,11 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         },
         orderBy: [{ field: "symbol", direction: "asc" }],
       });
-      expect(rowIds(booleanNotEqual.rows)).toEqual(["position-1", "position-4", "position-3"]);
+      expect(rowIds(booleanNotEqual.rows)).toStrictEqual([
+        "position-1",
+        "position-4",
+        "position-3",
+      ]);
 
       const decimalNotEqual = yield* engine.snapshot("positions", {
         select: ["id"],
@@ -662,7 +680,11 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         },
         orderBy: [{ field: "symbol", direction: "asc" }],
       });
-      expect(rowIds(decimalNotEqual.rows)).toEqual(["position-1", "position-4", "position-3"]);
+      expect(rowIds(decimalNotEqual.rows)).toStrictEqual([
+        "position-1",
+        "position-4",
+        "position-3",
+      ]);
     }),
   );
 
@@ -679,13 +701,13 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         select: ["id"],
         orderBy: [{ field: "metadata", direction: "asc" }],
       });
-      expect(rowIds(objectOrdered.rows)).toEqual(["1", "2", "3"]);
+      expect(rowIds(objectOrdered.rows)).toStrictEqual(["1", "2", "3"]);
 
       const arrayOrdered = yield* engine.snapshot("instruments", {
         select: ["id"],
         orderBy: [{ field: "tags", direction: "desc" }],
       });
-      expect(rowIds(arrayOrdered.rows)).toEqual(["1", "2", "3"]);
+      expect(rowIds(arrayOrdered.rows)).toStrictEqual(["1", "2", "3"]);
 
       yield* engine.publish("orders", order("1", "open", 10, 1));
       yield* engine.publish("orders", { ...order("2", "open", 20, 2), note: "visible" });
@@ -694,7 +716,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         select: ["id"],
         orderBy: [{ field: "note", direction: "asc" }],
       });
-      expect(rowIds(missingOrdered.rows)).toEqual(["1", "3", "2"]);
+      expect(rowIds(missingOrdered.rows)).toStrictEqual(["1", "3", "2"]);
     }),
   );
 
@@ -714,7 +736,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           orderBy: [{ field: "price", direction: "asc" }],
         });
 
-        expect(rowIds(snapshot.rows)).toEqual(["a", "b", "c"]);
+        expect(rowIds(snapshot.rows)).toStrictEqual(["a", "b", "c"]);
       }),
   );
 
@@ -729,7 +751,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("orders", { select: ["id"] });
 
-      expect(rowIds(snapshot.rows)).toEqual(["a", "b", "c"]);
+      expect(rowIds(snapshot.rows)).toStrictEqual(["a", "b", "c"]);
     }),
   );
 
@@ -749,7 +771,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           orderBy: [{ field: "price", direction: "desc" }],
         });
 
-        expect(rowIds(snapshot.rows)).toEqual(["a", "b", "c"]);
+        expect(rowIds(snapshot.rows)).toStrictEqual(["a", "b", "c"]);
       }),
   );
 
@@ -772,7 +794,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         ],
       });
 
-      expect(rowIds(snapshot.rows)).toEqual(["a", "b", "c"]);
+      expect(rowIds(snapshot.rows)).toStrictEqual(["a", "b", "c"]);
     }),
   );
 
@@ -802,7 +824,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           region: { eq: "emea" },
         },
       });
-      expect(rowIds(snapshot.rows)).toEqual(["7"]);
+      expect(rowIds(snapshot.rows)).toStrictEqual(["7"]);
 
       const notOpen = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -810,7 +832,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           status: { neq: "open" },
         },
       });
-      expect(rowIds(notOpen.rows)).toEqual(["4"]);
+      expect(rowIds(notOpen.rows)).toStrictEqual(["4"]);
     }),
   );
 });
@@ -846,8 +868,8 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const initialEvents = yield* take(1);
       const snapshot = firstEvent(initialEvents);
       expectSnapshotEvent(snapshot);
-      expect(snapshot.keys).toEqual(["a", "b"]);
-      expect(snapshot.rows).toEqual([
+      expect(snapshot.keys).toStrictEqual(["a", "b"]);
+      expect(snapshot.rows).toStrictEqual([
         { customerId: "customer-a", status: "open" },
         { customerId: "customer-b", status: "open" },
       ]);
@@ -858,7 +880,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       state = expectDeltaConverges(state, firstEvent(deleteEvents), [
         { customerId: "customer-b", status: "open" },
       ]);
-      expect(state.keys).toEqual(["b"]);
+      expect(state.keys).toStrictEqual(["b"]);
       yield* subscription.close();
     }),
   );
@@ -877,7 +899,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.patch("orders", "a", { status: "closed", price: 99 });
       const firstDelta = firstEvent(yield* take(1));
       expectDeltaEvent(firstDelta);
-      expect(firstDelta.operations).toEqual([
+      expect(firstDelta.operations).toStrictEqual([
         {
           type: "update",
           key: "a",
@@ -891,7 +913,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("orders", order("b", "open", 20, 2));
       const secondDelta = firstEvent(yield* take(1));
       expectDeltaEvent(secondDelta);
-      expect(secondDelta.operations).toEqual([
+      expect(secondDelta.operations).toStrictEqual([
         {
           type: "insert",
           key: "b",
@@ -954,7 +976,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const afterDelete = yield* engine.snapshot("orders", query);
       state = expectDeltaConverges(state, firstEvent(deleteEvents), afterDelete.rows);
 
-      expect(state.rows).toEqual([order("1", "open", 30, 1)]);
+      expect(state.rows).toStrictEqual([order("1", "open", 30, 1)]);
       yield* subscription.close();
     }),
   );
@@ -975,7 +997,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       yield* take(3);
       const fresh = yield* engine.snapshot("orders", { select: orderSelect });
-      expect(rowIds(fresh.rows)).toEqual(["a", "b", "c"]);
+      expect(rowIds(fresh.rows)).toStrictEqual(["a", "b", "c"]);
       expect(fresh.version).toBe(3);
       yield* subscription.close();
     }),
@@ -1001,8 +1023,8 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* take(1);
       const fresh = yield* engine.snapshot("orders", { select: orderSelect });
       expect(fresh.version).toBe(4);
-      expect(rowIds(fresh.rows)).toEqual(["a", "c"]);
-      expect(fresh.rows).toEqual([order("a", "open", 30, 1), order("c", "closed", 40, 3)]);
+      expect(rowIds(fresh.rows)).toStrictEqual(["a", "c"]);
+      expect(fresh.rows).toStrictEqual([order("a", "open", 30, 1), order("c", "closed", 40, 3)]);
       yield* subscription.close();
     }),
   );
@@ -1063,7 +1085,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const subscription = yield* engine.subscribe("orders", { select: ["id"] });
 
       const events = yield* takeEvents(subscription, 1);
-      expect(events.map((event) => event.type)).toEqual(["snapshot"]);
+      expect(events.map((event) => event.type)).toStrictEqual(["snapshot"]);
 
       const health = yield* engine.health();
       expect(health.topics["orders"].activeSubscriptions).toBe(0);
@@ -1135,7 +1157,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* subscription.close();
 
       const remaining = yield* collectEvents(subscription);
-      expect(remaining).toEqual([]);
+      expect(remaining).toStrictEqual([]);
     }),
   );
 
@@ -1170,7 +1192,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         order("1", "open", 10, 1),
         order("2", "open", 20, 2),
       ]);
-      expect(state.keys).toEqual(["1", "2"]);
+      expect(state.keys).toStrictEqual(["1", "2"]);
       yield* subscription.close();
     }),
   );
@@ -1195,7 +1217,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const events = yield* take(1);
       const event = firstEvent(events);
       expectDeltaEvent(event);
-      expect(event.operations).toEqual([
+      expect(event.operations).toStrictEqual([
         {
           type: "insert",
           key: "2",
@@ -1219,7 +1241,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           price: { gt: "9" },
         },
       });
-      expect(invalidGt.rows).toEqual([]);
+      expect(invalidGt.rows).toStrictEqual([]);
 
       const invalidGtNaN = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1229,7 +1251,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           },
         },
       });
-      expect(invalidGtNaN.rows).toEqual([]);
+      expect(invalidGtNaN.rows).toStrictEqual([]);
 
       const invalidGte = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1238,7 +1260,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           price: { gte: "9" },
         },
       });
-      expect(invalidGte.rows).toEqual([]);
+      expect(invalidGte.rows).toStrictEqual([]);
 
       const invalidLt = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1247,7 +1269,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           price: { lt: "11" },
         },
       });
-      expect(invalidLt.rows).toEqual([]);
+      expect(invalidLt.rows).toStrictEqual([]);
 
       const invalidLte = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1256,7 +1278,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           price: { lte: "11" },
         },
       });
-      expect(invalidLte.rows).toEqual([]);
+      expect(invalidLte.rows).toStrictEqual([]);
 
       const invalidIn = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1267,7 +1289,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           },
         },
       });
-      expect(invalidIn.rows).toEqual([]);
+      expect(invalidIn.rows).toStrictEqual([]);
 
       const invalidStartsWith = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1278,7 +1300,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           },
         },
       });
-      expect(invalidStartsWith.rows).toEqual([]);
+      expect(invalidStartsWith.rows).toStrictEqual([]);
 
       const invalidNeq = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1287,7 +1309,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           price: { neq: "10" },
         },
       });
-      expect(invalidNeq.rows).toEqual([]);
+      expect(invalidNeq.rows).toStrictEqual([]);
 
       const invalidNeqNaN = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1297,7 +1319,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           },
         },
       });
-      expect(invalidNeqNaN.rows).toEqual([]);
+      expect(invalidNeqNaN.rows).toStrictEqual([]);
 
       const undefinedEquals = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1308,7 +1330,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           },
         },
       });
-      expect(undefinedEquals.rows).toEqual([]);
+      expect(undefinedEquals.rows).toStrictEqual([]);
 
       const undefinedDirectRuntimeQuery: object = {
         select: ["id"],
@@ -1316,7 +1338,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       };
       // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
       const undefinedDirectFilter = yield* engine.snapshot("orders", undefinedDirectRuntimeQuery);
-      expect(undefinedDirectFilter.rows).toEqual([]);
+      expect(undefinedDirectFilter.rows).toStrictEqual([]);
 
       const undefinedInFilter = yield* engine.snapshot("orders", {
         select: ["id"],
@@ -1325,7 +1347,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           status: { in: [undefined] },
         },
       });
-      expect(undefinedInFilter.rows).toEqual([]);
+      expect(undefinedInFilter.rows).toStrictEqual([]);
 
       const sparseValues = Array<string>();
       sparseValues[1] = "open";
@@ -1337,7 +1359,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       };
       // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
       const sparseInFilter = yield* engine.snapshot("orders", sparseRuntimeQuery);
-      expect(sparseInFilter.rows).toEqual([]);
+      expect(sparseInFilter.rows).toStrictEqual([]);
 
       const emptyFilter = yield* Effect.flip(
         engine.snapshot("orders", {
@@ -1420,7 +1442,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         order("2", "open", 20, 2),
         order("1", "open", 30, 1),
       ]);
-      expect(state.keys).toEqual(["2", "1"]);
+      expect(state.keys).toStrictEqual(["2", "1"]);
       yield* subscription.close();
     }),
   );
@@ -1440,7 +1462,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const take = yield* makeEventReader(subscription);
       const initialEvents = yield* take(1);
       let state = stateFromSnapshot(firstEvent(initialEvents));
-      expect(state.keys).toEqual(["a", "b", "c"]);
+      expect(state.keys).toStrictEqual(["a", "b", "c"]);
 
       yield* engine.patch("orders", "b", { customerId: "customer-b-updated" });
       const events = yield* take(1);
@@ -1461,7 +1483,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         { ...order("b", "open", 10, 1), customerId: "customer-b-updated" },
         order("c", "open", 10, 1),
       ]);
-      expect(state.keys).toEqual(["a", "b", "c"]);
+      expect(state.keys).toStrictEqual(["a", "b", "c"]);
       yield* subscription.close();
     }),
   );
@@ -1475,7 +1497,20 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         where: {
           status: "open",
         },
-      } as const satisfies RawQuery<OrderRow>;
+      } satisfies RawQuery<OrderRow> & {
+        readonly select: readonly [
+          "id",
+          "customerId",
+          "status",
+          "price",
+          "region",
+          "updatedAt",
+          "note",
+        ];
+        readonly where: {
+          readonly status: "open";
+        };
+      };
       const subscription = yield* engine.subscribe("orders", query);
       const take = yield* makeEventReader(subscription);
       const initialEvents = yield* take(1);
@@ -1501,7 +1536,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const fresh = yield* engine.snapshot("orders", query);
       state = expectDeltaConverges(state, event, fresh.rows);
-      expect(state.rows).toEqual([
+      expect(state.rows).toStrictEqual([
         {
           ...order("1", "open", 10, 1),
           note: "newly-visible",
@@ -1551,7 +1586,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         order("2", "open", 20, 2),
         order("3", "open", 30, 3),
       ]);
-      expect(state.keys).toEqual(["2", "3"]);
+      expect(state.keys).toStrictEqual(["2", "3"]);
       yield* subscription.close();
     }),
   );
@@ -1574,7 +1609,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(health.topics["orders"].maxQueueDepth).toBe(1);
 
       const events = yield* collectEvents(subscription);
-      expect(events.map((event) => event.type)).toEqual(["status"]);
+      expect(events.map((event) => event.type)).toStrictEqual(["status"]);
       expect(events[0]).toMatchObject({
         type: "status",
         code: "BackpressureExceeded",
@@ -1680,13 +1715,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
           payload: { venue: "xlon" },
         },
       });
-      expect(emptyObjectKeywordFilter.rows).toEqual([]);
+      expect(emptyObjectKeywordFilter.rows).toStrictEqual([]);
 
       yield* engine.publish("payloads", { id: "1", payload });
       yield* engine.publish("payloads", { id: "2", payload: { venue: "xlon" } });
 
       const snapshot = yield* engine.snapshot("payloads", { select: ["id", "payload"] });
-      expect(snapshot.rows[0]?.payload).toEqual(payload);
+      expect(snapshot.rows[0]?.payload).toStrictEqual(payload);
       expect(snapshot.rows[0]?.payload).not.toBe(payload);
 
       const objectFilter = yield* engine.snapshot("payloads", {
@@ -1695,7 +1730,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
           payload: { venue: "xlon" },
         },
       });
-      expect(objectFilter.rows).toEqual([{ id: "2", payload: { venue: "xlon" } }]);
+      expect(objectFilter.rows).toStrictEqual([{ id: "2", payload: { venue: "xlon" } }]);
     }),
   );
 
@@ -1754,41 +1789,63 @@ describe("ColumnLiveViewEngine validation and health", () => {
     }),
   );
 
-  it.effect(
-    "supports unsafely cast decoders without struct field metadata for unfiltered health",
-    () =>
-      Effect.gen(function* () {
-        const engine = yield* createColumnLiveViewEngine({
-          topics: {
-            loose: {
-              schema: Schema.ObjectKeyword,
-              // @ts-expect-error ObjectKeyword has no known string select; this exercises runtime fallback only.
-              key: "id",
-            },
+  it.effect("keeps runtime guards for non-struct topic schemas", () =>
+    Effect.gen(function* () {
+      const nonStructSchemaConfig = {
+        topics: {
+          loose: {
+            schema: Schema.ObjectKeyword,
+            key: "id",
           },
-        });
+        },
+      };
+      // @ts-expect-error invalid configs can still reach runtime through untyped callers.
+      const engine = yield* createColumnLiveViewEngine(nonStructSchemaConfig);
+      const query: object = { select: ["id"] };
 
-        const health = yield* engine.health();
-        expect(health.topics["loose"].rowCount).toBe(0);
+      const error = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.snapshot("loose", query),
+      );
 
-        const fakeFieldMetadataEngine = yield* createColumnLiveViewEngine({
-          topics: {
-            fake: {
-              schema: {
-                // @ts-expect-error fake decoder metadata can still reach runtime through untyped callers.
-                fields: {
-                  id: "not-a-schema",
-                  metadata: { ast: "not-an-ast" },
-                },
+      expect(error).toMatchObject({
+        _tag: "InvalidQueryError",
+        topic: "loose",
+        message: expect.stringContaining("select"),
+      });
+    }),
+  );
+
+  it.effect("keeps runtime guards for malformed schema field metadata", () =>
+    Effect.gen(function* () {
+      const malformedFieldSchemaConfig = {
+        topics: {
+          loose: {
+            schema: {
+              fields: {
+                id: "not-a-schema",
+                label: { ast: "not-a-schema-ast" },
               },
-              // @ts-expect-error fake decoder metadata can still reach runtime through untyped callers.
-              key: "id",
             },
+            key: "id",
           },
-        });
-        const fakeHealth = yield* fakeFieldMetadataEngine.health();
-        expect(fakeHealth.topics["fake"]?.rowCount).toBe(0);
-      }),
+        },
+      };
+      // @ts-expect-error invalid configs can still reach runtime through untyped callers.
+      const engine = yield* createColumnLiveViewEngine(malformedFieldSchemaConfig);
+      const query: object = { select: ["id"] };
+
+      const snapshot = yield* engine.snapshot(
+        "loose",
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        query,
+      );
+
+      expect(snapshot).toMatchObject({
+        rows: [],
+        totalRows: 0,
+      });
+    }),
   );
 
   it.effect("fails missing-key patches and key-changing patches", () =>
@@ -1904,7 +1961,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
         topics: topicsWithInheritedDefinition,
       });
       const health = yield* engine.health();
-      expect(Object.keys(health.topics)).toEqual(["orders"]);
+      expect(Object.keys(health.topics)).toStrictEqual(["orders"]);
 
       const inherited = yield* Effect.flip(engine.snapshot("inherited", { select: ["id"] }));
       expect(inherited).toMatchObject({

@@ -67,10 +67,10 @@ describe("@view-server/client", () => {
       totalRows: 2,
       version: 1,
     });
-    expect(inserted.rows).toEqual([{ id: "a" }, { id: "c" }, { id: "b" }]);
-    expect(updated.rows).toEqual([{ id: "a" }, { id: "c-updated" }, { id: "b" }]);
-    expect(moved.rows).toEqual([{ id: "c-updated" }, { id: "b" }, { id: "a" }]);
-    expect(removed.rows).toEqual([{ id: "b" }, { id: "a" }]);
+    expect(inserted.rows).toStrictEqual([{ id: "a" }, { id: "c" }, { id: "b" }]);
+    expect(updated.rows).toStrictEqual([{ id: "a" }, { id: "c-updated" }, { id: "b" }]);
+    expect(moved.rows).toStrictEqual([{ id: "c-updated" }, { id: "b" }, { id: "a" }]);
+    expect(removed.rows).toStrictEqual([{ id: "b" }, { id: "a" }]);
 
     expect(
       applyEvent(removed, {

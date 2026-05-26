@@ -1,0 +1,993 @@
+import { NodeHttpServer } from "@effect/platform-node";
+import { describe, expect, it } from "@effect/vitest";
+import { defineViewServerConfig } from "@view-server/config";
+import {
+  Context,
+  Effect,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Queue,
+  Schema,
+  SchemaGetter,
+  Stream,
+} from "effect";
+import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import * as Http from "node:http";
+import {
+  ViewServerRpcs,
+  ViewServerWireRowSchema,
+  type ViewServerRpcError,
+  type ViewServerWireEvent,
+  type ViewServerWireHealth,
+} from "@view-server/protocol";
+import { makeViewServerClient } from "./remote";
+import { mapViewServerRemoteError } from "./remote-client";
+
+const Order = Schema.Struct({
+  id: Schema.String,
+  price: Schema.Number,
+});
+
+const BadJsonField = Schema.String.pipe(
+  Schema.encodeTo(Schema.Any, {
+    decode: SchemaGetter.transform((value) => (typeof value === "string" ? value : "decoded")),
+    encode: SchemaGetter.transform(() => Symbol("not-json")),
+  }),
+);
+
+const BadJsonRow = Schema.Struct({
+  id: BadJsonField,
+});
+
+const viewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+    },
+  },
+});
+
+const edgeViewServer = defineViewServerConfig({
+  topics: {
+    badjson: {
+      schema: BadJsonRow,
+      key: "id",
+    },
+  },
+});
+
+type OrderRow = typeof Order.Type;
+
+const order = (id: string, price: number): OrderRow => ({
+  id,
+  price,
+});
+
+type WireTopicHealth = ViewServerWireHealth["engine"]["topics"][string];
+
+const topicHealth = (rowCount: number, activeSubscriptions: number): WireTopicHealth => ({
+  status: "ready",
+  rowCount,
+  liveRowCount: rowCount,
+  deletedRowCount: 0,
+  version: rowCount,
+  lastMutationAt: null,
+  mutationsPerSecond: 0,
+  rowsPerSecond: 0,
+  pendingMutationBatches: 0,
+  activeViews: activeSubscriptions,
+  activeSubscriptions,
+  queuedEvents: 0,
+  maxQueueDepth: 0,
+  backpressureEvents: 0,
+  memoryBytes: 0,
+  tombstoneCount: 0,
+  compactionPending: false,
+});
+
+const health = (rowCount: number, activeSubscriptions: number): ViewServerWireHealth => ({
+  status: "ready",
+  version: rowCount,
+  uptimeMs: 0,
+  engine: {
+    topics: {
+      orders: topicHealth(rowCount, activeSubscriptions),
+      badjson: topicHealth(0, 0),
+    },
+  },
+  transport: {
+    activeClients: 1,
+    activeStreams: activeSubscriptions,
+    activeSubscriptions,
+    messagesPerSecond: 0,
+    bytesPerSecond: 0,
+    queuedMessages: 0,
+    queuedBytes: 0,
+    droppedClients: 0,
+    backpressureEvents: 0,
+    reconnects: 0,
+    lastError: null,
+  },
+});
+
+const readLimit = (query: unknown): number | undefined => {
+  if (typeof query !== "object" || query === null || !("limit" in query)) {
+    return undefined;
+  }
+  const value = query.limit;
+  return typeof value === "number" ? value : undefined;
+};
+
+const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(function* () {
+  const path = "/rpc";
+  const events = yield* Queue.unbounded<ViewServerWireEvent>();
+  let lastSubscribeQuery: unknown = undefined;
+  let rows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [];
+  let activeSubscriptions = 0;
+  let healthRequests = 0;
+  let healthOverride: ViewServerWireHealth | undefined = undefined;
+
+  const handlers = ViewServerRpcs.toLayer(
+    Effect.succeed(
+      ViewServerRpcs.of({
+        "ViewServer.Health": () =>
+          Effect.sync(() => {
+            healthRequests += 1;
+            return healthOverride ?? health(rows.length, activeSubscriptions);
+          }),
+        "ViewServer.Subscribe": (payload) => {
+          lastSubscribeQuery = payload.query;
+          const limit = readLimit(payload.query);
+          if (limit === 994) {
+            return Stream.fail<ViewServerRpcError>({
+              _tag: "ViewServerTransportError",
+              code: "SubscriptionClosed",
+              message: "subscription closed by server",
+            });
+          }
+          if (limit === 995) {
+            return Stream.fail<ViewServerRpcError>({
+              _tag: "ViewServerRuntimeError",
+              code: "SnapshotStale",
+              message: "snapshot stale",
+              topic: payload.topic,
+            });
+          }
+          if (limit === 996) {
+            return Stream.fail<ViewServerRpcError>({
+              _tag: "ViewServerRuntimeError",
+              code: "InvalidQuery",
+              message: "remote invalid query",
+              topic: payload.topic,
+            });
+          }
+          if (limit === 997) {
+            return Stream.fail<ViewServerRpcError>({
+              _tag: "ViewServerTransportError",
+              code: "TransportError",
+              message: "transport failure without query",
+            });
+          }
+          if (limit === 998) {
+            return Stream.fail<ViewServerRpcError>({
+              _tag: "ViewServerTransportError",
+              code: "TransportError",
+              message: "transport failure",
+              queryId: "query-from-server",
+            });
+          }
+          if (limit === 999) {
+            return Stream.fail<ViewServerRpcError>({
+              _tag: "ViewServerBackpressureError",
+              code: "BackpressureExceeded",
+              message: "backpressure failure",
+            });
+          }
+          return Stream.unwrap(
+            Effect.sync(() => {
+              activeSubscriptions += 1;
+              return Stream.succeed<ViewServerWireEvent>({
+                type: "snapshot",
+                topic: payload.topic,
+                queryId: "query-remote",
+                version: rows.length,
+                keys: rows.map((row) => {
+                  const id = row["id"];
+                  const encoded = typeof id === "string" ? id : JSON.stringify(id);
+                  return encoded === undefined ? "undefined" : encoded;
+                }),
+                rows,
+                totalRows: rows.length,
+              }).pipe(
+                Stream.concat(Stream.fromQueue(events)),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    activeSubscriptions -= 1;
+                  }),
+                ),
+              );
+            }),
+          );
+        },
+      }),
+    ),
+  );
+  const protocol = RpcServer.layerProtocolWebsocket({ path }).pipe(Layer.provide(HttpRouter.layer));
+  const layer = RpcServer.layer(ViewServerRpcs, {
+    disableFatalDefects: true,
+  }).pipe(
+    Layer.provide(handlers),
+    Layer.provideMerge(protocol),
+    Layer.provide(
+      HttpRouter.serve(protocol, {
+        disableListenLog: true,
+        disableLogger: true,
+      }),
+    ),
+    Layer.provideMerge(NodeHttpServer.layer(Http.createServer, { port: 0 })),
+    Layer.provide(RpcSerialization.layerNdjson),
+  );
+  const runtime = ManagedRuntime.make(layer);
+  const context = yield* runtime.contextEffect;
+  const server = Context.get(context, HttpServer.HttpServer);
+  const address = server.address;
+  if (address._tag !== "TcpAddress") {
+    return yield* Effect.die(new Error("Expected a TCP test server address."));
+  }
+  return {
+    activeSubscriptions: () => activeSubscriptions,
+    close: runtime.disposeEffect,
+    emit: (event: ViewServerWireEvent) => Queue.offer(events, event),
+    emitInsert: (topic: string, row: typeof ViewServerWireRowSchema.Type) =>
+      Effect.gen(function* () {
+        rows = [...rows, row];
+        const id = row["id"];
+        const encodedKey = typeof id === "string" ? id : JSON.stringify(id);
+        const key = encodedKey === undefined ? "undefined" : encodedKey;
+        yield* Queue.offer(events, {
+          type: "delta",
+          topic,
+          queryId: "query-remote",
+          fromVersion: rows.length - 1,
+          toVersion: rows.length,
+          operations: [
+            {
+              type: "insert",
+              key,
+              row,
+              index: rows.length - 1,
+            },
+          ],
+          totalRows: rows.length,
+        });
+      }),
+    healthRequests: () => healthRequests,
+    lastSubscribeQuery: () => lastSubscribeQuery,
+    setRows: (nextRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type>) => {
+      rows = nextRows;
+    },
+    setHealth: (nextHealth: ViewServerWireHealth) => {
+      healthOverride = nextHealth;
+    },
+    url: `ws://127.0.0.1:${address.port}${path}`,
+  };
+});
+
+describe("remote ViewServer client", () => {
+  it("maps client-side RPC errors into transport errors", () => {
+    expect(mapViewServerRemoteError(new Error("socket closed"))).toStrictEqual({
+      _tag: "ViewServerTransportError",
+      code: "TransportError",
+      message: "socket closed",
+    });
+  });
+
+  it.live(
+    "subscribes, receives external live events, refreshes health, and closes over Effect RPC WebSocket",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* makeTestRpcServer();
+        const client = yield* makeViewServerClient(viewServer, {
+          url: server.url,
+          healthPollInterval: "10 millis",
+        });
+        expect(server.healthRequests()).toBe(1);
+        const subscription = yield* client.subscribe("orders", {
+          select: ["id", "price"],
+          limit: 10,
+        });
+        expect(server.healthRequests()).toBe(2);
+        const eventsFiber = yield* subscription.events.pipe(
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.sleep("10 millis");
+
+        yield* server.emit({
+          type: "delta",
+          topic: "orders",
+          queryId: "query-remote",
+          fromVersion: 0,
+          toVersion: 1,
+          operations: [
+            { type: "insert", key: "queued", row: { id: "queued", price: 5 }, index: 0 },
+          ],
+          totalRows: 1,
+        });
+        yield* Effect.sleep("10 millis");
+
+        yield* server.emitInsert("orders", order("a", 10));
+        const events = yield* Fiber.join(eventsFiber);
+        expect(events[0]).toStrictEqual({
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-remote",
+          version: 0,
+          keys: [],
+          rows: [],
+          totalRows: 0,
+        });
+        expect(events[1]).toStrictEqual({
+          type: "delta",
+          topic: "orders",
+          queryId: "query-remote",
+          fromVersion: 0,
+          toVersion: 1,
+          operations: [
+            { type: "insert", key: "queued", row: { id: "queued", price: 5 }, index: 0 },
+          ],
+          totalRows: 1,
+        });
+        expect(events[2]).toStrictEqual({
+          type: "delta",
+          topic: "orders",
+          queryId: "query-remote",
+          fromVersion: 0,
+          toVersion: 1,
+          operations: [{ type: "insert", key: "a", row: { id: "a", price: 10 }, index: 0 }],
+          totalRows: 1,
+        });
+
+        yield* Effect.sleep("30 millis");
+        expect(client.health.value.engine.topics.orders.rowCount).toBe(1);
+
+        yield* Effect.sleep("10 millis");
+        expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
+
+        yield* client.close;
+        expect(client.health.value.status).toBe("stopping");
+        yield* server.close;
+      }),
+  );
+
+  it.live("closes the remote subscription scope when stream consumption finalizes", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      const subscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 10,
+      });
+      yield* Effect.sleep("10 millis");
+      expect(server.activeSubscriptions()).toBe(1);
+
+      yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+      yield* Effect.sleep("10 millis");
+
+      expect(server.activeSubscriptions()).toBe(0);
+      expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("polls remote health on a cadence without live query activity", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, {
+        url: server.url,
+        healthPollInterval: "10 millis",
+      });
+      expect(client.health.value.engine.topics.orders.rowCount).toBe(0);
+
+      server.setRows([{ id: "polled", price: 50 }]);
+      yield* Effect.sleep("30 millis");
+
+      expect(client.health.value.engine.topics.orders.rowCount).toBe(1);
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("does not poll remote health when the cadence is disabled", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, {
+        url: server.url,
+        healthPollInterval: false,
+      });
+      expect(server.healthRequests()).toBe(1);
+      expect(client.health.value.engine.topics.orders.rowCount).toBe(0);
+
+      server.setRows([{ id: "not-polled", price: 50 }]);
+      yield* Effect.sleep("30 millis");
+
+      expect(server.healthRequests()).toBe(1);
+      expect(client.health.value.engine.topics.orders.rowCount).toBe(0);
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("client close closes active remote subscription scopes", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 10,
+      });
+      yield* Effect.sleep("10 millis");
+      expect(server.activeSubscriptions()).toBe(1);
+
+      yield* client.close;
+      yield* Effect.sleep("10 millis");
+
+      expect(server.activeSubscriptions()).toBe(0);
+
+      yield* server.close;
+    }),
+  );
+
+  it.live("encodes query filters and surfaces client-side validation errors", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+
+      const richQuery = yield* client.subscribe("orders", {
+        select: ["id", "price"],
+        where: {
+          id: {
+            in: ["a", "b"],
+            startsWith: "a",
+          },
+          price: { gt: 1 },
+        },
+        orderBy: [{ field: "price", direction: "desc" }],
+        offset: 1,
+        limit: 10,
+      });
+      yield* Effect.sleep("10 millis");
+      expect(server.lastSubscribeQuery()).toStrictEqual({
+        select: ["id", "price"],
+        where: {
+          id: {
+            in: ["a", "b"],
+            startsWith: "a",
+          },
+          price: { gt: 1 },
+        },
+        orderBy: [{ field: "price", direction: "desc" }],
+        offset: 1,
+        limit: 10,
+      });
+      yield* richQuery.close();
+
+      const scalarFilter = yield* client.subscribe("orders", {
+        select: ["id"],
+        where: {
+          price: 10,
+        },
+        limit: 10,
+      });
+      expect(server.lastSubscribeQuery()).toStrictEqual({
+        select: ["id"],
+        where: {
+          price: 10,
+        },
+        limit: 10,
+      });
+      yield* scalarFilter.close();
+
+      const noLimit = yield* client.subscribe("orders", {
+        select: ["id"],
+      });
+      expect(server.lastSubscribeQuery()).toStrictEqual({
+        select: ["id"],
+      });
+      yield* noLimit.close();
+
+      const invalidTopic = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown topics.
+        client.subscribe("missing", {
+          select: ["id"],
+        }),
+      );
+      expect(invalidTopic.code).toBe("InvalidTopic");
+
+      const invalidSelect = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: [
+            // @ts-expect-error hostile callers can still send malformed selected fields.
+            1,
+          ],
+        }),
+      );
+      expect(invalidSelect.code).toBe("InvalidQuery");
+      expect(invalidSelect.message).toBe('Expected string, got 1\n  at ["select"][0]');
+
+      const unknownSelect = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: [
+            // @ts-expect-error hostile callers can still send unknown selected fields.
+            "missing",
+          ],
+        }),
+      );
+      expect(unknownSelect.code).toBe("InvalidQuery");
+      expect(unknownSelect.message).toBe("Query references an unknown field for topic: orders");
+
+      const unknownOrderBy = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          // @ts-expect-error hostile callers can still send unknown sort fields.
+          orderBy: [{ field: "missing", direction: "asc" }],
+        }),
+      );
+      expect(unknownOrderBy.code).toBe("InvalidQuery");
+      expect(unknownOrderBy.message).toBe("Query references an unknown field for topic: orders");
+
+      const unknownWhere = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          where: {
+            // @ts-expect-error hostile callers can still send unknown filter fields.
+            missing: { eq: "x" },
+          },
+        }),
+      );
+      expect(unknownWhere.code).toBe("InvalidQuery");
+      expect(unknownWhere.message).toBe("Query references an unknown field for topic: orders");
+
+      const invalidFilter = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          where: {
+            // @ts-expect-error hostile callers can still send malformed filter values.
+            price: { gt: "nope" },
+          },
+        }),
+      );
+      expect(invalidFilter.code).toBe("InvalidQuery");
+
+      const invalidStartsWith = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          where: {
+            // @ts-expect-error hostile callers can still send non-JSON filter values.
+            id: {
+              startsWith: 1n,
+            },
+          },
+        }),
+      );
+      expect(invalidStartsWith.code).toBe("InvalidQuery");
+
+      const invalidNumericStartsWith = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          where: {
+            // @ts-expect-error hostile callers can still send string operators to numeric fields.
+            price: {
+              startsWith: 1,
+            },
+          },
+        }),
+      );
+      expect(invalidNumericStartsWith.code).toBe("InvalidQuery");
+      expect(invalidNumericStartsWith.message).toBe("Filter price does not support startsWith");
+
+      const invalidUnknownOperator = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          where: {
+            id: {
+              startsWith: "a",
+              // @ts-expect-error hostile callers can still send unknown filter operators.
+              weird: 1n,
+            },
+          },
+        }),
+      );
+      expect(invalidUnknownOperator.code).toBe("InvalidQuery");
+
+      const emptySelect = yield* Effect.flip(
+        client.subscribe("orders", {
+          // @ts-expect-error hostile callers can still send empty projections.
+          select: [],
+        }),
+      );
+      expect(emptySelect.code).toBe("InvalidQuery");
+      expect(emptySelect.message).toBe("Query select must include at least one field");
+
+      const invalidOffset = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          offset: -1,
+        }),
+      );
+      expect(invalidOffset.code).toBe("InvalidQuery");
+      expect(invalidOffset.message).toBe("Query offset must be a non-negative integer");
+
+      const invalidLimit = yield* Effect.flip(
+        client.subscribe("orders", {
+          select: ["id"],
+          limit: 0,
+        }),
+      );
+      expect(invalidLimit.code).toBe("InvalidQuery");
+      expect(invalidLimit.message).toBe("Query limit must be a positive integer");
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("rejects non-json schema encodings before RPC", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(edgeViewServer, { url: server.url });
+
+      const badFilter = yield* Effect.flip(
+        client.subscribe("badjson", {
+          select: ["id"],
+          where: { id: { eq: "x" } },
+        }),
+      );
+      expect(badFilter.code).toBe("InvalidQuery");
+      expect(badFilter.message).toMatch(/Filter id is not JSON-safe/);
+
+      const badStartsWith = yield* Effect.flip(
+        client.subscribe("badjson", {
+          select: ["id"],
+          where: {
+            // @ts-expect-error hostile callers can still send non-string startsWith filters.
+            id: {
+              startsWith: 1,
+            },
+          },
+        }),
+      );
+      expect(badStartsWith.code).toBe("InvalidQuery");
+      expect(badStartsWith.message).toMatch(/Invalid startsWith filter for id/);
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("returns a transport error and disposes setup when initial health fails", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        makeViewServerClient(viewServer, { url: "ws://127.0.0.1:1/rpc" }),
+      );
+
+      expect(error.code).toBe("TransportError");
+    }),
+  );
+
+  it.live("rejects remote health payloads that omit configured topics", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.setHealth({
+        ...health(0, 0),
+        engine: {
+          topics: {
+            badjson: topicHealth(0, 0),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(makeViewServerClient(viewServer, { url: server.url }));
+      expect(error.code).toBe("InvalidRow");
+      expect(error.message).toBe("Health payload is missing topic: orders");
+
+      yield* server.close;
+    }),
+  );
+
+  it.live("maps decoded remote event failures into typed terminal statuses", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+
+      const unknownFieldSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 10,
+      });
+      const unknownFieldEventsFiber = yield* unknownFieldSubscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
+      yield* server.emit({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-remote",
+        version: 1,
+        keys: ["bad"],
+        rows: [{ id: "bad", missing: "x" }],
+        totalRows: 1,
+      });
+      const unknownFieldEvents = yield* Fiber.join(unknownFieldEventsFiber);
+      expect(unknownFieldEvents[1]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "error",
+        code: "InvalidRow",
+        message: "Unexpected row field for topic orders: missing",
+      });
+
+      const invalidTypeSubscription = yield* client.subscribe("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const invalidTypeEventsFiber = yield* invalidTypeSubscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
+      yield* server.emit({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-remote",
+        version: 1,
+        keys: ["bad"],
+        rows: [{ id: "bad", price: "nope" }],
+        totalRows: 1,
+      });
+      const invalidTypeEvents = yield* Fiber.join(invalidTypeEventsFiber);
+      expect(invalidTypeEvents[1]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "error",
+        code: "InvalidRow",
+        message: 'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN", got "nope"',
+      });
+
+      const invalidTopicSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 10,
+      });
+      const invalidTopicEventsFiber = yield* invalidTopicSubscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
+      yield* server.emit({
+        type: "snapshot",
+        topic: "missing",
+        queryId: "query-remote",
+        version: 1,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+      const invalidTopicEvents = yield* Fiber.join(invalidTopicEventsFiber);
+      expect(invalidTopicEvents[1]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "error",
+        code: "InvalidRow",
+        message: "Received event for missing while subscribed to orders",
+      });
+
+      const missingFieldSubscription = yield* client.subscribe("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const missingFieldEventsFiber = yield* missingFieldSubscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
+      yield* server.emit({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-remote",
+        version: 1,
+        keys: ["bad"],
+        rows: [{ id: "bad" }],
+        totalRows: 1,
+      });
+      const missingFieldEvents = yield* Fiber.join(missingFieldEventsFiber);
+      expect(missingFieldEvents[1]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "error",
+        code: "InvalidRow",
+        message: "Missing row field for topic orders: price",
+      });
+
+      const statusAndMoveSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 10,
+      });
+      const statusAndMoveEventsFiber = yield* statusAndMoveSubscription.events.pipe(
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
+      yield* server.emit({
+        type: "status",
+        topic: "orders",
+        queryId: "query-remote",
+        status: "ready",
+        code: "Ready",
+      });
+      yield* server.emit({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-remote",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          { type: "move", key: "a", fromIndex: 1, toIndex: 0 },
+          { type: "remove", key: "b" },
+        ],
+        totalRows: 0,
+      });
+      const statusAndMoveEvents = yield* Fiber.join(statusAndMoveEventsFiber);
+      expect(statusAndMoveEvents[1]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "query-remote",
+        status: "ready",
+        code: "Ready",
+      });
+      expect(statusAndMoveEvents[2]).toStrictEqual({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-remote",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          { type: "move", key: "a", fromIndex: 1, toIndex: 0 },
+          { type: "remove", key: "b" },
+        ],
+        totalRows: 0,
+      });
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("turns remote stream failures into terminal status events", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+
+      const subscriptionClosedSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 994,
+      });
+      const subscriptionClosedStatus = yield* subscriptionClosedSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      expect(subscriptionClosedStatus[0]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "closed",
+        code: "SubscriptionClosed",
+        message: "subscription closed by server",
+      });
+
+      const snapshotStaleSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 995,
+      });
+      const snapshotStaleStatus = yield* snapshotStaleSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      expect(snapshotStaleStatus[0]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "stale",
+        code: "SnapshotStale",
+        message: "snapshot stale",
+      });
+
+      const invalidQuerySubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 996,
+      });
+      const invalidQueryStatus = yield* invalidQuerySubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      expect(invalidQueryStatus[0]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "error",
+        code: "InvalidQuery",
+        message: "remote invalid query",
+      });
+
+      const transportSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 997,
+      });
+      const transportStatus = yield* transportSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      expect(transportStatus[0]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "error",
+        code: "TransportError",
+        message: "transport failure without query",
+      });
+
+      const identifiedTransportSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 998,
+      });
+      const identifiedTransportStatus = yield* identifiedTransportSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      expect(identifiedTransportStatus[0]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "query-from-server",
+        status: "error",
+        code: "TransportError",
+        message: "transport failure",
+      });
+
+      const backpressureSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        limit: 999,
+      });
+      const backpressureStatus = yield* backpressureSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      expect(backpressureStatus[0]).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "remote",
+        status: "closed",
+        code: "BackpressureExceeded",
+        message: "backpressure failure",
+      });
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+});

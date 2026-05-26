@@ -1,5 +1,6 @@
 import type { ViewServerLiveClient } from "@view-server/client";
 import * as clientPackage from "@view-server/client";
+import * as clientRemotePackage from "@view-server/client/remote";
 import type { ColumnLiveViewEngine } from "@view-server/column-live-view-engine";
 import * as enginePackage from "@view-server/column-live-view-engine";
 import type { ViewServerHealth } from "@view-server/config/health";
@@ -9,8 +10,12 @@ import type { RawQuery } from "@view-server/config/query";
 import type { RuntimeEnvironmentConfig } from "@view-server/config/runtime";
 import { createInMemoryViewServer } from "@view-server/in-memory";
 import * as inMemoryPackage from "@view-server/in-memory";
+import * as protocolPackage from "@view-server/protocol";
+import type { ViewServerWireEvent } from "@view-server/protocol";
 import { createViewServerReact } from "@view-server/react";
 import { createInMemoryViewServerReact } from "@view-server/react/testing";
+import { createViewServerWebSocketServer } from "@view-server/server";
+import type { ViewServerWebSocketServer } from "@view-server/server";
 import * as configPackage from "@view-server/config";
 import * as healthPackage from "@view-server/config/health";
 import * as kafkaPackage from "@view-server/config/kafka";
@@ -19,6 +24,7 @@ import * as queryPackage from "@view-server/config/query";
 import * as runtimePackage from "@view-server/config/runtime";
 import * as reactPackage from "@view-server/react";
 import * as reactTestingPackage from "@view-server/react/testing";
+import * as serverPackage from "@view-server/server";
 
 const requireExport = (moduleName: string, moduleValue: object, exportName: string) => {
   if (!(exportName in moduleValue)) {
@@ -50,6 +56,13 @@ requireExport("@view-server/config/runtime", runtimePackage, "runtimeConfig");
 requireExport("@view-server/config/runtime", runtimePackage, "runtimeEnvironmentConfig");
 requireExport("@view-server/client", clientPackage, "stableQueryKey");
 requireExport("@view-server/client", clientPackage, "applyEvent");
+rejectExport("@view-server/client", clientPackage, "makeViewServerClient");
+rejectExport("@view-server/client", clientPackage, "createViewServerClient");
+rejectExport("@view-server/client", clientPackage, "ViewServerRpcs");
+requireExport("@view-server/client/remote", clientRemotePackage, "makeViewServerClient");
+requireExport("@view-server/client/remote", clientRemotePackage, "createViewServerClient");
+requireExport("@view-server/protocol", protocolPackage, "ViewServerRpcs");
+requireExport("@view-server/protocol", protocolPackage, "ViewServerWireRowSchema");
 requireExport("@view-server/column-live-view-engine", enginePackage, "createColumnLiveViewEngine");
 requireExport("@view-server/column-live-view-engine", enginePackage, "InvalidTopicError");
 requireExport("@view-server/in-memory", inMemoryPackage, "createInMemoryViewServer");
@@ -60,6 +73,8 @@ rejectExport("@view-server/in-memory", inMemoryPackage, "makeHealthRefreshSchedu
 requireExport("@view-server/react", reactPackage, "createViewServerReact");
 rejectExport("@view-server/react", reactPackage, "createInMemoryViewServerReact");
 requireExport("@view-server/react/testing", reactTestingPackage, "createInMemoryViewServerReact");
+requireExport("@view-server/server", serverPackage, "makeViewServerWebSocketServer");
+requireExport("@view-server/server", serverPackage, "createViewServerWebSocketServer");
 
 const _clientType: ViewServerLiveClient<Record<string, never>> | undefined = undefined;
 const _engineType: ColumnLiveViewEngine<Record<string, never>> | undefined = undefined;
@@ -68,6 +83,8 @@ const _queryType: RawQuery<{ readonly id: string }> | undefined = undefined;
 const _healthType: ViewServerHealth<{ readonly orders: { readonly id: string } }> | undefined =
   undefined;
 const _subscriptionType: LiveSubscription<{ readonly id: string }> | undefined = undefined;
+const _serverType: ViewServerWebSocketServer | undefined = undefined;
+const _wireEventType: ViewServerWireEvent | undefined = undefined;
 const _mappingInputType:
   | KafkaMappingInput<
       { readonly orders: { readonly schema: never } },
@@ -84,7 +101,10 @@ void _runtimeConfigType;
 void _queryType;
 void _healthType;
 void _subscriptionType;
+void _serverType;
+void _wireEventType;
 void _mappingInputType;
 void createInMemoryViewServer;
 void createViewServerReact;
 void createInMemoryViewServerReact;
+void createViewServerWebSocketServer;

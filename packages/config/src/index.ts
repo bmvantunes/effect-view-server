@@ -63,6 +63,7 @@ export type {
   ViewServerBackpressureError,
   ViewServerInMemoryRuntime,
   RuntimeEnvironmentConfig,
+  ViewServerRuntimeClient,
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "./runtime-contract";

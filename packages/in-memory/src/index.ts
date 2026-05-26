@@ -135,10 +135,7 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(<
 
 export const makeInMemoryViewServer = Effect.fn("ViewServerInMemory.make")(function* <
   const Topics extends DecodableTopicDefinitions,
->(
-  config: ViewServerConfig<Topics>,
-  input: ViewServerInMemoryOptions,
-): Effect.fn.Return<ViewServerInMemoryInstance<Topics>> {
+>(config: ViewServerConfig<Topics>, input: ViewServerInMemoryOptions) {
   const engineConfig =
     input.subscriptionQueueCapacity === undefined
       ? { topics: config.topics }

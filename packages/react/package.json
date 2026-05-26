@@ -18,7 +18,7 @@
   },
   "scripts": {
     "build": "vp run -t @view-server/in-memory#build && vp pack",
-    "test": "vp test run --coverage --typecheck"
+    "test": "vp run -t @view-server/in-memory#build && vp run -t @view-server/server#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
     "@effect/atom-react": "catalog:",
@@ -32,9 +32,9 @@
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
     "@view-server/in-memory": "workspace:*",
+    "@view-server/server": "workspace:*",
     "@vitest/browser": "4.1.6",
     "@vitest/coverage-istanbul": "catalog:",
-    "@vitest/coverage-v8": "catalog:",
     "@vitest/runner": "catalog:",
     "playwright": "1.60.0",
     "react": "19.2.6",

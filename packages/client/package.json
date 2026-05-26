@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./remote": {
+      "types": "./dist/remote.d.ts",
+      "import": "./dist/remote.js"
     }
   },
   "scripts": {
@@ -17,12 +21,15 @@
     "test": "vp test run --coverage --typecheck"
   },
   "dependencies": {
+    "@effect/platform-browser": "catalog:",
     "@view-server/config": "workspace:*",
+    "@view-server/protocol": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
-    "@vitest/coverage-v8": "catalog:",
+    "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

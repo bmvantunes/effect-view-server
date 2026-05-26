@@ -51,7 +51,13 @@ export type StatusEventCode =
   | "SnapshotStale"
   | "SubscriptionClosed"
   | "TransportError"
-  | "BackpressureExceeded";
+  | "BackpressureExceeded"
+  | "InvalidTopic"
+  | "InvalidRow"
+  | "InvalidQuery"
+  | "UnsupportedQuery"
+  | "RuntimeUnavailable"
+  | "RuntimeResetFailed";
 
 export type StatusEvent =
   | {
@@ -83,7 +89,15 @@ export type StatusEvent =
       readonly topic: string;
       readonly queryId: string;
       readonly status: "error";
-      readonly code: "TransportError" | "BackpressureExceeded";
+      readonly code:
+        | "TransportError"
+        | "BackpressureExceeded"
+        | "InvalidTopic"
+        | "InvalidRow"
+        | "InvalidQuery"
+        | "UnsupportedQuery"
+        | "RuntimeUnavailable"
+        | "RuntimeResetFailed";
       readonly message?: string;
     };
 

@@ -45,7 +45,7 @@ export type ViewServerTransportError =
       readonly queryId?: string;
     };
 
-export type ViewServerInMemoryRuntime<Topics extends object> = {
+export type ViewServerRuntimeClient<Topics extends object> = {
   readonly publish: <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
     row: TopicRow<Topics, Topic>,
@@ -79,6 +79,8 @@ export type ViewServerInMemoryRuntime<Topics extends object> = {
   readonly health: () => Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;
   readonly reset: () => Effect.Effect<void, ViewServerRuntimeError>;
 };
+
+export type ViewServerInMemoryRuntime<Topics extends object> = ViewServerRuntimeClient<Topics>;
 
 export type RuntimeEnvironmentConfig = {
   readonly websocketPort: Config.Config<number>;

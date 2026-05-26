@@ -14,6 +14,7 @@ import type { Effect } from "effect";
 import { Schema } from "effect";
 import type { ReactNode } from "react";
 import { createViewServerReact } from "./index";
+import { ViewServerReactClientProvider } from "./internal";
 import { createInMemoryViewServerReact, type ViewServerInMemoryOptions } from "./testing";
 
 const Order = Schema.Struct({
@@ -36,6 +37,7 @@ const viewServer = defineViewServerConfig({
 
 const react = createViewServerReact(viewServer);
 const { ViewServerProvider, useLiveQuery, useViewServerHealth } = react;
+const ViewServerClientProvider = react[ViewServerReactClientProvider];
 
 const createInMemoryViewServer = (options?: ViewServerInMemoryOptions) =>
   createInMemoryViewServerReact(react, options);
@@ -188,7 +190,8 @@ describe("React type contracts", () => {
 
   it("keeps health and in-memory client keyed by configured topics", () => {
     const health = useViewServerHealth();
-    const provider = ViewServerProvider({ client: liveClient, children: null });
+    const provider = ViewServerProvider({ url: "ws://127.0.0.1:8080/rpc", children: null });
+    const clientProvider = ViewServerClientProvider({ client: liveClient, children: null });
     const inMemoryViewServer = createInMemoryViewServer({ subscriptionQueueCapacity: 1 });
     type Client = typeof inMemoryViewServer.client;
     const publish = inMemoryViewServer.client.publish("orders", {
@@ -202,6 +205,7 @@ describe("React type contracts", () => {
 
     expectTypeOf(health.engine.topics.orders.rowCount).toEqualTypeOf<number>();
     expectTypeOf(provider).toEqualTypeOf<ReactNode>();
+    expectTypeOf(clientProvider).toEqualTypeOf<ReactNode>();
     expectTypeOf<Parameters<Client["publish"]>>().toEqualTypeOf<
       [topic: "orders", row: typeof Order.Type]
     >();
@@ -249,7 +253,7 @@ describe("React type contracts", () => {
       select: ["id", "price"],
     });
     const provider = consumerReact.ViewServerProvider({
-      client: liveClient,
+      url: "ws://127.0.0.1:8080/rpc",
       children: null,
     });
 
@@ -260,6 +264,12 @@ describe("React type contracts", () => {
       }>
     >();
     expectTypeOf(provider).toEqualTypeOf<ReactNode>();
+
+    void consumerReact.ViewServerProvider({
+      // @ts-expect-error public production provider accepts a URL, not a caller-owned client.
+      client: liveClient,
+      children: null,
+    });
 
     consumerReact.useLiveQuery("orders", {
       // @ts-expect-error consumer package imports still reject unknown selected fields.

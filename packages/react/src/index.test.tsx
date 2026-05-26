@@ -2,10 +2,11 @@ import { describe, expect, inject, it, vi } from "@effect/vitest";
 import { makeViewServerClient } from "@view-server/client/remote";
 import { defineViewServerConfig } from "@view-server/config";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@view-server/in-memory";
-import { Effect, Schema } from "effect";
+import { Duration, Effect, Schema } from "effect";
 import { Component, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
+import { ViewServerReactClientProvider } from "./internal";
 import { createInMemoryViewServerReact, type ViewServerInMemoryOptions } from "./testing";
 
 declare module "vitest" {
@@ -46,6 +47,7 @@ const viewServer = defineViewServerConfig({
 
 const react = createViewServerReact(viewServer);
 const { useLiveQuery, useViewServerHealth } = react;
+const ViewServerClientProvider = react[ViewServerReactClientProvider];
 
 const createInMemoryViewServer = (options?: ViewServerInMemoryOptions) =>
   createInMemoryViewServerReact(react, options);
@@ -105,9 +107,9 @@ describe("createViewServerReact", () => {
     }
 
     const view = await render(
-      <react.ViewServerProvider client={inMemory.liveClient}>
+      <ViewServerClientProvider client={inMemory.liveClient}>
         <OrdersView />
-      </react.ViewServerProvider>,
+      </ViewServerClientProvider>,
     );
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     await expect.element(view.getByText("orders: a", { exact: true })).toBeVisible();
@@ -136,21 +138,18 @@ describe("createViewServerReact", () => {
       return <output role="status">{health.status}</output>;
     }
 
-    try {
-      const missingProvider = await render(
-        <ProviderErrorBoundary>
-          <HealthView />
-        </ProviderErrorBoundary>,
-      );
-      await expect
-        .element(
-          missingProvider.getByText("ViewServerProvider is missing a client.", { exact: true }),
-        )
-        .toBeVisible();
-      await missingProvider.unmount();
-    } finally {
-      consoleError.mockRestore();
-    }
+    const missingProvider = await render(
+      <ProviderErrorBoundary>
+        <HealthView />
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(
+        missingProvider.getByText("ViewServerProvider is missing a client.", { exact: true }),
+      )
+      .toBeVisible();
+    await missingProvider.unmount();
+    consoleError.mockRestore();
   });
 
   it("switches hook clients when the generic provider client prop changes", async () => {
@@ -171,17 +170,17 @@ describe("createViewServerReact", () => {
     }
 
     const view = await render(
-      <react.ViewServerProvider client={first.liveClient}>
+      <ViewServerClientProvider client={first.liveClient}>
         <OrdersView />
-      </react.ViewServerProvider>,
+      </ViewServerClientProvider>,
     );
     await Effect.runPromise(first.client.publish("orders", order("first", 10)));
     await expect.element(view.getByText("orders: first", { exact: true })).toBeVisible();
 
     await view.rerender(
-      <react.ViewServerProvider client={second.liveClient}>
+      <ViewServerClientProvider client={second.liveClient}>
         <OrdersView />
-      </react.ViewServerProvider>,
+      </ViewServerClientProvider>,
     );
     await Effect.runPromise(second.client.publish("orders", order("second", 20)));
     await expect.element(view.getByText("orders: second", { exact: true })).toBeVisible();
@@ -340,12 +339,9 @@ describe("createViewServerReact", () => {
       .toBeVisible();
     await localView.unmount();
 
-    const remote = await Effect.runPromise(
-      makeViewServerClient(viewServer, { url: inject("viewServerRemoteUrl") }),
-    );
     const remoteId = `remote-${crypto.randomUUID()}`;
     const remoteView = await render(
-      <react.ViewServerProvider client={remote}>
+      <react.ViewServerProvider url={inject("viewServerRemoteUrl")}>
         <OrdersView id={remoteId} />
         <HealthView label={`remote health ${remoteId}`} />
       </react.ViewServerProvider>,
@@ -357,11 +353,132 @@ describe("createViewServerReact", () => {
       .element(remoteView.getByText(`remote health ${remoteId}: ready`, { exact: true }))
       .toBeVisible();
 
-    await expect.poll(() => remote.health.value.engine.topics.orders.activeSubscriptions).toBe(1);
+    const remoteProbe = await Effect.runPromise(
+      makeViewServerClient(viewServer, {
+        healthPollInterval: "10 millis",
+        url: inject("viewServerRemoteUrl"),
+      }),
+    );
+    await expect
+      .poll(() => remoteProbe.health.value.engine.topics.orders.activeSubscriptions)
+      .toBe(1);
 
     await remoteView.unmount();
-    await expect.poll(() => remote.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
-    await Effect.runPromise(remote.close);
+
+    await expect
+      .poll(() => remoteProbe.health.value.engine.topics.orders.activeSubscriptions)
+      .toBe(0);
+    await Effect.runPromise(remoteProbe.close);
+  });
+
+  it("owns remote client creation from provider URL and options", async () => {
+    function HealthView(props: { readonly label: string }) {
+      const health = useViewServerHealth();
+      return (
+        <output aria-label={props.label} role="status">
+          {props.label}: {health.status}
+        </output>
+      );
+    }
+
+    const disabledPollingView = await render(
+      <react.ViewServerProvider
+        healthPollInterval={false}
+        subscriptionBufferSize={8}
+        url={inject("viewServerRemoteUrl")}
+      >
+        <HealthView label="disabled polling health" />
+      </react.ViewServerProvider>,
+    );
+    await expect
+      .element(disabledPollingView.getByText("disabled polling health: ready", { exact: true }))
+      .toBeVisible();
+    await disabledPollingView.unmount();
+
+    const stringPollingView = await render(
+      <react.ViewServerProvider healthPollInterval="1 second" url={inject("viewServerRemoteUrl")}>
+        <HealthView label="string polling health" />
+      </react.ViewServerProvider>,
+    );
+    await expect
+      .element(stringPollingView.getByText("string polling health: ready", { exact: true }))
+      .toBeVisible();
+    await stringPollingView.unmount();
+
+    const durationPollingView = await render(
+      <react.ViewServerProvider
+        healthPollInterval={Duration.millis(1_000)}
+        url={inject("viewServerRemoteUrl")}
+      >
+        <HealthView label="duration polling health" />
+      </react.ViewServerProvider>,
+    );
+    await expect
+      .element(durationPollingView.getByText("duration polling health: ready", { exact: true }))
+      .toBeVisible();
+    await durationPollingView.unmount();
+
+    const bigintPollingView = await render(
+      <react.ViewServerProvider
+        healthPollInterval={1_000_000_000n}
+        url={inject("viewServerRemoteUrl")}
+      >
+        <HealthView label="bigint polling health" />
+      </react.ViewServerProvider>,
+    );
+    await expect
+      .element(bigintPollingView.getByText("bigint polling health: ready", { exact: true }))
+      .toBeVisible();
+    await bigintPollingView.unmount();
+  });
+
+  it("recreates remote provider clients when URL options change", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    function HealthView() {
+      const health = useViewServerHealth();
+      return <output role="status">{health.status}</output>;
+    }
+
+    const provider = await render(
+      <ProviderErrorBoundary>
+        <react.ViewServerProvider healthPollInterval={false} url={inject("viewServerRemoteUrl")}>
+          <HealthView />
+        </react.ViewServerProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect.element(provider.getByText("ready", { exact: true })).toBeVisible();
+
+    await provider.rerender(
+      <ProviderErrorBoundary>
+        <react.ViewServerProvider healthPollInterval={false} url="ws://127.0.0.1:1/rpc">
+          <HealthView />
+        </react.ViewServerProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect.element(provider.getByRole("alert")).toBeVisible();
+    await provider.unmount();
+    consoleError.mockRestore();
+  });
+
+  it("surfaces remote provider connection failures through error boundaries", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    function HealthView() {
+      const health = useViewServerHealth();
+      return <output role="status">{health.status}</output>;
+    }
+
+    const failedProvider = await render(
+      <ProviderErrorBoundary>
+        <react.ViewServerProvider url="ws://127.0.0.1:1/rpc">
+          <HealthView />
+        </react.ViewServerProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect.element(failedProvider.getByRole("alert")).toBeVisible();
+    await failedProvider.unmount();
+    consoleError.mockRestore();
   });
 
   it("closes live subscriptions when browser components unmount", async () => {

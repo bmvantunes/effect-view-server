@@ -73,6 +73,29 @@ function typedHealthTopics(
   return topics;
 }
 
+const topicHealthFromRow = (
+  existing: TopicRuntimeHealth,
+  row: ViewServerHealthTopicRow,
+): TopicRuntimeHealth => ({
+  status: row.status === "stopping" ? existing.status : row.status,
+  rowCount: row.rowCount,
+  liveRowCount: row.liveRowCount,
+  deletedRowCount: row.deletedRowCount,
+  version: row.version,
+  lastMutationAt: row.lastMutationAt,
+  mutationsPerSecond: row.mutationsPerSecond,
+  rowsPerSecond: row.rowsPerSecond,
+  pendingMutationBatches: row.pendingMutationBatches,
+  activeViews: row.activeViews,
+  activeSubscriptions: row.activeSubscriptions,
+  queuedEvents: row.queuedEvents,
+  maxQueueDepth: row.maxQueueDepth,
+  backpressureEvents: row.backpressureEvents,
+  memoryBytes: row.memoryBytes,
+  tombstoneCount: row.tombstoneCount,
+  compactionPending: row.compactionPending,
+});
+
 export const mapViewServerRemoteError = (
   error: ViewServerRpcError | Error,
 ): ViewServerRemoteClientError => {
@@ -161,6 +184,67 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
   const subscriptionBufferSize = options.subscriptionBufferSize ?? 1_024;
   const clientScope = yield* Scope.make("parallel");
 
+  const updateHealthSummaryRef = (event: ViewServerLiveEvent<ViewServerHealthSummaryRow<Topics>>) =>
+    Effect.sync(() => {
+      if (event.type === "snapshot") {
+        for (const row of event.rows) {
+          health.update((current) => ({
+            ...current,
+            status: row.runtimeStatus,
+          }));
+        }
+      }
+      if (event.type === "delta") {
+        for (const operation of event.operations) {
+          if (operation.type === "insert" || operation.type === "update") {
+            health.update((current) => ({
+              ...current,
+              status: operation.row.runtimeStatus,
+            }));
+          }
+        }
+      }
+    });
+
+  const updateHealthTopicRef = (
+    event: ViewServerLiveEvent<ViewServerHealthTopicRow<Extract<keyof Topics, string>>>,
+  ) =>
+    Effect.sync(() => {
+      if (event.type === "snapshot") {
+        health.update((current) => {
+          const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
+          for (const row of event.rows) {
+            topics[row.id] = topicHealthFromRow(current.engine.topics[row.id], row);
+          }
+          return {
+            ...current,
+            engine: {
+              topics: typedHealthTopics<Topics>(topics),
+            },
+          };
+        });
+      }
+      if (event.type === "delta") {
+        health.update((current) => {
+          const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
+          for (const operation of event.operations) {
+            if (operation.type === "insert" || operation.type === "update") {
+              topics[operation.key] = topicHealthFromRow(
+                current.engine.topics[operation.row.id],
+                operation.row,
+              );
+            }
+          }
+          return {
+            ...current,
+            engine: {
+              topics: typedHealthTopics<Topics>(topics),
+            },
+          };
+        });
+      }
+    });
+
   const close = Scope.close(clientScope, Exit.void).pipe(
     Effect.andThen(managedRuntime.disposeEffect),
     Effect.andThen(
@@ -224,21 +308,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
         (event) => viewServerDecodeHealthSummaryEvent(config, event),
       );
       const subscription = yield* streamToSubscription(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, stream);
-      const events = subscription.events.pipe(
-        Stream.tap((event) =>
-          Effect.sync(() => {
-            if (event.type === "snapshot") {
-              const row = event.rows[0];
-              if (row !== undefined) {
-                health.update((current) => ({
-                  ...current,
-                  status: row.runtimeStatus,
-                }));
-              }
-            }
-          }),
-        ),
-      );
+      const events = subscription.events.pipe(Stream.tap(updateHealthSummaryRef));
       return {
         events,
         close: subscription.close,
@@ -253,44 +323,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
       viewServerDecodeHealthTopicEvent(config, event),
     );
     const subscription = yield* streamToSubscription(VIEW_SERVER_HEALTH_TOPIC, stream);
-    const events = subscription.events.pipe(
-      Stream.tap((event) =>
-        Effect.sync(() => {
-          if (event.type === "snapshot") {
-            health.update((current) => ({
-              ...current,
-              engine: {
-                topics: typedHealthTopics<Topics>(
-                  event.rows.reduce<Record<string, TopicRuntimeHealth>>((topics, row) => {
-                    const existing = current.engine.topics[row.id];
-                    topics[row.id] = {
-                      status: row.status === "stopping" ? existing.status : row.status,
-                      rowCount: row.rowCount,
-                      liveRowCount: row.liveRowCount,
-                      deletedRowCount: row.deletedRowCount,
-                      version: row.version,
-                      lastMutationAt: row.lastMutationAt,
-                      mutationsPerSecond: row.mutationsPerSecond,
-                      rowsPerSecond: row.rowsPerSecond,
-                      pendingMutationBatches: row.pendingMutationBatches,
-                      activeViews: row.activeViews,
-                      activeSubscriptions: row.activeSubscriptions,
-                      queuedEvents: row.queuedEvents,
-                      maxQueueDepth: row.maxQueueDepth,
-                      backpressureEvents: row.backpressureEvents,
-                      memoryBytes: row.memoryBytes,
-                      tombstoneCount: row.tombstoneCount,
-                      compactionPending: row.compactionPending,
-                    };
-                    return topics;
-                  }, {}),
-                ),
-              },
-            }));
-          }
-        }),
-      ),
-    );
+    const events = subscription.events.pipe(Stream.tap(updateHealthTopicRef));
     return {
       events,
       close: subscription.close,

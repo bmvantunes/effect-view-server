@@ -99,7 +99,6 @@ const health = (rowCount: number, activeSubscriptions: number): ViewServerWireHe
   engine: {
     topics: {
       orders: topicHealth(rowCount, activeSubscriptions),
-      badjson: topicHealth(0, 0),
     },
   },
   transport: {
@@ -178,6 +177,8 @@ const snapshotEvent = (
 const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(function* () {
   const path = "/rpc";
   const events = yield* Queue.unbounded<ViewServerWireEvent>();
+  const healthSummaryEvents = yield* Queue.unbounded<ViewServerWireEvent>();
+  const healthTopicEvents = yield* Queue.unbounded<ViewServerWireEvent>();
   let lastSubscribeQuery: unknown = undefined;
   let rows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [];
   let activeSubscriptions = 0;
@@ -208,6 +209,7 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
               Effect.sync(() => {
                 activeSubscriptions += 1;
                 return Stream.succeed(snapshotEvent(payload.topic, healthSummaryRows)).pipe(
+                  Stream.concat(Stream.fromQueue(healthSummaryEvents)),
                   Stream.ensuring(
                     Effect.sync(() => {
                       activeSubscriptions -= 1;
@@ -225,6 +227,7 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
               Effect.sync(() => {
                 activeSubscriptions += 1;
                 return Stream.succeed(snapshotEvent(payload.topic, healthTopicRows)).pipe(
+                  Stream.concat(Stream.fromQueue(healthTopicEvents)),
                   Stream.ensuring(
                     Effect.sync(() => {
                       activeSubscriptions -= 1;
@@ -323,6 +326,8 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
     activeSubscriptions: () => activeSubscriptions,
     close: runtime.disposeEffect,
     emit: (event: ViewServerWireEvent) => Queue.offer(events, event),
+    emitHealthSummary: (event: ViewServerWireEvent) => Queue.offer(healthSummaryEvents, event),
+    emitHealthTopic: (event: ViewServerWireEvent) => Queue.offer(healthTopicEvents, event),
     emitInsert: (topic: string, row: typeof ViewServerWireRowSchema.Type) =>
       Effect.gen(function* () {
         rows = [...rows, row];
@@ -552,18 +557,78 @@ describe("remote ViewServer client", () => {
   it.live("updates remote health refs from pushed health streams", () =>
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
-      server.setHealthSummaryRows([{ ...healthSummaryWireRow(), runtimeStatus: "degraded" }]);
+      server.setHealthSummaryRows([
+        { ...healthSummaryWireRow(), status: "degraded", runtimeStatus: "degraded" },
+      ]);
       server.setHealthTopicRows([{ ...healthTopicWireRow(), status: "stopping" }]);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
 
       const summarySubscription = yield* client.subscribeHealthSummary();
-      yield* summarySubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      const summaryEventsFiber = yield* summarySubscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
       expect(client.health.value.status).toBe("degraded");
+      yield* server.emitHealthSummary({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "query-remote",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          {
+            type: "update",
+            key: "summary",
+            row: healthSummaryWireRow(),
+            index: 0,
+          },
+          {
+            type: "move",
+            key: "summary",
+            fromIndex: 0,
+            toIndex: 0,
+          },
+        ],
+        totalRows: 1,
+      });
+      yield* Fiber.join(summaryEventsFiber);
+      expect(client.health.value.status).toBe("ready");
       yield* summarySubscription.close();
 
       const healthSubscription = yield* client.subscribeHealth();
-      yield* healthSubscription.events.pipe(Stream.take(1), Stream.runDrain);
+      const detailEventsFiber = yield* healthSubscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.sleep("10 millis");
       expect(client.health.value.engine.topics.orders.status).toBe("ready");
+      yield* server.emitHealthTopic({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "query-remote",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          {
+            type: "update",
+            key: "orders",
+            row: { ...healthTopicWireRow(), rowCount: 25 },
+            index: 0,
+          },
+          {
+            type: "move",
+            key: "orders",
+            fromIndex: 0,
+            toIndex: 0,
+          },
+        ],
+        totalRows: 1,
+      });
+      yield* Fiber.join(detailEventsFiber);
+      expect(client.health.value.engine.topics.orders.rowCount).toBe(25);
       yield* healthSubscription.close();
 
       yield* client.close;
@@ -827,6 +892,14 @@ describe("remote ViewServer client", () => {
   it.live("rejects non-json schema encodings before RPC", () =>
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
+      server.setHealth({
+        ...health(0, 0),
+        engine: {
+          topics: {
+            badjson: topicHealth(0, 0),
+          },
+        },
+      });
       const client = yield* makeViewServerClient(edgeViewServer, { url: server.url });
 
       const badFilter = yield* Effect.flip(
@@ -882,6 +955,27 @@ describe("remote ViewServer client", () => {
       const error = yield* Effect.flip(makeViewServerClient(viewServer, { url: server.url }));
       expect(error.code).toBe("InvalidRow");
       expect(error.message).toBe("Health payload is missing topic: orders");
+
+      yield* server.close;
+    }),
+  );
+
+  it.live("rejects remote health payloads with extra unknown topics", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.setHealth({
+        ...health(0, 0),
+        engine: {
+          topics: {
+            orders: topicHealth(0, 0),
+            missing: topicHealth(0, 0),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(makeViewServerClient(viewServer, { url: server.url }));
+      expect(error.code).toBe("InvalidRow");
+      expect(error.message).toBe("Health payload references unknown topic: missing");
 
       yield* server.close;
     }),

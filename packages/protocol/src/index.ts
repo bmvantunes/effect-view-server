@@ -1073,11 +1073,83 @@ const validateHealthTopicName = <const Topics extends TopicDefinitions>(
     return topic;
   });
 
+const configuredTopicNames = <const Topics extends TopicDefinitions>(config: {
+  readonly topics: Topics;
+}): ReadonlyArray<string> => Object.keys(config.topics);
+
+const validateNoDuplicateValues = (
+  systemTopic: string,
+  values: ReadonlyArray<string>,
+  message: string,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    const seen = new Set<string>();
+    for (const value of values) {
+      if (seen.has(value)) {
+        return yield* Effect.fail(invalidRow(systemTopic, `${message}: ${value}`));
+      }
+      seen.add(value);
+    }
+  });
+
+const validateExactSummaryKeys = (
+  systemTopic: string,
+  keys: ReadonlyArray<string>,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (keys.length !== 1 || keys[0] !== "summary") {
+      return yield* Effect.fail(
+        invalidRow(systemTopic, "Health summary keys must be exactly: summary"),
+      );
+    }
+  });
+
+const validateExactSummaryRowCount = (
+  systemTopic: string,
+  rowCount: number,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    if (rowCount !== 1) {
+      return yield* Effect.fail(
+        invalidRow(systemTopic, "Health summary must contain exactly one row"),
+      );
+    }
+  });
+
+const validateExactConfiguredTopicSet = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  systemTopic: string,
+  values: ReadonlyArray<string>,
+  label: string,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  Effect.gen(function* () {
+    yield* validateNoDuplicateValues(systemTopic, values, `${label} contains duplicate topic`);
+    const expected = configuredTopicNames(config);
+    for (const topic of expected) {
+      if (!values.includes(topic)) {
+        return yield* Effect.fail(invalidRow(systemTopic, `${label} is missing topic: ${topic}`));
+      }
+    }
+    for (const topic of values) {
+      yield* validateHealthTopicName(config, systemTopic, topic);
+    }
+  });
+
 const validateHealthSummaryRow = <const Topics extends TopicDefinitions>(
   config: { readonly topics: Topics },
   row: ViewServerHealthSummaryRow,
 ): Effect.Effect<void, ViewServerRuntimeError> =>
   Effect.gen(function* () {
+    const expectedStatus =
+      row.connectionStatus === "connected" ? row.runtimeStatus : row.connectionStatus;
+    if (row.status !== expectedStatus) {
+      return yield* Effect.fail(
+        invalidRow(
+          VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          `Health summary status does not match runtime/connection status: ${row.status} != ${expectedStatus}`,
+        ),
+      );
+    }
     for (const topic of row.unhealthyTopics) {
       yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_SUMMARY_TOPIC, topic);
     }
@@ -1089,6 +1161,8 @@ const validateHealthSummaryEvent = <const Topics extends TopicDefinitions>(
 ): Effect.Effect<void, ViewServerRuntimeError> =>
   Effect.gen(function* () {
     if (event.type === "snapshot") {
+      yield* validateExactSummaryKeys(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, event.keys);
+      yield* validateExactSummaryRowCount(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, event.rows.length);
       for (const row of event.rows) {
         yield* validateHealthSummaryRow(config, row);
       }
@@ -1115,6 +1189,19 @@ const validateHealthTopicEvent = <const Topics extends TopicDefinitions>(
 ): Effect.Effect<void, ViewServerRuntimeError> =>
   Effect.gen(function* () {
     if (event.type === "snapshot") {
+      yield* validateExactConfiguredTopicSet(
+        config,
+        VIEW_SERVER_HEALTH_TOPIC,
+        event.keys,
+        "Health topic snapshot keys",
+      );
+      const rowIds = event.rows.map((row) => row.id);
+      yield* validateExactConfiguredTopicSet(
+        config,
+        VIEW_SERVER_HEALTH_TOPIC,
+        rowIds,
+        "Health topic snapshot rows",
+      );
       for (const key of event.keys) {
         yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, key);
       }
@@ -1142,6 +1229,8 @@ const validateWireHealthSummaryEvent = <const Topics extends TopicDefinitions>(
 ): Effect.Effect<void, ViewServerRuntimeError> =>
   Effect.gen(function* () {
     if (event.type === "snapshot") {
+      yield* validateExactSummaryKeys(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, event.keys);
+      yield* validateExactSummaryRowCount(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, event.rows.length);
       for (const row of event.rows) {
         const unhealthyTopics = row["unhealthyTopics"];
         if (isStringArray(unhealthyTopics)) {
@@ -1154,7 +1243,24 @@ const validateWireHealthSummaryEvent = <const Topics extends TopicDefinitions>(
     }
     if (event.type === "delta") {
       for (const operation of event.operations) {
+        if (operation.key !== "summary") {
+          return yield* Effect.fail(
+            invalidRow(
+              VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+              "Health summary delta key must be: summary",
+            ),
+          );
+        }
         if (operation.type === "insert" || operation.type === "update") {
+          const id = operation.row["id"];
+          if (typeof id === "string" && id !== operation.key) {
+            return yield* Effect.fail(
+              invalidRow(
+                VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+                `Health summary delta key does not match row id: ${operation.key} != ${id}`,
+              ),
+            );
+          }
           const unhealthyTopics = operation.row["unhealthyTopics"];
           if (isStringArray(unhealthyTopics)) {
             for (const topic of unhealthyTopics) {
@@ -1172,15 +1278,38 @@ const validateWireHealthTopicEvent = <const Topics extends TopicDefinitions>(
 ): Effect.Effect<void, ViewServerRuntimeError> =>
   Effect.gen(function* () {
     if (event.type === "snapshot") {
+      yield* validateExactConfiguredTopicSet(
+        config,
+        VIEW_SERVER_HEALTH_TOPIC,
+        event.keys,
+        "Health topic snapshot keys",
+      );
+      const rowIds: Array<string> = [];
       for (const key of event.keys) {
         yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, key);
       }
-      for (const row of event.rows) {
+      for (const [index, row] of event.rows.entries()) {
         const id = row["id"];
         if (typeof id === "string") {
+          const key = event.keys[index];
+          if (key !== undefined && key !== id) {
+            return yield* Effect.fail(
+              invalidRow(
+                VIEW_SERVER_HEALTH_TOPIC,
+                `Health topic snapshot key does not match row id: ${key} != ${id}`,
+              ),
+            );
+          }
+          rowIds.push(id);
           yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, id);
         }
       }
+      yield* validateExactConfiguredTopicSet(
+        config,
+        VIEW_SERVER_HEALTH_TOPIC,
+        rowIds,
+        "Health topic snapshot rows",
+      );
       return;
     }
     if (event.type === "delta") {
@@ -1189,6 +1318,14 @@ const validateWireHealthTopicEvent = <const Topics extends TopicDefinitions>(
         if (operation.type === "insert" || operation.type === "update") {
           const id = operation.row["id"];
           if (typeof id === "string") {
+            if (id !== operation.key) {
+              return yield* Effect.fail(
+                invalidRow(
+                  VIEW_SERVER_HEALTH_TOPIC,
+                  `Health topic delta key does not match row id: ${operation.key} != ${id}`,
+                ),
+              );
+            }
             yield* validateHealthTopicName(config, VIEW_SERVER_HEALTH_TOPIC, id);
           }
         }
@@ -1276,9 +1413,18 @@ function typedHealth(health: ViewServerWireHealth): ViewServerWireHealth {
 export const viewServerDecodeHealth = Effect.fn("ViewServerProtocol.health.decode")(function* <
   const Topics extends TopicDefinitions,
 >(config: { readonly topics: Topics }, health: ViewServerWireHealth) {
-  for (const topic of Object.keys(config.topics)) {
+  const configuredTopics = configuredTopicNames(config);
+  const healthTopics = Object.keys(health.engine.topics);
+  for (const topic of configuredTopics) {
     if (!Object.hasOwn(health.engine.topics, topic)) {
       return yield* Effect.fail(invalidRow(topic, `Health payload is missing topic: ${topic}`));
+    }
+  }
+  for (const topic of healthTopics) {
+    if (!hasTopic(config, topic)) {
+      return yield* Effect.fail(
+        invalidRow(topic, `Health payload references unknown topic: ${topic}`),
+      );
     }
   }
   return typedHealth<Topics>(health);

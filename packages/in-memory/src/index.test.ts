@@ -242,6 +242,24 @@ describe("@view-server/in-memory", () => {
     }),
   );
 
+  it.effect("closes active pushed health subscriptions when the live client closes", () =>
+    Effect.gen(function* () {
+      const inMemory = yield* makeInMemoryViewServer(viewServer, {});
+      const summary = yield* inMemory.liveClient.subscribeHealthSummary();
+      const detail = yield* inMemory.liveClient.subscribeHealth();
+      const summaryFiber = yield* summary.events.pipe(Stream.runDrain, Effect.forkChild);
+      const detailFiber = yield* detail.events.pipe(Stream.runDrain, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* inMemory.close;
+      yield* Fiber.join(summaryFiber);
+      yield* Fiber.join(detailFiber);
+
+      const closed = yield* inMemory.client.health();
+      expect(closed.status).toBe("stopping");
+    }),
+  );
+
   it.effect("does not let stale detached health refreshes overwrite stopping health", () =>
     Effect.gen(function* () {
       const firstReadStarted = yield* Deferred.make<void>();

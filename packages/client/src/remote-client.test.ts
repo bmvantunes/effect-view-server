@@ -610,6 +610,10 @@ describe("remote ViewServer client", () => {
         { ...healthSummaryWireRow(), status: "degraded", runtimeStatus: "degraded" },
       ]);
       server.setHealthTopicRows([{ ...healthTopicWireRow(), status: "stopping" }]);
+      server.setHealth({
+        ...health(0, 0),
+        status: "degraded",
+      });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
 
       const summarySubscription = yield* client.subscribeHealthSummary();
@@ -620,6 +624,54 @@ describe("remote ViewServer client", () => {
       );
       yield* Effect.sleep("10 millis");
       expect(client.health.value.status).toBe("degraded");
+      const refreshedHealth = health(0, 0);
+      const refreshedKafka = {
+        regions: {
+          usa: {
+            status: "connected",
+            brokers: "localhost:9092",
+            lastConnectedAt: 10,
+            lastError: null,
+          },
+        },
+        topics: {
+          sourceOrders: {
+            status: "ready",
+            sourceTopic: "orders-source",
+            viewServerTopic: "orders",
+            regions: {
+              usa: {
+                connected: true,
+                assignedPartitions: 3,
+                messagesPerSecond: 22,
+                bytesPerSecond: 33,
+                decodedMessagesPerSecond: 20,
+                decodeFailuresPerSecond: 1,
+                lastMessageAt: 40,
+                lastCommitAt: 50,
+                consumerLagMessages: 9n,
+                consumerLagMs: 60,
+                lagSampledAt: 70,
+                highWatermarkOffset: "100",
+                committedOffset: "91",
+                lastError: null,
+              },
+            },
+          },
+        },
+      } satisfies NonNullable<ViewServerWireHealth["kafka"]>;
+      server.setHealth({
+        ...refreshedHealth,
+        version: 42,
+        uptimeMs: 1234,
+        kafka: refreshedKafka,
+        transport: {
+          ...refreshedHealth.transport,
+          activeClients: 3,
+          messagesPerSecond: 44,
+          lastError: "previous slow client",
+        },
+      });
       yield* server.emitHealthSummary({
         type: "delta",
         topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
@@ -643,7 +695,14 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
       yield* Fiber.join(summaryEventsFiber);
+      yield* Effect.sleep("10 millis");
       expect(client.health.value.status).toBe("ready");
+      expect(client.health.value.version).toBe(42);
+      expect(client.health.value.uptimeMs).toBe(1234);
+      expect(client.health.value.transport.activeClients).toBe(3);
+      expect(client.health.value.transport.messagesPerSecond).toBe(44);
+      expect(client.health.value.transport.lastError).toBe("previous slow client");
+      expect(client.health.value.kafka).toStrictEqual(refreshedKafka);
       yield* summarySubscription.close();
 
       const healthSubscription = yield* client.subscribeHealth();

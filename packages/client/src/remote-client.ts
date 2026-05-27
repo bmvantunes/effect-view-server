@@ -184,64 +184,95 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
   const subscriptionBufferSize = options.subscriptionBufferSize ?? 1_024;
   const clientScope = yield* Scope.make("parallel");
 
+  const refreshHealth = Effect.fn("ViewServerClient.remote.health.refresh")(function* () {
+    const nextHealth = yield* healthRpc().pipe(
+      Effect.flatMap((next) => viewServerDecodeHealth(config, next)),
+    );
+    yield* Effect.sync(() => {
+      health.update(() => nextHealth);
+    });
+  });
+
+  const refreshHealthInBackground = refreshHealth().pipe(
+    Effect.ignore,
+    Effect.forkIn(clientScope, { startImmediately: true }),
+    Effect.ignore,
+  );
+
   const updateHealthSummaryRef = (event: ViewServerLiveEvent<ViewServerHealthSummaryRow<Topics>>) =>
-    Effect.sync(() => {
-      if (event.type === "snapshot") {
-        for (const row of event.rows) {
-          health.update((current) => ({
-            ...current,
-            status: row.runtimeStatus,
-          }));
-        }
-      }
-      if (event.type === "delta") {
-        for (const operation of event.operations) {
-          if (operation.type === "insert" || operation.type === "update") {
+    Effect.gen(function* () {
+      let shouldRefreshHealth = false;
+      yield* Effect.sync(() => {
+        if (event.type === "snapshot") {
+          shouldRefreshHealth = true;
+          for (const row of event.rows) {
             health.update((current) => ({
               ...current,
-              status: operation.row.runtimeStatus,
+              status: row.runtimeStatus,
             }));
           }
         }
+        if (event.type === "delta") {
+          shouldRefreshHealth = true;
+          for (const operation of event.operations) {
+            if (operation.type === "insert" || operation.type === "update") {
+              health.update((current) => ({
+                ...current,
+                status: operation.row.runtimeStatus,
+              }));
+            }
+          }
+        }
+      });
+      if (shouldRefreshHealth) {
+        yield* refreshHealthInBackground;
       }
     });
 
   const updateHealthTopicRef = (
     event: ViewServerLiveEvent<ViewServerHealthTopicRow<Extract<keyof Topics, string>>>,
   ) =>
-    Effect.sync(() => {
-      if (event.type === "snapshot") {
-        health.update((current) => {
-          const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
-          for (const row of event.rows) {
-            topics[row.id] = topicHealthFromRow(current.engine.topics[row.id], row);
-          }
-          return {
-            ...current,
-            engine: {
-              topics: typedHealthTopics<Topics>(topics),
-            },
-          };
-        });
-      }
-      if (event.type === "delta") {
-        health.update((current) => {
-          const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
-          for (const operation of event.operations) {
-            if (operation.type === "insert" || operation.type === "update") {
-              topics[operation.key] = topicHealthFromRow(
-                current.engine.topics[operation.row.id],
-                operation.row,
-              );
+    Effect.gen(function* () {
+      let shouldRefreshHealth = false;
+      yield* Effect.sync(() => {
+        if (event.type === "snapshot") {
+          shouldRefreshHealth = true;
+          health.update((current) => {
+            const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
+            for (const row of event.rows) {
+              topics[row.id] = topicHealthFromRow(current.engine.topics[row.id], row);
             }
-          }
-          return {
-            ...current,
-            engine: {
-              topics: typedHealthTopics<Topics>(topics),
-            },
-          };
-        });
+            return {
+              ...current,
+              engine: {
+                topics: typedHealthTopics<Topics>(topics),
+              },
+            };
+          });
+        }
+        if (event.type === "delta") {
+          shouldRefreshHealth = true;
+          health.update((current) => {
+            const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
+            for (const operation of event.operations) {
+              if (operation.type === "insert" || operation.type === "update") {
+                topics[operation.key] = topicHealthFromRow(
+                  current.engine.topics[operation.row.id],
+                  operation.row,
+                );
+              }
+            }
+            return {
+              ...current,
+              engine: {
+                topics: typedHealthTopics<Topics>(topics),
+              },
+            };
+          });
+        }
+      });
+      if (shouldRefreshHealth) {
+        yield* refreshHealthInBackground;
       }
     });
 

@@ -2,7 +2,7 @@ import { NodeSocket } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerLiveEvent } from "@view-server/client";
 import { makeViewServerClient } from "@view-server/client/remote";
-import { defineViewServerConfig } from "@view-server/config";
+import { defineViewServerConfig, VIEW_SERVER_HEALTH_TOPIC } from "@view-server/config";
 import { createInMemoryViewServer } from "@view-server/in-memory";
 import { ViewServerRpcErrorSchema, ViewServerRpcs } from "@view-server/protocol";
 import {
@@ -163,7 +163,24 @@ describe("@view-server/server", () => {
         operations: [{ type: "insert", key: "a", row: { id: "a", price: 10 }, index: 0 }],
         totalRows: 2,
       });
-      expect(client.health.value.engine.topics.orders.rowCount).toBe(2);
+
+      const healthSummarySubscription = yield* client.subscribeHealthSummary();
+      const healthSummaryEvents = yield* healthSummarySubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+      const healthSummarySnapshots = Array.from(healthSummaryEvents).filter(
+        (event) => event.type === "snapshot",
+      );
+      expect(healthSummarySnapshots[0]?.rows[0]?.runtimeStatus).toBe("ready");
+      expect(healthSummarySnapshots[0]?.rows[0]?.connectionStatus).toBe("connected");
+      yield* healthSummarySubscription.close();
+
+      const healthSubscription = yield* client.subscribeHealth();
+      const healthEvents = yield* healthSubscription.events.pipe(Stream.take(1), Stream.runCollect);
+      const healthSnapshots = Array.from(healthEvents).filter((event) => event.type === "snapshot");
+      expect(healthSnapshots[0]?.rows[0]?.rowCount).toBe(2);
+      yield* healthSubscription.close();
 
       yield* inMemory.client.reset();
       expect((yield* inMemory.client.health()).engine.topics.orders.rowCount).toBe(0);
@@ -194,6 +211,15 @@ describe("@view-server/server", () => {
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
       expect(unknownSubscribeTopic.code).toBe("InvalidTopic");
+
+      const malformedHealthQuery = yield* Effect.flip(
+        raw.rpc["ViewServer.Subscribe"]({
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          query: { select: ["rowCount"] },
+        }).pipe(Stream.runDrain),
+      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
+      expect(malformedHealthQuery.code).toBe("InvalidQuery");
+      expect(malformedHealthQuery.message).toBe("Health query select must be exactly: id");
 
       const unknownSelect = yield* Effect.flip(
         raw.rpc["ViewServer.Subscribe"]({

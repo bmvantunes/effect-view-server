@@ -1,5 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@view-server/config";
+import {
+  defineViewServerConfig,
+  VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+  VIEW_SERVER_HEALTH_TOPIC,
+  type ViewServerHealthSummaryRow,
+  type ViewServerHealthTopicRow,
+} from "@view-server/config";
 import { Effect, Schema } from "effect";
 import {
   ViewServerBackpressureErrorSchema,
@@ -13,9 +19,14 @@ import {
   ViewServerWireRawQuerySchema,
   ViewServerWireRowSchema,
   viewServerDecodeHealth,
+  viewServerDecodeHealthQuery,
+  viewServerDecodeHealthSummaryEvent,
+  viewServerDecodeHealthTopicEvent,
   viewServerDecodeLiveEvent,
   viewServerDecodeRawQuery,
   viewServerDecodeTopic,
+  viewServerEncodeHealthSummaryEvent,
+  viewServerEncodeHealthTopicEvent,
   viewServerEncodeLiveEvent,
   viewServerEncodeRawQuery,
 } from "./index";
@@ -169,6 +180,82 @@ describe("@view-server/protocol", () => {
       });
       expect(health.engine.topics["orders"]?.rowCount).toBe(1);
 
+      const largeLag = 9_007_199_254_740_993n;
+      const lagHealth = yield* Schema.decodeUnknownEffect(ViewServerHealthSchema)({
+        status: "ready",
+        version: 1,
+        uptimeMs: 10,
+        engine: {
+          topics: {
+            orders: {
+              status: "ready",
+              rowCount: 1,
+              liveRowCount: 1,
+              deletedRowCount: 0,
+              version: 1,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 1,
+              activeSubscriptions: 1,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+            },
+          },
+        },
+        kafka: {
+          regions: {},
+          topics: {
+            orders: {
+              status: "ready",
+              sourceTopic: "orders-source",
+              viewServerTopic: "orders",
+              regions: {
+                usa: {
+                  connected: true,
+                  assignedPartitions: 1,
+                  messagesPerSecond: 0,
+                  bytesPerSecond: 0,
+                  decodedMessagesPerSecond: 0,
+                  decodeFailuresPerSecond: 0,
+                  lastMessageAt: null,
+                  lastCommitAt: null,
+                  consumerLagMessages: largeLag.toString(),
+                  consumerLagMs: null,
+                  lagSampledAt: null,
+                  highWatermarkOffset: null,
+                  committedOffset: null,
+                  lastError: null,
+                },
+              },
+            },
+          },
+        },
+        transport: {
+          activeClients: 1,
+          activeStreams: 1,
+          activeSubscriptions: 1,
+          messagesPerSecond: 0,
+          bytesPerSecond: 0,
+          queuedMessages: 0,
+          queuedBytes: 0,
+          droppedClients: 0,
+          backpressureEvents: 0,
+          reconnects: 0,
+          lastError: null,
+        },
+      });
+      expect(lagHealth.kafka?.topics["orders"]?.regions["usa"]?.consumerLagMessages).toBe(largeLag);
+      const encodedLagHealth = yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(lagHealth);
+      expect(encodedLagHealth.kafka?.topics["orders"]?.regions["usa"]?.consumerLagMessages).toBe(
+        largeLag.toString(),
+      );
+
       const snapshot = yield* Schema.decodeUnknownEffect(ViewServerWireEventSchema)({
         type: "snapshot",
         topic: "orders",
@@ -318,6 +405,10 @@ describe("@view-server/protocol", () => {
 
       const decodedQuery = yield* viewServerDecodeRawQuery(viewServer, "orders", richWireQuery);
       expect(decodedQuery).toStrictEqual(richWireQuery);
+      const healthQuery = yield* viewServerDecodeHealthQuery(VIEW_SERVER_HEALTH_TOPIC, {
+        select: ["id"],
+      });
+      expect(healthQuery).toStrictEqual({ select: ["id"] });
       const decodedNoWhere = yield* viewServerDecodeRawQuery(viewServer, "orders", {
         select: ["id"],
       });
@@ -404,6 +495,289 @@ describe("@view-server/protocol", () => {
 
       const decodedHealth = yield* viewServerDecodeHealth(viewServer, wireHealth);
       expect(decodedHealth.status).toBe("ready");
+    }),
+  );
+
+  it.effect("encodes and decodes pushed health wire codec operations", () =>
+    Effect.gen(function* () {
+      const summaryRow: ViewServerHealthSummaryRow<typeof viewServer.topics> = {
+        id: "summary",
+        status: "degraded",
+        runtimeStatus: "degraded",
+        connectionStatus: "connected",
+        unhealthyTopics: ["orders"],
+        updatedAtNanos: 123n,
+        maxKafkaLag: 45n,
+      };
+
+      const summaryStatus = yield* viewServerEncodeHealthSummaryEvent({
+        type: "status",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        status: "ready",
+        code: "Ready",
+      });
+      expect(summaryStatus).toStrictEqual({
+        type: "status",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        status: "ready",
+        code: "Ready",
+      });
+
+      const decodedSummaryStatus = yield* viewServerDecodeHealthSummaryEvent(
+        viewServer,
+        summaryStatus,
+      );
+      expect(decodedSummaryStatus).toStrictEqual(summaryStatus);
+
+      const summarySnapshot = yield* viewServerEncodeHealthSummaryEvent({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        version: 1,
+        keys: ["summary"],
+        rows: [summaryRow],
+        totalRows: 1,
+      });
+      expect(summarySnapshot).toStrictEqual({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        version: 1,
+        keys: ["summary"],
+        rows: [
+          {
+            id: "summary",
+            status: "degraded",
+            runtimeStatus: "degraded",
+            connectionStatus: "connected",
+            unhealthyTopics: ["orders"],
+            updatedAtNanos: "123",
+            maxKafkaLag: "45",
+          },
+        ],
+        totalRows: 1,
+      });
+
+      const decodedSummary = yield* viewServerDecodeHealthSummaryEvent(viewServer, summarySnapshot);
+      expect(decodedSummary).toStrictEqual({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        version: 1,
+        keys: ["summary"],
+        rows: [summaryRow],
+        totalRows: 1,
+      });
+
+      const disconnectedSummary = yield* viewServerDecodeHealthSummaryEvent(viewServer, {
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        version: 1,
+        keys: ["summary"],
+        rows: [
+          {
+            id: "summary",
+            status: "disconnected",
+            runtimeStatus: "ready",
+            connectionStatus: "disconnected",
+            unhealthyTopics: [],
+            updatedAtNanos: "1",
+            maxKafkaLag: "0",
+          },
+        ],
+        totalRows: 1,
+      });
+      expect(disconnectedSummary.type).toBe("snapshot");
+
+      const summaryDelta = yield* viewServerEncodeHealthSummaryEvent({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          { type: "insert", key: "summary", row: summaryRow, index: 0 },
+          {
+            type: "update",
+            key: "summary",
+            row: { ...summaryRow, unhealthyTopics: [] },
+            index: 0,
+          },
+          { type: "remove", key: "summary" },
+        ],
+        totalRows: 1,
+      });
+      const decodedSummaryDelta = yield* viewServerDecodeHealthSummaryEvent(
+        viewServer,
+        summaryDelta,
+      );
+      expect(decodedSummaryDelta).toStrictEqual({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          { type: "insert", key: "summary", row: summaryRow, index: 0 },
+          {
+            type: "update",
+            key: "summary",
+            row: { ...summaryRow, unhealthyTopics: [] },
+            index: 0,
+          },
+          { type: "remove", key: "summary" },
+        ],
+        totalRows: 1,
+      });
+
+      const healthTopicRow: ViewServerHealthTopicRow<"orders"> = {
+        id: "orders",
+        status: "ready",
+        rowCount: 10,
+        liveRowCount: 9,
+        deletedRowCount: 1,
+        version: 10,
+        lastMutationAt: null,
+        mutationsPerSecond: 2,
+        rowsPerSecond: 3,
+        pendingMutationBatches: 0,
+        activeViews: 1,
+        activeSubscriptions: 2,
+        queuedEvents: 3,
+        maxQueueDepth: 4,
+        backpressureEvents: 5,
+        memoryBytes: 6,
+        tombstoneCount: 1,
+        compactionPending: false,
+        kafkaLag: 7n,
+        updatedAtNanos: 456n,
+      };
+      const badJsonHealthTopicRow: ViewServerHealthTopicRow<"badjson"> = {
+        ...healthTopicRow,
+        id: "badjson",
+        rowCount: 0,
+        liveRowCount: 0,
+        version: 0,
+      };
+
+      const topicSnapshot = yield* viewServerEncodeHealthTopicEvent({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        version: 1,
+        keys: ["orders", "badjson"],
+        rows: [healthTopicRow, badJsonHealthTopicRow],
+        totalRows: 2,
+      });
+      expect(topicSnapshot).toStrictEqual({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        version: 1,
+        keys: ["orders", "badjson"],
+        rows: [
+          {
+            id: "orders",
+            status: "ready",
+            rowCount: 10,
+            liveRowCount: 9,
+            deletedRowCount: 1,
+            version: 10,
+            lastMutationAt: null,
+            mutationsPerSecond: 2,
+            rowsPerSecond: 3,
+            pendingMutationBatches: 0,
+            activeViews: 1,
+            activeSubscriptions: 2,
+            queuedEvents: 3,
+            maxQueueDepth: 4,
+            backpressureEvents: 5,
+            memoryBytes: 6,
+            tombstoneCount: 1,
+            compactionPending: false,
+            kafkaLag: "7",
+            updatedAtNanos: "456",
+          },
+          {
+            ...badJsonHealthTopicRow,
+            kafkaLag: "7",
+            updatedAtNanos: "456",
+          },
+        ],
+        totalRows: 2,
+      });
+
+      const topicDelta = yield* viewServerEncodeHealthTopicEvent({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          { type: "insert", key: "orders", row: healthTopicRow, index: 0 },
+          { type: "update", key: "orders", row: { ...healthTopicRow, rowCount: 11 }, index: 0 },
+          { type: "move", key: "orders", fromIndex: 1, toIndex: 0 },
+          { type: "remove", key: "orders" },
+        ],
+        totalRows: 1,
+      });
+      expect(topicDelta).toStrictEqual({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          {
+            type: "insert",
+            key: "orders",
+            row: { ...healthTopicRow, kafkaLag: "7", updatedAtNanos: "456" },
+            index: 0,
+          },
+          {
+            type: "update",
+            key: "orders",
+            row: { ...healthTopicRow, rowCount: 11, kafkaLag: "7", updatedAtNanos: "456" },
+            index: 0,
+          },
+          { type: "move", key: "orders", fromIndex: 1, toIndex: 0 },
+          { type: "remove", key: "orders" },
+        ],
+        totalRows: 1,
+      });
+
+      const decodedTopicSnapshot = yield* viewServerDecodeHealthTopicEvent(
+        viewServer,
+        topicSnapshot,
+      );
+      expect(decodedTopicSnapshot).toStrictEqual({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        version: 1,
+        keys: ["orders", "badjson"],
+        rows: [healthTopicRow, badJsonHealthTopicRow],
+        totalRows: 2,
+      });
+
+      const decodedTopicDelta = yield* viewServerDecodeHealthTopicEvent(viewServer, topicDelta);
+      expect(decodedTopicDelta).toStrictEqual({
+        type: "delta",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          { type: "insert", key: "orders", row: healthTopicRow, index: 0 },
+          { type: "update", key: "orders", row: { ...healthTopicRow, rowCount: 11 }, index: 0 },
+          { type: "move", key: "orders", fromIndex: 1, toIndex: 0 },
+          { type: "remove", key: "orders" },
+        ],
+        totalRows: 1,
+      });
     }),
   );
 
@@ -660,6 +1034,686 @@ describe("@view-server/protocol", () => {
         }),
       );
       expect(missingHealthTopic.message).toBe("Health payload is missing topic: badjson");
+
+      const extraHealthTopic = yield* Effect.flip(
+        viewServerDecodeHealth(viewServer, {
+          ...wireHealth,
+          engine: { topics: { ...wireHealth.engine.topics, missing: topicHealth } },
+        }),
+      );
+      expect(extraHealthTopic.message).toBe("Health payload references unknown topic: missing");
+
+      const reservedExtraHealthTopic = yield* Effect.flip(
+        viewServerDecodeHealth(viewServer, {
+          ...wireHealth,
+          engine: { topics: { ...wireHealth.engine.topics, __view_server_health: topicHealth } },
+        }),
+      );
+      expect(reservedExtraHealthTopic.message).toBe(
+        "Health payload references unknown topic: __view_server_health",
+      );
+
+      const wrongSummaryEncodeTopic = yield* Effect.flip(
+        viewServerEncodeHealthSummaryEvent({
+          type: "status",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-summary",
+          status: "ready",
+          code: "Ready",
+        }),
+      );
+      expect(wrongSummaryEncodeTopic.message).toBe(
+        "Received event for __view_server_health while subscribed to __view_server_health_summary",
+      );
+
+      const wrongTopicDecodeTopic = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "status",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-detail",
+          status: "ready",
+          code: "Ready",
+        }),
+      );
+      expect(wrongTopicDecodeTopic.message).toBe(
+        "Received event for __view_server_health_summary while subscribed to __view_server_health",
+      );
+
+      const validTopicStatus = yield* viewServerDecodeHealthTopicEvent(viewServer, {
+        type: "status",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        status: "ready",
+        code: "Ready",
+      });
+      expect(validTopicStatus).toStrictEqual({
+        type: "status",
+        topic: VIEW_SERVER_HEALTH_TOPIC,
+        queryId: "health-detail",
+        status: "ready",
+        code: "Ready",
+      });
+
+      const invalidHealthSummaryRow = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "ready",
+              runtimeStatus: "ready",
+              connectionStatus: "connected",
+              unhealthyTopics: ["orders"],
+              updatedAtNanos: 1,
+              maxKafkaLag: "0",
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(invalidHealthSummaryRow.message).toMatch(/Invalid system row/);
+
+      const missingSummaryTopics = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["summary"],
+          rows: [{ id: "summary", updatedAtNanos: 1 }],
+          totalRows: 1,
+        }),
+      );
+      expect(missingSummaryTopics.message).toMatch(/Invalid system row/);
+
+      const missingDeltaSummaryTopics = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "delta",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          fromVersion: 1,
+          toVersion: 2,
+          operations: [{ type: "update", key: "summary", row: { id: "summary" }, index: 0 }],
+          totalRows: 1,
+        }),
+      );
+      expect(missingDeltaSummaryTopics.message).toMatch(/Invalid system row/);
+
+      const unknownSummaryTopic = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "degraded",
+              runtimeStatus: "degraded",
+              connectionStatus: "connected",
+              unhealthyTopics: ["missing"],
+              updatedAtNanos: "1",
+              maxKafkaLag: "0",
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(unknownSummaryTopic.message).toBe("Health payload references unknown topic: missing");
+
+      const wrongSummaryKey = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["not-summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "ready",
+              runtimeStatus: "ready",
+              connectionStatus: "connected",
+              unhealthyTopics: [],
+              updatedAtNanos: "1",
+              maxKafkaLag: "0",
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(wrongSummaryKey.message).toBe("Health summary keys must be exactly: summary");
+
+      const wrongSummaryRowCount = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["summary"],
+          rows: [],
+          totalRows: 0,
+        }),
+      );
+      expect(wrongSummaryRowCount.message).toBe("Health summary must contain exactly one row");
+
+      const inconsistentSummaryStatus = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "ready",
+              runtimeStatus: "degraded",
+              connectionStatus: "connected",
+              unhealthyTopics: ["orders"],
+              updatedAtNanos: "1",
+              maxKafkaLag: "0",
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(inconsistentSummaryStatus.message).toBe(
+        "Health summary status does not match runtime/connection status: ready != degraded",
+      );
+
+      const wrongSummaryDeltaKey = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "delta",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          fromVersion: 1,
+          toVersion: 2,
+          operations: [
+            {
+              type: "remove",
+              key: "not-summary",
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(wrongSummaryDeltaKey.message).toBe("Health summary delta key must be: summary");
+
+      const mismatchedSummaryDeltaRow = yield* Effect.flip(
+        viewServerDecodeHealthSummaryEvent(viewServer, {
+          type: "delta",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          fromVersion: 1,
+          toVersion: 2,
+          operations: [
+            {
+              type: "update",
+              key: "summary",
+              row: {
+                id: "not-summary",
+                status: "ready",
+                runtimeStatus: "ready",
+                connectionStatus: "connected",
+                unhealthyTopics: [],
+                updatedAtNanos: "1",
+                maxKafkaLag: "0",
+              },
+              index: 0,
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(mismatchedSummaryDeltaRow.message).toBe(
+        "Health summary delta key does not match row id: summary != not-summary",
+      );
+
+      const unknownDetailTopic = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          version: 1,
+          keys: ["orders", "badjson", "missing"],
+          rows: [
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+            {
+              id: "badjson",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+            {
+              id: "missing",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: 0,
+              updatedAtNanos: 1,
+            },
+          ],
+          totalRows: 3,
+        }),
+      );
+      expect(unknownDetailTopic.message).toBe("Health payload references unknown topic: missing");
+
+      const partialDetailTopicSnapshot = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          version: 1,
+          keys: ["orders"],
+          rows: [
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(partialDetailTopicSnapshot.message).toBe(
+        "Health topic snapshot keys is missing topic: badjson",
+      );
+
+      const duplicateDetailTopicKeys = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          version: 1,
+          keys: ["orders", "orders"],
+          rows: [
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+          ],
+          totalRows: 2,
+        }),
+      );
+      expect(duplicateDetailTopicKeys.message).toBe(
+        "Health topic snapshot keys contains duplicate topic: orders",
+      );
+
+      const mismatchedDetailTopicKey = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          version: 1,
+          keys: ["orders", "badjson"],
+          rows: [
+            {
+              id: "badjson",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+          ],
+          totalRows: 2,
+        }),
+      );
+      expect(mismatchedDetailTopicKey.message).toBe(
+        "Health topic snapshot key does not match row id: orders != badjson",
+      );
+
+      const nonStringDetailTopic = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          version: 1,
+          keys: ["orders", "badjson"],
+          rows: [
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+            {
+              id: "badjson",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+            {
+              id: 1,
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: "0",
+              updatedAtNanos: "1",
+            },
+          ],
+          totalRows: 3,
+        }),
+      );
+      expect(nonStringDetailTopic.message).toMatch(/Invalid system row/);
+
+      const nonStringDeltaDetailTopic = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "delta",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          fromVersion: 1,
+          toVersion: 2,
+          operations: [
+            {
+              type: "update",
+              key: "orders",
+              row: {
+                id: 1,
+                status: "ready",
+                rowCount: 0,
+                liveRowCount: 0,
+                deletedRowCount: 0,
+                version: 0,
+                lastMutationAt: null,
+                mutationsPerSecond: 0,
+                rowsPerSecond: 0,
+                pendingMutationBatches: 0,
+                activeViews: 0,
+                activeSubscriptions: 0,
+                queuedEvents: 0,
+                maxQueueDepth: 0,
+                backpressureEvents: 0,
+                memoryBytes: 0,
+                tombstoneCount: 0,
+                compactionPending: false,
+                kafkaLag: 0,
+                updatedAtNanos: 1,
+              },
+              index: 0,
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(nonStringDeltaDetailTopic.message).toMatch(/Invalid system row/);
+
+      const mismatchedDeltaDetailTopic = yield* Effect.flip(
+        viewServerDecodeHealthTopicEvent(viewServer, {
+          type: "delta",
+          topic: VIEW_SERVER_HEALTH_TOPIC,
+          queryId: "health-detail",
+          fromVersion: 1,
+          toVersion: 2,
+          operations: [
+            {
+              type: "update",
+              key: "orders",
+              row: {
+                id: "badjson",
+                status: "ready",
+                rowCount: 0,
+                liveRowCount: 0,
+                deletedRowCount: 0,
+                version: 0,
+                lastMutationAt: null,
+                mutationsPerSecond: 0,
+                rowsPerSecond: 0,
+                pendingMutationBatches: 0,
+                activeViews: 0,
+                activeSubscriptions: 0,
+                queuedEvents: 0,
+                maxQueueDepth: 0,
+                backpressureEvents: 0,
+                memoryBytes: 0,
+                tombstoneCount: 0,
+                compactionPending: false,
+                kafkaLag: "0",
+                updatedAtNanos: "1",
+              },
+              index: 0,
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(mismatchedDeltaDetailTopic.message).toBe(
+        "Health topic delta key does not match row id: orders != badjson",
+      );
+
+      const malformedHealthQuery = yield* Effect.flip(
+        viewServerDecodeHealthQuery(VIEW_SERVER_HEALTH_TOPIC, { select: ["rowCount"] }),
+      );
+      expect(malformedHealthQuery.message).toBe("Health query select must be exactly: id");
+
+      const extraHealthQueryKey = yield* Effect.flip(
+        viewServerDecodeHealthQuery(VIEW_SERVER_HEALTH_TOPIC, {
+          select: ["id"],
+          limit: 1,
+        }),
+      );
+      expect(extraHealthQueryKey.code).toBe("InvalidQuery");
+
+      const invalidHealthSummaryEncodeRow = yield* Effect.flip(
+        viewServerEncodeHealthSummaryEvent({
+          type: "snapshot",
+          topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+          queryId: "health-summary",
+          version: 1,
+          keys: ["summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "ready",
+              runtimeStatus: "ready",
+              connectionStatus: "connected",
+              unhealthyTopics: ["orders"],
+              // @ts-expect-error hostile callers can pass invalid system row values.
+              updatedAtNanos: "1",
+              // @ts-expect-error hostile callers can pass invalid system row values.
+              maxKafkaLag: 1,
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(invalidHealthSummaryEncodeRow.message).toMatch(/Invalid system row/);
     }),
   );
 });

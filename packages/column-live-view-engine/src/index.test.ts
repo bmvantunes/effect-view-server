@@ -2182,11 +2182,14 @@ describe("ColumnLiveViewEngine validation and health", () => {
       yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "closed", 20, 2)]);
       yield* engine.patch("orders", "1", { price: 30 });
       yield* engine.delete("orders", "2");
+      yield* engine.delete("orders", "missing");
 
       const mutated = yield* engine.health();
-      expect(mutated.version).toBe(3);
+      expect(mutated.version).toBe(4);
       expect(mutated.topics["orders"].rowCount).toBe(1);
-      expect(mutated.topics["orders"].version).toBe(3);
+      expect(mutated.topics["orders"].version).toBe(4);
+      expect(mutated.topics["orders"].lastMutationAt).not.toBeNull();
+      expect(mutated.topics["orders"].pendingMutationBatches).toBe(0);
 
       yield* engine.reset();
 

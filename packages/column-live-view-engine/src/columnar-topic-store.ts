@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import type { ActiveQueryStoreState } from "./active-query";
+import type { TopicRowVisitor } from "./row-scan";
 import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
 import { cloneRow, fieldValue, isPlainRecord } from "./row-values";
 
@@ -28,7 +29,7 @@ export class ColumnarTopicStore {
     this.readModel = {
       identity: this,
       topic,
-      rows: () => this.rows,
+      scanRows: (visitor) => this.scanRows(visitor),
       version: () => this.versionValue,
     };
   }
@@ -63,6 +64,12 @@ export class ColumnarTopicStore {
 
   delete(key: string): number {
     return this.rows.delete(key) ? 1 : 0;
+  }
+
+  scanRows(visitor: TopicRowVisitor<object>): void {
+    for (const [key, row] of this.rows) {
+      visitor(key, row);
+    }
   }
 
   prepareRow = Effect.fn("ColumnLiveViewEngine.columnarTopicStore.row.prepare")(function* <

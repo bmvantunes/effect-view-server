@@ -1,12 +1,14 @@
 import type {
   DeltaEvent,
-  ExactRawQuery,
+  ExactLiveQueryInput,
+  GroupedQuery,
+  LiveQuery,
   LiveQueryRow,
+  RawQuery,
   SnapshotEvent,
   StatusEvent,
   TopicDefinitions,
   TopicRow,
-  ValidateLiveQuery,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
@@ -24,16 +26,18 @@ export type ViewServerLiveSubscription<Row> = {
 };
 
 export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
-  readonly subscribe: <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends { readonly select: ReadonlyArray<unknown> },
-  >(
-    topic: Topic,
-    query: Query & ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
-  ) => Effect.Effect<
-    ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError | ViewServerTransportError
-  >;
+  readonly subscribe: {
+    <
+      Topic extends Extract<keyof Topics, string>,
+      const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    >(
+      topic: Topic,
+      query: ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>,
+    ): Effect.Effect<
+      ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+      ViewServerRuntimeError | ViewServerTransportError
+    >;
+  };
   readonly subscribeHealthSummary: () => Effect.Effect<
     ViewServerLiveSubscription<ViewServerHealthSummaryRow<Topics>>,
     ViewServerRuntimeError | ViewServerTransportError
@@ -45,3 +49,14 @@ export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
   readonly health: AtomRef.ReadonlyRef<ViewServerHealth<Topics>>;
   readonly close: Effect.Effect<void>;
 };
+
+export type ViewServerRuntimeLiveClient<Topics extends TopicDefinitions> =
+  ViewServerLiveClient<Topics> & {
+    readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>>(
+      topic: Topic,
+      query: LiveQuery<TopicRow<Topics, Topic>>,
+    ) => Effect.Effect<
+      ViewServerLiveSubscription<object>,
+      ViewServerRuntimeError | ViewServerTransportError
+    >;
+  };

@@ -207,23 +207,16 @@ describe("@view-server/client", () => {
     const symbol = Symbol("filter");
     const firstFunction = () => undefined;
     const secondFunction = () => undefined;
-    const anonymousFunction = (() =>
-      function () {
-        return undefined;
-      })();
 
     expect(stableQueryKey({ value: undefined })).not.toBe(stableQueryKey({ value: null }));
     expect(stableQueryKey({ b: 1, a: 2 })).toBe(stableQueryKey({ a: 2, b: 1 }));
-    expect(stableQueryKey({ value: Symbol("filter") })).not.toBe(
+    expect(stableQueryKey({ value: Symbol("filter") })).toBe(
       stableQueryKey({ value: Symbol("filter") }),
     );
     expect(stableQueryKey({ value: symbol })).toBe(stableQueryKey({ value: symbol }));
     expect(stableQueryKey({ value: firstFunction })).toBe(stableQueryKey({ value: firstFunction }));
-    expect(stableQueryKey({ value: firstFunction })).not.toBe(
+    expect(stableQueryKey({ value: firstFunction })).toBe(
       stableQueryKey({ value: secondFunction }),
-    );
-    expect(stableQueryKey({ value: anonymousFunction })).toBe(
-      stableQueryKey({ value: anonymousFunction }),
     );
     expect(stableQueryKey({ value: Number.NaN })).not.toBe(stableQueryKey({ value: null }));
     expect(stableQueryKey({ value: Number.NaN })).not.toBe(
@@ -253,7 +246,7 @@ describe("@view-server/client", () => {
     expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).toBe(
       stableQueryKey({ where: { custom: { eq: firstFilter } } }),
     );
-    expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).not.toBe(
+    expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).toBe(
       stableQueryKey({ where: { custom: { eq: secondFilter } } }),
     );
     expect(

@@ -60,10 +60,8 @@ describe("runtime type contracts", () => {
     });
 
     const invalidSubscribe = runtime.liveClient.subscribe("orders", {
-      select: [
-        // @ts-expect-error runtime live client rejects fields outside the topic row.
-        "prcie",
-      ],
+      // @ts-expect-error runtime live client rejects fields outside the topic row.
+      select: ["prcie"],
     });
     const invalidTopicPublish = runtime.client.publish(
       // @ts-expect-error runtime mutation client rejects unknown topics.
@@ -74,6 +72,7 @@ describe("runtime type contracts", () => {
       },
     );
     const invalidSnapshot = runtime.client.snapshot("orders", {
+      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
       where: {
         // @ts-expect-error runtime query client rejects unknown filter fields.

@@ -2,30 +2,41 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   defineViewServerConfig,
   type DeltaEvent,
+  type GroupedQuery,
   type RawQuery,
   type SnapshotEvent,
   type StatusEvent,
 } from "@view-server/config";
-import { Cause, Deferred, Effect, Exit, Fiber, Schema, Scope, Stream } from "effect";
-import { fromStringUnsafe } from "effect/BigDecimal";
+import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema, Scope, Stream } from "effect";
+import { format as formatBigDecimal, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
 import {
   createColumnLiveViewEngine,
   EngineClosedError,
+  InvalidQueryError,
   InvalidRowError,
   InvalidTopicError,
-  UnsupportedQueryError,
   type ColumnLiveViewEngine,
   type ColumnLiveViewEngineConfig,
   type ColumnLiveViewEngineEvent,
   type ColumnLiveViewSubscription,
 } from "./index";
-import { acquireRawQueryExecution, activeStoreRawQueryExecutionCount } from "./active-query";
+import {
+  acquireMaterializedQueryExecution,
+  acquireRawQueryExecution,
+  activeStoreRawQueryExecutionCount,
+  releaseMaterializedQueryExecution,
+} from "./active-query";
 import {
   acquireLiveSubscriptionHandoff,
   closeInterruptedAcquiredSubscription,
   type LiveTopicSubscriber,
 } from "./live-subscription";
-import { prepareRawQuery } from "./raw-query-compiler";
+import {
+  prepareRawQuery,
+  rawQueryCompilerMetadata,
+  stableQueryValueString,
+} from "./raw-query-compiler";
+import { evaluateCompiledGroupedQuery, prepareGroupedQuery } from "./grouped-query-compiler";
 import { cloneRecord, cloneRow, fieldValue, rowsEqual } from "./row-values";
 import {
   closeTopicStoreSubscriptions,
@@ -91,6 +102,7 @@ const viewServer = defineViewServerConfig({
 type Topics = typeof viewServer.topics;
 type Engine = ColumnLiveViewEngine<Topics>;
 type OrderRow = typeof Order.Type;
+type PositionRow = typeof Position.Type;
 type InstrumentRow = typeof Instrument.Type;
 
 const orderSelect: readonly ["id", "customerId", "status", "price", "region", "updatedAt"] = [
@@ -121,6 +133,21 @@ const order = (
   price,
   region,
   updatedAt,
+});
+
+const position = (
+  id: string,
+  symbol: string,
+  quantity: bigint,
+  price: string,
+  active = true,
+): PositionRow => ({
+  id,
+  accountId: `account-${id}`,
+  symbol,
+  active,
+  quantity,
+  price: fromStringUnsafe(price),
 });
 
 const makeEngine = (): Effect.Effect<Engine> =>
@@ -157,6 +184,34 @@ const rowField = (row: object, field: string): unknown => {
 
 const rowIds = (rows: ReadonlyArray<object>): ReadonlyArray<unknown> =>
   rows.map((row) => rowField(row, "id"));
+
+const normalizeDecimalFields = <Row extends object>(
+  rows: ReadonlyArray<Row>,
+): ReadonlyArray<Record<string, unknown>> =>
+  rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [
+        key,
+        isBigDecimal(value) ? formatBigDecimal(value) : value,
+      ]),
+    ),
+  );
+
+const normalizeDecimalAndBigIntFields = <Row extends object>(
+  rows: ReadonlyArray<Row>,
+): ReadonlyArray<Record<string, unknown>> =>
+  rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [
+        key,
+        isBigDecimal(value)
+          ? formatBigDecimal(value)
+          : typeof value === "bigint"
+            ? value.toString()
+            : value,
+      ]),
+    ),
+  );
 
 const takeEvents = <Row>(
   subscription: ColumnLiveViewSubscription<Row>,
@@ -503,13 +558,14 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       });
       expect(rowIds(objectInQuery.rows)).toStrictEqual(["2"]);
 
-      const invalidObjectInQuery = yield* engine.snapshot("instruments", {
+      const invalidObjectRuntimeQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error runtime validation handles hostile untyped structured filters.
           operatorLike: { in: [undefined] },
         },
-      });
+      };
+      // @ts-expect-error runtime validation handles hostile untyped structured filters.
+      const invalidObjectInQuery = yield* engine.snapshot("instruments", invalidObjectRuntimeQuery);
       expect(rowIds(invalidObjectInQuery.rows)).toStrictEqual([]);
 
       const fullSnapshot = yield* engine.snapshot("instruments", {
@@ -589,6 +645,586 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         select: instrumentSelect,
       });
       expect(afterPatchMutation.rows).toStrictEqual([instrument("1", "xlon", 2, ["equity", "uk"])]);
+    }),
+  );
+
+  it.effect("evaluates grouped snapshots with aggregate ordering and windows", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [
+        order("1", "open", 10, 1, "emea"),
+        order("2", "open", 20, 2, "amer"),
+        order("3", "closed", 5, 3, "emea"),
+        order("4", "closed", 20, 4, "amer"),
+        order("5", "cancelled", 0, 5, "emea"),
+      ]);
+
+      const snapshot = yield* engine.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+          distinctRegions: { aggFunc: "countDistinct", field: "region" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+          averagePrice: { aggFunc: "avg", field: "price" },
+          minUpdatedAt: { aggFunc: "min", field: "updatedAt" },
+          maxUpdatedAt: { aggFunc: "max", field: "updatedAt" },
+        },
+        orderBy: [
+          { aggregate: "totalPrice", direction: "desc" },
+          { field: "status", direction: "asc" },
+        ],
+        offset: 0,
+        limit: 2,
+      });
+
+      expect(snapshot.totalRows).toBe(3);
+      expect(normalizeDecimalFields(snapshot.rows)).toStrictEqual([
+        {
+          status: "open",
+          rowCount: 2n,
+          distinctRegions: 2n,
+          totalPrice: "30",
+          averagePrice: "15",
+          minUpdatedAt: 1,
+          maxUpdatedAt: 2,
+        },
+        {
+          status: "closed",
+          rowCount: 2n,
+          distinctRegions: 2n,
+          totalPrice: "25",
+          averagePrice: "12.5",
+          minUpdatedAt: 3,
+          maxUpdatedAt: 4,
+        },
+      ]);
+
+      const filteredSnapshot = yield* engine.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+        where: {
+          region: "emea",
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+      });
+      expect(filteredSnapshot.totalRows).toBe(3);
+      expect(filteredSnapshot.rows).toStrictEqual([
+        { status: "cancelled", rowCount: 1n },
+        { status: "closed", rowCount: 1n },
+        { status: "open", rowCount: 1n },
+      ]);
+
+      const noExplicitOrderSnapshot = yield* engine.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+      });
+      expect(noExplicitOrderSnapshot.rows).toStrictEqual([
+        { status: "cancelled", rowCount: 1n },
+        { status: "closed", rowCount: 2n },
+        { status: "open", rowCount: 2n },
+      ]);
+
+      const delimiterEngine = yield* makeEngine();
+      yield* delimiterEngine.publishMany("orders", [
+        {
+          ...order("1", "open", 10, 1, 'region:string:"emea|x'),
+          customerId: 'customer|region:string:"emea',
+        },
+        {
+          ...order("2", "open", 20, 2, "x"),
+          customerId: 'customer|region:string:"emea',
+        },
+      ]);
+      const delimiterSnapshot = yield* delimiterEngine.snapshot("orders", {
+        groupBy: ["customerId", "region"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+        orderBy: [
+          { field: "customerId", direction: "asc" },
+          { field: "region", direction: "asc" },
+        ],
+      });
+      expect(delimiterSnapshot.totalRows).toBe(2);
+      expect(delimiterSnapshot.rows).toStrictEqual([
+        {
+          customerId: 'customer|region:string:"emea',
+          region: 'region:string:"emea|x',
+          rowCount: 1n,
+        },
+        {
+          customerId: 'customer|region:string:"emea',
+          region: "x",
+          rowCount: 1n,
+        },
+      ]);
+
+      yield* engine.patch("orders", "1", { note: "same" });
+      yield* engine.patch("orders", "2", { note: "same" });
+      const equalMinMaxSnapshot = yield* engine.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: {
+          minNote: { aggFunc: "min", field: "note" },
+          maxNote: { aggFunc: "max", field: "note" },
+        },
+        where: {
+          status: "open",
+        },
+      });
+      expect(equalMinMaxSnapshot.rows).toStrictEqual([
+        { status: "open", minNote: "same", maxNote: "same" },
+      ]);
+
+      const emptyNumericQuery: object = {
+        groupBy: ["status"],
+        aggregates: {
+          noteTotal: { aggFunc: "sum", field: "note" },
+          averageNote: { aggFunc: "avg", field: "note" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+      };
+      const nonNumericAggregateError = yield* Effect.flip(
+        engine.snapshot(
+          "orders",
+          // @ts-expect-error hostile runtime callers can still aggregate non-numeric fields.
+          emptyNumericQuery,
+        ),
+      );
+      expect(nonNumericAggregateError).toBeInstanceOf(InvalidQueryError);
+      expect(nonNumericAggregateError.message).toBe(
+        "Grouped query aggregate noteTotal must reference a numeric field.",
+      );
+    }),
+  );
+
+  it.effect("normalizes BigDecimal values for grouped keys and distinct aggregates", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("positions", [
+        position("1", "AAPL", 10n, "1.50"),
+        position("2", "AAPL", 20n, "1.5"),
+      ]);
+
+      const groupedByPrice = yield* engine.snapshot("positions", {
+        groupBy: ["price"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+      });
+      expect(normalizeDecimalFields(groupedByPrice.rows)).toStrictEqual([
+        {
+          price: "1.5",
+          rowCount: 2n,
+        },
+      ]);
+
+      const distinctPrice = yield* engine.snapshot("positions", {
+        groupBy: ["symbol"],
+        aggregates: {
+          distinctPrice: { aggFunc: "countDistinct", field: "price" },
+        },
+      });
+      expect(distinctPrice.rows).toStrictEqual([
+        {
+          symbol: "AAPL",
+          distinctPrice: 1n,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("evaluates grouped bigint aggregate states", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("positions", [
+        position("1", "AAPL", 10n, "1.00"),
+        position("2", "AAPL", 20n, "2.00"),
+        position("3", "MSFT", 5n, "3.00"),
+      ]);
+
+      const bigintSnapshot = yield* engine.snapshot("positions", {
+        groupBy: ["symbol"],
+        aggregates: {
+          totalQuantity: { aggFunc: "sum", field: "quantity" },
+          averageQuantity: { aggFunc: "avg", field: "quantity" },
+          minQuantity: { aggFunc: "min", field: "quantity" },
+          maxQuantity: { aggFunc: "max", field: "quantity" },
+        },
+        orderBy: [{ aggregate: "totalQuantity", direction: "desc" }],
+      });
+      expect(normalizeDecimalAndBigIntFields(bigintSnapshot.rows)).toStrictEqual([
+        {
+          symbol: "AAPL",
+          totalQuantity: "30",
+          averageQuantity: "15",
+          minQuantity: "10",
+          maxQuantity: "20",
+        },
+        {
+          symbol: "MSFT",
+          totalQuantity: "5",
+          averageQuantity: "5",
+          minQuantity: "5",
+          maxQuantity: "5",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("ignores malformed runtime values for bigint grouped sums", () =>
+    Effect.gen(function* () {
+      const PositionForCompiler = Schema.Struct({
+        id: Schema.String,
+        symbol: Schema.String,
+        quantity: Schema.BigInt,
+      });
+      const rows = new Map<string, object>([
+        ["bad", { id: "bad", symbol: "AAPL", quantity: "not-a-bigint" }],
+        ["good", { id: "good", symbol: "AAPL", quantity: 3n }],
+      ]);
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "positions",
+        rawQueryCompilerMetadata(PositionForCompiler),
+        {
+          groupBy: ["symbol"],
+          aggregates: {
+            totalQuantity: { aggFunc: "sum", field: "quantity" },
+          },
+        },
+      );
+      const evaluation = evaluateCompiledGroupedQuery(
+        {
+          rows: () => rows,
+          version: () => 1,
+        },
+        compiled,
+      );
+      expect(normalizeDecimalAndBigIntFields(evaluation.rows)).toStrictEqual([
+        {
+          symbol: "AAPL",
+          totalQuantity: "3",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("evaluates grouped mixed numeric aggregate states", () =>
+    Effect.gen(function* () {
+      const Mixed = Schema.Struct({
+        id: Schema.String,
+        group: Schema.String,
+        amount: Schema.Union([Schema.Number, Schema.BigInt, Schema.BigDecimal]),
+        optionalQuantity: Schema.Union([Schema.BigInt, Schema.Undefined]),
+      });
+      const mixedViewServer = defineViewServerConfig({
+        topics: {
+          mixed: {
+            schema: Mixed,
+            key: "id",
+          },
+        },
+      });
+      const mixedEngine = yield* createColumnLiveViewEngine({
+        topics: mixedViewServer.topics,
+      });
+      yield* mixedEngine.publishMany("mixed", [
+        { id: "1", group: "x", amount: 1n, optionalQuantity: 5n },
+        { id: "2", group: "x", amount: 2, optionalQuantity: undefined },
+        { id: "3", group: "x", amount: fromStringUnsafe("3.5"), optionalQuantity: 7n },
+        { id: "4", group: "x", amount: Number.NaN, optionalQuantity: undefined },
+        { id: "5", group: "y", amount: Number.NaN, optionalQuantity: undefined },
+        { id: "6", group: "z", amount: 1n, optionalQuantity: 1n },
+        { id: "7", group: "z", amount: 2n, optionalQuantity: 2n },
+      ]);
+      const mixedQuery = {
+        groupBy: ["group"],
+        aggregates: {
+          totalAmount: { aggFunc: "sum", field: "amount" },
+          averageAmount: { aggFunc: "avg", field: "amount" },
+        },
+      } satisfies GroupedQuery<typeof Mixed.Type>;
+      const mixedSnapshot = yield* mixedEngine.snapshot("mixed", mixedQuery);
+      expect(normalizeDecimalAndBigIntFields(mixedSnapshot.rows)).toStrictEqual([
+        {
+          group: "x",
+          totalAmount: "6.5",
+          averageAmount:
+            "2.166666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666667e+0",
+        },
+        {
+          group: "y",
+          totalAmount: "0",
+          averageAmount: "0",
+        },
+        {
+          group: "z",
+          totalAmount: "3",
+          averageAmount: "1.5",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("shares materialized grouped subscriptions and emits grouped deltas", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "closed", 5, 2)]);
+      const query = {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+        },
+        orderBy: [{ aggregate: "rowCount", direction: "desc" }],
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: {
+          readonly rowCount: { readonly aggFunc: "count" };
+          readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" };
+        };
+        readonly orderBy: readonly [{ readonly aggregate: "rowCount"; readonly direction: "desc" }];
+      };
+
+      const first = yield* engine.subscribe("orders", query);
+      const second = yield* engine.subscribe("orders", query);
+      const readFirst = yield* makeEventReader(first);
+      const readSecond = yield* makeEventReader(second);
+      const firstSnapshot = firstEvent(yield* readFirst(1));
+      const secondSnapshot = firstEvent(yield* readSecond(1));
+      expectSnapshotEvent(firstSnapshot);
+      expectSnapshotEvent(secondSnapshot);
+      expect(normalizeDecimalFields(firstSnapshot.rows)).toStrictEqual([
+        { status: "closed", rowCount: 1n, totalPrice: "5" },
+        { status: "open", rowCount: 1n, totalPrice: "10" },
+      ]);
+
+      let health = yield* engine.health();
+      expect(health.topics.orders.activeViews).toBe(1);
+      expect(health.topics.orders.activeSubscriptions).toBe(2);
+
+      yield* engine.publish("orders", order("3", "open", 7, 3));
+      const firstDelta = firstEvent(yield* readFirst(1));
+      const secondDelta = firstEvent(yield* readSecond(1));
+      expectDeltaEvent(firstDelta);
+      expectDeltaEvent(secondDelta);
+      expect(firstDelta.totalRows).toBe(2);
+      expect(secondDelta.totalRows).toBe(2);
+
+      yield* first.close();
+      health = yield* engine.health();
+      expect(health.topics.orders.activeViews).toBe(1);
+      expect(health.topics.orders.activeSubscriptions).toBe(1);
+
+      yield* second.close();
+      health = yield* engine.health();
+      expect(health.topics.orders.activeViews).toBe(0);
+      expect(health.topics.orders.activeSubscriptions).toBe(0);
+    }),
+  );
+
+  it.effect("rejects malformed grouped queries through the typed error channel", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      const sparseGroupBy = Array<string>();
+      sparseGroupBy[1] = "status";
+      const nonPlainGroupedQuery: object = Object.assign(new Map(), {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      });
+      const invalidCases: ReadonlyArray<{
+        readonly query: unknown;
+        readonly message: string;
+      }> = [
+        { query: null, message: "plain object" },
+        { query: nonPlainGroupedQuery, message: "plain object" },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            typo: true,
+          },
+          message: "unsupported key: typo",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            select: ["id"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+          },
+          message: "must not include select",
+        },
+        {
+          query: { groupBy: [], aggregates: { rowCount: { aggFunc: "count" } } },
+          message: "groupBy",
+        },
+        {
+          query: { groupBy: sparseGroupBy, aggregates: { rowCount: { aggFunc: "count" } } },
+          message: "groupBy",
+        },
+        {
+          query: { groupBy: [1], aggregates: { rowCount: { aggFunc: "count" } } },
+          message: "groupBy",
+        },
+        {
+          query: { groupBy: ["missing"], aggregates: { rowCount: { aggFunc: "count" } } },
+          message: "unknown field: missing",
+        },
+        { query: { groupBy: ["status"], aggregates: [] }, message: "aggregates" },
+        {
+          query: { groupBy: ["status"], aggregates: { status: { aggFunc: "count" } } },
+          message: "collides",
+        },
+        {
+          query: { groupBy: ["status"], aggregates: { constructor: { aggFunc: "count" } } },
+          message: "aggregate alias is not allowed",
+        },
+        {
+          query: { groupBy: ["status"], aggregates: { rowCount: "count" } },
+          message: "plain object",
+        },
+        {
+          query: { groupBy: ["status"], aggregates: { rowCount: { aggFunc: "median" } } },
+          message: "unsupported aggFunc",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count", field: "price" } },
+          },
+          message: "must not include a field",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { total: { aggFunc: "sum", field: "price", typo: true } },
+          },
+          message: "unsupported key: typo",
+        },
+        {
+          query: { groupBy: ["status"], aggregates: { total: { aggFunc: "sum" } } },
+          message: "field must be a string",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { total: { aggFunc: "sum", field: "missing" } },
+          },
+          message: "unknown field: missing",
+        },
+        {
+          query: { groupBy: ["status"], aggregates: { rowCount: { aggFunc: "count" } }, where: [] },
+          message: "where",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: "bad",
+          },
+          message: "orderBy",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: ["bad"],
+          },
+          message: "plain objects",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: [{ field: "status", direction: "asc", typo: true }],
+          },
+          message: "unsupported key: typo",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: [{ field: "status", direction: "sideways" }],
+          },
+          message: "direction",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: [{ direction: "asc" }],
+          },
+          message: "choose field or aggregate",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: [{ field: "status", aggregate: "rowCount", direction: "asc" }],
+          },
+          message: "choose field or aggregate",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: [{ field: "price", direction: "asc" }],
+          },
+          message: "field must be present in groupBy",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: [{ aggregate: "missing", direction: "asc" }],
+          },
+          message: "aggregate must reference an aggregate alias",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            offset: -1,
+          },
+          message: "offset",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            limit: "1",
+          },
+          message: "limit",
+        },
+      ];
+
+      for (const invalidCase of invalidCases) {
+        const error = yield* Effect.flip(
+          // @ts-expect-error hostile untyped runtime grouped query is still handled by runtime guards.
+          engine.snapshot("orders", invalidCase.query),
+        );
+        expect(error._tag).toBe("InvalidQueryError");
+        expect(error.message).toContain(invalidCase.message);
+      }
+
+      const orderMetadata = rawQueryCompilerMetadata(Order);
+      const inconsistentMetadata = {
+        ...orderMetadata,
+        fieldMetadata: new Map(),
+      };
+      const missingSumResultKind = yield* Effect.flip(
+        prepareGroupedQuery<typeof Order.Type, object>("orders", inconsistentMetadata, {
+          groupBy: ["status"],
+          aggregates: { totalPrice: { aggFunc: "sum", field: "price" } },
+        }),
+      );
+      expect(missingSumResultKind).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("must reference a numeric field"),
+      });
     }),
   );
 
@@ -1391,6 +2027,42 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
+  it.effect("materialized active queries ignore unchanged evaluations and unknown releases", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      const readModel = topicStoreReadModel(store);
+      let evaluationCount = 0;
+      const evaluate = () => {
+        evaluationCount += 1;
+        return {
+          rows: [],
+          keys: [],
+          window: [],
+          totalRows: 0,
+          version: readModel.version(),
+        };
+      };
+
+      const execution = yield* acquireMaterializedQueryExecution(
+        readModel,
+        "empty-materialized",
+        evaluate,
+      );
+      const cursor = execution.createCursor();
+      const unchanged = yield* execution.next("query-unchanged", cursor);
+
+      expect(Option.isNone(unchanged)).toBe(true);
+      expect(evaluationCount).toBe(1);
+      yield* acquireMaterializedQueryExecution(readModel, "second-materialized", evaluate);
+      expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(2);
+      yield* releaseMaterializedQueryExecution(readModel, "empty-materialized");
+      expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);
+      yield* releaseMaterializedQueryExecution(readModel, "missing-materialized");
+      yield* releaseMaterializedQueryExecution(readModel, "second-materialized");
+      expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(0);
+    }),
+  );
+
   it.effect("does not emit deltas for invisible updates or no-op visible patches", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
@@ -1486,13 +2158,14 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
-      const invalidGt = yield* engine.snapshot("orders", {
+      const invalidGtQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
           price: { gt: "9" },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const invalidGt = yield* engine.snapshot("orders", invalidGtQuery);
       expect(invalidGt.rows).toStrictEqual([]);
 
       const invalidGtNaN = yield* engine.snapshot("orders", {
@@ -1505,62 +2178,185 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       });
       expect(invalidGtNaN.rows).toStrictEqual([]);
 
-      const invalidGte = yield* engine.snapshot("orders", {
+      const invalidGteQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
           price: { gte: "9" },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const invalidGte = yield* engine.snapshot("orders", invalidGteQuery);
       expect(invalidGte.rows).toStrictEqual([]);
 
-      const invalidLt = yield* engine.snapshot("orders", {
+      const invalidLtQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
           price: { lt: "11" },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const invalidLt = yield* engine.snapshot("orders", invalidLtQuery);
       expect(invalidLt.rows).toStrictEqual([]);
 
-      const invalidLte = yield* engine.snapshot("orders", {
+      const invalidLteQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
           price: { lte: "11" },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const invalidLte = yield* engine.snapshot("orders", invalidLteQuery);
       expect(invalidLte.rows).toStrictEqual([]);
 
-      const invalidIn = yield* engine.snapshot("orders", {
+      const invalidInQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not throw or broaden results.
           status: {
             in: 1,
           },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not throw or broaden results.
+      const invalidIn = yield* engine.snapshot("orders", invalidInQuery);
       expect(invalidIn.rows).toStrictEqual([]);
 
-      const invalidStartsWith = yield* engine.snapshot("orders", {
+      const cyclicFilter: Array<unknown> = [];
+      cyclicFilter.push(cyclicFilter);
+      const cyclicQueryValue: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not throw or broaden results.
+          status: cyclicFilter,
+        },
+      };
+      const cyclicQueryValueError = yield* Effect.flip(
+        // @ts-expect-error hostile runtime query cycles must be rejected at the boundary.
+        engine.snapshot("orders", cyclicQueryValue),
+      );
+      expect(cyclicQueryValueError).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: "Raw query where field status contains unsupported query value.",
+      });
+
+      type CyclicRecord = {
+        self?: CyclicRecord;
+      };
+      const cyclicRecord: CyclicRecord = {};
+      cyclicRecord.self = cyclicRecord;
+      const cyclicRecordQueryValue: object = {
+        select: ["id"],
+        where: {
+          status: cyclicRecord,
+        },
+      };
+      const cyclicRecordQueryValueError = yield* Effect.flip(
+        // @ts-expect-error hostile runtime query object cycles must be rejected at the boundary.
+        engine.snapshot("orders", cyclicRecordQueryValue),
+      );
+      expect(cyclicRecordQueryValueError).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: "Raw query where field status contains unsupported query value.",
+      });
+
+      const invalidStartsWithQuery: object = {
+        select: ["id"],
+        where: {
           customerId: {
             startsWith: Symbol("customer"),
           },
         },
+      };
+      const invalidStartsWith = yield* Effect.flip(
+        // @ts-expect-error malformed runtime queries must not throw or broaden results.
+        engine.snapshot("orders", invalidStartsWithQuery),
+      );
+      expect(invalidStartsWith).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
       });
-      expect(invalidStartsWith.rows).toStrictEqual([]);
 
-      const invalidNeq = yield* engine.snapshot("orders", {
+      const invalidFunctionFilterQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
-          price: { neq: "10" },
+          customerId: {
+            eq: () => "customer",
+          },
+        },
+      };
+      const invalidFunctionFilter = yield* Effect.flip(
+        // @ts-expect-error malformed runtime queries must not throw or broaden results.
+        engine.snapshot("orders", invalidFunctionFilterQuery),
+      );
+      expect(invalidFunctionFilter).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
+      });
+
+      let getterReads = 0;
+      const throwingWhere = {};
+      Object.defineProperty(throwingWhere, "status", {
+        enumerable: true,
+        get() {
+          getterReads += 1;
+          if (getterReads === 1) {
+            return { eq: "open" };
+          }
+          throw {
+            _tag: "HostileGetterFailure",
+            message: "clone failed",
+          };
         },
       });
+      const throwingWhereQuery: object = {
+        select: ["id"],
+        where: throwingWhere,
+      };
+      const throwingWhereResult = yield* Effect.flip(
+        // @ts-expect-error hostile runtime query getters must be rejected at the boundary.
+        engine.snapshot("orders", throwingWhereQuery),
+      );
+      expect(throwingWhereResult).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("where could not be cloned"),
+      });
+
+      const stringRangeQuery: object = {
+        select: ["id"],
+        where: {
+          status: { gte: "open" },
+        },
+      };
+      const stringRange = yield* Effect.flip(
+        // @ts-expect-error runtime query validation rejects unsupported string range operators.
+        engine.snapshot("orders", stringRangeQuery),
+      );
+      expect(stringRange).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: "Raw query where field status does not support range operators.",
+      });
+
+      const numericStartsWithQuery: object = {
+        select: ["id"],
+        where: {
+          price: { startsWith: "1" },
+        },
+      };
+      const numericStartsWith = yield* Effect.flip(
+        // @ts-expect-error runtime query validation rejects unsupported numeric startsWith operators.
+        engine.snapshot("orders", numericStartsWithQuery),
+      );
+      expect(numericStartsWith).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: "Raw query where field price does not support startsWith.",
+      });
+
+      const invalidNeqQuery: object = {
+        select: ["id"],
+        where: {
+          price: { neq: "10" },
+        },
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const invalidNeq = yield* engine.snapshot("orders", invalidNeqQuery);
       expect(invalidNeq.rows).toStrictEqual([]);
 
       const invalidNeqNaN = yield* engine.snapshot("orders", {
@@ -1573,15 +2369,16 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       });
       expect(invalidNeqNaN.rows).toStrictEqual([]);
 
-      const undefinedEquals = yield* engine.snapshot("orders", {
+      const undefinedEqualsQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
           status: {
             eq: undefined,
           },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const undefinedEquals = yield* engine.snapshot("orders", undefinedEqualsQuery);
       expect(undefinedEquals.rows).toStrictEqual([]);
 
       const undefinedDirectRuntimeQuery: object = {
@@ -1592,13 +2389,14 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       const undefinedDirectFilter = yield* engine.snapshot("orders", undefinedDirectRuntimeQuery);
       expect(undefinedDirectFilter.rows).toStrictEqual([]);
 
-      const undefinedInFilter = yield* engine.snapshot("orders", {
+      const undefinedInFilterQuery: object = {
         select: ["id"],
         where: {
-          // @ts-expect-error malformed runtime queries must not broaden results.
           status: { in: [undefined] },
         },
-      });
+      };
+      // @ts-expect-error malformed runtime queries must not broaden results.
+      const undefinedInFilter = yield* engine.snapshot("orders", undefinedInFilterQuery);
       expect(undefinedInFilter.rows).toStrictEqual([]);
 
       const sparseValues = Array<string>();
@@ -1609,9 +2407,14 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           status: { in: sparseValues },
         },
       };
-      // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
-      const sparseInFilter = yield* engine.snapshot("orders", sparseRuntimeQuery);
-      expect(sparseInFilter.rows).toStrictEqual([]);
+      const sparseInFilter = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.snapshot("orders", sparseRuntimeQuery),
+      );
+      expect(sparseInFilter).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
+      });
 
       const emptyFilter = yield* Effect.flip(
         engine.snapshot("orders", {
@@ -1626,30 +2429,32 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         message: expect.stringContaining("unsupported filter operator"),
       });
 
-      const unknownOperator = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          where: {
-            // @ts-expect-error malformed runtime queries must not broaden results.
-            status: {
-              equals: "open",
-            },
+      const unknownOperatorQuery: object = {
+        select: ["id"],
+        where: {
+          status: {
+            equals: "open",
           },
-        }),
+        },
+      };
+      const unknownOperator = yield* Effect.flip(
+        // @ts-expect-error malformed runtime queries must not broaden results.
+        engine.snapshot("orders", unknownOperatorQuery),
       );
       expect(unknownOperator).toMatchObject({
         _tag: "InvalidQueryError",
         message: expect.stringContaining("unsupported filter operator"),
       });
 
+      const typoFieldEmptyFilterQuery: object = {
+        select: ["id"],
+        where: {
+          statuz: {},
+        },
+      };
       const typoFieldEmptyFilter = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          where: {
-            // @ts-expect-error malformed runtime query select must be rejected.
-            statuz: {},
-          },
-        }),
+        // @ts-expect-error malformed runtime query where field must be rejected.
+        engine.snapshot("orders", typoFieldEmptyFilterQuery),
       );
       expect(typoFieldEmptyFilter).toMatchObject({
         _tag: "InvalidQueryError",
@@ -1928,6 +2733,58 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 });
 
 describe("ColumnLiveViewEngine validation and health", () => {
+  it("encodes primitive and unsupported query values deterministically", () => {
+    function namedFilter() {
+      return "ignored";
+    }
+    const anonymousFilter = () => "ignored";
+
+    expect(JSON.parse(stableQueryValueString(null))).toStrictEqual(["null"]);
+    expect(JSON.parse(stableQueryValueString(1n))).toStrictEqual(["bigint", "1"]);
+    expect(JSON.parse(stableQueryValueString("x"))).toStrictEqual(["string", "x"]);
+    expect(JSON.parse(stableQueryValueString(-0))).toStrictEqual(["number", "-0"]);
+    expect(JSON.parse(stableQueryValueString(false))).toStrictEqual(["boolean", false]);
+    expect(JSON.parse(stableQueryValueString(Symbol("filter")))).toStrictEqual([
+      "unsupported",
+      "symbol:filter",
+    ]);
+    expect(JSON.parse(stableQueryValueString(Symbol()))).toStrictEqual(["unsupported", "symbol:"]);
+    expect(JSON.parse(stableQueryValueString(namedFilter))).toStrictEqual([
+      "unsupported",
+      "function:namedFilter",
+    ]);
+    expect(JSON.parse(stableQueryValueString(anonymousFilter))).toStrictEqual([
+      "unsupported",
+      "function:anonymousFilter",
+    ]);
+    expect(JSON.parse(stableQueryValueString(new Map()))).toStrictEqual([
+      "nonPlainObject",
+      "[object Map]",
+    ]);
+    expect(JSON.parse(stableQueryValueString(undefined))).toStrictEqual(["undefined"]);
+
+    const cyclicArray: Array<unknown> = [];
+    cyclicArray.push(cyclicArray);
+    expect(JSON.parse(stableQueryValueString(cyclicArray))).toStrictEqual(["array", [["cycle"]]]);
+
+    type CyclicObject = {
+      self?: CyclicObject;
+    };
+    const cyclicObject: CyclicObject = {};
+    cyclicObject.self = cyclicObject;
+    expect(JSON.parse(stableQueryValueString(cyclicObject))).toStrictEqual([
+      "object",
+      [["self", ["cycle"]]],
+    ]);
+  });
+
+  it("uses injective stable keys for structured query values", () => {
+    const left = { a: "b", c: "d" };
+    const right = { 'a:string:"b",c': "d" };
+
+    expect(stableQueryValueString(left)).not.toBe(stableQueryValueString(right));
+  });
+
   it("treats rows with different selected column counts as different", () => {
     expect(rowsEqual({ id: "1" }, { id: "1", note: "new" })).toBe(false);
   });
@@ -2114,6 +2971,36 @@ describe("ColumnLiveViewEngine validation and health", () => {
         rows: [],
         totalRows: 0,
       });
+
+      const metadata = rawQueryCompilerMetadata({
+        // @ts-expect-error hostile schema metadata can contain malformed field entries.
+        fields: {
+          id: "not-a-schema",
+          price: Schema.Number,
+        },
+      });
+      expect(metadata.fieldNames.has("id")).toBe(true);
+      expect(metadata.numericFieldNames.has("id")).toBe(false);
+      expect(metadata.numericFieldNames.has("price")).toBe(true);
+
+      const invalidNumericAggregateQuery: object = {
+        groupBy: ["label"],
+        aggregates: {
+          totalId: { aggFunc: "sum", field: "id" },
+        },
+      };
+      const invalidNumericAggregate = yield* Effect.flip(
+        engine.snapshot(
+          "loose",
+          // @ts-expect-error malformed schema metadata makes the query shape untyped.
+          invalidNumericAggregateQuery,
+        ),
+      );
+      expect(invalidNumericAggregate).toMatchObject({
+        _tag: "InvalidQueryError",
+        topic: "loose",
+        message: "Grouped query aggregate totalId must reference a numeric field.",
+      });
     }),
   );
 
@@ -2258,11 +3145,22 @@ describe("ColumnLiveViewEngine validation and health", () => {
     }),
   );
 
-  it.effect("keeps a runtime guard for untyped grouped aggregate query callers", () =>
+  it.effect("subscribes through the runtime-validated entrypoint", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      const subscription = yield* engine.subscribeRuntime("orders", { select: ["id"] });
+      yield* subscription.close();
+
+      const health = yield* engine.health();
+      expect(health.activeSubscriptions).toBe(0);
+    }),
+  );
+
+  it.effect("keeps runtime guards for untyped grouped aggregate query callers", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       const groupedRuntimeQuery: object = {
-        groupBy: ["status"],
+        groupBy: ["missing"],
         aggregates: { count: { aggFunc: "count" } },
       };
 
@@ -2272,16 +3170,16 @@ describe("ColumnLiveViewEngine validation and health", () => {
       );
 
       expect(error).toMatchObject({
-        _tag: "UnsupportedQueryError",
-        message: expect.stringContaining("Grouped aggregate queries are not implemented"),
+        _tag: "InvalidQueryError",
+        topic: "orders",
       });
-      expect(error).toBeInstanceOf(UnsupportedQueryError);
+      expect(error.message).toContain("unknown field: missing");
 
       const subscribeError = yield* Effect.flip(
         // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
         engine.subscribe("orders", groupedRuntimeQuery),
       );
-      expect(subscribeError._tag).toBe("UnsupportedQueryError");
+      expect(subscribeError._tag).toBe("InvalidQueryError");
     }),
   );
 
@@ -2317,12 +3215,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
       const engine = yield* makeEngine();
       yield* engine.publish("orders", order("1", "open", 10, 1));
 
+      const invalidWhereQuery: object = {
+        select: ["id"],
+        where: "bad",
+      };
       const invalidWhere = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          // @ts-expect-error malformed runtime query where must be rejected.
-          where: "bad",
-        }),
+        // @ts-expect-error malformed runtime query where must be rejected.
+        engine.snapshot("orders", invalidWhereQuery),
       );
       expect(invalidWhere).toMatchObject({
         _tag: "InvalidQueryError",
@@ -2330,12 +3229,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
         message: expect.stringContaining("where"),
       });
 
+      const invalidWhereArrayQuery: object = {
+        select: ["id"],
+        where: [],
+      };
       const invalidWhereArray = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          // @ts-expect-error malformed runtime query where array must be rejected.
-          where: [],
-        }),
+        // @ts-expect-error malformed runtime query where array must be rejected.
+        engine.snapshot("orders", invalidWhereArrayQuery),
       );
       expect(invalidWhereArray._tag).toBe("InvalidQueryError");
 
@@ -2380,11 +3280,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
         message: expect.stringContaining("unsupported key: whre"),
       });
 
+      const invalidOrderByQuery: object = {
+        select: ["id"],
+        orderBy: "bad",
+      };
       const invalidOrderBy = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          orderBy: "bad",
-        }),
+        // @ts-expect-error malformed runtime query orderBy must be rejected.
+        engine.snapshot("orders", invalidOrderByQuery),
       );
       expect(invalidOrderBy._tag).toBe("InvalidQueryError");
 
@@ -2396,11 +3298,15 @@ describe("ColumnLiveViewEngine validation and health", () => {
       );
       expect(invalidFields._tag).toBe("InvalidQueryError");
 
+      const invalidFieldEntryQuery: object = {
+        select: [1],
+      };
       const invalidFieldEntry = yield* Effect.flip(
-        engine.snapshot("orders", {
+        engine.snapshot(
+          "orders",
           // @ts-expect-error malformed runtime query field entries must be rejected.
-          select: [1],
-        }),
+          invalidFieldEntryQuery,
+        ),
       );
       expect(invalidFieldEntry._tag).toBe("InvalidQueryError");
 
@@ -2413,11 +3319,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
       );
       expect(invalidEmptySelect._tag).toBe("InvalidQueryError");
 
+      const invalidOffsetQuery: object = {
+        select: ["id"],
+        offset: "0",
+      };
       const invalidOffset = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          offset: "0",
-        }),
+        // @ts-expect-error malformed runtime query offset must be rejected.
+        engine.snapshot("orders", invalidOffsetQuery),
       );
       expect(invalidOffset).toMatchObject({
         _tag: "InvalidQueryError",
@@ -2457,11 +3365,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
         message: expect.stringContaining("offset"),
       });
 
+      const invalidLimitQuery: object = {
+        select: ["id"],
+        limit: "1",
+      };
       const invalidLimit = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          limit: "1",
-        }),
+        // @ts-expect-error malformed runtime query limit must be rejected.
+        engine.snapshot("orders", invalidLimitQuery),
       );
       expect(invalidLimit).toMatchObject({
         _tag: "InvalidQueryError",
@@ -2479,12 +3389,13 @@ describe("ColumnLiveViewEngine validation and health", () => {
         message: expect.stringContaining("limit"),
       });
 
+      const invalidOrderByEntryQuery: object = {
+        select: ["id"],
+        orderBy: ["bad"],
+      };
       const invalidOrderByEntry = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          // @ts-expect-error malformed runtime query orderBy entry must be rejected.
-          orderBy: ["bad"],
-        }),
+        // @ts-expect-error malformed runtime query orderBy entry must be rejected.
+        engine.snapshot("orders", invalidOrderByEntryQuery),
       );
       expect(invalidOrderByEntry._tag).toBe("InvalidQueryError");
 
@@ -2507,69 +3418,77 @@ describe("ColumnLiveViewEngine validation and health", () => {
         message: expect.stringContaining("unsupported key: typo"),
       });
 
+      const invalidOrderByFieldQuery: object = {
+        select: ["id"],
+        orderBy: [
+          {
+            direction: "asc",
+          },
+        ],
+      };
       const invalidOrderByField = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          // @ts-expect-error malformed runtime query orderBy field must be rejected.
-          orderBy: [
-            {
-              direction: "asc",
-            },
-          ],
-        }),
+        // @ts-expect-error malformed runtime query orderBy field must be rejected.
+        engine.snapshot("orders", invalidOrderByFieldQuery),
       );
       expect(invalidOrderByField._tag).toBe("InvalidQueryError");
 
+      const unknownOrderByFieldQuery: object = {
+        select: ["id"],
+        orderBy: [
+          {
+            field: "prcie",
+            direction: "asc",
+          },
+        ],
+      };
       const unknownOrderByField = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          // @ts-expect-error runtime query unknown orderBy fields must be rejected.
-          orderBy: [
-            {
-              field: "prcie",
-              direction: "asc",
-            },
-          ],
-        }),
+        // @ts-expect-error runtime query unknown orderBy fields must be rejected.
+        engine.snapshot("orders", unknownOrderByFieldQuery),
       );
       expect(unknownOrderByField).toMatchObject({
         _tag: "InvalidQueryError",
         message: expect.stringContaining("orderBy"),
       });
 
+      const unknownProjectionFieldQuery: object = {
+        select: ["prcie"],
+      };
       const unknownProjectionField = yield* Effect.flip(
-        engine.snapshot("orders", {
+        engine.snapshot(
+          "orders",
           // @ts-expect-error runtime query unknown projected fields must be rejected.
-          select: ["prcie"],
-        }),
+          unknownProjectionFieldQuery,
+        ),
       );
       expect(unknownProjectionField).toMatchObject({
         _tag: "InvalidQueryError",
         message: expect.stringContaining("select"),
       });
 
+      const unknownWhereFieldQuery: object = {
+        select: ["id"],
+        where: {
+          prcie: 10,
+        },
+      };
       const unknownWhereField = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          where: {
-            // @ts-expect-error runtime query unknown where fields must be rejected.
-            prcie: 10,
-          },
-        }),
+        // @ts-expect-error runtime query unknown where fields must be rejected.
+        engine.snapshot("orders", unknownWhereFieldQuery),
       );
       expect(unknownWhereField).toMatchObject({
         _tag: "InvalidQueryError",
         message: expect.stringContaining("where"),
       });
 
+      const unknownFilterOperatorQuery: object = {
+        select: ["id"],
+        where: {
+          status: { equals: "open" },
+        },
+      };
       const unknownFilterOperator = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          where: {
-            // @ts-expect-error runtime query unknown filter operators must be rejected.
-            status: { equals: "open" },
-          },
-        }),
+        // @ts-expect-error runtime query unknown filter operators must be rejected.
+        engine.snapshot("orders", unknownFilterOperatorQuery),
       );
       expect(unknownFilterOperator).toMatchObject({
         _tag: "InvalidQueryError",
@@ -2590,17 +3509,18 @@ describe("ColumnLiveViewEngine validation and health", () => {
         message: expect.stringContaining("unsupported filter operator"),
       });
 
+      const invalidOrderByDirectionQuery: object = {
+        select: ["id"],
+        orderBy: [
+          {
+            field: "price",
+            direction: "sideways",
+          },
+        ],
+      };
       const invalidOrderByDirection = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          // @ts-expect-error malformed runtime query orderBy direction must be rejected.
-          orderBy: [
-            {
-              field: "price",
-              direction: "sideways",
-            },
-          ],
-        }),
+        // @ts-expect-error malformed runtime query orderBy direction must be rejected.
+        engine.snapshot("orders", invalidOrderByDirectionQuery),
       );
       expect(invalidOrderByDirection._tag).toBe("InvalidQueryError");
     }),

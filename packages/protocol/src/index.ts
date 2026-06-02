@@ -10,13 +10,22 @@ export type { ViewServerRpcError } from "./protocol-rpc";
 
 export {
   ViewServerSubscribePayloadSchema,
+  ViewServerWireGroupedQuerySchema,
+  type ViewServerWireGroupedQuery,
+  type ViewServerWireLiveQuery,
   ViewServerWireRawQuerySchema,
   type ViewServerWireRawQuery,
   viewServerDecodeHealthQuery,
   viewServerDecodeTopic,
+  viewServerEncodeLiveQuery,
   viewServerEncodeRawQuery,
+  viewServerEncodeGroupedQuery,
+  viewServerDecodeLiveQuery,
   viewServerDecodeRawQuery,
+  viewServerDecodeGroupedQuery,
+  type ViewServerValidatedLiveQuery,
   type ViewServerValidatedRawQuery,
+  type ViewServerValidatedGroupedQuery,
 } from "./protocol-query-codec";
 
 export {

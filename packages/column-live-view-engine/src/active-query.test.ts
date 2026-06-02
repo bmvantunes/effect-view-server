@@ -545,7 +545,7 @@ describe("column-live-view-engine active query execution", () => {
     }),
   );
 
-  it.effect("covers query cache encoding for non-plain object filter values", () =>
+  it.effect("rejects non-plain object filter values before cache-keying", () =>
     Effect.gen(function* () {
       const store = new TopicStore(
         "special",
@@ -563,37 +563,26 @@ describe("column-live-view-engine active query execution", () => {
       queryPayload["value"] = 1n;
       queryPayload["label"] = "special";
 
-      const compiled = yield* prepareRawQuery("special", topicStoreRawQueryMetadata(store), {
-        select: ["id", "payload"],
-        where: {
-          payload: queryPayload,
-        },
+      const invalidPayload = yield* Effect.flip(
+        prepareRawQuery("special", topicStoreRawQueryMetadata(store), {
+          select: ["id", "payload"],
+          where: {
+            payload: queryPayload,
+          },
+        }),
+      );
+      expect(invalidPayload).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
       });
-
-      const execution = yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
-      const cursor = execution.createCursor();
-
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store))).toBe(1);
-      expect(execution.initial("query").rows).toStrictEqual([]);
-      expect((yield* execution.next("query", cursor))._tag).toBe("None");
-
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), compiled);
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store))).toBe(0);
     }),
   );
 
-  it.effect("covers cache key encoding for non-serializable filter values", () =>
+  it.effect("rejects non-serializable filter values before cache-keying", () =>
     Effect.gen(function* () {
       const firstFunction = () => "first";
-      const secondFunction = () => "second";
-      const anonymousFunction = (() =>
-        function () {
-          return "anonymous";
-        })();
       const firstSymbol = Symbol("first");
-      const secondSymbol = Symbol("second");
       const firstMap = new Map([["marker", "first"]]);
-      const secondMap = new Map([["marker", "second"]]);
       const store = new TopicStore(
         "special-non-serializable",
         Schema.Struct({
@@ -604,113 +593,44 @@ describe("column-live-view-engine active query execution", () => {
         () => {},
       );
 
-      const firstFunctionQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
+      const functionFilter = yield* Effect.flip(
+        prepareRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
           select: ["id", "marker"],
           where: {
             marker: firstFunction,
           },
-        },
+        }),
       );
-      const matchingFirstFunctionQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
-          select: ["id", "marker"],
-          where: {
-            marker: firstFunction,
-          },
-        },
-      );
-      const secondFunctionQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
-          select: ["id", "marker"],
-          where: {
-            marker: secondFunction,
-          },
-        },
-      );
-      const anonymousFunctionQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
-          select: ["id", "marker"],
-          where: {
-            marker: anonymousFunction,
-          },
-        },
-      );
-      const firstSymbolQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
+      expect(functionFilter).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
+      });
+
+      const symbolFilter = yield* Effect.flip(
+        prepareRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
           select: ["id", "marker"],
           where: {
             marker: firstSymbol,
           },
-        },
+        }),
       );
-      const secondSymbolQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
-          select: ["id", "marker"],
-          where: {
-            marker: secondSymbol,
-          },
-        },
-      );
-      const firstMapQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
+      expect(symbolFilter).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
+      });
+
+      const mapFilter = yield* Effect.flip(
+        prepareRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
           select: ["id", "marker"],
           where: {
             marker: firstMap,
           },
-        },
+        }),
       );
-      const secondMapQuery = yield* prepareRawQuery(
-        "special-non-serializable",
-        topicStoreRawQueryMetadata(store),
-        {
-          select: ["id", "marker"],
-          where: {
-            marker: secondMap,
-          },
-        },
-      );
-
-      const firstFunctionExecution = yield* acquireRawQueryExecution(
-        topicStoreReadModel(store),
-        firstFunctionQuery,
-      );
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), matchingFirstFunctionQuery);
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), secondFunctionQuery);
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), anonymousFunctionQuery);
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), firstSymbolQuery);
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), secondSymbolQuery);
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), firstMapQuery);
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), secondMapQuery);
-
-      const cursor = firstFunctionExecution.createCursor();
-
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store))).toBe(7);
-      expect(firstFunctionExecution.initial("query").totalRows).toBe(0);
-      expect((yield* firstFunctionExecution.next("query", cursor))._tag).toBe("None");
-
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), firstFunctionQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), matchingFirstFunctionQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), secondFunctionQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), anonymousFunctionQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), firstSymbolQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), secondSymbolQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), firstMapQuery);
-      yield* releaseRawQueryExecution(topicStoreReadModel(store), secondMapQuery);
+      expect(mapFilter).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: expect.stringContaining("unsupported query value"),
+      });
     }),
   );
 });

@@ -69,13 +69,12 @@ describe("remote client type contracts", () => {
     );
 
     const invalidSubscribe = client.subscribe("orders", {
-      select: [
-        // @ts-expect-error remote subscribe select fields must exist on the topic row.
-        "missing",
-      ],
+      // @ts-expect-error remote subscribe select fields must exist on the topic row.
+      select: ["missing"],
     });
 
     const invalidWhere = client.subscribe("orders", {
+      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
       where: {
         // @ts-expect-error remote subscribe where fields must exist on the topic row.
@@ -84,18 +83,22 @@ describe("remote client type contracts", () => {
     });
 
     const invalidOperator = client.subscribe("orders", {
+      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
       where: {
-        // @ts-expect-error numeric fields do not support string filters.
-        price: { startsWith: "10" },
+        price: {
+          // @ts-expect-error numeric fields do not support string filters.
+          startsWith: "10",
+        },
       },
     });
 
     const invalidOrderBy = client.subscribe("orders", {
+      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
-      // @ts-expect-error remote subscribe orderBy fields must exist on the topic row.
       orderBy: [
         {
+          // @ts-expect-error remote subscribe orderBy fields must exist on the topic row.
           field: "prcie",
           direction: "asc",
         },

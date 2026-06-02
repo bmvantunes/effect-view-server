@@ -1,11 +1,12 @@
 import { NodeSocket } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import type { ViewServerLiveClient, ViewServerLiveEvent } from "@view-server/client";
+import type { ViewServerLiveEvent, ViewServerRuntimeLiveClient } from "@view-server/client";
 import { makeViewServerClient } from "@view-server/client/remote";
 import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_TOPIC,
   type ViewServerHealth,
+  type ViewServerRuntimeError,
 } from "@view-server/config";
 import { createInMemoryViewServer } from "@view-server/in-memory";
 import { ViewServerRpcErrorSchema, ViewServerRpcs } from "@view-server/protocol";
@@ -46,21 +47,6 @@ const HealthJson = Schema.Struct({
     topics: Schema.Struct({
       orders: Schema.Struct({
         rowCount: Schema.Number,
-      }),
-    }),
-  }),
-});
-
-const HealthKafkaJson = Schema.Struct({
-  status: Schema.String,
-  kafka: Schema.Struct({
-    topics: Schema.Struct({
-      source_orders: Schema.Struct({
-        regions: Schema.Struct({
-          usa: Schema.Struct({
-            consumerLagMessages: Schema.String,
-          }),
-        }),
       }),
     }),
   }),
@@ -137,7 +123,9 @@ class RawViewServerRpcClient extends Context.Service<
 const makeRawRpcClient = Effect.fn("ViewServerServer.test.rawRpcClient.make")(function* (
   url: string,
 ) {
-  const layer = Layer.effect(RawViewServerRpcClient)(RpcClient.make(ViewServerRpcs)).pipe(
+  const layer: Layer.Layer<RawViewServerRpcClient, never, never> = Layer.effect(
+    RawViewServerRpcClient,
+  )(RpcClient.make(ViewServerRpcs)).pipe(
     Layer.provide(RpcClient.layerProtocolSocket()),
     Layer.provide([NodeSocket.layerWebSocket(url), RpcSerialization.layerNdjson]),
   );
@@ -264,7 +252,98 @@ describe("@view-server/server", () => {
     }),
   );
 
-  it.live("serves cached health snapshots without rebuilding runtime health", () =>
+  it.live("returns 500 when runtime health fails", () =>
+    Effect.gen(function* () {
+      const inMemory = createInMemoryViewServer(viewServer);
+      const healthError: ViewServerRuntimeError = {
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        message: "health unavailable",
+      };
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: {
+          health: () => Effect.fail(healthError),
+        },
+      });
+
+      const health = yield* fetchJson(server.healthUrl);
+
+      expect(health.response.status).toBe(500);
+      expect(health.value).toStrictEqual(healthError);
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+
+  it.live("returns 503 for degraded health and serializes bigint fields", () =>
+    Effect.gen(function* () {
+      const inMemory = createInMemoryViewServer(viewServer);
+      const baseHealth = yield* inMemory.client.health();
+      const degradedHealth: ViewServerHealth<typeof viewServer.topics> = {
+        ...baseHealth,
+        status: "degraded",
+        kafka: {
+          regions: {},
+          topics: {
+            source_orders: {
+              status: "degraded",
+              sourceTopic: "source_orders",
+              viewServerTopic: "orders",
+              regions: {
+                usa: {
+                  connected: true,
+                  assignedPartitions: 1,
+                  messagesPerSecond: 0,
+                  bytesPerSecond: 0,
+                  decodedMessagesPerSecond: 0,
+                  decodeFailuresPerSecond: 0,
+                  lastMessageAt: null,
+                  lastCommitAt: null,
+                  consumerLagMessages: 42n,
+                  consumerLagMs: null,
+                  lagSampledAt: null,
+                  highWatermarkOffset: null,
+                  committedOffset: null,
+                  lastError: null,
+                },
+              },
+            },
+          },
+        },
+      };
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: {
+          health: () => Effect.succeed(degradedHealth),
+        },
+      });
+
+      const health = yield* fetchJson(server.healthUrl);
+
+      expect(health.response.status).toBe(503);
+      expect(health.value).toMatchObject({
+        status: "degraded",
+        kafka: {
+          topics: {
+            source_orders: {
+              regions: {
+                usa: {
+                  consumerLagMessages: "42",
+                },
+              },
+            },
+          },
+        },
+      });
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+
+  it.live("serves fresh runtime health for Kubernetes readiness", () =>
     Effect.gen(function* () {
       const inMemory = createInMemoryViewServer(viewServer);
       const baseHealth = yield* inMemory.client.health();
@@ -301,7 +380,7 @@ describe("@view-server/server", () => {
         },
       };
       const cachedHealth = AtomRef.make<ViewServerHealth<typeof viewServer.topics>>(degradedHealth);
-      const liveClient: ViewServerLiveClient<typeof viewServer.topics> = {
+      const liveClient: ViewServerRuntimeLiveClient<typeof viewServer.topics> = {
         ...inMemory.liveClient,
         health: cachedHealth,
       };
@@ -318,11 +397,10 @@ describe("@view-server/server", () => {
       });
 
       const firstHealth = yield* fetchJson(server.healthUrl);
-      const firstBody = yield* Schema.decodeUnknownEffect(HealthKafkaJson)(firstHealth.value);
-      expect(firstHealth.response.status).toBe(503);
-      expect(firstBody.status).toBe("degraded");
-      expect(firstBody.kafka.topics.source_orders.regions.usa.consumerLagMessages).toBe("42");
-      expect(runtimeHealthCalls).toBe(0);
+      const firstBody = yield* Schema.decodeUnknownEffect(HealthJson)(firstHealth.value);
+      expect(firstHealth.response.status).toBe(200);
+      expect(firstBody.status).toBe("ready");
+      expect(runtimeHealthCalls).toBe(1);
 
       yield* Effect.sync(() => {
         cachedHealth.set(baseHealth);
@@ -331,7 +409,7 @@ describe("@view-server/server", () => {
       const secondBody = yield* Schema.decodeUnknownEffect(HealthJson)(secondHealth.value);
       expect(secondHealth.response.status).toBe(200);
       expect(secondBody.status).toBe("ready");
-      expect(runtimeHealthCalls).toBe(0);
+      expect(runtimeHealthCalls).toBe(2);
 
       yield* server.close;
       yield* inMemory.close;
@@ -415,11 +493,11 @@ describe("@view-server/server", () => {
       const invalidLimit = yield* Effect.flip(
         raw.rpc["ViewServer.Subscribe"]({
           topic: "orders",
-          query: { select: ["id"], limit: 0 },
+          query: { select: ["id"], limit: -1 },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
       expect(invalidLimit.code).toBe("InvalidQuery");
-      expect(invalidLimit.message).toBe("Query limit must be a positive integer");
+      expect(invalidLimit.message).toBe("Query limit must be a non-negative integer");
 
       const extraTopLevelQueryKey = yield* Effect.flip(
         raw.rpc["ViewServer.Subscribe"]({
@@ -527,14 +605,13 @@ describe("@view-server/server", () => {
         function* (event: ViewServerLiveEvent<object>) {
           const liveClient = {
             ...inMemory.liveClient,
-            subscribe: () =>
+            subscribeRuntime: () =>
               Effect.succeed({
                 events: Stream.make(event),
                 close: () => Effect.void,
               }),
           };
           const server = yield* makeViewServerWebSocketServer(viewServer, {
-            // @ts-expect-error this fake client intentionally violates the row type contract.
             liveClient,
             runtime: inMemory.client,
           });
@@ -624,14 +701,13 @@ describe("@view-server/server", () => {
       };
       const liveClient = {
         ...inMemory.liveClient,
-        subscribe: () =>
+        subscribeRuntime: () =>
           Effect.succeed({
             events: Stream.make(event),
             close: () => Effect.void,
           }),
       };
       const server = yield* makeViewServerWebSocketServer(edgeViewServer, {
-        // @ts-expect-error this fake client intentionally emits a row with a non-json encoding.
         liveClient,
         runtime: inMemory.client,
       });
@@ -923,10 +999,8 @@ describe("@view-server/server", () => {
 
       const invalidQuery = yield* Effect.flip(
         client.subscribe("orders", {
-          select: [
-            // @ts-expect-error hostile callers can still send malformed queries over the wire.
-            1,
-          ],
+          // @ts-expect-error hostile callers can still send malformed queries over the wire.
+          select: [1],
         }),
       );
       expect(invalidQuery.code).toBe("InvalidQuery");
@@ -934,10 +1008,8 @@ describe("@view-server/server", () => {
 
       const unknownSelect = yield* Effect.flip(
         client.subscribe("orders", {
-          select: [
-            // @ts-expect-error hostile callers can still send unknown projected fields.
-            "missing",
-          ],
+          // @ts-expect-error hostile callers can still send unknown projected fields.
+          select: ["missing"],
         }),
       );
       expect(unknownSelect.code).toBe("InvalidQuery");
@@ -945,6 +1017,7 @@ describe("@view-server/server", () => {
 
       const unknownWhere = yield* Effect.flip(
         client.subscribe("orders", {
+          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
           where: {
             // @ts-expect-error hostile callers can still send unknown filter fields.
@@ -957,10 +1030,11 @@ describe("@view-server/server", () => {
 
       const unknownOrderBy = yield* Effect.flip(
         client.subscribe("orders", {
+          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          // @ts-expect-error hostile callers can still send unknown sort fields.
           orderBy: [
             {
+              // @ts-expect-error hostile callers can still send unknown sort fields.
               field: "missing",
               direction: "asc",
             },

@@ -38,15 +38,15 @@ export type Aggregates<Row> = Readonly<Record<string, Aggregate<Row>>>;
 
 export type AggregateAliasesFromAggregates<Aggregates> = Extract<keyof Aggregates, string>;
 
+type SumResultValue<Value> = [Value] extends [bigint] ? bigint : BigDecimal.BigDecimal;
+
 export type AggregateResultValue<Row, Agg> = Agg extends {
   readonly aggFunc: "count" | "countDistinct";
 }
   ? bigint
   : Agg extends { readonly aggFunc: "sum"; readonly field: infer Field }
     ? Field extends keyof Row
-      ? Row[Field] extends bigint
-        ? bigint
-        : BigDecimal.BigDecimal
+      ? SumResultValue<Row[Field]>
       : never
     : Agg extends { readonly aggFunc: "avg" }
       ? BigDecimal.BigDecimal

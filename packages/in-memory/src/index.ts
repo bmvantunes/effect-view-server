@@ -3,19 +3,29 @@ import {
   InvalidQueryError,
   InvalidRowError,
   InvalidTopicError,
-  UnsupportedQueryError,
   type ColumnLiveViewEngine,
   type ColumnLiveViewEngineError,
   type DecodableTopicDefinitions,
 } from "@view-server/column-live-view-engine";
-import type { ViewServerLiveClient, ViewServerLiveEvent } from "@view-server/client";
 import type {
+  ViewServerLiveEvent,
+  ViewServerLiveSubscription,
+  ViewServerRuntimeLiveClient,
+} from "@view-server/client";
+import type {
+  ExactLiveQueryInput,
+  GroupedQuery,
+  LiveQueryRow,
+  LiveQueryResult,
+  RawQuery,
+  TopicRow,
   ViewServerConfig,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
   ViewServerInMemoryRuntime,
   ViewServerRuntimeError,
+  ViewServerTransportError,
 } from "@view-server/config";
 import {
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
@@ -31,7 +41,7 @@ export type { DecodableTopicDefinitions } from "@view-server/column-live-view-en
 
 export type ViewServerInMemoryInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerInMemoryRuntime<Topics>;
-  readonly liveClient: ViewServerLiveClient<Topics>;
+  readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
   readonly close: Effect.Effect<void>;
 };
 
@@ -64,14 +74,6 @@ const engineErrorToRuntimeError = (error: ColumnLiveViewEngineError): ViewServer
       topic: error.topic,
     };
   }
-  if (error instanceof UnsupportedQueryError) {
-    return {
-      _tag: "ViewServerRuntimeError",
-      code: "UnsupportedQuery",
-      message: error.message,
-      topic: error.topic,
-    };
-  }
   return {
     _tag: "ViewServerRuntimeError",
     code: "RuntimeUnavailable",
@@ -86,6 +88,16 @@ const makeRuntime = Effect.fn("ViewServerInMemory.runtime.make")(<
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
 ): Effect.Effect<ViewServerInMemoryRuntime<Topics>> => {
   const requestHealthRefresh = makeHealthRefreshScheduler(refreshHealth(engine, health));
+  const snapshot = <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>,
+  ): Effect.Effect<
+    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ViewServerRuntimeError
+  > => engine.snapshot<Topic, Query>(topic, query).pipe(Effect.mapError(engineErrorToRuntimeError));
   return Effect.succeed<ViewServerInMemoryRuntime<Topics>>({
     publish: (topic, row) =>
       engine.publish(topic, row).pipe(
@@ -107,8 +119,7 @@ const makeRuntime = Effect.fn("ViewServerInMemory.runtime.make")(<
         Effect.tap(() => requestHealthRefresh),
         Effect.mapError(engineErrorToRuntimeError),
       ),
-    snapshot: (topic, query) =>
-      engine.snapshot(topic, query).pipe(Effect.mapError(engineErrorToRuntimeError)),
+    snapshot,
     health: () => readHealth(engine, health).pipe(Effect.mapError(engineErrorToRuntimeError)),
     reset: () =>
       engine.reset().pipe(
@@ -122,8 +133,53 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(
   <const Topics extends DecodableTopicDefinitions>(
     engine: ColumnLiveViewEngine<Topics>,
     health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
-  ): Effect.Effect<ViewServerLiveClient<Topics>> =>
-    Effect.sync<ViewServerLiveClient<Topics>>(() => {
+  ): Effect.Effect<ViewServerRuntimeLiveClient<Topics>> =>
+    Effect.sync<ViewServerRuntimeLiveClient<Topics>>(() => {
+      function subscribe<
+        Topic extends Extract<keyof Topics, string>,
+        const Query extends
+          | RawQuery<TopicRow<Topics, Topic>>
+          | GroupedQuery<TopicRow<Topics, Topic>>,
+      >(
+        topic: Topic,
+        query: ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+        ViewServerRuntimeError | ViewServerTransportError
+      >;
+      function subscribe<
+        Topic extends Extract<keyof Topics, string>,
+        const Query extends
+          | RawQuery<TopicRow<Topics, Topic>>
+          | GroupedQuery<TopicRow<Topics, Topic>>,
+      >(
+        topic: Topic,
+        query: ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+        ViewServerRuntimeError | ViewServerTransportError
+      > {
+        return engine.subscribe<Topic, Query>(topic, query).pipe(
+          Effect.map((subscription) => ({
+            events: subscription.events,
+            close: () => subscription.close().pipe(Effect.andThen(refreshHealth(engine, health))),
+          })),
+          Effect.tap(() => refreshHealth(engine, health)),
+          Effect.mapError(engineErrorToRuntimeError),
+        );
+      }
+      const subscribeRuntime: ViewServerRuntimeLiveClient<Topics>["subscribeRuntime"] = (
+        topic,
+        query,
+      ) =>
+        engine.subscribeRuntime(topic, query).pipe(
+          Effect.map((subscription) => ({
+            events: subscription.events,
+            close: () => subscription.close().pipe(Effect.andThen(refreshHealth(engine, health))),
+          })),
+          Effect.tap(() => refreshHealth(engine, health)),
+          Effect.mapError(engineErrorToRuntimeError),
+        );
       const activeHealthSubscriptions = new Set<{ close: Effect.Effect<void> }>();
       const closeActiveHealthSubscriptions = Effect.suspend(() =>
         Effect.forEach(
@@ -204,15 +260,8 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(
         };
       });
       return {
-        subscribe: (topic, query) =>
-          engine.subscribe(topic, query).pipe(
-            Effect.map((subscription) => ({
-              events: subscription.events,
-              close: () => subscription.close().pipe(Effect.andThen(refreshHealth(engine, health))),
-            })),
-            Effect.tap(() => refreshHealth(engine, health)),
-            Effect.mapError(engineErrorToRuntimeError),
-          ),
+        subscribe,
+        subscribeRuntime,
         subscribeHealthSummary: () =>
           makeHealthSubscription<ViewServerHealthSummaryRow<Topics>>(
             VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
@@ -233,27 +282,33 @@ const makeLiveClient = Effect.fn("ViewServerInMemory.liveClient.make")(
     }),
 );
 
-export const makeInMemoryViewServer = Effect.fn("ViewServerInMemory.make")(function* <
-  const Topics extends DecodableTopicDefinitions,
->(config: ViewServerConfig<Topics>, input: ViewServerInMemoryOptions) {
-  const engineConfig =
-    input.subscriptionQueueCapacity === undefined
-      ? { topics: config.topics }
-      : {
-          topics: config.topics,
-          subscriptionQueueCapacity: input.subscriptionQueueCapacity,
-        };
-  const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
-  const engineHealth = yield* engine.health();
-  const health = AtomRef.make(healthFromEngine(engineHealth));
-  const client = yield* makeRuntime(engine, health);
-  const liveClient = yield* makeLiveClient(engine, health);
-  return {
-    client,
-    liveClient,
-    close: liveClient.close,
-  };
-});
+export const makeInMemoryViewServer: <const Topics extends DecodableTopicDefinitions>(
+  config: ViewServerConfig<Topics>,
+  input: ViewServerInMemoryOptions,
+) => Effect.Effect<ViewServerInMemoryInstance<Topics>> = Effect.fn("ViewServerInMemory.make")(
+  function* <const Topics extends DecodableTopicDefinitions>(
+    config: ViewServerConfig<Topics>,
+    input: ViewServerInMemoryOptions,
+  ) {
+    const engineConfig =
+      input.subscriptionQueueCapacity === undefined
+        ? { topics: config.topics }
+        : {
+            topics: config.topics,
+            subscriptionQueueCapacity: input.subscriptionQueueCapacity,
+          };
+    const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
+    const engineHealth = yield* engine.health();
+    const health = AtomRef.make(healthFromEngine(engineHealth));
+    const client = yield* makeRuntime(engine, health);
+    const liveClient = yield* makeLiveClient(engine, health);
+    return {
+      client,
+      liveClient,
+      close: liveClient.close,
+    };
+  },
+);
 
 export const createInMemoryViewServer = <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerConfig<Topics>,

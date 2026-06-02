@@ -14,14 +14,6 @@ export class InvalidRowError extends Schema.TaggedErrorClass<InvalidRowError>()(
   message: Schema.String,
 }) {}
 
-export class UnsupportedQueryError extends Schema.TaggedErrorClass<UnsupportedQueryError>()(
-  "UnsupportedQueryError",
-  {
-    topic: Schema.String,
-    message: Schema.String,
-  },
-) {}
-
 export class EngineClosedError extends Schema.TaggedErrorClass<EngineClosedError>()(
   "EngineClosedError",
   {
@@ -32,6 +24,5 @@ export class EngineClosedError extends Schema.TaggedErrorClass<EngineClosedError
 export type ColumnLiveViewEngineError =
   | InvalidTopicError
   | InvalidRowError
-  | UnsupportedQueryError
   | InvalidQueryError
   | EngineClosedError;

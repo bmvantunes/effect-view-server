@@ -10,6 +10,7 @@ import {
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
   viewServerReservedTopicNames,
+  viewServerSchemaFieldMetadata,
   viewServerTopicNameIsReserved,
   viewServerHealthSummaryFromHealth,
   viewServerHealthSummaryRowFromHealth,
@@ -19,6 +20,7 @@ import {
   type KafkaTopicDefinition,
   type ExactGroupedQuery,
   type ExactRawQuery,
+  type GroupedQuery,
   type LiveQueryResult,
   type LiveQueryRow,
   type LiveSubscription,
@@ -65,8 +67,10 @@ const Position = Schema.Struct({
   symbol: Schema.String,
   active: Schema.Boolean,
   quantity: Schema.BigInt,
+  optionalQuantity: Schema.Union([Schema.BigInt, Schema.Undefined]),
   price: Schema.BigDecimal,
   notional: Schema.Number,
+  optionalNotional: Schema.Union([Schema.Number, Schema.Undefined]),
 });
 
 declare const decimal: (value: string) => BigDecimal.BigDecimal;
@@ -160,13 +164,23 @@ const runtimeTopicHealth = (
 });
 
 type LiveQueryCall<Topics extends object> = {
-  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
     topic: Topic,
-    query: ExactGroupedQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+    query: Query &
+      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
   ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
-  <Topic extends Extract<keyof Topics, string>, const Query extends object>(
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
     topic: Topic,
-    query: ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
+    query: Query &
+      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
   ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
 };
 
@@ -178,6 +192,146 @@ const kafkaRegions = {
 const kafkaTopic = viewServer.kafkaTopic<typeof kafkaRegions>();
 
 describe("defineViewServerConfig", () => {
+  it("derives schema field metadata for query validation", () => {
+    expect(viewServerSchemaFieldMetadata(Schema.Number)).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigDecimal",
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.BigInt)).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: true,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigint",
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.BigDecimal)).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigDecimal",
+    });
+    expect(
+      viewServerSchemaFieldMetadata(Schema.Union([Schema.BigInt, Schema.BigInt])),
+    ).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigint",
+    });
+    expect(
+      viewServerSchemaFieldMetadata(Schema.Union([Schema.BigInt, Schema.Number])),
+    ).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigDecimal",
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Literal(1))).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigDecimal",
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Literals([1, 2]))).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigDecimal",
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Literal(1n))).toStrictEqual({
+      isNumeric: true,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+      sumResultKind: "bigint",
+    });
+    expect(
+      viewServerSchemaFieldMetadata(Schema.Union([Schema.Number, Schema.Undefined])),
+    ).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(
+      viewServerSchemaFieldMetadata(Schema.Union([Schema.BigInt, Schema.Undefined])),
+    ).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Undefined)).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Union([Schema.Undefined]))).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Union([]))).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata(undefined)).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata("not-a-schema")).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata({ ast: "not-an-effect-ast" })).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: false,
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Literals(["open", "closed"]))).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: true,
+      isStructured: false,
+    });
+    expect(
+      viewServerSchemaFieldMetadata(
+        Schema.Union([
+          Schema.Struct({ id: Schema.String }),
+          Schema.Struct({ id: Schema.String, name: Schema.String }),
+        ]),
+      ),
+    ).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: true,
+    });
+    expect(viewServerSchemaFieldMetadata(Schema.Struct({ id: Schema.String }))).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: true,
+    });
+  });
+
   it("defines topics and pure runtime option contracts without starting a runtime", () => {
     const runtimeOptions = viewServer.defineRuntimeOptions({
       websocketPort: runtimeEnvironmentConfig.websocketPort,
@@ -692,6 +846,40 @@ describe("public type surface", () => {
         readonly maxQuantity: bigint;
       }>();
 
+      const optionalNumericSumQuery = {
+        groupBy: ["accountId"],
+        aggregates: {
+          totalOptionalQuantity: { aggFunc: "sum", field: "optionalQuantity" },
+        },
+      } satisfies {
+        readonly groupBy: readonly ["accountId"];
+        readonly aggregates: {
+          readonly totalOptionalQuantity: {
+            readonly aggFunc: "sum";
+            readonly field: "optionalQuantity";
+          };
+        };
+      };
+      // @ts-expect-error optional numeric fields cannot be summed without an explicit non-null mapping.
+      useLiveQuery("positions", optionalNumericSumQuery);
+
+      const optionalNumberSumQuery = {
+        groupBy: ["accountId"],
+        aggregates: {
+          totalOptionalNotional: { aggFunc: "sum", field: "optionalNotional" },
+        },
+      } satisfies {
+        readonly groupBy: readonly ["accountId"];
+        readonly aggregates: {
+          readonly totalOptionalNotional: {
+            readonly aggFunc: "sum";
+            readonly field: "optionalNotional";
+          };
+        };
+      };
+      // @ts-expect-error optional numeric fields cannot be summed without an explicit non-null mapping.
+      useLiveQuery("positions", optionalNumberSumQuery);
+
       const dynamicAggregateAlias: string = "dynamicTotal";
       const dynamicAggregateQuery = {
         groupBy: ["status"],
@@ -1010,6 +1198,7 @@ const assertCompileTimeContracts = () => {
     );
 
     const invalidSnapshotFilter = runtime.snapshot("orders", {
+      // @ts-expect-error invalid query collapse keeps selected fields from being accepted
       select: ["id"],
       where: {
         // @ts-expect-error snapshot filters must use values from the selected topic row
@@ -1311,29 +1500,41 @@ const assertCompileTimeContracts = () => {
       where: { status: "open" },
     });
 
-    useLiveQuery("orders", {
+    const unknownWhereFieldQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error raw queries reject fields not present on the selected topic
         missing: "open",
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly missing: "open" };
+    };
+    // @ts-expect-error raw queries reject fields not present on the selected topic.
+    useLiveQuery("orders", unknownWhereFieldQuery);
 
-    useLiveQuery("orders", {
+    const wrongFilterValueQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error filter values must match the selected field type
         price: "not-a-number",
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly price: "not-a-number" };
+    };
+    // @ts-expect-error filter values must match the selected field type.
+    useLiveQuery("orders", wrongFilterValueQuery);
 
-    useLiveQuery("orders", {
+    const stringRangeFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error string filters do not accept range operators
         status: { gte: "open" },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly status: { readonly gte: "open" } };
+    };
+    // @ts-expect-error string filters do not accept range operators.
+    useLiveQuery("orders", stringRangeFilterQuery);
 
     const invalidStatusInFilter = {
       select: ["id"],
@@ -1352,86 +1553,166 @@ const assertCompileTimeContracts = () => {
     const _invalidStatusInFilter: RawQuery<typeof Order.Type> &
       ExactRawQuery<typeof Order.Type, typeof invalidStatusInFilter> = invalidStatusInFilter;
 
-    useLiveQuery("orders", {
+    const numericStartsWithFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error number filters do not accept string-only operators
         price: { startsWith: "1" },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly price: { readonly startsWith: "1" } };
+    };
+    // @ts-expect-error number filters do not accept string-only operators.
+    useLiveQuery("orders", numericStartsWithFilterQuery);
 
-    useLiveQuery("positions", {
+    const booleanRangeFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error boolean filters do not accept range operators
         active: { gte: true },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly active: { readonly gte: true } };
+    };
+    // @ts-expect-error boolean filters do not accept range operators.
+    useLiveQuery("positions", booleanRangeFilterQuery);
 
-    useLiveQuery("positions", {
+    const booleanStartsWithFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error boolean filters do not accept string-only operators
         active: { startsWith: "t" },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly active: { readonly startsWith: "t" } };
+    };
+    // @ts-expect-error boolean filters do not accept string-only operators.
+    useLiveQuery("positions", booleanStartsWithFilterQuery);
 
-    useLiveQuery("positions", {
+    const bigDecimalStringFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error BigDecimal filters require BigDecimal values, not strings
         price: { gte: "10.00" },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly price: { readonly gte: "10.00" } };
+    };
+    // @ts-expect-error BigDecimal filters require BigDecimal values, not strings.
+    useLiveQuery("positions", bigDecimalStringFilterQuery);
 
-    useLiveQuery("positions", {
+    const bigDecimalStartsWithFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error BigDecimal filters do not accept string-only operators
         price: { startsWith: "10" },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly price: { readonly startsWith: "10" } };
+    };
+    // @ts-expect-error BigDecimal filters do not accept string-only operators.
+    useLiveQuery("positions", bigDecimalStartsWithFilterQuery);
 
-    useLiveQuery("positions", {
+    const bigintNumberFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error bigint filters require bigint values, not numbers
         quantity: { gte: 1 },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly quantity: { readonly gte: 1 } };
+    };
+    // @ts-expect-error bigint filters require bigint values, not numbers.
+    useLiveQuery("positions", bigintNumberFilterQuery);
 
-    useLiveQuery("orders", {
+    const optionalNumericEqualityRows = useLiveQuery("positions", {
       select: ["id"],
-      // @ts-expect-error orderBy fields are constrained to the selected topic row
-      orderBy: [
-        {
-          field: "missing",
-          direction: "asc",
-        },
-      ],
-    });
+      where: {
+        optionalQuantity: { eq: 1n },
+        optionalNotional: 100,
+      },
+    }).rows;
+    expectTypeOf(optionalNumericEqualityRows).toEqualTypeOf<
+      ReadonlyArray<{ readonly id: string }>
+    >();
 
-    useLiveQuery("orders", {
+    const optionalBigintRangeFilterQuery = {
       select: ["id"],
-      // @ts-expect-error sort direction is constrained to asc or desc
-      orderBy: [
-        {
-          field: "price",
-          direction: "ascending",
-        },
-      ],
-    });
+      where: {
+        optionalQuantity: { gte: 1n },
+      },
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly optionalQuantity: { readonly gte: 1n } };
+    };
+    // @ts-expect-error optional numeric fields only support equality filters.
+    useLiveQuery("positions", optionalBigintRangeFilterQuery);
 
-    useLiveQuery("orders", {
+    const optionalBigintEqualityWithRangeFilterQuery = {
       select: ["id"],
-      // @ts-expect-error raw orderBy cannot reference aggregate aliases.
-      orderBy: [
-        {
-          aggregate: "totalPrice",
-          direction: "desc",
-        },
-      ],
-    });
+      where: {
+        optionalQuantity: { eq: 1n, gte: 1n },
+      },
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly optionalQuantity: { readonly eq: 1n; readonly gte: 1n } };
+    };
+    // @ts-expect-error optional numeric exact filters reject range operators even when equality is present.
+    useLiveQuery("positions", optionalBigintEqualityWithRangeFilterQuery);
+
+    const optionalNumberRangeFilterQuery = {
+      select: ["id"],
+      where: {
+        optionalNotional: { lte: 100 },
+      },
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly optionalNotional: { readonly lte: 100 } };
+    };
+    // @ts-expect-error optional numeric fields only support equality filters.
+    useLiveQuery("positions", optionalNumberRangeFilterQuery);
+
+    const optionalNumberEqualityWithRangeFilterQuery = {
+      select: ["id"],
+      where: {
+        optionalNotional: { eq: 100, lte: 100 },
+      },
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly optionalNotional: { readonly eq: 100; readonly lte: 100 } };
+    };
+    // @ts-expect-error optional numeric exact filters reject range operators even when equality is present.
+    useLiveQuery("positions", optionalNumberEqualityWithRangeFilterQuery);
+
+    const unknownOrderByFieldQuery = {
+      select: ["id"],
+      orderBy: [{ field: "missing", direction: "asc" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [{ readonly field: "missing"; readonly direction: "asc" }];
+    };
+    // @ts-expect-error orderBy fields are constrained to the selected topic row.
+    useLiveQuery("orders", unknownOrderByFieldQuery);
+
+    const invalidOrderByDirectionQuery = {
+      select: ["id"],
+      orderBy: [{ field: "price", direction: "ascending" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [{ readonly field: "price"; readonly direction: "ascending" }];
+    };
+    // @ts-expect-error sort direction is constrained to asc or desc.
+    useLiveQuery("orders", invalidOrderByDirectionQuery);
+
+    const rawAggregateOrderByQuery = {
+      select: ["id"],
+      orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [{ readonly aggregate: "totalPrice"; readonly direction: "desc" }];
+    };
+    // @ts-expect-error raw orderBy cannot reference aggregate aliases.
+    useLiveQuery("orders", rawAggregateOrderByQuery);
 
     const invalidSelectedFields = {
       select: ["id", "missing"],
@@ -1490,6 +1771,38 @@ const assertCompileTimeContracts = () => {
       typeof invalidAggregateAliasCollision
     > &
       ValidateLiveQuery<typeof invalidAggregateAliasCollision> = invalidAggregateAliasCollision;
+
+    const invalidEmptyAggregates = {
+      groupBy: ["status"],
+      aggregates: {},
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {};
+    };
+    // @ts-expect-error grouped queries require at least one aggregate alias.
+    const _invalidEmptyAggregates: ExactGroupedQuery<
+      typeof Order.Type,
+      typeof invalidEmptyAggregates
+    > &
+      ValidateLiveQuery<typeof invalidEmptyAggregates> = invalidEmptyAggregates;
+
+    const invalidDangerousAggregateAlias = {
+      groupBy: ["status"],
+      aggregates: { constructor: { aggFunc: "count" } },
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly constructor: {
+          readonly aggFunc: "count";
+        };
+      };
+    };
+    // @ts-expect-error grouped aggregate aliases must not use dangerous object keys.
+    const _invalidDangerousAggregateAlias: ExactGroupedQuery<
+      typeof Order.Type,
+      typeof invalidDangerousAggregateAlias
+    > &
+      ValidateLiveQuery<typeof invalidDangerousAggregateAlias> = invalidDangerousAggregateAlias;
 
     const invalidGroupedOrderByRawField = {
       groupBy: ["status"],
@@ -1636,17 +1949,21 @@ const assertCompileTimeContracts = () => {
       typeof invalidGroupedOrderByBothFieldAndAggregate
     > = invalidGroupedOrderByBothFieldAndAggregate;
 
-    useLiveQuery("orders", {
+    const rawOrderByFieldAndAggregateQuery = {
       select: ["id"],
-      // @ts-expect-error raw orderBy entries cannot also include aggregate.
-      orderBy: [
+      orderBy: [{ field: "price", aggregate: "totalPrice", direction: "desc" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [
         {
-          field: "price",
-          aggregate: "totalPrice",
-          direction: "desc",
+          readonly field: "price";
+          readonly aggregate: "totalPrice";
+          readonly direction: "desc";
         },
-      ],
-    });
+      ];
+    };
+    // @ts-expect-error raw orderBy entries cannot also include aggregate.
+    useLiveQuery("orders", rawOrderByFieldAndAggregateQuery);
 
     const invalidOrderSumField = {
       groupBy: ["status"],
@@ -1665,6 +1982,47 @@ const assertCompileTimeContracts = () => {
     // @ts-expect-error sum and avg aggregate fields must be numeric
     const _invalidOrderSumField: ExactGroupedQuery<typeof Order.Type, typeof invalidOrderSumField> =
       invalidOrderSumField;
+
+    const invalidAggregateExtraKey = {
+      groupBy: ["status"],
+      aggregates: {
+        totalPrice: { aggFunc: "sum", field: "price", typo: true },
+      },
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly totalPrice: {
+          readonly aggFunc: "sum";
+          readonly field: "price";
+          readonly typo: true;
+        };
+      };
+    };
+    // @ts-expect-error aggregate definitions reject extra keys through variables.
+    const _invalidAggregateExtraKey: ExactGroupedQuery<
+      typeof Order.Type,
+      typeof invalidAggregateExtraKey
+    > = invalidAggregateExtraKey;
+
+    const invalidCountAggregateField = {
+      groupBy: ["status"],
+      aggregates: {
+        rowCount: { aggFunc: "count", field: "price" },
+      },
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: {
+        readonly rowCount: {
+          readonly aggFunc: "count";
+          readonly field: "price";
+        };
+      };
+    };
+    // @ts-expect-error count aggregate definitions must not include a field.
+    const _invalidCountAggregateField: ExactGroupedQuery<
+      typeof Order.Type,
+      typeof invalidCountAggregateField
+    > = invalidCountAggregateField;
 
     const invalidPositionSumField = {
       groupBy: ["accountId"],
@@ -1873,5 +2231,24 @@ describe("reserved system topic validation", () => {
         },
       }),
     ).toThrow("View Server topic name is reserved for system health streams");
+  });
+
+  it("rejects reserved row field names at runtime", () => {
+    const reservedFieldName = "__proto__";
+    const BadRow = Schema.Struct({
+      id: Schema.String,
+      [reservedFieldName]: Schema.String,
+    });
+
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          badRows: {
+            schema: BadRow,
+            key: "id",
+          },
+        },
+      }),
+    ).toThrow("uses a reserved row field name: __proto__");
   });
 });

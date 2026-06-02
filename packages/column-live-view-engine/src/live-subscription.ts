@@ -1,6 +1,6 @@
 import type { DeltaEvent, SnapshotEvent, StatusEvent } from "@view-server/config";
 import { Cause, Effect, Exit, Option, Queue, Stream } from "effect";
-import type { RawQueryExecution } from "./active-query";
+import type { LiveQueryExecution } from "./active-query";
 import type { TopicStore } from "./topic-store";
 import {
   registerTopicStoreSubscription,
@@ -33,7 +33,7 @@ type MakeLiveSubscriptionOptions<ResultRow extends RowObject> = {
   readonly store: TopicStore;
   readonly queryId: string;
   readonly queueCapacity: number;
-  readonly execution: RawQueryExecution<ResultRow>;
+  readonly execution: LiveQueryExecution<ResultRow>;
   readonly release: Effect.Effect<void>;
 };
 

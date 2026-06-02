@@ -2,6 +2,7 @@ export type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
+  ViewServerRuntimeLiveClient,
 } from "./live-client";
 export { liveQueryFailureResult } from "./live-query-error";
 export { liveQueryResultFromAsyncResult } from "./live-query-result";

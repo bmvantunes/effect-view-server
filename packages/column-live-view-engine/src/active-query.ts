@@ -1,11 +1,13 @@
 import { Effect, Option } from "effect";
-import { isBigDecimal } from "effect/BigDecimal";
 import type { DeltaEvent, SnapshotEvent } from "@view-server/config";
-import { type CompiledRawQuery, type RuntimeRawQuery } from "./raw-query-compiler";
+import {
+  stableQueryValueString,
+  type CompiledRawQuery,
+  type RuntimeRawQuery,
+} from "./raw-query-compiler";
 import type { RawQueryRowStore } from "./raw-query-compiler";
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation, StoredRowOf } from "./query-result";
-import { isPlainRecord } from "./row-values";
 
 type RowObject = object;
 
@@ -14,7 +16,7 @@ export type ActiveQueryStoreState = RawQueryRowStore<object> & {
   readonly topic: string;
 };
 
-export type RawQueryExecutionCursor<ResultRow extends RowObject> = {
+export type LiveQueryExecutionCursor<ResultRow extends RowObject> = {
   evaluation: QueryEvaluation<ResultRow>;
 };
 
@@ -24,14 +26,16 @@ type RawQueryExecutionUpdate<ResultRow extends RowObject> = Effect.Effect<
   never
 >;
 
-export type RawQueryExecution<ResultRow extends RowObject> = {
+export type LiveQueryExecution<ResultRow extends RowObject> = {
   readonly initial: (queryId: string) => SnapshotEvent<ResultRow>;
-  readonly createCursor: () => RawQueryExecutionCursor<ResultRow>;
+  readonly createCursor: () => LiveQueryExecutionCursor<ResultRow>;
   readonly next: (
     queryId: string,
-    cursor: RawQueryExecutionCursor<ResultRow>,
+    cursor: LiveQueryExecutionCursor<ResultRow>,
   ) => RawQueryExecutionUpdate<ResultRow>;
 };
+
+export type RawQueryExecution<ResultRow extends RowObject> = LiveQueryExecution<ResultRow>;
 
 type ActiveQueryBaseExecution = {
   readonly latest: () => ActiveQueryBaseEvaluation;
@@ -42,6 +46,11 @@ type RawQueryExecutionSlot = {
   refs: number;
 };
 
+type MaterializedQueryExecutionSlot = {
+  readonly execution: ActiveMaterializedQueryExecution;
+  refs: number;
+};
+
 type ActiveQueryBaseEvaluation = {
   readonly keys: ReadonlyArray<string>;
   readonly window: ReadonlyArray<StoredRowOf<object>>;
@@ -49,125 +58,27 @@ type ActiveQueryBaseEvaluation = {
   readonly version: number;
 };
 
+type ActiveMaterializedQueryExecution = {
+  readonly latest: () => QueryEvaluation<object>;
+};
+
 type QueryExecutionCache = WeakMap<object, Map<string, RawQueryExecutionSlot>>;
+type MaterializedQueryExecutionCache = WeakMap<object, Map<string, MaterializedQueryExecutionSlot>>;
 
 const activeQueryExecutionCache: QueryExecutionCache = new WeakMap();
+const activeMaterializedQueryExecutionCache: MaterializedQueryExecutionCache = new WeakMap();
 
-const objectIdentities = new WeakMap<object, number>();
-const symbolIdentities = new Map<symbol, number>();
-let nextObjectIdentity = 0;
-let nextSymbolIdentity = 0;
-
-type QueryValueToken =
-  | readonly ["null"]
-  | readonly ["undefined"]
-  | readonly ["boolean", boolean]
-  | readonly ["number", string]
-  | readonly ["string", string]
-  | readonly ["bigint", string]
-  | readonly ["bigDecimal", string]
-  | readonly ["symbol", number]
-  | readonly ["function", string, number]
-  | readonly ["array", ReadonlyArray<QueryValueToken>]
-  | readonly ["object", ReadonlyArray<readonly [string, QueryValueToken]>]
-  | readonly ["nonPlainObject", string, number];
-
-type QueryCacheToken = readonly [
-  "raw",
-  ReadonlyArray<readonly [string, QueryValueToken]>,
-  ReadonlyArray<readonly [string, "asc" | "desc"]>,
-  QueryValueToken,
-  QueryValueToken,
-];
-
-const stableObjectIdentity = (value: object): number => {
-  const existing = objectIdentities.get(value);
-  if (existing !== undefined) {
-    return existing;
-  }
-  nextObjectIdentity += 1;
-  objectIdentities.set(value, nextObjectIdentity);
-  return nextObjectIdentity;
-};
-
-const stableSymbolIdentity = (value: symbol): number => {
-  const existing = symbolIdentities.get(value);
-  if (existing !== undefined) {
-    return existing;
-  }
-  nextSymbolIdentity += 1;
-  symbolIdentities.set(value, nextSymbolIdentity);
-  return nextSymbolIdentity;
-};
-
-const stableObjectName = (value: object): string => Object.prototype.toString.call(value);
-
-const stableFunctionName = (value: { readonly name: string }): string =>
-  value.name === "" ? "anonymous" : value.name;
-
-const isRecordLike = (value: unknown): value is Record<string, unknown> =>
-  isPlainRecord(value) || isBigDecimal(value);
-
-const stableNumberValue = (value: number): string => {
-  if (Object.is(value, -0)) {
-    return "-0";
-  }
-  return String(value);
-};
-
-const encodeQueryValue = (value: unknown): QueryValueToken => {
-  if (isBigDecimal(value)) {
-    return ["bigDecimal", value.toString()];
-  }
-  if (value === null) {
-    return ["null"];
-  }
-  if (Array.isArray(value)) {
-    return ["array", value.map(encodeQueryValue)];
-  }
-  if (isRecordLike(value)) {
-    return [
-      "object",
-      Object.keys(value)
-        .toSorted()
-        .map((key) => [key, encodeQueryValue(value[key])]),
-    ];
-  }
-  switch (typeof value) {
-    case "string":
-      return ["string", value];
-    case "number":
-      return ["number", stableNumberValue(value)];
-    case "bigint":
-      return ["bigint", value.toString()];
-    case "boolean":
-      return ["boolean", value];
-    case "symbol":
-      return ["symbol", stableSymbolIdentity(value)];
-    case "function":
-      return ["function", stableFunctionName(value), stableObjectIdentity(value)];
-    case "object":
-      return ["nonPlainObject", stableObjectName(value), stableObjectIdentity(value)];
-  }
-  return ["undefined"];
-};
-
-const canonicalizeWhere = (
-  where: Record<string, unknown>,
-): ReadonlyArray<readonly [string, QueryValueToken]> =>
-  Object.keys(where)
-    .toSorted()
-    .map((field) => [field, encodeQueryValue(where[field])]);
+type QueryCacheToken = readonly ["raw", string, string, string, string];
 
 const queryCacheKey = (query: RuntimeRawQuery): string => {
   const orderBy: ReadonlyArray<readonly [string, "asc" | "desc"]> =
     query.orderBy === undefined ? [] : query.orderBy.map((entry) => [entry.field, entry.direction]);
   const token: QueryCacheToken = [
     "raw",
-    query.where === undefined ? [] : canonicalizeWhere(query.where),
-    orderBy,
-    encodeQueryValue(query.offset),
-    encodeQueryValue(query.limit),
+    query.where === undefined ? "" : stableQueryValueString(query.where),
+    stableQueryValueString(orderBy),
+    stableQueryValueString(query.offset ?? null),
+    stableQueryValueString(query.limit ?? null),
   ];
   return JSON.stringify(token);
 };
@@ -179,6 +90,18 @@ const getActiveQueryMap = (store: ActiveQueryStoreState): Map<string, RawQueryEx
   }
   const created = new Map<string, RawQueryExecutionSlot>();
   activeQueryExecutionCache.set(store.identity, created);
+  return created;
+};
+
+const getActiveMaterializedQueryMap = (
+  store: ActiveQueryStoreState,
+): Map<string, MaterializedQueryExecutionSlot> => {
+  const existing = activeMaterializedQueryExecutionCache.get(store.identity);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, MaterializedQueryExecutionSlot>();
+  activeMaterializedQueryExecutionCache.set(store.identity, created);
   return created;
 };
 
@@ -262,6 +185,38 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
   };
 };
 
+const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
+  store: ActiveQueryStoreState,
+  execution: ActiveMaterializedQueryExecution,
+): LiveQueryExecution<ResultRow> => {
+  const latestEvaluation = () => typedQueryEvaluation<ResultRow>(execution.latest());
+
+  return {
+    initial: (queryId) => snapshotEvent(store, queryId, latestEvaluation()),
+    createCursor: () => ({
+      evaluation: latestEvaluation(),
+    }),
+    next: (queryId, cursor) =>
+      Effect.sync(() => {
+        const previous = cursor.evaluation;
+        const next = latestEvaluation();
+        const operations = deltaOperations(previous, next);
+        if (operations.length === 0 && previous.totalRows === next.totalRows) {
+          return Option.none();
+        }
+        cursor.evaluation = next;
+        return Option.some(deltaEvent(store, queryId, previous.version, next, operations));
+      }),
+  };
+};
+
+function typedQueryEvaluation<ResultRow extends RowObject>(
+  evaluation: QueryEvaluation<object>,
+): QueryEvaluation<ResultRow>;
+function typedQueryEvaluation(evaluation: QueryEvaluation<object>): QueryEvaluation<object> {
+  return evaluation;
+}
+
 export const makeRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.make")(
   (store: ActiveQueryStoreState, canonicalCompiled: CompiledRawQuery<object, object>) =>
     Effect.sync(() => {
@@ -333,16 +288,83 @@ export const releaseRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
     }),
 );
 
+export const acquireMaterializedQueryExecution = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.materialized.acquire",
+)(function <ResultRow extends RowObject>(
+  store: ActiveQueryStoreState,
+  cacheKey: string,
+  evaluate: () => QueryEvaluation<ResultRow>,
+) {
+  return Effect.sync(() => {
+    const map = getActiveMaterializedQueryMap(store);
+    const existing = map.get(cacheKey);
+    if (existing !== undefined) {
+      const entry = existing;
+      entry.refs += 1;
+      return leaseMaterializedQueryExecution<ResultRow>(store, entry.execution);
+    }
+
+    let snapshot = {
+      evaluation: evaluate(),
+      version: store.version(),
+    };
+    const execution: ActiveMaterializedQueryExecution = {
+      latest: () => {
+        const storeVersion = store.version();
+        if (snapshot.version !== storeVersion) {
+          snapshot = {
+            evaluation: evaluate(),
+            version: storeVersion,
+          };
+        }
+        return snapshot.evaluation;
+      },
+    };
+    map.set(cacheKey, {
+      execution,
+      refs: 1,
+    });
+    return leaseMaterializedQueryExecution<ResultRow>(store, execution);
+  });
+});
+
+export const releaseMaterializedQueryExecution = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.materialized.release",
+)((store: ActiveQueryStoreState, cacheKey: string) =>
+  Effect.sync(() => {
+    const map = activeMaterializedQueryExecutionCache.get(store.identity);
+    const existing = map?.get(cacheKey);
+    if (existing === undefined || map === undefined) {
+      return undefined;
+    }
+    const entry = existing;
+    if (entry.refs > 1) {
+      entry.refs -= 1;
+      return undefined;
+    }
+    map.delete(cacheKey);
+    if (map.size === 0) {
+      activeMaterializedQueryExecutionCache.delete(store.identity);
+    }
+    return undefined;
+  }),
+);
+
 export const clearStoreRawQueryExecutions = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.clearStore",
 )((store: ActiveQueryStoreState) =>
   Effect.sync(() => {
     activeQueryExecutionCache.delete(store.identity);
+    activeMaterializedQueryExecutionCache.delete(store.identity);
   }),
 );
 
 export const activeStoreRawQueryExecutionCount = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.countStore",
 )((store: ActiveQueryStoreState) =>
-  Effect.sync(() => activeQueryExecutionCache.get(store.identity)?.size ?? 0),
+  Effect.sync(
+    () =>
+      (activeQueryExecutionCache.get(store.identity)?.size ?? 0) +
+      (activeMaterializedQueryExecutionCache.get(store.identity)?.size ?? 0),
+  ),
 );

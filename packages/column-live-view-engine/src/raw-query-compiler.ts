@@ -10,6 +10,7 @@ import {
   valuesEqual,
 } from "./row-values";
 import type { QueryEvaluation, StoredRowOf } from "./query-result";
+import type { TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 const compiledRawQueryBrand: unique symbol = Symbol("CompiledRawQuery");
@@ -56,11 +57,6 @@ export type CompiledRawQuery<Row extends RowObject, ResultRow extends RowObject>
   readonly project: (row: Row) => ResultRow;
   readonly offset: number;
   readonly limit: number | undefined;
-};
-
-export type RawQueryRowStore<Row extends RowObject> = {
-  readonly rows: () => ReadonlyMap<string, Row>;
-  readonly version: () => number;
 };
 
 type FilterObject = {
@@ -865,12 +861,15 @@ export const prepareRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.prepare"
 });
 
 export const evaluateCompiledRawQuery = <Row extends RowObject, ResultRow extends RowObject>(
-  store: RawQueryRowStore<Row>,
+  store: TopicRowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
 ): QueryEvaluation<ResultRow> => {
-  const filtered = Array.from(store.rows(), ([key, row]) => ({ key, row })).filter((entry) =>
-    compiled.matches(entry.row),
-  );
+  const filtered: Array<StoredRowOf<Row>> = [];
+  store.scanRows((key, row) => {
+    if (compiled.matches(row)) {
+      filtered.push({ key, row });
+    }
+  });
   const ordered = filtered.toSorted(compiled.compare);
   const offset = compiled.offset;
   const windowed = ordered.slice(

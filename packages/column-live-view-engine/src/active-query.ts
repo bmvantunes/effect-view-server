@@ -5,13 +5,13 @@ import {
   type CompiledRawQuery,
   type RuntimeRawQuery,
 } from "./raw-query-compiler";
-import type { RawQueryRowStore } from "./raw-query-compiler";
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation, StoredRowOf } from "./query-result";
+import type { TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 
-export type ActiveQueryStoreState = RawQueryRowStore<object> & {
+export type ActiveQueryStoreState = TopicRowScan<object> & {
   readonly identity: object;
   readonly topic: string;
 };
@@ -121,11 +121,13 @@ const evaluateBaseQuery = (
   store: ActiveQueryStoreState,
   compiled: CompiledRawQuery<object, object>,
 ): ActiveQueryBaseEvaluation => {
-  const storeRows = store.rows();
   const storeVersion = store.version();
-  const filtered = Array.from(storeRows, ([key, row]) => ({ key, row })).filter((entry) =>
-    compiled.matches(entry.row),
-  );
+  const filtered: Array<StoredRowOf<object>> = [];
+  store.scanRows((key, row) => {
+    if (compiled.matches(row)) {
+      filtered.push({ key, row });
+    }
+  });
   const ordered = filtered.toSorted(compiled.compare);
   const offset = compiled.offset;
   const window = ordered.slice(

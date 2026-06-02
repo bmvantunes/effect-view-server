@@ -32,6 +32,7 @@ import {
   closeInterruptedAcquiredSubscription,
 } from "./subscription-handoff";
 import {
+  evaluateCompiledRawQuery,
   prepareRawQuery,
   rawQueryCompilerMetadata,
   stableQueryValueString,
@@ -937,7 +938,11 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       );
       const evaluation = evaluateCompiledGroupedQuery(
         {
-          rows: () => rows,
+          scanRows: (visitor) => {
+            for (const [key, row] of rows) {
+              visitor(key, row);
+            }
+          },
           version: () => 1,
         },
         compiled,
@@ -948,6 +953,57 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           totalQuantity: "3",
         },
       ]);
+    }),
+  );
+
+  it.effect("evaluates raw queries through the storage scan interface", () =>
+    Effect.gen(function* () {
+      const rows = [
+        { key: "closed", row: order("closed", "closed", 1, 1) },
+        { key: "open-high", row: order("open-high", "open", 20, 3) },
+        { key: "open-low", row: order("open-low", "open", 10, 2) },
+      ];
+      const compiled = yield* prepareRawQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          select: ["id", "price"],
+          where: {
+            status: "open",
+          },
+          orderBy: [
+            {
+              field: "price",
+              direction: "desc",
+            },
+          ],
+        },
+      );
+      const evaluation = evaluateCompiledRawQuery(
+        {
+          scanRows: (visitor) => {
+            for (const { key, row } of rows) {
+              visitor(key, row);
+            }
+          },
+          version: () => 7,
+        },
+        compiled,
+      );
+
+      expect(evaluation.keys).toStrictEqual(["open-high", "open-low"]);
+      expect(evaluation.rows).toStrictEqual([
+        {
+          id: "open-high",
+          price: 20,
+        },
+        {
+          id: "open-low",
+          price: 10,
+        },
+      ]);
+      expect(evaluation.totalRows).toBe(2);
+      expect(evaluation.version).toBe(7);
     }),
   );
 

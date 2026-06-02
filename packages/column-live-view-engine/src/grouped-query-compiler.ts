@@ -12,13 +12,10 @@ import {
   type RawQueryCompilerMetadata,
   prepareRawQuery,
 } from "./raw-query-compiler";
-import {
-  compareQueryValue,
-  stableQueryValueString,
-  type RawQueryRowStore,
-} from "./raw-query-compiler";
+import { compareQueryValue, stableQueryValueString } from "./raw-query-compiler";
 import { cloneUnknown, fieldValue, isPlainRecord } from "./row-values";
 import type { QueryEvaluation, StoredRowOf } from "./query-result";
+import type { TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 
@@ -59,7 +56,7 @@ export type CompiledGroupedQuery<Row extends RowObject, ResultRow extends RowObj
   readonly query: RuntimeGroupedQuery;
   readonly cacheKey: string;
   readonly matches: (row: Row) => boolean;
-  readonly evaluate: (store: RawQueryRowStore<Row>) => QueryEvaluation<ResultRow>;
+  readonly evaluate: (store: TopicRowScan<Row>) => QueryEvaluation<ResultRow>;
 };
 
 type AggregateState =
@@ -591,14 +588,14 @@ export const prepareGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.
 );
 
 const evaluateGroupedRows = <Row extends RowObject>(
-  store: RawQueryRowStore<Row>,
+  store: TopicRowScan<Row>,
   query: RuntimeGroupedQuery,
   matches: (row: Row) => boolean,
 ): QueryEvaluation<RowObject> => {
   const groups = new Map<string, GroupState>();
-  for (const row of store.rows().values()) {
+  store.scanRows((_key, row) => {
     if (!matches(row)) {
-      continue;
+      return;
     }
     const key = groupKey(query.groupBy, row);
     let group = groups.get(key);
@@ -609,7 +606,7 @@ const evaluateGroupedRows = <Row extends RowObject>(
     for (const [alias, aggregate] of Object.entries(query.aggregates)) {
       updateAggregateState(group.aggregates[alias]!, aggregate, row);
     }
-  }
+  });
   const ordered = Array.from(groups.values(), finalizeGroup).toSorted((left, right) =>
     compareGroupedRows(left, right, query.orderBy ?? []),
   );
@@ -628,6 +625,6 @@ const evaluateGroupedRows = <Row extends RowObject>(
 };
 
 export const evaluateCompiledGroupedQuery = <Row extends RowObject, ResultRow extends RowObject>(
-  store: RawQueryRowStore<Row>,
+  store: TopicRowScan<Row>,
   compiled: CompiledGroupedQuery<Row, ResultRow>,
 ): QueryEvaluation<ResultRow> => compiled.evaluate(store);

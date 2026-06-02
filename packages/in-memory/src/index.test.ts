@@ -142,6 +142,33 @@ describe("@view-server/in-memory", () => {
     }),
   );
 
+  it.effect("subscribes through the runtime live-client entrypoint", () =>
+    Effect.gen(function* () {
+      const inMemory = yield* makeInMemoryViewServer(viewServer, {});
+      yield* inMemory.client.publish("orders", order("a", 10));
+
+      const subscription = yield* inMemory.liveClient.subscribeRuntime("orders", {
+        select: ["id", "price"],
+      });
+      const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect(events[0]).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 1,
+        keys: ["a"],
+        rows: [{ id: "a", price: 10 }],
+        totalRows: 1,
+      });
+
+      yield* subscription.close();
+      const health = yield* inMemory.client.health();
+      expect(health.engine.topics.orders.activeSubscriptions).toBe(0);
+      yield* inMemory.close;
+    }),
+  );
+
   it.effect("refreshes health after close", () =>
     Effect.gen(function* () {
       const inMemory = yield* makeInMemoryViewServer(viewServer, {});
@@ -316,14 +343,10 @@ describe("@view-server/in-memory", () => {
           updatedAt: 20,
         }),
       );
-      const unsupportedQuery = yield* Effect.flip(
-        inMemory.client.snapshot("orders", {
-          // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-          groupBy: ["status"],
-          // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-          aggregates: { count: { aggFunc: "count" } },
-        }),
-      );
+      const groupedQuery = yield* inMemory.client.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      });
       const invalidQuery = yield* Effect.flip(
         inMemory.client.snapshot("orders", {
           // @ts-expect-error hostile runtime callers can still send unknown projected fields.
@@ -338,7 +361,7 @@ describe("@view-server/in-memory", () => {
 
       expect(invalidTopic.code).toBe("InvalidTopic");
       expect(invalidRow.code).toBe("InvalidRow");
-      expect(unsupportedQuery.code).toBe("UnsupportedQuery");
+      expect(groupedQuery.rows).toStrictEqual([{ status: "open", rowCount: 1n }]);
       expect(invalidQuery.code).toBe("InvalidQuery");
       expect(runtimeUnavailable.code).toBe("RuntimeUnavailable");
     }),

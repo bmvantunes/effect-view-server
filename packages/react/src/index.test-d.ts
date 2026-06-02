@@ -12,6 +12,7 @@ import {
 } from "@view-server/react/testing";
 import type { Effect } from "effect";
 import { Schema } from "effect";
+import type * as BigDecimal from "effect/BigDecimal";
 import type { ReactNode } from "react";
 import { createViewServerReact } from "./index";
 import { ViewServerReactClientProvider } from "./internal";
@@ -105,55 +106,77 @@ describe("React type contracts", () => {
   });
 
   it("rejects invalid raw query select", () => {
-    useLiveQuery("orders", {
-      // @ts-expect-error raw queries must explicitly select columns.
+    const missingSelectQuery = {
       where: {
         status: "open",
       },
-    });
+    };
+    // @ts-expect-error raw queries must explicitly select columns.
+    useLiveQuery("orders", missingSelectQuery);
 
-    useLiveQuery("orders", {
-      // @ts-expect-error raw queries must select at least one column.
+    const emptySelectQuery = {
       select: [],
-    });
+    };
+    // @ts-expect-error raw queries must select at least one column.
+    useLiveQuery("orders", emptySelectQuery);
 
-    useLiveQuery("orders", {
+    const unknownWhereFieldQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error unknown where fields are rejected.
         prcie: 10,
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: {
+        readonly prcie: 10;
+      };
+    };
+    // @ts-expect-error unknown where fields are rejected.
+    useLiveQuery("orders", unknownWhereFieldQuery);
 
-    useLiveQuery("orders", {
+    const unknownOrderByFieldQuery = {
       select: ["id"],
-      // @ts-expect-error unknown orderBy fields are rejected.
       orderBy: [
         {
           field: "prcie",
           direction: "asc",
         },
       ],
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [
+        {
+          readonly field: "prcie";
+          readonly direction: "asc";
+        },
+      ];
+    };
+    // @ts-expect-error unknown orderBy fields are rejected.
+    useLiveQuery("orders", unknownOrderByFieldQuery);
 
-    useLiveQuery("orders", {
-      // @ts-expect-error unknown projected fields are rejected.
+    const unknownProjectedFieldQuery = {
       select: ["id", "prcie"],
-    });
+    } satisfies {
+      readonly select: readonly ["id", "prcie"];
+    };
+    // @ts-expect-error unknown projected fields are rejected.
+    useLiveQuery("orders", unknownProjectedFieldQuery);
 
-    useLiveQuery("orders", {
-      select: [
-        // @ts-expect-error selected fields must be topic field names, not undefined.
-        undefined,
-      ],
-    });
+    const undefinedSelectedFieldQuery = {
+      select: [undefined],
+    } satisfies {
+      readonly select: readonly [undefined];
+    };
+    // @ts-expect-error selected fields must be topic field names, not undefined.
+    useLiveQuery("orders", undefinedSelectedFieldQuery);
 
-    useLiveQuery("orders", {
-      select: [
-        // @ts-expect-error selected fields must be topic field names, not null.
-        null,
-      ],
-    });
+    const nullSelectedFieldQuery = {
+      select: [null],
+    } satisfies {
+      readonly select: readonly [null];
+    };
+    // @ts-expect-error selected fields must be topic field names, not null.
+    useLiveQuery("orders", nullSelectedFieldQuery);
 
     const dynamicSingleTupleSelectedFieldsQuery = {
       select: [dynamicSingleField],
@@ -167,25 +190,41 @@ describe("React type contracts", () => {
   });
 
   it("rejects invalid raw query operators", () => {
-    useLiveQuery("orders", {
+    const stringRangeFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error string fields do not support range filters.
         status: {
           gte: "open",
         },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: {
+        readonly status: {
+          readonly gte: "open";
+        };
+      };
+    };
+    // @ts-expect-error string fields do not support range filters.
+    useLiveQuery("orders", stringRangeFilterQuery);
 
-    useLiveQuery("orders", {
+    const numericStringFilterQuery = {
       select: ["id"],
       where: {
-        // @ts-expect-error numeric fields do not support string filters.
         price: {
           startsWith: "10",
         },
       },
-    });
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: {
+        readonly price: {
+          readonly startsWith: "10";
+        };
+      };
+    };
+    // @ts-expect-error numeric fields do not support string filters.
+    useLiveQuery("orders", numericStringFilterQuery);
   });
 
   it("keeps health and in-memory client keyed by configured topics", () => {
@@ -231,16 +270,30 @@ describe("React type contracts", () => {
     createInMemoryViewServerReact(viewServer);
   });
 
-  it("rejects grouped queries for the in-memory runtime slice", () => {
+  it("preserves grouped query result types for React and in-memory clients", () => {
     const { client } = createInMemoryViewServer();
-    const groupedQuery = {
+    const groupedRows = useLiveQuery("orders", {
       groupBy: ["status"],
-      aggregates: { count: { aggFunc: "count" } },
-    };
-
-    const invalidGroupedSnapshot =
-      // @ts-expect-error grouped queries are not part of the raw in-memory runtime slice yet.
-      client.snapshot("orders", groupedQuery);
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+        totalPrice: { aggFunc: "sum", field: "price" },
+      },
+      orderBy: [
+        { field: "status", direction: "asc" },
+        { aggregate: "totalPrice", direction: "desc" },
+      ],
+    });
+    const groupedSnapshot = client.snapshot("orders", {
+      groupBy: ["status"],
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+        totalPrice: { aggFunc: "sum", field: "price" },
+      },
+      orderBy: [
+        { field: "status", direction: "asc" },
+        { aggregate: "totalPrice", direction: "desc" },
+      ],
+    });
 
     const invalidPatch = client.patch("orders", "order-1", {
       price: 10,
@@ -248,8 +301,35 @@ describe("React type contracts", () => {
       prcie: 10,
     });
 
-    expectTypeOf(invalidGroupedSnapshot).not.toBeAny();
+    expectTypeOf(groupedRows).toEqualTypeOf<
+      LiveQueryResult<{
+        readonly status: "open" | "closed" | "cancelled";
+        readonly rowCount: bigint;
+        readonly totalPrice: BigDecimal.BigDecimal;
+      }>
+    >();
+    expectTypeOf<Effect.Success<typeof groupedSnapshot>>().toEqualTypeOf<
+      LiveQueryResult<{
+        readonly status: "open" | "closed" | "cancelled";
+        readonly rowCount: bigint;
+        readonly totalPrice: BigDecimal.BigDecimal;
+      }>
+    >();
     expectTypeOf(invalidPatch).not.toBeAny();
+
+    useLiveQuery("orders", {
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      // @ts-expect-error grouped orderBy field must be present in groupBy.
+      orderBy: [{ field: "price", direction: "asc" }],
+    });
+
+    useLiveQuery("orders", {
+      groupBy: ["status"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+      // @ts-expect-error grouped orderBy aggregate must reference an aggregate alias.
+      orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
+    });
   });
 
   it("preserves consumer types through @view-server/react package imports", () => {
@@ -282,17 +362,13 @@ describe("React type contracts", () => {
     });
 
     consumerReact.useLiveQuery("orders", {
-      select: [
-        // @ts-expect-error consumer package imports still reject undefined selected fields.
-        undefined,
-      ],
+      // @ts-expect-error consumer package imports still reject undefined selected fields.
+      select: [undefined],
     });
 
     consumerReact.useLiveQuery("orders", {
-      select: [
-        // @ts-expect-error consumer package imports still reject null selected fields.
-        null,
-      ],
+      // @ts-expect-error consumer package imports still reject null selected fields.
+      select: [null],
     });
   });
 

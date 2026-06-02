@@ -19,18 +19,22 @@ export type {
   CountDistinctAggregate,
   EqualityFilter,
   ExactGroupedQuery,
+  ExactLiveQuery,
+  ExactLiveQueryInput,
   ExactPatch,
   ExactRawQuery,
   FieldFilter,
   FieldKey,
   GroupedOrderBy,
   GroupedQuery,
+  GroupedResult,
   LiveQuery,
   LiveQueryResult,
   LiveQueryRow,
   NumericFieldKey,
   OrderBy,
   OrderByField,
+  PickRawFields,
   RangeFilter,
   RawQuery,
   RowFromSchema,
@@ -84,6 +88,10 @@ export type {
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "./runtime-contract";
+export {
+  viewServerSchemaFieldMetadata,
+  type ViewServerSchemaFieldMetadata,
+} from "./schema-field-metadata";
 export type {
   DeltaEvent,
   DeltaOperation,
@@ -149,6 +157,12 @@ export const defineViewServerConfig = <
   for (const topic of Object.keys(input.topics)) {
     if (viewServerTopicNameIsReserved(topic)) {
       throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
+    }
+    const schema = input.topics[topic]!.schema;
+    for (const field of Object.keys(schema.fields)) {
+      if (field === "__proto__" || field === "prototype" || field === "constructor") {
+        throw new Error(`View Server topic ${topic} uses a reserved row field name: ${field}`);
+      }
     }
   }
   return {

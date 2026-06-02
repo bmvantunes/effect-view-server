@@ -2,12 +2,13 @@ import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
   defineViewServerConfig,
   type DeltaEvent,
-  type LiveQuery,
+  type ExactGroupedQuery,
   type LiveQueryResult,
   type RawQuery,
   type SnapshotEvent,
 } from "@view-server/config";
 import type { Effect, Stream } from "effect";
+import type { BigDecimal } from "effect/BigDecimal";
 import { Schema } from "effect";
 import type {
   ColumnLiveViewEngine,
@@ -170,31 +171,32 @@ describe("ColumnLiveViewEngine type contract", () => {
   });
 
   it("rejects invalid raw query select and topics", () => {
-    const _invalidSelectedField = engine.snapshot("orders", {
-      // @ts-expect-error invalid selected field is rejected.
-      select: ["missing"],
-    });
-    const _invalidSubscribeSelectedField = engine.subscribe("orders", {
-      // @ts-expect-error invalid selected field is rejected for subscriptions.
-      select: ["missing"],
-    });
+    // @ts-expect-error invalid selected field is rejected.
+    const _invalidSelectedField = engine.snapshot("orders", { select: ["missing"] });
+    // @ts-expect-error invalid selected field is rejected for subscriptions.
+    const _invalidSubscribeSelectedField = engine.subscribe("orders", { select: ["missing"] });
 
-    const _invalidWhereField = engine.snapshot("orders", {
+    const invalidWhereFieldQuery = {
       select: ["id"],
-      // @ts-expect-error invalid where field is rejected.
-      where: { missing: "value" },
-    });
+      where: {
+        missing: "value",
+      },
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: { readonly missing: "value" };
+    };
+    // @ts-expect-error invalid where field is rejected.
+    const _invalidWhereField = engine.snapshot("orders", invalidWhereFieldQuery);
 
-    const _invalidOrderField = engine.snapshot("orders", {
+    const invalidOrderFieldQuery = {
       select: ["id"],
-      // @ts-expect-error invalid order field is rejected.
-      orderBy: [
-        {
-          field: "missing",
-          direction: "asc",
-        },
-      ],
-    });
+      orderBy: [{ field: "missing", direction: "asc" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [{ readonly field: "missing"; readonly direction: "asc" }];
+    };
+    // @ts-expect-error invalid order field is rejected.
+    const _invalidOrderField = engine.snapshot("orders", invalidOrderFieldQuery);
 
     // @ts-expect-error invalid topic is rejected.
     const _invalidTopic = engine.snapshot("missing", { select: ["id"] });
@@ -361,34 +363,67 @@ describe("ColumnLiveViewEngine type contract", () => {
     void _invalidKeyConfig;
   });
 
-  it("rejects grouped queries in the raw-only engine slice", () => {
-    const _groupedSnapshot = engine.snapshot("orders", {
-      // @ts-expect-error grouped queries are not part of this raw-only slice.
+  it("types grouped aggregate snapshots and subscriptions", () => {
+    const groupedSnapshot = engine.snapshot("orders", {
       groupBy: ["status"],
-      // @ts-expect-error grouped queries are not part of this raw-only slice.
-      aggregates: { count: { aggFunc: "count" } },
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+        totalPrice: { aggFunc: "sum", field: "price" },
+        averagePrice: { aggFunc: "avg", field: "price" },
+        distinctCustomers: { aggFunc: "countDistinct", field: "customerId" },
+        minRegion: { aggFunc: "min", field: "region" },
+      },
+      orderBy: [{ aggregate: "rowCount", direction: "desc" }],
     });
+    expectTypeOf<EffectSuccess<typeof groupedSnapshot>>().toEqualTypeOf<
+      LiveQueryResult<{
+        readonly status: "open" | "closed" | "cancelled";
+        readonly rowCount: bigint;
+        readonly totalPrice: BigDecimal;
+        readonly averagePrice: BigDecimal;
+        readonly distinctCustomers: bigint;
+        readonly minRegion: string;
+      }>
+    >();
 
-    const _groupedSubscription = engine.subscribe("orders", {
-      // @ts-expect-error grouped subscriptions are not part of this raw-only slice.
+    const groupedSubscription = engine.subscribe("orders", {
       groupBy: ["status"],
-      // @ts-expect-error grouped subscriptions are not part of this raw-only slice.
-      aggregates: { count: { aggFunc: "count" } },
+      aggregates: { rowCount: { aggFunc: "count" } },
     });
+    expectTypeOf<EffectSuccess<typeof groupedSubscription>>().toEqualTypeOf<
+      ColumnLiveViewSubscription<{
+        readonly status: "open" | "closed" | "cancelled";
+        readonly rowCount: bigint;
+      }>
+    >();
 
-    const groupedVariable: LiveQuery<OrderRow> = {
+    const invalidGroupedOrderByAggregateQuery = {
       groupBy: ["status"],
-      aggregates: { count: { aggFunc: "count" } },
+      aggregates: { rowCount: { aggFunc: "count" } },
+      orderBy: [{ aggregate: "missing", direction: "desc" }],
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+      readonly orderBy: readonly [{ readonly aggregate: "missing"; readonly direction: "desc" }];
     };
-    // @ts-expect-error widened grouped query variables are rejected.
-    const _groupedVariableSnapshot = engine.snapshot("orders", groupedVariable);
-    // @ts-expect-error widened grouped subscription variables are rejected.
-    const _groupedVariableSubscription = engine.subscribe("orders", groupedVariable);
+    // @ts-expect-error grouped orderBy aggregate must reference an aggregate alias.
+    const _invalidGroupedOrderByAggregate: ExactGroupedQuery<
+      typeof Order.Type,
+      typeof invalidGroupedOrderByAggregateQuery
+    > = invalidGroupedOrderByAggregateQuery;
 
-    void _groupedSnapshot;
-    void _groupedSubscription;
-    void _groupedVariableSnapshot;
-    void _groupedVariableSubscription;
+    const invalidGroupedFieldQuery = {
+      groupBy: ["missing"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+    } satisfies {
+      readonly groupBy: readonly ["missing"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+    // @ts-expect-error groupBy fields must exist on the topic row.
+    const _invalidGroupedField: ExactGroupedQuery<
+      typeof Order.Type,
+      typeof invalidGroupedFieldQuery
+    > = invalidGroupedFieldQuery;
   });
 
   it("keeps TopicStore nominal inside engine internals", () => {

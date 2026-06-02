@@ -993,14 +993,10 @@ describe("createViewServerReact", () => {
       ),
     );
     const groupedSnapshot = await Effect.runPromise(
-      Effect.flip(
-        client.snapshot("orders", {
-          // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-          groupBy: ["status"],
-          // @ts-expect-error grouped queries are rejected by the raw in-memory runtime slice.
-          aggregates: { count: { aggFunc: "count" } },
-        }),
-      ),
+      client.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      }),
     );
     const invalidQuery = await Effect.runPromise(
       Effect.flip(
@@ -1013,7 +1009,7 @@ describe("createViewServerReact", () => {
 
     expect(invalidTopic.code).toBe("InvalidTopic");
     expect(invalidRow.code).toBe("InvalidRow");
-    expect(groupedSnapshot.code).toBe("UnsupportedQuery");
+    expect(groupedSnapshot.rows).toStrictEqual([{ status: "open", rowCount: 1n }]);
     expect(invalidQuery.code).toBe("InvalidQuery");
     await view.unmount();
   });

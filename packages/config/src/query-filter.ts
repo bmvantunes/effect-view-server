@@ -31,11 +31,15 @@ export type StringFilter<Value extends string> =
       readonly startsWith?: string;
     };
 
-export type FieldFilter<Value> = Value extends string
-  ? StringFilter<Value>
-  : Value extends number | bigint | BigDecimal.BigDecimal
-    ? RangeFilter<Value>
-    : EqualityFilter<Value>;
+type DefinedFilterValue<Value> = Exclude<Value, undefined>;
+
+export type FieldFilter<Value> = undefined extends Value
+  ? EqualityFilter<DefinedFilterValue<Value>>
+  : Value extends string
+    ? StringFilter<Value>
+    : Value extends number | bigint | BigDecimal.BigDecimal
+      ? RangeFilter<Value>
+      : EqualityFilter<Value>;
 
 export type Where<Row> = {
   readonly [Field in FieldKey<Row>]?: FieldFilter<Row[Field]>;
@@ -58,10 +62,18 @@ type FieldFilterShape<Value> = Value extends string
       readonly lte?: Value;
     };
 
+type ExactFieldFilterShape<Value> = undefined extends Value
+  ? {
+      readonly eq?: DefinedFilterValue<Value>;
+      readonly neq?: DefinedFilterValue<Value>;
+      readonly in?: ReadonlyArray<DefinedFilterValue<Value>>;
+    }
+  : FieldFilterShape<Value>;
+
 type ExactOperatorFilter<Value, Filter> = Filter extends object
   ? Filter extends ReadonlyArray<unknown>
     ? unknown
-    : Filter & RejectExtraKeys<Filter, FieldFilterShape<Value>>
+    : Filter & RejectExtraKeys<Filter, ExactFieldFilterShape<Value>>
   : unknown;
 
 type ExactFilter<Value, Filter> = Filter extends Value

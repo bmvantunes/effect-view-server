@@ -19,11 +19,18 @@ export type StringFieldKey<Row> = Extract<
   string
 >;
 
+type NumericValue = number | bigint | BigDecimal.BigDecimal;
+type IsNumericFieldValue<Value> = [Value] extends [never]
+  ? false
+  : undefined extends Value
+    ? false
+    : [Value] extends [NumericValue]
+      ? true
+      : false;
+
 export type NumericFieldKey<Row> = Extract<
   {
-    readonly [Key in keyof Row]-?: Row[Key] extends number | bigint | BigDecimal.BigDecimal
-      ? Key
-      : never;
+    readonly [Key in keyof Row]-?: IsNumericFieldValue<Row[Key]> extends true ? Key : never;
   }[keyof Row],
   string
 >;

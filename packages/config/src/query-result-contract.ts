@@ -1,10 +1,17 @@
-import type { GroupedQuery, GroupedResult } from "./grouped-query-contract";
-import type { PickRawFields, RawQuery } from "./raw-query-contract";
+import type { ExactGroupedQuery, GroupedQuery, GroupedResult } from "./grouped-query-contract";
+import type { ExactRawQuery, PickRawFields, RawQuery } from "./raw-query-contract";
 
 export type LiveQuery<Row> = RawQuery<Row> | GroupedQuery<Row>;
 
-export type LiveQueryRow<Row, Query> =
-  Query extends GroupedQuery<Row> ? GroupedResult<Row, Query> : PickRawFields<Row, Query>;
+export type ExactLiveQuery<Row, Query> = Query extends {
+  readonly groupBy: ReadonlyArray<unknown>;
+}
+  ? ExactGroupedQuery<Row, Query>
+  : ExactRawQuery<Row, Query>;
+
+export type LiveQueryRow<Row, Query> = Query extends { readonly groupBy: ReadonlyArray<unknown> }
+  ? GroupedResult<Row, Query>
+  : PickRawFields<Row, Query>;
 
 export type LiveQueryResult<Row> = {
   readonly rows: ReadonlyArray<Row>;
@@ -52,5 +59,26 @@ type RejectBroadAggregateAliases<Query> = Query extends {
     : unknown
   : unknown;
 
+type RejectEmptyAggregates<Query> = Query extends {
+  readonly aggregates: infer Aggs;
+}
+  ? keyof Aggs extends never
+    ? { readonly aggregates: never }
+    : unknown
+  : unknown;
+
+type DangerousAggregateAlias = "__proto__" | "prototype" | "constructor";
+
+type RejectDangerousAggregateAliases<Query> =
+  Extract<AggregateAliases<Query>, DangerousAggregateAlias> extends never
+    ? unknown
+    : { readonly aggregates: never };
+
 export type ValidateLiveQuery<Query> = RejectAggregateAliasCollisions<Query> &
-  RejectBroadAggregateAliases<Query>;
+  RejectBroadAggregateAliases<Query> &
+  RejectEmptyAggregates<Query> &
+  RejectDangerousAggregateAliases<Query>;
+
+export type ExactLiveQueryInput<Row, Query> = Query &
+  ExactLiveQuery<Row, Query> &
+  ValidateLiveQuery<Query>;

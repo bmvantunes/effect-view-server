@@ -1,7 +1,16 @@
 import { Effect } from "effect";
-import { UnsupportedQueryError } from "./engine-errors";
 import { makeLiveSubscription } from "./live-subscription";
-import { acquireRawQueryExecution, releaseRawQueryExecution } from "./active-query";
+import {
+  acquireMaterializedQueryExecution,
+  acquireRawQueryExecution,
+  releaseMaterializedQueryExecution,
+  releaseRawQueryExecution,
+} from "./active-query";
+import {
+  evaluateCompiledGroupedQuery,
+  prepareGroupedQuery,
+  type CompiledGroupedQuery,
+} from "./grouped-query-compiler";
 import {
   evaluateCompiledRawQuery,
   prepareRawQuery,
@@ -12,10 +21,15 @@ import { topicStoreRawQueryMetadata, topicStoreReadModel, type TopicStore } from
 
 type RowObject = object;
 
-export type ExecutableQuery<ResultRow extends RowObject> = {
-  readonly kind: "raw";
-  readonly compiled: CompiledRawQuery<object, ResultRow>;
-};
+export type ExecutableQuery<ResultRow extends RowObject> =
+  | {
+      readonly kind: "raw";
+      readonly compiled: CompiledRawQuery<object, ResultRow>;
+    }
+  | {
+      readonly kind: "grouped";
+      readonly compiled: CompiledGroupedQuery<object, ResultRow>;
+    };
 
 export const isGroupedQuery = (query: unknown): boolean =>
   typeof query === "object" &&
@@ -23,16 +37,18 @@ export const isGroupedQuery = (query: unknown): boolean =>
   !Array.isArray(query) &&
   ("groupBy" in query || "aggregates" in query);
 
-const unsupportedGroupedQuery = (topic: string) =>
-  new UnsupportedQueryError({
-    topic,
-    message: "Grouped aggregate queries are not implemented in this slice.",
-  });
-
 export const prepareExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExecution.prepare")(
   function* <ResultRow extends RowObject>(topic: string, store: TopicStore, query: unknown) {
     if (isGroupedQuery(query)) {
-      return yield* unsupportedGroupedQuery(topic);
+      const compiled = yield* prepareGroupedQuery<object, ResultRow>(
+        topic,
+        topicStoreRawQueryMetadata(store),
+        query,
+      );
+      return {
+        kind: "grouped",
+        compiled,
+      } satisfies ExecutableQuery<ResultRow>;
     }
     const compiled = yield* prepareRawQuery<object, ResultRow>(
       topic,
@@ -50,7 +66,9 @@ export const evaluateExecutableQuery = <ResultRow extends RowObject>(
   store: TopicStore,
   executable: ExecutableQuery<ResultRow>,
 ): QueryEvaluation<ResultRow> =>
-  evaluateCompiledRawQuery(topicStoreReadModel(store), executable.compiled);
+  executable.kind === "raw"
+    ? evaluateCompiledRawQuery(topicStoreReadModel(store), executable.compiled)
+    : evaluateCompiledGroupedQuery(topicStoreReadModel(store), executable.compiled);
 
 export const snapshotExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExecution.snapshot")(
   function* <ResultRow extends RowObject>(topic: string, store: TopicStore, query: unknown) {
@@ -71,13 +89,28 @@ export const subscribeExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExe
   ) {
     const executable = yield* prepareExecutableQuery<ResultRow>(topic, store, query);
     const storeReadModel = topicStoreReadModel(store);
-    const execution = yield* acquireRawQueryExecution(storeReadModel, executable.compiled);
+    if (executable.kind === "raw") {
+      const execution = yield* acquireRawQueryExecution(storeReadModel, executable.compiled);
+      return yield* makeLiveSubscription({
+        store,
+        queryId: input.queryId,
+        execution,
+        queueCapacity: input.queueCapacity,
+        release: releaseRawQueryExecution(storeReadModel, executable.compiled),
+      });
+    }
+
+    const execution = yield* acquireMaterializedQueryExecution(
+      storeReadModel,
+      executable.compiled.cacheKey,
+      () => evaluateCompiledGroupedQuery(storeReadModel, executable.compiled),
+    );
     return yield* makeLiveSubscription({
       store,
       queryId: input.queryId,
       execution,
       queueCapacity: input.queueCapacity,
-      release: releaseRawQueryExecution(storeReadModel, executable.compiled),
+      release: releaseMaterializedQueryExecution(storeReadModel, executable.compiled.cacheKey),
     });
   },
 );

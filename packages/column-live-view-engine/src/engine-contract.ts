@@ -1,15 +1,22 @@
 import type {
   DeltaEvent,
+  ExactGroupedQuery,
+  ExactLiveQuery,
   ExactPatch,
   ExactRawQuery,
+  GroupedQuery,
+  GroupedResult,
   LiveQueryRow,
   LiveQueryResult,
+  PickRawFields,
+  RawQuery,
   RowFromSchema,
   RowSchema,
   SnapshotEvent,
   StatusEvent,
   StringFieldKey,
   TopicRow,
+  ValidateLiveQuery,
 } from "@view-server/config";
 import type { Effect, Schema, Stream } from "effect";
 import type { ColumnLiveViewEngineHealth } from "./engine-health";
@@ -47,6 +54,84 @@ export type ColumnLiveViewSubscription<Row> = {
   readonly close: () => Effect.Effect<void, never>;
 };
 
+type EngineSnapshot<Topics extends DecodableTopicDefinitions> = {
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+};
+
+type EngineSubscribe<Topics extends DecodableTopicDefinitions> = {
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+};
+
 export type AnyTopicRow<Topics extends DecodableTopicDefinitions> = TopicRow<
   Topics,
   Extract<keyof Topics, string>
@@ -73,26 +158,12 @@ export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
     topic: Topic,
     key: string,
   ) => Effect.Effect<void, ColumnLiveViewEngineError>;
-  readonly snapshot: <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends { readonly select: ReadonlyArray<unknown> },
-  >(
+  readonly snapshot: EngineSnapshot<Topics>;
+  readonly subscribe: EngineSubscribe<Topics>;
+  readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
-    query: Query & ExactRawQuery<TopicRow<Topics, Topic>, Query>,
-  ) => Effect.Effect<
-    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  readonly subscribe: <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends { readonly select: ReadonlyArray<unknown> },
-  >(
-    topic: Topic,
-    query: Query & ExactRawQuery<TopicRow<Topics, Topic>, Query>,
-  ) => Effect.Effect<
-    ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
+    query: unknown,
+  ) => Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError>;
   readonly health: () => Effect.Effect<ColumnLiveViewEngineHealth<Topics>, never>;
   readonly reset: () => Effect.Effect<void, EngineClosedError>;
   readonly close: () => Effect.Effect<void, never>;

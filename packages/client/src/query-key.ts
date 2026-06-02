@@ -1,10 +1,5 @@
 import { format, isBigDecimal, normalize } from "effect/BigDecimal";
 
-const objectIdentities = new WeakMap<object, number>();
-const symbolIdentities = new Map<symbol, number>();
-let nextObjectIdentity = 0;
-let nextSymbolIdentity = 0;
-
 type StableObjectEntry = readonly [string, StableQueryToken];
 type StableMapEntry = readonly [StableQueryToken, StableQueryToken];
 
@@ -16,34 +11,12 @@ type StableQueryToken =
   | readonly ["string", string]
   | readonly ["bigint", string]
   | readonly ["bigDecimal", string]
-  | readonly ["symbol", number]
-  | readonly ["function", string, number]
+  | readonly ["unsupported", string]
   | readonly ["cycle"]
   | readonly ["array", ReadonlyArray<StableQueryToken>]
   | readonly ["object", ReadonlyArray<StableObjectEntry>]
   | readonly ["map", ReadonlyArray<StableMapEntry>]
-  | readonly ["set", ReadonlyArray<StableQueryToken>]
-  | readonly ["nonPlainObject", string, number];
-
-const stableObjectIdentity = (value: object): number => {
-  const identity = objectIdentities.get(value);
-  if (identity !== undefined) {
-    return identity;
-  }
-  nextObjectIdentity += 1;
-  objectIdentities.set(value, nextObjectIdentity);
-  return nextObjectIdentity;
-};
-
-const stableSymbolIdentity = (value: symbol): number => {
-  const identity = symbolIdentities.get(value);
-  if (identity !== undefined) {
-    return identity;
-  }
-  nextSymbolIdentity += 1;
-  symbolIdentities.set(value, nextSymbolIdentity);
-  return nextSymbolIdentity;
-};
+  | readonly ["set", ReadonlyArray<StableQueryToken>];
 
 const isPlainObject = (value: object): boolean => {
   const prototype = Object.getPrototypeOf(value);
@@ -56,9 +29,6 @@ const stableNumberValue = (value: number): string => {
   }
   return String(value);
 };
-
-const stableFunctionName = (value: { readonly name: string }): string =>
-  value.name === "" ? "anonymous" : value.name;
 
 const stableObjectName = (value: object): string => {
   const constructor = value.constructor;
@@ -106,10 +76,10 @@ const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryT
     return ["bigDecimal", format(normalize(value))];
   }
   if (typeof value === "symbol") {
-    return ["symbol", stableSymbolIdentity(value)];
+    return ["unsupported", "symbol"];
   }
   if (typeof value === "function") {
-    return ["function", stableFunctionName(value), stableObjectIdentity(value)];
+    return ["unsupported", "function"];
   }
   if (Array.isArray(value)) {
     return withCycleTracking(value, active, () => [
@@ -146,7 +116,7 @@ const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryT
     });
   }
   if (!isPlainObject(value)) {
-    return ["nonPlainObject", stableObjectName(value), stableObjectIdentity(value)];
+    return ["unsupported", stableObjectName(value)];
   }
   return withCycleTracking(value, active, () => [
     "object",

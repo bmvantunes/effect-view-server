@@ -1,12 +1,13 @@
 import type { Config, Effect } from "effect";
 import type { ViewServerHealth } from "./health-contract";
 import type {
+  ExactLiveQueryInput,
   ExactPatch,
-  ExactRawQuery,
-  LiveQueryResult,
+  GroupedQuery,
   LiveQueryRow,
+  LiveQueryResult,
+  RawQuery,
   TopicRow,
-  ValidateLiveQuery,
 } from "./topic-contract";
 
 export type ViewServerBackpressureError = {
@@ -45,6 +46,17 @@ export type ViewServerTransportError =
       readonly queryId?: string;
     };
 
+type RuntimeSnapshot<Topics extends object> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+>(
+  topic: Topic,
+  query: ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>,
+) => Effect.Effect<
+  LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+  ViewServerRuntimeError
+>;
+
 export type ViewServerRuntimeClient<Topics extends object> = {
   readonly publish: <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
@@ -66,16 +78,7 @@ export type ViewServerRuntimeClient<Topics extends object> = {
     topic: Topic,
     key: string,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly snapshot: <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends { readonly select: ReadonlyArray<unknown> },
-  >(
-    topic: Topic,
-    query: Query & ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
-  ) => Effect.Effect<
-    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError
-  >;
+  readonly snapshot: RuntimeSnapshot<Topics>;
   readonly health: () => Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;
   readonly reset: () => Effect.Effect<void, ViewServerRuntimeError>;
 };

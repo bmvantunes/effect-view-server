@@ -1,6 +1,6 @@
-import type { FieldKey, OrderBy } from "@view-server/config";
-import { Effect, Schema, SchemaAST } from "effect";
-import { isBigDecimal, Order } from "effect/BigDecimal";
+import { viewServerSchemaFieldMetadata, type FieldKey, type OrderBy } from "@view-server/config";
+import { Effect, Schema } from "effect";
+import { format as formatBigDecimal, isBigDecimal, normalize, Order } from "effect/BigDecimal";
 import {
   cloneRecord,
   cloneUnknown,
@@ -39,7 +39,12 @@ type SchemaWithFields = Schema.Decoder<object> & {
 
 export type RawQueryCompilerMetadata = {
   readonly fieldNames: ReadonlySet<string>;
+  readonly fieldMetadata: ReadonlyMap<string, ReturnType<typeof viewServerSchemaFieldMetadata>>;
   readonly structuredFieldNames: ReadonlySet<string>;
+  readonly stringFieldNames: ReadonlySet<string>;
+  readonly numericFieldNames: ReadonlySet<string>;
+  readonly bigintFieldNames: ReadonlySet<string>;
+  readonly bigDecimalFieldNames: ReadonlySet<string>;
 };
 
 export type CompiledRawQuery<Row extends RowObject, ResultRow extends RowObject> = {
@@ -70,6 +75,7 @@ type FilterObject = {
 
 const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "select"]);
 const filterOperatorKeys = new Set(["eq", "neq", "in", "gt", "gte", "lt", "lte", "startsWith"]);
+const rangeFilterOperatorKeys = new Set(["gt", "gte", "lt", "lte"]);
 
 const isDenseArray = (value: ReadonlyArray<unknown>): boolean => {
   for (let index = 0; index < value.length; index += 1) {
@@ -83,18 +89,114 @@ const isDenseArray = (value: ReadonlyArray<unknown>): boolean => {
 const isValidWindowNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+const isQueryValueSafe = (value: unknown, active: WeakSet<object> = new WeakSet()): boolean => {
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "bigint" ||
+    typeof value === "boolean" ||
+    isBigDecimal(value)
+  ) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    if (active.has(value)) {
+      return false;
+    }
+    active.add(value);
+    const safe = isDenseArray(value) && value.every((entry) => isQueryValueSafe(entry, active));
+    active.delete(value);
+    return safe;
+  }
+  if (isPlainRecord(value)) {
+    if (active.has(value)) {
+      return false;
+    }
+    active.add(value);
+    const safe = Object.values(value).every((entry) => isQueryValueSafe(entry, active));
+    active.delete(value);
+    return safe;
+  }
+  return false;
+};
+
 const isSchemaWithFields = (schema: Schema.Decoder<object>): schema is SchemaWithFields =>
   "fields" in schema && isRecord(schema.fields);
 
 const schemaFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> =>
   isSchemaWithFields(schema) ? new Set(Object.keys(schema.fields)) : new Set();
 
-const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
-  if (!isRecord(schema)) {
-    return undefined;
+const schemaFieldMetadata = (
+  schema: Schema.Decoder<object>,
+): ReadonlyMap<string, ReturnType<typeof viewServerSchemaFieldMetadata>> => {
+  if (!isSchemaWithFields(schema)) {
+    return new Map();
   }
-  const ast = schema["ast"];
-  return SchemaAST.isAST(ast) ? ast : undefined;
+
+  const fields = new Map<string, ReturnType<typeof viewServerSchemaFieldMetadata>>();
+  for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+    fields.set(field, viewServerSchemaFieldMetadata(fieldSchema));
+  }
+  return fields;
+};
+
+const schemaNumericFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> => {
+  if (!isSchemaWithFields(schema)) {
+    return new Set();
+  }
+
+  const fields = new Set<string>();
+  for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+    if (!viewServerSchemaFieldMetadata(fieldSchema).isNumeric) {
+      continue;
+    }
+    fields.add(field);
+  }
+  return fields;
+};
+
+const schemaBigintFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> => {
+  if (!isSchemaWithFields(schema)) {
+    return new Set();
+  }
+
+  const fields = new Set<string>();
+  for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+    if (viewServerSchemaFieldMetadata(fieldSchema).isPureBigInt) {
+      fields.add(field);
+    }
+  }
+  return fields;
+};
+
+const schemaBigDecimalFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> => {
+  if (!isSchemaWithFields(schema)) {
+    return new Set();
+  }
+
+  const fields = new Set<string>();
+  for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+    if (viewServerSchemaFieldMetadata(fieldSchema).sumResultKind === "bigDecimal") {
+      fields.add(field);
+    }
+  }
+  return fields;
+};
+
+const schemaStringFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> => {
+  if (!isSchemaWithFields(schema)) {
+    return new Set();
+  }
+
+  const fields = new Set<string>();
+  for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+    if (viewServerSchemaFieldMetadata(fieldSchema).isString) {
+      fields.add(field);
+    }
+  }
+  return fields;
 };
 
 const schemaStructuredFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> => {
@@ -104,11 +206,7 @@ const schemaStructuredFieldNames = (schema: Schema.Decoder<object>): ReadonlySet
 
   const fields = new Set<string>();
   for (const [field, fieldSchema] of Object.entries(schema.fields)) {
-    const ast = schemaAst(fieldSchema);
-    if (
-      ast !== undefined &&
-      (SchemaAST.isObjects(ast) || SchemaAST.isArrays(ast) || SchemaAST.isObjectKeyword(ast))
-    ) {
+    if (viewServerSchemaFieldMetadata(fieldSchema).isStructured) {
       fields.add(field);
     }
   }
@@ -119,7 +217,12 @@ export const rawQueryCompilerMetadata = (
   schema: Schema.Decoder<object>,
 ): RawQueryCompilerMetadata => ({
   fieldNames: schemaFieldNames(schema),
+  fieldMetadata: schemaFieldMetadata(schema),
   structuredFieldNames: schemaStructuredFieldNames(schema),
+  stringFieldNames: schemaStringFieldNames(schema),
+  numericFieldNames: schemaNumericFieldNames(schema),
+  bigintFieldNames: schemaBigintFieldNames(schema),
+  bigDecimalFieldNames: schemaBigDecimalFieldNames(schema),
 });
 
 const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")((
@@ -161,6 +264,12 @@ const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")((
         return InvalidQueryError.make({
           topic,
           message: `Raw query where contains unknown field: ${field}.`,
+        });
+      }
+      if (!isQueryValueSafe(where[field])) {
+        return InvalidQueryError.make({
+          topic,
+          message: `Raw query where field ${field} contains unsupported query value.`,
         });
       }
     }
@@ -319,6 +428,23 @@ const validateRuntimeQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.validate")
         message: `Raw query where field ${field} contains unsupported filter operator.`,
       });
     }
+    if (operatorKeyCount > 0) {
+      if (keys.includes("startsWith") && !metadata.stringFieldNames.has(field)) {
+        return yield* InvalidQueryError.make({
+          topic,
+          message: `Raw query where field ${field} does not support startsWith.`,
+        });
+      }
+      if (
+        keys.some((key) => rangeFilterOperatorKeys.has(key)) &&
+        !metadata.numericFieldNames.has(field)
+      ) {
+        return yield* InvalidQueryError.make({
+          topic,
+          message: `Raw query where field ${field} does not support range operators.`,
+        });
+      }
+    }
     if (operatorKeyCount === 0 && !metadata.structuredFieldNames.has(field)) {
       return yield* InvalidQueryError.make({
         topic,
@@ -328,22 +454,78 @@ const validateRuntimeQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.validate")
   }
 });
 
-const stableValueString = (value: unknown): string => {
+type StableQueryObjectEntry = readonly [string, StableQueryValueToken];
+
+type StableQueryValueToken =
+  | readonly ["null"]
+  | readonly ["undefined"]
+  | readonly ["boolean", boolean]
+  | readonly ["number", string]
+  | readonly ["string", string]
+  | readonly ["bigint", string]
+  | readonly ["bigDecimal", string]
+  | readonly ["unsupported", string]
+  | readonly ["cycle"]
+  | readonly ["array", ReadonlyArray<StableQueryValueToken>]
+  | readonly ["object", ReadonlyArray<StableQueryObjectEntry>]
+  | readonly ["nonPlainObject", string];
+
+const stableQueryValueToken = (value: unknown, active: WeakSet<object>): StableQueryValueToken => {
+  if (isBigDecimal(value)) {
+    return ["bigDecimal", formatBigDecimal(normalize(value))];
+  }
+  if (value === null) {
+    return ["null"];
+  }
+  if (typeof value === "bigint") {
+    return ["bigint", value.toString()];
+  }
+  if (typeof value === "symbol") {
+    return ["unsupported", `symbol:${value.description ?? ""}`];
+  }
+  if (typeof value === "function") {
+    return ["unsupported", `function:${value.name}`];
+  }
   if (Array.isArray(value)) {
-    return `[${value.map(stableValueString).join(",")}]`;
+    if (active.has(value)) {
+      return ["cycle"];
+    }
+    active.add(value);
+    const token: StableQueryValueToken = [
+      "array",
+      value.map((entry) => stableQueryValueToken(entry, active)),
+    ];
+    active.delete(value);
+    return token;
   }
   if (isPlainRecord(value)) {
-    return `{${Object.keys(value)
+    if (active.has(value)) {
+      return ["cycle"];
+    }
+    active.add(value);
+    const entries: Array<StableQueryObjectEntry> = Object.keys(value)
       .toSorted()
-      .map((key) => `${key}:${stableValueString(value[key])}`)
-      .join(",")}}`;
+      .map((key) => [key, stableQueryValueToken(value[key], active)]);
+    active.delete(value);
+    return ["object", entries];
   }
-  return `${typeof value}:${
-    JSON.stringify(value, (_key, entry: unknown) =>
-      typeof entry === "bigint" ? entry.toString() : entry,
-    ) ?? ""
-  }`;
+  if (typeof value === "object" && value !== null) {
+    return ["nonPlainObject", Object.prototype.toString.call(value)];
+  }
+  if (typeof value === "number") {
+    return ["number", Object.is(value, -0) ? "-0" : String(value)];
+  }
+  if (typeof value === "string") {
+    return ["string", value];
+  }
+  if (typeof value === "boolean") {
+    return ["boolean", value];
+  }
+  return ["undefined"];
 };
+
+export const stableQueryValueString = (value: unknown): string =>
+  JSON.stringify(stableQueryValueToken(value, new WeakSet()));
 
 const valueRank = (value: unknown): number => {
   if (value == null) {
@@ -384,12 +566,12 @@ const compareFilterValue = (left: unknown, right: unknown): number | undefined =
 };
 
 const compareByStableString = (left: unknown, right: unknown): number => {
-  const leftString = stableValueString(left);
-  const rightString = stableValueString(right);
+  const leftString = stableQueryValueString(left);
+  const rightString = stableQueryValueString(right);
   return Number(leftString > rightString) - Number(leftString < rightString);
 };
 
-const compareValue = (left: unknown, right: unknown): number | undefined => {
+export const compareQueryValue = (left: unknown, right: unknown): number | undefined => {
   const leftRank = valueRank(left);
   const rightRank = valueRank(right);
   if (leftRank !== rightRank) {
@@ -561,7 +743,7 @@ const compareRows = <Row extends RowObject>(
   orderBy: ReadonlyArray<OrderBy<Record<string, unknown>>>,
 ): number => {
   for (const order of orderBy) {
-    const comparison = compareValue(
+    const comparison = compareQueryValue(
       fieldValue(left.row, order.field),
       fieldValue(right.row, order.field),
     );

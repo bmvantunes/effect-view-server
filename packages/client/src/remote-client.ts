@@ -1,7 +1,13 @@
 import { BrowserSocket } from "@effect/platform-browser";
 import type {
+  ExactGroupedQuery,
+  ExactLiveQuery,
   ExactRawQuery,
+  GroupedQuery,
+  GroupedResult,
   LiveQueryRow,
+  PickRawFields,
+  RawQuery,
   StatusEvent,
   TopicRuntimeHealth,
   TopicDefinitions,
@@ -22,13 +28,13 @@ import {
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerDecodeLiveEvent,
-  viewServerEncodeRawQuery,
+  viewServerEncodeLiveQuery,
   type ViewServerRpcError,
   type ViewServerWireEvent,
   type ViewServerWireHealth,
-  type ViewServerWireRawQuery,
+  type ViewServerWireLiveQuery,
 } from "@view-server/protocol";
-import { Cause, Context, Effect, Exit, Layer, ManagedRuntime, Queue, Scope, Stream } from "effect";
+import { Context, Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
 import * as AtomRef from "effect/unstable/reactivity/AtomRef";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
@@ -37,6 +43,7 @@ import type {
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
 } from "./live-client";
+import { makeRemoteSubscription } from "./remote-subscription";
 
 export type ViewServerRemoteClientError = ViewServerRuntimeError | ViewServerTransportError;
 
@@ -162,7 +169,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
 
   const subscribeRpc = <Row>(
     topic: string,
-    query: ViewServerWireRawQuery,
+    query: ViewServerWireLiveQuery,
     decodeEvent: (
       event: ViewServerWireEvent,
     ) => Effect.Effect<ViewServerLiveEvent<Row>, ViewServerRuntimeError>,
@@ -184,114 +191,64 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
   const subscriptionBufferSize = options.subscriptionBufferSize ?? 1_024;
   const clientScope = yield* Scope.make("parallel");
 
-  const refreshHealth = Effect.fn("ViewServerClient.remote.health.refresh")(function* () {
-    const nextHealth = yield* healthRpc().pipe(
-      Effect.flatMap((next) => viewServerDecodeHealth(config, next)),
-    );
-    yield* Effect.sync(() => {
-      health.update(() => nextHealth);
-    });
-  });
-
-  let healthRefreshScheduled = false;
-  const requestHealthRefresh = Effect.fn("ViewServerClient.remote.health.refresh.request")(
-    function* () {
-      const shouldSchedule = yield* Effect.sync(() => {
-        if (healthRefreshScheduled) {
-          return false;
-        }
-        healthRefreshScheduled = true;
-        return true;
-      });
-      if (shouldSchedule) {
-        yield* Effect.sleep("20 millis").pipe(
-          Effect.andThen(refreshHealth()),
-          Effect.ensuring(
-            Effect.sync(() => {
-              healthRefreshScheduled = false;
-            }),
-          ),
-          Effect.forkIn(clientScope, { startImmediately: true }),
-          Effect.ignore,
-        );
-      }
-    },
-  );
-
   const updateHealthSummaryRef = (event: ViewServerLiveEvent<ViewServerHealthSummaryRow<Topics>>) =>
-    Effect.gen(function* () {
-      let shouldRefreshHealth = false;
-      yield* Effect.sync(() => {
-        if (event.type === "snapshot") {
-          shouldRefreshHealth = true;
-          for (const row of event.rows) {
-            health.update((current) => ({
-              ...current,
-              status: row.runtimeStatus,
-            }));
+    Effect.sync(() => {
+      const applySummaryRow = (row: ViewServerHealthSummaryRow<Topics>) => {
+        health.update((current) => ({
+          ...current,
+          status: row.runtimeStatus,
+        }));
+      };
+      if (event.type === "snapshot") {
+        for (const row of event.rows) {
+          applySummaryRow(row);
+        }
+      }
+      if (event.type === "delta") {
+        for (const operation of event.operations) {
+          if (operation.type === "insert" || operation.type === "update") {
+            applySummaryRow(operation.row);
           }
         }
-        if (event.type === "delta") {
-          shouldRefreshHealth = true;
-          for (const operation of event.operations) {
-            if (operation.type === "insert" || operation.type === "update") {
-              health.update((current) => ({
-                ...current,
-                status: operation.row.runtimeStatus,
-              }));
-            }
-          }
-        }
-      });
-      if (shouldRefreshHealth) {
-        yield* requestHealthRefresh();
       }
     });
 
   const updateHealthTopicRef = (
     event: ViewServerLiveEvent<ViewServerHealthTopicRow<Extract<keyof Topics, string>>>,
   ) =>
-    Effect.gen(function* () {
-      let shouldRefreshHealth = false;
-      yield* Effect.sync(() => {
-        if (event.type === "snapshot") {
-          shouldRefreshHealth = true;
-          health.update((current) => {
-            const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
-            for (const row of event.rows) {
-              topics[row.id] = topicHealthFromRow(current.engine.topics[row.id], row);
+    Effect.sync(() => {
+      if (event.type === "snapshot") {
+        health.update((current) => {
+          const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
+          for (const row of event.rows) {
+            topics[row.id] = topicHealthFromRow(current.engine.topics[row.id], row);
+          }
+          return {
+            ...current,
+            engine: {
+              topics: typedHealthTopics<Topics>(topics),
+            },
+          };
+        });
+      }
+      if (event.type === "delta") {
+        health.update((current) => {
+          const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
+          for (const operation of event.operations) {
+            if (operation.type === "insert" || operation.type === "update") {
+              topics[operation.key] = topicHealthFromRow(
+                current.engine.topics[operation.row.id],
+                operation.row,
+              );
             }
-            return {
-              ...current,
-              engine: {
-                topics: typedHealthTopics<Topics>(topics),
-              },
-            };
-          });
-        }
-        if (event.type === "delta") {
-          shouldRefreshHealth = true;
-          health.update((current) => {
-            const topics: Record<string, TopicRuntimeHealth> = { ...current.engine.topics };
-            for (const operation of event.operations) {
-              if (operation.type === "insert" || operation.type === "update") {
-                topics[operation.key] = topicHealthFromRow(
-                  current.engine.topics[operation.row.id],
-                  operation.row,
-                );
-              }
-            }
-            return {
-              ...current,
-              engine: {
-                topics: typedHealthTopics<Topics>(topics),
-              },
-            };
-          });
-        }
-      });
-      if (shouldRefreshHealth) {
-        yield* requestHealthRefresh();
+          }
+          return {
+            ...current,
+            engine: {
+              topics: typedHealthTopics<Topics>(topics),
+            },
+          };
+        });
       }
     });
 
@@ -350,9 +307,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
     ),
   );
 
-  const streamToSubscription = Effect.fn("ViewServerClient.remote.subscription.make")(function* <
-    Row,
-  >(
+  const streamToSubscription = <Row>(
     topic: string,
     source: Stream.Stream<ViewServerLiveEvent<Row>, ViewServerRemoteClientError>,
     lifecycle: {
@@ -362,49 +317,69 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
       onOpen: Effect.void,
       onClose: Effect.void,
     },
-  ) {
-    const scope = yield* Scope.fork(clientScope, "parallel");
-    const stream = source.pipe(
-      Stream.catch((error) => Stream.make(subscriptionFailureStatus(topic, error))),
-    );
-    const queue = yield* Queue.bounded<ViewServerLiveEvent<Row>, Cause.Done>(
+  ) =>
+    makeRemoteSubscription({
+      clientScope,
+      failureStatus: subscriptionFailureStatus,
+      lifecycle,
+      source,
       subscriptionBufferSize,
-    );
-    yield* Scope.addFinalizer(scope, lifecycle.onClose.pipe(Effect.ignore));
-    yield* Stream.runIntoQueue(stream, queue).pipe(
-      Effect.forkIn(scope, { startImmediately: true }),
-      Effect.ignore,
-    );
-    yield* lifecycle.onOpen;
-    const closeSubscription = Scope.close(scope, Exit.void).pipe(Effect.ignore);
-    return {
-      events: Stream.fromQueue(queue).pipe(Stream.ensuring(closeSubscription)),
-      close: () => closeSubscription,
-    } satisfies ViewServerLiveSubscription<Row>;
-  });
+      topic,
+    });
 
-  const subscribe = Effect.fn("ViewServerClient.remote.subscribe")(function* <
+  const subscribeLive = Effect.fn("ViewServerClient.remote.subscribe")(function* <
     Topic extends Extract<keyof Topics, string>,
-    const Query extends { readonly select: ReadonlyArray<unknown> },
-  >(
-    topic: Topic,
-    query: Query & ExactRawQuery<TopicRow<Topics, Topic>, Query> & ValidateLiveQuery<Query>,
-  ) {
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(topic: Topic, query: Query) {
     type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
-    const wireQuery = yield* viewServerEncodeRawQuery(config, topic, query);
+    const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, query);
     const stream = subscribeRpc<Row>(topic, wireQuery, (event) =>
-      viewServerDecodeLiveEvent<Topics, Topic, Row>(
-        config,
-        topic,
-        new Set(wireQuery.select),
-        event,
-      ),
+      viewServerDecodeLiveEvent<Topics, Topic, Row>(config, topic, wireQuery, event),
     );
     return yield* streamToSubscription(topic, stream, {
       onOpen: updateSubscriptionCount(topic, 1),
       onClose: updateSubscriptionCount(topic, -1),
     });
   });
+
+  function subscribe<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    ViewServerLiveSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
+    ViewServerRemoteClientError
+  >;
+  function subscribe<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    ViewServerLiveSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
+    ViewServerRemoteClientError
+  >;
+  function subscribe<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+  ): Effect.Effect<
+    ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ViewServerRemoteClientError
+  > {
+    return subscribeLive(topic, query);
+  }
 
   const subscribeHealthSummary = Effect.fn("ViewServerClient.remote.healthSummary.subscribe")(
     function* () {

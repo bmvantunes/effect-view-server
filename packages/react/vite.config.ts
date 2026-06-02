@@ -3,6 +3,9 @@ import { playwright } from "vitest/browser/providers/playwright";
 import { libraryPack } from "../../vite.pack";
 
 export default defineConfig({
+  optimizeDeps: {
+    include: ["effect/Function"],
+  },
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     globalSetup: ["./test/remote-global-setup.ts"],

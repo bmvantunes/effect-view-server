@@ -1,8 +1,12 @@
 import type {
-  Aggregate,
   AggregateAliasesFromAggregates,
   AggregateResultValue,
   Aggregates,
+  AverageAggregate,
+  ComparableAggregate,
+  CountAggregate,
+  CountDistinctAggregate,
+  SumAggregate,
 } from "./query-aggregate";
 import type { FieldKey, Simplify } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
@@ -23,8 +27,26 @@ type NonEmptyFieldTuple<Row, Tuple> = Tuple extends readonly [unknown, ...Array<
   ? { readonly [Index in keyof Tuple]: Tuple[Index] & FieldKey<Row> }
   : never;
 
+type ExactAggregate<Row, Candidate> = Candidate extends {
+  readonly aggFunc: "count";
+}
+  ? Candidate & CountAggregate & RejectExtraKeys<Candidate, CountAggregate>
+  : Candidate extends { readonly aggFunc: "countDistinct" }
+    ? Candidate &
+        CountDistinctAggregate<Row> &
+        RejectExtraKeys<Candidate, CountDistinctAggregate<Row>>
+    : Candidate extends { readonly aggFunc: "sum" }
+      ? Candidate & SumAggregate<Row> & RejectExtraKeys<Candidate, SumAggregate<Row>>
+      : Candidate extends { readonly aggFunc: "avg" }
+        ? Candidate & AverageAggregate<Row> & RejectExtraKeys<Candidate, AverageAggregate<Row>>
+        : Candidate extends { readonly aggFunc: "min" | "max" }
+          ? Candidate &
+              ComparableAggregate<Row> &
+              RejectExtraKeys<Candidate, ComparableAggregate<Row>>
+          : never;
+
 type ExactAggregates<Row, Candidate> = {
-  readonly [Alias in keyof Candidate]: Candidate[Alias] & Aggregate<Row>;
+  readonly [Alias in keyof Candidate]: ExactAggregate<Row, Candidate[Alias]>;
 };
 
 type GroupedOrderByField<Row, GroupBy> = Extract<

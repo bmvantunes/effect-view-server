@@ -46,6 +46,8 @@ export type { ExactPatch, ExactRawQuery, PickRawFields, RawQuery } from "./raw-q
 export type { ExactGroupedQuery, GroupedQuery, GroupedResult } from "./grouped-query-contract";
 export type {
   LiveQuery,
+  ExactLiveQuery,
+  ExactLiveQueryInput,
   LiveQueryResult,
   LiveQueryRow,
   ValidateLiveQuery,

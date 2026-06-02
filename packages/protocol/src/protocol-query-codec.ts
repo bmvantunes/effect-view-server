@@ -1,6 +1,7 @@
 import type {
-  ExactRawQuery,
+  Aggregates,
   FieldKey,
+  GroupedOrderBy,
   OrderBy,
   RowSchema,
   TopicDefinitions,
@@ -8,6 +9,7 @@ import type {
   ViewServerRuntimeError,
   Where,
 } from "@view-server/config";
+import { viewServerSchemaFieldMetadata } from "@view-server/config";
 import { Effect, Schema } from "effect";
 
 type JsonFieldSchema = Schema.Codec<unknown, unknown, never, never>;
@@ -28,6 +30,41 @@ export const ViewServerWireRawQuerySchema = Schema.Struct({
 });
 
 export type ViewServerWireRawQuery = typeof ViewServerWireRawQuerySchema.Type;
+
+const ViewServerWireAggregateSchema = Schema.Union([
+  Schema.Struct({
+    aggFunc: Schema.Literal("count"),
+  }),
+  Schema.Struct({
+    aggFunc: Schema.Literals(["countDistinct", "sum", "avg", "min", "max"]),
+    field: Schema.String,
+  }),
+]);
+
+export const ViewServerWireGroupedQuerySchema = Schema.Struct({
+  groupBy: Schema.Array(Schema.String),
+  aggregates: Schema.Record(Schema.String, ViewServerWireAggregateSchema),
+  where: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  orderBy: Schema.optionalKey(
+    Schema.Array(
+      Schema.Union([
+        Schema.Struct({
+          field: Schema.String,
+          direction: Schema.Literals(["asc", "desc"]),
+        }),
+        Schema.Struct({
+          aggregate: Schema.String,
+          direction: Schema.Literals(["asc", "desc"]),
+        }),
+      ]),
+    ),
+  ),
+  offset: Schema.optionalKey(Schema.Number),
+  limit: Schema.optionalKey(Schema.Number),
+});
+
+export type ViewServerWireGroupedQuery = typeof ViewServerWireGroupedQuerySchema.Type;
+export type ViewServerWireLiveQuery = ViewServerWireRawQuery | ViewServerWireGroupedQuery;
 
 export const ViewServerSubscribePayloadSchema = Schema.Struct({
   topic: Schema.String,
@@ -56,6 +93,30 @@ const LooseWireRawQuerySchema = Schema.Struct({
 
 type LooseWireRawQuery = typeof LooseWireRawQuerySchema.Type;
 
+const LooseWireGroupedQuerySchema = Schema.Struct({
+  groupBy: Schema.Array(Schema.String),
+  aggregates: Schema.Record(Schema.String, ViewServerWireAggregateSchema),
+  where: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  orderBy: Schema.optionalKey(
+    Schema.Array(
+      Schema.Union([
+        Schema.Struct({
+          field: Schema.String,
+          direction: Schema.Literals(["asc", "desc"]),
+        }),
+        Schema.Struct({
+          aggregate: Schema.String,
+          direction: Schema.Literals(["asc", "desc"]),
+        }),
+      ]),
+    ),
+  ),
+  offset: Schema.optionalKey(Schema.Number),
+  limit: Schema.optionalKey(Schema.Number),
+});
+
+type LooseWireGroupedQuery = typeof LooseWireGroupedQuerySchema.Type;
+
 type TrustedRawQuery<Row> = {
   readonly select: ReadonlyArray<FieldKey<Row>>;
   readonly where?: Where<Row>;
@@ -64,10 +125,26 @@ type TrustedRawQuery<Row> = {
   readonly limit?: number;
 };
 
-export type ViewServerValidatedRawQuery<Row> = TrustedRawQuery<Row> &
-  ExactRawQuery<Row, TrustedRawQuery<Row>>;
+export type ViewServerValidatedRawQuery<Row> = TrustedRawQuery<Row>;
+
+type TrustedGroupedQuery<Row> = {
+  readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
+  readonly aggregates: Aggregates<Row>;
+  readonly where?: Where<Row>;
+  readonly orderBy?: ReadonlyArray<GroupedOrderBy<Row>>;
+  readonly offset?: number;
+  readonly limit?: number;
+};
+
+export type ViewServerValidatedGroupedQuery<Row> = TrustedGroupedQuery<Row>;
+
+export type ViewServerValidatedLiveQuery<Row> =
+  | ViewServerValidatedRawQuery<Row>
+  | ViewServerValidatedGroupedQuery<Row>;
 
 const filterOperatorKeys = new Set(["eq", "neq", "in", "gt", "gte", "lt", "lte", "startsWith"]);
+const rangeFilterOperatorKeys = new Set(["gt", "gte", "lt", "lte"]);
+const dangerousRecordKeys = new Set(["__proto__", "prototype", "constructor"]);
 
 const strictParseOptions = {
   onExcessProperty: "error",
@@ -76,10 +153,17 @@ const strictParseOptions = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const isNumericFieldSchema = (schema: JsonFieldSchema | undefined): boolean => {
+  return schema !== undefined && viewServerSchemaFieldMetadata(schema).isNumeric;
+};
+
 const isFilterObject = (value: unknown): value is Record<string, unknown> =>
   isRecord(value) &&
   Object.keys(value).length > 0 &&
   Object.keys(value).every((key) => filterOperatorKeys.has(key));
+
+const isGroupedQueryInput = (query: unknown): query is { readonly groupBy: unknown } =>
+  isRecord(query) && Object.hasOwn(query, "groupBy");
 
 const invalidTopic = (topic: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
@@ -129,6 +213,19 @@ const isRawQueryForTopic = (schema: RowSchema, query: LooseWireRawQuery): boolea
   }
   return true;
 };
+
+const validateWindow = Effect.fn("ViewServerProtocol.query.window.validate")(function* (
+  topic: string,
+  offset: number | undefined,
+  limit: number | undefined,
+) {
+  if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) {
+    return yield* Effect.fail(invalidQuery(topic, "Query offset must be a non-negative integer"));
+  }
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+    return yield* Effect.fail(invalidQuery(topic, "Query limit must be a non-negative integer"));
+  }
+});
 
 export const viewServerDecodeTopic = Effect.fn("ViewServerProtocol.topic.decode")(function* <
   const Topics extends TopicDefinitions,
@@ -221,12 +318,36 @@ const decodeStringFilterValue = Effect.fn("ViewServerProtocol.filter.string.deco
   return decoded;
 });
 
+const validateOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.validate")(
+  function* (
+    topic: string,
+    field: string,
+    schema: JsonFieldSchema,
+    value: Record<string, unknown>,
+  ) {
+    const metadata = viewServerSchemaFieldMetadata(schema);
+    if (metadata.isStructured) {
+      return;
+    }
+    const keys = Object.keys(value);
+    if (keys.includes("startsWith") && !metadata.isString) {
+      return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support startsWith`));
+    }
+    if (keys.some((key) => rangeFilterOperatorKeys.has(key)) && !metadata.isNumeric) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Filter ${field} does not support range operators`),
+      );
+    }
+  },
+);
+
 const encodeOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.encode")(function* (
   topic: string,
   field: string,
   schema: JsonFieldSchema,
   value: Record<string, unknown>,
 ) {
+  yield* validateOperatorFilterValue(topic, field, schema, value);
   const output: Record<string, Schema.Json> = {};
   for (const [operator, operatorValue] of Object.entries(value)) {
     if (operator === "in" && Array.isArray(operatorValue)) {
@@ -248,6 +369,7 @@ const decodeOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.
   schema: JsonFieldSchema,
   value: Record<string, unknown>,
 ) {
+  yield* validateOperatorFilterValue(topic, field, schema, value);
   const output: Record<string, unknown> = {};
   for (const [operator, operatorValue] of Object.entries(value)) {
     if (operator === "in" && Array.isArray(operatorValue)) {
@@ -351,12 +473,7 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
   if (decoded.select.length === 0) {
     return yield* Effect.fail(invalidQuery(topic, "Query select must include at least one field"));
   }
-  if (decoded.offset !== undefined && (!Number.isInteger(decoded.offset) || decoded.offset < 0)) {
-    return yield* Effect.fail(invalidQuery(topic, "Query offset must be a non-negative integer"));
-  }
-  if (decoded.limit !== undefined && (!Number.isInteger(decoded.limit) || decoded.limit <= 0)) {
-    return yield* Effect.fail(invalidQuery(topic, "Query limit must be a positive integer"));
-  }
+  yield* validateWindow(topic, decoded.offset, decoded.limit);
   for (const field of decoded.select) {
     if (getFieldSchema(config, topic, field) === undefined) {
       return yield* Effect.fail(
@@ -384,40 +501,214 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
   return wireQuery;
 });
 
-function validatedRawQuery<Row>(query: LooseWireRawQuery): ViewServerValidatedRawQuery<Row>;
-function validatedRawQuery(query: LooseWireRawQuery): LooseWireRawQuery {
-  return query;
-}
+const validateGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.validate")(function* (
+  topic: string,
+  schema: RowSchema,
+  decoded: LooseWireGroupedQuery,
+) {
+  if (decoded.groupBy.length === 0) {
+    return yield* Effect.fail(
+      invalidQuery(topic, "Grouped query groupBy must include at least one field"),
+    );
+  }
+  const aggregateAliases = Object.keys(decoded.aggregates);
+  if (aggregateAliases.length === 0) {
+    return yield* Effect.fail(
+      invalidQuery(topic, "Grouped query aggregates must include at least one aggregate"),
+    );
+  }
+  for (const groupField of decoded.groupBy) {
+    if (schema.fields[groupField] === undefined) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
+      );
+    }
+  }
+  for (const [alias, aggregate] of Object.entries(decoded.aggregates)) {
+    if (dangerousRecordKeys.has(alias)) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Grouped aggregate alias is not allowed: ${alias}`),
+      );
+    }
+    if (decoded.groupBy.includes(alias)) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Aggregate alias collides with groupBy field: ${alias}`),
+      );
+    }
+    if (aggregate.aggFunc !== "count" && schema.fields[aggregate.field] === undefined) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
+      );
+    }
+    if (
+      (aggregate.aggFunc === "sum" || aggregate.aggFunc === "avg") &&
+      !isNumericFieldSchema(schema.fields[aggregate.field])
+    ) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Grouped aggregate ${alias} must reference a numeric field`),
+      );
+    }
+  }
+  if (decoded.where !== undefined && !hasOnlyKnownFields(schema, Object.keys(decoded.where))) {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
+    );
+  }
+  if (decoded.orderBy !== undefined) {
+    for (const entry of decoded.orderBy) {
+      if ("field" in entry && !decoded.groupBy.includes(entry.field)) {
+        return yield* Effect.fail(
+          invalidQuery(topic, `Grouped orderBy field is not in groupBy: ${entry.field}`),
+        );
+      }
+      if ("aggregate" in entry && !Object.hasOwn(decoded.aggregates, entry.aggregate)) {
+        return yield* Effect.fail(
+          invalidQuery(topic, `Grouped orderBy aggregate is not defined: ${entry.aggregate}`),
+        );
+      }
+    }
+  }
+  yield* validateWindow(topic, decoded.offset, decoded.limit);
+});
 
-export const viewServerDecodeRawQuery = Effect.fn("ViewServerProtocol.query.decode")(function* <
-  const Topics extends TopicDefinitions,
-  Topic extends Extract<keyof Topics, string>,
->(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
-  const decoded = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
-    query,
-    strictParseOptions,
-  ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
-  if (decoded.select.length === 0) {
-    return yield* Effect.fail(invalidQuery(topic, "Query select must include at least one field"));
-  }
-  if (decoded.offset !== undefined && (!Number.isInteger(decoded.offset) || decoded.offset < 0)) {
-    return yield* Effect.fail(invalidQuery(topic, "Query offset must be a non-negative integer"));
-  }
-  if (decoded.limit !== undefined && (!Number.isInteger(decoded.limit) || decoded.limit <= 0)) {
-    return yield* Effect.fail(invalidQuery(topic, "Query limit must be a positive integer"));
-  }
-  const topicSchema = config.topics[topic]!.schema;
-  if (isRawQueryForTopic(topicSchema, decoded)) {
-    const where = yield* decodeWhere(topic, topicSchema, decoded.where);
-    return validatedRawQuery<TopicRow<Topics, Topic>>({
-      select: decoded.select,
+export const viewServerEncodeGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.encode")(
+  function* <const Topics extends TopicDefinitions, Topic extends Extract<keyof Topics, string>>(
+    config: { readonly topics: Topics },
+    topic: Topic,
+    query: unknown,
+  ) {
+    if (!hasTopic(config, topic)) {
+      return yield* Effect.fail(invalidTopic(topic));
+    }
+    const decoded = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
+      query,
+      strictParseOptions,
+    ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+    const topicSchema = config.topics[topic]!.schema;
+    yield* validateGroupedQuery(topic, topicSchema, decoded);
+    const where = yield* encodeWhere(config, topic, decoded.where);
+    const wireQuery: ViewServerWireGroupedQuery = {
+      groupBy: decoded.groupBy,
+      aggregates: decoded.aggregates,
       ...(where === undefined ? {} : { where }),
       ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
       ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
       ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
-    });
-  }
-  return yield* Effect.fail(
-    invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
-  );
+    };
+    return wireQuery;
+  },
+);
+
+export const viewServerEncodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery.encode")(
+  function* <const Topics extends TopicDefinitions, Topic extends Extract<keyof Topics, string>>(
+    config: { readonly topics: Topics },
+    topic: Topic,
+    query: unknown,
+  ) {
+    if (isGroupedQueryInput(query)) {
+      return yield* viewServerEncodeGroupedQuery(config, topic, query);
+    }
+    return yield* viewServerEncodeRawQuery(config, topic, query);
+  },
+);
+
+function validatedRawQuery<Row>(query: LooseWireRawQuery): ViewServerValidatedRawQuery<Row>;
+function validatedRawQuery(query: LooseWireRawQuery) {
+  return query;
+}
+
+export const viewServerDecodeRawQuery: <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  query: unknown,
+) => Effect.Effect<ViewServerValidatedRawQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError> =
+  Effect.fn("ViewServerProtocol.query.decode")(function* <
+    const Topics extends TopicDefinitions,
+    Topic extends Extract<keyof Topics, string>,
+  >(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
+    const decodedTopic = yield* viewServerDecodeTopic(config, topic);
+    const decoded = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
+      query,
+      strictParseOptions,
+    ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+    if (decoded.select.length === 0) {
+      return yield* Effect.fail(
+        invalidQuery(topic, "Query select must include at least one field"),
+      );
+    }
+    yield* validateWindow(topic, decoded.offset, decoded.limit);
+    const topicSchema = config.topics[decodedTopic]!.schema;
+    if (isRawQueryForTopic(topicSchema, decoded)) {
+      const where = yield* decodeWhere(topic, topicSchema, decoded.where);
+      return validatedRawQuery<TopicRow<Topics, Topic>>({
+        select: decoded.select,
+        ...(where === undefined ? {} : { where }),
+        ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
+        ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
+        ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+      });
+    }
+    return yield* Effect.fail(
+      invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
+    );
+  });
+
+function validatedGroupedQuery<Row>(
+  query: LooseWireGroupedQuery,
+): ViewServerValidatedGroupedQuery<Row>;
+function validatedGroupedQuery(query: LooseWireGroupedQuery) {
+  return query;
+}
+
+export const viewServerDecodeGroupedQuery: <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  query: unknown,
+) => Effect.Effect<
+  ViewServerValidatedGroupedQuery<TopicRow<Topics, Topic>>,
+  ViewServerRuntimeError
+> = Effect.fn("ViewServerProtocol.groupedQuery.decode")(function* <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
+  const decodedTopic = yield* viewServerDecodeTopic(config, topic);
+  const decoded = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
+    query,
+    strictParseOptions,
+  ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+  const topicSchema = config.topics[decodedTopic]!.schema;
+  yield* validateGroupedQuery(topic, topicSchema, decoded);
+  const where = yield* decodeWhere(topic, topicSchema, decoded.where);
+  return validatedGroupedQuery<TopicRow<Topics, Topic>>({
+    groupBy: decoded.groupBy,
+    aggregates: decoded.aggregates,
+    ...(where === undefined ? {} : { where }),
+    ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
+    ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
+    ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+  });
 });
+
+export const viewServerDecodeLiveQuery: <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  query: unknown,
+) => Effect.Effect<ViewServerValidatedLiveQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError> =
+  Effect.fn("ViewServerProtocol.liveQuery.decode")(function* <
+    const Topics extends TopicDefinitions,
+    Topic extends Extract<keyof Topics, string>,
+  >(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
+    if (isGroupedQueryInput(query)) {
+      return yield* viewServerDecodeGroupedQuery(config, topic, query);
+    }
+    return yield* viewServerDecodeRawQuery(config, topic, query);
+  });

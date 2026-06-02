@@ -45,17 +45,13 @@ describe("client type contracts", () => {
 
   it("rejects nullish selected fields", () => {
     const undefinedSelectedField = client.subscribe("orders", {
-      select: [
-        // @ts-expect-error selected fields must be topic field names, not undefined.
-        undefined,
-      ],
+      // @ts-expect-error selected fields must be topic field names, not undefined.
+      select: [undefined],
     });
 
     const nullSelectedField = client.subscribe("orders", {
-      select: [
-        // @ts-expect-error selected fields must be topic field names, not null.
-        null,
-      ],
+      // @ts-expect-error selected fields must be topic field names, not null.
+      select: [null],
     });
 
     expectTypeOf(undefinedSelectedField).not.toBeAny();

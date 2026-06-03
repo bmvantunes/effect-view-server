@@ -44,6 +44,7 @@ import {
   closeBackpressuredTopicStoreSubscription,
   closeTopicStoreSubscriptions,
   collectTopicStoreHealth,
+  deleteTopicStoreRow,
   publishTopicStoreRow,
   registerTopicStoreSubscription,
   resetTopicStore,
@@ -2202,6 +2203,152 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(rowIds(notOpen.rows)).toStrictEqual(["4"]);
     }),
   );
+
+  it.effect("keeps column slot values in sync across replace, delete, reuse, and patch", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [
+        order("1", "closed", 10, 1),
+        order("2", "open", 20, 2),
+        order("3", "open", 30, 3),
+      ]);
+
+      yield* engine.publish("orders", order("1", "open", 40, 4));
+
+      const afterReplace = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        where: {
+          status: "open",
+          price: { gt: 35 },
+        },
+        orderBy: [{ field: "price", direction: "desc" }],
+      });
+      expect(afterReplace.rows).toStrictEqual([{ id: "1", price: 40 }]);
+      expect(afterReplace.totalRows).toBe(1);
+
+      yield* engine.delete("orders", "1");
+
+      const afterDelete = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        where: {
+          status: "open",
+          price: { gt: 35 },
+        },
+      });
+      expect(afterDelete.rows).toStrictEqual([]);
+      expect(afterDelete.totalRows).toBe(0);
+
+      const movedRowAfterDelete = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        where: {
+          status: "open",
+          price: { lt: 35 },
+        },
+        orderBy: [{ field: "price", direction: "desc" }],
+      });
+      expect(movedRowAfterDelete.rows).toStrictEqual([
+        { id: "3", price: 30 },
+        { id: "2", price: 20 },
+      ]);
+      expect(movedRowAfterDelete.totalRows).toBe(2);
+
+      yield* engine.publish("orders", order("4", "open", 50, 5));
+
+      const afterSlotReuse = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        where: {
+          status: "open",
+          price: { gt: 35 },
+        },
+        orderBy: [{ field: "price", direction: "desc" }],
+      });
+      expect(afterSlotReuse.rows).toStrictEqual([{ id: "4", price: 50 }]);
+      expect(afterSlotReuse.totalRows).toBe(1);
+
+      yield* engine.patch("orders", "4", { status: "closed", price: 5 });
+
+      const afterPatchOut = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        where: {
+          status: "open",
+          price: { gt: 35 },
+        },
+      });
+      expect(afterPatchOut.rows).toStrictEqual([]);
+      expect(afterPatchOut.totalRows).toBe(0);
+
+      yield* engine.patch("orders", "4", { status: "open", price: 45 });
+
+      const afterPatchIn = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        where: {
+          status: "open",
+          price: { gt: 35 },
+        },
+      });
+      expect(afterPatchIn.rows).toStrictEqual([{ id: "4", price: 45 }]);
+      expect(afterPatchIn.totalRows).toBe(1);
+    }),
+  );
+
+  it.effect("uses bigint column range narrowing for less-than filters", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("positions", [
+        position("1", "AAPL", 5n, "10"),
+        position("2", "MSFT", 15n, "20"),
+      ]);
+
+      const snapshot = yield* engine.snapshot("positions", {
+        select: ["id"],
+        where: {
+          quantity: { lt: 10n },
+        },
+      });
+
+      expect(snapshot.rows).toStrictEqual([{ id: "1" }]);
+      expect(snapshot.totalRows).toBe(1);
+    }),
+  );
+
+  it.effect("preserves compiled predicate miss behavior for custom storage scanners", () =>
+    Effect.gen(function* () {
+      const compiled = yield* prepareRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id"],
+        where: {
+          status: { eq: "open" },
+          customerId: { startsWith: "customer-" },
+        },
+      });
+      const rows = [
+        order("1", "closed", 10, 1),
+        { ...order("2", "open", 20, 2), customerId: "account-2" },
+      ];
+
+      const evaluation = evaluateRawQuery(
+        {
+          scanRawWindow: (plan) => {
+            const window = rows
+              .filter((row) => plan.matches(row))
+              .map((row) => ({
+                key: row.id,
+                row,
+              }));
+            return {
+              keys: window.map((entry) => entry.key),
+              window,
+              totalRows: window.length,
+            };
+          },
+          version: () => 1,
+        },
+        compiled,
+      );
+
+      expect(evaluation.rows).toStrictEqual([]);
+      expect(evaluation.totalRows).toBe(0);
+    }),
+  );
 });
 
 describe("ColumnLiveViewEngine subscriptions", () => {
@@ -2699,6 +2846,47 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
+  it.effect("honors explicit topic-store subscription handoff options", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      let beforeReturnCount = 0;
+      const subscriber: LiveTopicSubscriber = {
+        topic: "orders",
+        queryId: "query-explicit-handoff-options",
+        notify: () => Effect.void,
+        queuedEvents: Effect.succeed(0),
+        end: Effect.void,
+        closeWithStatus: () => Effect.void,
+        maxQueueDepth: 0,
+        backpressureEvents: 0,
+        closed: false,
+      };
+
+      yield* acquireTopicStoreSubscription(
+        store,
+        (permit, markAcquired) =>
+          Effect.gen(function* () {
+            const subscription = {
+              close: () => Effect.void,
+            };
+            yield* registerTopicStoreSubscription(permit, subscriber);
+            yield* markAcquired(subscription);
+            return subscription;
+          }),
+        {
+          beforeReturn: Effect.sync(() => {
+            beforeReturnCount += 1;
+          }),
+        },
+      );
+
+      const health = yield* collectTopicStoreHealth(store, false);
+      expect(beforeReturnCount).toBe(1);
+      expect(health.activeSubscriptions).toBe(1);
+      yield* closeTopicStoreSubscriptions(store);
+    }),
+  );
+
   it.effect("records backpressure close only once for already closed subscribers", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
@@ -2727,6 +2915,164 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       expect(subscriber.backpressureEvents).toBe(1);
       expect(health.activeSubscriptions).toBe(0);
       expect(health.backpressureEvents).toBe(1);
+    }),
+  );
+
+  it.effect("collects topic-store throughput and drains subscribers on normal close", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      let closeStatusCount = 0;
+      const subscriber: LiveTopicSubscriber = {
+        topic: "orders",
+        queryId: "query-normal-close",
+        notify: () => Effect.void,
+        queuedEvents: Effect.succeed(2),
+        end: Effect.void,
+        closeWithStatus: () =>
+          Effect.sync(() => {
+            closeStatusCount += 1;
+          }),
+        maxQueueDepth: 0,
+        backpressureEvents: 0,
+        closed: false,
+      };
+
+      yield* registerTestTopicStoreSubscriber(store, subscriber);
+      yield* publishTopicStoreRow(store, order("1", "open", 10, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+
+      const readyHealth = yield* collectTopicStoreHealth(store, false);
+      expect(readyHealth.status).toBe("ready");
+      expect(readyHealth.rowCount).toBe(1);
+      expect(readyHealth.mutationsPerSecond).toBeGreaterThanOrEqual(0);
+      expect(readyHealth.rowsPerSecond).toBeGreaterThanOrEqual(0);
+      expect(readyHealth.activeSubscriptions).toBe(1);
+      expect(readyHealth.queuedEvents).toBe(2);
+
+      yield* closeTopicStoreSubscriptions(store);
+
+      const closedHealth = yield* collectTopicStoreHealth(store, true);
+      expect(closeStatusCount).toBe(1);
+      expect(closedHealth.status).toBe("degraded");
+      expect(closedHealth.activeSubscriptions).toBe(0);
+    }),
+  );
+
+  it.effect("drains subscribers and storage on normal topic-store reset", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      let resetStatusCount = 0;
+      const subscriber: LiveTopicSubscriber = {
+        topic: "orders",
+        queryId: "query-normal-reset",
+        notify: () => Effect.void,
+        queuedEvents: Effect.succeed(0),
+        end: Effect.void,
+        closeWithStatus: () =>
+          Effect.sync(() => {
+            resetStatusCount += 1;
+          }),
+        maxQueueDepth: 0,
+        backpressureEvents: 0,
+        closed: false,
+      };
+
+      yield* registerTestTopicStoreSubscriber(store, subscriber);
+      yield* publishTopicStoreRow(store, order("1", "open", 10, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+
+      yield* resetTopicStore(store);
+
+      const health = yield* collectTopicStoreHealth(store, false);
+      expect(resetStatusCount).toBe(1);
+      expect(health.status).toBe("ready");
+      expect(health.rowCount).toBe(0);
+      expect(health.activeSubscriptions).toBe(0);
+      expect(health.version).toBe(0);
+    }),
+  );
+
+  it.effect("keeps deleted slots out of scans and handles hostile plans conservatively", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      yield* publishTopicStoreRow(store, order("1", "open", 10, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(store, order("2", "open", 20, 2), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(store, order("3", "open", 30, 3), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* deleteTopicStoreRow(store, "1");
+
+      const readModel = topicStoreReadModel(store);
+      const scannedKeys: Array<string> = [];
+      readModel.scanRows((key) => {
+        scannedKeys.push(key);
+      });
+      expect(scannedKeys.toSorted()).toStrictEqual(["2", "3"]);
+
+      const compareByKey = (left: { readonly key: string }, right: { readonly key: string }) =>
+        left.key.localeCompare(right.key);
+      const matchesOnlySecondRow = (row: object) => fieldValue(row, "id") === "2";
+      const missingColumn = readModel.scanRawWindow({
+        where: undefined,
+        predicate: {
+          filters: [{ field: "missing", operator: "eq", value: "anything" }],
+          callbackRequired: true,
+        },
+        orderBy: [],
+        matches: matchesOnlySecondRow,
+        compare: compareByKey,
+        offset: 0,
+        limit: undefined,
+      });
+      expect(missingColumn.keys).toStrictEqual(["2"]);
+
+      const invalidStartsWithPlan = readModel.scanRawWindow({
+        where: undefined,
+        predicate: {
+          filters: [{ field: "customerId", operator: "startsWith", value: 1 }],
+          callbackRequired: true,
+        },
+        orderBy: [],
+        matches: matchesOnlySecondRow,
+        compare: compareByKey,
+        offset: 0,
+        limit: undefined,
+      });
+      expect(invalidStartsWithPlan.keys).toStrictEqual(["2"]);
+
+      const invalidRangePlan = readModel.scanRawWindow({
+        where: undefined,
+        predicate: {
+          filters: [{ field: "price", operator: "gt", value: "10" }],
+          callbackRequired: true,
+        },
+        orderBy: [],
+        matches: matchesOnlySecondRow,
+        compare: compareByKey,
+        offset: 0,
+        limit: undefined,
+      });
+      expect(invalidRangePlan.keys).toStrictEqual(["2"]);
+
+      const nonFiniteRangePlan = readModel.scanRawWindow({
+        where: undefined,
+        predicate: {
+          filters: [{ field: "price", operator: "gt", value: Number.NaN }],
+          callbackRequired: true,
+        },
+        orderBy: [],
+        matches: matchesOnlySecondRow,
+        compare: compareByKey,
+        offset: 0,
+        limit: undefined,
+      });
+      expect(nonFiniteRangePlan.keys).toStrictEqual(["2"]);
     }),
   );
 

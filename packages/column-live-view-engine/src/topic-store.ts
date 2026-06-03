@@ -254,17 +254,18 @@ export const collectTopicStoreHealth = Effect.fn("ColumnLiveViewEngine.topicStor
     const activeSubscriptions = state.subscribers.size;
     const activeViews = yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store));
     const status: TopicRuntimeHealth["status"] = closed ? "degraded" : "ready";
-
-    return {
+    const lastMutationAt = totals.lastMutationAt;
+    const rowsPerSecond = totals.rowsPerSecond;
+    const health: TopicStoreHealthView = {
       topic: store.topic,
       status,
       rowCount: totals.rowCount,
       liveRowCount: totals.rowCount,
       deletedRowCount: 0,
       version: totals.version,
-      lastMutationAt: totals.lastMutationAt,
+      lastMutationAt,
       mutationsPerSecond: totals.mutationsPerSecond,
-      rowsPerSecond: totals.rowsPerSecond,
+      rowsPerSecond,
       pendingMutationBatches: totals.pendingMutationBatches,
       activeViews,
       activeSubscriptions,
@@ -274,29 +275,30 @@ export const collectTopicStoreHealth = Effect.fn("ColumnLiveViewEngine.topicStor
       memoryBytes: 0,
       tombstoneCount: 0,
       compactionPending: false,
-    } satisfies TopicStoreHealthView;
+    };
+    return health;
   },
 );
 
 export const registerTopicStoreSubscription = Effect.fn(
   "ColumnLiveViewEngine.topicStore.subscribe.add",
-)((permit: TopicStoreSubscriptionPermit, subscriber: LiveTopicSubscriber) =>
-  Effect.sync(() => {
+)(function (permit: TopicStoreSubscriptionPermit, subscriber: LiveTopicSubscriber) {
+  return Effect.sync(() => {
     const state = topicStoreState(permit.store);
     state.healthLedger.openSubscription(subscriber);
     state.subscribers.add(subscriber);
-  }),
-);
+  });
+});
 
 const unregisterTopicStoreSubscription = Effect.fn(
   "ColumnLiveViewEngine.topicStore.subscribe.remove",
-)((store: TopicStore, subscriber: LiveTopicSubscriber) =>
-  Effect.sync(() => {
+)(function (store: TopicStore, subscriber: LiveTopicSubscriber) {
+  return Effect.sync(() => {
     const state = topicStoreState(store);
     state.healthLedger.closeSubscription(subscriber);
     state.subscribers.delete(subscriber);
-  }),
-);
+  });
+});
 
 const drainTopicStoreSubscribersForReset = (
   state: TopicStoreState,
@@ -311,17 +313,17 @@ const drainTopicStoreSubscribersForReset = (
   return closingSubscribers;
 };
 
-const drainTopicStoreSubscribersForClose = (
+function drainTopicStoreSubscribersForClose(
   state: TopicStoreState,
-): ReadonlyArray<LiveTopicSubscriber> => {
-  const closingSubscribers = [...state.subscribers];
+): ReadonlyArray<LiveTopicSubscriber> {
+  const closingSubscribers = Array.from(state.subscribers);
   for (const subscriber of closingSubscribers) {
     subscriber.closed = true;
     state.healthLedger.closeSubscription(subscriber);
   }
   state.subscribers.clear();
   return closingSubscribers;
-};
+}
 
 export const trackTopicStoreSubscriptionQueueDepth = Effect.fn(
   "ColumnLiveViewEngine.topicStore.subscribe.queueDepth",

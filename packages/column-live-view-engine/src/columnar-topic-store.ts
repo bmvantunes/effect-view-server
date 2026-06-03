@@ -1,17 +1,19 @@
 import { Effect, Schema } from "effect";
 import type { ActiveQueryStoreState } from "./active-query";
 import type {
+  TopicRawPredicateFilterPlan,
   TopicRawWindowScanPlan,
   TopicRawWindowScanResult,
   TopicRowEntry,
   TopicRowVisitor,
 } from "./row-scan";
 import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
-import { cloneRow, fieldValue, isPlainRecord } from "./row-values";
+import { cloneRow, fieldValue, isPlainRecord, valuesEqual } from "./row-values";
 
 type RowObject = object;
 
 type InvalidRowErrorFactory<Error> = (topic: string, message: string) => Error;
+type ColumnValues = Array<unknown>;
 
 export type PreparedTopicRow = {
   readonly key: string;
@@ -22,7 +24,9 @@ export class ColumnarTopicStore {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
   readonly readModel: ActiveQueryStoreState;
 
-  private readonly rows = new Map<string, object>();
+  private readonly slots: Array<TopicRowEntry<object>> = [];
+  private readonly keyToSlot = new Map<string, number>();
+  private readonly columns = new Map<string, ColumnValues>();
   private versionValue = 0;
 
   constructor(
@@ -31,6 +35,9 @@ export class ColumnarTopicStore {
     private readonly keyField: string,
   ) {
     this.rawQueryMetadata = rawQueryCompilerMetadata(schema);
+    for (const field of this.rawQueryMetadata.fieldNames) {
+      this.columns.set(field, []);
+    }
     this.readModel = {
       identity: this,
       topic,
@@ -41,7 +48,7 @@ export class ColumnarTopicStore {
   }
 
   get rowCount(): number {
-    return this.rows.size;
+    return this.slots.length;
   }
 
   get version(): number {
@@ -54,12 +61,24 @@ export class ColumnarTopicStore {
   }
 
   clear(): void {
-    this.rows.clear();
+    this.slots.length = 0;
+    this.keyToSlot.clear();
+    for (const column of this.columns.values()) {
+      column.length = 0;
+    }
     this.versionValue = 0;
   }
 
   setPrepared(prepared: PreparedTopicRow): void {
-    this.rows.set(prepared.key, prepared.row);
+    const existingSlot = this.keyToSlot.get(prepared.key);
+    if (existingSlot !== undefined) {
+      this.writeSlot(existingSlot, prepared);
+      return;
+    }
+
+    const slot = this.slots.length;
+    this.keyToSlot.set(prepared.key, slot);
+    this.writeSlot(slot, prepared);
   }
 
   setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>): void {
@@ -69,20 +88,41 @@ export class ColumnarTopicStore {
   }
 
   delete(key: string): number {
-    return this.rows.delete(key) ? 1 : 0;
+    const slot = this.keyToSlot.get(key);
+    if (slot === undefined) {
+      return 0;
+    }
+
+    const lastSlot = this.slots.length - 1;
+    const lastEntry = this.slots[lastSlot]!;
+    this.keyToSlot.delete(key);
+    if (slot !== lastSlot) {
+      this.slots[slot] = lastEntry;
+      this.keyToSlot.set(lastEntry.key, slot);
+      for (const column of this.columns.values()) {
+        column[slot] = column[lastSlot];
+      }
+    }
+    this.slots.pop();
+    for (const column of this.columns.values()) {
+      column.pop();
+    }
+    return 1;
   }
 
   scanRows(visitor: TopicRowVisitor<object>): void {
-    for (const [key, row] of this.rows) {
-      visitor(key, row);
+    for (let slot = 0; slot < this.slots.length; slot += 1) {
+      const entry = this.slots[slot]!;
+      visitor(entry.key, entry.row);
     }
   }
 
   scanRawWindow(plan: TopicRawWindowScanPlan<object>): TopicRawWindowScanResult<object> {
     const filtered: Array<TopicRowEntry<object>> = [];
-    for (const [key, row] of this.rows) {
-      if (plan.matches(row)) {
-        filtered.push({ key, row });
+    for (let slot = 0; slot < this.slots.length; slot += 1) {
+      const entry = this.slots[slot]!;
+      if (this.slotMayMatchFilters(slot, plan.predicate.filters) && plan.matches(entry.row)) {
+        filtered.push(entry);
       }
     }
     const ordered = filtered.toSorted(plan.compare);
@@ -126,7 +166,7 @@ export class ColumnarTopicStore {
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     yield* this.validatePatchKeys(patch, invalidRow);
-    const current = this.rows.get(key);
+    const current = this.rowForKey(key);
     if (current === undefined) {
       return yield* Effect.fail(invalidRow(this.topic, `Cannot patch missing key: ${key}`));
     }
@@ -185,4 +225,89 @@ export class ColumnarTopicStore {
       }
     }
   });
+
+  private writeSlot(slot: number, prepared: PreparedTopicRow): void {
+    this.slots[slot] = {
+      key: prepared.key,
+      row: prepared.row,
+    };
+    for (const [field, column] of this.columns) {
+      column[slot] = fieldValue(prepared.row, field);
+    }
+  }
+
+  private rowForKey(key: string): object | undefined {
+    const slot = this.keyToSlot.get(key);
+    if (slot === undefined) {
+      return undefined;
+    }
+    return this.slots[slot]!.row;
+  }
+
+  private slotMayMatchFilters(
+    slot: number,
+    filters: ReadonlyArray<TopicRawPredicateFilterPlan>,
+  ): boolean {
+    for (const filter of filters) {
+      if (!this.slotMayMatchFilter(slot, filter)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private slotMayMatchFilter(slot: number, filter: TopicRawPredicateFilterPlan): boolean {
+    const column = this.columns.get(filter.field);
+    if (column === undefined) {
+      return true;
+    }
+    const value = column[slot];
+
+    if (filter.operator === "eq") {
+      return valuesEqual(value, filter.value);
+    }
+    if (filter.operator === "neq") {
+      return !valuesEqual(value, filter.value);
+    }
+    if (filter.operator === "in") {
+      return filter.values.some((candidate) => valuesEqual(value, candidate));
+    }
+    if (filter.operator === "startsWith") {
+      if (typeof filter.value !== "string") {
+        return true;
+      }
+      return typeof value === "string" && value.startsWith(filter.value);
+    }
+
+    const comparison = compareRangeColumnValue(value, filter.value);
+    if (comparison === undefined) {
+      return true;
+    }
+    if (filter.operator === "gt") {
+      return comparison > 0;
+    }
+    if (filter.operator === "gte") {
+      return comparison >= 0;
+    }
+    if (filter.operator === "lt") {
+      return comparison < 0;
+    }
+    return comparison <= 0;
+  }
 }
+
+const compareRangeColumnValue = (left: unknown, right: unknown): number | undefined => {
+  if (typeof left === "number" && typeof right === "number") {
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+      return undefined;
+    }
+    return left - right;
+  }
+  if (typeof left === "bigint" && typeof right === "bigint") {
+    if (left === right) {
+      return 0;
+    }
+    return left < right ? -1 : 1;
+  }
+  return undefined;
+};

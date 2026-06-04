@@ -7,6 +7,8 @@ import {
   fieldValue,
   isPlainRecord,
   isRecord,
+  scalarEqualityKey,
+  type ScalarEqualityKeyValue,
   valuesEqual,
 } from "./row-values";
 import type { TopicRawOrderByPlan, TopicRawPredicatePlan, TopicRowEntry } from "./row-scan";
@@ -855,7 +857,7 @@ const rangeValueKind = (value: unknown): RangeValueKind | undefined => {
   return undefined;
 };
 
-const isScalarPlanValue = (value: unknown): boolean =>
+const isScalarPlanValue = (value: unknown): value is ScalarEqualityKeyValue =>
   value === null ||
   typeof value === "string" ||
   typeof value === "boolean" ||
@@ -873,7 +875,8 @@ export const isRangePlanValue = (
   return kind !== undefined && fieldKinds?.size === 1 && fieldKinds.has(kind);
 };
 
-const isEqualityPlanValue = (value: unknown): boolean => isScalarPlanValue(value);
+const isEqualityPlanValue = (value: unknown): value is ScalarEqualityKeyValue =>
+  isScalarPlanValue(value);
 
 const isNotEqualPlanValue = (
   field: string,
@@ -892,10 +895,18 @@ const isNotEqualPlanValue = (
   return false;
 };
 
-const isInPlanValues = (value: unknown): value is ReadonlyArray<unknown> =>
+const isInPlanValues = (value: unknown): value is ReadonlyArray<ScalarEqualityKeyValue> =>
   Array.isArray(value) &&
   isDenseArray(value) &&
   value.every((candidate) => isEqualityPlanValue(candidate));
+
+const scalarEqualityKeys = (values: ReadonlyArray<ScalarEqualityKeyValue>): ReadonlySet<string> => {
+  const keys = new Set<string>();
+  for (const value of values) {
+    keys.add(scalarEqualityKey(value));
+  }
+  return keys;
+};
 
 type PredicateFieldPlan = {
   readonly filters: TopicRawPredicatePlan["filters"];
@@ -959,10 +970,12 @@ const predicateFilterPlans = (
   }
   if ("in" in filter) {
     if (isInPlanValues(filter["in"])) {
+      const values = [...filter["in"]];
       plans.push({
         field,
         operator: "in",
-        values: [...filter["in"]],
+        values,
+        valueKeys: scalarEqualityKeys(values),
       });
     } else {
       callbackRequired = true;

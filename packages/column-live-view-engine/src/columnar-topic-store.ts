@@ -14,7 +14,7 @@ import {
   rawQueryCompilerMetadata,
   type RawQueryCompilerMetadata,
 } from "./raw-query-compiler";
-import { cloneRow, fieldValue, isPlainRecord, valuesEqual } from "./row-values";
+import { cloneRow, fieldValue, isPlainRecord, scalarEqualityKey, valuesEqual } from "./row-values";
 import { isBigDecimal, Order as orderBigDecimal } from "effect/BigDecimal";
 
 type RowObject = object;
@@ -665,6 +665,10 @@ export class ColumnarTopicStore {
       return !valuesEqual(value, filter.value);
     }
     if (filter.operator === "in") {
+      if (filter.valueKeys !== undefined) {
+        const key = scalarEqualityKey(value);
+        return key !== undefined && filter.valueKeys.has(key);
+      }
       return filter.values.some((candidate) => valuesEqual(value, candidate));
     }
     if (filter.operator === "startsWith") {

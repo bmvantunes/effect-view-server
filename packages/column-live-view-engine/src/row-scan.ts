@@ -22,6 +22,7 @@ export type TopicRawPredicateFilterPlan =
       readonly field: string;
       readonly operator: "in";
       readonly values: ReadonlyArray<unknown>;
+      readonly valueKeys?: ReadonlySet<string>;
     };
 
 export type TopicRawPredicatePlan = {

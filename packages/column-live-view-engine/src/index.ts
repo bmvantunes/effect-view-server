@@ -175,7 +175,7 @@ class InMemoryColumnLiveViewEngine<
       function* (this: InMemoryColumnLiveViewEngine<Topics>) {
         yield* this.ensureOpen();
         const store = yield* this.getStore(topic);
-        return yield* snapshotExecutableQuery<ResultRow>(topic, store, query);
+        return yield* snapshotExecutableQuery<ResultRow>(store, query);
       },
     )();
 

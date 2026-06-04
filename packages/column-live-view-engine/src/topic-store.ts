@@ -1,13 +1,28 @@
 import { Clock, Effect, Schema, Semaphore } from "effect";
 import type { StatusEvent, TopicRuntimeHealth } from "@view-server/config";
 import {
+  acquireMaterializedQueryExecution,
+  acquireRawQueryExecution,
   activeStoreRawQueryExecutionCount,
   clearStoreRawQueryExecutions,
+  evaluateRawQuery,
+  releaseMaterializedQueryExecution,
+  releaseRawQueryExecution,
   type ActiveQueryStoreState,
 } from "./active-query";
 import { ColumnarTopicStore, type PreparedTopicRow } from "./columnar-topic-store";
+import {
+  evaluateCompiledGroupedQuery,
+  prepareGroupedQuery,
+  type CompiledGroupedQuery,
+} from "./grouped-query-compiler";
 import { createTopicHealthLedger } from "./topic-health-ledger";
-import type { RawQueryCompilerMetadata } from "./raw-query-compiler";
+import {
+  prepareRawQuery,
+  type CompiledRawQuery,
+  type RawQueryCompilerMetadata,
+} from "./raw-query-compiler";
+import type { QueryEvaluation } from "./query-result";
 import {
   acquireSubscriptionHandoff,
   type MarkAcquiredSubscription,
@@ -100,6 +115,71 @@ export const topicStoreRawQueryMetadata = (store: TopicStore): RawQueryCompilerM
 
 export const topicStoreReadModel = (store: TopicStore): ActiveQueryStoreState =>
   topicStoreState(store).storage.readModel;
+
+export const prepareTopicStoreRawQuery = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.query.raw.prepare",
+)(function* <ResultRow extends RowObject>(store: TopicStore, query: unknown) {
+  return yield* prepareRawQuery<object, ResultRow>(
+    store.topic,
+    topicStoreState(store).storage.rawQueryMetadata,
+    query,
+  );
+});
+
+export const prepareTopicStoreGroupedQuery = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.query.grouped.prepare",
+)(function* <ResultRow extends RowObject>(store: TopicStore, query: unknown) {
+  return yield* prepareGroupedQuery<object, ResultRow>(
+    store.topic,
+    topicStoreState(store).storage.rawQueryMetadata,
+    query,
+  );
+});
+
+export const evaluateTopicStoreRawQuery = <ResultRow extends RowObject>(
+  store: TopicStore,
+  compiled: CompiledRawQuery<object, ResultRow>,
+): QueryEvaluation<ResultRow> =>
+  evaluateRawQuery(topicStoreState(store).storage.readModel, compiled);
+
+export const evaluateTopicStoreGroupedQuery = <ResultRow extends RowObject>(
+  store: TopicStore,
+  compiled: CompiledGroupedQuery<object, ResultRow>,
+): QueryEvaluation<ResultRow> =>
+  evaluateCompiledGroupedQuery(topicStoreState(store).storage.readModel, compiled);
+
+export const acquireTopicStoreRawQueryExecution = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.query.raw.acquire",
+)(function* <ResultRow extends RowObject>(
+  store: TopicStore,
+  compiled: CompiledRawQuery<object, ResultRow>,
+) {
+  return yield* acquireRawQueryExecution(topicStoreState(store).storage.readModel, compiled);
+});
+
+export const releaseTopicStoreRawQueryExecution = <ResultRow extends RowObject>(
+  store: TopicStore,
+  compiled: CompiledRawQuery<object, ResultRow>,
+): Effect.Effect<void> =>
+  releaseRawQueryExecution(topicStoreState(store).storage.readModel, compiled);
+
+export const acquireTopicStoreMaterializedQueryExecution = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.query.materialized.acquire",
+)(function* <ResultRow extends RowObject>(
+  store: TopicStore,
+  compiled: CompiledGroupedQuery<object, ResultRow>,
+) {
+  const readModel = topicStoreState(store).storage.readModel;
+  return yield* acquireMaterializedQueryExecution(readModel, compiled.cacheKey, () =>
+    evaluateCompiledGroupedQuery(readModel, compiled),
+  );
+});
+
+export const releaseTopicStoreMaterializedQueryExecution = <ResultRow extends RowObject>(
+  store: TopicStore,
+  compiled: CompiledGroupedQuery<object, ResultRow>,
+): Effect.Effect<void> =>
+  releaseMaterializedQueryExecution(topicStoreState(store).storage.readModel, compiled.cacheKey);
 
 const withTopicStoreTransaction = Effect.fn("ColumnLiveViewEngine.topicStore.transaction")(
   function* <Success, Error, Requirements>(

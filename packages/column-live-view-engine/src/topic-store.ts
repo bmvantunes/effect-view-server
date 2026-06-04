@@ -5,7 +5,7 @@ import {
   clearStoreRawQueryExecutions,
   type ActiveQueryStoreState,
 } from "./active-query";
-import { ColumnarTopicStore } from "./columnar-topic-store";
+import { ColumnarTopicStore, type PreparedTopicRow } from "./columnar-topic-store";
 import { createTopicHealthLedger } from "./topic-health-ledger";
 import type { RawQueryCompilerMetadata } from "./raw-query-compiler";
 import {
@@ -53,6 +53,17 @@ type TopicStoreState = {
   readonly notificationSemaphore: Semaphore.Semaphore;
   readonly healthLedger: ReturnType<typeof createTopicHealthLedger>;
   readonly onCommit: () => void;
+};
+
+type TopicStoreMutationContext = {
+  readonly publishPrepared: (prepared: PreparedTopicRow) => number;
+  readonly publishPreparedMany: (preparedRows: ReadonlyArray<PreparedTopicRow>) => number;
+  readonly patch: <Patch extends Partial<RowObject>, Error>(
+    key: string,
+    patch: Patch,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) => Effect.Effect<number, Error>;
+  readonly delete: (key: string) => number;
 };
 
 const topicStoreStates = new WeakMap<TopicStore, TopicStoreState>();
@@ -182,6 +193,24 @@ const recordTopicStoreMutation = (
   return subscribersToNotify;
 };
 
+const topicStoreMutationContext = (state: TopicStoreState): TopicStoreMutationContext => ({
+  publishPrepared: (prepared) => {
+    state.storage.setPrepared(prepared);
+    return 1;
+  },
+  publishPreparedMany: (preparedRows) => {
+    state.storage.setPreparedMany(preparedRows);
+    return preparedRows.length;
+  },
+  patch: (key, patch, invalidRow) =>
+    Effect.gen(function* () {
+      const prepared = yield* state.storage.preparePatch(key, patch, invalidRow);
+      state.storage.setPrepared(prepared);
+      return 1;
+    }),
+  delete: (key) => state.storage.delete(key),
+});
+
 const notifyTopicStoreSubscribers = Effect.fn("ColumnLiveViewEngine.topicStore.notify")(function* (
   store: TopicStore,
   subscribers: ReadonlyArray<LiveTopicSubscriber>,
@@ -202,7 +231,7 @@ const runTopicStoreMutationTransaction = Effect.fn(
   "ColumnLiveViewEngine.topicStore.mutationTransaction",
 )(function* <Error, Requirements>(
   store: TopicStore,
-  mutate: (state: TopicStoreState) => Effect.Effect<number, Error, Requirements>,
+  mutate: (mutation: TopicStoreMutationContext) => Effect.Effect<number, Error, Requirements>,
 ) {
   yield* withTopicStoreMutationBatch(
     store,
@@ -211,7 +240,7 @@ const runTopicStoreMutationTransaction = Effect.fn(
         store,
         Effect.gen(function* () {
           const state = topicStoreState(store);
-          const rowsChanged = yield* mutate(state);
+          const rowsChanged = yield* mutate(topicStoreMutationContext(state));
           const occurredAt = yield* Clock.currentTimeMillis;
           return recordTopicStoreMutation(state, rowsChanged, occurredAt);
         }),
@@ -424,10 +453,9 @@ export const publishTopicStoreRow = Effect.fn("ColumnLiveViewEngine.topicStore.p
   Row extends RowObject,
 >(store: TopicStore, row: Row, invalidRow: InvalidRowErrorFactory<Error>) {
   const prepared = yield* topicStoreState(store).storage.prepareRow(row, invalidRow);
-  yield* runTopicStoreMutationTransaction(store, (state) =>
+  yield* runTopicStoreMutationTransaction(store, (mutation) =>
     Effect.sync(() => {
-      state.storage.setPrepared(prepared);
-      return 1;
+      return mutation.publishPrepared(prepared);
     }),
   );
 });
@@ -439,10 +467,9 @@ export const publishTopicStoreRows = Effect.fn("ColumnLiveViewEngine.topicStore.
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     const preparedRows = yield* topicStoreState(store).storage.prepareRows(rows, invalidRow);
-    yield* runTopicStoreMutationTransaction(store, (state) =>
+    yield* runTopicStoreMutationTransaction(store, (mutation) =>
       Effect.sync(() => {
-        state.storage.setPreparedMany(preparedRows);
-        return preparedRows.length;
+        return mutation.publishPreparedMany(preparedRows);
       }),
     );
   },
@@ -452,12 +479,8 @@ export const patchTopicStoreRow = Effect.fn("ColumnLiveViewEngine.topicStore.pat
   Patch extends Partial<RowObject>,
   Error,
 >(store: TopicStore, key: string, patch: Patch, invalidRow: InvalidRowErrorFactory<Error>) {
-  yield* runTopicStoreMutationTransaction(store, (state) =>
-    Effect.gen(function* () {
-      const prepared = yield* state.storage.preparePatch(key, patch, invalidRow);
-      state.storage.setPrepared(prepared);
-      return 1;
-    }),
+  yield* runTopicStoreMutationTransaction(store, (mutation) =>
+    mutation.patch(key, patch, invalidRow),
   );
 });
 
@@ -465,9 +488,9 @@ export const deleteTopicStoreRow = Effect.fn("ColumnLiveViewEngine.topicStore.de
   store: TopicStore,
   key: string,
 ) {
-  yield* runTopicStoreMutationTransaction(store, (state) =>
+  yield* runTopicStoreMutationTransaction(store, (mutation) =>
     Effect.sync(() => {
-      return state.storage.delete(key);
+      return mutation.delete(key);
     }),
   );
 });

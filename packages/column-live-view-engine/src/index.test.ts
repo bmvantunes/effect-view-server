@@ -38,7 +38,7 @@ import {
   stableQueryValueString,
 } from "./raw-query-compiler";
 import { evaluateCompiledGroupedQuery, prepareGroupedQuery } from "./grouped-query-compiler";
-import { cloneRecord, cloneRow, fieldValue, rowsEqual } from "./row-values";
+import { cloneRecord, cloneRow, fieldValue, rowsEqual, scalarEqualityKey } from "./row-values";
 import {
   acquireTopicStoreSubscription,
   closeBackpressuredTopicStoreSubscription,
@@ -1651,6 +1651,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
                   field: "status",
                   operator: "in",
                   values: ["open", "closed"],
+                  valueKeys: new Set(["string:4:open", "string:6:closed"]),
                 },
                 {
                   field: "price",
@@ -1718,6 +1719,128 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(evaluation.rows).toStrictEqual([]);
       expect(evaluation.totalRows).toBe(0);
       expect(evaluation.version).toBe(11);
+    }),
+  );
+
+  it.effect("passes indexed scalar in predicate keys to the storage scan interface", () =>
+    Effect.gen(function* () {
+      const matchedPrice = fromStringUnsafe("1.0");
+      const positionCompiled = yield* prepareRawQuery<object, object>(
+        "positions",
+        rawQueryCompilerMetadata(Position),
+        {
+          select: ["id"],
+          where: {
+            active: {
+              in: [true],
+            },
+            quantity: {
+              in: [20n],
+            },
+            price: {
+              in: [matchedPrice],
+            },
+          },
+        },
+      );
+
+      const positionEvaluation = evaluateRawQuery(
+        {
+          scanRawWindow: (plan) => {
+            expect(plan.predicate).toStrictEqual({
+              filters: [
+                {
+                  field: "active",
+                  operator: "in",
+                  values: [true],
+                  valueKeys: new Set(["boolean:true"]),
+                },
+                {
+                  field: "quantity",
+                  operator: "in",
+                  values: [20n],
+                  valueKeys: new Set(["bigint:20"]),
+                },
+                {
+                  field: "price",
+                  operator: "in",
+                  values: [matchedPrice],
+                  valueKeys: new Set(["bigDecimal:1"]),
+                },
+              ],
+              callbackRequired: false,
+              callbackSkippable: true,
+            });
+            expect(plan.matches(position("matched", "AAPL", 20n, "1", true))).toBe(true);
+            expect(plan.matches(position("wrong-active", "AAPL", 20n, "1", false))).toBe(false);
+            expect(plan.matches(position("wrong-quantity", "AAPL", 21n, "1", true))).toBe(false);
+            expect(plan.matches(position("wrong-price", "AAPL", 20n, "2", true))).toBe(false);
+            return {
+              keys: [],
+              window: [],
+              totalRows: 0,
+            };
+          },
+          version: () => 3,
+        },
+        positionCompiled,
+      );
+
+      expect(positionEvaluation.keys).toStrictEqual([]);
+      expect(positionEvaluation.rows).toStrictEqual([]);
+      expect(positionEvaluation.totalRows).toBe(0);
+      expect(positionEvaluation.version).toBe(3);
+
+      const NullableMetric = Schema.Struct({
+        id: Schema.String,
+        note: Schema.NullOr(Schema.String),
+      });
+      const nullableCompiled = yield* prepareRawQuery<object, object>(
+        "nullableMetrics",
+        rawQueryCompilerMetadata(NullableMetric),
+        {
+          select: ["id"],
+          where: {
+            note: {
+              in: [null, "x"],
+            },
+          },
+        },
+      );
+
+      const nullableEvaluation = evaluateRawQuery(
+        {
+          scanRawWindow: (plan) => {
+            expect(plan.predicate).toStrictEqual({
+              filters: [
+                {
+                  field: "note",
+                  operator: "in",
+                  values: [null, "x"],
+                  valueKeys: new Set(["null", "string:1:x"]),
+                },
+              ],
+              callbackRequired: false,
+              callbackSkippable: true,
+            });
+            expect(plan.matches({ id: "null", note: null })).toBe(true);
+            expect(plan.matches({ id: "x", note: "x" })).toBe(true);
+            expect(plan.matches({ id: "y", note: "y" })).toBe(false);
+            return {
+              keys: [],
+              window: [],
+              totalRows: 0,
+            };
+          },
+          version: () => 4,
+        },
+        nullableCompiled,
+      );
+
+      expect(nullableEvaluation.keys).toStrictEqual([]);
+      expect(nullableEvaluation.rows).toStrictEqual([]);
+      expect(nullableEvaluation.totalRows).toBe(0);
+      expect(nullableEvaluation.version).toBe(4);
     }),
   );
 
@@ -4117,6 +4240,77 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
+  it.effect("uses indexed scalar in predicate filters without row callbacks", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      yield* publishTopicStoreRow(store, order("cheap", "open", 10, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(store, order("matched", "open", 20, 2), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(store, order("expensive", "open", 30, 3), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(
+        store,
+        { ...order("noted", "open", 40, 4), note: "hello" },
+        (topic, message) => InvalidRowError.make({ topic, message }),
+      );
+
+      const readModel = topicStoreReadModel(store);
+      const indexedNumberIn = readModel.scanRawWindow({
+        predicate: {
+          filters: [
+            {
+              field: "price",
+              operator: "in",
+              values: [20],
+              valueKeys: new Set(["number:20"]),
+            },
+          ],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("indexed numeric in predicates should not call row callbacks");
+        },
+        compare: (left, right) => left.key.localeCompare(right.key),
+        offset: 0,
+        limit: undefined,
+      });
+
+      expect(indexedNumberIn.keys).toStrictEqual(["matched"]);
+      expect(indexedNumberIn.totalRows).toBe(1);
+
+      const indexedOptionalIn = readModel.scanRawWindow({
+        predicate: {
+          filters: [
+            {
+              field: "note",
+              operator: "in",
+              values: ["hello"],
+              valueKeys: new Set(["string:5:hello"]),
+            },
+          ],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("indexed optional in predicates should not call row callbacks");
+        },
+        compare: (left, right) => left.key.localeCompare(right.key),
+        offset: 0,
+        limit: undefined,
+      });
+
+      expect(indexedOptionalIn.keys).toStrictEqual(["noted"]);
+      expect(indexedOptionalIn.totalRows).toBe(1);
+    }),
+  );
+
   it.effect("keeps optional column values out of exact range scans without row callbacks", () =>
     Effect.gen(function* () {
       const OptionalPrice = Schema.Struct({
@@ -5192,6 +5386,19 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 });
 
 describe("ColumnLiveViewEngine validation and health", () => {
+  it("encodes scalar equality keys deterministically", () => {
+    expect(scalarEqualityKey(null)).toBe("null");
+    expect(scalarEqualityKey("open")).toBe("string:4:open");
+    expect(scalarEqualityKey(false)).toBe("boolean:false");
+    expect(scalarEqualityKey(true)).toBe("boolean:true");
+    expect(scalarEqualityKey(1n)).toBe("bigint:1");
+    expect(scalarEqualityKey(-0)).toBe("number:-0");
+    expect(scalarEqualityKey(Number.NaN)).toBe("number:NaN");
+    expect(scalarEqualityKey(Number.POSITIVE_INFINITY)).toBe("number:Infinity");
+    expect(scalarEqualityKey(fromStringUnsafe("1.0"))).toBe("bigDecimal:1");
+    expect(scalarEqualityKey({ value: "open" })).toBeUndefined();
+  });
+
   it("encodes primitive and unsupported query values deterministically", () => {
     function namedFilter() {
       return "ignored";

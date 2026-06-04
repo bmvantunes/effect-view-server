@@ -1,6 +1,14 @@
-import { equals, isBigDecimal } from "effect/BigDecimal";
+import {
+  equals,
+  format as formatBigDecimal,
+  isBigDecimal,
+  normalize,
+  type BigDecimal,
+} from "effect/BigDecimal";
 
 type RowObject = object;
+
+export type ScalarEqualityKeyValue = null | string | boolean | bigint | number | BigDecimal;
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -80,6 +88,30 @@ export const valuesEqual = (left: unknown, right: unknown): boolean => {
   }
   return Object.is(left, right);
 };
+
+export function scalarEqualityKey(value: ScalarEqualityKeyValue): string;
+export function scalarEqualityKey(value: unknown): string | undefined;
+export function scalarEqualityKey(value: unknown): string | undefined {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return `string:${value.length}:${value}`;
+  }
+  if (typeof value === "boolean") {
+    return `boolean:${value ? "true" : "false"}`;
+  }
+  if (typeof value === "bigint") {
+    return `bigint:${value.toString()}`;
+  }
+  if (typeof value === "number") {
+    return `number:${Object.is(value, -0) ? "-0" : value.toString()}`;
+  }
+  if (isBigDecimal(value)) {
+    return `bigDecimal:${formatBigDecimal(normalize(value))}`;
+  }
+  return undefined;
+}
 
 export const rowsEqual = <Row extends RowObject>(left: Row, right: Row): boolean => {
   const rightKeys = new Set(Object.keys(right));

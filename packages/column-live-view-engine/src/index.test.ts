@@ -3184,6 +3184,20 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
+  it.effect("applies disjoint patches cumulatively against the latest row state", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publish("orders", order("a", "open", 10, 1));
+
+      yield* engine.patch("orders", "a", { status: "closed" });
+      yield* engine.patch("orders", "a", { price: 99 });
+
+      const fresh = yield* engine.snapshot("orders", { select: orderSelect });
+      expect(fresh.version).toBe(3);
+      expect(fresh.rows).toStrictEqual([order("a", "closed", 99, 1)]);
+    }),
+  );
+
   it.effect("idempotent subscription close removes active subscribers from health", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();

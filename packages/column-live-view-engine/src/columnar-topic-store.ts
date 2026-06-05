@@ -8,16 +8,9 @@ import type {
 } from "./row-scan";
 import type {
   TopicRawOrderByPlan,
-  TopicRawPredicateFilterPlan,
   TopicRawWindowScanPlan,
   TopicRawWindowScanResult,
 } from "./raw-window-scan";
-import {
-  columnValueDoesNotEqual,
-  compareExactRangeColumnValue,
-  compareRangeColumnValue,
-  isComparableRangeValue,
-} from "./topic-range-value";
 import {
   selectedPredicateCandidateFilter,
   type PredicateCandidateFilter,
@@ -45,7 +38,7 @@ import {
   rawQueryCompilerMetadata,
   type RawQueryCompilerMetadata,
 } from "./raw-query-compiler";
-import { fieldValue, scalarEqualityKey, valuesEqual } from "./row-values";
+import { fieldValue } from "./row-values";
 import { TopicRowChangeJournal } from "./topic-row-change-journal";
 import {
   prepareTopicPatch,
@@ -54,6 +47,7 @@ import {
   type PreparedTopicRow,
   type TopicRowPreparationContext,
 } from "./topic-row-preparation";
+import { slotMatchesRawPredicatePlan } from "./topic-slot-predicate";
 
 type RowObject = object;
 
@@ -246,7 +240,7 @@ export class ColumnarTopicStore {
           continue;
         }
         const entry = this.slots[slot]!;
-        if (!this.slotMatchesPredicatePlan(slot, plan, entry.row)) {
+        if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, this.columns)) {
           continue;
         }
         const matchIndex = totalRows;
@@ -284,7 +278,7 @@ export class ColumnarTopicStore {
         continue;
       }
       const entry = this.slots[slot]!;
-      if (!this.slotMatchesPredicatePlan(slot, plan, entry.row)) {
+      if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, this.columns)) {
         continue;
       }
       totalRows += 1;
@@ -318,7 +312,7 @@ export class ColumnarTopicStore {
         continue;
       }
       const entry = this.slots[slot]!;
-      if (!this.slotMatchesPredicatePlan(slot, plan, entry.row)) {
+      if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, this.columns)) {
         continue;
       }
       totalRows += 1;
@@ -636,101 +630,6 @@ export class ColumnarTopicStore {
       return undefined;
     }
     return this.slots[slot]!.row;
-  }
-
-  private slotMatchesPredicatePlan(
-    slot: number,
-    plan: TopicRawWindowScanPlan<object>,
-    row: object,
-  ): boolean {
-    const exact = plan.predicate.callbackSkippable === true;
-    if (!this.slotMayMatchFilters(slot, plan.predicate.filters, exact)) {
-      return false;
-    }
-    return exact || plan.matches(row);
-  }
-
-  private slotMayMatchFilters(
-    slot: number,
-    filters: ReadonlyArray<TopicRawPredicateFilterPlan>,
-    exact: boolean,
-  ): boolean {
-    for (const filter of filters) {
-      if (!this.slotMayMatchFilter(slot, filter, exact)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private slotMayMatchFilter(
-    slot: number,
-    filter: TopicRawPredicateFilterPlan,
-    exact: boolean,
-  ): boolean {
-    const column = this.columns.get(filter.field);
-    if (column === undefined) {
-      return true;
-    }
-    const value = column[slot];
-
-    if (filter.operator === "eq") {
-      return valuesEqual(value, filter.value);
-    }
-    if (filter.operator === "neq") {
-      if (exact) {
-        return columnValueDoesNotEqual(value, filter.value);
-      }
-      return !valuesEqual(value, filter.value);
-    }
-    if (filter.operator === "in") {
-      if (filter.valueKeys !== undefined) {
-        const key = scalarEqualityKey(value);
-        return key !== undefined && filter.valueKeys.has(key);
-      }
-      return filter.values.some((candidate) => valuesEqual(value, candidate));
-    }
-    if (filter.operator === "startsWith") {
-      if (typeof filter.value !== "string") {
-        return true;
-      }
-      return typeof value === "string" && value.startsWith(filter.value);
-    }
-
-    if (exact && !isComparableRangeValue(filter.value)) {
-      return true;
-    }
-    if (exact) {
-      const exactComparison = compareExactRangeColumnValue(value, filter.value);
-      if (exactComparison === undefined) {
-        return false;
-      }
-      if (filter.operator === "gt") {
-        return exactComparison > 0;
-      }
-      if (filter.operator === "gte") {
-        return exactComparison >= 0;
-      }
-      if (filter.operator === "lt") {
-        return exactComparison < 0;
-      }
-      return exactComparison <= 0;
-    }
-
-    const comparison = compareRangeColumnValue(value, filter.value);
-    if (comparison === undefined) {
-      return true;
-    }
-    if (filter.operator === "gt") {
-      return comparison > 0;
-    }
-    if (filter.operator === "gte") {
-      return comparison >= 0;
-    }
-    if (filter.operator === "lt") {
-      return comparison < 0;
-    }
-    return comparison <= 0;
   }
 }
 

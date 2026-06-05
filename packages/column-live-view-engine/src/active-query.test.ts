@@ -191,12 +191,14 @@ describe("column-live-view-engine active query execution", () => {
         version,
       });
 
-      yield* acquireMaterializedQueryExecution(readModel, "grouped", () =>
-        emptyEvaluation(readModel.version()),
-      );
-      yield* acquireMaterializedQueryExecution(isolatedReadModel, "grouped", () =>
-        emptyEvaluation(isolatedReadModel.version()),
-      );
+      yield* acquireMaterializedQueryExecution(readModel, "grouped", () => ({
+        incremental: false,
+        latest: () => emptyEvaluation(readModel.version()),
+      }));
+      yield* acquireMaterializedQueryExecution(isolatedReadModel, "grouped", () => ({
+        incremental: false,
+        latest: () => emptyEvaluation(isolatedReadModel.version()),
+      }));
 
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);
       expect(yield* activeStoreRawQueryExecutionCount(isolatedReadModel)).toBe(1);

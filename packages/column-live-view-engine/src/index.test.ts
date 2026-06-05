@@ -20,10 +20,12 @@ import {
   type ColumnLiveViewEngineEvent,
   type ColumnLiveViewSubscription,
 } from "./index";
+import { ColumnarTopicStore } from "./columnar-topic-store";
 import {
   acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
   activeStoreRawQueryExecutionCount,
+  clearStoreRawQueryExecutions,
   evaluateRawQuery,
   releaseMaterializedQueryExecution,
 } from "./active-query";
@@ -37,8 +39,13 @@ import {
   rawQueryCompilerMetadata,
   stableQueryValueString,
 } from "./raw-query-compiler";
-import { evaluateCompiledGroupedQuery, prepareGroupedQuery } from "./grouped-query-compiler";
+import {
+  evaluateCompiledGroupedQuery,
+  makeIncrementalGroupedQueryExecution,
+  prepareGroupedQuery,
+} from "./grouped-query-compiler";
 import { cloneRecord, cloneRow, fieldValue, rowsEqual, scalarEqualityKey } from "./row-values";
+import type { TopicRowChangeBatch } from "./row-scan";
 import {
   acquireTopicStoreSubscription,
   closeBackpressuredTopicStoreSubscription,
@@ -1461,6 +1468,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       );
       const evaluation = evaluateCompiledGroupedQuery(
         {
+          changesSince: () => [],
           scanRows: (visitor) => {
             for (const [key, row] of rows) {
               visitor(key, row);
@@ -1476,6 +1484,412 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           totalQuantity: "3",
         },
       ]);
+    }),
+  );
+
+  it.effect("applies incremental grouped change batches without rescanning rows", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      let scanCount = 0;
+      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      const rows = new Map<string, object>([
+        ["1", order("1", "open", 10, 1, "emea")],
+        ["2", order("2", "open", 20, 2, "amer")],
+      ]);
+      const store = {
+        changesSince: () => batches,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          scanCount += 1;
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            rowCount: { aggFunc: "count" },
+          },
+          where: {
+            region: "emea",
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+
+      expect(execution.latest().rows).toStrictEqual([{ status: "open", rowCount: 1n }]);
+      expect(execution.latest().rows).toStrictEqual([{ status: "open", rowCount: 1n }]);
+      expect(scanCount).toBe(1);
+
+      const ignored = order("3", "closed", 30, 3, "amer");
+      const inserted = order("4", "closed", 40, 4, "emea");
+      rows.set("3", ignored);
+      rows.set("4", inserted);
+      version = 1;
+      batches = [
+        {
+          version,
+          changes: [
+            {
+              key: "ignored-old",
+              previous: order("ignored-old", "open", 5, 5, "amer"),
+              next: undefined,
+            },
+            {
+              key: "missing-old-group",
+              previous: order("missing-old-group", "cancelled", 5, 5, "emea"),
+              next: undefined,
+            },
+            {
+              key: "missing-open-member",
+              previous: order("missing-open-member", "open", 5, 5, "emea"),
+              next: undefined,
+            },
+            {
+              key: "1",
+              previous: undefined,
+              next: order("1", "open", 15, 6, "emea"),
+            },
+            { key: "3", previous: undefined, next: ignored },
+            { key: "4", previous: undefined, next: inserted },
+          ],
+        },
+      ];
+
+      expect(execution.latest().rows).toStrictEqual([
+        { status: "closed", rowCount: 1n },
+        { status: "open", rowCount: 1n },
+      ]);
+      expect(scanCount).toBe(1);
+    }),
+  );
+
+  it.effect("uses fallback grouped execution when incremental admission is too broad", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      const scanCounts: Array<number> = [];
+      const rows = new Map<string, object>(
+        Array.from({ length: 65_537 }, (_value, index) => [
+          `row-${index}`,
+          order(`row-${index}`, "open", index, index),
+        ]),
+      );
+      const store = {
+        changesSince: () => [],
+        scanRows: (visitor: (key: string, row: object) => false | void) => {
+          let scanCount = 0;
+          for (const [key, row] of rows) {
+            scanCount += 1;
+            if (visitor(key, row) === false) {
+              break;
+            }
+          }
+          scanCounts.push(scanCount);
+        },
+        version: () => version,
+      };
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            rowCount: { aggFunc: "count" },
+          },
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+      expect(execution.incremental).toBe(false);
+      expect(execution.latest().rows).toStrictEqual([{ status: "open", rowCount: 65_537n }]);
+      expect(scanCounts).toStrictEqual([4_097, 65_537]);
+
+      rows.set("closed", order("closed", "closed", 1, 65_538));
+      version = 1;
+      expect(execution.latest().rows).toStrictEqual([
+        { status: "closed", rowCount: 1n },
+        { status: "open", rowCount: 65_537n },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "switches grouped execution to fallback when an incremental batch exceeds admission",
+    () =>
+      Effect.gen(function* () {
+        let version = 0;
+        let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+        const rows = new Map<string, object>();
+        const store = {
+          changesSince: () => batches,
+          scanRows: (visitor: (key: string, row: object) => void) => {
+            for (const [key, row] of rows) {
+              visitor(key, row);
+            }
+          },
+          version: () => version,
+        };
+        const compiled = yield* prepareGroupedQuery<object, object>(
+          "orders",
+          rawQueryCompilerMetadata(Order),
+          {
+            groupBy: ["status"],
+            aggregates: {
+              rowCount: { aggFunc: "count" },
+            },
+          },
+        );
+        const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+        expect(execution.incremental).toBe(true);
+
+        const changes = Array.from({ length: 65_537 }, (_value, index) => {
+          const row = order(`row-${index}`, "open", index, index);
+          rows.set(row.id, row);
+          return {
+            key: row.id,
+            previous: undefined,
+            next: row,
+          };
+        });
+        version = 1;
+        batches = [{ changes, version }];
+
+        expect(execution.latest().rows).toStrictEqual([{ status: "open", rowCount: 65_537n }]);
+        expect(execution.incremental).toBe(false);
+        rows.set("closed", order("closed", "closed", 1, 65_538));
+        version = 2;
+        batches = [];
+        expect(execution.latest().rows).toStrictEqual([
+          { status: "closed", rowCount: 1n },
+          { status: "open", rowCount: 65_537n },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "switches grouped execution to fallback when incremental batches exceed total admission",
+    () =>
+      Effect.gen(function* () {
+        let version = 0;
+        let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+        const rows = new Map<string, object>();
+        const store = {
+          changesSince: () => batches,
+          scanRows: (visitor: (key: string, row: object) => false | void) => {
+            for (const [key, row] of rows) {
+              if (visitor(key, row) === false) {
+                break;
+              }
+            }
+          },
+          version: () => version,
+        };
+        const compiled = yield* prepareGroupedQuery<object, object>(
+          "positions",
+          rawQueryCompilerMetadata(Position),
+          {
+            groupBy: ["symbol"],
+            aggregates: {
+              rowCount: { aggFunc: "count" },
+            },
+          },
+        );
+        const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+        expect(execution.incremental).toBe(true);
+
+        const changes = Array.from({ length: 65_537 }, (_value, index) => {
+          const row = position(`row-${index}`, `symbol-${index % 8_192}`, 1n, "1");
+          rows.set(row.id, row);
+          return {
+            key: row.id,
+            previous: undefined,
+            next: row,
+          };
+        });
+        version = 1;
+        batches = [{ changes, version }];
+
+        expect(execution.latest().totalRows).toBe(8_192);
+        expect(execution.incremental).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "switches grouped execution to fallback when incremental batches exceed group admission",
+    () =>
+      Effect.gen(function* () {
+        let version = 0;
+        let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+        const rows = new Map<string, object>();
+        const store = {
+          changesSince: () => batches,
+          scanRows: (visitor: (key: string, row: object) => false | void) => {
+            for (const [key, row] of rows) {
+              if (visitor(key, row) === false) {
+                break;
+              }
+            }
+          },
+          version: () => version,
+        };
+        const compiled = yield* prepareGroupedQuery<object, object>(
+          "positions",
+          rawQueryCompilerMetadata(Position),
+          {
+            groupBy: ["symbol"],
+            aggregates: {
+              rowCount: { aggFunc: "count" },
+            },
+          },
+        );
+        const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+        expect(execution.incremental).toBe(true);
+
+        const changes = Array.from({ length: 8_193 }, (_value, index) => {
+          const row = position(`group-row-${index}`, `group-symbol-${index}`, 1n, "1");
+          rows.set(row.id, row);
+          return {
+            key: row.id,
+            previous: undefined,
+            next: row,
+          };
+        });
+        version = 1;
+        batches = [{ changes, version }];
+
+        expect(execution.latest().totalRows).toBe(8_193);
+        expect(execution.incremental).toBe(false);
+      }),
+  );
+
+  it.effect("falls back to a grouped rebuild when the row-change journal is unavailable", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      let scanCount = 0;
+      const rows = new Map<string, object>([["1", order("1", "open", 10, 1)]]);
+      const store = {
+        changesSince: () => undefined,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          scanCount += 1;
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            rowCount: { aggFunc: "count" },
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+
+      expect(execution.latest().rows).toStrictEqual([{ status: "open", rowCount: 1n }]);
+      rows.set("2", order("2", "closed", 20, 2));
+      version = 1;
+
+      expect(execution.latest().rows).toStrictEqual([
+        { status: "closed", rowCount: 1n },
+        { status: "open", rowCount: 1n },
+      ]);
+      expect(scanCount).toBe(2);
+    }),
+  );
+
+  it.effect("uses fallback when a grouped rebuild after a missed journal exceeds admission", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      const rows = new Map<string, object>([["initial", order("initial", "open", 1, 1)]]);
+      const store = {
+        changesSince: () => undefined,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            rowCount: { aggFunc: "count" },
+          },
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(store, compiled, () => {});
+      expect(execution.latest().rows).toStrictEqual([{ status: "open", rowCount: 1n }]);
+
+      for (let index = 0; index < 65_537; index += 1) {
+        const row = order(`wide-${index}`, "closed", index, index);
+        rows.set(row.id, row);
+      }
+      version = 1;
+
+      expect(execution.latest().rows).toStrictEqual([
+        { status: "closed", rowCount: 65_537n },
+        { status: "open", rowCount: 1n },
+      ]);
+      rows.set("cancelled", order("cancelled", "cancelled", 1, 65_538));
+      version = 2;
+      expect(execution.latest().rows).toStrictEqual([
+        { status: "cancelled", rowCount: 1n },
+        { status: "closed", rowCount: 65_537n },
+        { status: "open", rowCount: 1n },
+      ]);
+    }),
+  );
+
+  it.effect("rebuilds a real grouped execution after its row-change journal window is missed", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      yield* publishTopicStoreRow(store, order("initial", "open", 10, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      const readModel = topicStoreReadModel(store);
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            rowCount: { aggFunc: "count" },
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+        },
+      );
+      const execution = yield* acquireMaterializedQueryExecution(
+        readModel,
+        "missed-real-journal",
+        () => makeIncrementalGroupedQueryExecution(readModel, compiled, () => {}),
+      );
+      const cursor = execution.createCursor();
+
+      for (let index = 0; index < 1_025; index += 1) {
+        yield* publishTopicStoreRow(
+          store,
+          order(`late-${index}`, "closed", index, index),
+          (topic, message) => InvalidRowError.make({ topic, message }),
+        );
+      }
+
+      const next = yield* execution.next("missed-real-journal-query", cursor);
+      expect(Option.isSome(next)).toBe(true);
+      expect(expectDefined(Option.getOrUndefined(next)).totalRows).toBe(2);
+
+      yield* releaseMaterializedQueryExecution(readModel, "missed-real-journal");
     }),
   );
 
@@ -2456,6 +2870,160 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       health = yield* engine.health();
       expect(health.topics.orders.activeViews).toBe(0);
       expect(health.topics.orders.activeSubscriptions).toBe(0);
+    }),
+  );
+
+  it.effect("updates grouped subscriptions incrementally across moves and deletes", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [
+        order("1", "open", 10, 1, "emea"),
+        order("2", "open", 20, 2, "amer"),
+        order("3", "closed", 5, 3, "emea"),
+      ]);
+      const query = {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+          distinctRegions: { aggFunc: "countDistinct", field: "region" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+          averagePrice: { aggFunc: "avg", field: "price" },
+          minUpdatedAt: { aggFunc: "min", field: "updatedAt" },
+          maxUpdatedAt: { aggFunc: "max", field: "updatedAt" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: {
+          readonly rowCount: { readonly aggFunc: "count" };
+          readonly distinctRegions: {
+            readonly aggFunc: "countDistinct";
+            readonly field: "region";
+          };
+          readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" };
+          readonly averagePrice: { readonly aggFunc: "avg"; readonly field: "price" };
+          readonly minUpdatedAt: { readonly aggFunc: "min"; readonly field: "updatedAt" };
+          readonly maxUpdatedAt: { readonly aggFunc: "max"; readonly field: "updatedAt" };
+        };
+        readonly orderBy: readonly [{ readonly field: "status"; readonly direction: "asc" }];
+      };
+
+      const subscription = yield* engine.subscribe("orders", query);
+      const read = yield* makeEventReader(subscription);
+      const snapshot = firstEvent(yield* read(1));
+      expectSnapshotEvent(snapshot);
+      let state = stateFromSnapshot(snapshot);
+      expect(normalizeDecimalFields(state.rows)).toStrictEqual([
+        {
+          status: "closed",
+          rowCount: 1n,
+          distinctRegions: 1n,
+          totalPrice: "5",
+          averagePrice: "5",
+          minUpdatedAt: 3,
+          maxUpdatedAt: 3,
+        },
+        {
+          status: "open",
+          rowCount: 2n,
+          distinctRegions: 2n,
+          totalPrice: "30",
+          averagePrice: "15",
+          minUpdatedAt: 1,
+          maxUpdatedAt: 2,
+        },
+      ]);
+
+      yield* engine.patch("orders", "2", {
+        status: "closed",
+        price: 30,
+        region: "emea",
+        updatedAt: 4,
+      });
+      const movedDelta = firstEvent(yield* read(1));
+      expectDeltaEvent(movedDelta);
+      state = applyDelta(state, movedDelta);
+      expect(normalizeDecimalFields(state.rows)).toStrictEqual([
+        {
+          status: "closed",
+          rowCount: 2n,
+          distinctRegions: 1n,
+          totalPrice: "35",
+          averagePrice: "17.5",
+          minUpdatedAt: 3,
+          maxUpdatedAt: 4,
+        },
+        {
+          status: "open",
+          rowCount: 1n,
+          distinctRegions: 1n,
+          totalPrice: "10",
+          averagePrice: "10",
+          minUpdatedAt: 1,
+          maxUpdatedAt: 1,
+        },
+      ]);
+
+      yield* engine.delete("orders", "1");
+      const deleteDelta = firstEvent(yield* read(1));
+      expectDeltaEvent(deleteDelta);
+      state = applyDelta(state, deleteDelta);
+      expect(normalizeDecimalFields(state.rows)).toStrictEqual([
+        {
+          status: "closed",
+          rowCount: 2n,
+          distinctRegions: 1n,
+          totalPrice: "35",
+          averagePrice: "17.5",
+          minUpdatedAt: 3,
+          maxUpdatedAt: 4,
+        },
+      ]);
+
+      yield* subscription.close();
+    }),
+  );
+
+  it.effect("converges grouped subscriptions for duplicate-key publishMany batches", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publish("orders", order("same", "open", 1, 1, "emea"));
+      const query = {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: {
+          readonly rowCount: { readonly aggFunc: "count" };
+          readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" };
+        };
+        readonly orderBy: readonly [{ readonly field: "status"; readonly direction: "asc" }];
+      };
+
+      const subscription = yield* engine.subscribe("orders", query);
+      const read = yield* makeEventReader(subscription);
+      let state = stateFromSnapshot(firstEvent(yield* read(1)));
+
+      yield* engine.publishMany("orders", [
+        order("same", "closed", 2, 2, "emea"),
+        order("same", "open", 3, 3, "emea"),
+        order("same", "closed", 4, 4, "emea"),
+        order("other", "open", 10, 10, "amer"),
+      ]);
+
+      const delta = firstEvent(yield* read(1));
+      expectDeltaEvent(delta);
+      state = applyDelta(state, delta);
+      expect(normalizeDecimalFields(state.rows)).toStrictEqual([
+        { status: "closed", rowCount: 1n, totalPrice: "4" },
+        { status: "open", rowCount: 1n, totalPrice: "10" },
+      ]);
+
+      yield* subscription.close();
     }),
   );
 
@@ -3734,19 +4302,235 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
+  it.effect("acquires topic-store subscriptions through the permit handoff", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      let closed = false;
+      const subscription = yield* acquireTopicStoreSubscription(store, (permit, markAcquired) =>
+        Effect.gen(function* () {
+          expect(permit.store).toBe(store);
+          const acquired = {
+            close: () =>
+              Effect.sync(() => {
+                closed = true;
+              }),
+          };
+          yield* markAcquired(acquired);
+          return acquired;
+        }),
+      );
+
+      yield* subscription.close();
+      expect(closed).toBe(true);
+    }),
+  );
+
+  it.effect("exposes bounded row-change batches for active query catch-up", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      const readModel = topicStoreReadModel(store);
+      expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
+      expect(readModel.changesSince(-1)).toBeUndefined();
+      expect(readModel.changesSince(1)).toBeUndefined();
+
+      yield* publishTopicStoreRow(store, order("initial", "open", 10, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      expect(readModel.changesSince(0)).toBeUndefined();
+
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+        },
+      );
+      const execution = yield* acquireMaterializedQueryExecution(readModel, "journal-bounds", () =>
+        makeIncrementalGroupedQueryExecution(readModel, compiled, () => {}),
+      );
+      expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
+
+      yield* publishTopicStoreRow(store, order("first-active", "open", 11, 2), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      expect(readModel.changesSince(1)).toStrictEqual([
+        {
+          version: 2,
+          changes: [
+            {
+              key: "first-active",
+              previous: undefined,
+              next: order("first-active", "open", 11, 2),
+            },
+          ],
+        },
+      ]);
+
+      for (let index = 0; index < 1_025; index += 1) {
+        yield* publishTopicStoreRow(
+          store,
+          order(`journal-${index}`, "open", index, index),
+          (topic, message) => InvalidRowError.make({ topic, message }),
+        );
+      }
+
+      expect(readModel.version()).toBe(1_027);
+      expect(readModel.changesSince(0)).toBeUndefined();
+      expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
+      yield* releaseMaterializedQueryExecution(readModel, "journal-bounds");
+      expect(readModel.changesSince(readModel.version() - 1)).toBeUndefined();
+      const cursor = execution.createCursor();
+      const unchanged = yield* execution.next("released-journal", cursor);
+      expect(Option.isNone(unchanged)).toBe(true);
+    }),
+  );
+
+  it.effect("clears retained row-change journals on active execution clear and overflow", () =>
+    Effect.gen(function* () {
+      const storage = new ColumnarTopicStore("orders", Order, "id");
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+        },
+      );
+      yield* acquireMaterializedQueryExecution(storage.readModel, "overflow-journal", () =>
+        makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
+      );
+      yield* acquireMaterializedQueryExecution(storage.readModel, "overflow-journal-second", () =>
+        makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
+      );
+      yield* releaseMaterializedQueryExecution(storage.readModel, "overflow-journal-second");
+      expect(storage.readModel.changesSince(storage.version)).toStrictEqual([]);
+
+      const baseVersion = storage.version;
+      storage.setPreparedMany(
+        Array.from({ length: 65_537 }, (_value, index) => ({
+          key: `row-${index}`,
+          row: order(`row-${index}`, "open", index, index),
+        })),
+      );
+      storage.advanceVersion();
+      expect(storage.readModel.changesSince(baseVersion)).toBeUndefined();
+
+      const recoveredVersion = storage.version;
+      storage.setPrepared({
+        key: "after-overflow",
+        row: order("after-overflow", "closed", 1, 1),
+      });
+      storage.advanceVersion();
+      expect(storage.readModel.changesSince(recoveredVersion)).toStrictEqual([
+        {
+          version: recoveredVersion + 1,
+          changes: [
+            {
+              key: "after-overflow",
+              previous: undefined,
+              next: order("after-overflow", "closed", 1, 1),
+            },
+          ],
+        },
+      ]);
+
+      const multiVersionOverflowStart = storage.version;
+      for (let batchIndex = 0; batchIndex < 257; batchIndex += 1) {
+        storage.setPreparedMany(
+          Array.from({ length: 256 }, (_value, rowIndex) => {
+            const key = `multi-version-${batchIndex}-${rowIndex}`;
+            return {
+              key,
+              row: order(key, "open", rowIndex, rowIndex),
+            };
+          }),
+        );
+        storage.advanceVersion();
+      }
+      expect(storage.readModel.changesSince(multiVersionOverflowStart)).toBeUndefined();
+
+      yield* clearStoreRawQueryExecutions(storage.readModel);
+      expect(yield* activeStoreRawQueryExecutionCount(storage.readModel)).toBe(0);
+      storage.setPrepared({
+        key: "after-clear",
+        row: order("after-clear", "open", 1, 1),
+      });
+      const afterClearVersion = storage.version;
+      storage.advanceVersion();
+      expect(storage.readModel.changesSince(afterClearVersion)).toBeUndefined();
+
+      const fallbackStorage = new ColumnarTopicStore("orders", Order, "id");
+      fallbackStorage.setPreparedMany(
+        Array.from({ length: 65_537 }, (_value, index) => ({
+          key: `fallback-${index}`,
+          row: order(`fallback-${index}`, "open", index, index),
+        })),
+      );
+      fallbackStorage.advanceVersion();
+      yield* acquireMaterializedQueryExecution(fallbackStorage.readModel, "fallback-clear", () =>
+        makeIncrementalGroupedQueryExecution(fallbackStorage.readModel, compiled, () => {}),
+      );
+      yield* clearStoreRawQueryExecutions(fallbackStorage.readModel);
+      expect(yield* activeStoreRawQueryExecutionCount(fallbackStorage.readModel)).toBe(0);
+    }),
+  );
+
+  it.effect("releases retained row-change journals after grouped fallback demotion", () =>
+    Effect.gen(function* () {
+      const storage = new ColumnarTopicStore("orders", Order, "id");
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+        },
+      );
+      const execution = yield* acquireMaterializedQueryExecution(
+        storage.readModel,
+        "demoted-grouped-journal",
+        (releaseRetainedChanges) =>
+          makeIncrementalGroupedQueryExecution(storage.readModel, compiled, releaseRetainedChanges),
+      );
+      const cursor = execution.createCursor();
+
+      storage.setPreparedMany(
+        Array.from({ length: 65_537 }, (_value, index) => ({
+          key: `row-${index}`,
+          row: order(`row-${index}`, "open", index, index),
+        })),
+      );
+      storage.advanceVersion();
+      yield* execution.next("demoted-grouped-journal", cursor);
+
+      const demotedVersion = storage.version;
+      storage.setPrepared({
+        key: "after-demotion",
+        row: order("after-demotion", "closed", 1, 1),
+      });
+      storage.advanceVersion();
+      expect(storage.readModel.changesSince(demotedVersion)).toBeUndefined();
+
+      yield* releaseMaterializedQueryExecution(storage.readModel, "demoted-grouped-journal");
+    }),
+  );
+
   it.effect("drains subscribers and storage on normal topic-store reset", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
       let resetStatusCount = 0;
+      let resetStatus: StatusEvent | undefined;
       const subscriber: LiveTopicSubscriber = {
         topic: "orders",
         queryId: "query-normal-reset",
         notify: () => Effect.void,
         queuedEvents: Effect.succeed(0),
         end: Effect.void,
-        closeWithStatus: () =>
+        closeWithStatus: (event) =>
           Effect.sync(() => {
             resetStatusCount += 1;
+            resetStatus = event;
           }),
         maxQueueDepth: 0,
         backpressureEvents: 0,
@@ -3762,6 +4546,14 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const health = yield* collectTopicStoreHealth(store, false);
       expect(resetStatusCount).toBe(1);
+      expect(expectDefined(resetStatus)).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "query-normal-reset",
+        status: "closed",
+        code: "SubscriptionClosed",
+        message: "Subscription closed because the engine reset.",
+      });
       expect(health.status).toBe("ready");
       expect(health.rowCount).toBe(0);
       expect(health.activeSubscriptions).toBe(0);
@@ -5558,18 +6350,25 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           version: readModel.version(),
         };
       };
+      const makeExecution = () => {
+        const evaluation = evaluate();
+        return {
+          incremental: false,
+          latest: () => evaluation,
+        };
+      };
 
       const execution = yield* acquireMaterializedQueryExecution(
         readModel,
         "empty-materialized",
-        evaluate,
+        makeExecution,
       );
       const cursor = execution.createCursor();
       const unchanged = yield* execution.next("query-unchanged", cursor);
 
       expect(Option.isNone(unchanged)).toBe(true);
       expect(evaluationCount).toBe(1);
-      yield* acquireMaterializedQueryExecution(readModel, "second-materialized", evaluate);
+      yield* acquireMaterializedQueryExecution(readModel, "second-materialized", makeExecution);
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(2);
       yield* releaseMaterializedQueryExecution(readModel, "empty-materialized");
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);

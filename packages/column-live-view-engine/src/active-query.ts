@@ -14,6 +14,8 @@ type RowObject = object;
 export type ActiveQueryStoreState = TopicRowScan<object> &
   TopicRawWindowScan<object> & {
     readonly activeQueries: ActiveQueryRegistry;
+    readonly releaseChanges: () => void;
+    readonly retainChanges: () => void;
     readonly topic: string;
   };
 
@@ -55,6 +57,7 @@ type RawQueryExecutionWindowSlot = {
 
 type MaterializedQueryExecutionSlot = {
   readonly execution: ActiveMaterializedQueryExecution;
+  readonly releaseRetainedChanges: () => void;
   refs: number;
 };
 
@@ -63,7 +66,13 @@ type ActiveQueryBaseEvaluation<Row extends RowObject> = TopicRawWindowScanResult
 };
 
 type ActiveMaterializedQueryExecution = {
+  readonly incremental: boolean;
   readonly latest: () => QueryEvaluation<object>;
+};
+
+export type MaterializedQueryExecution<ResultRow extends RowObject> = {
+  readonly incremental: boolean;
+  readonly latest: () => QueryEvaluation<ResultRow>;
 };
 
 export type ActiveQueryRegistry = {
@@ -392,7 +401,7 @@ export const acquireMaterializedQueryExecution = Effect.fn(
 )(function <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   cacheKey: string,
-  evaluate: () => QueryEvaluation<ResultRow>,
+  makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution<ResultRow>,
 ) {
   return Effect.sync(() => {
     const map = getActiveMaterializedQueryMap(store);
@@ -403,24 +412,22 @@ export const acquireMaterializedQueryExecution = Effect.fn(
       return leaseMaterializedQueryExecution<ResultRow>(store, entry.execution);
     }
 
-    let snapshot = {
-      evaluation: evaluate(),
-      version: store.version(),
+    let retainedChanges = false;
+    const releaseRetainedChanges = () => {
+      if (!retainedChanges) {
+        return;
+      }
+      retainedChanges = false;
+      store.releaseChanges();
     };
-    const execution: ActiveMaterializedQueryExecution = {
-      latest: () => {
-        const storeVersion = store.version();
-        if (snapshot.version !== storeVersion) {
-          snapshot = {
-            evaluation: evaluate(),
-            version: storeVersion,
-          };
-        }
-        return snapshot.evaluation;
-      },
-    };
+    const execution = makeExecution(releaseRetainedChanges);
+    if (execution.incremental) {
+      retainedChanges = true;
+      store.retainChanges();
+    }
     map.set(cacheKey, {
       execution,
+      releaseRetainedChanges,
       refs: 1,
     });
     return leaseMaterializedQueryExecution<ResultRow>(store, execution);
@@ -441,6 +448,7 @@ export const releaseMaterializedQueryExecution = Effect.fn(
       entry.refs -= 1;
       return undefined;
     }
+    entry.releaseRetainedChanges();
     map.delete(cacheKey);
     return undefined;
   }),
@@ -451,6 +459,9 @@ export const clearStoreRawQueryExecutions = Effect.fn(
 )((store: ActiveQueryStoreState) =>
   Effect.sync(() => {
     store.activeQueries.raw.clear();
+    for (const entry of store.activeQueries.materialized.values()) {
+      entry.releaseRetainedChanges();
+    }
     store.activeQueries.materialized.clear();
   }),
 );

@@ -13,6 +13,7 @@ import {
 import { ColumnarTopicStore, type PreparedTopicRow } from "./columnar-topic-store";
 import {
   evaluateCompiledGroupedQuery,
+  makeIncrementalGroupedQueryExecution,
   prepareGroupedQuery,
   type CompiledGroupedQuery,
 } from "./grouped-query-compiler";
@@ -170,8 +171,11 @@ export const acquireTopicStoreMaterializedQueryExecution = Effect.fn(
   compiled: CompiledGroupedQuery<object, ResultRow>,
 ) {
   const readModel = topicStoreState(store).storage.readModel;
-  return yield* acquireMaterializedQueryExecution(readModel, compiled.cacheKey, () =>
-    evaluateCompiledGroupedQuery(readModel, compiled),
+  return yield* acquireMaterializedQueryExecution(
+    readModel,
+    compiled.cacheKey,
+    (releaseRetainedChanges) =>
+      makeIncrementalGroupedQueryExecution(readModel, compiled, releaseRetainedChanges),
   );
 });
 

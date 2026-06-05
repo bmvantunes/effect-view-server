@@ -24,12 +24,14 @@ import * as Http from "node:http";
 import {
   ViewServerRpcs,
   ViewServerWireRowSchema,
+  viewServerDecodeHealth,
   type ViewServerRpcError,
   type ViewServerWireEvent,
   type ViewServerWireHealth,
 } from "@view-server/protocol";
 import { makeViewServerClient } from "./remote";
 import { mapViewServerRemoteError } from "./remote-client";
+import { makeRemoteHealthState } from "./remote-health";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -390,6 +392,36 @@ describe("remote ViewServer client", () => {
       message: "socket closed",
     });
   });
+
+  it.effect("does not let late pushed health summary events overwrite stopping status", () =>
+    Effect.gen(function* () {
+      const initialHealth = yield* viewServerDecodeHealth(viewServer, health(0, 0));
+      const remoteHealth = makeRemoteHealthState(initialHealth);
+
+      yield* remoteHealth.markStopping;
+      yield* remoteHealth.updateHealthSummaryRef({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "query-remote",
+        version: 1,
+        keys: ["summary"],
+        rows: [
+          {
+            id: "summary",
+            status: "ready",
+            runtimeStatus: "ready",
+            connectionStatus: "connected",
+            unhealthyTopics: [],
+            updatedAtNanos: 1n,
+            maxKafkaLag: 0n,
+          },
+        ],
+        totalRows: 1,
+      });
+
+      expect(remoteHealth.readonlyHealth.value.status).toBe("stopping");
+    }),
+  );
 
   it.live("subscribes, receives external live events, and closes over Effect RPC WebSocket", () =>
     Effect.gen(function* () {

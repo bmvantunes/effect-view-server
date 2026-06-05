@@ -1,6 +1,8 @@
 import { Clock, Effect } from "effect";
 import type { TopicRuntimeHealth } from "@view-server/config";
+import { activeStoreRawQueryExecutionCount } from "./active-query";
 import type { createTopicHealthLedger } from "./topic-health-ledger";
+import { TopicStore, topicStoreReadModel, topicStoreState } from "./topic-store-state";
 import type { LiveTopicSubscriber } from "./topic-subscriber";
 
 export type TopicStoreHealthView = {
@@ -29,6 +31,16 @@ export type TopicStoreHealthState = {
   readonly healthLedger: ReturnType<typeof createTopicHealthLedger>;
   readonly subscribers: ReadonlySet<LiveTopicSubscriber>;
   readonly topic: string;
+};
+
+const topicStoreHealthState = (store: TopicStore, activeViews: number): TopicStoreHealthState => {
+  const state = topicStoreState(store);
+  return {
+    activeViews,
+    healthLedger: state.healthLedger,
+    subscribers: state.subscribers,
+    topic: store.topic,
+  };
 };
 
 export const collectTopicStoreHealthView = Effect.fn(
@@ -68,3 +80,10 @@ export const collectTopicStoreHealthView = Effect.fn(
   };
   return health;
 });
+
+export const collectTopicStoreHealth = Effect.fn("ColumnLiveViewEngine.topicStore.health")(
+  function* (store: TopicStore, closed: boolean) {
+    const activeViews = yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store));
+    return yield* collectTopicStoreHealthView(topicStoreHealthState(store, activeViews), closed);
+  },
+);

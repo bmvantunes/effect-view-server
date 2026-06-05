@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const engineSourceRoot = join(repoRoot, "packages", "column-live-view-engine", "src");
 const topicStoreFile = join(engineSourceRoot, "topic-store.ts");
+const topicStoreHealthFile = join(engineSourceRoot, "topic-store-health.ts");
 const topicStoreLifecycleFile = join(engineSourceRoot, "topic-store-lifecycle.ts");
 const topicStoreMutationFile = join(engineSourceRoot, "topic-store-mutation.ts");
 const topicStoreQueryFile = join(engineSourceRoot, "topic-store-query.ts");
@@ -27,6 +28,7 @@ const restrictedTopicStoreHelpers = [
     pattern: /\btopicStoreReadModel\b/,
     allowedPaths: new Set([
       topicStoreFile,
+      topicStoreHealthFile,
       topicStoreLifecycleFile,
       topicStoreQueryFile,
       topicStoreStateFile,
@@ -37,6 +39,7 @@ const restrictedTopicStoreHelpers = [
     pattern: /\btopicStoreState\b/,
     allowedPaths: new Set([
       topicStoreFile,
+      topicStoreHealthFile,
       topicStoreLifecycleFile,
       topicStoreMutationFile,
       topicStoreStateFile,

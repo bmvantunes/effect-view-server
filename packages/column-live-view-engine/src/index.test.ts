@@ -5227,53 +5227,6 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
-  it.effect("falls back when materialized predicate candidates exceed the transient cap", () =>
-    Effect.gen(function* () {
-      const SkewedRow = Schema.Struct({
-        id: Schema.String,
-        status: Schema.String,
-      });
-      const rowCount = 270_000;
-      const matchingPrefixRows = 70_000;
-      const sampleSize = 4_096;
-      const sampledSlots = new Set(
-        Array.from({ length: sampleSize }, (_value, sampleIndex) =>
-          Math.round((sampleIndex * (rowCount - 1)) / (sampleSize - 1)),
-        ),
-      );
-      const rows = Array.from({ length: rowCount }, (_value, index) => ({
-        id: `row-${index.toString().padStart(6, "0")}`,
-        status: index < matchingPrefixRows && !sampledSlots.has(index) ? "match" : "skip",
-      }));
-      const expectedTotalRows =
-        matchingPrefixRows -
-        Array.from(sampledSlots).filter((slot) => slot < matchingPrefixRows).length;
-      const store = new TopicStore("candidate-cap", SkewedRow, "id", () => {});
-      yield* publishTopicStoreRows(store, rows, (topic, message) =>
-        InvalidRowError.make({ topic, message }),
-      );
-
-      const readModel = topicStoreReadModel(store);
-      const fallbackResult = readModel.scanRawWindow({
-        predicate: {
-          filters: [{ field: "status", operator: "eq", value: "match" }],
-          callbackRequired: false,
-          callbackSkippable: true,
-        },
-        orderBy: [],
-        matches: () => {
-          throw new Error("complete capped candidate predicates should not call row callbacks");
-        },
-        compare: (left, right) => left.key.localeCompare(right.key),
-        offset: 0,
-        limit: 0,
-      });
-
-      expect(fallbackResult.keys).toStrictEqual([]);
-      expect(fallbackResult.totalRows).toBe(expectedTotalRows);
-    }),
-  );
-
   it.effect("uses bigint range hints conservatively for manual plans", () =>
     Effect.gen(function* () {
       const store = new TopicStore("positions", Position, "id", () => {});

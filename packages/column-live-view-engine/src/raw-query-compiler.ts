@@ -736,114 +736,6 @@ const includesValue = (values: ReadonlyArray<unknown>, value: unknown): boolean 
   return false;
 };
 
-const matchesFilter = (value: unknown, filter: unknown): boolean => {
-  if (filter === undefined) {
-    return false;
-  }
-  if (!isPlainRecord(filter) || isBigDecimal(filter)) {
-    return valuesEqual(value, filter);
-  }
-  const valueIsStructured = (isPlainRecord(value) && !isBigDecimal(value)) || Array.isArray(value);
-  if (valueIsStructured) {
-    if (valuesEqual(value, filter)) {
-      return true;
-    }
-    const oneOf = filter["in"];
-    if (oneOf !== undefined) {
-      if (
-        !Array.isArray(oneOf) ||
-        !isDenseArray(oneOf) ||
-        oneOf.some((candidate) => candidate === undefined)
-      ) {
-        return false;
-      }
-      if (!includesValue(oneOf, value)) {
-        return false;
-      }
-    }
-    const eq = filter["eq"];
-    if (eq !== undefined && !valuesEqual(value, eq)) {
-      return false;
-    }
-    const notEqual = filter["neq"];
-    if (notEqual !== undefined && valuesEqual(value, notEqual)) {
-      return false;
-    }
-    return eq !== undefined || oneOf !== undefined || notEqual !== undefined;
-  }
-  if (!isOperatorFilterObject(filter)) {
-    return valuesEqual(value, filter);
-  }
-
-  if (
-    ("eq" in filter && filter.eq === undefined) ||
-    ("neq" in filter && filter.neq === undefined) ||
-    ("in" in filter && filter.in === undefined) ||
-    ("gt" in filter && filter.gt === undefined) ||
-    ("gte" in filter && filter.gte === undefined) ||
-    ("lt" in filter && filter.lt === undefined) ||
-    ("lte" in filter && filter.lte === undefined) ||
-    ("startsWith" in filter && filter.startsWith === undefined)
-  ) {
-    return false;
-  }
-
-  if (filter.eq !== undefined && !valuesEqual(value, filter.eq)) {
-    return false;
-  }
-  if (filter.neq !== undefined) {
-    if (!isEqualityComparable(value, filter.neq) || valuesEqual(value, filter.neq)) {
-      return false;
-    }
-  }
-  if (filter.in !== undefined) {
-    if (
-      !Array.isArray(filter.in) ||
-      !isDenseArray(filter.in) ||
-      filter.in.some((candidate) => candidate === undefined) ||
-      !includesValue(filter.in, value)
-    ) {
-      return false;
-    }
-  }
-  if (filter.startsWith !== undefined) {
-    if (
-      typeof filter.startsWith !== "string" ||
-      typeof value !== "string" ||
-      !value.startsWith(filter.startsWith)
-    ) {
-      return false;
-    }
-  }
-
-  if (filter.gt !== undefined) {
-    const comparison = compareFilterValue(value, filter.gt);
-    if (comparison === undefined || comparison <= 0) {
-      return false;
-    }
-  }
-  if (filter.gte !== undefined) {
-    const comparison = compareFilterValue(value, filter.gte);
-    if (comparison === undefined || comparison < 0) {
-      return false;
-    }
-  }
-  if (filter.lt !== undefined) {
-    const comparison = compareFilterValue(value, filter.lt);
-    if (comparison === undefined || comparison >= 0) {
-      return false;
-    }
-  }
-  if (filter.lte !== undefined) {
-    const comparison = compareFilterValue(value, filter.lte);
-    if (comparison === undefined || comparison > 0) {
-      return false;
-    }
-  }
-
-  return true;
-};
-
 const rangeValueKind = (value: unknown): RangeValueKind | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) {
     return "number";
@@ -911,6 +803,16 @@ const scalarEqualityKeys = (values: ReadonlyArray<ScalarEqualityKeyValue>): Read
 type PredicateFieldPlan = {
   readonly filters: TopicRawPredicatePlan["filters"];
   readonly callbackRequired: boolean;
+};
+
+type CompiledRawPredicateClause = {
+  readonly field: string;
+  readonly matches: (value: unknown) => boolean;
+};
+
+type CompiledRawPredicateParts = {
+  readonly clauses: ReadonlyArray<CompiledRawPredicateClause>;
+  readonly plan: TopicRawPredicatePlan;
 };
 
 const predicateFilterPlans = (
@@ -1042,29 +944,178 @@ const predicateFilterPlans = (
   };
 };
 
-const compilePredicatePlan = (
+const isStructuredQueryValue = (value: unknown): boolean =>
+  (isPlainRecord(value) && !isBigDecimal(value)) || Array.isArray(value);
+
+const compileStructuredFilterMatcher = (
+  filter: Readonly<Record<string, unknown>>,
+): ((value: unknown) => boolean) => {
+  const oneOf = filter["in"];
+  const oneOfMatcher =
+    oneOf === undefined
+      ? undefined
+      : Array.isArray(oneOf) &&
+          isDenseArray(oneOf) &&
+          !oneOf.some((candidate) => candidate === undefined)
+        ? (value: unknown) => includesValue(oneOf, value)
+        : () => false;
+  const eq = filter["eq"];
+  const neq = filter["neq"];
+
+  return (value) => {
+    if (valuesEqual(value, filter)) {
+      return true;
+    }
+    if (oneOfMatcher !== undefined && !oneOfMatcher(value)) {
+      return false;
+    }
+    if (eq !== undefined && !valuesEqual(value, eq)) {
+      return false;
+    }
+    if (neq !== undefined && valuesEqual(value, neq)) {
+      return false;
+    }
+    return eq !== undefined || oneOfMatcher !== undefined || neq !== undefined;
+  };
+};
+
+const compileScalarOperatorFilterMatcher = (
+  filter: Readonly<Record<string, unknown>>,
+): ((value: unknown) => boolean) => {
+  if (
+    ("eq" in filter && filter["eq"] === undefined) ||
+    ("neq" in filter && filter["neq"] === undefined) ||
+    ("in" in filter && filter["in"] === undefined) ||
+    ("gt" in filter && filter["gt"] === undefined) ||
+    ("gte" in filter && filter["gte"] === undefined) ||
+    ("lt" in filter && filter["lt"] === undefined) ||
+    ("lte" in filter && filter["lte"] === undefined) ||
+    ("startsWith" in filter && filter["startsWith"] === undefined)
+  ) {
+    return () => false;
+  }
+
+  const eq = filter["eq"];
+  const neq = filter["neq"];
+  const oneOf = filter["in"];
+  const startsWith = filter["startsWith"];
+  const gt = filter["gt"];
+  const gte = filter["gte"];
+  const lt = filter["lt"];
+  const lte = filter["lte"];
+  const oneOfMatcher =
+    oneOf === undefined
+      ? undefined
+      : Array.isArray(oneOf) &&
+          isDenseArray(oneOf) &&
+          !oneOf.some((candidate) => candidate === undefined)
+        ? (value: unknown) => includesValue(oneOf, value)
+        : () => false;
+
+  return (value) => {
+    if (eq !== undefined && !valuesEqual(value, eq)) {
+      return false;
+    }
+    if (neq !== undefined) {
+      if (!isEqualityComparable(value, neq) || valuesEqual(value, neq)) {
+        return false;
+      }
+    }
+    if (oneOfMatcher !== undefined && !oneOfMatcher(value)) {
+      return false;
+    }
+    if (startsWith !== undefined) {
+      if (
+        typeof startsWith !== "string" ||
+        typeof value !== "string" ||
+        !value.startsWith(startsWith)
+      ) {
+        return false;
+      }
+    }
+
+    if (gt !== undefined) {
+      const comparison = compareFilterValue(value, gt);
+      if (comparison === undefined || comparison <= 0) {
+        return false;
+      }
+    }
+    if (gte !== undefined) {
+      const comparison = compareFilterValue(value, gte);
+      if (comparison === undefined || comparison < 0) {
+        return false;
+      }
+    }
+    if (lt !== undefined) {
+      const comparison = compareFilterValue(value, lt);
+      if (comparison === undefined || comparison >= 0) {
+        return false;
+      }
+    }
+    if (lte !== undefined) {
+      const comparison = compareFilterValue(value, lte);
+      if (comparison === undefined || comparison > 0) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+};
+
+const compileFilterMatcher = (filter: unknown): ((value: unknown) => boolean) => {
+  if (filter === undefined) {
+    return () => false;
+  }
+  if (!isPlainRecord(filter) || isBigDecimal(filter)) {
+    return (value) => valuesEqual(value, filter);
+  }
+
+  const structuredMatcher = compileStructuredFilterMatcher(filter);
+  if (!isOperatorFilterObject(filter)) {
+    return (value) =>
+      isStructuredQueryValue(value) ? structuredMatcher(value) : valuesEqual(value, filter);
+  }
+
+  const scalarMatcher = compileScalarOperatorFilterMatcher(filter);
+  return (value) =>
+    isStructuredQueryValue(value) ? structuredMatcher(value) : scalarMatcher(value);
+};
+
+const compilePredicateParts = (
   metadata: RawQueryCompilerMetadata,
   where: RuntimeRawQuery["where"],
-): TopicRawPredicatePlan => {
+): CompiledRawPredicateParts => {
   if (where === undefined) {
     return {
-      filters: [],
-      callbackRequired: false,
-      callbackSkippable: true,
+      clauses: [],
+      plan: {
+        filters: [],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
     };
   }
 
   const filters: Array<TopicRawPredicatePlan["filters"][number]> = [];
+  const clauses: Array<CompiledRawPredicateClause> = [];
   let callbackRequired = false;
   for (const [field, filter] of Object.entries(where)) {
     const fieldPlan = predicateFilterPlans(field, filter, metadata);
     filters.push(...fieldPlan.filters);
     callbackRequired ||= fieldPlan.callbackRequired;
+    clauses.push({
+      field,
+      matches: compileFilterMatcher(filter),
+    });
   }
   return {
-    filters,
-    callbackRequired,
-    callbackSkippable: !callbackRequired,
+    clauses,
+    plan: {
+      filters,
+      callbackRequired,
+      callbackSkippable: !callbackRequired,
+    },
   };
 };
 
@@ -1072,20 +1123,19 @@ const compileMatches = <Row extends RowObject>(
   metadata: RawQueryCompilerMetadata,
   where: RuntimeRawQuery["where"],
 ): CompiledRawPredicate<Row> => {
-  const plan = compilePredicatePlan(metadata, where);
-  if (where === undefined) {
+  const parts = compilePredicateParts(metadata, where);
+  if (parts.clauses.length === 0) {
     return {
-      plan,
+      plan: parts.plan,
       matches: () => true,
     };
   }
 
-  const filters = Object.entries(where);
   return {
-    plan,
+    plan: parts.plan,
     matches: (row) => {
-      for (const [field, filter] of filters) {
-        if (!matchesFilter(fieldValue(row, field), filter)) {
+      for (const clause of parts.clauses) {
+        if (!clause.matches(fieldValue(row, clause.field))) {
           return false;
         }
       }

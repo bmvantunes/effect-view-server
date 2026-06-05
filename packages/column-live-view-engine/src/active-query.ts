@@ -7,7 +7,8 @@ import {
 } from "./raw-query-compiler";
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation } from "./query-result";
-import type { TopicRawWindowScan, TopicRawWindowScanResult, TopicRowScan } from "./row-scan";
+import type { TopicRawWindowScan, TopicRawWindowScanResult } from "./raw-window-scan";
+import type { TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 

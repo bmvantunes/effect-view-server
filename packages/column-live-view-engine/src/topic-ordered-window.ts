@@ -1,4 +1,4 @@
-import type { TopicRawOrderByPlan, TopicRawPredicateFilterPlan } from "./row-scan";
+import type { TopicRawOrderByPlan, TopicRawPredicateFilterPlan } from "./raw-window-scan";
 import {
   compareQueryValue,
   isRangePlanValue,

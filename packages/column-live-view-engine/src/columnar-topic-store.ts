@@ -1,15 +1,17 @@
 import { Effect, Schema } from "effect";
 import { createActiveQueryRegistry, type ActiveQueryStoreState } from "./active-query";
 import type {
-  TopicRawOrderByPlan,
-  TopicRawPredicateFilterPlan,
-  TopicRawWindowScanPlan,
-  TopicRawWindowScanResult,
   TopicRowChange,
   TopicRowChangeBatch,
   TopicRowEntry,
   TopicRowVisitor,
 } from "./row-scan";
+import type {
+  TopicRawOrderByPlan,
+  TopicRawPredicateFilterPlan,
+  TopicRawWindowScanPlan,
+  TopicRawWindowScanResult,
+} from "./raw-window-scan";
 import {
   columnValueDoesNotEqual,
   compareExactRangeColumnValue,

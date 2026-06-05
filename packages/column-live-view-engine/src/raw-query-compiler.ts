@@ -14,7 +14,8 @@ import {
 } from "./raw-query-decoder";
 import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { cloneUnknown, fieldValue } from "./row-values";
-import type { TopicRawOrderByPlan, TopicRowEntry } from "./row-scan";
+import type { TopicRawOrderByPlan } from "./raw-window-scan";
+import type { TopicRowEntry } from "./row-scan";
 
 type RowObject = object;
 const compiledRawQueryBrand: unique symbol = Symbol("CompiledRawQuery");

@@ -1,4 +1,4 @@
-import type { TopicRawPredicateFilterPlan } from "./row-scan";
+import type { TopicRawPredicateFilterPlan } from "./raw-window-scan";
 import { scalarEqualityKey } from "./row-values";
 import {
   compareExactRangeColumnValue,

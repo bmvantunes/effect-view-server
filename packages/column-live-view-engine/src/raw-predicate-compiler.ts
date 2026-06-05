@@ -9,7 +9,7 @@ import {
   type ScalarEqualityKeyValue,
   valuesEqual,
 } from "./row-values";
-import type { TopicRawPredicatePlan } from "./row-scan";
+import type { TopicRawPredicatePlan } from "./raw-window-scan";
 
 type RowObject = object;
 

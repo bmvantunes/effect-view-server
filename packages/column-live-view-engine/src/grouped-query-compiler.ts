@@ -15,7 +15,7 @@ import {
 import { compareQueryValue, stableQueryValueString } from "./raw-query-compiler";
 import { cloneUnknown, fieldValue, isPlainRecord } from "./row-values";
 import type { QueryEvaluation, StoredRowOf } from "./query-result";
-import type { TopicRowScan } from "./row-scan";
+import type { TopicRowChangeBatch, TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 
@@ -95,6 +95,19 @@ type GroupState = {
   readonly row: Record<string, unknown>;
   readonly aggregates: Record<string, AggregateState>;
 };
+
+type IncrementalGroupState = GroupState & {
+  readonly members: Map<string, RowObject>;
+};
+
+export type IncrementalGroupedQueryExecution<ResultRow extends RowObject> = {
+  readonly incremental: boolean;
+  readonly latest: () => QueryEvaluation<ResultRow>;
+};
+
+const maxIncrementalGroupedMembers = 65_536;
+const maxIncrementalGroupedMembersPerGroup = 4_096;
+const maxIncrementalGroupedGroups = 8_192;
 
 const groupedQueryKeys = new Set([
   "groupBy",
@@ -272,6 +285,40 @@ const newGroupState = (
   };
 };
 
+const newIncrementalGroupState = (
+  key: string,
+  groupBy: ReadonlyArray<string>,
+  aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>,
+  row: RowObject,
+): IncrementalGroupState => ({
+  ...newGroupState(key, groupBy, aggregates, row),
+  members: new Map(),
+});
+
+const resetAggregateStates = (
+  group: GroupState,
+  aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>,
+): void => {
+  for (const key of Object.keys(group.aggregates)) {
+    delete group.aggregates[key];
+  }
+  for (const [alias, aggregate] of Object.entries(aggregates)) {
+    group.aggregates[alias] = emptyAggregateState(aggregate);
+  }
+};
+
+const recomputeIncrementalGroupState = (
+  group: IncrementalGroupState,
+  aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>,
+): void => {
+  resetAggregateStates(group, aggregates);
+  for (const row of group.members.values()) {
+    for (const [alias, aggregate] of Object.entries(aggregates)) {
+      updateAggregateState(group.aggregates[alias]!, aggregate, row);
+    }
+  }
+};
+
 const finalizeGroup = (group: GroupState): StoredRowOf<RowObject> => {
   const row: Record<string, unknown> = { ...group.row };
   for (const [alias, state] of Object.entries(group.aggregates)) {
@@ -296,6 +343,28 @@ const compareGroupedRows = (
     }
   }
   return Number(left.key > right.key) - Number(left.key < right.key);
+};
+
+const groupedEvaluationFromEntries = (
+  entries: ReadonlyArray<StoredRowOf<RowObject>>,
+  query: RuntimeGroupedQuery,
+  version: number,
+): QueryEvaluation<RowObject> => {
+  const ordered = entries.toSorted((left, right) =>
+    compareGroupedRows(left, right, query.orderBy ?? []),
+  );
+  const offset = query.offset ?? 0;
+  const window = ordered.slice(
+    offset,
+    query.limit === undefined ? undefined : offset + query.limit,
+  );
+  return {
+    rows: window.map((entry) => entry.row),
+    keys: window.map((entry) => entry.key),
+    window,
+    totalRows: ordered.length,
+    version,
+  };
 };
 
 const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.decode")((
@@ -607,20 +676,303 @@ const evaluateGroupedRows = <Row extends RowObject>(
       updateAggregateState(group.aggregates[alias]!, aggregate, row);
     }
   });
-  const ordered = Array.from(groups.values(), finalizeGroup).toSorted((left, right) =>
-    compareGroupedRows(left, right, query.orderBy ?? []),
+  return groupedEvaluationFromEntries(
+    Array.from(groups.values(), finalizeGroup),
+    query,
+    store.version(),
   );
-  const offset = query.offset ?? 0;
-  const window = ordered.slice(
-    offset,
-    query.limit === undefined ? undefined : offset + query.limit,
-  );
+};
+
+type IncrementalGroupedQueryState = {
+  readonly groups: Map<string, IncrementalGroupState>;
+  evaluation: QueryEvaluation<RowObject>;
+  memberCount: number;
+  version: number;
+};
+
+type IncrementalGroupedQueryBuildState =
+  | {
+      readonly admitted: false;
+    }
+  | {
+      readonly admitted: true;
+      readonly state: IncrementalGroupedQueryState;
+    };
+
+const evaluateIncrementalGroupedQuery = (
+  groups: ReadonlyMap<string, IncrementalGroupState>,
+  query: RuntimeGroupedQuery,
+  version: number,
+): QueryEvaluation<RowObject> =>
+  groupedEvaluationFromEntries(Array.from(groups.values(), finalizeGroup), query, version);
+
+const clearIncrementalGroupedQueryState = (
+  state: IncrementalGroupedQueryState,
+  query: RuntimeGroupedQuery,
+  version: number,
+): void => {
+  state.groups.clear();
+  state.evaluation = groupedEvaluationFromEntries([], query, version);
+  state.memberCount = 0;
+  state.version = version;
+};
+
+const buildIncrementalGroupedQueryState = <Row extends RowObject>(
+  store: TopicRowScan<Row>,
+  query: RuntimeGroupedQuery,
+  matches: (row: Row) => boolean,
+): IncrementalGroupedQueryBuildState => {
+  const groups = new Map<string, IncrementalGroupState>();
+  let memberCount = 0;
+  let admitted = true;
+  store.scanRows((key, row) => {
+    if (!admitted) {
+      return undefined;
+    }
+    if (!matches(row)) {
+      return undefined;
+    }
+    const groupedKey = groupKey(query.groupBy, row);
+    let group = groups.get(groupedKey);
+    if (group === undefined) {
+      group = newIncrementalGroupState(groupedKey, query.groupBy, query.aggregates, row);
+      groups.set(groupedKey, group);
+    }
+    group.members.set(key, row);
+    memberCount += 1;
+    if (
+      memberCount > maxIncrementalGroupedMembers ||
+      group.members.size > maxIncrementalGroupedMembersPerGroup ||
+      groups.size > maxIncrementalGroupedGroups
+    ) {
+      groups.clear();
+      admitted = false;
+      return false;
+    }
+    for (const [alias, aggregate] of Object.entries(query.aggregates)) {
+      updateAggregateState(group.aggregates[alias]!, aggregate, row);
+    }
+    return undefined;
+  });
+  if (!admitted) {
+    return {
+      admitted: false,
+    };
+  }
+  const version = store.version();
   return {
-    rows: window.map((entry) => entry.row),
-    keys: window.map((entry) => entry.key),
-    window,
-    totalRows: ordered.length,
+    admitted: true,
+    state: {
+      groups,
+      evaluation: evaluateIncrementalGroupedQuery(groups, query, version),
+      memberCount,
+      version,
+    },
+  };
+};
+
+const removeIncrementalGroupedMember = <Row extends RowObject>(
+  groups: Map<string, IncrementalGroupState>,
+  query: RuntimeGroupedQuery,
+  matches: (row: Row) => boolean,
+  key: string,
+  row: Row,
+  dirtyGroups: Set<IncrementalGroupState>,
+): boolean => {
+  if (!matches(row)) {
+    return false;
+  }
+  const groupedKey = groupKey(query.groupBy, row);
+  const group = groups.get(groupedKey);
+  if (group === undefined) {
+    return false;
+  }
+  const removed = group.members.delete(key);
+  if (!removed) {
+    return false;
+  }
+  if (group.members.size === 0) {
+    groups.delete(groupedKey);
+    dirtyGroups.delete(group);
+    return true;
+  }
+  dirtyGroups.add(group);
+  return true;
+};
+
+type UpsertIncrementalGroupedMemberResult = {
+  readonly groupSize: number;
+  readonly inserted: boolean;
+};
+
+const upsertIncrementalGroupedMember = <Row extends RowObject>(
+  groups: Map<string, IncrementalGroupState>,
+  query: RuntimeGroupedQuery,
+  matches: (row: Row) => boolean,
+  key: string,
+  row: Row,
+  dirtyGroups: Set<IncrementalGroupState>,
+): UpsertIncrementalGroupedMemberResult | undefined => {
+  if (!matches(row)) {
+    return undefined;
+  }
+  const groupedKey = groupKey(query.groupBy, row);
+  let group = groups.get(groupedKey);
+  if (group === undefined) {
+    group = newIncrementalGroupState(groupedKey, query.groupBy, query.aggregates, row);
+    groups.set(groupedKey, group);
+  }
+  const inserted = !group.members.has(key);
+  group.members.set(key, row);
+  dirtyGroups.add(group);
+  return {
+    groupSize: group.members.size,
+    inserted,
+  };
+};
+
+const applyIncrementalGroupedQueryBatch = <Row extends RowObject>(
+  state: IncrementalGroupedQueryState,
+  query: RuntimeGroupedQuery,
+  matches: (row: Row) => boolean,
+  batch: TopicRowChangeBatch<Row>,
+  dirtyGroups: Set<IncrementalGroupState>,
+): boolean => {
+  for (const change of batch.changes) {
+    if (change.previous !== undefined) {
+      const removed = removeIncrementalGroupedMember(
+        state.groups,
+        query,
+        matches,
+        change.key,
+        change.previous,
+        dirtyGroups,
+      );
+      if (removed) {
+        state.memberCount -= 1;
+      }
+    }
+    if (change.next !== undefined) {
+      const upserted = upsertIncrementalGroupedMember(
+        state.groups,
+        query,
+        matches,
+        change.key,
+        change.next,
+        dirtyGroups,
+      );
+      if (upserted === undefined) {
+        continue;
+      }
+      if (upserted.groupSize > maxIncrementalGroupedMembersPerGroup) {
+        return false;
+      }
+      if (state.groups.size > maxIncrementalGroupedGroups) {
+        return false;
+      }
+      if (upserted.inserted) {
+        state.memberCount += 1;
+        if (state.memberCount > maxIncrementalGroupedMembers) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+};
+
+const applyIncrementalGroupedQueryBatches = <Row extends RowObject>(
+  state: IncrementalGroupedQueryState,
+  query: RuntimeGroupedQuery,
+  matches: (row: Row) => boolean,
+  batches: ReadonlyArray<TopicRowChangeBatch<Row>>,
+): boolean => {
+  const dirtyGroups = new Set<IncrementalGroupState>();
+  for (const batch of batches) {
+    if (!applyIncrementalGroupedQueryBatch(state, query, matches, batch, dirtyGroups)) {
+      state.groups.clear();
+      state.memberCount = 0;
+      return false;
+    }
+    state.version = batch.version;
+  }
+  for (const group of dirtyGroups) {
+    recomputeIncrementalGroupState(group, query.aggregates);
+  }
+  state.evaluation = evaluateIncrementalGroupedQuery(state.groups, query, state.version);
+  return true;
+};
+
+const makeFallbackGroupedQueryExecution = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicRowScan<Row>,
+  compiled: CompiledGroupedQuery<Row, ResultRow>,
+): IncrementalGroupedQueryExecution<ResultRow> => {
+  let snapshot = {
+    evaluation: compiled.evaluate(store),
     version: store.version(),
+  };
+  return {
+    incremental: false,
+    latest: () => {
+      const storeVersion = store.version();
+      if (snapshot.version !== storeVersion) {
+        snapshot = {
+          evaluation: compiled.evaluate(store),
+          version: storeVersion,
+        };
+      }
+      return snapshot.evaluation;
+    },
+  };
+};
+
+export const makeIncrementalGroupedQueryExecution = <
+  Row extends RowObject,
+  ResultRow extends RowObject,
+>(
+  store: TopicRowScan<Row>,
+  compiled: CompiledGroupedQuery<Row, ResultRow>,
+  releaseRetainedChanges: () => void,
+): IncrementalGroupedQueryExecution<ResultRow> => {
+  let build = buildIncrementalGroupedQueryState(store, compiled.query, compiled.matches);
+  if (!build.admitted) {
+    return makeFallbackGroupedQueryExecution(store, compiled);
+  }
+  let state = build.state;
+  let fallback: IncrementalGroupedQueryExecution<ResultRow> | undefined;
+  const activateFallback = (): IncrementalGroupedQueryExecution<ResultRow> => {
+    clearIncrementalGroupedQueryState(state, compiled.query, store.version());
+    const nextFallback = makeFallbackGroupedQueryExecution(store, compiled);
+    fallback = nextFallback;
+    releaseRetainedChanges();
+    return nextFallback;
+  };
+  return {
+    get incremental() {
+      return fallback === undefined;
+    },
+    latest: () => {
+      if (fallback !== undefined) {
+        return fallback.latest();
+      }
+      const storeVersion = store.version();
+      if (state.version === storeVersion) {
+        return typedEvaluation<ResultRow>(state.evaluation);
+      }
+      const batches = store.changesSince(state.version);
+      if (batches === undefined) {
+        build = buildIncrementalGroupedQueryState(store, compiled.query, compiled.matches);
+        if (!build.admitted) {
+          return activateFallback().latest();
+        }
+        state = build.state;
+        return typedEvaluation<ResultRow>(state.evaluation);
+      }
+      if (!applyIncrementalGroupedQueryBatches(state, compiled.query, compiled.matches, batches)) {
+        return activateFallback().latest();
+      }
+      return typedEvaluation<ResultRow>(state.evaluation);
+    },
   };
 };
 

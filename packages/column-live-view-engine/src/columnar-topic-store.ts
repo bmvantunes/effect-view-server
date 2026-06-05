@@ -5,6 +5,8 @@ import type {
   TopicRawPredicateFilterPlan,
   TopicRawWindowScanPlan,
   TopicRawWindowScanResult,
+  TopicRowChange,
+  TopicRowChangeBatch,
   TopicRowEntry,
   TopicRowVisitor,
 } from "./row-scan";
@@ -82,6 +84,8 @@ const noOrderedRangeBounds: OrderedRangeBounds = {
 const maxBoundedRawWindowEnd = 1_024;
 const maxPredicateCandidateSampleSlots = 4_096;
 const maxTransientPredicateCandidateSlots = 65_536;
+const maxRowChangeJournalEntries = 65_536;
+const maxRowChangeJournalVersions = 1_024;
 
 export type PreparedTopicRow = {
   readonly key: string;
@@ -96,6 +100,12 @@ export class ColumnarTopicStore {
   private readonly keyToSlot = new Map<string, number>();
   private readonly columns = new Map<string, ColumnValues>();
   private readonly orderedSlotIndexes = new Map<string, OrderedSlotIndex>();
+  private pendingRowChanges: Array<TopicRowChange<object>> = [];
+  private pendingRowChangesOverflowed = false;
+  private readonly rowChangeJournal: Array<TopicRowChangeBatch<object>> = [];
+  private rowChangeJournalChangeCount = 0;
+  private rowChangeJournalInvalidBeforeVersion = 0;
+  private rowChangeJournalRefs = 0;
   private versionValue = 0;
 
   constructor(
@@ -110,6 +120,9 @@ export class ColumnarTopicStore {
     this.readModel = {
       activeQueries: createActiveQueryRegistry(),
       topic,
+      changesSince: (version) => this.changesSince(version),
+      releaseChanges: () => this.releaseChanges(),
+      retainChanges: () => this.retainChanges(),
       scanRows: (visitor) => this.scanRows(visitor),
       scanRawWindow: (plan) => this.scanRawWindow(plan),
       version: () => this.versionValue,
@@ -126,6 +139,21 @@ export class ColumnarTopicStore {
 
   advanceVersion(): number {
     this.versionValue += 1;
+    if (this.rowChangeJournalRefs > 0) {
+      if (this.pendingRowChangesOverflowed) {
+        this.pendingRowChanges = [];
+        this.pendingRowChangesOverflowed = false;
+        return this.versionValue;
+      }
+      const changes = this.pendingRowChanges;
+      this.rowChangeJournal.push({
+        changes,
+        version: this.versionValue,
+      });
+      this.pendingRowChanges = [];
+      this.rowChangeJournalChangeCount += changes.length;
+      this.trimRowChangeJournal();
+    }
     return this.versionValue;
   }
 
@@ -133,6 +161,7 @@ export class ColumnarTopicStore {
     this.slots.length = 0;
     this.keyToSlot.clear();
     this.orderedSlotIndexes.clear();
+    this.clearRowChangeJournal();
     for (const column of this.columns.values()) {
       column.length = 0;
     }
@@ -142,7 +171,13 @@ export class ColumnarTopicStore {
   setPrepared(prepared: PreparedTopicRow): void {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
+      const previous = this.slots[existingSlot]!.row;
       this.writeSlot(existingSlot, prepared);
+      this.recordRowChange({
+        key: prepared.key,
+        previous,
+        next: prepared.row,
+      });
       this.orderedSlotIndexes.clear();
       return;
     }
@@ -150,6 +185,11 @@ export class ColumnarTopicStore {
     const slot = this.slots.length;
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
+    this.recordRowChange({
+      key: prepared.key,
+      previous: undefined,
+      next: prepared.row,
+    });
     this.insertSlotIntoOrderedIndexes(slot);
   }
 
@@ -176,6 +216,7 @@ export class ColumnarTopicStore {
     this.orderedSlotIndexes.clear();
     const lastSlot = this.slots.length - 1;
     const lastEntry = this.slots[lastSlot]!;
+    const previous = this.slots[slot]!.row;
     this.keyToSlot.delete(key);
     if (slot !== lastSlot) {
       this.slots[slot] = lastEntry;
@@ -188,13 +229,43 @@ export class ColumnarTopicStore {
     for (const column of this.columns.values()) {
       column.pop();
     }
+    this.recordRowChange({
+      key,
+      previous,
+      next: undefined,
+    });
     return 1;
+  }
+
+  changesSince(version: number): ReadonlyArray<TopicRowChangeBatch<object>> | undefined {
+    if (version === this.versionValue) {
+      return [];
+    }
+    if (this.rowChangeJournalRefs === 0 || version < 0 || version > this.versionValue) {
+      return undefined;
+    }
+    if (version < this.rowChangeJournalInvalidBeforeVersion) {
+      return undefined;
+    }
+    const firstBatch = this.rowChangeJournal[0]!;
+    if (version < firstBatch.version - 1) {
+      return undefined;
+    }
+    const batches: Array<TopicRowChangeBatch<object>> = [];
+    for (const batch of this.rowChangeJournal) {
+      if (batch.version > version) {
+        batches.push(batch);
+      }
+    }
+    return batches;
   }
 
   scanRows(visitor: TopicRowVisitor<object>): void {
     for (let slot = 0; slot < this.slots.length; slot += 1) {
       const entry = this.slots[slot]!;
-      visitor(entry.key, entry.row);
+      if (visitor(entry.key, entry.row) === false) {
+        break;
+      }
     }
   }
 
@@ -769,13 +840,73 @@ export class ColumnarTopicStore {
   private setPreparedWithoutIndexMaintenance(prepared: PreparedTopicRow): void {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
+      const previous = this.slots[existingSlot]!.row;
       this.writeSlot(existingSlot, prepared);
+      this.recordRowChange({
+        key: prepared.key,
+        previous,
+        next: prepared.row,
+      });
       return;
     }
 
     const slot = this.slots.length;
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
+    this.recordRowChange({
+      key: prepared.key,
+      previous: undefined,
+      next: prepared.row,
+    });
+  }
+
+  private clearRowChangeJournal(): void {
+    this.pendingRowChanges = [];
+    this.pendingRowChangesOverflowed = false;
+    this.rowChangeJournal.length = 0;
+    this.rowChangeJournalChangeCount = 0;
+    this.rowChangeJournalInvalidBeforeVersion = this.versionValue;
+  }
+
+  private invalidateRowChangeJournal(invalidBeforeVersion: number): void {
+    this.clearRowChangeJournal();
+    this.rowChangeJournalInvalidBeforeVersion = invalidBeforeVersion;
+  }
+
+  private recordRowChange(change: TopicRowChange<object>): void {
+    if (this.rowChangeJournalRefs === 0 || this.pendingRowChangesOverflowed) {
+      return;
+    }
+    if (this.pendingRowChanges.length + 1 > maxRowChangeJournalEntries) {
+      this.invalidateRowChangeJournal(this.versionValue + 1);
+      this.pendingRowChangesOverflowed = true;
+      return;
+    }
+    this.pendingRowChanges.push(change);
+  }
+
+  private releaseChanges(): void {
+    this.rowChangeJournalRefs = Math.max(0, this.rowChangeJournalRefs - 1);
+    if (this.rowChangeJournalRefs === 0) {
+      this.clearRowChangeJournal();
+    }
+  }
+
+  private retainChanges(): void {
+    this.rowChangeJournalRefs += 1;
+    if (this.rowChangeJournalRefs === 1) {
+      this.clearRowChangeJournal();
+    }
+  }
+
+  private trimRowChangeJournal(): void {
+    while (this.rowChangeJournal.length > maxRowChangeJournalVersions) {
+      const removed = this.rowChangeJournal.shift()!;
+      this.rowChangeJournalChangeCount -= removed.changes.length;
+    }
+    if (this.rowChangeJournalChangeCount > maxRowChangeJournalEntries) {
+      this.invalidateRowChangeJournal(this.versionValue);
+    }
   }
 
   private rowForKey(key: string): object | undefined {

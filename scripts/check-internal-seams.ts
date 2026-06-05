@@ -7,6 +7,7 @@ const engineSourceRoot = join(repoRoot, "packages", "column-live-view-engine", "
 const topicStoreFile = join(engineSourceRoot, "topic-store.ts");
 const topicStoreLifecycleFile = join(engineSourceRoot, "topic-store-lifecycle.ts");
 const topicStoreMutationFile = join(engineSourceRoot, "topic-store-mutation.ts");
+const topicStoreQueryFile = join(engineSourceRoot, "topic-store-query.ts");
 const topicStoreStateFile = join(engineSourceRoot, "topic-store-state.ts");
 const topicStoreSubscriptionFile = join(engineSourceRoot, "topic-store-subscription.ts");
 
@@ -19,12 +20,17 @@ const restrictedTopicStoreHelpers = [
   {
     name: "topicStoreRawQueryMetadata",
     pattern: /\btopicStoreRawQueryMetadata\b/,
-    allowedPaths: new Set([topicStoreFile, topicStoreStateFile]),
+    allowedPaths: new Set([topicStoreFile, topicStoreQueryFile, topicStoreStateFile]),
   },
   {
     name: "topicStoreReadModel",
     pattern: /\btopicStoreReadModel\b/,
-    allowedPaths: new Set([topicStoreFile, topicStoreLifecycleFile, topicStoreStateFile]),
+    allowedPaths: new Set([
+      topicStoreFile,
+      topicStoreLifecycleFile,
+      topicStoreQueryFile,
+      topicStoreStateFile,
+    ]),
   },
   {
     name: "topicStoreState",

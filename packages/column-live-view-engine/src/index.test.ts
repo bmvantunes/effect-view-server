@@ -43,6 +43,11 @@ import { evaluateCompiledGroupedQuery, prepareGroupedQuery } from "./grouped-que
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
 import { cloneRecord, cloneRow, fieldValue, rowsEqual, scalarEqualityKey } from "./row-values";
 import type { TopicRowChangeBatch } from "./row-scan";
+import { scanTopicRawWindow } from "./topic-raw-window-scanner";
+import {
+  createScalarPredicateIndexes,
+  selectedPredicateCandidateSlots,
+} from "./topic-predicate-candidate-index";
 import {
   acquireTopicStoreSubscription,
   closeBackpressuredTopicStoreSubscription,
@@ -974,6 +979,73 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         { id: "i", price: 9 },
       ]);
       expect(afterAppend.totalRows).toBe(4);
+    }),
+  );
+
+  it.effect("keeps exact predicate candidate indexes current after row mutations", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [
+        order("a", "open", 10, 1),
+        order("b", "closed", 20, 2),
+        order("c", "open", 30, 3),
+      ]);
+
+      const initial = yield* engine.snapshot("orders", {
+        select: ["id"],
+        where: {
+          status: "open",
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(initial.rows).toStrictEqual([{ id: "a" }, { id: "c" }]);
+      expect(initial.totalRows).toBe(2);
+
+      yield* engine.publish("orders", order("a", "closed", 10, 4));
+      yield* engine.delete("orders", "b");
+
+      const afterUpdateAndSlotSwapDelete = yield* engine.snapshot("orders", {
+        select: ["id"],
+        where: {
+          status: "open",
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(afterUpdateAndSlotSwapDelete.rows).toStrictEqual([{ id: "c" }]);
+      expect(afterUpdateAndSlotSwapDelete.totalRows).toBe(1);
+
+      yield* engine.publish("orders", order("d", "open", 40, 5));
+      yield* engine.delete("orders", "c");
+
+      const afterInsertAndSecondSlotSwapDelete = yield* engine.snapshot("orders", {
+        select: ["id"],
+        where: {
+          status: "open",
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(afterInsertAndSecondSlotSwapDelete.rows).toStrictEqual([{ id: "d" }]);
+      expect(afterInsertAndSecondSlotSwapDelete.totalRows).toBe(1);
+
+      yield* engine.reset();
+
+      const afterReset = yield* engine.snapshot("orders", {
+        select: ["id"],
+        where: {
+          status: "open",
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(afterReset.rows).toStrictEqual([]);
+      expect(afterReset.totalRows).toBe(0);
     }),
   );
 
@@ -6615,22 +6687,17 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
-  it.effect("falls back when stratified samples underestimate predicate candidate size", () =>
+  it.effect("keeps broad exact scalar predicates correct without row callbacks", () =>
     Effect.gen(function* () {
       const SkewedRow = Schema.Struct({
         id: Schema.String,
         status: Schema.String,
       });
       const rowCount = 20_000;
-      const sampleSize = 4_096;
-      const sampledSlots = new Set(
-        Array.from({ length: sampleSize }, (_value, sampleIndex) =>
-          Math.round((sampleIndex * (rowCount - 1)) / (sampleSize - 1)),
-        ),
-      );
+      const skippedSlots = new Set(Array.from({ length: 4_096 }, (_value, index) => index * 2));
       const rows = Array.from({ length: rowCount }, (_value, index) => ({
         id: `row-${index.toString().padStart(5, "0")}`,
-        status: sampledSlots.has(index) ? "skip" : "match",
+        status: skippedSlots.has(index) ? "skip" : "match",
       }));
       const store = new TopicStore("skewed", SkewedRow, "id", () => {});
       yield* publishTopicStoreRows(store, rows, (topic, message) =>
@@ -6654,9 +6721,536 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       });
 
       expect(fallbackResult.keys).toStrictEqual([]);
-      expect(fallbackResult.totalRows).toBe(rowCount - sampledSlots.size);
+      expect(fallbackResult.totalRows).toBe(rowCount - skippedSlots.size);
     }),
   );
+
+  it("does not touch non-candidate row entries for exact scalar and range scans", () => {
+    const first = order("first", "open", 10, 1);
+    const second = order("second", "closed", 20, 2);
+    const slots = [
+      {
+        key: first.id,
+        row: first,
+      },
+      {
+        key: second.id,
+        row: second,
+      },
+    ];
+    const state = {
+      columns: new Map<string, ReadonlyArray<unknown>>([
+        ["id", [first.id, second.id]],
+        ["price", [first.price, second.price]],
+        ["status", [first.status, second.status]],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: rawQueryCompilerMetadata(Order),
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots,
+    };
+
+    const warmRangeIndex = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 0 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "price", direction: "asc" }],
+      storageOrderBy: [{ field: "price", direction: "asc" }],
+      matches: () => {
+        throw new Error("exact range warmup should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 2,
+    });
+
+    expect(warmRangeIndex.keys).toStrictEqual(["first", "second"]);
+    expect(warmRangeIndex.totalRows).toBe(2);
+
+    Object.defineProperty(slots, "0", {
+      get: () => {
+        throw new Error("non-candidate scalar slot should not be read");
+      },
+    });
+
+    const scalarCandidate = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "eq", value: 20 }],
+        callbackRequired: true,
+      },
+      orderBy: [],
+      matches: () => true,
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(scalarCandidate.keys).toStrictEqual(["second"]);
+    expect(scalarCandidate.totalRows).toBe(1);
+
+    const rangeCandidate = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 10 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact range candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(rangeCandidate.keys).toStrictEqual(["second"]);
+    expect(rangeCandidate.totalRows).toBe(1);
+
+    const emptyRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          { field: "price", operator: "gt", value: 30 },
+          { field: "price", operator: "lt", value: 10 },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("empty exact range candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(emptyRange.keys).toStrictEqual([]);
+    expect(emptyRange.totalRows).toBe(0);
+  });
+
+  it("keeps exact candidate scans aligned with bounded and ordered raw windows", () => {
+    const low = position("low", "AAPL", 5n, "10");
+    const equal = position("equal", "AAPL", 10n, "10");
+    const high = position("high", "MSFT", 20n, "10");
+    const missingQuantity = {
+      ...position("missing-quantity", "TSLA", 0n, "10"),
+      quantity: undefined,
+    };
+    const rows = [low, equal, high, missingQuantity];
+    const slots = rows.map((row) => ({
+      key: row.id,
+      row,
+    }));
+    const state = {
+      columns: new Map<string, ReadonlyArray<unknown>>([
+        ["id", rows.map((row) => row.id)],
+        ["symbol", rows.map((row) => row.symbol)],
+        ["quantity", rows.map((row) => row.quantity)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: rawQueryCompilerMetadata(Position),
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots,
+    };
+
+    const boundedReplacement = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [],
+        callbackRequired: true,
+      },
+      orderBy: [],
+      matches: () => true,
+      compare: (left, right) =>
+        Number(fieldValue(right.row, "quantity")) - Number(fieldValue(left.row, "quantity")),
+      offset: 0,
+      limit: 1,
+    });
+
+    expect(boundedReplacement.keys).toStrictEqual(["high"]);
+    expect(boundedReplacement.totalRows).toBe(4);
+
+    const exactBigIntRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "quantity", operator: "gte", value: 10n }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact BigInt range candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(exactBigIntRange.keys).toStrictEqual(["equal", "high"]);
+    expect(exactBigIntRange.totalRows).toBe(2);
+
+    const nonExactBigIntRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "quantity", operator: "gte", value: 10n }],
+        callbackRequired: false,
+      },
+      orderBy: [],
+      matches: () => true,
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(nonExactBigIntRange.keys).toStrictEqual(["equal", "high", "missing-quantity"]);
+    expect(nonExactBigIntRange.totalRows).toBe(3);
+
+    const nonExactBigIntUpperRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "quantity", operator: "lte", value: 10n }],
+        callbackRequired: false,
+      },
+      orderBy: [],
+      matches: () => true,
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(nonExactBigIntUpperRange.keys).toStrictEqual(["equal", "low", "missing-quantity"]);
+    expect(nonExactBigIntUpperRange.totalRows).toBe(3);
+
+    const nonExactBigIntLowerRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "quantity", operator: "gt", value: 10n }],
+        callbackRequired: false,
+      },
+      orderBy: [],
+      matches: () => true,
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(nonExactBigIntLowerRange.keys).toStrictEqual(["high", "missing-quantity"]);
+    expect(nonExactBigIntLowerRange.totalRows).toBe(2);
+
+    const orderedCandidate = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          { field: "quantity", operator: "gt", value: 0n },
+          {
+            field: "symbol",
+            operator: "in",
+            values: ["MSFT"],
+            valueKeys: new Set(["string:4:MSFT"]),
+          },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "quantity", direction: "asc" }],
+      storageOrderBy: [{ field: "quantity", direction: "asc" }],
+      matches: () => {
+        throw new Error("ordered exact candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 2,
+    });
+
+    expect(orderedCandidate.keys).toStrictEqual(["high"]);
+    expect(orderedCandidate.totalRows).toBe(1);
+    expect(state.scalarPredicateIndexes.size).toBe(0);
+
+    const openScalarBucket = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "symbol", operator: "eq", value: "AAPL" }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: state.slots.length,
+      },
+    );
+
+    expect(openScalarBucket?.slots).toStrictEqual([0, 1]);
+
+    const existingBucketOverBudget = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "symbol", operator: "in", values: ["AAPL", "NVDA"] }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: 2,
+      },
+    );
+
+    expect(existingBucketOverBudget).toBeUndefined();
+
+    const existingIndexWithMissingBucketBuildDisabled = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "symbol", operator: "in", values: ["AAPL", "NVDA"] }],
+      {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+        maxSlotCount: state.slots.length,
+      },
+    );
+
+    expect(existingIndexWithMissingBucketBuildDisabled).toBeUndefined();
+
+    const orderedMissingScalarBucket = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          { field: "quantity", operator: "gt", value: 0n },
+          { field: "symbol", operator: "eq", value: "NVDA" },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "quantity", direction: "asc" }],
+      storageOrderBy: [{ field: "quantity", direction: "asc" }],
+      matches: () => {
+        throw new Error("ordered missing scalar candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 2,
+    });
+
+    expect(orderedMissingScalarBucket.keys).toStrictEqual([]);
+    expect(orderedMissingScalarBucket.totalRows).toBe(0);
+    expect(state.scalarPredicateIndexes.has("symbol")).toBe(true);
+    const symbolIndex = state.scalarPredicateIndexes.get("symbol")!;
+    expect(symbolIndex.buckets.has("string:4:NVDA")).toBe(false);
+  });
+
+  it("rejects exact candidates that are not smaller than their scan budget", () => {
+    const rows = [order("a", "open", 1, 1), order("b", "closed", 2, 2), order("c", "open", 3, 3)];
+    const state = {
+      columns: new Map<string, ReadonlyArray<unknown>>([
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+        ["status", [rows[0]!.status, rows[1]!.status, { nonScalar: true }]],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: rawQueryCompilerMetadata(Order),
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({
+        key: row.id,
+        row,
+      })),
+    };
+
+    const valueKeysTakePrecedence = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          {
+            field: "status",
+            operator: "in",
+            values: ["closed"],
+            valueKeys: new Set([scalarEqualityKey("open")!]),
+          },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact value-key candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(valueKeysTakePrecedence.keys).toStrictEqual(["a"]);
+    expect(valueKeysTakePrecedence.totalRows).toBe(1);
+
+    const orderedInWithoutValueKeys = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          {
+            field: "status",
+            operator: "in",
+            values: ["open"],
+          },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "status", direction: "asc" }],
+      storageOrderBy: [{ field: "status", direction: "asc" }],
+      matches: () => {
+        throw new Error("ordered exact in candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 2,
+    });
+
+    expect(orderedInWithoutValueKeys.keys).toStrictEqual(["a"]);
+    expect(orderedInWithoutValueKeys.totalRows).toBe(1);
+
+    const orderedValueKeysTakePrecedence = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          {
+            field: "status",
+            operator: "in",
+            values: ["closed"],
+            valueKeys: new Set([scalarEqualityKey("open")!]),
+          },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "status", direction: "asc" }],
+      storageOrderBy: [{ field: "status", direction: "asc" }],
+      matches: () => {
+        throw new Error("ordered exact value-key candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 2,
+    });
+
+    expect(orderedValueKeysTakePrecedence.keys).toStrictEqual(["a"]);
+    expect(orderedValueKeysTakePrecedence.totalRows).toBe(1);
+
+    const orderedValueKeySizeMismatch = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          {
+            field: "status",
+            operator: "in",
+            values: [],
+            valueKeys: new Set([scalarEqualityKey("open")!]),
+          },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "status", direction: "asc" }],
+      storageOrderBy: [{ field: "status", direction: "asc" }],
+      matches: () => {
+        throw new Error("ordered exact value-key mismatch should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 2,
+    });
+
+    expect(orderedValueKeySizeMismatch.keys).toStrictEqual(["a"]);
+    expect(orderedValueKeySizeMismatch.totalRows).toBe(1);
+
+    const nonScalarInWithoutValueKeys = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "status", operator: "in", values: [{ structured: true }] }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: state.slots.length,
+      },
+    );
+
+    expect(nonScalarInWithoutValueKeys).toBeUndefined();
+
+    const broadScalar = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "status", operator: "in", values: ["open", "closed"] }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: 2,
+      },
+    );
+
+    expect(broadScalar).toBeUndefined();
+
+    const missingScalarWithNonScalarColumnEntry = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "status", operator: "in", values: ["missing", "absent"] }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: state.slots.length,
+      },
+    );
+
+    expect(missingScalarWithNonScalarColumnEntry?.slots).toStrictEqual([]);
+    const statusIndex = state.scalarPredicateIndexes.get("status")!;
+    expect(statusIndex.indexedKeys.has(scalarEqualityKey("missing")!)).toBe(false);
+    expect(statusIndex.indexedKeys.has(scalarEqualityKey("absent")!)).toBe(false);
+    expect(statusIndex.buckets.has(scalarEqualityKey("missing")!)).toBe(false);
+    expect(statusIndex.buckets.has(scalarEqualityKey("absent")!)).toBe(false);
+
+    const singleMissingScalar = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "status", operator: "eq", value: "single-missing" }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: state.slots.length,
+      },
+    );
+
+    expect(singleMissingScalar?.slots).toStrictEqual([]);
+    expect(statusIndex.indexedKeys.has(scalarEqualityKey("single-missing")!)).toBe(false);
+    expect(statusIndex.buckets.has(scalarEqualityKey("single-missing")!)).toBe(false);
+
+    const zeroBudgetCandidate = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "status", operator: "in", values: [] }],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: 0,
+      },
+    );
+
+    expect(zeroBudgetCandidate).toBeUndefined();
+
+    const warmPriceIndex = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 0 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "price", direction: "asc" }],
+      storageOrderBy: [{ field: "price", direction: "asc" }],
+      matches: () => {
+        throw new Error("exact range index warmup should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 3,
+    });
+
+    expect(warmPriceIndex.totalRows).toBe(3);
+
+    const fullRange = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "price", operator: "gte", value: 1 }],
+      {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+      },
+    );
+
+    expect(fullRange).toBeUndefined();
+
+    const rangeNotSmallerThanBudget = selectedPredicateCandidateSlots(
+      state,
+      [{ field: "price", operator: "gte", value: 2 }],
+      {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+        maxSlotCount: 2,
+      },
+    );
+
+    expect(rangeNotSmallerThanBudget).toBeUndefined();
+  });
 
   it.effect("uses bigint range hints conservatively for manual plans", () =>
     Effect.gen(function* () {

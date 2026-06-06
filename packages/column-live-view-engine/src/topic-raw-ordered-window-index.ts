@@ -84,37 +84,49 @@ export const rawWindowOrderedWindow = (
     orderField,
     state.rawQueryMetadata,
   );
-  const indexKey = orderedSlotIndexKey(storageOrderBy);
-  const existing = state.orderedSlotIndexes.get(indexKey);
-  if (existing !== undefined) {
-    return {
-      candidateExcludedField: orderField,
-      limit: plan.limit,
-      slots: existing.slots,
-      spans: orderedSlotIndexSpans(state, existing, seekBounds, equalityValues),
-    };
-  }
+  const index = rawWindowOrderedSlotIndex(state, storageOrderBy);
 
-  const slots = Array.from({ length: state.slots.length }, (_value, slot) => slot);
-  slots.sort((left, right) => compareSlotsByStorageOrder(state, left, right, storageOrderBy));
-  state.orderedSlotIndexes.set(indexKey, {
-    orderBy: storageOrderBy,
-    slots,
-  });
   return {
     candidateExcludedField: orderField,
     limit: plan.limit,
-    slots,
-    spans: orderedSlotIndexSpans(
-      state,
-      {
-        orderBy: storageOrderBy,
-        slots,
-      },
-      seekBounds,
-      equalityValues,
-    ),
+    slots: index.slots,
+    spans: rawWindowOrderedSpans(state, index, seekBounds, equalityValues),
   };
+};
+
+export const rawWindowOrderedSlotIndex = (
+  state: RawOrderedWindowIndexState,
+  storageOrderBy: ReadonlyArray<TopicRawOrderByPlan>,
+): OrderedSlotIndex => {
+  const indexKey = orderedSlotIndexKey(storageOrderBy);
+  const existing = state.orderedSlotIndexes.get(indexKey);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const slots = Array.from({ length: state.slots.length }, (_value, slot) => slot);
+  slots.sort((left, right) => compareSlotsByStorageOrder(state, left, right, storageOrderBy));
+  const index: OrderedSlotIndex = {
+    orderBy: storageOrderBy,
+    slots,
+  };
+  state.orderedSlotIndexes.set(indexKey, index);
+  return index;
+};
+
+export const existingRawWindowOrderedSlotIndex = (
+  state: RawOrderedWindowIndexState,
+  storageOrderBy: ReadonlyArray<TopicRawOrderByPlan>,
+): OrderedSlotIndex | undefined => {
+  return state.orderedSlotIndexes.get(orderedSlotIndexKey(storageOrderBy));
+};
+
+export const rawWindowOrderedSpans = (
+  state: RawOrderedWindowIndexState,
+  index: OrderedSlotIndex,
+  rangeBounds: OrderedRangeBounds,
+  equalityValues: ReadonlyArray<unknown> | undefined,
+): ReadonlyArray<OrderedRawWindowSpan> => {
+  return orderedSlotIndexSpans(state, index, rangeBounds, equalityValues);
 };
 
 export const rawWindowSlotComparator = (

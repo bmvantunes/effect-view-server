@@ -5,6 +5,7 @@ import {
   isRangePlanValue,
   type RawQueryCompilerMetadata,
 } from "./raw-query-compiler";
+import { scalarEqualityKey } from "./row-values";
 
 type ColumnValues = ReadonlyArray<unknown>;
 
@@ -61,8 +62,14 @@ export const orderedSlotIndexKey = (orderBy: ReadonlyArray<TopicRawOrderByPlan>)
 };
 
 export const orderedRawWindowSlotCount = (window: OrderedRawWindow): number => {
+  return orderedRawWindowSpanSlotCount(window.spans);
+};
+
+export const orderedRawWindowSpanSlotCount = (
+  spans: ReadonlyArray<OrderedRawWindowSpan>,
+): number => {
   let count = 0;
-  for (const span of window.spans) {
+  for (const span of spans) {
     count += span.endIndex - span.startIndex;
   }
   return count;
@@ -124,15 +131,14 @@ export const orderedEqualityValuesForField = (
       } else {
         hasUnsafeEqualityFilter = true;
       }
-    } else if (filter.values.length === 0) {
-      hasEmptyInFilter = true;
     } else {
-      for (const value of filter.values) {
-        if (isEqualitySeekPlanValue(field, value, metadata)) {
-          nextValues.push(value);
-        } else {
-          hasUnsafeEqualityFilter = true;
-        }
+      const seekValues = orderedInSeekValues(filter, field, metadata);
+      if (seekValues === undefined) {
+        hasUnsafeEqualityFilter = true;
+      } else if (seekValues.length === 0) {
+        hasEmptyInFilter = true;
+      } else {
+        nextValues.push(...seekValues);
       }
     }
     if (nextValues.length > 0) {
@@ -271,6 +277,34 @@ const isEqualitySeekPlanValue = (
     return typeof value === "string";
   }
   return isRangePlanValue(field, value, metadata);
+};
+
+const orderedInSeekValues = (
+  filter: TopicRawInPredicateFilterPlan,
+  field: string,
+  metadata: RawQueryCompilerMetadata,
+): ReadonlyArray<unknown> | undefined => {
+  const values: Array<unknown> = [];
+  const valueKeys = new Set<string>();
+  for (const value of filter.values) {
+    if (!isEqualitySeekPlanValue(field, value, metadata)) {
+      return undefined;
+    }
+    values.push(value);
+    valueKeys.add(scalarEqualityKey(value)!);
+  }
+  if (filter.valueKeys === undefined) {
+    return values;
+  }
+  if (valueKeys.size !== filter.valueKeys.size) {
+    return undefined;
+  }
+  for (const key of filter.valueKeys) {
+    if (!valueKeys.has(key)) {
+      return undefined;
+    }
+  }
+  return values;
 };
 
 const strongerLowerBound = (

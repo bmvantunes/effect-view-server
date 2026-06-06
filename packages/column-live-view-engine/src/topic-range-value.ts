@@ -25,22 +25,6 @@ export const compareExactRangeColumnValue = (left: unknown, right: unknown): num
   return undefined;
 };
 
-export const rangeComparisonMatches = (
-  operator: "gt" | "gte" | "lt" | "lte",
-  comparison: number,
-): boolean => {
-  if (operator === "gt") {
-    return comparison > 0;
-  }
-  if (operator === "gte") {
-    return comparison >= 0;
-  }
-  if (operator === "lt") {
-    return comparison < 0;
-  }
-  return comparison <= 0;
-};
-
 export const columnValueDoesNotEqual = (value: unknown, notEqual: unknown): boolean => {
   return equalityComparableValues(value, notEqual) && !valuesEqual(value, notEqual);
 };

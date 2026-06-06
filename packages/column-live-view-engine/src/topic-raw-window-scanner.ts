@@ -2,9 +2,10 @@ import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import type { TopicRawWindowScanPlan, TopicRawWindowScanResult } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
 import {
-  selectedPredicateCandidateFilter,
-  type PredicateCandidateFilter,
-} from "./topic-predicate-candidate-filter";
+  selectedPredicateCandidateSlots,
+  type PredicateCandidateSlotIndexState,
+  type PredicateCandidateSlots,
+} from "./topic-predicate-candidate-index";
 import {
   insertSlotIntoRawWindowIndexes,
   rawWindowOrderedWindow,
@@ -25,6 +26,7 @@ export type TopicRawWindowScanState = {
   readonly columns: ReadonlyMap<string, ColumnValues>;
   readonly orderedSlotIndexes: Map<string, OrderedSlotIndex>;
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
+  readonly scalarPredicateIndexes: PredicateCandidateSlotIndexState["scalarPredicateIndexes"];
   readonly slots: ReadonlyArray<TopicRowEntry<object>>;
 };
 
@@ -36,22 +38,31 @@ export const scanTopicRawWindow = (
 ): TopicRawWindowScanResult<object> => {
   const orderedWindow = rawWindowOrderedWindow(state, plan);
   if (orderedWindow !== undefined) {
-    const candidateFilter =
-      plan.predicate.callbackSkippable === true &&
-      orderedRawWindowSlotCount(orderedWindow) * 2 > state.slots.length
-        ? selectedPredicateCandidateFilter(
-            plan.predicate.filters,
-            state.columns,
-            state.slots.length,
-            orderedWindow.candidateExcludedField,
-          )
-        : undefined;
-    return scanRawWindowOrderedSlots(state, plan, orderedWindow, candidateFilter);
+    const orderedSlotCount = orderedRawWindowSlotCount(orderedWindow);
+    const candidateSlots = selectedPredicateCandidateSlots(state, plan.predicate.filters, {
+      allowScalarIndexBuild: false,
+      exactRangeCandidates: plan.predicate.callbackSkippable === true,
+      excludedField: orderedWindow.candidateExcludedField,
+      maxSlotCount: orderedSlotCount,
+    });
+    if (candidateSlots !== undefined && candidateSlots.slots.length < orderedSlotCount) {
+      const compareSlots = rawWindowSlotComparator(state, plan)!;
+      return scanRawWindowCandidateSlots(state, plan, compareSlots, candidateSlots);
+    }
+    return scanRawWindowOrderedSlots(state, plan, orderedWindow);
   }
 
   const compareSlots =
     rawWindowSlotComparator(state, plan) ??
     ((left, right) => plan.compare(state.slots[left]!, state.slots[right]!));
+  const candidateSlots = selectedPredicateCandidateSlots(state, plan.predicate.filters, {
+    allowScalarIndexBuild: true,
+    exactRangeCandidates: plan.predicate.callbackSkippable === true,
+    maxSlotCount: state.slots.length,
+  });
+  if (candidateSlots !== undefined) {
+    return scanRawWindowCandidateSlots(state, plan, compareSlots, candidateSlots);
+  }
   return scanRawWindowSlots(state, plan, compareSlots);
 };
 
@@ -61,7 +72,6 @@ const scanRawWindowOrderedSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
   orderedWindow: OrderedRawWindow,
-  candidateFilter: PredicateCandidateFilter | undefined,
 ): TopicRawWindowScanResult<object> => {
   let totalRows = 0;
   const windowSlots: Array<number> = [];
@@ -69,9 +79,6 @@ const scanRawWindowOrderedSlots = (
   for (const span of orderedWindow.spans) {
     for (let slotIndex = span.startIndex; slotIndex < span.endIndex; slotIndex += 1) {
       const slot = orderedWindow.slots[slotIndex]!;
-      if (candidateFilter !== undefined && !candidateFilter.matches(candidateFilter.column[slot])) {
-        continue;
-      }
       const entry = state.slots[slot]!;
       if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
         continue;
@@ -86,26 +93,56 @@ const scanRawWindowOrderedSlots = (
   return rawWindowScanResult(state, windowSlots, totalRows);
 };
 
+const scanRawWindowCandidateSlots = (
+  state: TopicRawWindowScanState,
+  plan: TopicRawWindowScanPlan<object>,
+  compareSlots: (left: number, right: number) => number,
+  candidateSlots: PredicateCandidateSlots,
+): TopicRawWindowScanResult<object> => {
+  const boundedWindowEnd = boundedRawWindowEnd(plan);
+  if (boundedWindowEnd !== undefined) {
+    return scanRawWindowBoundedSlotCandidates(
+      state,
+      plan,
+      compareSlots,
+      boundedWindowEnd,
+      candidateSlots,
+    );
+  }
+
+  let totalRows = 0;
+  const filteredSlots: Array<number> = [];
+  for (const slot of candidateSlots.slots) {
+    const entry = state.slots[slot]!;
+    if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
+      continue;
+    }
+    totalRows += 1;
+    if (plan.limit !== 0) {
+      filteredSlots.push(slot);
+    }
+  }
+  filteredSlots.sort(compareSlots);
+  const windowSlots = filteredSlots.slice(
+    plan.offset,
+    plan.limit === undefined ? undefined : plan.offset + plan.limit,
+  );
+  return rawWindowScanResult(state, windowSlots, totalRows);
+};
+
 const scanRawWindowSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
   compareSlots: (left: number, right: number) => number,
 ): TopicRawWindowScanResult<object> => {
-  const candidateFilter =
-    plan.predicate.callbackSkippable === true
-      ? selectedPredicateCandidateFilter(plan.predicate.filters, state.columns, state.slots.length)
-      : undefined;
   const boundedWindowEnd = boundedRawWindowEnd(plan);
   if (boundedWindowEnd !== undefined) {
-    return scanRawWindowBoundedSlots(state, plan, compareSlots, boundedWindowEnd, candidateFilter);
+    return scanRawWindowBoundedSlots(state, plan, compareSlots, boundedWindowEnd);
   }
 
   let totalRows = 0;
   const filteredSlots: Array<number> = [];
   for (let slot = 0; slot < state.slots.length; slot += 1) {
-    if (candidateFilter !== undefined && !candidateFilter.matches(candidateFilter.column[slot])) {
-      continue;
-    }
     const entry = state.slots[slot]!;
     if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
       continue;
@@ -128,14 +165,40 @@ const scanRawWindowBoundedSlots = (
   plan: TopicRawWindowScanPlan<object>,
   compareSlots: (left: number, right: number) => number,
   windowEnd: number,
-  candidateFilter: PredicateCandidateFilter | undefined,
 ): TopicRawWindowScanResult<object> => {
   let totalRows = 0;
   const windowSlots: Array<number> = [];
   for (let slot = 0; slot < state.slots.length; slot += 1) {
-    if (candidateFilter !== undefined && !candidateFilter.matches(candidateFilter.column[slot])) {
+    const entry = state.slots[slot]!;
+    if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
       continue;
     }
+    totalRows += 1;
+    if (windowSlots.length < windowEnd) {
+      const insertAt = orderedSlotIndexInsertionPoint(windowSlots, slot, compareSlots);
+      windowSlots.splice(insertAt, 0, slot);
+      continue;
+    }
+    const worstSlot = windowSlots[windowSlots.length - 1]!;
+    if (compareSlots(slot, worstSlot) < 0) {
+      const insertAt = orderedSlotIndexInsertionPoint(windowSlots, slot, compareSlots);
+      windowSlots.splice(insertAt, 0, slot);
+      windowSlots.pop();
+    }
+  }
+  return rawWindowScanResult(state, windowSlots.slice(plan.offset), totalRows);
+};
+
+const scanRawWindowBoundedSlotCandidates = (
+  state: TopicRawWindowScanState,
+  plan: TopicRawWindowScanPlan<object>,
+  compareSlots: (left: number, right: number) => number,
+  windowEnd: number,
+  candidateSlots: PredicateCandidateSlots,
+): TopicRawWindowScanResult<object> => {
+  let totalRows = 0;
+  const windowSlots: Array<number> = [];
+  for (const slot of candidateSlots.slots) {
     const entry = state.slots[slot]!;
     if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
       continue;

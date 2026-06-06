@@ -6,7 +6,10 @@ import { rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { fieldValue, scalarEqualityKey } from "./row-values";
 import type { TopicRowEntry } from "./row-scan";
 import type { TopicRawWindowScanPlan } from "./raw-window-scan";
-import { createScalarPredicateIndexes } from "./topic-predicate-candidate-index";
+import {
+  createScalarPredicateIndexes,
+  selectedPredicateCandidateSlots,
+} from "./topic-predicate-candidate-index";
 import { scanTopicRawWindow, type TopicRawWindowScanState } from "./topic-raw-window-scanner";
 
 declare const process: {
@@ -30,9 +33,16 @@ type PredicateBenchState = {
 type RowCallbackCounter = {
   count: number;
 };
+type CandidateExpectation = {
+  readonly allowScalarIndexBuild: boolean;
+  readonly exactRangeCandidates: boolean;
+  readonly excludedField: string;
+  readonly expectedSlots: ReadonlyArray<number> | undefined;
+};
 type BenchmarkCase = {
   readonly name: string;
   readonly counter: RowCallbackCounter;
+  readonly candidateExpectation: CandidateExpectation;
   readonly expectedCallbackCount: number;
   readonly expectedKeys: ReadonlyArray<string>;
   readonly expectedTotalRows: number;
@@ -40,11 +50,12 @@ type BenchmarkCase = {
 };
 
 const defaultRowCount = 100_000;
-const minimumRowCount = 100;
+const minimumRowCount = 101;
 const defaultBenchmarkTimeMs = 250;
 const defaultIterations = 5;
 const defaultWarmupIterations = 0;
 const defaultWarmupTimeMs = 0;
+const noExcludedField = "__view_server_bench_no_excluded_field__";
 
 const positiveIntegerFromEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];
@@ -205,6 +216,12 @@ const orderKeysFromRange = (startInclusive: number, endExclusive: number): Reado
     (_value, index) => `order-${startInclusive + index}`,
   );
 
+const slotIndexesFromRange = (
+  startInclusive: number,
+  endExclusive: number,
+): ReadonlyArray<number> =>
+  Array.from({ length: endExclusive - startInclusive }, (_value, index) => startInclusive + index);
+
 const scalarKey = (value: string): string => {
   const key = scalarEqualityKey(value);
   if (key === undefined) {
@@ -235,11 +252,31 @@ const selectiveScalarCounter: RowCallbackCounter = { count: 0 };
 const multiKeyCounter: RowCallbackCounter = { count: 0 };
 const broadRejectedCounter: RowCallbackCounter = { count: 0 };
 
+const assertCandidateExpectation = (
+  state: TopicRawWindowScanState,
+  filters: TopicRawWindowScanPlan<object>["predicate"]["filters"],
+  expectation: CandidateExpectation,
+): void => {
+  const candidateSlots = selectedPredicateCandidateSlots(state, filters, {
+    allowScalarIndexBuild: expectation.allowScalarIndexBuild,
+    exactRangeCandidates: expectation.exactRangeCandidates,
+    excludedField: expectation.excludedField,
+    maxSlotCount: state.slots.length,
+  });
+  expect(candidateSlots?.slots).toStrictEqual(expectation.expectedSlots);
+};
+
 const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
   return [
     {
       name: "full scan callback baseline: selective customer + fallback sort",
       counter: fullScanSelectiveCounter,
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: false,
+        excludedField: noExcludedField,
+        expectedSlots: undefined,
+      },
       expectedCallbackCount: rowCount,
       expectedKeys: [`order-${targetCustomerIndex}`],
       expectedTotalRows: 1,
@@ -260,6 +297,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "exact scalar candidate: selective customer + fallback sort",
       counter: selectiveScalarCounter,
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: false,
+        excludedField: noExcludedField,
+        expectedSlots: [targetCustomerIndex],
+      },
       expectedCallbackCount: 1,
       expectedKeys: [`order-${targetCustomerIndex}`],
       expectedTotalRows: 1,
@@ -280,6 +323,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "exact scalar candidate: selective customer without callback",
       counter: { count: 0 },
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: false,
+        excludedField: noExcludedField,
+        expectedSlots: [targetCustomerIndex],
+      },
       expectedCallbackCount: 0,
       expectedKeys: [`order-${targetCustomerIndex}`],
       expectedTotalRows: 1,
@@ -299,6 +348,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "exact multi-key in candidate: three customers + fallback sort",
       counter: multiKeyCounter,
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: false,
+        excludedField: noExcludedField,
+        expectedSlots: [10, targetCustomerIndex, targetLastCustomerIndex],
+      },
       expectedCallbackCount: targetCustomerIds.length,
       expectedKeys: [
         `order-10`,
@@ -330,6 +385,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "exact range candidate: upper price tail + fallback sort",
       counter: { count: 0 },
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+        excludedField: noExcludedField,
+        expectedSlots: slotIndexesFromRange(rowCount - 100, rowCount),
+      },
       expectedCallbackCount: 0,
       expectedKeys: orderKeysFromRange(rowCount - 100, rowCount - 50),
       expectedTotalRows: 100,
@@ -349,6 +410,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "full scan callback baseline: upper price tail + fallback sort",
       counter: fullScanUpperTailCounter,
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: false,
+        excludedField: noExcludedField,
+        expectedSlots: undefined,
+      },
       expectedCallbackCount: rowCount,
       expectedKeys: orderKeysFromRange(rowCount - 100, rowCount - 50),
       expectedTotalRows: 100,
@@ -367,6 +434,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "ordered equality seek: customer storage order",
       counter: { count: 0 },
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+        excludedField: "customerId",
+        expectedSlots: undefined,
+      },
       expectedCallbackCount: 0,
       expectedKeys: [`order-${targetCustomerIndex}`],
       expectedTotalRows: 1,
@@ -387,6 +460,12 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
     {
       name: "failed broad scalar candidate build + full scan",
       counter: broadRejectedCounter,
+      candidateExpectation: {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: false,
+        excludedField: noExcludedField,
+        expectedSlots: undefined,
+      },
       expectedCallbackCount: rowCount,
       expectedKeys: orderKeysFromRange(0, 50),
       expectedTotalRows: rowCount,
@@ -414,6 +493,11 @@ const benchmarkCases = (): ReadonlyArray<BenchmarkCase> => {
 const runBenchmarkCase = (benchmarkCase: BenchmarkCase): void => {
   const current = profileState();
   resetCounter(benchmarkCase.counter);
+  assertCandidateExpectation(
+    current.state,
+    benchmarkCase.plan.predicate.filters,
+    benchmarkCase.candidateExpectation,
+  );
   const result = scanTopicRawWindow(current.state, benchmarkCase.plan);
   expect(result.keys).toStrictEqual(benchmarkCase.expectedKeys);
   expect(result.totalRows).toBe(benchmarkCase.expectedTotalRows);
@@ -455,8 +539,36 @@ beforeAll(() => {
     matches: unexpectedCallback("range index warmup should not call row callbacks"),
     compare: compareByUpdatedAtDesc,
     offset: 0,
-    limit: rowCount,
+    limit: 1,
   });
+
+  assertCandidateExpectation(
+    state,
+    [{ field: "customerId", operator: "eq", value: targetCustomerId }],
+    {
+      allowScalarIndexBuild: true,
+      exactRangeCandidates: false,
+      excludedField: noExcludedField,
+      expectedSlots: [targetCustomerIndex],
+    },
+  );
+  assertCandidateExpectation(
+    state,
+    [
+      {
+        field: "customerId",
+        operator: "in",
+        values: targetCustomerIds,
+        valueKeys: new Set(targetCustomerIds.map(scalarKey)),
+      },
+    ],
+    {
+      allowScalarIndexBuild: true,
+      exactRangeCandidates: false,
+      excludedField: noExcludedField,
+      expectedSlots: [10, targetCustomerIndex, targetLastCustomerIndex],
+    },
+  );
 
   for (const benchmarkCase of benchmarkCases()) {
     runBenchmarkCase(benchmarkCase);

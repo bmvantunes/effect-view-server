@@ -1290,8 +1290,8 @@ benchmark. It compares:
 - failed broad scalar candidate build plus full scan
 
 It writes `packages/column-live-view-engine/.artifacts/raw-predicate-index.json`. Run each row count
-in a separate process. The benchmark rejects row counts below 100 because several cases assert exact
-50/100-row windows.
+in a separate process. The benchmark rejects row counts below 101 because several cases assert exact
+50/100-row windows and the range-candidate case must stay narrower than the whole table.
 
 ```bash
 VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-predicate-index

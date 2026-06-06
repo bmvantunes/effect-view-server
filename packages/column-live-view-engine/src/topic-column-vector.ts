@@ -2,20 +2,38 @@ import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 
 export type TopicColumnKind = "generic" | "number";
 
-export type TopicColumnValues = {
+type BaseTopicColumnValues = {
   readonly kind: TopicColumnKind;
   readonly length: number;
   get(slot: number): unknown;
 };
 
-export type MutableTopicColumnValues = TopicColumnValues & {
+export type GenericTopicColumnValues = BaseTopicColumnValues & {
+  readonly kind: "generic";
+};
+
+export type NumberTopicColumnValues = BaseTopicColumnValues & {
+  readonly kind: "number";
+  numberAt(slot: number): number | undefined;
+};
+
+export type TopicColumnValues = GenericTopicColumnValues | NumberTopicColumnValues;
+
+type MutableColumnOperations = {
   clear(): void;
   copySlot(targetSlot: number, sourceSlot: number): void;
   pop(): void;
   set(slot: number, value: unknown): void;
 };
 
-class GenericTopicColumn implements MutableTopicColumnValues {
+type MutableGenericTopicColumnValues = GenericTopicColumnValues & MutableColumnOperations;
+type MutableNumberTopicColumnValues = NumberTopicColumnValues & MutableColumnOperations;
+
+export type MutableTopicColumnValues =
+  | MutableGenericTopicColumnValues
+  | MutableNumberTopicColumnValues;
+
+class GenericTopicColumn implements MutableGenericTopicColumnValues {
   readonly kind = "generic";
   private readonly values: Array<unknown> = [];
 
@@ -44,7 +62,7 @@ class GenericTopicColumn implements MutableTopicColumnValues {
   }
 }
 
-class NumberTopicColumn implements MutableTopicColumnValues {
+class NumberTopicColumn implements MutableNumberTopicColumnValues {
   readonly kind = "number";
   private values = new Float64Array(0);
   private validity = new Uint8Array(0);
@@ -55,6 +73,10 @@ class NumberTopicColumn implements MutableTopicColumnValues {
   }
 
   get(slot: number): unknown {
+    return this.numberAt(slot);
+  }
+
+  numberAt(slot: number): number | undefined {
     if (slot < 0 || slot >= this.lengthValue || this.validity[slot] !== 1) {
       return undefined;
     }

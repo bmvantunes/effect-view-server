@@ -154,7 +154,7 @@ const compareSlotsByStorageOrder = (
 ): number => {
   for (const order of storageOrderBy) {
     const column = state.columns.get(order.field)!;
-    const comparison = compareQueryValue(columnValue(column, left), columnValue(column, right));
+    const comparison = compareSlotColumnValues(column, left, right);
     if (comparison !== 0) {
       return order.direction === "asc" ? comparison : -comparison;
     }
@@ -162,6 +162,26 @@ const compareSlotsByStorageOrder = (
   const leftKey = state.slots[left]!.key;
   const rightKey = state.slots[right]!.key;
   return Number(leftKey > rightKey) - Number(leftKey < rightKey);
+};
+
+const compareSlotColumnValues = (
+  column: TopicColumnValues,
+  left: number,
+  right: number,
+): number => {
+  if (column.kind === "number") {
+    const leftValue = column.numberAt(left);
+    const rightValue = column.numberAt(right);
+    if (
+      leftValue !== undefined &&
+      rightValue !== undefined &&
+      Number.isFinite(leftValue) &&
+      Number.isFinite(rightValue)
+    ) {
+      return leftValue === rightValue ? 0 : leftValue < rightValue ? -1 : 1;
+    }
+  }
+  return compareQueryValue(columnValue(column, left), columnValue(column, right));
 };
 
 const storageOrderByFieldsExist = (

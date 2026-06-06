@@ -1362,6 +1362,50 @@ Raw live fanout knobs:
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
 
+Current browser in-memory React benchmark harness:
+
+```bash
+vp run --no-cache react#bench:in-memory-live-query
+```
+
+This harness uses Vitest Browser Mode `bench()` with `vitest-browser-react`. It seeds an in-memory
+View Server through the runtime client, renders a real component through the React client provider
+with an in-memory live client, subscribes with `useLiveQuery`, publishes a matching row, and waits
+for the top row to appear in the rendered output. Publish uses the runtime client; observation uses
+the in-memory live client and React hook/provider seam. It measures:
+
+```text
+publish -> runtime-core -> Column Live View Engine subscription -> React hook/store -> render
+```
+
+It intentionally excludes Kafka, TCP/gRPC ingress, Effect RPC WebSocket, remote global setup, and
+network latency. Use it to catch browser/provider/hook regressions after engine changes and to prove
+the in-memory live client uses the same runtime-core/engine path as production. It samples cleanup
+after React unmount/subscription release and before force-closing the runtime. It writes Vitest
+timing JSON plus a View Server summary sidecar under `packages/react/.artifacts/`, for example
+`in-memory-live-query-10000rows-chromium.json` and
+`in-memory-live-query-10000rows-chromium.summary.json`.
+
+Run each browser/row-count combination in a separate process and do not run competing benchmark
+suites in parallel:
+
+```bash
+VIEW_SERVER_REACT_BENCH_ROWS=10000 VIEW_SERVER_REACT_BENCH_BROWSER=chromium vp run --no-cache react#bench:in-memory-live-query
+VIEW_SERVER_REACT_BENCH_ROWS=10000 VIEW_SERVER_REACT_BENCH_BROWSER=firefox vp run --no-cache react#bench:in-memory-live-query
+VIEW_SERVER_REACT_BENCH_ROWS=10000 VIEW_SERVER_REACT_BENCH_BROWSER=webkit vp run --no-cache react#bench:in-memory-live-query
+```
+
+Browser in-memory React knobs:
+
+- `VIEW_SERVER_REACT_BENCH_BROWSER`: Vitest browser instance, usually `chromium`, `firefox`, or `webkit`.
+- `VIEW_SERVER_REACT_BENCH_ROWS`: row count for this benchmark process.
+- `VIEW_SERVER_REACT_BENCH_BATCH_SIZE`: publish batch size while seeding.
+- `VIEW_SERVER_REACT_BENCH_ITERATIONS`: benchmark iterations per case.
+- `VIEW_SERVER_REACT_BENCH_TIME_MS`: benchmark time budget per case.
+- `VIEW_SERVER_REACT_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
+- `VIEW_SERVER_REACT_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
+- `VIEW_SERVER_REACT_BENCH_OUTPUT_JSON`: optional artifact path override.
+
 Each production/runtime benchmark sidecar must include:
 
 - row count
@@ -1369,7 +1413,8 @@ Each production/runtime benchmark sidecar must include:
 - subscribers
 - topics
 - latency source pointing at the Vitest timing JSON containing p50/p95/p99/max samples
-- memory/RSS/heap before setup, after setup, and after clearing retained benchmark fixture references
+- memory/RSS/heap before setup, after setup, and after clearing retained benchmark fixture references,
+  or an explicit `browser-unavailable` marker for browser-only benchmarks
 - top-level queued event count
 - backpressure count
 - cleanup leak count, with non-zero engine cleanup leaks failing the benchmark after the sidecar is written

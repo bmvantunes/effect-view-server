@@ -1,43 +1,53 @@
-import { defineViewServerConfig } from "@view-server/config";
-import { createViewServerRuntimeCore } from "@view-server/runtime-core";
-import { makeViewServerWebSocketServer } from "@view-server/server";
-import { Effect, Schema } from "effect";
+import { env } from "node:process";
 
 type Project = {
   readonly provide: (key: "viewServerRemoteUrl", value: string) => void;
 };
 
-const Order = Schema.Struct({
-  id: Schema.String,
-  customerId: Schema.String,
-  status: Schema.Literals(["open", "closed", "cancelled"]),
-  price: Schema.Number,
-  region: Schema.String,
-  updatedAt: Schema.Number,
-});
-
-const Trade = Schema.Struct({
-  id: Schema.String,
-  symbol: Schema.String,
-  quantity: Schema.BigInt,
-  price: Schema.Number,
-  region: Schema.String,
-});
-
-const viewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-    },
-    trades: {
-      schema: Trade,
-      key: "id",
-    },
-  },
-});
+const skipRemoteGlobalSetup = (): boolean =>
+  env["VIEW_SERVER_REACT_SKIP_REMOTE_GLOBAL_SETUP"] === "1";
 
 export const setup = async (project: Project) => {
+  if (skipRemoteGlobalSetup()) {
+    project.provide("viewServerRemoteUrl", "ws://127.0.0.1:0/rpc");
+    return () => Promise.resolve();
+  }
+
+  const { defineViewServerConfig } = await import("@view-server/config");
+  const { createViewServerRuntimeCore } = await import("@view-server/runtime-core");
+  const { makeViewServerWebSocketServer } = await import("@view-server/server");
+  const { Effect, Schema } = await import("effect");
+
+  const Order = Schema.Struct({
+    id: Schema.String,
+    customerId: Schema.String,
+    status: Schema.Literals(["open", "closed", "cancelled"]),
+    price: Schema.Number,
+    region: Schema.String,
+    updatedAt: Schema.Number,
+  });
+
+  const Trade = Schema.Struct({
+    id: Schema.String,
+    symbol: Schema.String,
+    quantity: Schema.BigInt,
+    price: Schema.Number,
+    region: Schema.String,
+  });
+
+  const viewServer = defineViewServerConfig({
+    topics: {
+      orders: {
+        schema: Order,
+        key: "id",
+      },
+      trades: {
+        schema: Trade,
+        key: "id",
+      },
+    },
+  });
+
   const runtimeCore = createViewServerRuntimeCore(viewServer);
   const server = await Effect.runPromise(
     makeViewServerWebSocketServer(viewServer, {

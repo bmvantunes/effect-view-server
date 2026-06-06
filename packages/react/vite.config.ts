@@ -8,6 +8,9 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    benchmark: {
+      include: ["src/**/*.bench.tsx"],
+    },
     globalSetup: ["./test/remote-global-setup.ts"],
     typecheck: {
       enabled: true,
@@ -28,7 +31,12 @@ export default defineConfig({
     coverage: {
       provider: "istanbul",
       include: ["src/**/*.ts", "src/**/*.tsx"],
-      exclude: ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.test-d.ts"],
+      exclude: [
+        "src/**/*.bench.tsx",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "src/**/*.test-d.ts",
+      ],
       reporter: ["text"],
       thresholds: {
         "100": true,

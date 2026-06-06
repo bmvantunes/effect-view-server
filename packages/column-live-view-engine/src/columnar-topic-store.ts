@@ -10,6 +10,11 @@ import type { TopicRawWindowScanPlan, TopicRawWindowScanResult } from "./raw-win
 import type { OrderedSlotIndex } from "./topic-ordered-window";
 import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
 import { fieldValue } from "./row-values";
+import {
+  addSlotToScalarPredicateIndexes,
+  createScalarPredicateIndexes,
+  removeSlotFromScalarPredicateIndexes,
+} from "./topic-predicate-candidate-index";
 import { TopicRowChangeJournal } from "./topic-row-change-journal";
 import {
   prepareTopicPatch,
@@ -36,6 +41,7 @@ export class ColumnarTopicStore {
   private readonly keyToSlot = new Map<string, number>();
   private readonly columns = new Map<string, ColumnValues>();
   private readonly orderedSlotIndexes = new Map<string, OrderedSlotIndex>();
+  private readonly scalarPredicateIndexes = createScalarPredicateIndexes();
   private readonly rowChangeJournal = new TopicRowChangeJournal<object>();
   private readonly rowPreparation: TopicRowPreparationContext;
   private readonly rawWindowScanState: TopicRawWindowScanState;
@@ -51,6 +57,7 @@ export class ColumnarTopicStore {
       columns: this.columns,
       orderedSlotIndexes: this.orderedSlotIndexes,
       rawQueryMetadata: this.rawQueryMetadata,
+      scalarPredicateIndexes: this.scalarPredicateIndexes,
       slots: this.slots,
     };
     this.rowPreparation = {
@@ -92,6 +99,7 @@ export class ColumnarTopicStore {
     this.slots.length = 0;
     this.keyToSlot.clear();
     this.orderedSlotIndexes.clear();
+    this.scalarPredicateIndexes.clear();
     this.rowChangeJournal.clear(this.versionValue);
     for (const column of this.columns.values()) {
       column.length = 0;
@@ -103,7 +111,9 @@ export class ColumnarTopicStore {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
       const previous = this.slots[existingSlot]!.row;
+      this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
+      this.addSlotToScalarIndexes(existingSlot);
       this.recordRowChange({
         key: prepared.key,
         previous,
@@ -116,6 +126,7 @@ export class ColumnarTopicStore {
     const slot = this.slots.length;
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
+    this.addSlotToScalarIndexes(slot);
     this.recordRowChange({
       key: prepared.key,
       previous: undefined,
@@ -148,13 +159,16 @@ export class ColumnarTopicStore {
     const lastSlot = this.slots.length - 1;
     const lastEntry = this.slots[lastSlot]!;
     const previous = this.slots[slot]!.row;
+    this.removeSlotFromScalarIndexes(slot);
     this.keyToSlot.delete(key);
     if (slot !== lastSlot) {
+      this.removeSlotFromScalarIndexes(lastSlot);
       this.slots[slot] = lastEntry;
       this.keyToSlot.set(lastEntry.key, slot);
       for (const column of this.columns.values()) {
         column[slot] = column[lastSlot];
       }
+      this.addSlotToScalarIndexes(slot);
     }
     this.slots.pop();
     for (const column of this.columns.values()) {
@@ -235,7 +249,9 @@ export class ColumnarTopicStore {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
       const previous = this.slots[existingSlot]!.row;
+      this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
+      this.addSlotToScalarIndexes(existingSlot);
       this.recordRowChange({
         key: prepared.key,
         previous,
@@ -247,6 +263,7 @@ export class ColumnarTopicStore {
     const slot = this.slots.length;
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
+    this.addSlotToScalarIndexes(slot);
     this.recordRowChange({
       key: prepared.key,
       previous: undefined,
@@ -256,6 +273,14 @@ export class ColumnarTopicStore {
 
   private recordRowChange(change: TopicRowChange<object>): void {
     this.rowChangeJournal.record(change, this.versionValue);
+  }
+
+  private addSlotToScalarIndexes(slot: number): void {
+    addSlotToScalarPredicateIndexes(this.scalarPredicateIndexes, this.columns, slot);
+  }
+
+  private removeSlotFromScalarIndexes(slot: number): void {
+    removeSlotFromScalarPredicateIndexes(this.scalarPredicateIndexes, this.columns, slot);
   }
 
   private releaseChanges(): void {

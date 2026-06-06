@@ -18,7 +18,7 @@ import {
   type OrderedRawWindow,
   type OrderedSlotIndex,
 } from "./topic-ordered-window";
-import { slotMatchesRawPredicatePlan } from "./topic-slot-predicate";
+import { rawPredicateSlotMatcher } from "./topic-slot-predicate";
 
 type RowObject = object;
 
@@ -38,6 +38,7 @@ export const scanTopicRawWindow = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
 ): TopicRawWindowScanResult<object> => {
+  const matchesSlot = rawPredicateMatchesSlot(state, plan);
   const orderedWindow = rawWindowOrderedWindow(state, plan);
   if (orderedWindow !== undefined) {
     const orderedSlotCount = orderedRawWindowSlotCount(orderedWindow);
@@ -49,9 +50,9 @@ export const scanTopicRawWindow = (
     });
     if (candidateSlots !== undefined && candidateSlots.slots.length < orderedSlotCount) {
       const compareSlots = rawWindowSlotComparator(state, plan)!;
-      return scanRawWindowCandidateSlots(state, plan, compareSlots, candidateSlots);
+      return scanRawWindowCandidateSlots(state, plan, compareSlots, matchesSlot, candidateSlots);
     }
-    return scanRawWindowOrderedSlots(state, plan, orderedWindow);
+    return scanRawWindowOrderedSlots(state, plan, matchesSlot, orderedWindow);
   }
 
   const compareSlots =
@@ -63,9 +64,9 @@ export const scanTopicRawWindow = (
     maxSlotCount: Math.min(state.slots.length, materializedPredicateCandidateSlotBudget),
   });
   if (candidateSlots !== undefined) {
-    return scanRawWindowCandidateSlots(state, plan, compareSlots, candidateSlots);
+    return scanRawWindowCandidateSlots(state, plan, compareSlots, matchesSlot, candidateSlots);
   }
-  return scanRawWindowSlots(state, plan, compareSlots);
+  return scanRawWindowSlots(state, plan, compareSlots, matchesSlot);
 };
 
 export { insertSlotIntoRawWindowIndexes };
@@ -73,6 +74,7 @@ export { insertSlotIntoRawWindowIndexes };
 const scanRawWindowOrderedSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
+  matchesSlot: (slot: number) => boolean,
   orderedWindow: OrderedRawWindow,
 ): TopicRawWindowScanResult<object> => {
   let totalRows = 0;
@@ -81,8 +83,7 @@ const scanRawWindowOrderedSlots = (
   for (const span of orderedWindow.spans) {
     for (let slotIndex = span.startIndex; slotIndex < span.endIndex; slotIndex += 1) {
       const slot = orderedWindow.slots[slotIndex]!;
-      const entry = state.slots[slot]!;
-      if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
+      if (!matchesSlot(slot)) {
         continue;
       }
       const matchIndex = totalRows;
@@ -99,6 +100,7 @@ const scanRawWindowCandidateSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
   compareSlots: (left: number, right: number) => number,
+  matchesSlot: (slot: number) => boolean,
   candidateSlots: PredicateCandidateSlots,
 ): TopicRawWindowScanResult<object> => {
   const boundedWindowEnd = boundedRawWindowEnd(plan);
@@ -107,6 +109,7 @@ const scanRawWindowCandidateSlots = (
       state,
       plan,
       compareSlots,
+      matchesSlot,
       boundedWindowEnd,
       candidateSlots,
     );
@@ -115,8 +118,7 @@ const scanRawWindowCandidateSlots = (
   let totalRows = 0;
   const filteredSlots: Array<number> = [];
   for (const slot of candidateSlots.slots) {
-    const entry = state.slots[slot]!;
-    if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
+    if (!matchesSlot(slot)) {
       continue;
     }
     totalRows += 1;
@@ -136,17 +138,17 @@ const scanRawWindowSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
   compareSlots: (left: number, right: number) => number,
+  matchesSlot: (slot: number) => boolean,
 ): TopicRawWindowScanResult<object> => {
   const boundedWindowEnd = boundedRawWindowEnd(plan);
   if (boundedWindowEnd !== undefined) {
-    return scanRawWindowBoundedSlots(state, plan, compareSlots, boundedWindowEnd);
+    return scanRawWindowBoundedSlots(state, plan, compareSlots, matchesSlot, boundedWindowEnd);
   }
 
   let totalRows = 0;
   const filteredSlots: Array<number> = [];
   for (let slot = 0; slot < state.slots.length; slot += 1) {
-    const entry = state.slots[slot]!;
-    if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
+    if (!matchesSlot(slot)) {
       continue;
     }
     totalRows += 1;
@@ -166,13 +168,13 @@ const scanRawWindowBoundedSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
   compareSlots: (left: number, right: number) => number,
+  matchesSlot: (slot: number) => boolean,
   windowEnd: number,
 ): TopicRawWindowScanResult<object> => {
   let totalRows = 0;
   const windowSlots: Array<number> = [];
   for (let slot = 0; slot < state.slots.length; slot += 1) {
-    const entry = state.slots[slot]!;
-    if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
+    if (!matchesSlot(slot)) {
       continue;
     }
     totalRows += 1;
@@ -195,14 +197,14 @@ const scanRawWindowBoundedSlotCandidates = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
   compareSlots: (left: number, right: number) => number,
+  matchesSlot: (slot: number) => boolean,
   windowEnd: number,
   candidateSlots: PredicateCandidateSlots,
 ): TopicRawWindowScanResult<object> => {
   let totalRows = 0;
   const windowSlots: Array<number> = [];
   for (const slot of candidateSlots.slots) {
-    const entry = state.slots[slot]!;
-    if (!slotMatchesRawPredicatePlan(slot, plan, entry.row, state.columns)) {
+    if (!matchesSlot(slot)) {
       continue;
     }
     totalRows += 1;
@@ -219,6 +221,17 @@ const scanRawWindowBoundedSlotCandidates = (
     }
   }
   return rawWindowScanResult(state, windowSlots.slice(plan.offset), totalRows);
+};
+
+const rawPredicateMatchesSlot = (
+  state: TopicRawWindowScanState,
+  plan: TopicRawWindowScanPlan<object>,
+): ((slot: number) => boolean) => {
+  const matcher = rawPredicateSlotMatcher(plan, state.columns);
+  if (matcher.kind === "slot") {
+    return matcher.matchesSlot;
+  }
+  return (slot) => matcher.matchesEntry(slot, state.slots[slot]!);
 };
 
 const rawWindowScanResult = (

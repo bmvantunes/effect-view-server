@@ -1301,6 +1301,25 @@ Raw snapshot knobs:
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
 
+Current broad-scan optimization signal:
+
+- Exact raw scans precompile slot predicates per scan, resolve columns once, use direct numeric
+  column comparisons for finite number ranges/orderings, and avoid row-object reads when
+  `callbackSkippable` proves column predicates are authoritative.
+- These are warm/shared-engine benchmark signals: the raw snapshot harness has an existing live
+  subscription and shared same-process indexes. They are not cold index-build numbers.
+- 10M raw snapshot `compound filter + top-k sort`: ~1983ms mean -> ~959ms mean.
+- 10M raw snapshot `filtered totalRows via zero-row window`: ~727ms mean -> ~635ms mean. This case
+  was noisy in the current run: median/p75 stayed near ~356ms while one outlier lifted mean/max.
+- 10M raw snapshot `equality filter + top-k sort`: ~442ms mean -> ~280ms mean.
+- 10M raw snapshot `range filter + top-k sort`: ~224ms mean -> ~52ms mean.
+- 1M raw write sanity, base mode: single append ~0.049ms mean, batch append ~14.7ms mean.
+- 1M raw write sanity, indexed mode: single append ~0.423ms mean, batch append ~15.5ms mean.
+- 10M raw write sanity, base mode: single append ~0.054ms mean, batch append ~16.7ms mean.
+- 10M raw write sanity, indexed mode: single append ~2.14ms mean, batch append ~161ms mean and
+  very noisy. Treat the batch result as benchmark-state/GC pressure after warmed indexed writes, not
+  a direct per-row ordered-index splice cost measurement.
+
 Current raw predicate candidate index benchmark harness:
 
 ```bash

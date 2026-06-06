@@ -7409,6 +7409,307 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     expect(state.scalarPredicateIndexes.get("status")?.buckets.has(openKey)).toBe(false);
   });
 
+  it("counts exact broad zero-row scans without reading row objects", () => {
+    const openKey = scalarEqualityKey("open");
+    const rows = [
+      ...Array.from({ length: 100_001 }, (_value, index) =>
+        order(`open-${index}`, "open", index, index),
+      ),
+      order("closed-row", "closed", 0, 0),
+    ];
+    const metadata = rawQueryCompilerMetadata(Order);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+        ["status", rows.map((row) => row.status)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => {
+        const entry = {
+          key: row.id,
+          row,
+        };
+        Object.defineProperty(entry, "row", {
+          get: () => {
+            throw new Error("exact zero-row count scan should not read row objects");
+          },
+        });
+        return entry;
+      }),
+    };
+
+    const result = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [
+          {
+            field: "status",
+            operator: "in",
+            values: ["open"],
+            valueKeys: new Set([openKey]),
+          },
+        ],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact zero-row count scan should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 0,
+    });
+
+    expect(result.keys).toStrictEqual([]);
+    expect(result.totalRows).toBe(rows.length - 1);
+  });
+
+  it("keeps generic numeric range predicate fallbacks conservative", () => {
+    const GenericMetric = Schema.Struct({
+      id: Schema.String,
+      price: Schema.Unknown,
+    });
+    const rows = [
+      { id: "nan", price: Number.NaN },
+      { id: "low", price: 1 },
+      { id: "high", price: 3 },
+    ];
+    const metadata = rawQueryCompilerMetadata(GenericMetric);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({
+        key: row.id,
+        row,
+      })),
+    };
+
+    const exactRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 2 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact generic numeric range should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+    expect(exactRange.keys).toStrictEqual(["high"]);
+    expect(exactRange.totalRows).toBe(1);
+
+    const exactRangeBoundary = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gte", value: 1 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact generic numeric boundary range should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+    expect(exactRangeBoundary.keys).toStrictEqual(["high", "low"]);
+    expect(exactRangeBoundary.totalRows).toBe(2);
+
+    const exactNonFiniteRange = scanTopicRawWindow(
+      {
+        ...state,
+        columns: makeColumns(metadata, [
+          ["id", rows.map((row) => row.id)],
+          ["price", [Number.POSITIVE_INFINITY, 1, 3]],
+        ]),
+      },
+      {
+        predicate: {
+          filters: [{ field: "price", operator: "gt", value: 2 }],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("exact non-finite numeric range should not call row callbacks");
+        },
+        compare: (left, right) => left.key.localeCompare(right.key),
+        offset: 0,
+        limit: undefined,
+      },
+    );
+    expect(exactNonFiniteRange.keys).toStrictEqual(["high"]);
+    expect(exactNonFiniteRange.totalRows).toBe(1);
+
+    const nonExactRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 2 }],
+        callbackRequired: true,
+      },
+      orderBy: [],
+      matches: (row) => fieldValue(row, "id") !== "nan",
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+    expect(nonExactRange.keys).toStrictEqual(["high"]);
+    expect(nonExactRange.totalRows).toBe(1);
+
+    const nonExactNonFiniteRange = scanTopicRawWindow(
+      {
+        ...state,
+        columns: makeColumns(metadata, [
+          ["id", rows.map((row) => row.id)],
+          ["price", [Number.POSITIVE_INFINITY, 1, 3]],
+        ]),
+      },
+      {
+        predicate: {
+          filters: [{ field: "price", operator: "gt", value: 2 }],
+          callbackRequired: true,
+        },
+        orderBy: [],
+        matches: () => true,
+        compare: (left, right) => left.key.localeCompare(right.key),
+        offset: 0,
+        limit: undefined,
+      },
+    );
+    expect(nonExactNonFiniteRange.keys).toStrictEqual(["high", "nan"]);
+    expect(nonExactNonFiniteRange.totalRows).toBe(2);
+
+    const exactNotEqual = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "neq", value: 1 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact generic numeric neq should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+    expect(exactNotEqual.keys).toStrictEqual(["high", "nan"]);
+    expect(exactNotEqual.totalRows).toBe(2);
+  });
+
+  it("keeps number-column non-finite range predicates aligned with query semantics", () => {
+    const NumericMetric = Schema.Struct({
+      id: Schema.String,
+      price: Schema.Number,
+    });
+    const rows = [
+      { id: "infinite", price: Number.POSITIVE_INFINITY },
+      { id: "low", price: 1 },
+      { id: "high", price: 3 },
+    ];
+    const metadata = rawQueryCompilerMetadata(NumericMetric);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({
+        key: row.id,
+        row,
+      })),
+    };
+
+    const exactRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 2 }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("exact number-column non-finite range should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+    expect(exactRange.keys).toStrictEqual(["high"]);
+    expect(exactRange.totalRows).toBe(1);
+
+    const nonExactRange = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [{ field: "price", operator: "gt", value: 2 }],
+        callbackRequired: true,
+      },
+      orderBy: [],
+      matches: () => true,
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+    expect(nonExactRange.keys).toStrictEqual(["high", "infinite"]);
+    expect(nonExactRange.totalRows).toBe(2);
+  });
+
+  it("falls back to query-value ordering for invalid number-column slots", () => {
+    const NumericMetric = Schema.Struct({
+      id: Schema.String,
+      price: Schema.Number,
+    });
+    const rows = [
+      { id: "valid", price: 1 },
+      { id: "invalid", price: "not-a-number" },
+      { id: "infinite", price: Number.POSITIVE_INFINITY },
+      { id: "nan", price: Number.NaN },
+    ];
+    const metadata = rawQueryCompilerMetadata(NumericMetric);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({
+        key: row.id,
+        row,
+      })),
+    };
+
+    const result = scanTopicRawWindow(state, {
+      predicate: {
+        filters: [],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "price", direction: "asc" }],
+      storageOrderBy: [{ field: "price", direction: "asc" }],
+      matches: () => {
+        throw new Error("exact ordered numeric scan should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(result.keys).toStrictEqual(["invalid", "valid", "infinite", "nan"]);
+    expect(result.totalRows).toBe(4);
+  });
+
   it.effect("uses bigint range hints conservatively for manual plans", () =>
     Effect.gen(function* () {
       const store = new TopicStore("positions", Position, "id", () => {});

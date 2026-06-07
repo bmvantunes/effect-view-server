@@ -4,11 +4,17 @@ import { defineViewServerConfig } from "@view-server/config";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";
 import {
   createColumnLiveViewEngine,
+  defaultGroupedIncrementalAdmissionLimits,
+  groupedIncrementalAdmissionLimitsFromConfig,
   type ColumnLiveViewEngine,
   type ColumnLiveViewEngineEvent,
   type ColumnLiveViewSubscription,
+  type GroupedIncrementalAdmissionLimits,
 } from "./index";
 import {
+  activeFallbackGroupedViewCountFromEngineHealth,
+  activeIncrementalGroupedViewCountFromEngineHealth,
+  activeViewCountFromEngineHealth,
   backpressureCountFromEngineHealth,
   benchmarkOutputJsonPath,
   cleanupLeakCountFromEngineHealth,
@@ -164,6 +170,25 @@ const mutationBatchSize = positiveIntegerFromEnv(
   "VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE",
   defaultMutationBatchSize,
 );
+const groupedIncrementalAdmissionLimits: GroupedIncrementalAdmissionLimits =
+  groupedIncrementalAdmissionLimitsFromConfig({
+    maxGroups: positiveIntegerFromEnv(
+      "VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_GROUPS",
+      defaultGroupedIncrementalAdmissionLimits.maxGroups,
+    ),
+    maxMembers: positiveIntegerFromEnv(
+      "VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_MEMBERS",
+      defaultGroupedIncrementalAdmissionLimits.maxMembers,
+    ),
+    maxMembersPerGroup: positiveIntegerFromEnv(
+      "VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_MEMBERS_PER_GROUP",
+      defaultGroupedIncrementalAdmissionLimits.maxMembersPerGroup,
+    ),
+    maxRetainedValueEntries: positiveIntegerFromEnv(
+      "VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_RETAINED_VALUE_ENTRIES",
+      defaultGroupedIncrementalAdmissionLimits.maxRetainedValueEntries,
+    ),
+  });
 const maximumSafeMutationBatchSize = Math.max(1, Math.floor(benchmarkRowCount / 20));
 if (seedBatchSize > benchmarkRowCount) {
   throw new Error("VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE must be less than or equal to row count.");
@@ -512,7 +537,12 @@ const drainDeltas = async (benchmarkProfile: BenchmarkProfile, caseName: string)
 };
 
 beforeAll(async () => {
-  const engine = Effect.runSync(createColumnLiveViewEngine({ topics: viewServer.topics }));
+  const engine = Effect.runSync(
+    createColumnLiveViewEngine({
+      groupedIncrementalAdmissionLimits,
+      topics: viewServer.topics,
+    }),
+  );
   await Effect.runPromise(seedEngine(engine, profile.rowCount));
   const requiredMutationKeys = benchOptions.iterations * mutationBatchSize;
 
@@ -575,6 +605,10 @@ afterAll(async () => {
     .filter((record) => record.readerName === "secondary")
     .map((record) => record.fromVersion);
   const memoryAfterSetup = profile.memoryAfterSetup ?? memoryBefore;
+  let preCleanupHealth: unknown = undefined;
+  let activeFallbackGroupedViewsBeforeCleanup = 0;
+  let activeIncrementalGroupedViewsBeforeCleanup = 0;
+  let activeViewsBeforeCleanup = 0;
   expect(profile.deltaRecords.length).toBe(expectedMutationDeltaEvents);
   expect(statusFromVersions).toStrictEqual(expectedFromVersions);
   expect(regionStatusFromVersions).toStrictEqual(expectedFromVersions);
@@ -585,14 +619,26 @@ afterAll(async () => {
     expect(record.totalRows > 0).toBe(true);
   }
   if (profile.engine !== undefined) {
-    const healthBeforeCleanup = await Effect.runPromise(profile.engine.health());
-    expect(isBenchmarkEngineHealth(healthBeforeCleanup)).toBe(true);
-    const benchmarkHealthBeforeCleanup = isBenchmarkEngineHealth(healthBeforeCleanup)
-      ? healthBeforeCleanup
+    preCleanupHealth = await Effect.runPromise(profile.engine.health());
+    expect(isBenchmarkEngineHealth(preCleanupHealth)).toBe(true);
+    const benchmarkHealthBeforeCleanup = isBenchmarkEngineHealth(preCleanupHealth)
+      ? preCleanupHealth
       : undefined;
     expect(benchmarkHealthBeforeCleanup?.activeSubscriptions).toBe(2);
     expect(benchmarkHealthBeforeCleanup?.backpressureEvents).toBe(0);
     expect(benchmarkHealthBeforeCleanup?.queuedEvents).toBe(0);
+    activeFallbackGroupedViewsBeforeCleanup =
+      benchmarkHealthBeforeCleanup === undefined
+        ? 0
+        : activeFallbackGroupedViewCountFromEngineHealth(benchmarkHealthBeforeCleanup);
+    activeIncrementalGroupedViewsBeforeCleanup =
+      benchmarkHealthBeforeCleanup === undefined
+        ? 0
+        : activeIncrementalGroupedViewCountFromEngineHealth(benchmarkHealthBeforeCleanup);
+    activeViewsBeforeCleanup =
+      benchmarkHealthBeforeCleanup === undefined
+        ? 0
+        : activeViewCountFromEngineHealth(benchmarkHealthBeforeCleanup);
   }
   if (profile.statusSubscription !== undefined) {
     await Effect.runPromise(profile.statusSubscription.close());
@@ -641,6 +687,16 @@ afterAll(async () => {
     benchmarkName: "grouped write engine benchmark",
     benchmarkScope: "engine-grouped-write",
     cleanupLeakCount,
+    groupedWriteAdmission: {
+      activeFallbackGroupedViewsBeforeCleanup,
+      activeIncrementalGroupedViewsBeforeCleanup,
+      activeViewsBeforeCleanup,
+      configuredMode: groupedWriteMode,
+      incrementalAdmissionLimits: groupedIncrementalAdmissionLimits,
+      priceThreshold:
+        groupedWriteMode === "incremental" ? incrementalPriceThreshold(benchmarkRowCount) : null,
+      writeBatchSize: mutationBatchSize,
+    },
     health,
     latency: {
       outputJsonPath,
@@ -665,6 +721,7 @@ afterAll(async () => {
       `Grouped write engine versions during timed samples: ${profile.deltaVersionCount}.`,
     ],
     outputJsonPath,
+    preCleanupHealth,
     queuedEventCount: queuedEventCountFromEngineHealth(health),
     rowCount: profile.rowCount,
     subscriberCount: 2,

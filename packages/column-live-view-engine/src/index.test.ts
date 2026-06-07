@@ -11,7 +11,9 @@ import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema, Scope, Stream } f
 import { format as formatBigDecimal, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
 import {
   createColumnLiveViewEngine,
+  defaultGroupedIncrementalAdmissionLimits,
   EngineClosedError,
+  groupedIncrementalAdmissionLimitsFromConfig,
   InvalidQueryError,
   InvalidRowError,
   InvalidTopicError,
@@ -9946,6 +9948,87 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
       const health = yield* engine.health();
       expect(health.activeSubscriptions).toBe(0);
+    }),
+  );
+
+  it("normalizes grouped incremental admission limits from config", () => {
+    expect(groupedIncrementalAdmissionLimitsFromConfig(undefined)).toStrictEqual(
+      defaultGroupedIncrementalAdmissionLimits,
+    );
+    expect(
+      groupedIncrementalAdmissionLimitsFromConfig({
+        maxGroups: Number.NaN,
+        maxMembers: 0,
+        maxMembersPerGroup: -1,
+        maxRetainedValueEntries: 2,
+      }),
+    ).toStrictEqual({
+      ...defaultGroupedIncrementalAdmissionLimits,
+      maxRetainedValueEntries: 2,
+    });
+  });
+
+  it.effect("reports active grouped execution mode counts in health", () =>
+    Effect.gen(function* () {
+      const admittedEngine = yield* createColumnLiveViewEngine({
+        groupedIncrementalAdmissionLimits: {
+          maxGroups: 10,
+          maxMembers: 10,
+          maxMembersPerGroup: 10,
+          maxRetainedValueEntries: 10,
+        },
+        topics: viewServer.topics,
+      });
+      yield* admittedEngine.publishMany("orders", [
+        order("1", "open", 10, 1),
+        order("2", "closed", 20, 2),
+      ]);
+      const admittedSubscription = yield* admittedEngine.subscribe("orders", {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+        limit: 10,
+      });
+
+      const admitted = yield* admittedEngine.health();
+
+      expect(admitted.topics["orders"].activeSubscriptions).toBe(1);
+      expect(admitted.topics["orders"].activeViews).toBe(1);
+      expect(admitted.topics["orders"].activeFallbackGroupedViews).toBe(0);
+      expect(admitted.topics["orders"].activeIncrementalGroupedViews).toBe(1);
+      yield* admittedSubscription.close();
+
+      const fallbackEngine = yield* createColumnLiveViewEngine({
+        groupedIncrementalAdmissionLimits: {
+          maxGroups: 1,
+          maxMembers: 10,
+          maxMembersPerGroup: 10,
+          maxRetainedValueEntries: 10,
+        },
+        topics: viewServer.topics,
+      });
+      yield* fallbackEngine.publishMany("orders", [
+        order("1", "open", 10, 1),
+        order("2", "closed", 20, 2),
+      ]);
+      const fallbackSubscription = yield* fallbackEngine.subscribe("orders", {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+        limit: 10,
+      });
+
+      const fallback = yield* fallbackEngine.health();
+
+      expect(fallback.topics["orders"].activeSubscriptions).toBe(1);
+      expect(fallback.topics["orders"].activeViews).toBe(1);
+      expect(fallback.topics["orders"].activeFallbackGroupedViews).toBe(1);
+      expect(fallback.topics["orders"].activeIncrementalGroupedViews).toBe(0);
+      yield* fallbackSubscription.close();
     }),
   );
 

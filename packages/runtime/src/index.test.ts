@@ -182,6 +182,8 @@ describe("@view-server/runtime", () => {
             mutationsPerSecond: 2,
             rowsPerSecond: 2,
             pendingMutationBatches: 0,
+            activeFallbackGroupedViews: 0,
+            activeIncrementalGroupedViews: 1,
             activeViews: 1,
             activeSubscriptions: 4,
             queuedEvents: 5,

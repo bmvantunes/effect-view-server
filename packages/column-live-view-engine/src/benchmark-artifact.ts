@@ -38,7 +38,24 @@ export type BenchmarkEngineHealth = {
 };
 
 export type BenchmarkTopicHealth = {
+  readonly activeFallbackGroupedViews?: number;
+  readonly activeIncrementalGroupedViews?: number;
   readonly activeViews: number;
+};
+
+export type BenchmarkGroupedWriteAdmission = {
+  readonly activeFallbackGroupedViewsBeforeCleanup: number;
+  readonly activeIncrementalGroupedViewsBeforeCleanup: number;
+  readonly activeViewsBeforeCleanup: number;
+  readonly configuredMode: "fallback" | "incremental";
+  readonly incrementalAdmissionLimits: {
+    readonly maxGroups: number;
+    readonly maxMembers: number;
+    readonly maxMembersPerGroup: number;
+    readonly maxRetainedValueEntries: number;
+  };
+  readonly priceThreshold: number | null;
+  readonly writeBatchSize: number;
 };
 
 export type BenchmarkArtifactInput = {
@@ -67,9 +84,11 @@ export type BenchmarkArtifactInput = {
   };
   readonly backpressureCount: number;
   readonly cleanupLeakCount: number;
+  readonly groupedWriteAdmission?: BenchmarkGroupedWriteAdmission;
   readonly queuedEventCount: number;
   readonly health: unknown;
   readonly notes: ReadonlyArray<string>;
+  readonly preCleanupHealth?: unknown;
 };
 
 export const memorySnapshot = (): BenchmarkMemorySnapshot => {
@@ -195,6 +214,32 @@ export const activeViewCountFromEngineHealth = (health: BenchmarkEngineHealth): 
   return activeViewCount;
 };
 
+export const activeFallbackGroupedViewCountFromEngineHealth = (
+  health: BenchmarkEngineHealth,
+): number => {
+  if (health.topics === undefined) {
+    return 0;
+  }
+  let activeViewCount = 0;
+  for (const topic of Object.values(health.topics)) {
+    activeViewCount += topic.activeFallbackGroupedViews ?? 0;
+  }
+  return activeViewCount;
+};
+
+export const activeIncrementalGroupedViewCountFromEngineHealth = (
+  health: BenchmarkEngineHealth,
+): number => {
+  if (health.topics === undefined) {
+    return 0;
+  }
+  let activeViewCount = 0;
+  for (const topic of Object.values(health.topics)) {
+    activeViewCount += topic.activeIncrementalGroupedViews ?? 0;
+  }
+  return activeViewCount;
+};
+
 export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
   const summaryPath = benchmarkSummaryPath(input.outputJsonPath);
   mkdirSync(dirname(summaryPath), { recursive: true });
@@ -208,6 +253,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
         benchmarkName: input.benchmarkName,
         benchmarkScope: input.benchmarkScope,
         cleanupLeakCount: input.cleanupLeakCount,
+        groupedWriteAdmission: input.groupedWriteAdmission,
         health: input.health,
         latency: input.latency,
         memory: {
@@ -221,6 +267,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
         mutationCount: input.mutationCount,
         notes: input.notes,
         outputJsonPath: input.outputJsonPath,
+        preCleanupHealth: input.preCleanupHealth,
         queuedEventCount: input.queuedEventCount,
         rowCount: input.rowCount,
         subscriberCount: input.subscriberCount,

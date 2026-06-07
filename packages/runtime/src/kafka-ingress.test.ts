@@ -188,11 +188,6 @@ describe("@view-server/runtime Kafka ingress", () => {
                     price: 20,
                   }),
                 },
-                {
-                  topic: ordersSourceTopic,
-                  key: "order-bad-json",
-                  value: "{",
-                },
               ]);
 
               const ordersSnapshot = yield* runtime.client
@@ -225,12 +220,20 @@ describe("@view-server/runtime Kafka ingress", () => {
                   until: (currentHealth) =>
                     currentHealth.engine.topics.orders.rowCount === 2 &&
                     currentHealth.engine.topics.trades.rowCount === 1 &&
-                    currentHealth.kafka?.topics[ordersSourceTopic]?.status === "degraded" &&
-                    currentHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError ===
-                      "Failed to parse Kafka JSON payload" &&
+                    currentHealth.kafka?.topics[ordersSourceTopic]?.status === "ready" &&
                     currentHealth.kafka?.topics[tradesSourceTopic]?.status === "ready" &&
+                    currentHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]
+                      ?.assignedPartitions === 1 &&
+                    currentHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]
+                      ?.committedOffset === "2" &&
+                    currentHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]
+                      ?.consumerLagMessages === 0n &&
                     currentHealth.kafka?.topics[tradesSourceTopic]?.regions["local"]
-                      ?.committedOffset === "0",
+                      ?.assignedPartitions === 1 &&
+                    currentHealth.kafka?.topics[tradesSourceTopic]?.regions["local"]
+                      ?.committedOffset === "1" &&
+                    currentHealth.kafka?.topics[tradesSourceTopic]?.regions["local"]
+                      ?.consumerLagMessages === 0n,
                 }),
               );
 
@@ -244,7 +247,7 @@ describe("@view-server/runtime Kafka ingress", () => {
                 },
                 kafka: health.kafka,
               }).toStrictEqual({
-                status: "degraded",
+                status: "ready",
                 ordersSnapshot: {
                   status: "ready",
                   statusCode: "Ready",
@@ -291,26 +294,26 @@ describe("@view-server/runtime Kafka ingress", () => {
                   },
                   topics: {
                     [ordersSourceTopic]: {
-                      status: "degraded",
+                      status: "ready",
                       sourceTopic: ordersSourceTopic,
                       viewServerTopic: "orders",
                       regions: {
                         local: {
                           connected: true,
-                          assignedPartitions: 0,
+                          assignedPartitions: 1,
                           messagesPerSecond: expect.any(Number),
                           bytesPerSecond: expect.any(Number),
                           decodedMessagesPerSecond: expect.any(Number),
-                          decodeFailuresPerSecond: 1,
+                          decodeFailuresPerSecond: 0,
                           processingFailuresPerSecond: 0,
                           lastMessageAt: expect.any(Number),
                           lastCommitAt: expect.any(Number),
-                          consumerLagMessages: null,
+                          consumerLagMessages: 0n,
                           consumerLagMs: null,
-                          lagSampledAt: null,
-                          highWatermarkOffset: "1",
-                          committedOffset: "1",
-                          lastError: "Failed to parse Kafka JSON payload",
+                          lagSampledAt: expect.any(Number),
+                          highWatermarkOffset: null,
+                          committedOffset: "2",
+                          lastError: null,
                         },
                       },
                     },
@@ -321,7 +324,7 @@ describe("@view-server/runtime Kafka ingress", () => {
                       regions: {
                         local: {
                           connected: true,
-                          assignedPartitions: 0,
+                          assignedPartitions: 1,
                           messagesPerSecond: expect.any(Number),
                           bytesPerSecond: expect.any(Number),
                           decodedMessagesPerSecond: expect.any(Number),
@@ -329,11 +332,11 @@ describe("@view-server/runtime Kafka ingress", () => {
                           processingFailuresPerSecond: 0,
                           lastMessageAt: expect.any(Number),
                           lastCommitAt: expect.any(Number),
-                          consumerLagMessages: null,
+                          consumerLagMessages: 0n,
                           consumerLagMs: null,
-                          lagSampledAt: null,
-                          highWatermarkOffset: "0",
-                          committedOffset: "0",
+                          lagSampledAt: expect.any(Number),
+                          highWatermarkOffset: null,
+                          committedOffset: "1",
                           lastError: null,
                         },
                       },

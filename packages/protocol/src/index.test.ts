@@ -276,6 +276,7 @@ describe("@view-server/protocol", () => {
                   bytesPerSecond: 0,
                   decodedMessagesPerSecond: 0,
                   decodeFailuresPerSecond: 0,
+                  processingFailuresPerSecond: 2,
                   lastMessageAt: null,
                   lastCommitAt: null,
                   consumerLagMessages: largeLag.toString(),
@@ -304,6 +305,9 @@ describe("@view-server/protocol", () => {
         },
       });
       expect(lagHealth.kafka?.topics["orders"]?.regions["usa"]?.consumerLagMessages).toBe(largeLag);
+      expect(lagHealth.kafka?.topics["orders"]?.regions["usa"]?.processingFailuresPerSecond).toBe(
+        2,
+      );
       const encodedLagHealth = yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(lagHealth);
       expect(encodedLagHealth.kafka?.topics["orders"]?.regions["usa"]?.consumerLagMessages).toBe(
         largeLag.toString(),

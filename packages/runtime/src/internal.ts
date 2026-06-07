@@ -1,5 +1,6 @@
 import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@view-server/client";
-import type { RuntimeRegions, ViewServerConfig } from "@view-server/config";
+import type { RuntimeRegions, ViewServerConfig, ViewServerHealth } from "@view-server/config";
+import type { ViewServerRuntimeCoreOptionsFor } from "@view-server/runtime-core";
 import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
@@ -36,6 +37,17 @@ const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitio
   subscribeHealthSummary: liveClient.subscribeHealthSummary,
 });
 
+type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
+  groupedIncrementalAdmissionLimits?: NonNullable<
+    ViewServerRuntimeCoreOptionsFor<Topics>["groupedIncrementalAdmissionLimits"]
+  >;
+  subscriptionQueueCapacity?: NonNullable<
+    ViewServerRuntimeCoreOptionsFor<Topics>["subscriptionQueueCapacity"]
+  >;
+  transportHealth: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["transportHealth"]>;
+  healthOverlay?: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["healthOverlay"]>;
+};
+
 export const makeViewServerRuntimeWithDependencies: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Options extends ViewServerRuntimeOptions<Topics> = ViewServerRuntimeOptions<Topics>,
@@ -63,11 +75,23 @@ export const makeViewServerRuntimeWithDependencies: <
     kafkaOptions === undefined
       ? undefined
       : dependencies.makeKafkaHealthLedger(config, kafkaOptions);
-  const runtimeCore = yield* dependencies.makeRuntimeCore(config, {
-    ...runtimeCoreOptions,
+  const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
     transportHealth: transportHealth.transportHealth,
-    ...(kafkaHealth === undefined ? {} : { healthOverlay: kafkaHealth.healthOverlay }),
-  });
+  };
+  if (runtimeCoreOptions.groupedIncrementalAdmissionLimits !== undefined) {
+    runtimeCoreInput.groupedIncrementalAdmissionLimits =
+      runtimeCoreOptions.groupedIncrementalAdmissionLimits;
+  }
+  if (runtimeCoreOptions.subscriptionQueueCapacity !== undefined) {
+    runtimeCoreInput.subscriptionQueueCapacity = runtimeCoreOptions.subscriptionQueueCapacity;
+  }
+  if (kafkaHealth !== undefined) {
+    runtimeCoreInput.healthOverlay = (
+      health: ViewServerHealth<Topics>,
+      nowMillis: number,
+    ): ViewServerHealth<Topics> => kafkaHealth.healthOverlay(health, nowMillis);
+  }
+  const runtimeCore = yield* dependencies.makeRuntimeCore(config, runtimeCoreInput);
   const refreshTransportHealth = runtimeCore.client.health().pipe(Effect.ignore);
   const server = yield* dependencies
     .makeServer(

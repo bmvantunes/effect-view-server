@@ -9,7 +9,7 @@ import type {
   ViewServerHealth,
   ViewServerRuntimeClient,
 } from "@view-server/config";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
   defaultRuntimeCoreTransportHealth,
@@ -69,8 +69,9 @@ export const makeViewServerRuntimeCore: <const Topics extends DecodableTopicDefi
     };
     const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
     const engineHealth = yield* engine.health();
+    const nowMillis = yield* Clock.currentTimeMillis;
     const health: AtomRef.AtomRef<ViewServerHealth<Topics>> = AtomRef.make(
-      healthFromEngine(engineHealth, transportHealth, healthOverlay),
+      healthFromEngine(engineHealth, transportHealth, healthOverlay, nowMillis),
     );
     const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
       engine,

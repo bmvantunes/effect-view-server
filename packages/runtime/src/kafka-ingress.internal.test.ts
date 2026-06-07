@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Consumer } from "@platformatic/kafka";
 import type { Message } from "@platformatic/kafka";
 import {
   defineViewServerConfig,
@@ -11,11 +12,16 @@ import { Buffer } from "node:buffer";
 import { Effect, Exit, Schema } from "effect";
 import { makeViewServerKafkaHealthLedger } from "./kafka-health";
 import {
+  assignedPartitionsForSourceTopic,
   bootstrapBrokers,
+  closeKafkaConsumerAfterStartFailure,
+  closeKafkaConsumerOnStartFailure,
   kafkaHeadersFromMessage,
   kafkaConsumerCloseError,
   kafkaConsumerStartError,
   kafkaMessageCommitError,
+  kafkaMessageDecodeError,
+  kafkaMessageProcessingError,
   kafkaStreamCloseError,
   kafkaStreamError,
   makeViewServerKafkaIngress,
@@ -23,7 +29,10 @@ import {
   mapKafkaStreamError,
   messageFromUnknown,
   processKafkaMessage,
+  recordKafkaAssignments,
+  recordKafkaLag,
   recordKafkaStreamError,
+  registerKafkaConsumerHealthListeners,
   runKafkaMessageStream,
   sourceTopicsForRegion,
   startKafkaRegionConsumers,
@@ -153,9 +162,35 @@ async function* failingKafkaStream(): AsyncIterable<KafkaMessage> {
   throw new Error("stream-down");
 }
 
+async function* decodeFailureThenSuccessKafkaStream(
+  onCommit: () => void,
+): AsyncIterable<KafkaMessage> {
+  yield kafkaMessage({
+    topic: ordersSourceTopic,
+    key: "bad-json",
+    value: "{",
+    offset: 1n,
+    onCommit,
+  });
+  yield kafkaMessage({
+    topic: ordersSourceTopic,
+    key: "order-after-failure",
+    value: JSON.stringify({
+      customerId: "customer-after-failure",
+      price: 40,
+    }),
+    offset: 2n,
+    onCommit,
+  });
+}
+
 describe("@view-server/runtime Kafka ingress internals", () => {
   it("normalizes Kafka helper values", () => {
-    const headers = new Map([[Buffer.from("trace"), Buffer.from("abc")]]);
+    const headers = new Map([
+      [Buffer.from("trace"), Buffer.from("abc")],
+      [Buffer.from("trace"), Buffer.from("def")],
+      [Buffer.from("trace"), Buffer.from("ghi")],
+    ]);
 
     expect({
       errorMessage: messageFromUnknown(new Error("boom")),
@@ -164,6 +199,14 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       plainMessage: messageFromUnknown("plain"),
       bootstrapBrokers: bootstrapBrokers(regions.local),
       headers: kafkaHeadersFromMessage(headers),
+      assignedOrdersPartitions: assignedPartitionsForSourceTopic(
+        [{ topic: ordersSourceTopic, partitions: [0, 1] }],
+        ordersSourceTopic,
+      ),
+      assignedMissingPartitions: assignedPartitionsForSourceTopic(
+        [{ topic: ordersSourceTopic, partitions: [0, 1] }],
+        unknownSourceTopic,
+      ),
     }).toStrictEqual({
       errorMessage: "boom",
       taggedErrorMessage: "publish failed",
@@ -171,14 +214,22 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       plainMessage: "plain",
       bootstrapBrokers: ["localhost:9092", "localhost:9094"],
       headers: {
-        trace: Buffer.from("abc"),
+        trace: [Buffer.from("abc"), Buffer.from("def"), Buffer.from("ghi")],
       },
+      assignedOrdersPartitions: 2,
+      assignedMissingPartitions: 0,
     });
     const consumerError = kafkaConsumerStartError("local", "no-broker");
     const streamError = kafkaStreamError("local", "stream-down");
     const consumerCloseError = kafkaConsumerCloseError("close-down");
     const streamCloseError = kafkaStreamCloseError("stream-close-down");
     const commitError = kafkaMessageCommitError("local", ordersSourceTopic, "commit-down");
+    const decodeError = kafkaMessageDecodeError("local", ordersSourceTopic, "decode-down");
+    const processingError = kafkaMessageProcessingError(
+      "local",
+      ordersSourceTopic,
+      "processing-down",
+    );
     expect({
       _tag: consumerError._tag,
       message: consumerError.message,
@@ -258,9 +309,73 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       region: "local",
       sourceTopic: ordersSourceTopic,
     });
+    expect({
+      decode: {
+        _tag: decodeError._tag,
+        message: decodeError.message,
+        cause: decodeError.cause,
+        region: decodeError.region,
+        sourceTopic: decodeError.sourceTopic,
+      },
+      processing: {
+        _tag: processingError._tag,
+        message: processingError.message,
+        cause: processingError.cause,
+        region: processingError.region,
+        sourceTopic: processingError.sourceTopic,
+      },
+    }).toStrictEqual({
+      decode: {
+        _tag: "ViewServerKafkaIngressError",
+        message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+        cause: "decode-down",
+        region: "local",
+        sourceTopic: ordersSourceTopic,
+      },
+      processing: {
+        _tag: "ViewServerKafkaIngressError",
+        message: `Failed to process Kafka message for source topic ${ordersSourceTopic}`,
+        cause: "processing-down",
+        region: "local",
+        sourceTopic: ordersSourceTopic,
+      },
+    });
     expect(sourceTopicsForRegion(kafkaOptions, "local")).toStrictEqual([ordersSourceTopic]);
     expect(sourceTopicsForRegion(kafkaOptions, "cold")).toStrictEqual([]);
   });
+
+  it.effect("closes constructed Kafka consumers after consume startup failures", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+
+      yield* closeKafkaConsumerAfterStartFailure({
+        close: (force) => {
+          closeForce = force;
+        },
+      });
+
+      expect(closeForce).toBe(true);
+    }),
+  );
+
+  it.effect("closes Kafka consumers when startup effects fail", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+      const exit = yield* Effect.exit(
+        closeKafkaConsumerOnStartFailure(
+          {
+            close: (force) => {
+              closeForce = force;
+            },
+          },
+          Effect.fail(kafkaConsumerStartError("local", "no-broker")),
+        ),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(closeForce).toBe(true);
+    }),
+  );
 
   it.effect("records Kafka health transitions and ignores unknown ledger keys", () =>
     Effect.gen(function* () {
@@ -279,12 +394,12 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       yield* ledger.topicConnected(ordersSourceTopic, "local", 2, 1_000);
       yield* ledger.messageDecoded(ordersSourceTopic, "local", {
         bytes: 10,
-        offset: "1",
+        committedOffset: "1",
         nowMillis: 1_000,
       });
       yield* ledger.messageDecoded(ordersSourceTopic, "local", {
         bytes: 20,
-        offset: "2",
+        committedOffset: "2",
         nowMillis: 2_000,
       });
       yield* ledger.decodeFailed(ordersSourceTopic, "local", {
@@ -298,7 +413,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       yield* ledger.topicConnected("missing", "local", 1, 2_000);
       yield* ledger.messageDecoded("missing", "local", {
         bytes: 1,
-        offset: "3",
+        committedOffset: "3",
         nowMillis: 2_000,
       });
       yield* ledger.decodeFailed("missing", "local", {
@@ -312,7 +427,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         nowMillis: 2_000,
       });
 
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
 
       expect({
         status: health.status,
@@ -347,7 +462,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
                   consumerLagMessages: null,
                   consumerLagMs: null,
                   lagSampledAt: null,
-                  highWatermarkOffset: "2",
+                  highWatermarkOffset: null,
                   committedOffset: "2",
                   lastError: "lost",
                 },
@@ -357,6 +472,149 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         },
       });
 
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("records Kafka assignments and lag samples", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      let healthReadCount = 0;
+      const refreshingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        health: () =>
+          Effect.sync(() => {
+            healthReadCount += 1;
+          }).pipe(Effect.andThen(runtimeCore.client.health())),
+      };
+      yield* ledger.regionConnected("local", 1_000);
+      yield* recordKafkaAssignments(
+        ledger,
+        refreshingClient,
+        "local",
+        [ordersSourceTopic],
+        [{ topic: ordersSourceTopic, partitions: [0, 1] }],
+        1_000,
+      );
+      yield* recordKafkaLag(
+        ledger,
+        refreshingClient,
+        "local",
+        new Map([
+          [ordersSourceTopic, [3n, -1n, 2n]],
+          [unknownSourceTopic, [99n]],
+        ]),
+        2_000,
+      );
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+
+      expect(healthReadCount).toBe(2);
+      expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
+        status: "ready",
+        sourceTopic: ordersSourceTopic,
+        viewServerTopic: "orders",
+        regions: {
+          local: {
+            connected: true,
+            assignedPartitions: 2,
+            messagesPerSecond: 0,
+            bytesPerSecond: 0,
+            decodedMessagesPerSecond: 0,
+            decodeFailuresPerSecond: 0,
+            processingFailuresPerSecond: 0,
+            lastMessageAt: 1_000,
+            lastCommitAt: null,
+            consumerLagMessages: 5n,
+            consumerLagMs: null,
+            lagSampledAt: 2_000,
+            highWatermarkOffset: null,
+            committedOffset: null,
+            lastError: null,
+          },
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("records Kafka health from consumer listener callbacks", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      let healthReadCount = 0;
+      const refreshingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        health: () =>
+          Effect.sync(() => {
+            healthReadCount += 1;
+          }).pipe(Effect.andThen(runtimeCore.client.health())),
+      };
+      const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
+        bootstrapBrokers: ["127.0.0.1:1"],
+        clientId: "view-server-listener-test",
+        groupId: "view-server-listener-test",
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
+        consumer,
+        ledger,
+        refreshingClient,
+        "local",
+        [ordersSourceTopic],
+      );
+
+      consumer.emit("consumer:group:join", {
+        groupId: "view-server-listener-test",
+        memberId: "member-1",
+      });
+      consumer.emit("consumer:group:join", {
+        groupId: "view-server-listener-test",
+        memberId: "member-1",
+        assignments: [{ topic: ordersSourceTopic, partitions: [0, 1] }],
+      });
+      consumer.emit("consumer:lag", new Map([[ordersSourceTopic, [4n, 1n]]]));
+      yield* Effect.promise<void>(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect(healthReadCount).toBe(3);
+      expect(health.kafka?.topics[ordersSourceTopic]?.regions["local"]).toStrictEqual({
+        connected: true,
+        assignedPartitions: 2,
+        messagesPerSecond: 0,
+        bytesPerSecond: 0,
+        decodedMessagesPerSecond: 0,
+        decodeFailuresPerSecond: 0,
+        processingFailuresPerSecond: 0,
+        lastMessageAt: expect.any(Number),
+        lastCommitAt: null,
+        consumerLagMessages: 5n,
+        consumerLagMs: null,
+        lagSampledAt: expect.any(Number),
+        highWatermarkOffset: null,
+        committedOffset: null,
+        lastError: null,
+      });
+
+      yield* listenerRegistration.close;
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true))).pipe(Effect.ignore);
       yield* runtimeCore.close;
     }),
   );
@@ -377,7 +635,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       });
       yield* readyLedger.regionConnected("local", 1_000);
       yield* readyLedger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      const readyHealth = readyLedger.healthOverlay(yield* readyRuntimeCore.client.health());
+      const readyHealth = readyLedger.healthOverlay(yield* readyRuntimeCore.client.health(), 1_000);
 
       const startingRuntimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
       const startingLedger = makeViewServerKafkaHealthLedger<Topics>({
@@ -393,6 +651,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       yield* startingLedger.topicConnected(ordersSourceTopic, "local", 1, 2_000);
       const startingHealth = startingLedger.healthOverlay(
         yield* startingRuntimeCore.client.health(),
+        2_000,
       );
 
       expect({
@@ -513,6 +772,68 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("resets idle Kafka per-second counters on health reads", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      yield* ledger.messageDecoded(ordersSourceTopic, "local", {
+        bytes: 10,
+        committedOffset: "1",
+        nowMillis: 1_000,
+      });
+
+      const activeHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 1_000);
+      const idleHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+
+      expect(activeHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]).toStrictEqual({
+        connected: true,
+        assignedPartitions: 1,
+        messagesPerSecond: 1,
+        bytesPerSecond: 10,
+        decodedMessagesPerSecond: 1,
+        decodeFailuresPerSecond: 0,
+        processingFailuresPerSecond: 0,
+        lastMessageAt: 1_000,
+        lastCommitAt: 1_000,
+        consumerLagMessages: null,
+        consumerLagMs: null,
+        lagSampledAt: null,
+        highWatermarkOffset: null,
+        committedOffset: "1",
+        lastError: null,
+      });
+      expect(idleHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]).toStrictEqual({
+        connected: true,
+        assignedPartitions: 1,
+        messagesPerSecond: 0,
+        bytesPerSecond: 0,
+        decodedMessagesPerSecond: 0,
+        decodeFailuresPerSecond: 0,
+        processingFailuresPerSecond: 0,
+        lastMessageAt: 1_000,
+        lastCommitAt: 1_000,
+        consumerLagMessages: null,
+        consumerLagMs: null,
+        lagSampledAt: null,
+        highWatermarkOffset: null,
+        committedOffset: "1",
+        lastError: null,
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("recovers degraded topic status after successful Kafka decoding resumes", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
@@ -535,10 +856,10 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       });
       yield* ledger.messageDecoded(ordersSourceTopic, "local", {
         bytes: 10,
-        offset: "2",
+        committedOffset: "2",
         nowMillis: 1_000,
       });
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect(health.status).toBe("ready");
       expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
@@ -559,7 +880,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
             consumerLagMessages: null,
             consumerLagMs: null,
             lagSampledAt: null,
-            highWatermarkOffset: "2",
+            highWatermarkOffset: null,
             committedOffset: "2",
             lastError: null,
           },
@@ -622,7 +943,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       const streamError = kafkaStreamError("local", "stream-down");
 
       const exit = yield* Effect.exit(recordKafkaStreamError(ledger, "local", streamError));
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect({
         streamRecordingFailed: Exit.isFailure(exit),
@@ -673,7 +994,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect({
         streamFailed: Exit.isFailure(exit),
@@ -727,11 +1048,91 @@ describe("@view-server/runtime Kafka ingress internals", () => {
                   consumerLagMessages: null,
                   consumerLagMs: null,
                   lagSampledAt: null,
-                  highWatermarkOffset: "4",
-                  committedOffset: "4",
+                  highWatermarkOffset: null,
+                  committedOffset: "5",
                   lastError: "Kafka stream failed for region local",
                 },
               },
+            },
+          },
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("fails Kafka streams before later records can skip failed offsets", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+
+      let committedMessages = 0;
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          runtimeCore.client,
+          kafkaOptions,
+          ledger,
+          "local",
+          decodeFailureThenSuccessKafkaStream(() => {
+            committedMessages += 1;
+          }),
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        streamFailed: Exit.isFailure(exit),
+        committedMessages,
+        snapshot,
+        kafkaTopic: health.kafka?.topics[ordersSourceTopic],
+      }).toStrictEqual({
+        streamFailed: true,
+        committedMessages: 0,
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [],
+          totalRows: 0,
+          version: 0,
+        },
+        kafkaTopic: {
+          status: "degraded",
+          sourceTopic: ordersSourceTopic,
+          viewServerTopic: "orders",
+          regions: {
+            local: {
+              connected: false,
+              assignedPartitions: 1,
+              messagesPerSecond: 1,
+              bytesPerSecond: 9,
+              decodedMessagesPerSecond: 0,
+              decodeFailuresPerSecond: 1,
+              processingFailuresPerSecond: 0,
+              lastMessageAt: 0,
+              lastCommitAt: null,
+              consumerLagMessages: null,
+              consumerLagMs: null,
+              lagSampledAt: null,
+              highWatermarkOffset: null,
+              committedOffset: null,
+              lastError: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
             },
           },
         },
@@ -763,7 +1164,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         ledger,
       );
       yield* ingress.close;
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect(health.status).toBe("ready");
       expect(health.kafka).toStrictEqual({
@@ -823,21 +1224,23 @@ describe("@view-server/runtime Kafka ingress internals", () => {
           },
         }),
       );
-      yield* processKafkaMessage(
-        viewServer,
-        runtimeCore.client,
-        kafkaOptions,
-        ledger,
-        "local",
-        kafkaMessage({
-          topic: ordersSourceTopic,
-          key: "bad-json",
-          value: "{",
-          offset: 2n,
-          onCommit: () => {
-            committedMessages += 1;
-          },
-        }),
+      const decodeExit = yield* Effect.exit(
+        processKafkaMessage(
+          viewServer,
+          runtimeCore.client,
+          kafkaOptions,
+          ledger,
+          "local",
+          kafkaMessage({
+            topic: ordersSourceTopic,
+            key: "bad-json",
+            value: "{",
+            offset: 2n,
+            onCommit: () => {
+              committedMessages += 1;
+            },
+          }),
+        ),
       );
 
       const publishExit = yield* Effect.exit(
@@ -866,14 +1269,16 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect({
+        decodeFailed: Exit.isFailure(decodeExit),
         publishFailed: Exit.isFailure(publishExit),
         committedMessages,
         snapshot,
       }).toStrictEqual({
-        publishFailed: false,
+        decodeFailed: true,
+        publishFailed: true,
         committedMessages: 1,
         snapshot: {
           status: "ready",
@@ -907,8 +1312,8 @@ describe("@view-server/runtime Kafka ingress internals", () => {
             consumerLagMessages: null,
             consumerLagMs: null,
             lagSampledAt: null,
-            highWatermarkOffset: "1",
-            committedOffset: "1",
+            highWatermarkOffset: null,
+            committedOffset: "2",
             lastError: "publish failed",
           },
         },
@@ -956,9 +1361,9 @@ describe("@view-server/runtime Kafka ingress internals", () => {
           }),
         ),
       );
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
-      expect(Exit.isSuccess(exit)).toBe(true);
+      expect(Exit.isFailure(exit)).toBe(true);
       expect(healthReadCount).toBe(1);
       expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
         status: "degraded",
@@ -1028,7 +1433,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health());
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect({
         commitFailed: Exit.isFailure(exit),

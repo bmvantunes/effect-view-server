@@ -4,7 +4,7 @@ import type {
   DecodableTopicDefinitions,
 } from "@view-server/column-live-view-engine";
 import type { TransportHealth, ViewServerHealth } from "@view-server/config";
-import { Effect, Fiber, Semaphore } from "effect";
+import { Clock, Effect, Fiber, Semaphore } from "effect";
 import type * as Duration from "effect/Duration";
 import type { AtomRef } from "effect/unstable/reactivity";
 
@@ -16,14 +16,18 @@ export const healthFromEngine = <Topics extends DecodableTopicDefinitions>(
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
   transportHealth: RuntimeCoreTransportHealth<Topics> = defaultRuntimeCoreTransportHealth,
   healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
+  nowMillis = 0,
 ): ViewServerHealth<Topics> => {
-  return healthOverlay({
-    status: engineHealth.status,
-    version: engineHealth.version,
-    uptimeMs: 0,
-    engine: { topics: engineHealth.topics },
-    transport: transportHealth(engineHealth),
-  });
+  return healthOverlay(
+    {
+      status: engineHealth.status,
+      version: engineHealth.version,
+      uptimeMs: 0,
+      engine: { topics: engineHealth.topics },
+      transport: transportHealth(engineHealth),
+    },
+    nowMillis,
+  );
 };
 
 export type RuntimeCoreTransportHealth<Topics extends DecodableTopicDefinitions> = (
@@ -32,10 +36,12 @@ export type RuntimeCoreTransportHealth<Topics extends DecodableTopicDefinitions>
 
 export type RuntimeCoreHealthOverlay<Topics extends DecodableTopicDefinitions> = (
   health: ViewServerHealth<Topics>,
+  nowMillis: number,
 ) => ViewServerHealth<Topics>;
 
 export const defaultRuntimeCoreHealthOverlay = <Topics extends DecodableTopicDefinitions>(
   health: ViewServerHealth<Topics>,
+  _nowMillis: number,
 ): ViewServerHealth<Topics> => health;
 
 export const defaultRuntimeCoreTransportHealth = <Topics extends DecodableTopicDefinitions>(
@@ -72,7 +78,8 @@ export const readHealth = Effect.fn("ViewServerRuntimeCore.health.read")(functio
   transportHealth: RuntimeCoreTransportHealth<Topics> = defaultRuntimeCoreTransportHealth,
   healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
 ) {
-  const value = healthFromEngine(yield* engine.health(), transportHealth, healthOverlay);
+  const nowMillis = yield* Clock.currentTimeMillis;
+  const value = healthFromEngine(yield* engine.health(), transportHealth, healthOverlay, nowMillis);
   yield* Effect.sync(() => {
     health.update((current) => nextHealthValue(current, value));
   });

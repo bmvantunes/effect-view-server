@@ -45,7 +45,10 @@ type KafkaTopicLedger = {
 };
 
 export type ViewServerKafkaHealthLedger<Topics extends ViewServerRuntimeTopicDefinitions> = {
-  readonly healthOverlay: (health: ViewServerHealth<Topics>) => ViewServerHealth<Topics>;
+  readonly healthOverlay: (
+    health: ViewServerHealth<Topics>,
+    nowMillis: number,
+  ) => ViewServerHealth<Topics>;
   readonly regionConnected: (region: string, nowMillis: number) => Effect.Effect<void>;
   readonly regionDisconnected: (region: string, message: string) => Effect.Effect<void>;
   readonly topicConnected: (
@@ -54,12 +57,21 @@ export type ViewServerKafkaHealthLedger<Topics extends ViewServerRuntimeTopicDef
     assignedPartitions: number,
     nowMillis: number,
   ) => Effect.Effect<void>;
+  readonly topicLagSampled: (
+    sourceTopic: string,
+    region: string,
+    input: {
+      readonly assignedPartitions: number;
+      readonly consumerLagMessages: bigint;
+      readonly nowMillis: number;
+    },
+  ) => Effect.Effect<void>;
   readonly messageDecoded: (
     sourceTopic: string,
     region: string,
     input: {
       readonly bytes: number;
-      readonly offset: string;
+      readonly committedOffset: string;
       readonly nowMillis: number;
     },
   ) => Effect.Effect<void>;
@@ -145,6 +157,18 @@ const incrementWindow = (
   region.decodedMessagesPerSecond += counters.decoded;
   region.decodeFailuresPerSecond += counters.failed;
   region.processingFailuresPerSecond += counters.processingFailed;
+};
+
+const resetIdleWindow = (region: KafkaTopicRegionLedger, nowMillis: number) => {
+  const nextSecond = Math.floor(nowMillis / 1000);
+  if (region.windowSecond !== null && region.windowSecond !== nextSecond) {
+    region.windowSecond = nextSecond;
+    region.messagesPerSecond = 0;
+    region.bytesPerSecond = 0;
+    region.decodedMessagesPerSecond = 0;
+    region.decodeFailuresPerSecond = 0;
+    region.processingFailuresPerSecond = 0;
+  }
 };
 
 const copyRegionHealth = (region: KafkaRegionLedger): KafkaRegionHealth => ({
@@ -258,7 +282,7 @@ export const makeViewServerKafkaHealthLedger = <
     });
   }
 
-  const snapshot = (): KafkaHealthSnapshot<Topics> => {
+  const snapshot = (nowMillis: number): KafkaHealthSnapshot<Topics> => {
     const regionHealth: Record<string, KafkaRegionHealth> = {};
     const topicHealth: Record<string, KafkaTopicHealth> = {};
 
@@ -269,6 +293,7 @@ export const makeViewServerKafkaHealthLedger = <
     for (const [sourceTopic, topic] of topics) {
       const topicRegions: Record<string, KafkaTopicRegionHealth> = {};
       for (const [region, ledger] of topic.regions) {
+        resetIdleWindow(ledger, nowMillis);
         topicRegions[region] = copyTopicRegionHealth(ledger);
       }
       topicHealth[sourceTopic] = {
@@ -286,8 +311,8 @@ export const makeViewServerKafkaHealthLedger = <
   };
 
   return {
-    healthOverlay: (health) => {
-      const kafka = snapshot();
+    healthOverlay: (health, nowMillis) => {
+      const kafka = snapshot(nowMillis);
       return {
         ...health,
         status: mergeRuntimeStatus(health, kafka),
@@ -331,6 +356,15 @@ export const makeViewServerKafkaHealthLedger = <
           refreshTopicStatus(topic);
         }
       }),
+    topicLagSampled: (sourceTopic, region, input) =>
+      Effect.sync(() => {
+        const ledger = getTopicRegion(topics, sourceTopic, region);
+        if (ledger !== undefined) {
+          ledger.assignedPartitions = input.assignedPartitions;
+          ledger.consumerLagMessages = input.consumerLagMessages;
+          ledger.lagSampledAt = input.nowMillis;
+        }
+      }),
     messageDecoded: (sourceTopic, region, input) =>
       Effect.sync(() => {
         const ledger = getTopicRegion(topics, sourceTopic, region);
@@ -345,8 +379,7 @@ export const makeViewServerKafkaHealthLedger = <
           });
           ledger.lastMessageAt = input.nowMillis;
           ledger.lastCommitAt = input.nowMillis;
-          ledger.highWatermarkOffset = input.offset;
-          ledger.committedOffset = input.offset;
+          ledger.committedOffset = input.committedOffset;
           ledger.lastError = null;
           refreshTopicStatus(topic);
         }

@@ -27,6 +27,13 @@ const retainedDeltaReleaseEnv = {
   VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
 };
 
+const groupedAggregateReleaseEnv = {
+  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "3",
+  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
+  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
+  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
+};
+
 const task = (label, vpTask, env) => ({
   args: ["run", "--no-cache", vpTask],
   command: "vp",
@@ -68,6 +75,12 @@ const rawLiveFanoutTask = (fanoutCase, rowCount, subscriberCount, env = {}) =>
       ...env,
     },
   );
+
+const groupedAggregateTask = (rowCount, env = {}) =>
+  task(`grouped aggregate ${rowCount} rows`, "column-live-view-engine#bench:grouped-aggregate", {
+    VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
+    ...env,
+  });
 
 const rawActiveRetainedDeltaTask = (retainedCase, rowCount, env = {}) =>
   task(
@@ -112,6 +125,10 @@ const profiles = new Map([
         VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
         ...commonEngineSmokeEnv,
       }),
+      groupedAggregateTask(1_000, {
+        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
+        ...commonEngineSmokeEnv,
+      }),
       rawActiveRetainedDeltaTask("noop", 101, retainedDeltaSmokeEnv),
       rawActiveRetainedDeltaTask("predicate-enter", 101, retainedDeltaSmokeEnv),
       rawActiveRetainedDeltaTask("visible-delete", 101, retainedDeltaSmokeEnv),
@@ -142,6 +159,9 @@ const profiles = new Map([
       rawLiveFanoutTask("ten-window", 100_000, 50),
       rawLiveFanoutTask("same-window", 1_000_000, 250),
       rawLiveFanoutTask("ten-window", 1_000_000, 250),
+      groupedAggregateTask(100_000, groupedAggregateReleaseEnv),
+      groupedAggregateTask(1_000_000, groupedAggregateReleaseEnv),
+      groupedAggregateTask(5_000_000, groupedAggregateReleaseEnv),
       rawActiveRetainedDeltaTask("noop", 100_000, retainedDeltaReleaseEnv),
       rawActiveRetainedDeltaTask("predicate-enter", 100_000, retainedDeltaReleaseEnv),
       rawActiveRetainedDeltaTask("visible-delete", 100_000, retainedDeltaReleaseEnv),

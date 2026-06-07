@@ -1422,6 +1422,64 @@ Raw write knobs:
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: must remain `0`; raw-write mutates shared engine state.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: must remain `0`; raw-write mutates shared engine state.
 
+Current grouped aggregate benchmark harness:
+
+```bash
+vp run --no-cache column-live-view-engine#bench:grouped-aggregate
+```
+
+This harness uses Vitest `bench()` against the public `ColumnLiveViewEngine` snapshot, subscribe,
+and publish path. It seeds one topic and measures grouped reads with count, countDistinct, sum, avg,
+min, max, aggregate ordering, group-key ordering, filters, high-cardinality groups, and zero-row
+group counts. It also opens one selective grouped live subscription, drains the initial snapshot,
+publishes a matching row, and waits for the grouped delta. The live query intentionally filters to an
+upper price tail so the initial matched member count stays below the current grouped incremental
+member target; the public artifact validates the member bound but does not expose the internal
+execution mode directly.
+
+It writes `grouped-aggregate-<rows>rows.json` plus a matching `.summary.json` sidecar under
+`packages/column-live-view-engine/.artifacts/`. Run each row count in a separate process so previous
+profiles do not contaminate GC/RSS/latency or overwrite artifacts:
+
+```bash
+VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:grouped-aggregate
+VIEW_SERVER_ENGINE_BENCH_ROWS=1000000 vp run --no-cache column-live-view-engine#bench:grouped-aggregate
+VIEW_SERVER_ENGINE_BENCH_ROWS=5000000 vp run --no-cache column-live-view-engine#bench:grouped-aggregate
+```
+
+The release baseline runner includes those three grouped row counts with `iterations=3` and
+`time=0`, so the 5M profile is bounded by sample count instead of a time-budget loop. The smoke
+runner uses 1k rows with one iteration and small seed batches to verify wiring quickly.
+
+Grouped aggregate benchmark cases:
+
+- `status grouped count/sum/min/max/avg`
+- `region+status grouped count/sum/min/max/avg`
+- `high-cardinality desk grouped aggregates`
+- `high-cardinality desk group count via zero-row window`
+- `filtered status grouped aggregates`
+- `live grouped aggregate delta after publish`
+
+Grouped aggregate knobs:
+
+- `VIEW_SERVER_ENGINE_BENCH_ROWS`: row count for this benchmark process.
+- `VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE`: publish batch size while seeding.
+- `VIEW_SERVER_ENGINE_BENCH_ITERATIONS`: benchmark iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_TIME_MS`: benchmark time budget per case.
+- `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
+
+Interpretation notes:
+
+- Snapshot cases are grouped read baselines and intentionally use the public engine API rather than
+  grouped internals so future columnar/SIMD/Rust rewrites remain comparable.
+- The live grouped delta case is iteration-bound and disables time/warmup sampling. It records the
+  number of live publishes in the summary sidecar.
+- Raw write benchmarks remain the write-path guardrail for storage/index maintenance, but they do
+  not prove grouped materialized patch/delete/group-move costs. Any future grouped materialized index
+  must add matching grouped write-path cases before adoption, because faster grouped reads can easily
+  regress publish/patch/delete costs.
+
 Current raw live fanout benchmark harness:
 
 ```bash

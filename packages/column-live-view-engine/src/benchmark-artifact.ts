@@ -49,7 +49,8 @@ export type BenchmarkArtifactInput = {
     | "engine-raw-predicate-index"
     | "engine-raw-live-fanout"
     | "engine-raw-active-retained-delta"
-    | "engine-raw-write";
+    | "engine-raw-write"
+    | "engine-grouped-aggregate";
   readonly rowCount: number;
   readonly mutationCount: number;
   readonly subscriberCount: number;

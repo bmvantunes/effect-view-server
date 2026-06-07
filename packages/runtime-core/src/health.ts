@@ -15,19 +15,28 @@ type EngineHealthReader<Topics extends DecodableTopicDefinitions> = {
 export const healthFromEngine = <Topics extends DecodableTopicDefinitions>(
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
   transportHealth: RuntimeCoreTransportHealth<Topics> = defaultRuntimeCoreTransportHealth,
+  healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
 ): ViewServerHealth<Topics> => {
-  return {
+  return healthOverlay({
     status: engineHealth.status,
     version: engineHealth.version,
     uptimeMs: 0,
     engine: { topics: engineHealth.topics },
     transport: transportHealth(engineHealth),
-  };
+  });
 };
 
 export type RuntimeCoreTransportHealth<Topics extends DecodableTopicDefinitions> = (
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
 ) => TransportHealth;
+
+export type RuntimeCoreHealthOverlay<Topics extends DecodableTopicDefinitions> = (
+  health: ViewServerHealth<Topics>,
+) => ViewServerHealth<Topics>;
+
+export const defaultRuntimeCoreHealthOverlay = <Topics extends DecodableTopicDefinitions>(
+  health: ViewServerHealth<Topics>,
+): ViewServerHealth<Topics> => health;
 
 export const defaultRuntimeCoreTransportHealth = <Topics extends DecodableTopicDefinitions>(
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
@@ -61,8 +70,9 @@ export const readHealth = Effect.fn("ViewServerRuntimeCore.health.read")(functio
   engine: EngineHealthReader<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
   transportHealth: RuntimeCoreTransportHealth<Topics> = defaultRuntimeCoreTransportHealth,
+  healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
 ) {
-  const value = healthFromEngine(yield* engine.health(), transportHealth);
+  const value = healthFromEngine(yield* engine.health(), transportHealth, healthOverlay);
   yield* Effect.sync(() => {
     health.update((current) => nextHealthValue(current, value));
   });
@@ -75,8 +85,9 @@ export const refreshHealth = Effect.fn("ViewServerRuntimeCore.health.refresh")(f
   engine: ColumnLiveViewEngine<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
   transportHealth: RuntimeCoreTransportHealth<Topics>,
+  healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
 ) {
-  yield* readHealth(engine, health, transportHealth);
+  yield* readHealth(engine, health, transportHealth, healthOverlay);
 });
 
 export const makeHealthRefreshScheduler = (

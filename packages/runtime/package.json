@@ -14,9 +14,10 @@
   },
   "scripts": {
     "build": "vp run -t @view-server/runtime-core#build && vp run -t @view-server/server#build && vp pack",
-    "test": "vp run -t @view-server/runtime-core#build && vp run -t @view-server/server#build && vp test run --coverage --typecheck"
+    "test": "node ../../scripts/test-runtime.mjs"
   },
   "dependencies": {
+    "@platformatic/kafka": "catalog:",
     "@view-server/client": "workspace:*",
     "@view-server/config": "workspace:*",
     "@view-server/runtime-core": "workspace:*",
@@ -24,6 +25,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",

@@ -1,15 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ColumnLiveViewEngineHealth } from "@view-server/column-live-view-engine";
 import { makeViewServerClient } from "@view-server/client/remote";
-import { defineViewServerConfig, type TransportHealth } from "@view-server/config";
+import { defineViewServerConfig, kafka, type TransportHealth } from "@view-server/config";
 import { makeViewServerRuntimeCore } from "@view-server/runtime-core";
-import { Deferred, Effect, Exit, Fiber, Schedule, Schema, Stream } from "effect";
+import { Config, Deferred, Effect, Exit, Fiber, Schedule, Schema, Stream } from "effect";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import {
+  makeDefaultRuntimeDependencies,
   makeViewServerRuntimeWithDependencies,
   runViewServerRuntimeWithDependencies,
 } from "./internal";
 import { makeViewServerRuntime, runViewServerRuntime } from "./index";
+import { ViewServerKafkaIngressError } from "./kafka-ingress";
+import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
 import { makeViewServerRuntimeTransportHealth } from "./transport-health";
 
 const Order = Schema.Struct({
@@ -18,7 +21,7 @@ const Order = Schema.Struct({
 });
 
 const HealthJson = Schema.Struct({
-  status: Schema.Literal("ready"),
+  status: Schema.Literals(["ready", "degraded", "starting", "stopping"]),
   engine: Schema.Struct({
     topics: Schema.Struct({
       orders: Schema.Struct({
@@ -103,15 +106,29 @@ describe("@view-server/runtime", () => {
         activeClients: 1,
         activeStreams: 1,
       });
-      expect(runtime.liveClient.health.value.transport.activeStreams).toBe(1);
-      expect(connectedTransport.activeClients).toBe(1);
-      expect(connectedTransport.activeStreams).toBe(1);
+      expect({
+        liveClientActiveStreams: runtime.liveClient.health.value.transport.activeStreams,
+        connectedTransport,
+      }).toStrictEqual({
+        liveClientActiveStreams: 1,
+        connectedTransport: {
+          activeClients: 1,
+          activeStreams: 1,
+          activeSubscriptions: 1,
+          messagesPerSecond: 0,
+          bytesPerSecond: 0,
+          queuedMessages: 0,
+          queuedBytes: 0,
+          droppedClients: 0,
+          backpressureEvents: 0,
+          reconnects: 0,
+          lastError: null,
+        },
+      });
 
       yield* runtime.client.publish("orders", order("a", 10));
 
       const events = yield* Fiber.join(eventsFiber);
-      expect(runtime.url.endsWith("/runtime-rpc")).toBe(true);
-      expect(runtime.healthUrl.endsWith("/runtime-health")).toBe(true);
       expect(events[0]).toStrictEqual({
         type: "snapshot",
         topic: "orders",
@@ -132,8 +149,17 @@ describe("@view-server/runtime", () => {
       });
 
       const health = yield* fetchHealth(runtime.healthUrl);
-      expect(health.response.status).toBe(200);
-      expect(health.health.engine.topics.orders.rowCount).toBe(1);
+      expect({
+        runtimeUrlUsesConfiguredPath: runtime.url.endsWith("/runtime-rpc"),
+        healthUrlUsesConfiguredPath: runtime.healthUrl.endsWith("/runtime-health"),
+        healthResponseStatus: health.response.status,
+        healthRowCount: health.health.engine.topics.orders.rowCount,
+      }).toStrictEqual({
+        runtimeUrlUsesConfiguredPath: true,
+        healthUrlUsesConfiguredPath: true,
+        healthResponseStatus: 200,
+        healthRowCount: 1,
+      });
 
       yield* subscription.close();
       yield* remoteClient.close;
@@ -141,8 +167,19 @@ describe("@view-server/runtime", () => {
         activeClients: 0,
         activeStreams: 0,
       });
-      expect(disconnectedTransport.activeClients).toBe(0);
-      expect(disconnectedTransport.activeStreams).toBe(0);
+      expect(disconnectedTransport).toStrictEqual({
+        activeClients: 0,
+        activeStreams: 0,
+        activeSubscriptions: 0,
+        messagesPerSecond: 0,
+        bytesPerSecond: 0,
+        queuedMessages: 0,
+        queuedBytes: 0,
+        droppedClients: 0,
+        backpressureEvents: 0,
+        reconnects: 0,
+        lastError: null,
+      });
       yield* runtime.close;
     }),
   );
@@ -150,17 +187,28 @@ describe("@view-server/runtime", () => {
   it.live("supports default paths and queue capacity options", () =>
     Effect.gen(function* () {
       const defaultRuntime = yield* makeViewServerRuntime(viewServer);
-      expect(defaultRuntime.url.endsWith("/rpc")).toBe(true);
-      expect(defaultRuntime.healthUrl.endsWith("/health")).toBe(true);
-      expect("subscribeRuntime" in defaultRuntime.liveClient).toBe(false);
+      expect({
+        runtimeUrlUsesDefaultPath: defaultRuntime.url.endsWith("/rpc"),
+        healthUrlUsesDefaultPath: defaultRuntime.healthUrl.endsWith("/health"),
+        exposesInternalRuntimeSubscription: "subscribeRuntime" in defaultRuntime.liveClient,
+      }).toStrictEqual({
+        runtimeUrlUsesDefaultPath: true,
+        healthUrlUsesDefaultPath: true,
+        exposesInternalRuntimeSubscription: false,
+      });
       yield* defaultRuntime.close;
 
       const configuredRuntime = yield* makeViewServerRuntime(viewServer, {
         websocketPort: 0,
         subscriptionQueueCapacity: 1,
       });
-      expect(configuredRuntime.url.endsWith("/rpc")).toBe(true);
-      expect(configuredRuntime.healthUrl.endsWith("/health")).toBe(true);
+      expect({
+        runtimeUrlUsesDefaultPath: configuredRuntime.url.endsWith("/rpc"),
+        healthUrlUsesDefaultPath: configuredRuntime.healthUrl.endsWith("/health"),
+      }).toStrictEqual({
+        runtimeUrlUsesDefaultPath: true,
+        healthUrlUsesDefaultPath: true,
+      });
       yield* configuredRuntime.close;
     }),
   );
@@ -236,6 +284,7 @@ describe("@view-server/runtime", () => {
       let serverInput: Parameters<RuntimeDependencies["makeServer"]>[1] | undefined;
       let serverOptions: Parameters<RuntimeDependencies["makeServer"]>[2] | undefined;
       const dependencies: RuntimeDependencies = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
         makeRuntimeCore: (config, options) => {
           runtimeCoreOptions = options;
           return makeViewServerRuntimeCore(config, options);
@@ -262,22 +311,165 @@ describe("@view-server/runtime", () => {
         subscriptionQueueCapacity: 7,
       });
 
-      expect(runtimeCoreOptions?.subscriptionQueueCapacity).toBe(7);
-      expect(runtimeCoreOptions?.groupedIncrementalAdmissionLimits).toStrictEqual({
-        maxGroups: 1,
-      });
-      expect(runtimeCoreOptions?.transportHealth).toBeTypeOf("function");
-      expect(serverInput?.transport?.clientOpened).toBeDefined();
-      expect(serverInput?.transport?.clientClosed).toBeDefined();
-      expect(serverInput?.transport?.streamOpened).toBeDefined();
-      expect(serverInput?.transport?.streamClosed).toBeDefined();
-      expect(serverOptions).toStrictEqual({
-        host: "0.0.0.0",
-        port: 1234,
-        path: "/custom-rpc",
-        healthPath: "/custom-health",
+      expect({
+        runtimeCoreOptions: {
+          subscriptionQueueCapacity: runtimeCoreOptions?.subscriptionQueueCapacity,
+          groupedIncrementalAdmissionLimits: runtimeCoreOptions?.groupedIncrementalAdmissionLimits,
+          transportHealthType: typeof runtimeCoreOptions?.transportHealth,
+        },
+        serverTransportHooks: {
+          clientOpenedType: typeof serverInput?.transport?.clientOpened,
+          clientClosedType: typeof serverInput?.transport?.clientClosed,
+          streamOpenedType: typeof serverInput?.transport?.streamOpened,
+          streamClosedType: typeof serverInput?.transport?.streamClosed,
+        },
+        serverOptions,
+      }).toStrictEqual({
+        runtimeCoreOptions: {
+          subscriptionQueueCapacity: 7,
+          groupedIncrementalAdmissionLimits: {
+            maxGroups: 1,
+          },
+          transportHealthType: "function",
+        },
+        serverTransportHooks: {
+          clientOpenedType: "object",
+          clientClosedType: "object",
+          streamOpenedType: "object",
+          streamClosedType: "object",
+        },
+        serverOptions: {
+          host: "0.0.0.0",
+          port: 1234,
+          path: "/custom-rpc",
+          healthPath: "/custom-health",
+        },
       });
       yield* runtime.close;
+    }),
+  );
+
+  it.live("resolves Kafka runtime options and starts configured ingress", () =>
+    Effect.gen(function* () {
+      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof viewServer.topics>;
+      let kafkaOptions: ResolvedViewServerKafkaRuntimeOptions<typeof viewServer.topics> | undefined;
+      const regions = {
+        local: Config.succeed("localhost:9092"),
+      };
+      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const dependencies: RuntimeDependencies = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            close: Effect.void,
+          }),
+        makeKafkaIngress: (_config, _client, options) => {
+          kafkaOptions = options;
+          return Effect.succeed({
+            close: Effect.void,
+          });
+        },
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        kafka: {
+          regions,
+          topics: {
+            "orders-source": localKafkaTopic({
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              viewServerTopic: "orders",
+              mapping: ({ key, value }) => ({
+                id: key,
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+
+      expect({
+        consumerGroupId: kafkaOptions?.consumerGroupId,
+        regions: kafkaOptions?.regions,
+        topics: Object.fromEntries(
+          Object.entries(kafkaOptions?.topics ?? {}).map(([sourceTopic, topic]) => [
+            sourceTopic,
+            {
+              regions: topic.regions,
+              viewServerTopic: topic.viewServerTopic,
+            },
+          ]),
+        ),
+      }).toStrictEqual({
+        consumerGroupId: "view-server",
+        regions: {
+          local: "localhost:9092",
+        },
+        topics: {
+          "orders-source": {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("returns unavailable health when Kafka ingress is degraded", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        makeKafkaIngress: (_config, _client, _options, health) =>
+          health.regionDisconnected("local", "lost").pipe(
+            Effect.as({
+              close: Effect.void,
+            }),
+          ),
+      };
+
+      yield* Effect.acquireUseRelease(
+        makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+          kafka: {
+            regions,
+            topics: {
+              "orders-source": localKafkaTopic({
+                regions: ["local"],
+                value: kafka.json(Order),
+                key: kafka.stringKey(),
+                viewServerTopic: "orders",
+                mapping: ({ key, value }) => ({
+                  id: key,
+                  price: value.price,
+                }),
+              }),
+            },
+          },
+        }),
+        (runtime) =>
+          Effect.gen(function* () {
+            const health = yield* fetchHealth(runtime.healthUrl);
+
+            expect({
+              responseStatus: health.response.status,
+              runtimeStatus: health.health.status,
+              ordersRowCount: health.health.engine.topics.orders.rowCount,
+            }).toStrictEqual({
+              responseStatus: 503,
+              runtimeStatus: "degraded",
+              ordersRowCount: 0,
+            });
+          }),
+        (runtime) => runtime.close.pipe(Effect.ignore),
+      );
     }),
   );
 
@@ -285,6 +477,7 @@ describe("@view-server/runtime", () => {
     Effect.gen(function* () {
       let serverCloseCount = 0;
       const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
         makeRuntimeCore: makeViewServerRuntimeCore,
         makeServer: () =>
           Effect.succeed({
@@ -300,8 +493,13 @@ describe("@view-server/runtime", () => {
       yield* runtime.liveClient.close;
       const health = yield* runtime.client.health();
 
-      expect(serverCloseCount).toBe(1);
-      expect(health.status).toBe("stopping");
+      expect({
+        serverCloseCount,
+        runtimeStatus: health.status,
+      }).toStrictEqual({
+        serverCloseCount: 1,
+        runtimeStatus: "stopping",
+      });
     }),
   );
 
@@ -310,6 +508,7 @@ describe("@view-server/runtime", () => {
       let serverCloseCount = 0;
       const serverStarted = yield* Deferred.make<void>();
       const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
         makeRuntimeCore: makeViewServerRuntimeCore,
         makeServer: () =>
           Deferred.succeed(serverStarted, void 0).pipe(
@@ -328,10 +527,10 @@ describe("@view-server/runtime", () => {
       );
       yield* Deferred.await(serverStarted);
       yield* Effect.sleep("10 millis");
-      expect(serverCloseCount).toBe(0);
+      expect({ serverCloseCount }).toStrictEqual({ serverCloseCount: 0 });
 
       yield* Fiber.interrupt(fiber);
-      expect(serverCloseCount).toBe(1);
+      expect({ serverCloseCount }).toStrictEqual({ serverCloseCount: 1 });
     }),
   );
 
@@ -362,6 +561,7 @@ describe("@view-server/runtime", () => {
     Effect.gen(function* () {
       let closed = false;
       const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
         makeRuntimeCore: (config, options) =>
           makeViewServerRuntimeCore(config, options).pipe(
             Effect.map((runtimeCore) => ({
@@ -382,8 +582,85 @@ describe("@view-server/runtime", () => {
         makeViewServerRuntimeWithDependencies(dependencies, viewServer),
       );
 
-      expect(Exit.isFailure(startupExit)).toBe(true);
-      expect(closed).toBe(true);
+      expect({
+        startupFailed: Exit.isFailure(startupExit),
+        runtimeCoreClosed: closed,
+      }).toStrictEqual({
+        startupFailed: true,
+        runtimeCoreClosed: true,
+      });
+    }),
+  );
+
+  it.live("releases server and runtime core when Kafka ingress startup fails", () =>
+    Effect.gen(function* () {
+      let runtimeCoreClosed = false;
+      let serverClosed = false;
+      const regions = {
+        local: "localhost:9092",
+      };
+      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        makeRuntimeCore: (config, options) =>
+          makeViewServerRuntimeCore(config, options).pipe(
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              close: runtimeCore.close.pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    runtimeCoreClosed = true;
+                  }),
+                ),
+              ),
+            })),
+          ),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            close: Effect.sync(() => {
+              serverClosed = true;
+            }),
+          }),
+        makeKafkaIngress: () =>
+          Effect.fail(
+            new ViewServerKafkaIngressError({
+              message: "Kafka ingress startup failed",
+              cause: "startup failed",
+            }),
+          ),
+      };
+
+      const startupExit = yield* Effect.exit(
+        makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+          kafka: {
+            regions,
+            topics: {
+              "orders-source": localKafkaTopic({
+                regions: ["local"],
+                value: kafka.json(Order),
+                key: kafka.stringKey(),
+                viewServerTopic: "orders",
+                mapping: ({ key, value }) => ({
+                  id: key,
+                  price: value.price,
+                }),
+              }),
+            },
+          },
+        }),
+      );
+
+      expect({
+        startupFailed: Exit.isFailure(startupExit),
+        serverClosed,
+        runtimeCoreClosed,
+      }).toStrictEqual({
+        startupFailed: true,
+        serverClosed: true,
+        runtimeCoreClosed: true,
+      });
     }),
   );
 });

@@ -27,7 +27,12 @@ import {
 } from "@view-server/config";
 import { Cause, Clock, Effect, Fiber, Queue, Semaphore, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
-import { readHealth, refreshHealth, type RuntimeCoreTransportHealth } from "./health";
+import {
+  readHealth,
+  refreshHealth,
+  type RuntimeCoreHealthOverlay,
+  type RuntimeCoreTransportHealth,
+} from "./health";
 import { engineErrorToRuntimeError } from "./runtime-error";
 
 const runtimeClosedError: ViewServerRuntimeError = {
@@ -41,6 +46,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
     engine: ColumnLiveViewEngine<Topics>,
     health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
     transportHealth: RuntimeCoreTransportHealth<Topics>,
+    healthOverlay?: RuntimeCoreHealthOverlay<Topics>,
   ): Effect.Effect<ViewServerRuntimeLiveClient<Topics>> =>
     Effect.sync<ViewServerRuntimeLiveClient<Topics>>(() => {
       function subscribe<
@@ -73,9 +79,11 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
             close: () =>
               subscription
                 .close()
-                .pipe(Effect.andThen(refreshHealth(engine, health, transportHealth))),
+                .pipe(
+                  Effect.andThen(refreshHealth(engine, health, transportHealth, healthOverlay)),
+                ),
           })),
-          Effect.tap(() => refreshHealth(engine, health, transportHealth)),
+          Effect.tap(() => refreshHealth(engine, health, transportHealth, healthOverlay)),
           Effect.mapError(engineErrorToRuntimeError),
         );
       }
@@ -89,9 +97,11 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
             close: () =>
               subscription
                 .close()
-                .pipe(Effect.andThen(refreshHealth(engine, health, transportHealth))),
+                .pipe(
+                  Effect.andThen(refreshHealth(engine, health, transportHealth, healthOverlay)),
+                ),
           })),
-          Effect.tap(() => refreshHealth(engine, health, transportHealth)),
+          Effect.tap(() => refreshHealth(engine, health, transportHealth, healthOverlay)),
           Effect.mapError(engineErrorToRuntimeError),
         );
       const activeHealthSubscriptions = new Set<{ close: Effect.Effect<void> }>();
@@ -117,7 +127,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
       ).pipe(Effect.ignore);
       const close = closeActiveHealthSubscriptions.pipe(
         Effect.andThen(engine.close()),
-        Effect.andThen(refreshHealth(engine, health, transportHealth)),
+        Effect.andThen(refreshHealth(engine, health, transportHealth, healthOverlay)),
       );
       const readonlyHealth = health.map((value) => value);
       const makeHealthSubscription = Effect.fn("ViewServerRuntimeCore.health.subscribe")(function* <
@@ -183,9 +193,12 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
               yield* releaseSubscription;
               return yield* Effect.fail(runtimeClosedError);
             }
-            const latestHealth = yield* readHealth(engine, health, transportHealth).pipe(
-              Effect.mapError(engineErrorToRuntimeError),
-            );
+            const latestHealth = yield* readHealth(
+              engine,
+              health,
+              transportHealth,
+              healthOverlay,
+            ).pipe(Effect.mapError(engineErrorToRuntimeError));
             yield* offerSnapshot(latestHealth);
             return {
               events: Stream.fromQueue(queue).pipe(Stream.ensuring(subscription.close)),

@@ -4,6 +4,7 @@ import { libraryPack } from "../../vite.pack";
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
+    testTimeout: 30_000,
     typecheck: {
       enabled: true,
       checker: "tsc",

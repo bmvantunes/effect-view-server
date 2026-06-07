@@ -56,7 +56,9 @@ const react = createViewServerReact(viewServer);
 const { useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
 
-const createInMemoryViewServer = (options?: ViewServerInMemoryOptions) =>
+type TestInMemoryOptions = ViewServerInMemoryOptions<typeof viewServer.topics>;
+
+const createInMemoryViewServer = (options?: TestInMemoryOptions) =>
   createInMemoryViewServerReact(react, options);
 
 type OrderRow = typeof Order.Type;

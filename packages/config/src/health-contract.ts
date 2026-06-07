@@ -60,6 +60,7 @@ export type KafkaTopicRegionHealth = {
   readonly bytesPerSecond: number;
   readonly decodedMessagesPerSecond: number;
   readonly decodeFailuresPerSecond: number;
+  readonly processingFailuresPerSecond: number;
   readonly lastMessageAt: number | null;
   readonly lastCommitAt: number | null;
   readonly consumerLagMessages: bigint | null;

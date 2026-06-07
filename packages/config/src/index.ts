@@ -100,16 +100,29 @@ export type {
   StatusEvent,
   StatusEventCode,
 } from "./live-protocol";
-export { defineKafkaTopic, kafka } from "./kafka-contract";
+export {
+  decodeKafkaCodec,
+  decodeKafkaTopicMessage,
+  defineKafkaTopic,
+  kafka,
+} from "./kafka-contract";
 export type {
+  KafkaBytesCodec,
+  KafkaDecodedTopicMessage,
   ExactRuntimeOptions,
   KafkaCodec,
   KafkaCodecDecodeInput,
   KafkaCodecError,
   KafkaCodecType,
+  KafkaCustomCodec,
   KafkaDecodeError,
+  KafkaJsonCodec,
   KafkaMappingInput,
   KafkaMessageMetadata,
+  KafkaProtobufCodec,
+  KafkaSourceCodec,
+  KafkaStringCodec,
+  KafkaRuntimeTopicDefinition,
   KafkaProtobufType,
   KafkaTopicDefinition,
   KafkaTopicHelper,
@@ -122,7 +135,15 @@ export type {
   ValidateRuntimeOptions,
 } from "./kafka-contract";
 
-export type ViewServerConfig<Topics extends object> = {
+type ViewServerConfigTopicShape = Record<
+  string,
+  {
+    readonly schema: RowSchema;
+    readonly key: string;
+  }
+>;
+
+export type ViewServerConfig<Topics extends ViewServerConfigTopicShape> = {
   readonly topics: Topics & ValidateTopicDefinitions<Topics>;
   readonly defineRuntimeOptions: <const Options extends RuntimeOptionsCandidate>(
     options: ExactRuntimeOptions<Topics, Options>,
@@ -130,7 +151,7 @@ export type ViewServerConfig<Topics extends object> = {
   readonly kafkaTopic: KafkaTopicHelper<Topics>;
 };
 
-type ValidateTopicDefinitions<Topics extends object> = {
+type ValidateTopicDefinitions<Topics extends ViewServerConfigTopicShape> = {
   readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
     ? never
     : Topics[Topic] extends {
@@ -141,7 +162,7 @@ type ValidateTopicDefinitions<Topics extends object> = {
       : never;
 };
 
-export type DefineViewServerConfigInput<Topics extends object> = {
+export type DefineViewServerConfigInput<Topics extends ViewServerConfigTopicShape> = {
   readonly topics: Topics & ValidateTopicDefinitions<Topics>;
 };
 
@@ -170,6 +191,6 @@ export const defineViewServerConfig = <
   return {
     topics: input.topics,
     defineRuntimeOptions: (options) => options,
-    kafkaTopic: defineKafkaTopic<Topics>(),
+    kafkaTopic: defineKafkaTopic<Topics>(input.topics),
   };
 };

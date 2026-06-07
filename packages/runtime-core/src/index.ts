@@ -14,6 +14,7 @@ import { AtomRef } from "effect/unstable/reactivity";
 import {
   defaultRuntimeCoreTransportHealth,
   healthFromEngine,
+  type RuntimeCoreHealthOverlay,
   type RuntimeCoreTransportHealth,
 } from "./health";
 import type * as Duration from "effect/Duration";
@@ -23,6 +24,7 @@ import { makeRuntimeCoreClient } from "./runtime-client";
 export type { DecodableTopicDefinitions } from "@view-server/column-live-view-engine";
 export type { GroupedIncrementalAdmissionLimits } from "@view-server/column-live-view-engine";
 export type { RuntimeCoreTransportHealth } from "./health";
+export type { RuntimeCoreHealthOverlay } from "./health";
 
 export type ViewServerRuntimeCoreInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
@@ -34,6 +36,7 @@ export type ViewServerRuntimeCoreOptions = {
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
   readonly transportHealth?: RuntimeCoreTransportHealth<DecodableTopicDefinitions>;
+  readonly healthOverlay?: RuntimeCoreHealthOverlay<DecodableTopicDefinitions>;
   readonly healthRefreshCadence?: Duration.Input;
 };
 
@@ -41,6 +44,7 @@ export type ViewServerRuntimeCoreOptionsFor<Topics extends DecodableTopicDefinit
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
   readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
+  readonly healthOverlay?: RuntimeCoreHealthOverlay<Topics>;
   readonly healthRefreshCadence?: Duration.Input;
 };
 
@@ -53,6 +57,7 @@ export const makeViewServerRuntimeCore: <const Topics extends DecodableTopicDefi
     input: ViewServerRuntimeCoreOptionsFor<Topics>,
   ) {
     const transportHealth = input.transportHealth ?? defaultRuntimeCoreTransportHealth;
+    const healthOverlay = input.healthOverlay;
     const engineConfig = {
       ...(input.groupedIncrementalAdmissionLimits === undefined
         ? {}
@@ -65,15 +70,21 @@ export const makeViewServerRuntimeCore: <const Topics extends DecodableTopicDefi
     const engine = yield* createColumnLiveViewEngine<Topics>(engineConfig);
     const engineHealth = yield* engine.health();
     const health: AtomRef.AtomRef<ViewServerHealth<Topics>> = AtomRef.make(
-      healthFromEngine(engineHealth, transportHealth),
+      healthFromEngine(engineHealth, transportHealth, healthOverlay),
     );
     const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
       engine,
       health,
       transportHealth,
+      healthOverlay,
       input.healthRefreshCadence,
     );
-    const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(engine, health, transportHealth);
+    const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(
+      engine,
+      health,
+      transportHealth,
+      healthOverlay,
+    );
     const close = Effect.uninterruptible(
       runtimeClient.close.pipe(Effect.andThen(liveClient.close)),
     );

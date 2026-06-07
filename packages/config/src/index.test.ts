@@ -1229,6 +1229,55 @@ const assertCompileTimeContracts = () => {
       updatedAt: value.updatedAt,
     }),
   });
+  const validLocalOrdersTopic = localKafkaTopic({
+    regions: ["usa"],
+    value: kafka.protobuf(ordersValueSchema),
+    viewServerTopic: "orders",
+    mapping: ({ key, value, region }) => ({
+      id: key,
+      customerId: value.customerId,
+      status: value.status,
+      price: value.price,
+      region,
+      updatedAt: value.updatedAt,
+    }),
+  });
+  const validKeyedLocalOrdersTopic = localKafkaTopic({
+    regions: ["usa"],
+    value: kafka.protobuf(ordersValueSchema),
+    key: kafka.protobuf(ordersKeySchema),
+    viewServerTopic: "orders",
+    mapping: ({ key, value, region }) => ({
+      id: key.orderId,
+      customerId: value.customerId,
+      status: value.status,
+      price: value.price,
+      region,
+      updatedAt: value.updatedAt,
+    }),
+  });
+  const spreadValueMismatchTopic = {
+    ...validLocalOrdersTopic,
+    value: kafka.string(),
+  };
+  const spreadKeyMismatchTopic = {
+    ...validKeyedLocalOrdersTopic,
+    key: kafka.stringKey(),
+  };
+  const spreadMappingMismatchTopic = {
+    ...validLocalOrdersTopic,
+    mapping: (): typeof Trade.Type => ({
+      id: "trade-1",
+      symbol: "AAPL",
+      quantity: 1,
+      price: 42,
+      region: "usa",
+    }),
+  };
+  const spreadTargetMismatchTopic = {
+    ...validLocalOrdersTopic,
+    viewServerTopic: "trades",
+  };
   type UnsafeJsonParseResult = ReturnType<typeof JSON.parse>;
   const unsafeValueCodec: KafkaCodec<UnsafeJsonParseResult> = kafka.bytes();
   const unsafeErrorCodec: KafkaCodec<string, UnsafeJsonParseResult> = kafka.string();
@@ -1595,6 +1644,54 @@ const assertCompileTimeContracts = () => {
             updatedAt: 1,
           }),
         },
+      },
+    },
+  });
+
+  viewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    tcpPublishPort: 8081,
+    kafka: {
+      regions: localKafkaRegions,
+      topics: {
+        // @ts-expect-error spread-mutated Kafka topic values must still match mapping input types
+        orders: spreadValueMismatchTopic,
+      },
+    },
+  });
+
+  viewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    tcpPublishPort: 8081,
+    kafka: {
+      regions: localKafkaRegions,
+      topics: {
+        // @ts-expect-error spread-mutated Kafka topic keys must still match mapping input types
+        orders: spreadKeyMismatchTopic,
+      },
+    },
+  });
+
+  viewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    tcpPublishPort: 8081,
+    kafka: {
+      regions: localKafkaRegions,
+      topics: {
+        // @ts-expect-error spread-mutated Kafka mappings must still return the target topic row
+        orders: spreadMappingMismatchTopic,
+      },
+    },
+  });
+
+  viewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    tcpPublishPort: 8081,
+    kafka: {
+      regions: localKafkaRegions,
+      topics: {
+        // @ts-expect-error spread-mutated Kafka target topics must still match the mapping row
+        orders: spreadTargetMismatchTopic,
       },
     },
   });

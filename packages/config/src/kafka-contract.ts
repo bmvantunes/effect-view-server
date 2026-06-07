@@ -313,13 +313,54 @@ type ValidateKafkaTopic<
   Regions extends RuntimeRegions,
   Candidate,
 > = Candidate extends KafkaTopicDefinitionMarker & {
-  readonly regions: NonEmptyReadonlyArray<Extract<keyof Regions, string>>;
-  readonly value: KafkaCodec<unknown, unknown>;
-  readonly viewServerTopic: Extract<keyof Topics, string>;
-  readonly mapping: (input: never) => TopicRow<Topics, Extract<keyof Topics, string>>;
+  readonly regions: infer TopicRegions extends NonEmptyReadonlyArray<
+    Extract<keyof Regions, string>
+  >;
+  readonly value: infer ValueCodec;
+  readonly key: infer KeyCodec;
+  readonly viewServerTopic: infer ViewTopic extends Extract<keyof Topics, string>;
 }
-  ? Candidate
-  : never;
+  ? Candidate extends {
+      readonly mapping: infer Mapping extends (
+        input: KafkaMappingInput<Topics, ViewTopic, TopicRegions[number], ValueCodec, KeyCodec>,
+      ) => TopicRow<Topics, ViewTopic>;
+    }
+    ? Candidate extends KafkaTopicWithKey<
+        Topics,
+        Regions,
+        ViewTopic,
+        ValueCodec,
+        KeyCodec,
+        TopicRegions,
+        Mapping
+      >
+      ? Candidate
+      : never
+    : never
+  : Candidate extends KafkaTopicDefinitionMarker & {
+        readonly regions: infer TopicRegions extends NonEmptyReadonlyArray<
+          Extract<keyof Regions, string>
+        >;
+        readonly value: infer ValueCodec;
+        readonly viewServerTopic: infer ViewTopic extends Extract<keyof Topics, string>;
+      }
+    ? Candidate extends {
+        readonly mapping: infer Mapping extends (
+          input: KafkaMappingInput<Topics, ViewTopic, TopicRegions[number], ValueCodec, undefined>,
+        ) => TopicRow<Topics, ViewTopic>;
+      }
+      ? Candidate extends KafkaTopicWithoutKey<
+          Topics,
+          Regions,
+          ViewTopic,
+          ValueCodec,
+          TopicRegions,
+          Mapping
+        >
+        ? Candidate
+        : never
+      : never
+    : never;
 
 type ValidateKafkaTopics<
   Topics extends object,

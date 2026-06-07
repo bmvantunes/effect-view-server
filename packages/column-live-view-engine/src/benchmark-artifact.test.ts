@@ -93,6 +93,7 @@ describe("benchmark artifact helpers", () => {
         },
       },
     };
+    expect(isBenchmarkEngineHealth(minimalTopicHealth)).toBe(true);
     expect(activeFallbackGroupedViewCountFromEngineHealth(minimalTopicHealth)).toBe(0);
     expect(activeIncrementalGroupedViewCountFromEngineHealth(minimalTopicHealth)).toBe(0);
 
@@ -150,6 +151,61 @@ describe("benchmark artifact helpers", () => {
         },
       }),
     ).toBe(false);
+    expect(
+      isBenchmarkEngineHealth({
+        activeSubscriptions: 2,
+        backpressureEvents: 5,
+        maxQueueDepth: 999,
+        queuedEvents: 3,
+        topics: {
+          orders: null,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isBenchmarkEngineHealth({
+        activeSubscriptions: 2,
+        backpressureEvents: 5,
+        maxQueueDepth: 999,
+        queuedEvents: 3,
+        topics: {
+          orders: {
+            activeFallbackGroupedViews: 0,
+            activeIncrementalGroupedViews: 0,
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isBenchmarkEngineHealth({
+        activeSubscriptions: 2,
+        backpressureEvents: 5,
+        maxQueueDepth: 999,
+        queuedEvents: 3,
+        topics: {
+          orders: {
+            activeFallbackGroupedViews: "0",
+            activeIncrementalGroupedViews: 0,
+            activeViews: 7,
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isBenchmarkEngineHealth({
+        activeSubscriptions: 2,
+        backpressureEvents: 5,
+        maxQueueDepth: 999,
+        queuedEvents: 3,
+        topics: {
+          orders: {
+            activeFallbackGroupedViews: 0,
+            activeIncrementalGroupedViews: Number.NaN,
+            activeViews: 7,
+          },
+        },
+      }),
+    ).toBe(false);
     expect(cleanupLeakCountFromEngineHealth({})).toBe(0);
     expect(backpressureCountFromEngineHealth({})).toBe(0);
     expect(queuedEventCountFromEngineHealth({})).toBe(0);
@@ -169,10 +225,14 @@ describe("benchmark artifact helpers", () => {
       benchmarkScope: "engine-raw-snapshot",
       cleanupLeakCount: 0,
       groupedWriteAdmission: {
+        activeFallbackGroupedViewsAfterSetup: 0,
         activeFallbackGroupedViewsBeforeCleanup: 0,
+        activeIncrementalGroupedViewsAfterSetup: 2,
         activeIncrementalGroupedViewsBeforeCleanup: 2,
+        activeViewsAfterSetup: 2,
         activeViewsBeforeCleanup: 2,
         configuredMode: "incremental",
+        expectedAdmission: "incremental",
         incrementalAdmissionLimits: {
           maxGroups: 10,
           maxMembers: 20,
@@ -180,6 +240,8 @@ describe("benchmark artifact helpers", () => {
           maxRetainedValueEntries: 40,
         },
         priceThreshold: 900,
+        seedMutationCount: 100,
+        timedMutationCount: 10,
         writeBatchSize: 32,
       },
       health: {
@@ -214,10 +276,14 @@ describe("benchmark artifact helpers", () => {
           benchmarkScope: "engine-raw-snapshot",
           cleanupLeakCount: 0,
           groupedWriteAdmission: {
+            activeFallbackGroupedViewsAfterSetup: 0,
             activeFallbackGroupedViewsBeforeCleanup: 0,
+            activeIncrementalGroupedViewsAfterSetup: 2,
             activeIncrementalGroupedViewsBeforeCleanup: 2,
+            activeViewsAfterSetup: 2,
             activeViewsBeforeCleanup: 2,
             configuredMode: "incremental",
+            expectedAdmission: "incremental",
             incrementalAdmissionLimits: {
               maxGroups: 10,
               maxMembers: 20,
@@ -225,6 +291,8 @@ describe("benchmark artifact helpers", () => {
               maxRetainedValueEntries: 40,
             },
             priceThreshold: 900,
+            seedMutationCount: 100,
+            timedMutationCount: 10,
             writeBatchSize: 32,
           },
           health: {

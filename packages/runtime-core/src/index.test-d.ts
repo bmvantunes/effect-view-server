@@ -20,6 +20,11 @@ const viewServer = defineViewServerConfig({
 });
 
 const runtimeCore = createViewServerRuntimeCore(viewServer);
+const runtimeCoreWithGroupedAdmissionLimits = createViewServerRuntimeCore(viewServer, {
+  groupedIncrementalAdmissionLimits: {
+    maxGroups: 1,
+  },
+});
 
 describe("runtime-core type contracts", () => {
   it("preserves runtime and live client topic types", () => {
@@ -62,5 +67,8 @@ describe("runtime-core type contracts", () => {
     >();
     expectTypeOf(invalidPatch).not.toBeAny();
     expectTypeOf(runtimeCoreWithTransportHealth.client).toEqualTypeOf<typeof runtimeCore.client>();
+    expectTypeOf(runtimeCoreWithGroupedAdmissionLimits.client).toEqualTypeOf<
+      typeof runtimeCore.client
+    >();
   });
 });

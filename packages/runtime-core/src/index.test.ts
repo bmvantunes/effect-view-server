@@ -157,6 +157,32 @@ describe("@view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("forwards grouped admission limits to the engine", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {
+        groupedIncrementalAdmissionLimits: {
+          maxGroups: 1,
+        },
+      });
+      yield* runtimeCore.client.publishMany("orders", [order("a", 10), order("b", 20)]);
+      const subscription = yield* runtimeCore.liveClient.subscribe("orders", {
+        groupBy: ["price"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+        orderBy: [{ field: "price", direction: "asc" }],
+        limit: 10,
+      });
+
+      const health = yield* runtimeCore.client.health();
+      expect(health.engine.topics.orders.activeFallbackGroupedViews).toBe(1);
+      expect(health.engine.topics.orders.activeIncrementalGroupedViews).toBe(0);
+
+      yield* subscription.close();
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("subscribes through the runtime live-client entrypoint", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

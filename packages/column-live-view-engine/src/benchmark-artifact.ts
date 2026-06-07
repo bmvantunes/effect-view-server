@@ -44,10 +44,14 @@ export type BenchmarkTopicHealth = {
 };
 
 export type BenchmarkGroupedWriteAdmission = {
+  readonly activeFallbackGroupedViewsAfterSetup: number;
   readonly activeFallbackGroupedViewsBeforeCleanup: number;
+  readonly activeIncrementalGroupedViewsAfterSetup: number;
   readonly activeIncrementalGroupedViewsBeforeCleanup: number;
+  readonly activeViewsAfterSetup: number;
   readonly activeViewsBeforeCleanup: number;
   readonly configuredMode: "fallback" | "incremental";
+  readonly expectedAdmission: "fallback" | "incremental" | null;
   readonly incrementalAdmissionLimits: {
     readonly maxGroups: number;
     readonly maxMembers: number;
@@ -55,6 +59,8 @@ export type BenchmarkGroupedWriteAdmission = {
     readonly maxRetainedValueEntries: number;
   };
   readonly priceThreshold: number | null;
+  readonly seedMutationCount: number;
+  readonly timedMutationCount: number;
   readonly writeBatchSize: number;
 };
 
@@ -190,17 +196,33 @@ export const isBenchmarkEngineHealth = (value: unknown): value is BenchmarkEngin
   }
 
   for (const topic of Object.values(topics)) {
-    if (
-      typeof topic !== "object" ||
-      topic === null ||
-      !("activeViews" in topic) ||
-      typeof topic.activeViews !== "number"
-    ) {
+    if (!isBenchmarkTopicHealth(topic)) {
       return false;
     }
   }
 
   return true;
+};
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+const isOptionalFiniteNumber = (value: unknown): value is number | undefined =>
+  value === undefined || isFiniteNumber(value);
+
+const isBenchmarkTopicHealth = (value: unknown): value is BenchmarkTopicHealth => {
+  if (typeof value !== "object" || value === null || !("activeViews" in value)) {
+    return false;
+  }
+  const activeFallbackGroupedViews =
+    "activeFallbackGroupedViews" in value ? value.activeFallbackGroupedViews : undefined;
+  const activeIncrementalGroupedViews =
+    "activeIncrementalGroupedViews" in value ? value.activeIncrementalGroupedViews : undefined;
+  return (
+    isFiniteNumber(value.activeViews) &&
+    isOptionalFiniteNumber(activeFallbackGroupedViews) &&
+    isOptionalFiniteNumber(activeIncrementalGroupedViews)
+  );
 };
 
 export const activeViewCountFromEngineHealth = (health: BenchmarkEngineHealth): number => {

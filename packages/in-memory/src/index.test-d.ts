@@ -20,6 +20,11 @@ const viewServer = defineViewServerConfig({
 });
 
 const inMemory = createInMemoryViewServer(viewServer);
+const inMemoryWithGroupedAdmissionLimits = createInMemoryViewServer(viewServer, {
+  groupedIncrementalAdmissionLimits: {
+    maxGroups: 1,
+  },
+});
 const invalidTransportHealthOption = createInMemoryViewServer(viewServer, {
   // @ts-expect-error in-memory does not expose Runtime Core transport adapter hooks.
   transportHealth: () => ({
@@ -59,6 +64,7 @@ describe("in-memory type contracts", () => {
       }>
     >();
     expectTypeOf(inMemory.liveClient).not.toHaveProperty("subscribeRuntime");
+    expectTypeOf(inMemoryWithGroupedAdmissionLimits.client).toEqualTypeOf<typeof inMemory.client>();
     expectTypeOf(invalidPatch).not.toBeAny();
     expectTypeOf(invalidTransportHealthOption).not.toBeAny();
   });

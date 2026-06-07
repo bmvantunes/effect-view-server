@@ -10032,6 +10032,61 @@ describe("ColumnLiveViewEngine validation and health", () => {
     }),
   );
 
+  it.effect("demotes active grouped execution when writes exceed admission limits", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngine({
+        groupedIncrementalAdmissionLimits: {
+          maxGroups: 10,
+          maxMembers: 2,
+          maxMembersPerGroup: 10,
+          maxRetainedValueEntries: 1_000,
+        },
+        topics: viewServer.topics,
+      });
+      yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "closed", 20, 2)]);
+      const query = {
+        groupBy: ["status"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+        limit: 10,
+      } satisfies GroupedQuery<OrderRow>;
+      const subscription = yield* engine.subscribe("orders", query);
+      const read = yield* makeEventReader(subscription);
+      const initial = firstEvent(yield* read(1));
+      expectSnapshotEvent(initial);
+
+      const admitted = yield* engine.health();
+      expect(admitted.topics["orders"].activeFallbackGroupedViews).toBe(0);
+      expect(admitted.topics["orders"].activeIncrementalGroupedViews).toBe(1);
+
+      yield* engine.publish("orders", order("3", "open", 5, 3));
+      const delta = firstEvent(yield* read(1));
+      expectDeltaEvent(delta);
+      const snapshot = yield* engine.snapshot("orders", query);
+      expect(normalizeDecimalFields(snapshot.rows)).toStrictEqual([
+        {
+          rowCount: 1n,
+          status: "closed",
+          totalPrice: "20",
+        },
+        {
+          rowCount: 2n,
+          status: "open",
+          totalPrice: "15",
+        },
+      ]);
+
+      const demoted = yield* engine.health();
+      expect(demoted.topics["orders"].activeFallbackGroupedViews).toBe(1);
+      expect(demoted.topics["orders"].activeIncrementalGroupedViews).toBe(0);
+
+      yield* subscription.close();
+    }),
+  );
+
   it.effect("subscribes through the runtime-validated entrypoint", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();

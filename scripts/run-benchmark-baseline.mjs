@@ -53,6 +53,7 @@ const groupedAdmissionReleaseEnv = {
 };
 
 const forcedGroupedFallbackAdmissionEnv = {
+  VIEW_SERVER_ENGINE_BENCH_EXPECTED_GROUPED_ADMISSION: "fallback",
   VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_GROUPS: "1",
   VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_MEMBERS: "1",
   VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_MEMBERS_PER_GROUP: "1",
@@ -112,6 +113,7 @@ const groupedWriteTask = (mode, rowCount, env = {}) =>
     `grouped write ${mode} ${rowCount} rows ${env.VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE ?? "1"} mutations${env.VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX === undefined ? "" : ` ${env.VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX}`}`,
     "column-live-view-engine#bench:grouped-write",
     {
+      VIEW_SERVER_ENGINE_BENCH_EXPECTED_GROUPED_ADMISSION: mode,
       VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_MODE: mode,
       VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
       ...env,

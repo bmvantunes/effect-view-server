@@ -25,6 +25,11 @@ const viewServer = defineViewServerConfig({
 });
 
 const runtimeEffect = makeViewServerRuntime(viewServer);
+const runtimeWithGroupedAdmissionLimits = makeViewServerRuntime(viewServer, {
+  groupedIncrementalAdmissionLimits: {
+    maxGroups: 1,
+  },
+});
 const runEffect = runViewServerRuntime(viewServer);
 declare const runtime: Effect.Success<typeof runtimeEffect>;
 
@@ -42,6 +47,9 @@ describe("runtime type contracts", () => {
     >();
     expectTypeOf<Effect.Success<typeof runEffect>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Error<typeof runEffect>>().toEqualTypeOf<HttpServerError.ServeError>();
+    expectTypeOf<Effect.Success<typeof runtimeWithGroupedAdmissionLimits>>().toMatchTypeOf<
+      ViewServerRuntime<typeof viewServer.topics>
+    >();
 
     const publish = runtime.client.publish("orders", {
       id: "order-1",

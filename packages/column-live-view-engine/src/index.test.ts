@@ -10029,6 +10029,40 @@ describe("ColumnLiveViewEngine validation and health", () => {
       expect(fallback.topics["orders"].activeFallbackGroupedViews).toBe(1);
       expect(fallback.topics["orders"].activeIncrementalGroupedViews).toBe(0);
       yield* fallbackSubscription.close();
+
+      const retainedValueFallbackEngine = yield* createColumnLiveViewEngine({
+        groupedIncrementalAdmissionLimits: {
+          maxGroups: 10,
+          maxMembers: 10,
+          maxMembersPerGroup: 10,
+          maxRetainedValueEntries: 1,
+        },
+        topics: viewServer.topics,
+      });
+      yield* retainedValueFallbackEngine.publishMany("orders", [
+        order("1", "open", 10, 1),
+        order("2", "closed", 20, 2),
+      ]);
+      const retainedValueFallbackSubscription = yield* retainedValueFallbackEngine.subscribe(
+        "orders",
+        {
+          groupBy: ["status"],
+          aggregates: {
+            minimumPrice: { aggFunc: "min", field: "price" },
+            rowCount: { aggFunc: "count" },
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+          limit: 10,
+        } satisfies GroupedQuery<OrderRow>,
+      );
+
+      const retainedValueFallback = yield* retainedValueFallbackEngine.health();
+
+      expect(retainedValueFallback.topics["orders"].activeSubscriptions).toBe(1);
+      expect(retainedValueFallback.topics["orders"].activeViews).toBe(1);
+      expect(retainedValueFallback.topics["orders"].activeFallbackGroupedViews).toBe(1);
+      expect(retainedValueFallback.topics["orders"].activeIncrementalGroupedViews).toBe(0);
+      yield* retainedValueFallbackSubscription.close();
     }),
   );
 

@@ -470,15 +470,12 @@ export type KafkaTopicDefinition<
 export type KafkaRuntimeTopicDefinition<
   Topics extends KafkaTopicSchemaRegistry,
   Regions extends RuntimeRegions,
+  TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>> =
+    NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
 > = KafkaTopicDefinitionMarker &
   KafkaTopicSchemaMarker<Topics, Extract<keyof Topics, string>> &
-  KafkaTopicDecoder<
-    Topics,
-    Extract<keyof Topics, string>,
-    Extract<keyof Regions, string>,
-    unknown
-  > & {
-    readonly regions: NonEmptyReadonlyArray<Extract<keyof Regions, string>>;
+  KafkaTopicDecoder<Topics, Extract<keyof Topics, string>, TopicRegions[number], unknown> & {
+    readonly regions: TopicRegions;
     readonly viewServerTopic: Extract<keyof Topics, string>;
   };
 
@@ -497,7 +494,7 @@ export const decodeKafkaTopicMessage = Effect.fn("ViewServerConfig.kafka.topic.d
     Regions extends RuntimeRegions,
     TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
   >(
-    topic: KafkaRuntimeTopicDefinition<Topics, Regions>,
+    topic: KafkaRuntimeTopicDefinition<Topics, Regions, TopicRegions>,
     input: {
       readonly keyBytes: Uint8Array;
       readonly valueBytes: Uint8Array;

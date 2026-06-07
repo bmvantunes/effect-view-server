@@ -47,7 +47,7 @@ const resolveKafkaOptions: <
       regions[region] = bootstrap;
     }
     return {
-      consumerGroupId: options.consumerGroupId ?? "view-server",
+      consumerGroupId: options.consumerGroupId,
       regions,
       topics: options.topics,
     };

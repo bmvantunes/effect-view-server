@@ -932,11 +932,19 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      let healthReadCount = 0;
+      const refreshingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        health: () =>
+          Effect.sync(() => {
+            healthReadCount += 1;
+          }).pipe(Effect.andThen(runtimeCore.client.health())),
+      };
 
       const exit = yield* Effect.exit(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          refreshingClient,
           kafkaOptions,
           ledger,
           "local",
@@ -951,6 +959,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       const health = ledger.healthOverlay(yield* runtimeCore.client.health());
 
       expect(Exit.isSuccess(exit)).toBe(true);
+      expect(healthReadCount).toBe(1);
       expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
         status: "degraded",
         sourceTopic: ordersSourceTopic,

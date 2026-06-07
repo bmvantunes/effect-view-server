@@ -26,7 +26,7 @@ export type ViewServerKafkaRuntimeOptions<
   Topics extends ViewServerRuntimeTopicDefinitions,
   Regions extends RuntimeRegions = RuntimeRegions,
 > = {
-  readonly consumerGroupId?: string;
+  readonly consumerGroupId: string;
   readonly regions: Regions;
   readonly topics: Record<string, KafkaRuntimeTopicDefinition<Topics, Regions>>;
 };

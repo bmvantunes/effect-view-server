@@ -352,6 +352,7 @@ describe("@view-server/runtime", () => {
 
       const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
         kafka: {
+          consumerGroupId: "view-server-test-runtime",
           regions,
           topics: {
             "orders-source": localKafkaTopic({
@@ -381,7 +382,7 @@ describe("@view-server/runtime", () => {
           ]),
         ),
       }).toStrictEqual({
-        consumerGroupId: "view-server",
+        consumerGroupId: "view-server-test-runtime",
         regions: {
           local: "localhost:9092",
         },
@@ -416,6 +417,7 @@ describe("@view-server/runtime", () => {
       yield* Effect.acquireUseRelease(
         makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
           kafka: {
+            consumerGroupId: "view-server-test-degraded",
             regions,
             topics: {
               "orders-source": localKafkaTopic({
@@ -596,6 +598,7 @@ describe("@view-server/runtime", () => {
       const startupExit = yield* Effect.exit(
         makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
           kafka: {
+            consumerGroupId: "view-server-test-startup-failure",
             regions,
             topics: {
               "orders-source": localKafkaTopic({

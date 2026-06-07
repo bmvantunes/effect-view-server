@@ -207,6 +207,7 @@ export const processKafkaMessage = Effect.fn("ViewServerRuntime.kafka.message.pr
     timestamp: Number(message.timestamp),
     headers: kafkaHeadersFromMessage(message.headers),
   };
+  const refreshHealth = client.health().pipe(Effect.ignore);
   const decoded = yield* decodeKafkaTopicMessage(topic, {
     keyBytes,
     valueBytes,
@@ -221,7 +222,7 @@ export const processKafkaMessage = Effect.fn("ViewServerRuntime.kafka.message.pr
             message: messageFromUnknown(error),
             nowMillis,
           })
-          .pipe(Effect.as(undefined)),
+          .pipe(Effect.andThen(refreshHealth), Effect.as(undefined)),
       onSuccess: (decodedMessage) => Effect.succeed(decodedMessage),
     }),
   );
@@ -237,7 +238,7 @@ export const processKafkaMessage = Effect.fn("ViewServerRuntime.kafka.message.pr
             message: messageFromUnknown(cause),
             nowMillis,
           })
-          .pipe(Effect.as(false)),
+          .pipe(Effect.andThen(refreshHealth), Effect.as(false)),
       onSuccess: () => Effect.succeed(true),
     }),
   );

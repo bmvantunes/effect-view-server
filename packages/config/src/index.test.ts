@@ -119,7 +119,9 @@ const base64FromBytes = (bytes: Uint8Array) =>
 
 const textEncoder = new TextEncoder();
 
-const kafkaTestMetadata = (region: "usa" | "london"): KafkaMessageMetadata<typeof region> => ({
+const kafkaTestMetadata = <const Region extends "usa" | "london">(
+  region: Region,
+): KafkaMessageMetadata<Region> => ({
   sourceTopic: "orders-source",
   sourceRegion: region,
   partition: 0,
@@ -1226,6 +1228,26 @@ describe("public type surface", () => {
       });
 
       expect(keyedTopic.key.descriptor).toBe(ordersKeySchema);
+      const invalidKeyedTopicRegion = decodeKafkaTopicMessage(keyedTopic, {
+        keyBytes: toBinary(
+          ordersKeySchema,
+          create(ordersKeySchema, {
+            orderId: "order-keyed-london",
+          }),
+        ),
+        valueBytes: toBinary(
+          ordersValueSchema,
+          create(ordersValueSchema, {
+            customerId: "customer-keyed-london",
+            status: "closed",
+            price: 84,
+            updatedAt: 2,
+          }),
+        ),
+        // @ts-expect-error keyed topic is configured only for usa.
+        region: "london",
+        metadata: kafkaTestMetadata("usa"),
+      });
       expect(
         yield* decodeKafkaTopicMessage(keyedTopic, {
           keyBytes: toBinary(
@@ -1257,6 +1279,7 @@ describe("public type surface", () => {
           updatedAt: 2,
         },
       });
+      expectTypeOf(invalidKeyedTopicRegion).not.toBeAny();
 
       const throwingTopic = kafkaTopic({
         regions: ["usa"],

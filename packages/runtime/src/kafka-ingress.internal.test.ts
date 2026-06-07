@@ -14,8 +14,11 @@ import { makeViewServerKafkaHealthLedger } from "./kafka-health";
 import {
   assignedPartitionsForSourceTopic,
   bootstrapBrokers,
+  closeKafkaConsumer,
   closeKafkaConsumerAfterStartFailure,
+  closeKafkaConsumerOnPostConsumeStartupFailure,
   closeKafkaConsumerOnStartFailure,
+  closeStartedKafkaConsumerResources,
   kafkaHeadersFromMessage,
   kafkaConsumerCloseError,
   kafkaConsumerStartError,
@@ -37,7 +40,11 @@ import {
   sourceTopicsForRegion,
   startKafkaRegionConsumers,
 } from "./kafka-ingress";
-import type { StartedKafkaRegionConsumer, ViewServerKafkaIngressError } from "./kafka-ingress";
+import type {
+  StartedKafkaConsumerResources,
+  StartedKafkaRegionConsumer,
+  ViewServerKafkaIngressError,
+} from "./kafka-ingress";
 import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
 
 const Order = Schema.Struct({
@@ -190,7 +197,9 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       [Buffer.from("trace"), Buffer.from("abc")],
       [Buffer.from("trace"), Buffer.from("def")],
       [Buffer.from("trace"), Buffer.from("ghi")],
+      [Buffer.from("__proto__"), Buffer.from("safe")],
     ]);
+    const normalizedHeaders = kafkaHeadersFromMessage(headers);
 
     expect({
       errorMessage: messageFromUnknown(new Error("boom")),
@@ -198,7 +207,6 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       nonStringMessage: messageFromUnknown({ message: 123 }),
       plainMessage: messageFromUnknown("plain"),
       bootstrapBrokers: bootstrapBrokers(regions.local),
-      headers: kafkaHeadersFromMessage(headers),
       assignedOrdersPartitions: assignedPartitionsForSourceTopic(
         [{ topic: ordersSourceTopic, partitions: [0, 1] }],
         ordersSourceTopic,
@@ -213,12 +221,16 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       nonStringMessage: "[object Object]",
       plainMessage: "plain",
       bootstrapBrokers: ["localhost:9092", "localhost:9094"],
-      headers: {
-        trace: [Buffer.from("abc"), Buffer.from("def"), Buffer.from("ghi")],
-      },
       assignedOrdersPartitions: 2,
       assignedMissingPartitions: 0,
     });
+    expect(Object.getPrototypeOf(normalizedHeaders)).toBe(null);
+    expect(normalizedHeaders["trace"]).toStrictEqual([
+      Buffer.from("abc"),
+      Buffer.from("def"),
+      Buffer.from("ghi"),
+    ]);
+    expect(normalizedHeaders["__proto__"]).toStrictEqual(Buffer.from("safe"));
     const consumerError = kafkaConsumerStartError("local", "no-broker");
     const streamError = kafkaStreamError("local", "stream-down");
     const consumerCloseError = kafkaConsumerCloseError("close-down");
@@ -374,6 +386,133 @@ describe("@view-server/runtime Kafka ingress internals", () => {
 
       expect(Exit.isFailure(exit)).toBe(true);
       expect(closeForce).toBe(true);
+    }),
+  );
+
+  it.effect("closes stream and consumer resources", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+      let streamCloseCount = 0;
+
+      yield* closeKafkaConsumer({
+        consumer: {
+          close: (force) => {
+            closeForce = force;
+          },
+        },
+        stream: {
+          close: () => {
+            streamCloseCount += 1;
+          },
+        },
+      });
+
+      expect(streamCloseCount).toBe(1);
+      expect(closeForce).toBe(true);
+    }),
+  );
+
+  it.effect("closes started Kafka resources with and without health listeners", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+      let streamCloseCount = 0;
+      let listenerCloseCount = 0;
+      const resourcesWithListeners: StartedKafkaConsumerResources = {
+        consumer: {
+          close: (force) => {
+            closeForce = force;
+          },
+        },
+        stream: {
+          close: () => {
+            streamCloseCount += 1;
+          },
+        },
+        healthListeners: () => ({
+          close: Effect.sync(() => {
+            listenerCloseCount += 1;
+          }),
+        }),
+      };
+      const resourcesWithoutListeners: StartedKafkaConsumerResources = {
+        consumer: {
+          close: (force) => {
+            closeForce = force;
+          },
+        },
+        stream: {
+          close: () => {
+            streamCloseCount += 1;
+          },
+        },
+        healthListeners: () => null,
+      };
+
+      yield* closeStartedKafkaConsumerResources(resourcesWithListeners);
+      yield* closeStartedKafkaConsumerResources(resourcesWithoutListeners);
+
+      expect(streamCloseCount).toBe(2);
+      expect(listenerCloseCount).toBe(1);
+      expect(closeForce).toBe(true);
+    }),
+  );
+
+  it.effect("cleans post-consume Kafka resources only when later startup fails", () =>
+    Effect.gen(function* () {
+      let successStreamCloseCount = 0;
+      let failedStreamCloseCount = 0;
+      let failedListenerCloseCount = 0;
+      let successCloseForce: boolean | undefined = undefined;
+      let failedCloseForce: boolean | undefined = undefined;
+      const successResources: StartedKafkaConsumerResources = {
+        consumer: {
+          close: (force) => {
+            successCloseForce = force;
+          },
+        },
+        stream: {
+          close: () => {
+            successStreamCloseCount += 1;
+          },
+        },
+        healthListeners: () => null,
+      };
+      const failedResources: StartedKafkaConsumerResources = {
+        consumer: {
+          close: (force) => {
+            failedCloseForce = force;
+          },
+        },
+        stream: {
+          close: () => {
+            failedStreamCloseCount += 1;
+          },
+        },
+        healthListeners: () => ({
+          close: Effect.sync(() => {
+            failedListenerCloseCount += 1;
+          }),
+        }),
+      };
+
+      const success = yield* closeKafkaConsumerOnPostConsumeStartupFailure(
+        successResources,
+        Effect.succeed("started"),
+      );
+      const failedExit = yield* Effect.exit(
+        closeKafkaConsumerOnPostConsumeStartupFailure(
+          failedResources,
+          Effect.fail(kafkaConsumerStartError("local", "post-consume-down")),
+        ),
+      );
+
+      expect(success).toBe("started");
+      expect(successStreamCloseCount).toBe(0);
+      expect(successCloseForce).toBe(undefined);
+      expect(Exit.isFailure(failedExit)).toBe(true);
+      expect(failedStreamCloseCount).toBe(1);
+      expect(failedListenerCloseCount).toBe(1);
+      expect(failedCloseForce).toBe(true);
     }),
   );
 

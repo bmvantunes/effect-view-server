@@ -39,8 +39,16 @@ type KafkaConsumer = Consumer<Buffer, Buffer, Buffer, Buffer>;
 type CloseableKafkaConsumer = {
   readonly close: (force?: boolean) => unknown;
 };
+type CloseableKafkaStream = {
+  readonly close: () => unknown;
+};
 type KafkaConsumerHealthListenerRegistration = {
   readonly close: Effect.Effect<void>;
+};
+export type StartedKafkaConsumerResources = {
+  readonly consumer: CloseableKafkaConsumer;
+  readonly stream: CloseableKafkaStream;
+  readonly healthListeners: () => KafkaConsumerHealthListenerRegistration | null;
 };
 type KafkaMessageBytes = Buffer | null | undefined;
 type KafkaConsumerMessage = Message<KafkaMessageBytes, KafkaMessageBytes, Buffer, Buffer>;
@@ -73,7 +81,8 @@ export const bootstrapBrokers = (brokers: string): ReadonlyArray<string> =>
 export const kafkaHeadersFromMessage = (
   headers: ReadonlyMap<Buffer, Buffer>,
 ): KafkaMessageMetadata["headers"] => {
-  const output: Record<string, string | Uint8Array | ReadonlyArray<string | Uint8Array>> = {};
+  const output: Record<string, string | Uint8Array | ReadonlyArray<string | Uint8Array>> =
+    Object.create(null);
   const textDecoder = new TextDecoder();
   for (const [key, value] of headers) {
     const name = textDecoder.decode(key);
@@ -295,20 +304,43 @@ const makeKafkaConsumer = Effect.fn("ViewServerRuntime.kafka.consumer.make")(fun
   return { consumer, stream };
 });
 
-const closeKafkaConsumer = Effect.fn("ViewServerRuntime.kafka.consumer.close")(function* (input: {
-  readonly consumer: KafkaConsumer;
-  readonly stream: {
-    readonly close: () => Promise<void>;
-  };
-}) {
-  yield* Effect.tryPromise({
-    try: () => input.stream.close(),
-    catch: kafkaStreamCloseError,
-  }).pipe(Effect.ignore);
-  yield* Effect.tryPromise({
-    try: () => Promise.resolve(input.consumer.close(true)),
-    catch: kafkaConsumerCloseError,
-  }).pipe(Effect.ignore);
+export const closeKafkaConsumer = Effect.fn("ViewServerRuntime.kafka.consumer.close")(
+  function* (input: {
+    readonly consumer: CloseableKafkaConsumer;
+    readonly stream: CloseableKafkaStream;
+  }) {
+    yield* Effect.tryPromise({
+      try: () => Promise.resolve(input.stream.close()),
+      catch: kafkaStreamCloseError,
+    }).pipe(Effect.ignore);
+    yield* Effect.tryPromise({
+      try: () => Promise.resolve(input.consumer.close(true)),
+      catch: kafkaConsumerCloseError,
+    }).pipe(Effect.ignore);
+  },
+);
+
+export const closeStartedKafkaConsumerResources = Effect.fn(
+  "ViewServerRuntime.kafka.consumer.closeStartedResources",
+)(function* (resources: StartedKafkaConsumerResources) {
+  const healthListeners = resources.healthListeners();
+  if (healthListeners !== null) {
+    yield* healthListeners.close.pipe(Effect.ignore);
+  }
+  yield* closeKafkaConsumer({
+    consumer: resources.consumer,
+    stream: resources.stream,
+  });
+});
+
+export const closeKafkaConsumerOnPostConsumeStartupFailure = Effect.fn(
+  "ViewServerRuntime.kafka.consumer.closeOnPostConsumeStartupFailure",
+)(function* <A, E>(resources: StartedKafkaConsumerResources, startup: Effect.Effect<A, E>) {
+  return yield* startup.pipe(
+    Effect.onExit((exit) =>
+      Exit.isFailure(exit) ? closeStartedKafkaConsumerResources(resources) : Effect.void,
+    ),
+  );
 });
 
 export const processKafkaMessage = Effect.fn("ViewServerRuntime.kafka.message.process")(function* <
@@ -483,28 +515,55 @@ const startRegionConsumer = Effect.fn("ViewServerRuntime.kafka.region.start")(fu
     topics,
     options.consumerGroupId,
   );
-  return yield* Effect.gen(function* () {
-    const healthListeners = yield* registerKafkaConsumerHealthListeners(
-      consumer,
-      health,
-      client,
-      region,
-      topics,
-    );
-    yield* startKafkaLagMonitoring(consumer, topics);
-    const nowMillis = yield* Clock.currentTimeMillis;
-    yield* health.regionConnected(region, nowMillis);
-    yield* recordKafkaAssignments(health, client, region, topics, consumer.assignments, nowMillis);
-    const processStream = runKafkaMessageStream(config, client, options, health, region, stream);
-    const fiber = yield* processStream.pipe(Effect.forkDetach({ startImmediately: true }));
-    return {
-      close: healthListeners.close.pipe(
-        Effect.andThen(closeKafkaConsumer({ consumer, stream })),
-        Effect.andThen(Fiber.interrupt(fiber)),
-        Effect.asVoid,
-      ),
-    };
+  let healthListeners: KafkaConsumerHealthListenerRegistration | null = null;
+  const resources: StartedKafkaConsumerResources = {
+    consumer,
+    healthListeners: () => healthListeners,
+    stream,
+  };
+  let resourcesClosed = false;
+  const closeResources = Effect.suspend(() => {
+    if (resourcesClosed) {
+      return Effect.void;
+    }
+    resourcesClosed = true;
+    return closeStartedKafkaConsumerResources(resources);
   });
+  return yield* closeKafkaConsumerOnPostConsumeStartupFailure(
+    resources,
+    Effect.gen(function* () {
+      healthListeners = yield* registerKafkaConsumerHealthListeners(
+        consumer,
+        health,
+        client,
+        region,
+        topics,
+      );
+      yield* startKafkaLagMonitoring(consumer, topics);
+      const nowMillis = yield* Clock.currentTimeMillis;
+      yield* health.regionConnected(region, nowMillis);
+      yield* recordKafkaAssignments(
+        health,
+        client,
+        region,
+        topics,
+        consumer.assignments,
+        nowMillis,
+      );
+      const processStream = runKafkaMessageStream(
+        config,
+        client,
+        options,
+        health,
+        region,
+        stream,
+      ).pipe(Effect.ensuring(closeResources));
+      const fiber = yield* processStream.pipe(Effect.forkDetach({ startImmediately: true }));
+      return {
+        close: closeResources.pipe(Effect.andThen(Fiber.interrupt(fiber)), Effect.asVoid),
+      };
+    }),
+  );
 });
 
 export const startKafkaRegionConsumers = Effect.fn("ViewServerRuntime.kafka.regions.start")(

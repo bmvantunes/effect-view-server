@@ -81,7 +81,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build packages
-        run: vp run -r build
+        run: pnpm exec vp run -r build
 
       - name: Install Chromium benchmark dependencies
         run: pnpm --filter @view-server/react exec playwright install --with-deps chromium

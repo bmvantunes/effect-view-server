@@ -1,14 +1,17 @@
 import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@view-server/client";
-import type { ViewServerConfig } from "@view-server/config";
-import { Effect, Exit, Layer } from "effect";
+import type { RuntimeRegions, ViewServerConfig, ViewServerHealth } from "@view-server/config";
+import type { ViewServerRuntimeCoreOptionsFor } from "@view-server/runtime-core";
+import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
   type ViewServerRuntimeDependencies,
 } from "./runtime-dependencies";
+import type { ViewServerKafkaIngressError } from "./kafka-ingress";
 import { resolveViewServerRuntimeOptions } from "./runtime-options";
 import type {
   ViewServerRuntime,
+  ViewServerRuntimeOptionsInput,
   ViewServerRuntimeOptions,
   ViewServerRuntimeTopicDefinitions,
 } from "./runtime-types";
@@ -18,6 +21,7 @@ export { makeDefaultRuntimeDependencies };
 export type {
   ViewServerRuntime,
   ViewServerRuntimeDependencies,
+  ViewServerRuntimeOptionsInput,
   ViewServerRuntimeOptions,
   ViewServerRuntimeTopicDefinitions,
 };
@@ -33,25 +37,61 @@ const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitio
   subscribeHealthSummary: liveClient.subscribeHealthSummary,
 });
 
+type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
+  groupedIncrementalAdmissionLimits?: NonNullable<
+    ViewServerRuntimeCoreOptionsFor<Topics>["groupedIncrementalAdmissionLimits"]
+  >;
+  subscriptionQueueCapacity?: NonNullable<
+    ViewServerRuntimeCoreOptionsFor<Topics>["subscriptionQueueCapacity"]
+  >;
+  transportHealth: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["transportHealth"]>;
+  healthOverlay?: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["healthOverlay"]>;
+};
+
 export const makeViewServerRuntimeWithDependencies: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Options extends ViewServerRuntimeOptions<Topics> = ViewServerRuntimeOptions<Topics>,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptions,
-) => Effect.Effect<ViewServerRuntime<Topics>, HttpServerError.ServeError> = Effect.fn(
-  "ViewServerRuntime.makeWithDependencies",
-)(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+) => Effect.Effect<
+  ViewServerRuntime<Topics>,
+  HttpServerError.ServeError | Config.ConfigError | ViewServerKafkaIngressError
+> = Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Options extends ViewServerRuntimeOptions<Topics>,
+>(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
-  options: ViewServerRuntimeOptions = {},
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) {
-  const { runtimeCoreOptions, serverOptions } = resolveViewServerRuntimeOptions(options);
+  const { runtimeCoreOptions, serverOptions, kafkaOptions } =
+    options === undefined
+      ? yield* resolveViewServerRuntimeOptions<Topics, RuntimeRegions>({})
+      : yield* resolveViewServerRuntimeOptions(options);
   const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
-  const runtimeCore = yield* dependencies.makeRuntimeCore(config, {
-    ...runtimeCoreOptions,
+  const kafkaHealth =
+    kafkaOptions === undefined
+      ? undefined
+      : dependencies.makeKafkaHealthLedger(config, kafkaOptions);
+  const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
     transportHealth: transportHealth.transportHealth,
-  });
+  };
+  if (runtimeCoreOptions.groupedIncrementalAdmissionLimits !== undefined) {
+    runtimeCoreInput.groupedIncrementalAdmissionLimits =
+      runtimeCoreOptions.groupedIncrementalAdmissionLimits;
+  }
+  if (runtimeCoreOptions.subscriptionQueueCapacity !== undefined) {
+    runtimeCoreInput.subscriptionQueueCapacity = runtimeCoreOptions.subscriptionQueueCapacity;
+  }
+  if (kafkaHealth !== undefined) {
+    runtimeCoreInput.healthOverlay = (
+      health: ViewServerHealth<Topics>,
+      nowMillis: number,
+    ): ViewServerHealth<Topics> => kafkaHealth.healthOverlay(health, nowMillis);
+  }
+  const runtimeCore = yield* dependencies.makeRuntimeCore(config, runtimeCoreInput);
   const refreshTransportHealth = runtimeCore.client.health().pipe(Effect.ignore);
   const server = yield* dependencies
     .makeServer(
@@ -69,7 +109,22 @@ export const makeViewServerRuntimeWithDependencies: <
       serverOptions,
     )
     .pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? runtimeCore.close : Effect.void)));
-  const close = server.close.pipe(Effect.ensuring(runtimeCore.close));
+  const kafkaIngress =
+    kafkaOptions === undefined || kafkaHealth === undefined
+      ? undefined
+      : yield* dependencies
+          .makeKafkaIngress(config, runtimeCore.client, kafkaOptions, kafkaHealth)
+          .pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? server.close.pipe(Effect.ensuring(runtimeCore.close))
+                : Effect.void,
+            ),
+          );
+  const close = (kafkaIngress?.close ?? Effect.void).pipe(
+    Effect.ensuring(server.close),
+    Effect.ensuring(runtimeCore.close),
+  );
   const publicLiveClient = toPublicLiveClient(runtimeCore.liveClient, close);
   return {
     url: server.url,
@@ -88,32 +143,41 @@ const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <
   yield* Effect.logInfo(`View Server health endpoint listening at ${runtime.healthUrl}`);
 });
 
-const makeViewServerRuntimeLaunchLayer = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+const makeViewServerRuntimeLaunchLayer = <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Options extends ViewServerRuntimeOptions<Topics>,
+>(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
-  options: ViewServerRuntimeOptions,
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) =>
   Layer.effectDiscard(
     Effect.acquireRelease(
-      makeViewServerRuntimeWithDependencies(dependencies, config, options).pipe(
-        Effect.tap(logRuntimeStarted),
-      ),
+      (options === undefined
+        ? makeViewServerRuntimeWithDependencies(dependencies, config)
+        : makeViewServerRuntimeWithDependencies(dependencies, config, options)
+      ).pipe(Effect.tap(logRuntimeStarted)),
       (runtime) => runtime.close,
     ),
   );
 
 export const runViewServerRuntimeWithDependencies: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Options extends ViewServerRuntimeOptions<Topics> = ViewServerRuntimeOptions<Topics>,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptions,
-) => Effect.Effect<never, HttpServerError.ServeError> = Effect.fn(
-  "ViewServerRuntime.runWithDependencies",
-)(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+) => Effect.Effect<
+  never,
+  HttpServerError.ServeError | Config.ConfigError | ViewServerKafkaIngressError
+> = Effect.fn("ViewServerRuntime.runWithDependencies")(function* <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Options extends ViewServerRuntimeOptions<Topics>,
+>(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
-  options: ViewServerRuntimeOptions = {},
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) {
   return yield* makeViewServerRuntimeLaunchLayer(dependencies, config, options).pipe(Layer.launch);
 });

@@ -19,6 +19,7 @@ import {
   makeHealthRefreshScheduler,
   readHealth,
   refreshHealth,
+  type RuntimeCoreHealthOverlay,
   type RuntimeCoreTransportHealth,
 } from "./health";
 import type * as Duration from "effect/Duration";
@@ -35,10 +36,11 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
   engine: ColumnLiveViewEngine<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
   transportHealth: RuntimeCoreTransportHealth<Topics>,
+  healthOverlay?: RuntimeCoreHealthOverlay<Topics>,
   healthRefreshCadence?: Duration.Input,
 ): Effect.Effect<RuntimeCoreClientInstance<Topics>> => {
   const healthRefreshScheduler = makeHealthRefreshScheduler(
-    refreshHealth(engine, health, transportHealth),
+    refreshHealth(engine, health, transportHealth, healthOverlay),
     healthRefreshCadence,
   );
   const snapshot = <
@@ -75,7 +77,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
         ),
       snapshot,
       health: () =>
-        readHealth(engine, health, transportHealth).pipe(
+        readHealth(engine, health, transportHealth, healthOverlay).pipe(
           Effect.mapError(engineErrorToRuntimeError),
         ),
       reset: () =>

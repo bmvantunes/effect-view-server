@@ -40,7 +40,9 @@ const react = createViewServerReact(viewServer);
 const { ViewServerProvider, useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
 
-const createInMemoryViewServer = (options?: ViewServerInMemoryOptions) =>
+type TestInMemoryOptions = ViewServerInMemoryOptions<typeof viewServer.topics>;
+
+const createInMemoryViewServer = (options?: TestInMemoryOptions) =>
   createInMemoryViewServerReact(react, options);
 
 declare const liveClient: ViewServerLiveClient<typeof viewServer.topics>;

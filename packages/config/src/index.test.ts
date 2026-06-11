@@ -5,8 +5,10 @@ import type { GenMessage } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import type * as BigDecimal from "effect/BigDecimal";
-import { Config, Effect, Schema } from "effect";
+import { Config, Effect, Exit, Schema } from "effect";
 import {
+  decodeKafkaCodec,
+  decodeKafkaTopicMessage,
   defineViewServerConfig,
   kafka,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
@@ -114,6 +116,19 @@ type CustomKafkaCodecError = {
 
 const base64FromBytes = (bytes: Uint8Array) =>
   globalThis.btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
+
+const textEncoder = new TextEncoder();
+
+const kafkaTestMetadata = <const Region extends "usa" | "london">(
+  region: Region,
+): KafkaMessageMetadata<Region> => ({
+  sourceTopic: "orders-source",
+  sourceRegion: region,
+  partition: 0,
+  offset: "1",
+  timestamp: null,
+  headers: {},
+});
 
 const testProtoFile = fileDesc(
   base64FromBytes(
@@ -463,65 +478,153 @@ describe("defineViewServerConfig", () => {
     expect(Config.isConfig(runtimeConfig.port("VIEW_SERVER_TCP_PUBLISH_PORT"))).toBe(true);
   });
 
-  it("defines typed Kafka source codecs", () => {
-    const bytesCodec = kafka.bytes();
-    const stringCodec = kafka.string();
-    const stringKeyCodec = kafka.stringKey();
-    const jsonCodec = kafka.json(Order);
-    const protobufCodec = kafka.protobuf(ordersValueSchema);
-    const customCodec = kafka.codec({
-      name: "custom-order-value",
-      decode: ({ bytes }): Effect.Effect<{ readonly byteLength: number }, never> =>
-        Effect.succeed({
-          byteLength: bytes.byteLength,
-        }),
-    });
-    const customErrorCodec = kafka.codec({
-      name: "custom-order-value-with-error",
-      decode: (): Effect.Effect<{ readonly id: string }, CustomKafkaCodecError> =>
-        Effect.fail({
-          _tag: "CustomKafkaCodecError",
-          message: "decode failed",
-        }),
-    });
+  it.effect("defines typed Kafka source codecs", () =>
+    Effect.gen(function* () {
+      const bytesCodec = kafka.bytes();
+      const stringCodec = kafka.string();
+      const stringKeyCodec = kafka.stringKey();
+      const jsonCodec = kafka.json(Order);
+      const protobufCodec = kafka.protobuf(ordersValueSchema);
+      const customCodec = kafka.codec({
+        name: "custom-order-value",
+        decode: ({ bytes }): Effect.Effect<{ readonly byteLength: number }, never> =>
+          Effect.succeed({
+            byteLength: bytes.byteLength,
+          }),
+      });
+      const customErrorCodec = kafka.codec({
+        name: "custom-order-value-with-error",
+        decode: (): Effect.Effect<{ readonly id: string }, CustomKafkaCodecError> =>
+          Effect.fail({
+            _tag: "CustomKafkaCodecError",
+            message: "decode failed",
+          }),
+      });
 
-    expect(bytesCodec.format).toBe("bytes");
-    expect(stringCodec.format).toBe("string");
-    expect(stringKeyCodec.format).toBe("string");
-    expect(jsonCodec.schema).toBe(Order);
-    expect(protobufCodec.descriptor).toBe(ordersValueSchema);
-    expect(customCodec.name).toBe("custom-order-value");
-    expect(
-      Effect.runSync(
-        customCodec.decode({
+      expect(bytesCodec.format).toBe("bytes");
+      expect(stringCodec.format).toBe("string");
+      expect(stringKeyCodec.format).toBe("string");
+      expect(jsonCodec.schema).toBe(Order);
+      expect(protobufCodec.descriptor).toBe(ordersValueSchema);
+      expect(customCodec.name).toBe("custom-order-value");
+      expect(
+        yield* decodeKafkaCodec(bytesCodec, {
           bytes: new Uint8Array([1, 2, 3]),
-          metadata: {
-            sourceTopic: "orders-source",
-            sourceRegion: "usa",
-            partition: 0,
-            offset: "1",
-            timestamp: null,
-            headers: {},
-          },
+          metadata: kafkaTestMetadata("usa"),
         }),
-      ),
-    ).toStrictEqual({
-      byteLength: 3,
-    });
+      ).toStrictEqual(new Uint8Array([1, 2, 3]));
+      expect(
+        yield* decodeKafkaCodec(stringCodec, {
+          bytes: textEncoder.encode("order-value"),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      ).toBe("order-value");
+      expect(
+        yield* decodeKafkaCodec(stringKeyCodec, {
+          bytes: textEncoder.encode("order-key"),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      ).toBe("order-key");
+      expect(
+        yield* decodeKafkaCodec(jsonCodec, {
+          bytes: textEncoder.encode(
+            JSON.stringify({
+              id: "order-1",
+              customerId: "customer-1",
+              status: "open",
+              price: 42,
+              region: "usa",
+              updatedAt: 1,
+            }),
+          ),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      ).toStrictEqual({
+        id: "order-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 42,
+        region: "usa",
+        updatedAt: 1,
+      });
+      expect(
+        yield* decodeKafkaCodec(protobufCodec, {
+          bytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-1",
+              status: "open",
+              price: 42,
+              updatedAt: 1,
+            }),
+          ),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      ).toStrictEqual(
+        create(ordersValueSchema, {
+          customerId: "customer-1",
+          status: "open",
+          price: 42,
+          updatedAt: 1,
+        }),
+      );
+      expect(
+        yield* customCodec.decode({
+          bytes: new Uint8Array([1, 2, 3]),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      ).toStrictEqual({
+        byteLength: 3,
+      });
+      const jsonParseFailure = yield* Effect.exit(
+        decodeKafkaCodec(jsonCodec, {
+          bytes: textEncoder.encode("{"),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      );
+      const jsonSchemaFailure = yield* Effect.exit(
+        decodeKafkaCodec(jsonCodec, {
+          bytes: textEncoder.encode(
+            JSON.stringify({
+              id: "order-1",
+            }),
+          ),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      );
+      const protobufFailure = yield* Effect.exit(
+        decodeKafkaCodec(protobufCodec, {
+          bytes: new Uint8Array([255]),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      );
+      const customFailure = yield* Effect.exit(
+        decodeKafkaCodec(customErrorCodec, {
+          bytes: new Uint8Array([1]),
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      );
+      expect(Exit.isFailure(jsonParseFailure)).toBe(true);
+      expect(Exit.isFailure(jsonSchemaFailure)).toBe(true);
+      expect(Exit.isFailure(protobufFailure)).toBe(true);
+      expect(Exit.isFailure(customFailure)).toBe(true);
 
-    expectTypeOf<KafkaCodecType<typeof bytesCodec>>().toEqualTypeOf<Uint8Array>();
-    expectTypeOf<KafkaCodecType<typeof stringCodec>>().toEqualTypeOf<string>();
-    expectTypeOf<KafkaCodecType<typeof stringKeyCodec>>().toEqualTypeOf<string>();
-    expectTypeOf<KafkaCodecType<typeof jsonCodec>>().toEqualTypeOf<typeof Order.Type>();
-    expectTypeOf<KafkaCodecType<typeof protobufCodec>>().toEqualTypeOf<OrdersValueMessage>();
-    expectTypeOf<KafkaCodecType<typeof customCodec>>().toEqualTypeOf<{
-      readonly byteLength: number;
-    }>();
-    expectTypeOf<KafkaCodecError<typeof jsonCodec>>().toEqualTypeOf<KafkaDecodeError>();
-    expectTypeOf<KafkaCodecError<typeof protobufCodec>>().toEqualTypeOf<KafkaDecodeError>();
-    expectTypeOf<KafkaCodecError<typeof customCodec>>().toEqualTypeOf<never>();
-    expectTypeOf<KafkaCodecError<typeof customErrorCodec>>().toEqualTypeOf<CustomKafkaCodecError>();
-  });
+      expectTypeOf<KafkaCodecType<typeof bytesCodec>>().toEqualTypeOf<Uint8Array>();
+      expectTypeOf<KafkaCodecType<typeof stringCodec>>().toEqualTypeOf<string>();
+      expectTypeOf<KafkaCodecType<typeof stringKeyCodec>>().toEqualTypeOf<string>();
+      expectTypeOf<KafkaCodecType<typeof jsonCodec>>().toEqualTypeOf<typeof Order.Type>();
+      expectTypeOf<KafkaCodecType<typeof protobufCodec>>().toEqualTypeOf<OrdersValueMessage>();
+      expectTypeOf<KafkaCodecType<typeof customCodec>>().toEqualTypeOf<{
+        readonly byteLength: number;
+      }>();
+      expectTypeOf<KafkaCodecError<typeof jsonCodec>>().toEqualTypeOf<KafkaDecodeError>();
+      expectTypeOf<KafkaCodecError<typeof protobufCodec>>().toEqualTypeOf<KafkaDecodeError>();
+      expectTypeOf<KafkaCodecError<typeof customCodec>>().toEqualTypeOf<never>();
+      expectTypeOf<
+        KafkaCodecError<typeof customErrorCodec>
+      >().toEqualTypeOf<CustomKafkaCodecError>();
+    }),
+  );
 
   it("does not expose executable React or runtime placeholders from config", () => {
     expect(Object.keys(viewServer)).toStrictEqual(["topics", "defineRuntimeOptions", "kafkaTopic"]);
@@ -606,10 +709,19 @@ describe("public type surface", () => {
       message: "client queue exceeded configured limits",
     };
 
-    expect(snapshot.rows[0]?.id).toBe("order-1");
+    expect(snapshot.rows[0]).toStrictEqual({
+      id: "order-1",
+    });
     expect(metadata.sourceRegion).toBe("usa");
     expect(health.engine.topics["orders"].rowCount).toBe(1);
-    expect(backpressure.code).toBe("BackpressureExceeded");
+    expect(backpressure).toStrictEqual({
+      type: "status",
+      topic: "orders",
+      queryId: "query-1",
+      status: "error",
+      code: "BackpressureExceeded",
+      message: "client queue exceeded configured limits",
+    });
     expectTypeOf<LiveTransportAdapter>().toHaveProperty("subscribe");
     expectTypeOf<Effect.Success<ReturnType<LiveTransportAdapter["subscribe"]>>>().toEqualTypeOf<
       LiveSubscription<unknown>
@@ -653,6 +765,7 @@ describe("public type surface", () => {
                 bytesPerSecond: 100,
                 decodedMessagesPerSecond: 10,
                 decodeFailuresPerSecond: 0,
+                processingFailuresPerSecond: 0,
                 lastMessageAt: null,
                 lastCommitAt: null,
                 consumerLagMessages: 5n,
@@ -669,6 +782,7 @@ describe("public type surface", () => {
                 bytesPerSecond: 0,
                 decodedMessagesPerSecond: 0,
                 decodeFailuresPerSecond: 0,
+                processingFailuresPerSecond: 0,
                 lastMessageAt: null,
                 lastCommitAt: null,
                 consumerLagMessages: null,
@@ -692,6 +806,7 @@ describe("public type surface", () => {
                 bytesPerSecond: 0,
                 decodedMessagesPerSecond: 0,
                 decodeFailuresPerSecond: 0,
+                processingFailuresPerSecond: 0,
                 lastMessageAt: null,
                 lastCommitAt: null,
                 consumerLagMessages: 11n,
@@ -766,14 +881,19 @@ describe("public type surface", () => {
       "stopping",
       "stopping",
     ]);
-    expect(VIEW_SERVER_HEALTH_SUMMARY_TOPIC).toBe("__view_server_health_summary");
-    expect(VIEW_SERVER_HEALTH_TOPIC).toBe("__view_server_health");
-    expect(viewServerTopicNameIsReserved(VIEW_SERVER_HEALTH_TOPIC)).toBe(true);
-    expect(viewServerTopicNameIsReserved("orders")).toBe(false);
-    expect(viewServerReservedTopicNames).toStrictEqual([
-      VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
-      VIEW_SERVER_HEALTH_TOPIC,
-    ]);
+    expect({
+      summary: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+      detailed: VIEW_SERVER_HEALTH_TOPIC,
+      detailedIsReserved: viewServerTopicNameIsReserved(VIEW_SERVER_HEALTH_TOPIC),
+      ordersIsReserved: viewServerTopicNameIsReserved("orders"),
+      all: viewServerReservedTopicNames,
+    }).toStrictEqual({
+      summary: "__view_server_health_summary",
+      detailed: "__view_server_health",
+      detailedIsReserved: true,
+      ordersIsReserved: false,
+      all: [VIEW_SERVER_HEALTH_SUMMARY_TOPIC, VIEW_SERVER_HEALTH_TOPIC],
+    });
     expectTypeOf(summary).toEqualTypeOf<ViewServerHealthSummary<typeof viewServer.topics>>();
     expectTypeOf(summaryRow).toEqualTypeOf<ViewServerHealthSummaryRow<typeof viewServer.topics>>();
     expectTypeOf(rows[0]).toEqualTypeOf<
@@ -1038,50 +1158,156 @@ describe("public type surface", () => {
     expect(assertQueryTypes).toBeTypeOf("function");
   });
 
-  it("infers unannotated Kafka mapping callback parameters through the topic helper", () => {
-    const topic = kafkaTopic({
-      regions: ["usa", "london"],
-      value: kafka.protobuf(ordersValueSchema),
-      viewServerTopic: "orders",
-      mapping: ({ key, value, region }) => {
-        expectTypeOf(key).toEqualTypeOf<string>();
-        expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-        expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
-        return {
-          id: key,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region,
-          updatedAt: value.updatedAt,
-        };
-      },
-    });
+  it.effect("infers and decodes Kafka mapping callback parameters through the topic helper", () =>
+    Effect.gen(function* () {
+      const topic = kafkaTopic({
+        regions: ["usa", "london"],
+        value: kafka.protobuf(ordersValueSchema),
+        viewServerTopic: "orders",
+        mapping: ({ key, value, region }) => {
+          expectTypeOf(key).toEqualTypeOf<string>();
+          expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+          expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
+          return {
+            id: key,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region,
+            updatedAt: value.updatedAt,
+          };
+        },
+      });
 
-    expect(topic.viewServerTopic).toBe("orders");
+      expect(topic.viewServerTopic).toBe("orders");
+      expect(
+        yield* decodeKafkaTopicMessage(topic, {
+          keyBytes: textEncoder.encode("order-1"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-1",
+              status: "open",
+              price: 42,
+              updatedAt: 1,
+            }),
+          ),
+          region: "london",
+          metadata: kafkaTestMetadata("london"),
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        row: {
+          id: "order-1",
+          customerId: "customer-1",
+          status: "open",
+          price: 42,
+          region: "london",
+          updatedAt: 1,
+        },
+      });
 
-    const keyedTopic = kafkaTopic({
-      regions: ["usa"],
-      value: kafka.protobuf(ordersValueSchema),
-      key: kafka.protobuf(ordersKeySchema),
-      viewServerTopic: "orders",
-      mapping: ({ key, value, region }) => {
-        expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
-        expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-        expectTypeOf(region).toEqualTypeOf<"usa">();
-        return {
-          id: key.orderId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region,
-          updatedAt: value.updatedAt,
-        };
-      },
-    });
+      const keyedTopic = kafkaTopic({
+        regions: ["usa"],
+        value: kafka.protobuf(ordersValueSchema),
+        key: kafka.protobuf(ordersKeySchema),
+        viewServerTopic: "orders",
+        mapping: ({ key, value, region }) => {
+          expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+          expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+          expectTypeOf(region).toEqualTypeOf<"usa">();
+          return {
+            id: key.orderId,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region,
+            updatedAt: value.updatedAt,
+          };
+        },
+      });
 
-    expect(keyedTopic.key.descriptor).toBe(ordersKeySchema);
-  });
+      expect(keyedTopic.key.descriptor).toBe(ordersKeySchema);
+      const invalidKeyedTopicRegion = decodeKafkaTopicMessage(keyedTopic, {
+        keyBytes: toBinary(
+          ordersKeySchema,
+          create(ordersKeySchema, {
+            orderId: "order-keyed-london",
+          }),
+        ),
+        valueBytes: toBinary(
+          ordersValueSchema,
+          create(ordersValueSchema, {
+            customerId: "customer-keyed-london",
+            status: "closed",
+            price: 84,
+            updatedAt: 2,
+          }),
+        ),
+        // @ts-expect-error keyed topic is configured only for usa.
+        region: "london",
+        metadata: kafkaTestMetadata("usa"),
+      });
+      expect(
+        yield* decodeKafkaTopicMessage(keyedTopic, {
+          keyBytes: toBinary(
+            ordersKeySchema,
+            create(ordersKeySchema, {
+              orderId: "order-keyed-1",
+            }),
+          ),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-keyed-1",
+              status: "closed",
+              price: 84,
+              updatedAt: 2,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        row: {
+          id: "order-keyed-1",
+          customerId: "customer-keyed-1",
+          status: "closed",
+          price: 84,
+          region: "usa",
+          updatedAt: 2,
+        },
+      });
+      expectTypeOf(invalidKeyedTopicRegion).not.toBeAny();
+
+      const throwingTopic = kafkaTopic({
+        regions: ["usa"],
+        value: kafka.protobuf(ordersValueSchema),
+        viewServerTopic: "orders",
+        mapping: () => {
+          throw new Error("mapper failed");
+        },
+      });
+      const mappingFailure = yield* Effect.exit(
+        decodeKafkaTopicMessage(throwingTopic, {
+          keyBytes: textEncoder.encode("order-throws"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-throws",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+        }),
+      );
+      expect(Exit.isFailure(mappingFailure)).toBe(true);
+    }),
+  );
 
   it("supports json and custom Kafka source codecs without weakening mapping exactness", () => {
     const jsonTopic = kafkaTopic({
@@ -1708,50 +1934,14 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  localKafkaTopic({
-    // @ts-expect-error Kafka topic regions are constrained to kafka.regions keys
-    regions: ["USA"],
-    value: kafka.protobuf(ordersValueSchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
-  });
+  // @ts-expect-error Kafka topic regions are constrained to kafka.regions keys
+  localKafkaTopic({ regions: ["USA"] });
 
-  localKafkaTopic({
-    // @ts-expect-error Kafka topic regions must be non-empty
-    regions: [],
-    value: kafka.protobuf(ordersValueSchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
-  });
+  // @ts-expect-error Kafka topic regions must be non-empty
+  localKafkaTopic({ regions: [] });
 
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    // @ts-expect-error Kafka mappings must target a configured View Server topic
-    viewServerTopic: "customers",
-    mapping: ({ key, value, region }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-    }),
-  });
+  // @ts-expect-error Kafka mappings must target a configured View Server topic
+  localKafkaTopic({ viewServerTopic: "customers" });
 
   const invalidExtraKafkaTopicField: KafkaTopicDefinition<
     typeof viewServer.topics,
@@ -2601,72 +2791,17 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error unsupported Kafka value codecs must fail instead of inferring unknown
-    value: {},
-    viewServerTopic: "orders",
-    mapping: ({ key }) => ({
-      id: key,
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
+  // @ts-expect-error unsupported Kafka value codecs must fail instead of inferring unknown
+  localKafkaTopic({ value: {} });
 
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error $typeName-only objects are message instances, not generated schemas/codecs
-    value: { $typeName: "viewserver.test.OrderValue" },
-    viewServerTopic: "orders",
-    mapping: ({ key }) => ({
-      id: key,
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
+  // @ts-expect-error $typeName-only objects are message instances, not generated schemas/codecs
+  localKafkaTopic({ value: { $typeName: "viewserver.test.OrderValue" } });
 
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error arbitrary decoder shapes are not accepted as Kafka codecs
-    value: {
-      fromBinary: (_bytes: Uint8Array) => ({
-        customerId: "customer-1",
-        status: "open",
-        price: 42,
-        updatedAt: 1,
-      }),
-    },
-    viewServerTopic: "orders",
-    mapping: ({ key }) => ({
-      id: key,
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
+  // @ts-expect-error arbitrary decoder shapes are not accepted as Kafka codecs
+  localKafkaTopic({ value: { fromBinary: (_bytes: Uint8Array) => ({}) } });
 
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error row Effect schemas are not Kafka codecs unless wrapped with kafka.json
-    value: Order,
-    viewServerTopic: "orders",
-    mapping: ({ key }) => ({
-      id: key,
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
+  // @ts-expect-error row Effect schemas are not Kafka codecs unless wrapped with kafka.json
+  localKafkaTopic({ value: Order });
 };
 
 describe("compile-time contract assertions", () => {

@@ -386,6 +386,120 @@ describe("@view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("applies health overlays to pushed health subscriptions", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {
+        healthOverlay: (health) => ({
+          ...health,
+          status: "degraded",
+          kafka: {
+            regions: {
+              local: {
+                status: "connected",
+                brokers: "localhost:9092",
+                lastConnectedAt: 1_000,
+                lastError: null,
+              },
+            },
+            topics: {
+              sourceOrders: {
+                status: "stalled",
+                sourceTopic: "orders-source",
+                viewServerTopic: "orders",
+                regions: {
+                  local: {
+                    connected: true,
+                    assignedPartitions: 1,
+                    messagesPerSecond: 0,
+                    bytesPerSecond: 0,
+                    decodedMessagesPerSecond: 0,
+                    decodeFailuresPerSecond: 0,
+                    processingFailuresPerSecond: 0,
+                    lastMessageAt: null,
+                    lastCommitAt: null,
+                    consumerLagMessages: 7n,
+                    consumerLagMs: null,
+                    lagSampledAt: null,
+                    highWatermarkOffset: "10",
+                    committedOffset: "3",
+                    lastError: "lagging",
+                  },
+                },
+              },
+            },
+          },
+        }),
+      });
+      const summary = yield* runtimeCore.liveClient.subscribeHealthSummary();
+      const detail = yield* runtimeCore.liveClient.subscribeHealth();
+
+      const summaryEvents = yield* summary.events.pipe(Stream.take(1), Stream.runCollect);
+      const detailEvents = yield* detail.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect(Array.from(summaryEvents)).toStrictEqual([
+        {
+          type: "snapshot",
+          topic: "__view_server_health_summary",
+          queryId: "health-summary",
+          version: 0,
+          keys: ["summary"],
+          rows: [
+            {
+              id: "summary",
+              status: "degraded",
+              runtimeStatus: "degraded",
+              connectionStatus: "connected",
+              unhealthyTopics: [],
+              updatedAtNanos: expect.anything(),
+              maxKafkaLag: 7n,
+            },
+          ],
+          totalRows: 1,
+        },
+      ]);
+      expect(Array.from(detailEvents)).toStrictEqual([
+        {
+          type: "snapshot",
+          topic: "__view_server_health",
+          queryId: "health",
+          version: 0,
+          keys: ["orders"],
+          rows: [
+            {
+              id: "orders",
+              status: "ready",
+              rowCount: 0,
+              liveRowCount: 0,
+              deletedRowCount: 0,
+              version: 0,
+              lastMutationAt: null,
+              mutationsPerSecond: 0,
+              rowsPerSecond: 0,
+              pendingMutationBatches: 0,
+              activeFallbackGroupedViews: 0,
+              activeIncrementalGroupedViews: 0,
+              activeViews: 0,
+              activeSubscriptions: 0,
+              queuedEvents: 0,
+              maxQueueDepth: 0,
+              backpressureEvents: 0,
+              memoryBytes: 0,
+              tombstoneCount: 0,
+              compactionPending: false,
+              kafkaLag: 7n,
+              updatedAtNanos: expect.anything(),
+            },
+          ],
+          totalRows: 1,
+        },
+      ]);
+
+      yield* summary.close();
+      yield* detail.close();
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("closes active pushed health subscriptions when the live client closes", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

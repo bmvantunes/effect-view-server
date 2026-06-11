@@ -1,12 +1,13 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig, type ViewServerRuntimeError } from "@view-server/config";
-import type { Effect } from "effect";
+import { defineViewServerConfig, kafka, type ViewServerRuntimeError } from "@view-server/config";
+import type { Config, Effect } from "effect";
 import { Schema } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeViewServerRuntime,
   runViewServerRuntime,
   type ViewServerRuntime,
+  type ViewServerKafkaIngressError,
   type ViewServerRuntimeOptions,
 } from "./index";
 
@@ -33,6 +34,24 @@ const runtimeWithGroupedAdmissionLimits = makeViewServerRuntime(viewServer, {
 const runEffect = runViewServerRuntime(viewServer);
 declare const runtime: Effect.Success<typeof runtimeEffect>;
 
+const usaKafkaRegions = {
+  usa: "localhost:9092",
+};
+const londonKafkaRegions = {
+  london: "localhost:9093",
+};
+const usaKafkaTopic = viewServer.kafkaTopic<typeof usaKafkaRegions>();
+const londonKafkaTopic = viewServer.kafkaTopic<typeof londonKafkaRegions>()({
+  regions: ["london"],
+  value: kafka.json(Order),
+  key: kafka.stringKey(),
+  viewServerTopic: "orders",
+  mapping: ({ key, value }) => ({
+    id: key,
+    price: value.price,
+  }),
+});
+
 describe("runtime type contracts", () => {
   it("preserves configured topic types through runtime clients", () => {
     expectTypeOf(runtime.url).toEqualTypeOf<ViewServerRuntime<typeof viewServer.topics>["url"]>();
@@ -46,7 +65,9 @@ describe("runtime type contracts", () => {
       ViewServerRuntime<typeof viewServer.topics>["close"]
     >();
     expectTypeOf<Effect.Success<typeof runEffect>>().toEqualTypeOf<never>();
-    expectTypeOf<Effect.Error<typeof runEffect>>().toEqualTypeOf<HttpServerError.ServeError>();
+    expectTypeOf<Effect.Error<typeof runEffect>>().toEqualTypeOf<
+      HttpServerError.ServeError | Config.ConfigError | ViewServerKafkaIngressError
+    >();
     expectTypeOf<Effect.Success<typeof runtimeWithGroupedAdmissionLimits>>().toMatchTypeOf<
       ViewServerRuntime<typeof viewServer.topics>
     >();
@@ -96,6 +117,10 @@ describe("runtime type contracts", () => {
       // @ts-expect-error runtime options reject string ports.
       websocketPort: "8080",
     });
+    const invalidTcpPublishPortOptions = makeViewServerRuntime(viewServer, {
+      // @ts-expect-error TCP publish ingress is not wired by the runtime package yet.
+      tcpPublishPort: 8081,
+    });
     const invalidPathOptions = makeViewServerRuntime(viewServer, {
       // @ts-expect-error runtime paths must be absolute HTTP paths.
       rpcPath: "runtime-rpc",
@@ -124,18 +149,92 @@ describe("runtime type contracts", () => {
         maxGroups: "1",
       },
     });
+    const runtimeWithKafka = makeViewServerRuntime(viewServer, {
+      kafka: {
+        consumerGroupId: "view-server-type-test",
+        regions: usaKafkaRegions,
+        topics: {
+          orders: usaKafkaTopic({
+            regions: ["usa"],
+            value: kafka.json(Order),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              price: value.price,
+            }),
+          }),
+        },
+      },
+    });
+    const invalidKafkaOptionKey = makeViewServerRuntime(viewServer, {
+      kafka: {
+        consumerGroupId: "view-server-type-test",
+        // @ts-expect-error runtime Kafka options reject misspelled consumer group keys.
+        consumerGroupID: "view-server-typo",
+        regions: usaKafkaRegions,
+        topics: {
+          orders: usaKafkaTopic({
+            regions: ["usa"],
+            value: kafka.json(Order),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              price: value.price,
+            }),
+          }),
+        },
+      },
+    });
+    const invalidMissingKafkaConsumerGroup = makeViewServerRuntime(viewServer, {
+      // @ts-expect-error runtime Kafka options require an explicit per-runtime consumer group id.
+      kafka: {
+        regions: usaKafkaRegions,
+        topics: {
+          orders: usaKafkaTopic({
+            regions: ["usa"],
+            value: kafka.json(Order),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              price: value.price,
+            }),
+          }),
+        },
+      },
+    });
+    const invalidKafkaRegionRuntime = makeViewServerRuntime(viewServer, {
+      kafka: {
+        consumerGroupId: "view-server-type-test",
+        regions: usaKafkaRegions,
+        topics: {
+          // @ts-expect-error direct runtime Kafka topics must match runtime kafka.regions keys.
+          orders: londonKafkaTopic,
+        },
+      },
+    });
     expectTypeOf(invalidPublish).not.toBeAny();
     expectTypeOf(invalidSubscribe).not.toBeAny();
     expectTypeOf(invalidTopicPublish).not.toBeAny();
     expectTypeOf(invalidSnapshot).not.toBeAny();
     expectTypeOf(invalidOptions).not.toBeAny();
+    expectTypeOf(invalidTcpPublishPortOptions).not.toBeAny();
     expectTypeOf(invalidPathOptions).not.toBeAny();
     expectTypeOf(invalidHealthPathOptions).not.toBeAny();
     expectTypeOf(invalidWildcardRpcPathOptions).not.toBeAny();
     expectTypeOf(invalidWildcardHealthPathOptions).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitKey).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
+    expectTypeOf<Effect.Success<typeof runtimeWithKafka>>().toMatchTypeOf<
+      ViewServerRuntime<typeof viewServer.topics>
+    >();
+    expectTypeOf(invalidKafkaOptionKey).not.toBeAny();
+    expectTypeOf(invalidMissingKafkaConsumerGroup).not.toBeAny();
+    expectTypeOf(invalidKafkaRegionRuntime).not.toBeAny();
     expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("port");
     expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("path");
+    expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("tcpPublishPort");
   });
 });

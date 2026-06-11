@@ -709,6 +709,7 @@ describe("remote ViewServer client", () => {
                 bytesPerSecond: 33,
                 decodedMessagesPerSecond: 20,
                 decodeFailuresPerSecond: 1,
+                processingFailuresPerSecond: 2,
                 lastMessageAt: 40,
                 lastCommitAt: 50,
                 consumerLagMessages: 9n,

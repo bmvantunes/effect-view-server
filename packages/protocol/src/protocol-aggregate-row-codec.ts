@@ -2,6 +2,11 @@ import type { TopicDefinitions, ViewServerRuntimeError } from "@view-server/conf
 import { viewServerSchemaFieldMetadata } from "@view-server/config";
 import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
+import {
+  decodeJsonFieldValue,
+  encodeJsonFieldValue,
+  type JsonFieldSchema,
+} from "./protocol-json-field-codec";
 import type { ViewServerWireAggregate } from "./protocol-query-schema";
 
 const invalidRow = (topic: string, message: string): ViewServerRuntimeError => ({
@@ -14,7 +19,7 @@ const invalidRow = (topic: string, message: string): ViewServerRuntimeError => (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isBigIntFieldSchema = (schema: Schema.Codec<unknown>): boolean =>
+const isBigIntFieldSchema = (schema: JsonFieldSchema): boolean =>
   viewServerSchemaFieldMetadata(schema).sumResultKind === "bigint";
 
 const bigintPattern = /^-?\d+$/;
@@ -68,15 +73,11 @@ const decodeAggregateEnvelope = Effect.fn("ViewServerProtocol.row.aggregate.enve
 
 const encodeAggregateJsonFieldValue = Effect.fn(
   "ViewServerProtocol.row.aggregate.jsonField.encode",
-)(function* (topic: string, field: string, schema: Schema.Codec<unknown>, value: unknown) {
-  const encoded = yield* Schema.encodeUnknownEffect(Schema.toCodecJson(schema))(value).pipe(
-    Effect.mapError((error) => invalidRow(topic, `Invalid field ${field}: ${error.message}`)),
-  );
-  return yield* Schema.decodeUnknownEffect(Schema.Json)(encoded).pipe(
-    Effect.mapError((error) =>
-      invalidRow(topic, `Field ${field} is not JSON-safe: ${error.message}`),
-    ),
-  );
+)(function* (topic: string, field: string, schema: JsonFieldSchema, value: unknown) {
+  return yield* encodeJsonFieldValue(schema, value, {
+    invalid: (message) => invalidRow(topic, `Invalid field ${field}: ${message}`),
+    notJsonSafe: (message) => invalidRow(topic, `Field ${field} is not JSON-safe: ${message}`),
+  });
 });
 
 const encodeBigIntAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.bigint.encode")(
@@ -124,23 +125,23 @@ const decodeBigDecimalAggregateValue = Effect.fn(
 });
 
 const encodeJsonAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.json.encode")(
-  function* (topic: string, field: string, schema: Schema.Codec<unknown>, value: unknown) {
+  function* (topic: string, field: string, schema: JsonFieldSchema, value: unknown) {
     const encoded = yield* encodeAggregateJsonFieldValue(topic, field, schema, value);
     return encodeJsonAggregateEnvelope(encoded);
   },
 );
 
 const decodeJsonAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.json.decode")(
-  function* (topic: string, field: string, schema: Schema.Codec<unknown>, value: unknown) {
+  function* (topic: string, field: string, schema: JsonFieldSchema, value: unknown) {
     const envelope = yield* decodeAggregateEnvelope(topic, field, value);
     if (envelope._viewServerAggregate !== "json") {
       return yield* Effect.fail(
         invalidRow(topic, `Aggregate ${field} must be a JSON aggregate envelope.`),
       );
     }
-    return yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(envelope.value).pipe(
-      Effect.mapError((error) => invalidRow(topic, `Invalid field ${field}: ${error.message}`)),
-    );
+    return yield* decodeJsonFieldValue(schema, envelope.value, {
+      invalid: (message) => invalidRow(topic, `Invalid field ${field}: ${message}`),
+    });
   },
 );
 

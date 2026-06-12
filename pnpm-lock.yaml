@@ -349,6 +349,9 @@ importers:
       '@view-server/config':
         specifier: workspace:*
         version: link:../config
+      '@view-server/effect-utils':
+        specifier: workspace:*
+        version: link:../effect-utils
       '@view-server/runtime-core':
         specifier: workspace:*
         version: link:../runtime-core

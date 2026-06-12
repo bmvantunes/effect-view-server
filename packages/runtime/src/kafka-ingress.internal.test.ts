@@ -9,8 +9,9 @@ import {
 } from "@view-server/config";
 import { makeViewServerRuntimeCore } from "@view-server/runtime-core";
 import { Buffer } from "node:buffer";
-import { Effect, Exit, Fiber, Schema, Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, Logger, References, Schema, Scope } from "effect";
 import { makeViewServerKafkaHealthLedger } from "./kafka-health";
+import type { ViewServerKafkaHealthLedger } from "./kafka-health";
 import {
   assignedPartitionsForSourceTopic,
   bootstrapBrokers,
@@ -18,6 +19,8 @@ import {
   closeKafkaConsumerAfterStartFailure,
   closeKafkaConsumerOnPostConsumeStartupFailure,
   closeKafkaConsumerOnStartFailure,
+  closeKafkaMessageStreamFiber,
+  closeStartedKafkaRegionConsumers,
   closeStartedKafkaConsumerResources,
   kafkaHeadersFromMessage,
   kafkaConsumerCloseError,
@@ -28,6 +31,7 @@ import {
   kafkaStreamCloseError,
   kafkaStreamError,
   makeViewServerKafkaIngress,
+  makeStartedKafkaConsumerResourcesFinalizer,
   mapKafkaConsumerStartError,
   mapKafkaStreamError,
   messageFromUnknown,
@@ -70,6 +74,21 @@ const viewServer = defineViewServerConfig({
 type Topics = typeof viewServer.topics;
 type KafkaMessageBytes = Buffer | null | undefined;
 type KafkaMessage = Message<KafkaMessageBytes, KafkaMessageBytes, Buffer, Buffer>;
+type CapturedLog = {
+  readonly cause: Cause.Cause<unknown>;
+  readonly message: unknown;
+};
+
+const makeCapturedLogs = () => {
+  const logs: Array<CapturedLog> = [];
+  const logger = Logger.make<unknown, void>((options) => {
+    logs.push({
+      cause: options.cause,
+      message: options.message,
+    });
+  });
+  return { logger, logs };
+};
 
 const regions = {
   cold: "localhost:9093",
@@ -452,6 +471,39 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("closes Kafka consumers even when stream close fails", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+      let streamCloseCount = 0;
+
+      const closeExit = yield* Effect.exit(
+        closeKafkaConsumer({
+          consumer: {
+            close: (force) => {
+              closeForce = force;
+            },
+          },
+          stream: {
+            close: () => {
+              streamCloseCount += 1;
+              throw new Error("stream close failed");
+            },
+          },
+        }),
+      );
+
+      expect({
+        closeForce,
+        closeFailurePreserved: Exit.isFailure(closeExit),
+        streamCloseCount,
+      }).toStrictEqual({
+        closeForce: true,
+        closeFailurePreserved: true,
+        streamCloseCount: 1,
+      });
+    }),
+  );
+
   it.effect("closes started Kafka resources with and without health listeners", () =>
     Effect.gen(function* () {
       let closeForce: boolean | undefined = undefined;
@@ -521,14 +573,201 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         }),
       };
 
-      yield* closeStartedKafkaConsumerResources(resources);
+      const exit = yield* Effect.exit(closeStartedKafkaConsumerResources(resources));
 
       expect({
         closeForce,
+        defectPreserved: Exit.hasDies(exit),
+        failed: Exit.isFailure(exit),
+        interrupted: Exit.hasInterrupts(exit),
         streamCloseCount,
       }).toStrictEqual({
         closeForce: true,
+        defectPreserved: true,
+        failed: true,
+        interrupted: false,
         streamCloseCount: 1,
+      });
+    }),
+  );
+
+  it.effect("retries started Kafka resource cleanup after a defecting close attempt", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+      let listenerCloseCount = 0;
+      let streamCloseCount = 0;
+      let listenerClose: Effect.Effect<void> = Effect.die(new Error("listener close failed"));
+      const resources: StartedKafkaConsumerResources = {
+        consumer: {
+          close: (force) => {
+            closeForce = force;
+          },
+        },
+        stream: {
+          close: () => {
+            streamCloseCount += 1;
+          },
+        },
+        healthListeners: () => ({
+          close: Effect.suspend(() => {
+            listenerCloseCount += 1;
+            const close = listenerClose;
+            listenerClose = Effect.void;
+            return close;
+          }),
+          processed: Effect.succeed(0),
+          waitForProcessed: () => Effect.void,
+        }),
+      };
+      const finalizer = yield* makeStartedKafkaConsumerResourcesFinalizer(resources);
+      const firstExit = yield* Effect.exit(finalizer);
+      yield* finalizer;
+      yield* finalizer;
+
+      expect({
+        closeForce,
+        firstAttemptDefected: Exit.hasDies(firstExit),
+        listenerCloseCount,
+        streamCloseCount,
+      }).toStrictEqual({
+        closeForce: true,
+        firstAttemptDefected: true,
+        listenerCloseCount: 2,
+        streamCloseCount: 2,
+      });
+    }),
+  );
+
+  it.effect("waits for Kafka stream fiber finalizers before close completes", () =>
+    Effect.gen(function* () {
+      let closeResourcesCount = 0;
+      let streamFinalizerCount = 0;
+      const streamFiber = yield* Effect.never.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            streamFinalizerCount += 1;
+          }),
+        ),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      yield* closeKafkaMessageStreamFiber(
+        streamFiber,
+        Effect.sync(() => {
+          closeResourcesCount += 1;
+        }),
+      );
+
+      expect({
+        closeResourcesCount,
+        streamFinalizerCount,
+      }).toStrictEqual({
+        closeResourcesCount: 1,
+        streamFinalizerCount: 1,
+      });
+    }),
+  );
+
+  it.effect("waits for Kafka stream fiber finalizers when resource cleanup defects", () =>
+    Effect.gen(function* () {
+      let closeResourcesCount = 0;
+      let streamFinalizerCount = 0;
+      const streamFiber = yield* Effect.never.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            streamFinalizerCount += 1;
+          }),
+        ),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      const exit = yield* Effect.exit(
+        closeKafkaMessageStreamFiber(
+          streamFiber,
+          Effect.gen(function* () {
+            closeResourcesCount += 1;
+            return yield* Effect.die(new Error("resource close failed"));
+          }),
+        ),
+      );
+
+      expect({
+        closeResourcesCount,
+        defectPreserved: Exit.hasDies(exit),
+        streamFinalizerCount,
+      }).toStrictEqual({
+        closeResourcesCount: 1,
+        defectPreserved: true,
+        streamFinalizerCount: 1,
+      });
+    }),
+  );
+
+  it.effect("preserves Kafka stream fiber finalizer defects during close", () =>
+    Effect.gen(function* () {
+      let closeResourcesCount = 0;
+      let streamFinalizerCount = 0;
+      const streamFiber = yield* Effect.never.pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            streamFinalizerCount += 1;
+            return yield* Effect.die(new Error("stream finalizer failed"));
+          }),
+        ),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      const exit = yield* Effect.exit(
+        closeKafkaMessageStreamFiber(
+          streamFiber,
+          Effect.sync(() => {
+            closeResourcesCount += 1;
+          }),
+        ),
+      );
+
+      expect({
+        closeResourcesCount,
+        defectPreserved: Exit.hasDies(exit),
+        streamFinalizerCount,
+      }).toStrictEqual({
+        closeResourcesCount: 1,
+        defectPreserved: true,
+        streamFinalizerCount: 1,
+      });
+    }),
+  );
+
+  it.effect("closes all started region consumers before returning close defects", () =>
+    Effect.gen(function* () {
+      const closed: Array<string> = [];
+      const closeExit = yield* Effect.exit(
+        closeStartedKafkaRegionConsumers([
+          {
+            close: Effect.gen(function* () {
+              closed.push("first");
+              return yield* Effect.die(new Error("first close failed"));
+            }),
+          },
+          {
+            close: Effect.sync(() => {
+              closed.push("second");
+            }),
+          },
+          {
+            close: Effect.sync(() => {
+              closed.push("third");
+            }),
+          },
+        ]),
+      );
+
+      expect({
+        closed,
+        defectPreserved: Exit.hasDies(closeExit),
+      }).toStrictEqual({
+        closed: ["first", "second", "third"],
+        defectPreserved: true,
       });
     }),
   );
@@ -1004,10 +1243,167 @@ describe("@view-server/runtime Kafka ingress internals", () => {
 
       yield* listenerRegistration.close;
       yield* Scope.close(scope, Exit.void);
-      yield* Effect.promise(() => Promise.resolve(consumer.close(true))).pipe(Effect.ignore);
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true)));
       yield* runtimeCore.close;
     }),
   );
+
+  it.effect("logs Kafka listener callback failures after applying ledger updates", () => {
+    const { logger, logs } = makeCapturedLogs();
+
+    return Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      const failingLedger: ViewServerKafkaHealthLedger<Topics> = {
+        ...ledger,
+        topicConnected: (sourceTopic, region, assignedPartitions, nowMillis) =>
+          ledger
+            .topicConnected(sourceTopic, region, assignedPartitions, nowMillis)
+            .pipe(Effect.andThen(Effect.die(new Error("listener ledger defect")))),
+      };
+      const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
+        bootstrapBrokers: ["127.0.0.1:1"],
+        clientId: "view-server-listener-failure-test",
+        groupId: "view-server-listener-failure-test",
+      });
+      const scope = yield* Scope.make("parallel");
+      const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
+        consumer,
+        failingLedger,
+        runtimeCore.client,
+        "local",
+        [ordersSourceTopic],
+        scope,
+      );
+      const processedWait = yield* listenerRegistration
+        .waitForProcessed(1)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      consumer.emit("consumer:group:join", {
+        groupId: "view-server-listener-failure-test",
+        memberId: "member-1",
+        assignments: [{ topic: ordersSourceTopic, partitions: [0] }],
+      });
+      yield* Fiber.join(processedWait);
+      const processed = yield* listenerRegistration.processed;
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+      const log = logs[0];
+
+      expect({
+        logCauseHasDefect: Cause.hasDies(log?.cause ?? Cause.empty),
+        logMessage: log?.message,
+        logCount: logs.length,
+        processed,
+        region: health.kafka?.regions["local"],
+        topicRegion: health.kafka?.topics[ordersSourceTopic]?.regions["local"],
+      }).toStrictEqual({
+        logCauseHasDefect: true,
+        logMessage: ["Kafka health listener dispatch failed."],
+        logCount: 1,
+        processed: 1,
+        region: {
+          status: "connected",
+          brokers: regions.local,
+          lastConnectedAt: expect.any(Number),
+          lastError: null,
+        },
+        topicRegion: {
+          connected: true,
+          assignedPartitions: 1,
+          messagesPerSecond: 0,
+          bytesPerSecond: 0,
+          decodedMessagesPerSecond: 0,
+          decodeFailuresPerSecond: 0,
+          mappingFailuresPerSecond: 0,
+          processingFailuresPerSecond: 0,
+          lastMessageAt: null,
+          lastCommitAt: null,
+          consumerLagMessages: null,
+          lagSampledAt: null,
+          committedOffset: null,
+          lastError: null,
+        },
+      });
+
+      yield* listenerRegistration.close;
+      yield* Scope.close(scope, Exit.void);
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true)));
+      yield* runtimeCore.close;
+    }).pipe(
+      Effect.provide(Logger.layer([logger])),
+      Effect.provideService(References.MinimumLogLevel, "Trace"),
+    );
+  });
+
+  it.effect("does not log pure Kafka listener interruptions", () => {
+    const { logger, logs } = makeCapturedLogs();
+
+    return Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      const interruptingLedger: ViewServerKafkaHealthLedger<Topics> = {
+        ...ledger,
+        topicConnected: () => Effect.interrupt,
+      };
+      const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
+        bootstrapBrokers: ["127.0.0.1:1"],
+        clientId: "view-server-listener-interrupt-test",
+        groupId: "view-server-listener-interrupt-test",
+      });
+      const scope = yield* Scope.make("parallel");
+      const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
+        consumer,
+        interruptingLedger,
+        runtimeCore.client,
+        "local",
+        [ordersSourceTopic],
+        scope,
+      );
+      const processedWait = yield* listenerRegistration
+        .waitForProcessed(1)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      consumer.emit("consumer:group:join", {
+        groupId: "view-server-listener-interrupt-test",
+        memberId: "member-1",
+        assignments: [{ topic: ordersSourceTopic, partitions: [0] }],
+      });
+      yield* Fiber.join(processedWait);
+      const processed = yield* listenerRegistration.processed;
+
+      expect({
+        logCount: logs.length,
+        processed,
+      }).toStrictEqual({
+        logCount: 0,
+        processed: 1,
+      });
+
+      yield* listenerRegistration.close;
+      yield* Scope.close(scope, Exit.void);
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true)));
+      yield* runtimeCore.close;
+    }).pipe(
+      Effect.provide(Logger.layer([logger])),
+      Effect.provideService(References.MinimumLogLevel, "Trace"),
+    );
+  });
 
   it.effect("reports Kafka overlay ready and starting runtime statuses", () =>
     Effect.gen(function* () {
@@ -1810,7 +2206,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       });
 
       yield* listenerRegistration.close;
-      yield* Effect.promise(() => Promise.resolve(consumer.close(true))).pipe(Effect.ignore);
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true)));
       yield* runtimeCore.close;
     }),
   );

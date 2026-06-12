@@ -24,7 +24,7 @@ if (exitCode === 0) {
     "sh",
     [
       "-c",
-      "vp run -t @view-server/runtime-core#build && vp run -t @view-server/server#build && vp test run --coverage --typecheck",
+      "vp run -t @view-server/effect-utils#build && vp run -t @view-server/runtime-core#build && vp run -t @view-server/server#build && vp test run --coverage --typecheck",
     ],
     {
       cwd: runtimeDirectory,

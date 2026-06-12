@@ -7,6 +7,7 @@ const ignoreCloseFailure =
 
 type CapturedLog = {
   readonly cause: Cause.Cause<unknown>;
+  readonly logLevel: unknown;
   readonly message: unknown;
 };
 
@@ -15,6 +16,7 @@ const makeCapturedLogs = () => {
   const logger = Logger.make<unknown, void>((options) => {
     logs.push({
       cause: options.cause,
+      logLevel: options.logLevel,
       message: options.message,
     });
   });
@@ -28,7 +30,9 @@ describe("close policy", () => {
     return Effect.gen(function* () {
       yield* Effect.fail("typed close failure").pipe(ignoreCloseFailure);
 
+      expect(logs).toHaveLength(1);
       expect(logs[0]?.message).toStrictEqual(["Ignoring close failure."]);
+      expect(logs[0]?.logLevel).toBe("Warn");
       expect(Cause.hasFails(logs[0]?.cause ?? Cause.empty)).toBe(true);
       expect(Cause.hasDies(logs[0]?.cause ?? Cause.empty)).toBe(false);
       expect(Cause.hasInterrupts(logs[0]?.cause ?? Cause.empty)).toBe(false);
@@ -84,7 +88,9 @@ describe("close policy", () => {
       expect(Cause.hasDies(cause)).toBe(true);
       expect(Cause.hasFails(cause)).toBe(false);
       expect(Cause.hasInterrupts(cause)).toBe(false);
+      expect(logs).toHaveLength(1);
       expect(logs[0]?.message).toStrictEqual(["Ignoring close failure."]);
+      expect(logs[0]?.logLevel).toBe("Warn");
       expect(Cause.hasFails(logs[0]?.cause ?? Cause.empty)).toBe(true);
       expect(Cause.hasDies(logs[0]?.cause ?? Cause.empty)).toBe(false);
       expect(Cause.hasInterrupts(logs[0]?.cause ?? Cause.empty)).toBe(false);
@@ -111,7 +117,9 @@ describe("close policy", () => {
       expect(Cause.hasDies(cause)).toBe(false);
       expect(Cause.hasFails(cause)).toBe(false);
       expect(Cause.hasInterrupts(cause)).toBe(true);
+      expect(logs).toHaveLength(1);
       expect(logs[0]?.message).toStrictEqual(["Ignoring close failure."]);
+      expect(logs[0]?.logLevel).toBe("Warn");
       expect(Cause.hasFails(logs[0]?.cause ?? Cause.empty)).toBe(true);
       expect(Cause.hasDies(logs[0]?.cause ?? Cause.empty)).toBe(false);
       expect(Cause.hasInterrupts(logs[0]?.cause ?? Cause.empty)).toBe(false);

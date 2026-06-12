@@ -17,7 +17,7 @@ export const ignoreLoggedTypedFailuresPreserveNonTypedFailures =
         const logTypedFailures =
           typedFailures.length === 0
             ? Effect.void
-            : Effect.logInfo(message, Cause.fromReasons(typedFailures));
+            : Effect.logWarning(message, Cause.fromReasons(typedFailures));
 
         return nonTypedFailures.length === 0
           ? logTypedFailures

@@ -8,16 +8,14 @@ import type {
 } from "./live-client";
 
 const ignoreRemoteSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
-  "Ignoring remote subscription close failure.",
+  "Remote subscription close failed.",
 );
 const ignoreRemoteSubscriptionStreamStartFailure =
-  ignoreLoggedTypedFailuresPreserveNonTypedFailures(
-    "Ignoring remote subscription stream start failure.",
-  );
+  ignoreLoggedTypedFailuresPreserveNonTypedFailures("Remote subscription stream start failed.");
 
 export type RemoteSubscriptionLifecycle = {
   readonly onOpen: Effect.Effect<void>;
-  readonly onClose: Effect.Effect<void>;
+  readonly onClose: Effect.Effect<void, unknown>;
 };
 
 export type RemoteSubscriptionOptions<

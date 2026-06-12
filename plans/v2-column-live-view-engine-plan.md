@@ -1597,6 +1597,17 @@ Interpretation notes:
 - Current incremental grouped write maintenance updates aggregate states reversibly for inserts,
   removals, same-group patches, and group moves. Count, count-distinct, sum, avg, min, and max are
   adjusted from the changed row instead of recomputing every dirty group from its member map.
+- Same-group patches whose changed aggregates are not used by grouped `orderBy` patch the current
+  materialized grouped evaluation in place. Visible dirty groups get fresh finalized aggregate rows;
+  dirty groups outside the visible window only advance the evaluation version. Group add/delete/move,
+  predicate enter/leave, and aggregate changes that affect grouped ordering still rebuild the grouped
+  window.
+- The default grouped-write benchmark keeps both a field-ordered grouped subscription and an
+  aggregate-ordered grouped subscription open. `grouped patch aggregate values` is therefore a mixed
+  signal: the field-ordered subscription can use the order-neutral evaluation patch, while the
+  aggregate-ordered subscription still rebuilds its grouped window. The diagnostics-backed grouped
+  correctness tests are the isolated regression guard for the order-neutral patch path until a
+  dedicated benchmark profile is added.
 - Retained `min`/`max` removals can invalidate the current extremum. The incremental executor batches
   those invalidations and recomputes each dirty `{group, aggregate}` once after the mutation batch,
   avoiding repeated retained-map scans when a single `publishMany` replaces or deletes many extrema.

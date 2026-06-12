@@ -1,6 +1,7 @@
 import {
   type MaterializedIncrementalGroupState,
   type RetainedMinMaxAggregateState,
+  finalizeGroup,
   newIncrementalGroupState,
   recomputeRetainedMinMaxAggregateState,
   removeAggregateState,
@@ -32,6 +33,16 @@ type CountOnlyIncrementalGroupState = {
 export type IncrementalGroupedQueryExecution<ResultRow extends RowObject> = {
   readonly incremental: boolean;
   readonly latest: () => QueryEvaluation<ResultRow>;
+};
+
+export type GroupedIncrementalExecutionDiagnostics = {
+  readonly onFullEvaluation: () => void;
+  readonly onPatchedEvaluation: () => void;
+};
+
+const noopGroupedIncrementalExecutionDiagnostics: GroupedIncrementalExecutionDiagnostics = {
+  onFullEvaluation: () => undefined,
+  onPatchedEvaluation: () => undefined,
 };
 
 const retainedValueAggregateCount = <Row extends RowObject>(
@@ -278,6 +289,40 @@ type UpsertIncrementalGroupedMemberResult = {
 
 type DirtyAggregateRecomputes = Set<RetainedMinMaxAggregateState>;
 
+type MaterializedEvaluationPatch = {
+  readonly dirtyGroups: Map<string, MaterializedIncrementalGroupState>;
+  requiresFullEvaluation: boolean;
+};
+
+const newMaterializedEvaluationPatch = (): MaterializedEvaluationPatch => ({
+  dirtyGroups: new Map<string, MaterializedIncrementalGroupState>(),
+  requiresFullEvaluation: false,
+});
+
+const orderByUsesAggregate = <Row extends RowObject>(
+  plan: GroupedQueryPlan<Row>,
+  alias: string,
+): boolean => {
+  for (const order of plan.orderBy) {
+    if ("aggregate" in order && order.aggregate === alias) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const markMaterializedAggregateChange = <Row extends RowObject>(
+  patch: MaterializedEvaluationPatch,
+  plan: GroupedQueryPlan<Row>,
+  group: MaterializedIncrementalGroupState,
+  alias: string,
+): void => {
+  patch.dirtyGroups.set(group.key, group);
+  if (orderByUsesAggregate(plan, alias)) {
+    patch.requiresFullEvaluation = true;
+  }
+};
+
 const markDirtyAggregateRecompute = (
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
   state: RetainedMinMaxAggregateState | undefined,
@@ -351,6 +396,7 @@ const upsertMatchingMaterializedIncrementalGroupedMember = <Row extends RowObjec
 
 const replaceMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
+  patch: MaterializedEvaluationPatch,
   group: MaterializedIncrementalGroupState,
   plan: GroupedQueryPlan<Row>,
   key: string,
@@ -361,6 +407,7 @@ const replaceMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   for (const [alias, aggregate] of Object.entries(plan.aggregates)) {
     if (aggregateValueChanged(aggregate, previous, next)) {
       const state = group.aggregates[alias]!;
+      markMaterializedAggregateChange(patch, plan, group, alias);
       markDirtyAggregateRecompute(
         dirtyAggregateRecomputes,
         removeAggregateState(state, aggregate, previous),
@@ -415,6 +462,7 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
   matches: (row: Row) => boolean,
   batch: TopicRowChangeBatch<Row>,
   limits: GroupedIncrementalAdmissionLimits,
+  patch: MaterializedEvaluationPatch,
 ): boolean => {
   const retainedAggregateCount = retainedValueAggregateCount(plan);
   const dirtyAggregateRecomputes: DirtyAggregateRecomputes = new Set();
@@ -433,6 +481,7 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
       ) {
         replaceMaterializedIncrementalGroupedMember(
           dirtyAggregateRecomputes,
+          patch,
           group,
           plan,
           change.key,
@@ -453,6 +502,7 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
       );
       if (removed) {
         state.memberCount -= 1;
+        patch.requiresFullEvaluation = true;
       }
     }
     if (change.next !== undefined) {
@@ -467,6 +517,7 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
       if (upserted === undefined) {
         continue;
       }
+      patch.requiresFullEvaluation = true;
       if (upserted.groupSize > limits.maxMembersPerGroup) {
         return false;
       }
@@ -487,6 +538,57 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
   }
   recomputeDirtyAggregateStates(dirtyAggregateRecomputes);
   return true;
+};
+
+const patchOrderNeutralMaterializedEvaluation = (
+  state: Extract<IncrementalGroupedQueryState, { readonly mode: "materialized" }>,
+  patch: MaterializedEvaluationPatch,
+): QueryEvaluation<RowObject> => {
+  if (patch.dirtyGroups.size === 0) {
+    return {
+      ...state.evaluation,
+      version: state.version,
+    };
+  }
+
+  let visibleWindowChanged = false;
+  const window = state.evaluation.window.map((entry) => {
+    const group = patch.dirtyGroups.get(entry.key);
+    if (group !== undefined) {
+      visibleWindowChanged = true;
+      return finalizeGroup(group);
+    }
+    return entry;
+  });
+
+  if (!visibleWindowChanged) {
+    return {
+      ...state.evaluation,
+      version: state.version,
+    };
+  }
+
+  return {
+    keys: window.map((entry) => entry.key),
+    rows: window.map((entry) => entry.row),
+    totalRows: state.evaluation.totalRows,
+    version: state.version,
+    window,
+  };
+};
+
+const evaluateMaterializedGroupedQueryAfterPatches = <Row extends RowObject>(
+  state: Extract<IncrementalGroupedQueryState, { readonly mode: "materialized" }>,
+  plan: GroupedQueryPlan<Row>,
+  patch: MaterializedEvaluationPatch,
+  diagnostics: GroupedIncrementalExecutionDiagnostics,
+): QueryEvaluation<RowObject> => {
+  if (patch.requiresFullEvaluation) {
+    diagnostics.onFullEvaluation();
+    return evaluateIncrementalGroupedQuery(state, plan, state.version);
+  }
+  diagnostics.onPatchedEvaluation();
+  return patchOrderNeutralMaterializedEvaluation(state, patch);
 };
 
 const applyCountOnlyIncrementalGroupedQueryBatch = <Row extends RowObject>(
@@ -524,16 +626,20 @@ const applyMaterializedIncrementalGroupedQueryBatches = <Row extends RowObject>(
   matches: (row: Row) => boolean,
   batches: ReadonlyArray<TopicRowChangeBatch<Row>>,
   limits: GroupedIncrementalAdmissionLimits,
+  diagnostics: GroupedIncrementalExecutionDiagnostics,
 ): boolean => {
+  const patch = newMaterializedEvaluationPatch();
   for (const batch of batches) {
-    if (!applyMaterializedIncrementalGroupedQueryBatch(state, plan, matches, batch, limits)) {
+    if (
+      !applyMaterializedIncrementalGroupedQueryBatch(state, plan, matches, batch, limits, patch)
+    ) {
       state.groups.clear();
       state.memberCount = 0;
       return false;
     }
     state.version = batch.version;
   }
-  state.evaluation = evaluateIncrementalGroupedQuery(state, plan, state.version);
+  state.evaluation = evaluateMaterializedGroupedQueryAfterPatches(state, plan, patch, diagnostics);
   return true;
 };
 
@@ -561,11 +667,19 @@ const applyIncrementalGroupedQueryBatches = <Row extends RowObject>(
   matches: (row: Row) => boolean,
   batches: ReadonlyArray<TopicRowChangeBatch<Row>>,
   limits: GroupedIncrementalAdmissionLimits,
+  diagnostics: GroupedIncrementalExecutionDiagnostics,
 ): boolean => {
   if (state.mode === "countOnly") {
     return applyCountOnlyIncrementalGroupedQueryBatches(state, plan, matches, batches, limits);
   }
-  return applyMaterializedIncrementalGroupedQueryBatches(state, plan, matches, batches, limits);
+  return applyMaterializedIncrementalGroupedQueryBatches(
+    state,
+    plan,
+    matches,
+    batches,
+    limits,
+    diagnostics,
+  );
 };
 
 const makeFallbackGroupedQueryExecution = <Row extends RowObject, ResultRow extends RowObject>(
@@ -599,6 +713,7 @@ export const makeIncrementalGroupedQueryExecution = <
   compiled: CompiledGroupedQuery<Row, ResultRow>,
   releaseRetainedChanges: () => void,
   limits: GroupedIncrementalAdmissionLimits = defaultGroupedIncrementalAdmissionLimits,
+  diagnostics: GroupedIncrementalExecutionDiagnostics = noopGroupedIncrementalExecutionDiagnostics,
 ): IncrementalGroupedQueryExecution<ResultRow> => {
   let build = buildIncrementalGroupedQueryState(store, compiled.plan, compiled.matches, limits);
   if (!build.admitted) {
@@ -641,6 +756,7 @@ export const makeIncrementalGroupedQueryExecution = <
           compiled.matches,
           batches,
           limits,
+          diagnostics,
         )
       ) {
         return activateFallback().latest();

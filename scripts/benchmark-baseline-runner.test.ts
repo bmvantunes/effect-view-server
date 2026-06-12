@@ -529,6 +529,23 @@ describe("benchmark baseline runner", () => {
     expect(taskRunner.terminateActiveChild("SIGTERM")).toBeUndefined();
   });
 
+  it("returns the recorded parent termination code without spawning a future task", async () => {
+    const processLike = new EventEmitter();
+    const spawnedCommands: Array<string> = [];
+    const taskRunner = createBenchmarkTaskRunner({
+      processLike,
+      spawn: (command) => {
+        spawnedCommands.push(command);
+        return new FakeChildProcess();
+      },
+    });
+
+    processLike.emit("SIGTERM");
+
+    await expect(taskRunner.runTask(makeTask(makeDirectory()))).resolves.toBe(143);
+    expect(spawnedCommands).toStrictEqual([]);
+  });
+
   it("leaves the active benchmark child intact when an older child exits", async () => {
     const firstChild = new FakeChildProcess();
     const secondChild = new FakeChildProcess();
@@ -648,6 +665,23 @@ describe("benchmark baseline runner", () => {
     });
 
     expect(exitCode).toBe(12);
+  });
+
+  it("returns the parent termination code when termination happens outside child execution", async () => {
+    const processLike = new EventEmitter();
+    const exitCode = await runBenchmarkBaselineCli({
+      argv: ["node", "script"],
+      environment: {},
+      logger: silentLogger().logger,
+      processLike,
+      runBaseline: async () => {
+        processLike.emit("SIGHUP");
+        return 0;
+      },
+      spawn: () => new FakeChildProcess(),
+    });
+
+    expect(exitCode).toBe(129);
   });
 
   it("returns unknown profile failures", async () => {

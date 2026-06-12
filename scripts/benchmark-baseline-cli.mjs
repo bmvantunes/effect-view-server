@@ -21,6 +21,10 @@ export const createBenchmarkTaskRunner = ({ processLike, spawn }) => {
 
   const runTask = (currentTask) =>
     new Promise((resolve, reject) => {
+      if (terminatingExitCode !== undefined) {
+        resolve(terminatingExitCode);
+        return;
+      }
       const child = spawn(currentTask.command, currentTask.args, {
         env: currentTask.env,
         stdio: "inherit",
@@ -51,12 +55,13 @@ export const createBenchmarkTaskRunner = ({ processLike, spawn }) => {
     });
 
   return {
+    getTerminatingExitCode: () => terminatingExitCode,
     runTask,
     terminateActiveChild,
   };
 };
 
-export const runBenchmarkBaselineCli = ({
+export const runBenchmarkBaselineCli = async ({
   argv,
   environment,
   logger,
@@ -68,10 +73,11 @@ export const runBenchmarkBaselineCli = ({
     processLike,
     spawn,
   });
-  return runBaseline({
+  const exitCode = await runBaseline({
     argv,
     environment,
     logger,
     runTask: taskRunner.runTask,
   });
+  return taskRunner.getTerminatingExitCode() ?? exitCode;
 };

@@ -27,23 +27,12 @@ const restrictedTopicStoreHelpers = [
   {
     name: "topicStoreReadModel",
     pattern: /\btopicStoreReadModel\b/,
-    allowedPaths: new Set([
-      topicStoreHealthFile,
-      topicStoreLifecycleFile,
-      topicStoreQueryFile,
-      topicStoreStateFile,
-    ]),
+    allowedPaths: new Set([topicStoreQueryFile, topicStoreStateFile]),
   },
   {
     name: "topicStoreState",
     pattern: /\btopicStoreState\b/,
-    allowedPaths: new Set([
-      topicStoreHealthFile,
-      topicStoreLifecycleFile,
-      topicStoreMutationFile,
-      topicStoreStateFile,
-      topicStoreSubscriptionFile,
-    ]),
+    allowedPaths: new Set([topicStoreMutationFile, topicStoreStateFile]),
   },
 ] as const;
 

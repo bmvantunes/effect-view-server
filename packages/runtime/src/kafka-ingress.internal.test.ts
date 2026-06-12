@@ -2124,6 +2124,82 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("preserves dangerous Kafka health source topic and region keys", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const dangerousRegions: Record<string, string> = Object.create(null);
+      dangerousRegions["__proto__"] = "localhost:9092";
+      const dangerousTopics: Record<
+        string,
+        {
+          readonly viewServerTopic: "orders";
+          readonly regions: ReadonlyArray<string>;
+        }
+      > = Object.create(null);
+      dangerousTopics["__proto__"] = {
+        regions: ["__proto__"],
+        viewServerTopic: "orders",
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: dangerousRegions,
+        topics: dangerousTopics,
+      });
+
+      yield* ledger.regionConnected("__proto__", 1_000);
+      yield* ledger.topicConnected("__proto__", "__proto__", 2, 1_000);
+      yield* ledger.messageDecoded("__proto__", "__proto__", {
+        bytes: 12,
+        committedOffset: "4",
+        nowMillis: 2_000,
+      });
+
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+      const expectedRegions: Record<string, unknown> = Object.create(null);
+      expectedRegions["__proto__"] = {
+        status: "connected",
+        brokers: "localhost:9092",
+        lastConnectedAt: 1_000,
+        lastError: null,
+      };
+      const expectedTopicRegions: Record<string, unknown> = Object.create(null);
+      expectedTopicRegions["__proto__"] = {
+        connected: true,
+        assignedPartitions: 2,
+        messagesPerSecond: 1,
+        bytesPerSecond: 12,
+        decodedMessagesPerSecond: 1,
+        decodeFailuresPerSecond: 0,
+        mappingFailuresPerSecond: 0,
+        processingFailuresPerSecond: 0,
+        lastMessageAt: 2_000,
+        lastCommitAt: 2_000,
+        consumerLagMessages: null,
+        lagSampledAt: null,
+        committedOffset: "4",
+        lastError: null,
+      };
+      const expectedTopics: Record<string, unknown> = Object.create(null);
+      expectedTopics["__proto__"] = {
+        status: "ready",
+        sourceTopic: "__proto__",
+        viewServerTopic: "orders",
+        regions: expectedTopicRegions,
+      };
+
+      expect(Object.hasOwn(health.kafka?.regions ?? {}, "__proto__")).toBe(true);
+      expect(Object.hasOwn(health.kafka?.topics ?? {}, "__proto__")).toBe(true);
+      expect(Object.hasOwn(health.kafka?.topics["__proto__"]?.regions ?? {}, "__proto__")).toBe(
+        true,
+      );
+      expect(health.kafka).toStrictEqual({
+        regions: expectedRegions,
+        topics: expectedTopics,
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("does not run Kafka listener callbacks after their scope closes", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

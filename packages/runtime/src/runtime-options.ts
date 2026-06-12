@@ -42,7 +42,7 @@ const resolveKafkaOptions: <
     const entries = yield* Effect.forEach(Object.entries(options.regions), ([region, value]) =>
       resolveRuntimeValue(value).pipe(Effect.map((bootstrap) => [region, bootstrap] as const)),
     );
-    const regions: Record<string, string> = {};
+    const regions: Record<string, string> = Object.create(null);
     for (const [region, bootstrap] of entries) {
       regions[region] = bootstrap;
     }

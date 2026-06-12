@@ -54,6 +54,16 @@ const order = (id: string, price: number): OrderRow => ({
   price,
 });
 
+const nullRecord = <Value>(
+  entries: ReadonlyArray<readonly [string, Value]>,
+): Record<string, Value> => {
+  const record: Record<string, Value> = Object.create(null);
+  for (const [key, value] of entries) {
+    record[key] = value;
+  }
+  return record;
+};
+
 const fetchHealth = Effect.fn("ViewServerRuntime.test.health.fetch")(function* (url: string) {
   const response = yield* Effect.promise(() => fetch(url));
   const text = yield* Effect.promise(() => response.text());
@@ -383,15 +393,72 @@ describe("@view-server/runtime", () => {
         ),
       }).toStrictEqual({
         consumerGroupId: "view-server-test-runtime",
-        regions: {
-          local: "localhost:9092",
-        },
+        regions: nullRecord([["local", "localhost:9092"]]),
         topics: {
           "orders-source": {
             regions: ["local"],
             viewServerTopic: "orders",
           },
         },
+      });
+
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("preserves dangerous Kafka runtime option keys", () =>
+    Effect.gen(function* () {
+      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof viewServer.topics>;
+      let kafkaOptions: ResolvedViewServerKafkaRuntimeOptions<typeof viewServer.topics> | undefined;
+      const regions = nullRecord([["__proto__", Config.succeed("localhost:9092")]]);
+      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const dangerousTopic = localKafkaTopic({
+        regions: ["__proto__"],
+        value: kafka.json(Order),
+        key: kafka.stringKey(),
+        viewServerTopic: "orders",
+        mapping: ({ key, value }) => ({
+          id: key,
+          price: value.price,
+        }),
+      });
+      const topics = nullRecord([["__proto__", dangerousTopic]]);
+      const dependencies: RuntimeDependencies = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            close: Effect.void,
+          }),
+        makeKafkaIngress: (_config, _client, options) => {
+          kafkaOptions = options;
+          return Effect.succeed({
+            close: Effect.void,
+          });
+        },
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        kafka: {
+          consumerGroupId: "view-server-dangerous-key-test-runtime",
+          regions,
+          topics,
+        },
+      });
+
+      expect(Object.hasOwn(kafkaOptions?.regions ?? {}, "__proto__")).toBe(true);
+      expect(Object.hasOwn(kafkaOptions?.topics ?? {}, "__proto__")).toBe(true);
+      expect({
+        consumerGroupId: kafkaOptions?.consumerGroupId,
+        region: kafkaOptions?.regions["__proto__"],
+        topicRegions: kafkaOptions?.topics["__proto__"]?.regions,
+        viewServerTopic: kafkaOptions?.topics["__proto__"]?.viewServerTopic,
+      }).toStrictEqual({
+        consumerGroupId: "view-server-dangerous-key-test-runtime",
+        region: "localhost:9092",
+        topicRegions: ["__proto__"],
+        viewServerTopic: "orders",
       });
 
       yield* runtime.close;

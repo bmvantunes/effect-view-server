@@ -2265,6 +2265,378 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
     }),
   );
 
+  it.effect("patches order-neutral grouped aggregate rows without changing window order", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      let scanCount = 0;
+      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      const rows = new Map<string, object>([
+        ["cancelled", order("cancelled", "cancelled", 5, 1, "emea")],
+        ["open-a", order("open-a", "open", 10, 2, "emea")],
+        ["open-b", order("open-b", "open", 20, 3, "emea")],
+        ["closed", order("closed", "closed", 7, 4, "emea")],
+      ]);
+      const store = {
+        changesSince: () => batches,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          scanCount += 1;
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      let fullEvaluationCount = 0;
+      let patchedEvaluationCount = 0;
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            maxPrice: { aggFunc: "max", field: "price" },
+            rowCount: { aggFunc: "count" },
+            totalPrice: { aggFunc: "sum", field: "price" },
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+          limit: 3,
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(
+        store,
+        compiled,
+        () => {},
+        defaultGroupedIncrementalAdmissionLimits,
+        {
+          onFullEvaluation: () => {
+            fullEvaluationCount += 1;
+          },
+          onPatchedEvaluation: () => {
+            patchedEvaluationCount += 1;
+          },
+        },
+      );
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: "1",
+          totalPrice: "5",
+        },
+        {
+          status: "closed",
+          maxPrice: 7,
+          rowCount: "1",
+          totalPrice: "7",
+        },
+        {
+          status: "open",
+          maxPrice: 20,
+          rowCount: "2",
+          totalPrice: "30",
+        },
+      ]);
+
+      const previous = order("open-a", "open", 10, 2, "emea");
+      const next = order("open-a", "open", 15, 5, "emea");
+      rows.set("open-a", next);
+      version = 1;
+      batches = [
+        {
+          version,
+          changes: [{ key: "open-a", previous, next }],
+        },
+      ];
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: "1",
+          totalPrice: "5",
+        },
+        {
+          status: "closed",
+          maxPrice: 7,
+          rowCount: "1",
+          totalPrice: "7",
+        },
+        {
+          status: "open",
+          maxPrice: 20,
+          rowCount: "2",
+          totalPrice: "35",
+        },
+      ]);
+      expect(execution.latest().version).toBe(1);
+      expect(scanCount).toBe(1);
+      expect(fullEvaluationCount).toBe(0);
+      expect(patchedEvaluationCount).toBe(1);
+
+      const recomputedExtremumPrevious = order("open-b", "open", 20, 3, "emea");
+      const recomputedExtremumNext = order("open-b", "open", 12, 6, "emea");
+      rows.set("open-b", recomputedExtremumNext);
+      version = 2;
+      batches = [
+        {
+          version,
+          changes: [
+            {
+              key: "open-b",
+              previous: recomputedExtremumPrevious,
+              next: recomputedExtremumNext,
+            },
+          ],
+        },
+      ];
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: "1",
+          totalPrice: "5",
+        },
+        {
+          status: "closed",
+          maxPrice: 7,
+          rowCount: "1",
+          totalPrice: "7",
+        },
+        {
+          status: "open",
+          maxPrice: 15,
+          rowCount: "2",
+          totalPrice: "27",
+        },
+      ]);
+      expect(execution.latest().version).toBe(2);
+      expect(scanCount).toBe(1);
+      expect(fullEvaluationCount).toBe(0);
+      expect(patchedEvaluationCount).toBe(2);
+
+      const unchangedAggregatePrevious = order("open-b", "open", 12, 6, "emea");
+      const unchangedAggregateNext = order("open-b", "open", 12, 7, "emea");
+      rows.set("open-b", unchangedAggregateNext);
+      version = 3;
+      batches = [
+        {
+          version,
+          changes: [
+            {
+              key: "open-b",
+              previous: unchangedAggregatePrevious,
+              next: unchangedAggregateNext,
+            },
+          ],
+        },
+      ];
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: "1",
+          totalPrice: "5",
+        },
+        {
+          status: "closed",
+          maxPrice: 7,
+          rowCount: "1",
+          totalPrice: "7",
+        },
+        {
+          status: "open",
+          maxPrice: 15,
+          rowCount: "2",
+          totalPrice: "27",
+        },
+      ]);
+      expect(execution.latest().version).toBe(3);
+      expect(scanCount).toBe(1);
+      expect(fullEvaluationCount).toBe(0);
+      expect(patchedEvaluationCount).toBe(3);
+    }),
+  );
+
+  it.effect("keeps order-neutral grouped patches outside the visible window invisible", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      let scanCount = 0;
+      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      const rows = new Map<string, object>([
+        ["cancelled", order("cancelled", "cancelled", 5, 1, "emea")],
+        ["open-a", order("open-a", "open", 10, 2, "emea")],
+        ["open-b", order("open-b", "open", 20, 3, "emea")],
+      ]);
+      let fullEvaluationCount = 0;
+      let patchedEvaluationCount = 0;
+      const store = {
+        changesSince: () => batches,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          scanCount += 1;
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            maxPrice: { aggFunc: "max", field: "price" },
+            rowCount: { aggFunc: "count" },
+            totalPrice: { aggFunc: "sum", field: "price" },
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+          limit: 1,
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(
+        store,
+        compiled,
+        () => {},
+        defaultGroupedIncrementalAdmissionLimits,
+        {
+          onFullEvaluation: () => {
+            fullEvaluationCount += 1;
+          },
+          onPatchedEvaluation: () => {
+            patchedEvaluationCount += 1;
+          },
+        },
+      );
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: "1",
+          totalPrice: "5",
+        },
+      ]);
+
+      const previous = order("open-a", "open", 10, 2, "emea");
+      const next = order("open-a", "open", 15, 5, "emea");
+      rows.set("open-a", next);
+      version = 1;
+      batches = [
+        {
+          version,
+          changes: [{ key: "open-a", previous, next }],
+        },
+      ];
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: "1",
+          totalPrice: "5",
+        },
+      ]);
+      expect(execution.latest().version).toBe(1);
+      expect(scanCount).toBe(1);
+      expect(fullEvaluationCount).toBe(0);
+      expect(patchedEvaluationCount).toBe(1);
+    }),
+  );
+
+  it.effect("fully re-evaluates grouped windows when patched aggregates drive ordering", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      let scanCount = 0;
+      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      const rows = new Map<string, object>([
+        ["open", order("open", "open", 10, 1, "emea")],
+        ["closed", order("closed", "closed", 20, 2, "emea")],
+      ]);
+      const store = {
+        changesSince: () => batches,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          scanCount += 1;
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      let fullEvaluationCount = 0;
+      let patchedEvaluationCount = 0;
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            rowCount: { aggFunc: "count" },
+            totalPrice: { aggFunc: "sum", field: "price" },
+          },
+          orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
+          limit: 2,
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(
+        store,
+        compiled,
+        () => {},
+        defaultGroupedIncrementalAdmissionLimits,
+        {
+          onFullEvaluation: () => {
+            fullEvaluationCount += 1;
+          },
+          onPatchedEvaluation: () => {
+            patchedEvaluationCount += 1;
+          },
+        },
+      );
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "closed",
+          rowCount: "1",
+          totalPrice: "20",
+        },
+        {
+          status: "open",
+          rowCount: "1",
+          totalPrice: "10",
+        },
+      ]);
+
+      const previous = order("open", "open", 10, 1, "emea");
+      const next = order("open", "open", 30, 3, "emea");
+      rows.set("open", next);
+      version = 1;
+      batches = [
+        {
+          version,
+          changes: [{ key: "open", previous, next }],
+        },
+      ];
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "open",
+          rowCount: "1",
+          totalPrice: "30",
+        },
+        {
+          status: "closed",
+          rowCount: "1",
+          totalPrice: "20",
+        },
+      ]);
+      expect(scanCount).toBe(1);
+      expect(fullEvaluationCount).toBe(1);
+      expect(patchedEvaluationCount).toBe(0);
+    }),
+  );
+
   it.effect("tracks incremental zero-limit grouped counts without aggregate windows", () =>
     Effect.gen(function* () {
       let version = 0;
@@ -3936,6 +4308,122 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       health = yield* engine.health();
       expect(health.topics.orders.activeViews).toBe(0);
       expect(health.topics.orders.activeSubscriptions).toBe(0);
+    }),
+  );
+
+  it.effect("emits grouped deltas for order-neutral aggregate patches", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [
+        order("cancelled", "cancelled", 5, 1, "emea"),
+        order("closed", "closed", 7, 2, "emea"),
+        order("open-a", "open", 10, 3, "emea"),
+        order("open-b", "open", 20, 4, "emea"),
+      ]);
+      const query = {
+        groupBy: ["status"],
+        aggregates: {
+          maxPrice: { aggFunc: "max", field: "price" },
+          rowCount: { aggFunc: "count" },
+          totalPrice: { aggFunc: "sum", field: "price" },
+        },
+        orderBy: [{ field: "status", direction: "asc" }],
+        limit: 3,
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: {
+          readonly maxPrice: { readonly aggFunc: "max"; readonly field: "price" };
+          readonly rowCount: { readonly aggFunc: "count" };
+          readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" };
+        };
+        readonly orderBy: readonly [{ readonly field: "status"; readonly direction: "asc" }];
+        readonly limit: 3;
+      };
+
+      const subscription = yield* engine.subscribe("orders", query);
+      const read = yield* makeEventReader(subscription);
+      const snapshot = firstEvent(yield* read(1));
+      expectSnapshotEvent(snapshot);
+      expect(snapshot.rows).toStrictEqual([
+        {
+          status: "cancelled",
+          maxPrice: 5,
+          rowCount: 1n,
+          totalPrice: fromStringUnsafe("5"),
+        },
+        {
+          status: "closed",
+          maxPrice: 7,
+          rowCount: 1n,
+          totalPrice: fromStringUnsafe("7"),
+        },
+        {
+          status: "open",
+          maxPrice: 20,
+          rowCount: 2n,
+          totalPrice: fromStringUnsafe("30"),
+        },
+      ]);
+      const openGroupKey = expectDefined(snapshot.keys[2]);
+      const queryId = snapshot.queryId;
+
+      yield* engine.patch("orders", "open-a", {
+        price: 15,
+        updatedAt: 5,
+      });
+      const visibleDelta = firstEvent(yield* read(1));
+      expectDeltaEvent(visibleDelta);
+      expect(visibleDelta).toStrictEqual({
+        type: "delta",
+        topic: "orders",
+        queryId,
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [
+          {
+            type: "update",
+            key: openGroupKey,
+            row: {
+              status: "open",
+              maxPrice: 20,
+              rowCount: 2n,
+              totalPrice: fromStringUnsafe("35"),
+            },
+            index: 2,
+          },
+        ],
+        totalRows: 3,
+      });
+
+      yield* engine.patch("orders", "open-b", {
+        price: 12,
+        updatedAt: 6,
+      });
+      const extremumDelta = firstEvent(yield* read(1));
+      expectDeltaEvent(extremumDelta);
+      expect(extremumDelta).toStrictEqual({
+        type: "delta",
+        topic: "orders",
+        queryId,
+        fromVersion: 2,
+        toVersion: 3,
+        operations: [
+          {
+            type: "update",
+            key: openGroupKey,
+            row: {
+              status: "open",
+              maxPrice: 15,
+              rowCount: 2n,
+              totalPrice: fromStringUnsafe("27"),
+            },
+            index: 2,
+          },
+        ],
+        totalRows: 3,
+      });
+
+      yield* subscription.close();
     }),
   );
 

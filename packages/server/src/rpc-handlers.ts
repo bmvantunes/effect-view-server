@@ -15,7 +15,7 @@ import { Effect, Exit, Stream } from "effect";
 import type { ViewServerWebSocketServerInput } from "./server-types";
 
 const ignoreSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
-  "Ignoring RPC subscription close failure.",
+  "RPC subscription close failed.",
 );
 
 export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>(

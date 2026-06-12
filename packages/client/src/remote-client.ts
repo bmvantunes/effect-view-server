@@ -169,7 +169,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
     source: Stream.Stream<ViewServerLiveEvent<Row, Topic, Key>, ViewServerRemoteClientError>,
     lifecycle: {
       readonly onOpen: Effect.Effect<void>;
-      readonly onClose: Effect.Effect<void>;
+      readonly onClose: Effect.Effect<void, unknown>;
     } = {
       onOpen: Effect.void,
       onClose: Effect.void,

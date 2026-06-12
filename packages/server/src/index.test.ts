@@ -990,9 +990,17 @@ describe("@view-server/server", () => {
   );
 
   it.live("logs typed RPC handler stream finalization close failures", () => {
-    const logMessages: Array<unknown> = [];
+    const logs: Array<{
+      readonly cause: Cause.Cause<unknown>;
+      readonly logLevel: unknown;
+      readonly message: unknown;
+    }> = [];
     const logger = Logger.make<unknown, void>((options) => {
-      logMessages.push(options.message);
+      logs.push({
+        cause: options.cause,
+        logLevel: options.logLevel,
+        message: options.message,
+      });
     });
     let closeAttempts = 0;
     const closeFailure: ViewServerTransportError = {
@@ -1049,7 +1057,12 @@ describe("@view-server/server", () => {
 
       yield* Deferred.await(closeStarted);
       expect(closeAttempts).toBe(1);
-      expect(logMessages).toStrictEqual([["Ignoring RPC subscription close failure."]]);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.message).toStrictEqual(["RPC subscription close failed."]);
+      expect(logs[0]?.logLevel).toBe("Warn");
+      expect(Cause.hasFails(logs[0]?.cause ?? Cause.empty)).toBe(true);
+      expect(Cause.hasDies(logs[0]?.cause ?? Cause.empty)).toBe(false);
+      expect(Cause.hasInterrupts(logs[0]?.cause ?? Cause.empty)).toBe(false);
       yield* inMemory.close;
     }).pipe(
       Effect.provide(Logger.layer([logger])),
@@ -1060,9 +1073,17 @@ describe("@view-server/server", () => {
   it.live(
     "preserves RPC handler stream finalization close defects mixed with typed failures",
     () => {
-      const logMessages: Array<unknown> = [];
+      const logs: Array<{
+        readonly cause: Cause.Cause<unknown>;
+        readonly logLevel: unknown;
+        readonly message: unknown;
+      }> = [];
       const logger = Logger.make<unknown, void>((options) => {
-        logMessages.push(options.message);
+        logs.push({
+          cause: options.cause,
+          logLevel: options.logLevel,
+          message: options.message,
+        });
       });
       let closeAttempts = 0;
       const closeFailure: ViewServerTransportError = {
@@ -1121,7 +1142,12 @@ describe("@view-server/server", () => {
         expect(Cause.hasDies(cause)).toBe(true);
         expect(Cause.hasFails(cause)).toBe(false);
         expect(closeAttempts).toBe(1);
-        expect(logMessages).toStrictEqual([["Ignoring RPC subscription close failure."]]);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.message).toStrictEqual(["RPC subscription close failed."]);
+        expect(logs[0]?.logLevel).toBe("Warn");
+        expect(Cause.hasFails(logs[0]?.cause ?? Cause.empty)).toBe(true);
+        expect(Cause.hasDies(logs[0]?.cause ?? Cause.empty)).toBe(false);
+        expect(Cause.hasInterrupts(logs[0]?.cause ?? Cause.empty)).toBe(false);
         yield* inMemory.close;
       }).pipe(
         Effect.provide(Logger.layer([logger])),

@@ -1653,13 +1653,17 @@ batches can update the shared base window incrementally by merging the previous 
 matching inserted rows, sorting that retained candidate window, and preserving `totalRows`. Retained
 updates/deletes that provably do not match the predicate are ignored without rescanning. Retained
 deletes or predicate-leaving updates can refill visible windows from the lookahead row when one
-changed row leaves the retained window. Matching deletes outside the retained window update
-`totalRows` without touching the visible window. For `limit: 0` count-only subscriptions, retained
-inserts, updates, and deletes adjust `totalRows` directly because there is no visible window to
-refill. Visible match-to-match updates, unavailable retained changes, exhausted lookahead, and
-base-window shape changes still fall back to a full raw window scan. This keeps correctness local
-while making append-heavy live top-k deltas, simple retained deletes/leaves, and count-only retained
-changes avoid full 10M-row re-evaluation.
+changed row leaves the retained window. Matching retained match-to-match updates that compare equal
+or better than their previous retained entry update the retained candidate window without rescanning.
+Matching deletes outside the retained window update `totalRows` without touching the visible window.
+For `limit: 0` count-only subscriptions, retained inserts, updates, and deletes adjust `totalRows`
+directly because there is no visible window to refill. Unavailable retained changes, exhausted
+lookahead, match-to-match updates outside retained lookahead, match-to-match updates that move
+worse within finite retained windows, and base-window shape changes still fall back to a full raw
+window scan. This includes same-index tail updates that become worse than outside lookahead rows.
+This keeps correctness local while making append-heavy live top-k deltas, simple retained
+deletes/leaves, safe retained match-to-match updates, and count-only retained changes avoid full
+10M-row re-evaluation.
 
 Current directional result after the insert-only path:
 
@@ -1690,6 +1694,9 @@ one retained-change case per process so subscription queues and mutable engine s
 cross-contaminate cases:
 
 - `noop`: insert, update, and delete a nonmatching closed row while asserting no queued event.
+- `match-update`: patch the current top row so it remains matching and retained, asserting one
+  update delta. The no-rescan guarantee is enforced by the retained-window correctness tests with
+  scan-count instrumentation.
 - `predicate-enter`: insert a closed row, patch it into the predicate, and read the retained delta.
 - `visible-delete`: repeatedly delete the current visible top row and read the refill/fallback
   delta sequence.
@@ -1704,6 +1711,7 @@ parallel:
 
 ```bash
 VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE=noop VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta
+VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE=match-update VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta
 VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE=predicate-enter VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta
 VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE=visible-delete VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta
 VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE=exhausted-lookahead VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta
@@ -1714,6 +1722,7 @@ For the default case-specific scripts:
 
 ```bash
 VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta:noop
+VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta:match-update
 VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta:predicate-enter
 VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta:visible-delete
 VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#bench:raw-active-retained-delta:exhausted-lookahead
@@ -1722,8 +1731,8 @@ VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#b
 
 Raw active retained delta knobs:
 
-- `VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE`: `noop`, `predicate-enter`, `visible-delete`,
-  `exhausted-lookahead`, or `count-only`.
+- `VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE`: `noop`, `match-update`, `predicate-enter`,
+  `visible-delete`, `exhausted-lookahead`, or `count-only`.
 - `VIEW_SERVER_ENGINE_BENCH_ROWS`: seeded row count for this benchmark process; minimum 101.
 - `VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE`: publish batch size while seeding.
 - `VIEW_SERVER_ENGINE_BENCH_ITERATIONS`: exact benchmark iterations per case.

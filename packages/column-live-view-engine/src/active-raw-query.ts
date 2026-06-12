@@ -34,6 +34,15 @@ type ActiveQueryBaseEvaluation<Row extends RowObject> = TopicRawWindowScanResult
   readonly version: number;
 };
 
+type RetainedWindowEntry = {
+  readonly key: string;
+  readonly row: RowObject;
+};
+
+type RetainedReplacementResult = {
+  readonly window: ReadonlyArray<RetainedWindowEntry>;
+};
+
 const retainedWindowFilled = (
   window: ReadonlyArray<{ readonly key: string; readonly row: RowObject }>,
   totalRows: number,
@@ -75,6 +84,38 @@ const evaluateBaseQuery = <Row extends RowObject, ResultRow extends RowObject>(
   };
 };
 
+const replaceRetainedMatchingEntry = (
+  windowEntries: ReadonlyArray<RetainedWindowEntry>,
+  key: string,
+  row: RowObject,
+  compare: (left: RetainedWindowEntry, right: RetainedWindowEntry) => number,
+  retainedLimit: number | undefined,
+): RetainedReplacementResult | undefined => {
+  let previousIndex = -1;
+  let previousEntry: RetainedWindowEntry | undefined;
+  for (const [index, entry] of windowEntries.entries()) {
+    if (entry.key === key) {
+      previousIndex = index;
+      previousEntry = entry;
+      break;
+    }
+  }
+  if (previousEntry === undefined) {
+    return undefined;
+  }
+  const nextEntry = { key, row };
+  if (retainedLimit !== undefined && compare(nextEntry, previousEntry) > 0) {
+    return undefined;
+  }
+  const replaced = windowEntries.map((entry, index) =>
+    index === previousIndex ? nextEntry : entry,
+  );
+  const sorted = replaced.toSorted(compare);
+  return {
+    window: retainedLimit === undefined ? sorted : sorted.slice(0, retainedLimit),
+  };
+};
+
 const updateBaseEvaluationFromRetainedChanges = (
   store: ActiveQueryStoreState,
   compiled: CompiledRawQuery<object, object>,
@@ -108,7 +149,26 @@ const updateBaseEvaluationFromRetainedChanges = (
 
       if (change.previous !== undefined) {
         if (previousMatches && nextMatches) {
-          return undefined;
+          const pendingInsertedEntry = insertedWindowEntries.get(change.key);
+          if (pendingInsertedEntry !== undefined) {
+            insertedWindowEntries.set(change.key, {
+              key: change.key,
+              row: change.next,
+            });
+            continue;
+          }
+          const replacedWindow = replaceRetainedMatchingEntry(
+            windowEntries,
+            change.key,
+            change.next,
+            compiled.plan.compare,
+            queryWindow.limit,
+          );
+          if (replacedWindow === undefined) {
+            return undefined;
+          }
+          windowEntries = replacedWindow.window;
+          continue;
         }
         if (previousMatches) {
           totalRows -= 1;

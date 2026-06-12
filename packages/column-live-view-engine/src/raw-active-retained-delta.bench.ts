@@ -51,6 +51,7 @@ type SelectedOrderRow = Pick<OrderRow, "id" | "score" | "status" | "updatedAt">;
 type RetainedDeltaCaseName =
   | "count-only"
   | "exhausted-lookahead"
+  | "match-update"
   | "noop"
   | "predicate-enter"
   | "visible-delete";
@@ -78,6 +79,14 @@ type ExhaustedLookaheadValidation = {
   readonly totalRowsAfterFirstDelete: number;
   readonly totalRowsAfterSecondDelete: number;
 };
+type MatchUpdateValidation = {
+  readonly caseName: "match-update";
+  readonly events: ReadonlyArray<OrderEvent>;
+  readonly fromVersion: number;
+  readonly row: OrderRow;
+  readonly toVersion: number;
+  readonly totalRows: number;
+};
 type PredicateEnterValidation = {
   readonly caseName: "predicate-enter";
   readonly enteredRow: OrderRow;
@@ -99,6 +108,7 @@ type VisibleDeleteValidation = {
 type RecordedValidation =
   | CountOnlyValidation
   | ExhaustedLookaheadValidation
+  | MatchUpdateValidation
   | PredicateEnterValidation
   | VisibleDeleteValidation;
 type RetainedDeltaCaseDefinition = {
@@ -121,6 +131,7 @@ type BenchmarkProfile = {
   memoryAfterSetup: BenchmarkMemorySnapshot | undefined;
   nextCountIndex: number;
   nextExhaustedDeleteIndex: number;
+  nextMatchUpdateScore: number;
   nextNoopIndex: number;
   nextPredicateEnterIndex: number;
   nextVisibleDeleteIndex: number;
@@ -194,6 +205,7 @@ const retainedCaseNameFromEnv = (): RetainedDeltaCaseName => {
   if (
     trimmed === "count-only" ||
     trimmed === "exhausted-lookahead" ||
+    trimmed === "match-update" ||
     trimmed === "noop" ||
     trimmed === "predicate-enter" ||
     trimmed === "visible-delete"
@@ -201,7 +213,7 @@ const retainedCaseNameFromEnv = (): RetainedDeltaCaseName => {
     return trimmed;
   }
   throw new Error(
-    "VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE must be count-only, exhausted-lookahead, noop, predicate-enter, or visible-delete.",
+    "VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE must be count-only, exhausted-lookahead, match-update, noop, predicate-enter, or visible-delete.",
   );
 };
 
@@ -259,6 +271,7 @@ const profile: BenchmarkProfile = {
   memoryAfterSetup: undefined,
   nextCountIndex: benchmarkRowCount,
   nextExhaustedDeleteIndex: benchmarkRowCount - 1,
+  nextMatchUpdateScore: 5_000_000_000,
   nextNoopIndex: 0,
   nextPredicateEnterIndex: 0,
   nextVisibleDeleteIndex: benchmarkRowCount - 1,
@@ -475,6 +488,27 @@ const validateExhaustedLookahead = (validation: ExhaustedLookaheadValidation): v
   ]);
 };
 
+const validateMatchUpdate = (validation: MatchUpdateValidation): void => {
+  expectSingleDelta(validation.events, {
+    fromVersion: validation.fromVersion,
+    toVersion: validation.toVersion,
+    operations: [
+      {
+        type: "update",
+        key: validation.row.id,
+        row: {
+          id: validation.row.id,
+          score: validation.row.score,
+          status: "open",
+          updatedAt: validation.row.updatedAt,
+        },
+        index: 0,
+      },
+    ],
+    totalRows: validation.totalRows,
+  });
+};
+
 const validatePredicateEnter = (validation: PredicateEnterValidation): void => {
   expectSingleDelta(validation.events, {
     fromVersion: validation.fromVersion,
@@ -533,6 +567,10 @@ const validateRecordedEvents = (validation: RecordedValidation): void => {
     }
     case "exhausted-lookahead": {
       validateExhaustedLookahead(validation);
+      return;
+    }
+    case "match-update": {
+      validateMatchUpdate(validation);
       return;
     }
     case "predicate-enter": {
@@ -601,6 +639,41 @@ const retainedCases: Record<RetainedDeltaCaseName, RetainedDeltaCaseDefinition> 
           toVersion,
           totalRowsAfterFirstDelete: benchmarkProfile.nextExhaustedDeleteIndex + 2,
           totalRowsAfterSecondDelete: benchmarkProfile.nextExhaustedDeleteIndex + 1,
+        });
+        benchmarkProfile.lastDeliveredVersion = toVersion;
+      },
+    ),
+  },
+  "match-update": {
+    benchmarkLabel: "retained match-to-match update delta",
+    subscribe: subscribeTopK,
+    run: Effect.fn("ColumnLiveViewEngine.bench.rawActiveRetainedDelta.matchUpdate")(
+      function* (benchmarkProfile) {
+        const engine = profileEngine(benchmarkProfile);
+        const readEvent = profileEventReader(benchmarkProfile);
+        const topRowKey = `order-${benchmarkProfile.rowCount - 1}`;
+        const score = benchmarkProfile.nextMatchUpdateScore;
+        benchmarkProfile.nextMatchUpdateScore += 1;
+        const row = {
+          ...seedOrder(benchmarkProfile.rowCount - 1),
+          score,
+          updatedAt: score,
+        };
+        const fromVersion = benchmarkProfile.lastDeliveredVersion;
+        const toVersion = fromVersion + 1;
+        yield* engine.patch("orders", topRowKey, {
+          score: row.score,
+          updatedAt: row.updatedAt,
+        });
+        benchmarkProfile.measuredMutationCount += 1;
+        const events = yield* readEvent(1);
+        benchmarkProfile.validations.push({
+          caseName: "match-update",
+          events,
+          fromVersion,
+          row,
+          toVersion,
+          totalRows: benchmarkProfile.rowCount,
         });
         benchmarkProfile.lastDeliveredVersion = toVersion;
       },

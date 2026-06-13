@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Logger, References, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Logger, References, Scope, Stream } from "effect";
 import type { StatusEvent } from "@view-server/config";
 import type { ViewServerLiveEvent } from "./live-client";
 import { makeRemoteSubscription } from "./remote-subscription";
@@ -124,6 +124,55 @@ describe("remote subscription", () => {
 
       expect(Exit.isFailure(closeExit)).toBe(true);
       expect(closeCount).toBe(1);
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("ends events without a transport error when the client scope closes", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      let failureStatusCount = 0;
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus: (topic, error) => {
+          failureStatusCount += 1;
+          return failureStatus(topic, error);
+        },
+        source: Stream.never,
+        subscriptionBufferSize: 2,
+        topic: "orders",
+      });
+      const eventsFiber = yield* subscription.events.pipe(Stream.runCollect, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* Scope.close(clientScope, Exit.void);
+      const events = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second"));
+
+      expect(failureStatusCount).toBe(0);
+      expect(Array.from(events)).toStrictEqual([]);
+    }),
+  );
+
+  it.effect("does not turn source defects into clean event completion", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        source: Stream.die("source defect"),
+        subscriptionBufferSize: 2,
+        topic: "orders",
+      });
+
+      const defectSeen = yield* subscription.events.pipe(
+        Stream.runCollect,
+        Effect.matchCause({
+          onFailure: Cause.hasDies,
+          onSuccess: () => false,
+        }),
+      );
+
+      expect(defectSeen).toBe(true);
       yield* Scope.close(clientScope, Exit.void);
     }),
   );

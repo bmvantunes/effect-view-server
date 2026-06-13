@@ -43,7 +43,14 @@ import {
 } from "./raw-query-compiler";
 import { evaluateCompiledGroupedQuery, prepareGroupedQuery } from "./grouped-query-compiler";
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
-import { cloneRecord, cloneRow, fieldValue, rowsEqual, scalarEqualityKey } from "./row-values";
+import {
+  cloneRecord,
+  cloneRow,
+  fieldValue,
+  rowsEqual,
+  scalarEqualityKey,
+  valuesEqual,
+} from "./row-values";
 import type { TopicRowChangeBatch } from "./row-scan";
 import { scanTopicRawWindow } from "./topic-raw-window-scanner";
 import {
@@ -4054,44 +4061,19 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         id: Schema.String,
         amount: Schema.Union([Schema.Number, Schema.BigInt, Schema.BigDecimal]),
       });
-      const mixedNumericCompiled = yield* prepareRawQuery<object, object>(
-        "mixedNumeric",
-        rawQueryCompilerMetadata(MixedNumeric),
-        {
+      const mixedNumericRangeError = yield* Effect.flip(
+        prepareRawQuery<object, object>("mixedNumeric", rawQueryCompilerMetadata(MixedNumeric), {
           select: ["id"],
           where: {
             amount: {
               gt: 1,
             },
           },
-        },
+        }),
       );
-      const mixedNumericEvaluation = evaluateRawQuery(
-        {
-          scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
-              filters: [],
-              callbackRequired: true,
-              callbackSkippable: false,
-            });
-            expect(plan.matches({ id: "number", amount: 2 })).toBe(true);
-            expect(plan.matches({ id: "bigint", amount: 2n })).toBe(false);
-            expect(plan.matches({ id: "decimal", amount: fromStringUnsafe("2") })).toBe(false);
-            return {
-              keys: [],
-              window: [],
-              totalRows: 0,
-            };
-          },
-          version: () => 20,
-        },
-        mixedNumericCompiled,
+      expect(mixedNumericRangeError.message).toBe(
+        "Raw query where field amount does not support range operators.",
       );
-
-      expect(mixedNumericEvaluation.keys).toStrictEqual([]);
-      expect(mixedNumericEvaluation.rows).toStrictEqual([]);
-      expect(mixedNumericEvaluation.totalRows).toBe(0);
-      expect(mixedNumericEvaluation.version).toBe(20);
     }),
   );
 
@@ -4152,12 +4134,12 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
     }),
   );
 
-  it.effect("evaluates grouped mixed numeric aggregate states", () =>
+  it.effect("evaluates grouped BigDecimal aggregate states", () =>
     Effect.gen(function* () {
       const Mixed = Schema.Struct({
         id: Schema.String,
         group: Schema.String,
-        amount: Schema.Union([Schema.Number, Schema.BigInt, Schema.BigDecimal]),
+        amount: Schema.BigDecimal,
         optionalQuantity: Schema.Union([Schema.BigInt, Schema.Undefined]),
       });
       const mixedViewServer = defineViewServerConfig({
@@ -4172,13 +4154,12 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         topics: mixedViewServer.topics,
       });
       yield* mixedEngine.publishMany("mixed", [
-        { id: "1", group: "x", amount: 1n, optionalQuantity: 5n },
-        { id: "2", group: "x", amount: 2, optionalQuantity: undefined },
+        { id: "1", group: "x", amount: fromStringUnsafe("1"), optionalQuantity: 5n },
+        { id: "2", group: "x", amount: fromStringUnsafe("2"), optionalQuantity: undefined },
         { id: "3", group: "x", amount: fromStringUnsafe("3.5"), optionalQuantity: 7n },
-        { id: "4", group: "x", amount: Number.NaN, optionalQuantity: undefined },
-        { id: "5", group: "y", amount: Number.NaN, optionalQuantity: undefined },
-        { id: "6", group: "z", amount: 1n, optionalQuantity: 1n },
-        { id: "7", group: "z", amount: 2n, optionalQuantity: 2n },
+        { id: "4", group: "y", amount: fromStringUnsafe("0"), optionalQuantity: undefined },
+        { id: "5", group: "z", amount: fromStringUnsafe("1"), optionalQuantity: 1n },
+        { id: "6", group: "z", amount: fromStringUnsafe("2"), optionalQuantity: 2n },
       ]);
       const mixedQuery = {
         groupBy: ["group"],
@@ -10566,6 +10547,17 @@ describe("ColumnLiveViewEngine validation and health", () => {
 
   it("treats rows with different selected column counts as different", () => {
     expect(rowsEqual({ id: "1" }, { id: "1", note: "new" })).toBe(false);
+  });
+
+  it("does not structurally compare map and set values on row hot paths", () => {
+    expect(valuesEqual(new Map([["venue", "xnys"]]), new Map([["venue", "xnys"]]))).toBe(false);
+    expect(valuesEqual(new Set(["xnys"]), new Set(["xnys"]))).toBe(false);
+    expect(
+      rowsEqual(
+        { id: "1", payload: new Map([["venue", "xnys"]]) },
+        { id: "1", payload: new Map([["venue", "xnys"]]) },
+      ),
+    ).toBe(false);
   });
 
   it("ignores inherited row properties", () => {

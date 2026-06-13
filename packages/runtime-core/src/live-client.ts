@@ -29,7 +29,7 @@ import {
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
 } from "@view-server/config";
-import { Cause, Clock, Effect, Fiber, Queue, Semaphore, Stream } from "effect";
+import { Cause, Clock, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import { engineErrorToRuntimeError } from "./runtime-error";
 
@@ -155,6 +155,8 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
               64,
             );
             const updates = yield* Queue.sliding<ViewServerHealth<Topics>, Cause.Done>(1);
+            const subscriptionScope = yield* Scope.make("parallel");
+            const closeSubscriptionScope = Scope.close(subscriptionScope, Exit.void);
             const subscription = { close: Effect.void };
             let subscriptionClosed = false;
             const offerSnapshot = Effect.fn("ViewServerRuntimeCore.health.snapshot.offer")(
@@ -163,9 +165,9 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
                 yield* Queue.offer(queue, snapshotFromHealth(nextHealth, updatedAtNanos));
               },
             );
-            const pumpFiber = yield* Stream.fromQueue(updates).pipe(
+            yield* Stream.fromQueue(updates).pipe(
               Stream.runForEach(offerSnapshot),
-              Effect.forkDetach({ startImmediately: true }),
+              Effect.forkIn(subscriptionScope, { startImmediately: true }),
             );
             const unsubscribe = health.subscribe((nextHealth) => {
               Queue.offerUnsafe(updates, nextHealth);
@@ -184,7 +186,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
               );
               if (shouldClose) {
                 yield* Queue.end(updates);
-                yield* Fiber.interrupt(pumpFiber).pipe(Effect.asVoid);
+                yield* closeSubscriptionScope;
                 yield* Queue.end(queue);
               }
             });

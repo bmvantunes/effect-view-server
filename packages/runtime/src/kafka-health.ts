@@ -35,8 +35,21 @@ type KafkaTopicRegionLedger = {
   committedOffset: string | null;
   lastError: string | null;
   regionLastError: string | null;
-  windowSecond: number | null;
+  rateBuckets: Array<KafkaRateBucket | undefined>;
 };
+
+type KafkaRateBucket = {
+  occurredAt: number;
+  messages: number;
+  bytes: number;
+  decoded: number;
+  failed: number;
+  mappingFailed: number;
+  processingFailed: number;
+};
+
+const kafkaRateWindowMillis = 1_000;
+const maxKafkaRateBuckets = kafkaRateWindowMillis + 1;
 
 type KafkaTopicLedger = {
   status: KafkaTopicHealth["status"];
@@ -128,7 +141,7 @@ const initialTopicRegionLedger = (): KafkaTopicRegionLedger => ({
   committedOffset: null,
   lastError: null,
   regionLastError: null,
-  windowSecond: null,
+  rateBuckets: Array.from({ length: maxKafkaRateBuckets }, () => undefined),
 });
 
 const copyTopicRegionHealth = (region: KafkaTopicRegionLedger): KafkaTopicRegionHealth => ({
@@ -160,35 +173,59 @@ const incrementWindow = (
     readonly processingFailed: number;
   },
 ) => {
-  const nextSecond = Math.floor(nowMillis / 1000);
-  if (region.windowSecond !== nextSecond) {
-    region.windowSecond = nextSecond;
-    region.messagesPerSecond = 0;
-    region.bytesPerSecond = 0;
-    region.decodedMessagesPerSecond = 0;
-    region.decodeFailuresPerSecond = 0;
-    region.mappingFailuresPerSecond = 0;
-    region.processingFailuresPerSecond = 0;
+  const occurredAt = Math.trunc(nowMillis);
+  const bucketIndex = Math.abs(occurredAt % maxKafkaRateBuckets);
+  const existingBucket = region.rateBuckets[bucketIndex];
+  if (existingBucket !== undefined && existingBucket.occurredAt === occurredAt) {
+    existingBucket.messages += counters.messages;
+    existingBucket.bytes += counters.bytes;
+    existingBucket.decoded += counters.decoded;
+    existingBucket.failed += counters.failed;
+    existingBucket.mappingFailed += counters.mappingFailed;
+    existingBucket.processingFailed += counters.processingFailed;
+    return;
   }
-  region.messagesPerSecond += counters.messages;
-  region.bytesPerSecond += counters.bytes;
-  region.decodedMessagesPerSecond += counters.decoded;
-  region.decodeFailuresPerSecond += counters.failed;
-  region.mappingFailuresPerSecond += counters.mappingFailed;
-  region.processingFailuresPerSecond += counters.processingFailed;
+  region.rateBuckets[bucketIndex] = {
+    occurredAt,
+    messages: counters.messages,
+    bytes: counters.bytes,
+    decoded: counters.decoded,
+    failed: counters.failed,
+    mappingFailed: counters.mappingFailed,
+    processingFailed: counters.processingFailed,
+  };
 };
 
 const resetIdleWindow = (region: KafkaTopicRegionLedger, nowMillis: number) => {
-  const nextSecond = Math.floor(nowMillis / 1000);
-  if (region.windowSecond !== null && region.windowSecond !== nextSecond) {
-    region.windowSecond = nextSecond;
-    region.messagesPerSecond = 0;
-    region.bytesPerSecond = 0;
-    region.decodedMessagesPerSecond = 0;
-    region.decodeFailuresPerSecond = 0;
-    region.mappingFailuresPerSecond = 0;
-    region.processingFailuresPerSecond = 0;
+  const occurredBefore = Math.trunc(nowMillis) - kafkaRateWindowMillis;
+  const occurredAfter = Math.trunc(nowMillis);
+  let messagesPerSecond = 0;
+  let bytesPerSecond = 0;
+  let decodedMessagesPerSecond = 0;
+  let decodeFailuresPerSecond = 0;
+  let mappingFailuresPerSecond = 0;
+  let processingFailuresPerSecond = 0;
+  for (const bucket of region.rateBuckets) {
+    if (
+      bucket === undefined ||
+      bucket.occurredAt < occurredBefore ||
+      bucket.occurredAt > occurredAfter
+    ) {
+      continue;
+    }
+    messagesPerSecond += bucket.messages;
+    bytesPerSecond += bucket.bytes;
+    decodedMessagesPerSecond += bucket.decoded;
+    decodeFailuresPerSecond += bucket.failed;
+    mappingFailuresPerSecond += bucket.mappingFailed;
+    processingFailuresPerSecond += bucket.processingFailed;
   }
+  region.messagesPerSecond = messagesPerSecond;
+  region.bytesPerSecond = bytesPerSecond;
+  region.decodedMessagesPerSecond = decodedMessagesPerSecond;
+  region.decodeFailuresPerSecond = decodeFailuresPerSecond;
+  region.mappingFailuresPerSecond = mappingFailuresPerSecond;
+  region.processingFailuresPerSecond = processingFailuresPerSecond;
 };
 
 const copyRegionHealth = (region: KafkaRegionLedger): KafkaRegionHealth => ({

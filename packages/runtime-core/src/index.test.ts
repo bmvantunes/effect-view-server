@@ -935,7 +935,7 @@ describe("@view-server/runtime-core", () => {
           );
         },
       };
-      const scheduler = makeHealthRefreshScheduler(
+      const scheduler = yield* makeHealthRefreshScheduler(
         Effect.gen(function* () {
           const readInstallEpoch = installEpoch;
           yield* readHealth(
@@ -999,7 +999,7 @@ describe("@view-server/runtime-core", () => {
           );
         },
       };
-      const scheduler = makeHealthRefreshScheduler(
+      const scheduler = yield* makeHealthRefreshScheduler(
         Effect.gen(function* () {
           const readInstallEpoch = installEpoch;
           yield* readHealth(
@@ -1091,7 +1091,7 @@ describe("@view-server/runtime-core", () => {
           { started: secondStarted, finished: secondFinished },
         ] as const;
 
-        const scheduler = makeHealthRefreshScheduler(
+        const scheduler = yield* makeHealthRefreshScheduler(
           Effect.gen(function* () {
             const refreshStep = refreshSteps[refreshCount] ?? refreshSteps[1];
             yield* Effect.sync(() => {
@@ -1119,7 +1119,7 @@ describe("@view-server/runtime-core", () => {
   it.effect("closes a sleeping health scheduler refresh fiber", () =>
     Effect.gen(function* () {
       let refreshCount = 0;
-      const scheduler = makeHealthRefreshScheduler(
+      const scheduler = yield* makeHealthRefreshScheduler(
         Effect.sync(() => {
           refreshCount += 1;
         }),
@@ -1140,7 +1140,7 @@ describe("@view-server/runtime-core", () => {
       const secondStarted = yield* Deferred.make<void>();
       const startedSignals = [firstStarted, secondStarted] as const;
       let refreshCount = 0;
-      const scheduler = makeHealthRefreshScheduler(
+      const scheduler = yield* makeHealthRefreshScheduler(
         Effect.gen(function* () {
           const started = startedSignals[refreshCount] ?? secondStarted;
           yield* Effect.sync(() => {
@@ -1166,7 +1166,7 @@ describe("@view-server/runtime-core", () => {
   it.effect("ignores health scheduler refresh requests after close", () =>
     Effect.gen(function* () {
       let refreshCount = 0;
-      const scheduler = makeHealthRefreshScheduler(
+      const scheduler = yield* makeHealthRefreshScheduler(
         Effect.sync(() => {
           refreshCount += 1;
         }),

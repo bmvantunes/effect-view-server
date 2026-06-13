@@ -7,6 +7,7 @@ import {
   type RuntimeOptionsDefinition,
 } from "./kafka-contract";
 import type { RowFromSchema, RowSchema, StringFieldKey, TopicDefinition } from "./topic-contract";
+import { viewServerUnsupportedRuntimeFieldDomain } from "./schema-field-metadata";
 
 export type {
   Aggregate,
@@ -90,6 +91,7 @@ export type {
 } from "./runtime-contract";
 export {
   viewServerSchemaFieldMetadata,
+  viewServerUnsupportedRuntimeFieldDomain,
   type ViewServerSchemaFieldMetadata,
 } from "./schema-field-metadata";
 export type {
@@ -190,6 +192,14 @@ export const defineViewServerConfig = <
     for (const field of Object.keys(schema.fields)) {
       if (field === "__proto__" || field === "prototype" || field === "constructor") {
         throw new Error(`View Server topic ${topic} uses a reserved row field name: ${field}`);
+      }
+      const unsupportedRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(
+        schema.fields[field],
+      );
+      if (unsupportedRuntimeDomain !== undefined) {
+        throw new Error(
+          `View Server topic ${topic} field ${field} uses unsupported runtime domain: ${unsupportedRuntimeDomain}`,
+        );
       }
     }
   }

@@ -295,7 +295,7 @@ export const validateRuntimeQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.val
       }
       if (
         keys.some((key) => rangeFilterOperatorKeys.has(key)) &&
-        !metadata.numericFieldNames.has(field)
+        (!metadata.numericFieldNames.has(field) || metadata.rangeValueKinds.get(field)?.size !== 1)
       ) {
         return yield* InvalidQueryError.make({
           topic,

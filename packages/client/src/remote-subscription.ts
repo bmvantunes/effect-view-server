@@ -13,6 +13,23 @@ const ignoreRemoteSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNo
 const ignoreRemoteSubscriptionStreamStartFailure =
   ignoreLoggedTypedFailuresPreserveNonTypedFailures("Remote subscription stream start failed.");
 
+const completeQueueFromProducerExit = <Row, Topic extends string, Key extends string>(
+  queue: Queue.Enqueue<ViewServerLiveEvent<Row, Topic, Key>, Cause.Done>,
+  exit: Exit.Exit<void>,
+) => {
+  if (Exit.isSuccess(exit)) {
+    return Queue.end(queue);
+  }
+  if (
+    Cause.hasInterrupts(exit.cause) &&
+    !Cause.hasDies(exit.cause) &&
+    !Cause.hasFails(exit.cause)
+  ) {
+    return Queue.end(queue);
+  }
+  return Queue.failCause(queue, exit.cause);
+};
+
 export type RemoteSubscriptionLifecycle = {
   readonly onOpen: Effect.Effect<void>;
   readonly onClose: Effect.Effect<void, unknown>;
@@ -62,7 +79,8 @@ export const makeRemoteSubscription = Effect.fn("ViewServerClient.remote.subscri
               scope,
               lifecycle.onClose.pipe(ignoreRemoteSubscriptionCloseFailure),
             );
-            yield* Stream.runIntoQueue(stream, queue).pipe(
+            yield* Stream.runForEach(stream, (event) => Queue.offer(queue, event)).pipe(
+              Effect.onExit((exit) => completeQueueFromProducerExit(queue, exit)),
               Effect.forkIn(scope, { startImmediately: true }),
               ignoreRemoteSubscriptionStreamStartFailure,
             );

@@ -60,39 +60,25 @@ const decodeFilterJsonFieldValue = Effect.fn("ViewServerProtocol.field.decode")(
 const encodeStringFilterValue = Effect.fn("ViewServerProtocol.filter.string.encode")(function* (
   topic: string,
   field: string,
-  schema: JsonFieldSchema,
+  _schema: JsonFieldSchema,
   value: unknown,
 ) {
-  const decoded = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(value).pipe(
-    Effect.mapError((error) =>
-      invalidQuery(topic, `Invalid filter for ${field}: ${error.message}`),
-    ),
-  );
-  if (typeof decoded !== "string") {
-    return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support startsWith`));
+  if (typeof value !== "string") {
+    return yield* Effect.fail(invalidQuery(topic, `Invalid filter for ${field}: expected string`));
   }
-  return yield* Schema.decodeUnknownEffect(Schema.String)(value).pipe(
-    Effect.mapError((error) =>
-      invalidQuery(topic, `Invalid startsWith filter for ${field}: ${error.message}`),
-    ),
-  );
+  return value;
 });
 
 const decodeStringFilterValue = Effect.fn("ViewServerProtocol.filter.string.decode")(function* (
   topic: string,
   field: string,
-  schema: JsonFieldSchema,
+  _schema: JsonFieldSchema,
   value: unknown,
 ) {
-  const decoded = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(value).pipe(
-    Effect.mapError((error) =>
-      invalidQuery(topic, `Invalid filter for ${field}: ${error.message}`),
-    ),
-  );
-  if (typeof decoded !== "string") {
-    return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support startsWith`));
+  if (typeof value !== "string") {
+    return yield* Effect.fail(invalidQuery(topic, `Invalid filter for ${field}: expected string`));
   }
-  return decoded;
+  return value;
 });
 
 const validateOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.validate")(
@@ -103,9 +89,6 @@ const validateOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operato
     value: Record<string, unknown>,
   ) {
     const metadata = viewServerSchemaFieldMetadata(schema);
-    if (metadata.isStructured) {
-      return;
-    }
     const keys = Object.keys(value);
     if (keys.includes("startsWith") && !metadata.isString) {
       return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support startsWith`));

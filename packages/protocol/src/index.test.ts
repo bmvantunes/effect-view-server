@@ -42,6 +42,7 @@ import { SchemaGetter } from "effect";
 
 const Order = Schema.Struct({
   id: Schema.String,
+  status: Schema.Literals(["open", "closed"]),
   price: Schema.Number,
   quantity: Schema.BigInt,
   decimalPrice: Schema.BigDecimal,
@@ -1635,6 +1636,95 @@ describe("@view-server/protocol", () => {
       );
       expect(invalidDecodedStringStartsWith.message).toMatch(/Invalid filter for id/);
 
+      const trimmedViewServer = defineViewServerConfig({
+        topics: {
+          trimmed: {
+            schema: Schema.Struct({
+              id: Schema.Trim,
+            }),
+            key: "id",
+          },
+        },
+      });
+      const encodedTrimmedStartsWith = yield* viewServerEncodeRawQuery(
+        trimmedViewServer,
+        "trimmed",
+        {
+          select: ["id"],
+          where: { id: { startsWith: "  abc  " } },
+        },
+      );
+      expect(encodedTrimmedStartsWith).toStrictEqual({
+        select: ["id"],
+        where: { id: { startsWith: "  abc  " } },
+      });
+
+      const decodedTrimmedStartsWith = yield* viewServerDecodeRawQuery(
+        trimmedViewServer,
+        "trimmed",
+        {
+          select: ["id"],
+          where: { id: { startsWith: "  abc  " } },
+        },
+      );
+      expect(decodedTrimmedStartsWith).toStrictEqual({
+        select: ["id"],
+        where: { id: { startsWith: "  abc  " } },
+      });
+
+      const badJsonStartsWith = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "badjson", {
+          select: ["id"],
+          where: { id: { startsWith: 1 } },
+        }),
+      );
+      expect(badJsonStartsWith.message).toBe("Invalid filter for id: expected string");
+
+      const refinedStringViewServer = defineViewServerConfig({
+        topics: {
+          refined: {
+            schema: Schema.Struct({
+              id: Schema.String.check(Schema.isMinLength(2)),
+            }),
+            key: "id",
+          },
+        },
+      });
+      const encodedRefinedStartsWith = yield* viewServerEncodeRawQuery(
+        refinedStringViewServer,
+        "refined",
+        {
+          select: ["id"],
+          where: { id: { startsWith: "x" } },
+        },
+      );
+      expect(encodedRefinedStartsWith).toStrictEqual({
+        select: ["id"],
+        where: { id: { startsWith: "x" } },
+      });
+
+      const decodedRefinedStartsWith = yield* viewServerDecodeRawQuery(
+        refinedStringViewServer,
+        "refined",
+        {
+          select: ["id"],
+          where: { id: { startsWith: "x" } },
+        },
+      );
+      expect(decodedRefinedStartsWith).toStrictEqual({
+        select: ["id"],
+        where: { id: { startsWith: "x" } },
+      });
+
+      const encodedLiteralStartsWith = yield* viewServerEncodeRawQuery(viewServer, "orders", {
+        select: ["status"],
+        where: { status: { startsWith: "op" } },
+      });
+      expect(encodedLiteralStartsWith).toStrictEqual({
+        select: ["status"],
+        where: { status: { startsWith: "op" } },
+      });
+
       const structuredEncodeStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
@@ -1669,6 +1759,40 @@ describe("@view-server/protocol", () => {
         "Filter metadata does not support startsWith",
       );
 
+      const structuredEncodeRange = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: {
+            metadata: {
+              gt: {
+                _viewServerScalar: "kind",
+                value: "x",
+              },
+            },
+          },
+        }),
+      );
+      expect(structuredEncodeRange.message).toBe(
+        "Filter metadata does not support range operators",
+      );
+
+      const structuredDecodeRange = yield* Effect.flip(
+        viewServerDecodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: {
+            metadata: {
+              gt: {
+                _viewServerScalar: "kind",
+                value: "x",
+              },
+            },
+          },
+        }),
+      );
+      expect(structuredDecodeRange.message).toBe(
+        "Filter metadata does not support range operators",
+      );
+
       const invalidRangeOperator = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
@@ -1684,14 +1808,6 @@ describe("@view-server/protocol", () => {
         }),
       );
       expect(nonJsonFilter.message).toMatch(/Filter id is not JSON-safe/);
-
-      const badStartsWith = yield* Effect.flip(
-        viewServerEncodeRawQuery(viewServer, "badjson", {
-          select: ["id"],
-          where: { id: { startsWith: 1 } },
-        }),
-      );
-      expect(badStartsWith.message).toMatch(/Invalid startsWith filter for id/);
 
       const badDecodedField = yield* Effect.flip(
         viewServerDecodeRawQuery(viewServer, "orders", {

@@ -297,6 +297,7 @@ afterAll(async () => {
       "BigDecimal range filter + indexed seek",
       "selective range filter + fallback top-k sort",
       "compound filter + top-k sort",
+      "narrow scalar projection + top-k sort",
       "wide scalar projection + top-k sort",
       "filtered totalRows via zero-row window",
       "live subscription delta after publish",
@@ -485,6 +486,23 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
           },
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 50,
+        }),
+      );
+    },
+    benchOptions,
+  );
+
+  bench(
+    "narrow scalar projection + top-k sort",
+    async () => {
+      await Effect.runPromise(
+        profileEngine(profile).snapshot("orders", {
+          select: ["id", "price", "updatedAt"],
+          where: {
+            status: { eq: "open" },
+          },
+          orderBy: [{ field: "updatedAt", direction: "desc" }],
+          limit: 200,
         }),
       );
     },

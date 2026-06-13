@@ -235,7 +235,11 @@ export class TopicRowStorage {
   projectRawRow(slot: number, selectedFields: ReadonlyArray<string>): RowObject {
     const projected: Record<string, unknown> = {};
     for (const field of selectedFields) {
-      projected[field] = cloneUnknown(columnValue(this.columns.get(field)!, slot));
+      const column = this.columns.get(field)!;
+      projected[field] =
+        column.kind === "generic"
+          ? cloneUnknown(columnValue(column, slot))
+          : columnValue(column, slot);
     }
     return projected;
   }

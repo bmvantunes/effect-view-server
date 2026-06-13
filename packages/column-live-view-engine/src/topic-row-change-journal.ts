@@ -5,6 +5,18 @@ type RowObject = object;
 const maxRowChangeJournalEntries = 65_536;
 const maxRowChangeJournalVersions = 1_024;
 
+export type TopicRowChangeJournalLimits = {
+  readonly maxEntries?: number;
+  readonly maxVersions?: number;
+};
+
+const positiveSafeIntegerOrDefault = (value: number | undefined, fallback: number): number => {
+  if (value === undefined) {
+    return fallback;
+  }
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+};
+
 export class TopicRowChangeJournal<Row extends RowObject> {
   private pendingChanges: Array<TopicRowChange<Row>> = [];
   private pendingChangesOverflowed = false;
@@ -12,6 +24,16 @@ export class TopicRowChangeJournal<Row extends RowObject> {
   private changeCount = 0;
   private invalidBeforeVersion = 0;
   private refs = 0;
+  private readonly maxEntries: number;
+  private readonly maxVersions: number;
+
+  constructor(limits?: TopicRowChangeJournalLimits) {
+    this.maxEntries = positiveSafeIntegerOrDefault(limits?.maxEntries, maxRowChangeJournalEntries);
+    this.maxVersions = positiveSafeIntegerOrDefault(
+      limits?.maxVersions,
+      maxRowChangeJournalVersions,
+    );
+  }
 
   changesSince(
     version: number,
@@ -24,6 +46,9 @@ export class TopicRowChangeJournal<Row extends RowObject> {
       return undefined;
     }
     if (version < this.invalidBeforeVersion) {
+      return undefined;
+    }
+    if (this.batches.length === 0) {
       return undefined;
     }
     const firstBatch = this.batches[0]!;
@@ -70,7 +95,7 @@ export class TopicRowChangeJournal<Row extends RowObject> {
     if (this.refs === 0 || this.pendingChangesOverflowed) {
       return;
     }
-    if (this.pendingChanges.length + 1 > maxRowChangeJournalEntries) {
+    if (this.pendingChanges.length + 1 > this.maxEntries) {
       this.invalidate(currentVersion + 1);
       this.pendingChangesOverflowed = true;
       return;
@@ -98,11 +123,11 @@ export class TopicRowChangeJournal<Row extends RowObject> {
   }
 
   private trim(currentVersion: number): void {
-    while (this.batches.length > maxRowChangeJournalVersions) {
+    while (this.batches.length > this.maxVersions) {
       const removed = this.batches.shift()!;
       this.changeCount -= removed.changes.length;
     }
-    if (this.changeCount > maxRowChangeJournalEntries) {
+    if (this.changeCount > this.maxEntries) {
       this.invalidate(currentVersion);
     }
   }

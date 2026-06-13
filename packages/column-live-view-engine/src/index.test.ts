@@ -427,6 +427,18 @@ it("uses typed column values for ordered slot bound indexes", () => {
   expect(orderedSlotBoundIndex([0, 1], generic, "open", (comparison) => comparison >= 0)).toBe(1);
 });
 
+it("keeps schema field order for aligned column writes", () => {
+  expect(rawQueryCompilerMetadata(Order).fieldOrder).toStrictEqual([
+    "id",
+    "customerId",
+    "status",
+    "price",
+    "region",
+    "updatedAt",
+    "note",
+  ]);
+});
+
 const numericRowField = (row: object, field: string): number => {
   const value = fieldValue(row, field);
   if (typeof value === "number") {
@@ -6337,7 +6349,12 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
   it.effect("clears retained row-change journals on active execution clear and overflow", () =>
     Effect.gen(function* () {
-      const storage = new TopicRowStorage("orders", Order, "id");
+      const storage = new TopicRowStorage("orders", Order, "id", {
+        maxEntries: 4,
+        maxVersions: 3,
+      });
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
       const compiled = yield* prepareGroupedQuery<object, object>(
         "orders",
         rawQueryCompilerMetadata(Order),
@@ -6357,19 +6374,18 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const baseVersion = storage.version;
       storage.setPreparedMany(
-        Array.from({ length: 65_537 }, (_value, index) => ({
-          key: `row-${index}`,
-          row: order(`row-${index}`, "open", index, index),
-        })),
+        yield* storage.prepareRows(
+          Array.from({ length: 5 }, (_value, index) => order(`row-${index}`, "open", index, index)),
+          invalidRow,
+        ),
       );
       storage.advanceVersion();
       expect(storage.readModel.changesSince(baseVersion)).toBeUndefined();
 
       const recoveredVersion = storage.version;
-      storage.setPrepared({
-        key: "after-overflow",
-        row: order("after-overflow", "closed", 1, 1),
-      });
+      storage.setPrepared(
+        yield* storage.prepareRow(order("after-overflow", "closed", 1, 1), invalidRow),
+      );
       storage.advanceVersion();
       expect(storage.readModel.changesSince(recoveredVersion)).toStrictEqual([
         {
@@ -6385,15 +6401,15 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       ]);
 
       const multiVersionOverflowStart = storage.version;
-      for (let batchIndex = 0; batchIndex < 257; batchIndex += 1) {
+      for (let batchIndex = 0; batchIndex < 3; batchIndex += 1) {
         storage.setPreparedMany(
-          Array.from({ length: 256 }, (_value, rowIndex) => {
-            const key = `multi-version-${batchIndex}-${rowIndex}`;
-            return {
-              key,
-              row: order(key, "open", rowIndex, rowIndex),
-            };
-          }),
+          yield* storage.prepareRows(
+            Array.from({ length: 2 }, (_value, rowIndex) => {
+              const key = `multi-version-${batchIndex}-${rowIndex}`;
+              return order(key, "open", rowIndex, rowIndex);
+            }),
+            invalidRow,
+          ),
         );
         storage.advanceVersion();
       }
@@ -6401,20 +6417,24 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       yield* clearStoreRawQueryExecutions(storage.readModel);
       expect(yield* activeStoreRawQueryExecutionCount(storage.readModel)).toBe(0);
-      storage.setPrepared({
-        key: "after-clear",
-        row: order("after-clear", "open", 1, 1),
-      });
+      storage.setPrepared(
+        yield* storage.prepareRow(order("after-clear", "open", 1, 1), invalidRow),
+      );
       const afterClearVersion = storage.version;
       storage.advanceVersion();
       expect(storage.readModel.changesSince(afterClearVersion)).toBeUndefined();
 
-      const fallbackStorage = new TopicRowStorage("orders", Order, "id");
+      const fallbackStorage = new TopicRowStorage("orders", Order, "id", {
+        maxEntries: 4,
+        maxVersions: 3,
+      });
       fallbackStorage.setPreparedMany(
-        Array.from({ length: 65_537 }, (_value, index) => ({
-          key: `fallback-${index}`,
-          row: order(`fallback-${index}`, "open", index, index),
-        })),
+        yield* fallbackStorage.prepareRows(
+          Array.from({ length: 5 }, (_value, index) =>
+            order(`fallback-${index}`, "open", index, index),
+          ),
+          invalidRow,
+        ),
       );
       fallbackStorage.advanceVersion();
       yield* acquireMaterializedQueryExecution(fallbackStorage.readModel, "fallback-clear", () =>
@@ -6427,7 +6447,12 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
   it.effect("releases retained row-change journals after grouped fallback demotion", () =>
     Effect.gen(function* () {
-      const storage = new TopicRowStorage("orders", Order, "id");
+      const storage = new TopicRowStorage("orders", Order, "id", {
+        maxEntries: 4,
+        maxVersions: 3,
+      });
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
       const compiled = yield* prepareGroupedQuery<object, object>(
         "orders",
         rawQueryCompilerMetadata(Order),
@@ -6440,24 +6465,31 @@ describe("ColumnLiveViewEngine subscriptions", () => {
         storage.readModel,
         "demoted-grouped-journal",
         (releaseRetainedChanges) =>
-          makeIncrementalGroupedQueryExecution(storage.readModel, compiled, releaseRetainedChanges),
+          makeIncrementalGroupedQueryExecution(
+            storage.readModel,
+            compiled,
+            releaseRetainedChanges,
+            {
+              ...defaultGroupedIncrementalAdmissionLimits,
+              maxMembers: 4,
+            },
+          ),
       );
       const cursor = execution.createCursor();
 
       storage.setPreparedMany(
-        Array.from({ length: 65_537 }, (_value, index) => ({
-          key: `row-${index}`,
-          row: order(`row-${index}`, "open", index, index),
-        })),
+        yield* storage.prepareRows(
+          Array.from({ length: 5 }, (_value, index) => order(`row-${index}`, "open", index, index)),
+          invalidRow,
+        ),
       );
       storage.advanceVersion();
       yield* execution.next("demoted-grouped-journal", cursor);
 
       const demotedVersion = storage.version;
-      storage.setPrepared({
-        key: "after-demotion",
-        row: order("after-demotion", "closed", 1, 1),
-      });
+      storage.setPrepared(
+        yield* storage.prepareRow(order("after-demotion", "closed", 1, 1), invalidRow),
+      );
       storage.advanceVersion();
       expect(storage.readModel.changesSince(demotedVersion)).toBeUndefined();
 
@@ -11004,6 +11036,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
           price: Schema.Number,
         },
       });
+      expect(metadata.fieldOrder).toStrictEqual(["id", "price"]);
       expect(metadata.fieldNames.has("id")).toBe(true);
       expect(metadata.numericFieldNames.has("id")).toBe(false);
       expect(metadata.numericFieldNames.has("price")).toBe(true);

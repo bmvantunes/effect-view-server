@@ -1225,6 +1225,77 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("keeps Kafka assignments authoritative when lag arrives after disconnect", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      let healthRefreshRequestCount = 0;
+      const requestHealthRefresh = Effect.sync(() => {
+        healthRefreshRequestCount += 1;
+      });
+
+      yield* ledger.regionConnected("local", 1_000);
+      yield* recordKafkaAssignments(
+        ledger,
+        requestHealthRefresh,
+        "local",
+        [ordersSourceTopic],
+        [{ topic: ordersSourceTopic, partitions: [0, 1] }],
+        1_000,
+      );
+      yield* ledger.regionDisconnected("local", "Kafka consumer left group");
+      yield* recordKafkaLag(
+        ledger,
+        requestHealthRefresh,
+        "local",
+        new Map([[ordersSourceTopic, [8n, -1n, 3n]]]),
+        2_000,
+      );
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+
+      expect(healthRefreshRequestCount).toBe(2);
+      expect({
+        region: health.kafka?.regions["local"],
+        topicStatus: health.kafka?.topics[ordersSourceTopic]?.status,
+        topicRegion: health.kafka?.topics[ordersSourceTopic]?.regions["local"],
+      }).toStrictEqual({
+        region: {
+          status: "disconnected",
+          brokers: regions.local,
+          lastConnectedAt: 1_000,
+          lastError: "Kafka consumer left group",
+        },
+        topicStatus: "degraded",
+        topicRegion: {
+          connected: false,
+          assignedPartitions: 2,
+          messagesPerSecond: 0,
+          bytesPerSecond: 0,
+          decodedMessagesPerSecond: 0,
+          decodeFailuresPerSecond: 0,
+          mappingFailuresPerSecond: 0,
+          processingFailuresPerSecond: 0,
+          lastMessageAt: null,
+          lastCommitAt: null,
+          consumerLagMessages: 11n,
+          lagSampledAt: 2_000,
+          committedOffset: null,
+          lastError: "Kafka consumer left group",
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("records Kafka health from consumer listener callbacks", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

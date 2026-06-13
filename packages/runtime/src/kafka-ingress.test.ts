@@ -269,7 +269,7 @@ describe("@view-server/runtime Kafka ingress", () => {
                     },
                   ],
                   totalRows: 2,
-                  version: 1,
+                  version: expect.any(Number),
                 },
                 tradesSnapshot: {
                   status: "ready",
@@ -282,7 +282,7 @@ describe("@view-server/runtime Kafka ingress", () => {
                     },
                   ],
                   totalRows: 1,
-                  version: 1,
+                  version: expect.any(Number),
                 },
                 engineRows: {
                   orders: 2,

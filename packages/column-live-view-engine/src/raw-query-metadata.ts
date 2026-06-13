@@ -10,6 +10,7 @@ export type RangeValueKind = "number" | "bigint" | "bigDecimal";
 
 export type RawQueryCompilerMetadata = {
   readonly fieldNames: ReadonlySet<string>;
+  readonly fieldOrder: ReadonlyArray<string>;
   readonly fieldMetadata: ReadonlyMap<string, ReturnType<typeof viewServerSchemaFieldMetadata>>;
   readonly structuredFieldNames: ReadonlySet<string>;
   readonly structuredObjectFieldNames: ReadonlySet<string>;
@@ -87,6 +88,9 @@ const isPureBigDecimalAst = (ast: SchemaAST.AST): boolean => {
 
 const schemaFieldNames = (schema: Schema.Decoder<object>): ReadonlySet<string> =>
   isSchemaWithFields(schema) ? new Set(Object.keys(schema.fields)) : new Set();
+
+const schemaFieldOrder = (schema: Schema.Decoder<object>): ReadonlyArray<string> =>
+  isSchemaWithFields(schema) ? Object.keys(schema.fields) : [];
 
 const schemaFieldMetadata = (
   schema: Schema.Decoder<object>,
@@ -230,6 +234,7 @@ export const rawQueryCompilerMetadata = (
   schema: Schema.Decoder<object>,
 ): RawQueryCompilerMetadata => ({
   fieldNames: schemaFieldNames(schema),
+  fieldOrder: schemaFieldOrder(schema),
   fieldMetadata: schemaFieldMetadata(schema),
   structuredFieldNames: schemaStructuredFieldNames(schema),
   structuredObjectFieldNames: schemaStructuredObjectFieldNames(schema),

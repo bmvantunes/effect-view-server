@@ -20,7 +20,10 @@ import {
   createScalarPredicateIndexes,
   removeSlotFromScalarPredicateIndexes,
 } from "./topic-predicate-candidate-index";
-import { TopicRowChangeJournal } from "./topic-row-change-journal";
+import {
+  TopicRowChangeJournal,
+  type TopicRowChangeJournalLimits,
+} from "./topic-row-change-journal";
 import {
   prepareTopicPatch,
   prepareTopicRow,
@@ -52,10 +55,12 @@ export class TopicRowStorage {
   private readonly slots: Array<TopicRowEntry<object>> = [];
   private readonly keyToSlot = new Map<string, number>();
   private readonly columns = new Map<string, MutableTopicColumnValues>();
+  private readonly columnWritePlan: Array<MutableTopicColumnValues> = [];
+  private readonly columnWriteFields: Array<string> = [];
   private readonly reservableColumns: Array<MutableTopicColumnValues> = [];
   private readonly orderedSlotIndexes = new Map<string, OrderedSlotIndex>();
   private readonly scalarPredicateIndexes = createScalarPredicateIndexes();
-  private readonly rowChangeJournal = new TopicRowChangeJournal<object>();
+  private readonly rowChangeJournal: TopicRowChangeJournal<object>;
   private readonly rowPreparation: TopicRowPreparationContext;
   private readonly rawWindowScanState: TopicRawWindowScanState;
   private versionValue = 0;
@@ -64,7 +69,9 @@ export class TopicRowStorage {
     readonly topic: string,
     schema: Schema.Decoder<object>,
     keyField: string,
+    rowChangeJournalLimits?: TopicRowChangeJournalLimits,
   ) {
+    this.rowChangeJournal = new TopicRowChangeJournal<object>(rowChangeJournalLimits);
     this.rawQueryMetadata = rawQueryCompilerMetadata(schema);
     this.rawWindowScanState = {
       columns: this.columns,
@@ -82,6 +89,11 @@ export class TopicRowStorage {
     for (const field of this.rawQueryMetadata.fieldNames) {
       const column = createTopicColumnValues(field, this.rawQueryMetadata);
       this.columns.set(field, column);
+    }
+    for (const field of this.rawQueryMetadata.fieldOrder) {
+      const column = this.columns.get(field)!;
+      this.columnWritePlan.push(column);
+      this.columnWriteFields.push(field);
       if (column.kind === "number") {
         this.reservableColumns.push(column);
       }
@@ -264,8 +276,11 @@ export class TopicRowStorage {
       key: prepared.key,
       row: prepared.row,
     };
-    for (const [field, column] of this.columns) {
-      column.set(slot, fieldValue(prepared.row, field));
+    for (let index = 0; index < this.columnWritePlan.length; index += 1) {
+      this.columnWritePlan[index]!.set(
+        slot,
+        fieldValue(prepared.row, this.columnWriteFields[index]!),
+      );
     }
   }
 

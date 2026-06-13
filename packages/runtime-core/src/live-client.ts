@@ -51,6 +51,20 @@ const ignoreRuntimeHealthRefreshFailure = ignoreLoggedTypedFailuresPreserveNonTy
   "Ignoring runtime health refresh failure.",
 );
 
+const runtimeHealthBackpressureStatus = <Topic extends string>(
+  topic: Topic,
+  queryId: string,
+  queuedEvents: number,
+) =>
+  ({
+    type: "status",
+    topic,
+    queryId,
+    status: "closed",
+    code: "BackpressureExceeded",
+    message: `Runtime health subscription closed because its event queue exceeded capacity with ${queuedEvents} queued event(s).`,
+  }) satisfies ViewServerLiveEvent<never, Topic, never>;
+
 export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveClient.make")(
   <const Topics extends DecodableTopicDefinitions>(
     engine: ColumnLiveViewEngine<Topics>,
@@ -114,7 +128,12 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
           ),
         );
       };
-      const activeHealthSubscriptions = new Set<{ close: Effect.Effect<void> }>();
+      type ActiveHealthSubscription = {
+        close: Effect.Effect<void>;
+        claimClosed: () => boolean;
+        finishClosed: Effect.Effect<void>;
+      };
+      const activeHealthSubscriptions = new Set<ActiveHealthSubscription>();
       const healthSubscriptionLock = Semaphore.makeUnsafe(1);
       let healthSubscriptionsClosed = false;
       const closeActiveHealthSubscriptions = Effect.suspend(() =>
@@ -123,13 +142,16 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
             Effect.sync(() => {
               healthSubscriptionsClosed = true;
               const subscriptions = Array.from(activeHealthSubscriptions);
+              const claimedSubscriptions = subscriptions.filter((subscription) =>
+                subscription.claimClosed(),
+              );
               activeHealthSubscriptions.clear();
-              return subscriptions;
+              return claimedSubscriptions;
             }),
           )
           .pipe(
             Effect.andThen((subscriptions) =>
-              runAllFinalizers(subscriptions.map((subscription) => subscription.close)),
+              runAllFinalizers(subscriptions.map((subscription) => subscription.finishClosed)),
             ),
           ),
       ).pipe(ignoreHealthSubscriptionCloseFailure);
@@ -144,6 +166,8 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         Key extends string,
         Row extends { readonly id: Key },
       >(
+        topic: Topic,
+        queryId: string,
         snapshotFromHealth: (
           nextHealth: ViewServerHealth<Topics>,
           updatedAtNanos: bigint,
@@ -151,48 +175,125 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
       ) {
         return yield* Effect.uninterruptible(
           Effect.gen(function* () {
-            const queue = yield* Queue.bounded<ViewServerLiveEvent<Row, Topic, Key>, Cause.Done>(
+            const queue = yield* Queue.dropping<ViewServerLiveEvent<Row, Topic, Key>, Cause.Done>(
               64,
             );
             const updates = yield* Queue.sliding<ViewServerHealth<Topics>, Cause.Done>(1);
             const subscriptionScope = yield* Scope.make("parallel");
             const closeSubscriptionScope = Scope.close(subscriptionScope, Exit.void);
-            const subscription = { close: Effect.void };
             let subscriptionClosed = false;
+            let unsubscribe: () => void;
+            const claimClosed = () => {
+              if (subscriptionClosed) {
+                return false;
+              }
+              subscriptionClosed = true;
+              unsubscribe();
+              return true;
+            };
+            const subscription: ActiveHealthSubscription = {
+              close: Effect.void,
+              claimClosed,
+              finishClosed: Effect.void,
+            };
+            type HealthSubscriptionCloseReason =
+              | {
+                  readonly _tag: "normal";
+                }
+              | {
+                  readonly _tag: "backpressure";
+                  readonly queuedEvents: number;
+                };
+            type HealthSnapshotOfferResult =
+              | {
+                  readonly _tag: "offered";
+                }
+              | {
+                  readonly _tag: "closed";
+                }
+              | {
+                  readonly _tag: "backpressure";
+                  readonly queuedEvents: number;
+                };
+            const releaseSubscriptionResources = Effect.fn(
+              "ViewServerRuntimeCore.health.subscription.releaseResources",
+            )(function* () {
+              yield* Queue.end(updates);
+              yield* closeSubscriptionScope;
+            });
+            const finishClosedSubscription = Effect.fn(
+              "ViewServerRuntimeCore.health.subscription.finishClosed",
+            )(function* (reason: HealthSubscriptionCloseReason) {
+              if (reason._tag === "backpressure") {
+                yield* Queue.clear(queue);
+                yield* Queue.offer(
+                  queue,
+                  runtimeHealthBackpressureStatus(topic, queryId, reason.queuedEvents),
+                );
+              }
+              yield* Queue.end(queue);
+              yield* releaseSubscriptionResources();
+            });
+            const closeSubscription = Effect.fn("ViewServerRuntimeCore.health.subscription.close")(
+              function* (reason: HealthSubscriptionCloseReason) {
+                const shouldClose = yield* healthSubscriptionLock.withPermit(
+                  Effect.sync(() => {
+                    const claimed = subscription.claimClosed();
+                    if (claimed) {
+                      activeHealthSubscriptions.delete(subscription);
+                    }
+                    return claimed;
+                  }),
+                );
+                if (shouldClose) {
+                  yield* finishClosedSubscription(reason);
+                }
+              },
+            );
+            const releaseSubscriptionAndEndQueue = () => closeSubscription({ _tag: "normal" });
+            subscription.finishClosed = finishClosedSubscription({ _tag: "normal" });
             const offerSnapshot = Effect.fn("ViewServerRuntimeCore.health.snapshot.offer")(
               function* (nextHealth: ViewServerHealth<Topics>) {
                 const updatedAtNanos = yield* Clock.currentTimeNanos;
-                yield* Queue.offer(queue, snapshotFromHealth(nextHealth, updatedAtNanos));
+                const snapshot = snapshotFromHealth(nextHealth, updatedAtNanos);
+                const offerResult: HealthSnapshotOfferResult =
+                  yield* healthSubscriptionLock.withPermit(
+                    Effect.gen(function* () {
+                      if (subscriptionClosed || healthSubscriptionsClosed) {
+                        const closed: HealthSnapshotOfferResult = { _tag: "closed" };
+                        return closed;
+                      }
+                      const offered = yield* Queue.offer(queue, snapshot);
+                      if (offered) {
+                        const offeredResult: HealthSnapshotOfferResult = { _tag: "offered" };
+                        return offeredResult;
+                      }
+                      const queuedEvents = yield* Queue.size(queue);
+                      subscriptionClosed = true;
+                      unsubscribe();
+                      activeHealthSubscriptions.delete(subscription);
+                      const backpressure: HealthSnapshotOfferResult = {
+                        _tag: "backpressure",
+                        queuedEvents,
+                      };
+                      return backpressure;
+                    }),
+                  );
+                if (offerResult._tag === "closed") {
+                  return yield* Effect.fail(runtimeClosedError);
+                }
+                if (offerResult._tag === "backpressure") {
+                  yield* finishClosedSubscription(offerResult);
+                  return yield* Effect.interrupt;
+                }
               },
             );
-            yield* Stream.fromQueue(updates).pipe(
-              Stream.runForEach(offerSnapshot),
-              Effect.forkIn(subscriptionScope, { startImmediately: true }),
-            );
-            const unsubscribe = health.subscribe((nextHealth) => {
+            unsubscribe = health.subscribe((nextHealth) => {
               Queue.offerUnsafe(updates, nextHealth);
-            });
-            const releaseSubscription = Effect.gen(function* () {
-              const shouldClose = yield* healthSubscriptionLock.withPermit(
-                Effect.sync(() => {
-                  if (subscriptionClosed) {
-                    return false;
-                  }
-                  subscriptionClosed = true;
-                  unsubscribe();
-                  activeHealthSubscriptions.delete(subscription);
-                  return true;
-                }),
-              );
-              if (shouldClose) {
-                yield* Queue.end(updates);
-                yield* closeSubscriptionScope;
-                yield* Queue.end(queue);
-              }
             });
             const registered = yield* healthSubscriptionLock.withPermit(
               Effect.sync(() => {
-                subscription.close = releaseSubscription;
+                subscription.close = releaseSubscriptionAndEndQueue();
                 if (healthSubscriptionsClosed) {
                   return false;
                 }
@@ -201,13 +302,17 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
               }),
             );
             if (!registered) {
-              yield* releaseSubscription;
+              yield* releaseSubscriptionAndEndQueue();
               return yield* Effect.fail(runtimeClosedError);
             }
             const latestHealth = yield* refreshHealth.pipe(
-              Effect.onError(() => releaseSubscription),
+              Effect.onError(() => releaseSubscriptionAndEndQueue()),
             );
             yield* offerSnapshot(latestHealth);
+            yield* Stream.fromQueue(updates).pipe(
+              Stream.runForEach(offerSnapshot),
+              Effect.forkIn(subscriptionScope, { startImmediately: true }),
+            );
             return {
               events: Stream.fromQueue(queue).pipe(Stream.ensuring(subscription.close)),
               close: () => subscription.close,
@@ -223,7 +328,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
             typeof VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
             "summary",
             ViewServerHealthSummaryRow<Topics>
-          >((nextHealth, updatedAtNanos) => ({
+          >(VIEW_SERVER_HEALTH_SUMMARY_TOPIC, "health-summary", (nextHealth, updatedAtNanos) => ({
             type: "snapshot",
             topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
             queryId: "health-summary",
@@ -237,7 +342,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
             typeof VIEW_SERVER_HEALTH_TOPIC,
             Extract<keyof Topics, string>,
             ViewServerHealthTopicRow<Extract<keyof Topics, string>>
-          >((nextHealth, updatedAtNanos) => {
+          >(VIEW_SERVER_HEALTH_TOPIC, "health", (nextHealth, updatedAtNanos) => {
             const rows = viewServerHealthTopicRowsFromHealth(nextHealth, updatedAtNanos);
             return {
               type: "snapshot",

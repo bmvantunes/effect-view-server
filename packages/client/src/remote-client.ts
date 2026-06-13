@@ -53,6 +53,17 @@ export type ViewServerClientOptions = {
 
 export type ViewServerRemoteClient<Topics extends TopicDefinitions> = ViewServerLiveClient<Topics>;
 
+const defaultSubscriptionBufferSize = 1_024;
+
+const normalizeSubscriptionBufferSize = (subscriptionBufferSize: number | undefined): number => {
+  if (subscriptionBufferSize === undefined) {
+    return defaultSubscriptionBufferSize;
+  }
+  return Number.isSafeInteger(subscriptionBufferSize) && subscriptionBufferSize > 0
+    ? subscriptionBufferSize
+    : 1;
+};
+
 class ViewServerRpcClient extends Context.Service<
   ViewServerRpcClient,
   RpcClient.FromGroup<typeof ViewServerRpcs, RpcClientError>
@@ -113,6 +124,18 @@ const subscriptionFailureStatus = <Topic extends string>(
   };
 };
 
+const subscriptionOverflowStatus = <Topic extends string>(
+  topic: Topic,
+  queuedEvents: number,
+): ViewServerStatusEvent<Topic> => ({
+  type: "status",
+  topic,
+  queryId: "remote",
+  status: "closed",
+  code: "BackpressureExceeded",
+  message: `Remote subscription buffer exceeded capacity with ${queuedEvents} queued event(s).`,
+});
+
 export const makeViewServerClient: <const Topics extends TopicDefinitions>(
   config: ViewServerConfig<Topics>,
   options: ViewServerClientOptions,
@@ -134,6 +157,8 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
   const healthRpc = (): Effect.Effect<ViewServerWireHealth, ViewServerRemoteClientError> =>
     rpc["ViewServer.Health"](undefined).pipe(Effect.mapError(mapViewServerRemoteError));
 
+  const subscriptionBufferSize = normalizeSubscriptionBufferSize(options.subscriptionBufferSize);
+
   const subscribeRpc = <Row, Topic extends string = string, Key extends string = string>(
     topic: Topic,
     query: ViewServerWireLiveQuery,
@@ -147,7 +172,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
         query,
       },
       {
-        streamBufferSize: options.subscriptionBufferSize ?? 1_024,
+        streamBufferSize: subscriptionBufferSize,
       },
     ).pipe(Stream.mapError(mapViewServerRemoteError), Stream.mapEffect(decodeEvent));
 
@@ -155,7 +180,6 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
     healthRpc().pipe(Effect.flatMap((next) => viewServerDecodeHealth(config, next))),
   );
   const remoteHealth = makeRemoteHealthState(initialHealth);
-  const subscriptionBufferSize = options.subscriptionBufferSize ?? 1_024;
   const clientScope = yield* Scope.make("parallel");
 
   const close = runAllFinalizers([
@@ -179,6 +203,7 @@ export const makeViewServerClient: <const Topics extends TopicDefinitions>(
       clientScope,
       failureStatus: subscriptionFailureStatus,
       lifecycle,
+      overflowStatus: subscriptionOverflowStatus,
       source,
       subscriptionBufferSize,
       topic,

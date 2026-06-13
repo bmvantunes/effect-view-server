@@ -529,6 +529,112 @@ describe("remote ViewServer client", () => {
     }),
   );
 
+  it.live(
+    "closes with typed backpressure status when the remote client event buffer overflows",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* makeTestRpcServer();
+        const client = yield* makeViewServerClient(viewServer, {
+          subscriptionBufferSize: 1,
+          url: server.url,
+        });
+        const subscription = yield* client.subscribe("orders", {
+          select: ["id", "price"],
+          limit: 10,
+        });
+
+        yield* server.emitInsert("orders", order("first", 1));
+        yield* server.emitInsert("orders", order("second", 2));
+        const events = yield* subscription.events.pipe(Stream.takeRight(1), Stream.runCollect);
+
+        expect(Array.from(events)).toStrictEqual([
+          {
+            type: "status",
+            topic: "orders",
+            queryId: "remote",
+            status: "closed",
+            code: "BackpressureExceeded",
+            message: "Remote subscription buffer exceeded capacity with 1 queued event(s).",
+          },
+        ]);
+        yield* Effect.sleep("10 millis");
+        expect(server.activeSubscriptions()).toBe(0);
+
+        yield* client.close;
+        yield* server.close;
+      }),
+  );
+
+  it.live("closes with typed backpressure status when the remote client buffer size is zero", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, {
+        subscriptionBufferSize: 0,
+        url: server.url,
+      });
+      const subscription = yield* client.subscribe("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+
+      yield* server.emitInsert("orders", order("first", 1));
+      yield* server.emitInsert("orders", order("second", 2));
+      const events = yield* subscription.events.pipe(Stream.takeRight(1), Stream.runCollect);
+
+      expect(Array.from(events)).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "remote",
+          status: "closed",
+          code: "BackpressureExceeded",
+          message: "Remote subscription buffer exceeded capacity with 1 queued event(s).",
+        },
+      ]);
+      yield* Effect.sleep("10 millis");
+      expect(server.activeSubscriptions()).toBe(0);
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live(
+    "closes with typed backpressure status when the remote client buffer size is not finite",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* makeTestRpcServer();
+        const client = yield* makeViewServerClient(viewServer, {
+          subscriptionBufferSize: Number.NaN,
+          url: server.url,
+        });
+        const subscription = yield* client.subscribe("orders", {
+          select: ["id", "price"],
+          limit: 10,
+        });
+
+        yield* server.emitInsert("orders", order("first", 1));
+        yield* server.emitInsert("orders", order("second", 2));
+        const events = yield* subscription.events.pipe(Stream.takeRight(1), Stream.runCollect);
+
+        expect(Array.from(events)).toStrictEqual([
+          {
+            type: "status",
+            topic: "orders",
+            queryId: "remote",
+            status: "closed",
+            code: "BackpressureExceeded",
+            message: "Remote subscription buffer exceeded capacity with 1 queued event(s).",
+          },
+        ]);
+        yield* Effect.sleep("10 millis");
+        expect(server.activeSubscriptions()).toBe(0);
+
+        yield* client.close;
+        yield* server.close;
+      }),
+  );
+
   it.live("does not wait for health refresh before delivering the first live event", () =>
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();

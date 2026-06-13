@@ -1,5 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Fiber, Logger, References, Scope, Stream } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Logger,
+  Option,
+  References,
+  Scope,
+  Stream,
+} from "effect";
 import type { StatusEvent } from "@view-server/config";
 import type { ViewServerLiveEvent } from "./live-client";
 import { makeRemoteSubscription } from "./remote-subscription";
@@ -45,6 +56,15 @@ const failureStatus = (topic: string, error: string): StatusEvent => ({
   message: error,
 });
 
+const overflowStatus = (topic: string, queuedEvents: number): StatusEvent => ({
+  type: "status",
+  topic,
+  queryId: "remote",
+  status: "closed",
+  code: "BackpressureExceeded",
+  message: `overflow with ${queuedEvents} queued event(s)`,
+});
+
 describe("remote subscription", () => {
   it.effect("streams events and closes without explicit lifecycle hooks", () =>
     Effect.gen(function* () {
@@ -52,6 +72,7 @@ describe("remote subscription", () => {
       const subscription = yield* makeRemoteSubscription({
         clientScope,
         failureStatus,
+        overflowStatus,
         source: Stream.make(snapshot),
         subscriptionBufferSize: 2,
         topic: "orders",
@@ -81,6 +102,7 @@ describe("remote subscription", () => {
             closeCount += 1;
           }),
         },
+        overflowStatus,
         source: Stream.fail("socket closed"),
         subscriptionBufferSize: 2,
         topic: "orders",
@@ -115,6 +137,7 @@ describe("remote subscription", () => {
             closeCount += 1;
           }).pipe(Effect.andThen(Effect.die("close failed"))),
         },
+        overflowStatus,
         source: Stream.make(snapshot),
         subscriptionBufferSize: 2,
         topic: "orders",
@@ -138,6 +161,7 @@ describe("remote subscription", () => {
           failureStatusCount += 1;
           return failureStatus(topic, error);
         },
+        overflowStatus,
         source: Stream.never,
         subscriptionBufferSize: 2,
         topic: "orders",
@@ -159,6 +183,7 @@ describe("remote subscription", () => {
       const subscription = yield* makeRemoteSubscription<Row, string>({
         clientScope,
         failureStatus,
+        overflowStatus,
         source: Stream.die("source defect"),
         subscriptionBufferSize: 2,
         topic: "orders",
@@ -193,6 +218,7 @@ describe("remote subscription", () => {
             return yield* Effect.fail("typed close failure");
           }),
         },
+        overflowStatus,
         source: Stream.make(snapshot),
         subscriptionBufferSize: 2,
         topic: "orders",
@@ -214,4 +240,214 @@ describe("remote subscription", () => {
       Effect.provideService(References.MinimumLogLevel, "Trace"),
     );
   });
+
+  it.effect("closes with typed backpressure status when the local event buffer overflows", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      const lifecycleEvents: Array<"open" | "close"> = [];
+      let closeCount = 0;
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        lifecycle: {
+          onOpen: Effect.sync(() => {
+            lifecycleEvents.push("open");
+          }),
+          onClose: Effect.sync(() => {
+            lifecycleEvents.push("close");
+            closeCount += 1;
+          }),
+        },
+        overflowStatus,
+        source: Stream.make(snapshot, {
+          ...snapshot,
+          version: 2,
+        }),
+        subscriptionBufferSize: 1,
+        topic: "orders",
+      });
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      expect(closeCount).toBe(1);
+      expect(lifecycleEvents).toStrictEqual(["open", "close"]);
+
+      const events = yield* subscription.events.pipe(Stream.runCollect);
+
+      expect(Array.from(events)).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "remote",
+          status: "closed",
+          code: "BackpressureExceeded",
+          message: "overflow with 1 queued event(s)",
+        },
+      ]);
+      expect(closeCount).toBe(1);
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("propagates overflow close defects from lifecycle finalizers", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      let closeCount = 0;
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        lifecycle: {
+          onOpen: Effect.void,
+          onClose: Effect.sync(() => {
+            closeCount += 1;
+          }).pipe(Effect.andThen(Effect.die("overflow close failed"))),
+        },
+        overflowStatus,
+        source: Stream.make(snapshot, {
+          ...snapshot,
+          version: 2,
+        }),
+        subscriptionBufferSize: 1,
+        topic: "orders",
+      });
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const defectSeen = yield* subscription.events.pipe(
+        Stream.runCollect,
+        Effect.matchCause({
+          onFailure: Cause.hasDies,
+          onSuccess: () => false,
+        }),
+      );
+
+      expect(defectSeen).toBe(true);
+      expect(closeCount).toBe(1);
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("clears stale queued events before waiting for overflow lifecycle close", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      const closeStarted = yield* Deferred.make<void>();
+      const closeRelease = yield* Deferred.make<void>();
+      const firstEvents = yield* Deferred.make<ReadonlyArray<ViewServerLiveEvent<Row>>>();
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        lifecycle: {
+          onOpen: Effect.void,
+          onClose: Deferred.succeed(closeStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(closeRelease)),
+          ),
+        },
+        overflowStatus,
+        source: Stream.make(snapshot, {
+          ...snapshot,
+          version: 2,
+        }),
+        subscriptionBufferSize: 1,
+        topic: "orders",
+      });
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Deferred.await(closeStarted).pipe(Effect.timeout("1 second"));
+      yield* subscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.flatMap((events) => Deferred.succeed(firstEvents, Array.from(events))),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const beforeCloseRelease = yield* Deferred.poll(firstEvents);
+
+      expect(Option.isNone(beforeCloseRelease)).toBe(true);
+
+      yield* Deferred.succeed(closeRelease, undefined);
+      const events = yield* Deferred.await(firstEvents);
+
+      expect(events).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "remote",
+          status: "closed",
+          code: "BackpressureExceeded",
+          message: "overflow with 1 queued event(s)",
+        },
+      ]);
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect("delivers typed backpressure status when the configured buffer size is zero", () =>
+    Effect.gen(function* () {
+      const clientScope = yield* Scope.make("parallel");
+      const subscription = yield* makeRemoteSubscription<Row, string>({
+        clientScope,
+        failureStatus,
+        overflowStatus,
+        source: Stream.make(snapshot, {
+          ...snapshot,
+          version: 2,
+        }),
+        subscriptionBufferSize: 0,
+        topic: "orders",
+      });
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const events = yield* subscription.events.pipe(Stream.runCollect);
+
+      expect(Array.from(events)).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "remote",
+          status: "closed",
+          code: "BackpressureExceeded",
+          message: "overflow with 1 queued event(s)",
+        },
+      ]);
+      yield* Scope.close(clientScope, Exit.void);
+    }),
+  );
+
+  it.effect(
+    "delivers typed backpressure status when the configured buffer size is not finite",
+    () =>
+      Effect.gen(function* () {
+        const clientScope = yield* Scope.make("parallel");
+        const subscription = yield* makeRemoteSubscription<Row, string>({
+          clientScope,
+          failureStatus,
+          overflowStatus,
+          source: Stream.make(snapshot, {
+            ...snapshot,
+            version: 2,
+          }),
+          subscriptionBufferSize: Number.NaN,
+          topic: "orders",
+        });
+
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+        const events = yield* subscription.events.pipe(Stream.runCollect);
+
+        expect(Array.from(events)).toStrictEqual([
+          {
+            type: "status",
+            topic: "orders",
+            queryId: "remote",
+            status: "closed",
+            code: "BackpressureExceeded",
+            message: "overflow with 1 queued event(s)",
+          },
+        ]);
+        yield* Scope.close(clientScope, Exit.void);
+      }),
+  );
 });

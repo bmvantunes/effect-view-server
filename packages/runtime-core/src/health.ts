@@ -3,7 +3,7 @@ import type {
   DecodableTopicDefinitions,
 } from "@view-server/column-live-view-engine";
 import type { TransportHealth, ViewServerHealth } from "@view-server/config";
-import { Clock, Deferred, Effect, Fiber, Semaphore, type Exit } from "effect";
+import { Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 import type * as Duration from "effect/Duration";
 import type { AtomRef } from "effect/unstable/reactivity";
 
@@ -159,10 +159,10 @@ export const makeCoalescedHealthReader = <const Topics extends DecodableTopicDef
   });
 };
 
-export const makeHealthRefreshScheduler = (
-  refresh: Effect.Effect<void>,
-  cadence: Duration.Input = "1 second",
-) => {
+export const makeHealthRefreshScheduler = Effect.fn(
+  "ViewServerRuntimeCore.healthRefreshScheduler.make",
+)(function* (refresh: Effect.Effect<void>, cadence: Duration.Input = "1 second") {
+  const schedulerScope = yield* Scope.make("parallel");
   let scheduled = false;
   let pending = false;
   let closed = false;
@@ -242,7 +242,7 @@ export const makeHealthRefreshScheduler = (
             const { token } = decision;
             const fiber = yield* drainRefreshes().pipe(
               Effect.ensuring(clearActiveRun(token)),
-              Effect.forkDetach({ startImmediately: true }),
+              Effect.forkIn(schedulerScope, { startImmediately: true }),
             );
             yield* Effect.sync(() => {
               activeFiber = fiber;
@@ -270,6 +270,7 @@ export const makeHealthRefreshScheduler = (
         if (fiber !== undefined) {
           yield* Fiber.interrupt(fiber).pipe(Effect.asVoid);
         }
+        yield* Scope.close(schedulerScope, Exit.void);
       }),
     );
   });
@@ -278,4 +279,4 @@ export const makeHealthRefreshScheduler = (
     close: close(),
     request: requestRefresh(),
   };
-};
+});

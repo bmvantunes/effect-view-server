@@ -1052,9 +1052,9 @@ describe("@view-server/runtime Kafka ingress internals", () => {
                 local: {
                   connected: false,
                   assignedPartitions: 2,
-                  messagesPerSecond: 2,
-                  bytesPerSecond: 25,
-                  decodedMessagesPerSecond: 1,
+                  messagesPerSecond: 3,
+                  bytesPerSecond: 35,
+                  decodedMessagesPerSecond: 2,
                   decodeFailuresPerSecond: 1,
                   mappingFailuresPerSecond: 0,
                   processingFailuresPerSecond: 0,
@@ -1683,7 +1683,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("resets idle Kafka per-second counters on health reads", () =>
+  it.effect("reports Kafka per-second counters over a rolling one-second window", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
       const ledger = makeViewServerKafkaHealthLedger<Topics>({
@@ -1704,9 +1704,26 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       });
 
       const activeHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 1_000);
-      const idleHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+      const boundaryHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+      const idleHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_001);
 
       expect(activeHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]).toStrictEqual({
+        connected: true,
+        assignedPartitions: 1,
+        messagesPerSecond: 1,
+        bytesPerSecond: 10,
+        decodedMessagesPerSecond: 1,
+        decodeFailuresPerSecond: 0,
+        mappingFailuresPerSecond: 0,
+        processingFailuresPerSecond: 0,
+        lastMessageAt: 1_000,
+        lastCommitAt: 1_000,
+        consumerLagMessages: null,
+        lagSampledAt: null,
+        committedOffset: "1",
+        lastError: null,
+      });
+      expect(boundaryHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]).toStrictEqual({
         connected: true,
         assignedPartitions: 1,
         messagesPerSecond: 1,

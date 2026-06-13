@@ -1145,7 +1145,7 @@ describe("remote ViewServer client", () => {
 
       const badStartsWith = yield* Effect.flip(
         client.subscribe("badjson", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
+          // @ts-expect-error hostile callers can still send invalid selected fields.
           select: ["id"],
           where: {
             id: {
@@ -1156,7 +1156,7 @@ describe("remote ViewServer client", () => {
         }),
       );
       expect(badStartsWith.code).toBe("InvalidQuery");
-      expect(badStartsWith.message).toMatch(/Invalid startsWith filter for id/);
+      expect(badStartsWith.message).toBe("Invalid filter for id: expected string");
 
       yield* client.close;
       yield* server.close;

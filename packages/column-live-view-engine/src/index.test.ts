@@ -312,10 +312,19 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
   status.clear();
   expect(status.length).toBe(0);
 
+  const statusKeys = createTopicColumnValues("status", metadata);
   const optionalPrice = createTopicColumnValuesFromArray("optionalPrice", metadata, [1, undefined]);
+  const numberKeys = createTopicColumnValues("optionalPrice", metadata);
   const quantity = createTopicColumnValues("quantity", metadata);
   const decimalPrice = createTopicColumnValues("decimalPrice", metadata);
   const generic = createTopicColumnValues("unknown", metadata);
+  statusKeys.reserve(8);
+  statusKeys.set(0, "a:b");
+  numberKeys.reserve(8);
+  numberKeys.set(0, -0);
+  numberKeys.set(1, Number.NaN);
+  numberKeys.set(2, Number.POSITIVE_INFINITY);
+  numberKeys.set(3, Number.NEGATIVE_INFINITY);
   quantity.reserve(8);
   quantity.set(0, 1n);
   quantity.set(1, 2n);
@@ -328,6 +337,8 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
   expect(quantity.kind).toBe("bigint");
   expect(decimalPrice.kind).toBe("bigDecimal");
   expect(generic.kind).toBe("generic");
+  expect(columnScalarEqualityKey(statusKeys, 0)).toBe("string:3:a:b");
+  expect(columnScalarEqualityKey(statusKeys, 1)).toBeUndefined();
   expect(columnValue(optionalPrice, 0)).toBe(1);
   expect(columnValue(optionalPrice, 1)).toBeUndefined();
   expect(columnValue(quantity, 0)).toBe(1n);
@@ -338,6 +349,10 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
 
   expect(columnScalarEqualityKey(optionalPrice, 0)).toBe("number:1");
   expect(columnScalarEqualityKey(optionalPrice, 1)).toBeUndefined();
+  expect(columnScalarEqualityKey(numberKeys, 0)).toBe("number:-0");
+  expect(columnScalarEqualityKey(numberKeys, 1)).toBe("number:NaN");
+  expect(columnScalarEqualityKey(numberKeys, 2)).toBe("number:Infinity");
+  expect(columnScalarEqualityKey(numberKeys, 3)).toBe("number:-Infinity");
   expect(columnScalarEqualityKey(quantity, 0)).toBe("bigint:1");
   expect(columnScalarEqualityKey(quantity, -1)).toBeUndefined();
   expect(columnScalarEqualityKey(decimalPrice, 0)).toBe("bigDecimal:1.25");

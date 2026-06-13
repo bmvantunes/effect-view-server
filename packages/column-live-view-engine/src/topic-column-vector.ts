@@ -295,15 +295,17 @@ export const columnScalarEqualityKey = (
 ): string | undefined => {
   if (column.kind === "string") {
     const value = column.stringAt(slot);
-    return value === undefined ? undefined : scalarEqualityKey(value);
+    return value === undefined ? undefined : `string:${value.length}:${value}`;
   }
   if (column.kind === "number") {
     const value = column.numberAt(slot);
-    return value === undefined ? undefined : scalarEqualityKey(value);
+    return value === undefined
+      ? undefined
+      : `number:${Object.is(value, -0) ? "-0" : value.toString()}`;
   }
   if (column.kind === "bigint") {
     const value = column.bigintAt(slot);
-    return value === undefined ? undefined : scalarEqualityKey(value);
+    return value === undefined ? undefined : `bigint:${value.toString()}`;
   }
   if (column.kind === "bigDecimal") {
     const value = column.bigDecimalAt(slot);

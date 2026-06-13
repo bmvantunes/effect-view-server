@@ -32,6 +32,14 @@ import {
 
 type RowObject = object;
 
+type AppendBatchReservation = {
+  reserveFrom(startIndex: number): void;
+};
+
+const noopAppendBatchReservation: AppendBatchReservation = {
+  reserveFrom: () => {},
+};
+
 export class TopicRowStorage {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
   readonly readModel: ActiveQueryStoreState;
@@ -39,6 +47,7 @@ export class TopicRowStorage {
   private readonly slots: Array<TopicRowEntry<object>> = [];
   private readonly keyToSlot = new Map<string, number>();
   private readonly columns = new Map<string, MutableTopicColumnValues>();
+  private readonly reservableColumns: Array<MutableTopicColumnValues> = [];
   private readonly orderedSlotIndexes = new Map<string, OrderedSlotIndex>();
   private readonly scalarPredicateIndexes = createScalarPredicateIndexes();
   private readonly rowChangeJournal = new TopicRowChangeJournal<object>();
@@ -66,7 +75,11 @@ export class TopicRowStorage {
       topic,
     };
     for (const field of this.rawQueryMetadata.fieldNames) {
-      this.columns.set(field, createTopicColumnValues(field, this.rawQueryMetadata));
+      const column = createTopicColumnValues(field, this.rawQueryMetadata);
+      this.columns.set(field, column);
+      if (column.kind === "number") {
+        this.reservableColumns.push(column);
+      }
     }
     this.readModel = {
       activeQueries: createActiveQueryRegistry(),
@@ -135,16 +148,17 @@ export class TopicRowStorage {
   }
 
   setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>): void {
+    const appendReservation = this.createAppendBatchReservation(preparedRows);
     if (preparedRows.length > 1 && this.orderedSlotIndexes.size > 0) {
       this.orderedSlotIndexes.clear();
-      for (const prepared of preparedRows) {
-        this.setPreparedWithoutIndexMaintenance(prepared);
+      for (let index = 0; index < preparedRows.length; index += 1) {
+        this.setPreparedWithoutIndexMaintenance(preparedRows[index]!, appendReservation, index);
       }
       return;
     }
 
-    for (const prepared of preparedRows) {
-      this.setPrepared(prepared);
+    for (let index = 0; index < preparedRows.length; index += 1) {
+      this.setPreparedInBatch(preparedRows[index]!, appendReservation, index);
     }
   }
 
@@ -235,11 +249,78 @@ export class TopicRowStorage {
     }
   }
 
+  private createAppendBatchReservation(
+    preparedRows: ReadonlyArray<PreparedTopicRow>,
+  ): AppendBatchReservation {
+    if (this.reservableColumns.length === 0) {
+      return noopAppendBatchReservation;
+    }
+    let reserved = false;
+    return {
+      reserveFrom: (startIndex) => {
+        if (reserved) {
+          return;
+        }
+        reserved = true;
+        let appendCount = 0;
+        const appendKeys = new Set<string>();
+        for (let index = startIndex; index < preparedRows.length; index += 1) {
+          const key = preparedRows[index]!.key;
+          if (!this.keyToSlot.has(key) && !appendKeys.has(key)) {
+            appendKeys.add(key);
+            appendCount += 1;
+          }
+        }
+        const minimumCapacity = this.slots.length + appendCount;
+        for (const column of this.reservableColumns) {
+          column.reserve(minimumCapacity);
+        }
+      },
+    };
+  }
+
+  private setPreparedInBatch(
+    prepared: PreparedTopicRow,
+    appendReservation: AppendBatchReservation,
+    batchIndex: number,
+  ): void {
+    const existingSlot = this.keyToSlot.get(prepared.key);
+    if (existingSlot !== undefined) {
+      const previous = this.slots[existingSlot]!.row;
+      this.removeSlotFromScalarIndexes(existingSlot);
+      this.writeSlot(existingSlot, prepared);
+      this.addSlotToScalarIndexes(existingSlot);
+      this.recordRowChange({
+        key: prepared.key,
+        previous,
+        next: prepared.row,
+      });
+      this.orderedSlotIndexes.clear();
+      return;
+    }
+
+    appendReservation.reserveFrom(batchIndex);
+    const slot = this.slots.length;
+    this.keyToSlot.set(prepared.key, slot);
+    this.writeSlot(slot, prepared);
+    this.addSlotToScalarIndexes(slot);
+    this.recordRowChange({
+      key: prepared.key,
+      previous: undefined,
+      next: prepared.row,
+    });
+    this.insertSlotIntoOrderedIndexes(slot);
+  }
+
   private insertSlotIntoOrderedIndexes(slot: number): void {
     insertSlotIntoRawWindowIndexes(this.rawWindowScanState, slot);
   }
 
-  private setPreparedWithoutIndexMaintenance(prepared: PreparedTopicRow): void {
+  private setPreparedWithoutIndexMaintenance(
+    prepared: PreparedTopicRow,
+    appendReservation: AppendBatchReservation,
+    batchIndex: number,
+  ): void {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
       const previous = this.slots[existingSlot]!.row;
@@ -254,6 +335,7 @@ export class TopicRowStorage {
       return;
     }
 
+    appendReservation.reserveFrom(batchIndex);
     const slot = this.slots.length;
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);

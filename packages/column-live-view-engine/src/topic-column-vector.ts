@@ -44,6 +44,7 @@ type MutableColumnOperations = {
   clear(): void;
   copySlot(targetSlot: number, sourceSlot: number): void;
   pop(): void;
+  reserve(minimumCapacity: number): void;
   set(slot: number, value: unknown): void;
 };
 
@@ -84,6 +85,8 @@ class GenericTopicColumn implements MutableGenericTopicColumnValues {
     this.values.pop();
   }
 
+  reserve(_minimumCapacity: number): void {}
+
   clear(): void {
     this.values.length = 0;
   }
@@ -119,6 +122,8 @@ class StringTopicColumn implements MutableStringTopicColumnValues {
   pop(): void {
     this.values.pop();
   }
+
+  reserve(_minimumCapacity: number): void {}
 
   clear(): void {
     this.values.length = 0;
@@ -178,6 +183,10 @@ class NumberTopicColumn implements MutableNumberTopicColumnValues {
     this.validity[this.lengthValue] = 0;
   }
 
+  reserve(minimumCapacity: number): void {
+    this.ensureCapacity(minimumCapacity);
+  }
+
   clear(): void {
     this.values = new Float64Array(0);
     this.validity = new Uint8Array(0);
@@ -232,6 +241,8 @@ class BigIntTopicColumn implements MutableBigIntTopicColumnValues {
     this.values.pop();
   }
 
+  reserve(_minimumCapacity: number): void {}
+
   clear(): void {
     this.values.length = 0;
   }
@@ -267,6 +278,8 @@ class BigDecimalTopicColumn implements MutableBigDecimalTopicColumnValues {
   pop(): void {
     this.values.pop();
   }
+
+  reserve(_minimumCapacity: number): void {}
 
   clear(): void {
     this.values.length = 0;

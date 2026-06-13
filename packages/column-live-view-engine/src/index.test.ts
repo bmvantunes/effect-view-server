@@ -269,6 +269,7 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
 
   const price = createTopicColumnValues("price", metadata);
   const finitePrice = createTopicColumnValues("finitePrice", metadata);
+  price.reserve(32);
   price.set(20, 42);
   price.set(21, undefined);
   price.copySlot(0, 20);
@@ -295,6 +296,7 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
   expect(price.length).toBe(0);
 
   const status = createTopicColumnValues("status", metadata);
+  status.reserve(4);
   status.set(0, "open");
   status.set(1, { structured: true });
   status.copySlot(0, 1);
@@ -310,21 +312,28 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
   expect(status.length).toBe(0);
 
   const optionalPrice = createTopicColumnValuesFromArray("optionalPrice", metadata, [1, undefined]);
-  const quantity = createTopicColumnValuesFromArray("quantity", metadata, [1n, 2n]);
-  const decimalPrice = createTopicColumnValuesFromArray("decimalPrice", metadata, [
-    fromStringUnsafe("1.25"),
-    "not-a-decimal",
-  ]);
+  const quantity = createTopicColumnValues("quantity", metadata);
+  const decimalPrice = createTopicColumnValues("decimalPrice", metadata);
+  const generic = createTopicColumnValues("unknown", metadata);
+  quantity.reserve(8);
+  quantity.set(0, 1n);
+  quantity.set(1, 2n);
+  decimalPrice.reserve(8);
+  decimalPrice.set(0, fromStringUnsafe("1.25"));
+  decimalPrice.set(1, "not-a-decimal");
+  generic.reserve(8);
 
   expect(optionalPrice.kind).toBe("number");
   expect(quantity.kind).toBe("bigint");
   expect(decimalPrice.kind).toBe("bigDecimal");
+  expect(generic.kind).toBe("generic");
   expect(columnValue(optionalPrice, 0)).toBe(1);
   expect(columnValue(optionalPrice, 1)).toBeUndefined();
   expect(columnValue(quantity, 0)).toBe(1n);
   expect(columnValue(quantity, -1)).toBeUndefined();
   expect(columnValue(decimalPrice, 0)).toStrictEqual(fromStringUnsafe("1.25"));
   expect(columnValue(decimalPrice, 1)).toBeUndefined();
+  expect(generic.length).toBe(0);
 });
 
 it("keeps scalar range helpers exact for numeric runtime domains", () => {
@@ -4782,6 +4791,8 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         order("same", "closed", 2, 2, "emea"),
         order("same", "open", 3, 3, "emea"),
         order("same", "closed", 4, 4, "emea"),
+        order("fresh", "open", 5, 5, "amer"),
+        order("fresh", "closed", 6, 6, "amer"),
         order("other", "open", 10, 10, "amer"),
       ]);
 
@@ -4789,7 +4800,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expectDeltaEvent(delta);
       state = applyDelta(state, delta);
       expect(normalizeDecimalFields(state.rows)).toStrictEqual([
-        { status: "closed", rowCount: 1n, totalPrice: "4" },
+        { status: "closed", rowCount: 2n, totalPrice: "10" },
         { status: "open", rowCount: 1n, totalPrice: "10" },
       ]);
 

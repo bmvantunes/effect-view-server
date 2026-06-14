@@ -387,6 +387,24 @@ describe(`raw write engine benchmark: ${profile.rowCount} rows`, () => {
         );
       },
     },
+    {
+      name: "patch existing rows one by one",
+      run: async () => {
+        const engine = profileEngine(profile);
+        const generation = profile.nextPatchGeneration;
+        profile.nextPatchGeneration += 1;
+        for (let offset = 0; offset < batchSize; offset += 1) {
+          await Effect.runPromise(
+            engine.patch("orders", `order-${offset}`, {
+              price: generation + offset,
+              quantity: BigInt(generation + offset),
+              decimalPrice: fromStringUnsafe(String(generation + offset)),
+              updatedAt: 2_000_000_000 + generation + offset,
+            }),
+          );
+        }
+      },
+    },
     ...(writeMode === "indexed"
       ? [
           {
@@ -436,24 +454,6 @@ describe(`raw write engine benchmark: ${profile.rowCount} rows`, () => {
           },
         ]
       : []),
-    {
-      name: "patch existing rows one by one",
-      run: async () => {
-        const engine = profileEngine(profile);
-        const generation = profile.nextPatchGeneration;
-        profile.nextPatchGeneration += 1;
-        for (let offset = 0; offset < batchSize; offset += 1) {
-          await Effect.runPromise(
-            engine.patch("orders", `order-${offset}`, {
-              price: generation + offset,
-              quantity: BigInt(generation + offset),
-              decimalPrice: fromStringUnsafe(String(generation + offset)),
-              updatedAt: 2_000_000_000 + generation + offset,
-            }),
-          );
-        }
-      },
-    },
     {
       name: "publishMany append batch",
       run: async () => {

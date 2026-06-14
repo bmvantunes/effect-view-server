@@ -129,6 +129,3 @@ export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.
     } satisfies PreparedTopicRow;
   },
 );
-
-export const preparedTopicRowChangesRow = (prepared: PreparedTopicRow): boolean =>
-  prepared.source === "row" || prepared.changedFields !== undefined;

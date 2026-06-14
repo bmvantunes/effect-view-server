@@ -7018,6 +7018,8 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* patchTopicStoreRow(store, "1", { price: 10 }, invalidRow);
       yield* deleteTopicStoreRow(store, "missing");
       yield* publishTopicStoreRows(store, [], invalidRow);
+      yield* publishTopicStoreRow(store, order("1", "open", 10, 1), invalidRow);
+      yield* publishTopicStoreRows(store, [order("1", "open", 10, 1)], invalidRow);
 
       const health = yield* collectTopicStoreHealth(store, false);
       expect(notifyCount).toBe(1);

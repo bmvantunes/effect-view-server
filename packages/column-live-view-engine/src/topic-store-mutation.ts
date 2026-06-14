@@ -1,10 +1,6 @@
 import { Clock, Effect, Semaphore } from "effect";
 import type { TopicRowStorage } from "./topic-row-storage";
-import {
-  preparedTopicRowChangesRow,
-  type InvalidRowErrorFactory,
-  type PreparedTopicRow,
-} from "./topic-row-preparation";
+import type { InvalidRowErrorFactory, PreparedTopicRow } from "./topic-row-preparation";
 import type { createTopicHealthLedger } from "./topic-health-ledger";
 import type { LiveTopicSubscriber } from "./topic-subscriber";
 import { topicStoreState, type TopicStore } from "./topic-store-state";
@@ -101,22 +97,12 @@ const recordTopicStoreMutation = (
 };
 
 const topicStoreMutationContext = (state: TopicStoreMutationState): TopicStoreMutationContext => ({
-  publishPrepared: (prepared) => {
-    state.storage.setPrepared(prepared);
-    return 1;
-  },
-  publishPreparedMany: (preparedRows) => {
-    state.storage.setPreparedMany(preparedRows);
-    return preparedRows.length;
-  },
+  publishPrepared: (prepared) => state.storage.setPrepared(prepared),
+  publishPreparedMany: (preparedRows) => state.storage.setPreparedMany(preparedRows),
   patch: (key, patch, invalidRow) =>
     Effect.gen(function* () {
       const prepared = yield* state.storage.preparePatch(key, patch, invalidRow);
-      if (!preparedTopicRowChangesRow(prepared)) {
-        return 0;
-      }
-      state.storage.setPrepared(prepared);
-      return 1;
+      return state.storage.setPrepared(prepared);
     }),
   delete: (key) => state.storage.delete(key),
 });

@@ -7,6 +7,7 @@ import type {
   TopicRowEntry,
   TopicRowVisitor,
 } from "./row-scan";
+import { topicRowChangedFieldsFromRows } from "./row-scan";
 import type {
   TopicRawOrderByPlan,
   TopicRawWindowScanPlan,
@@ -33,7 +34,6 @@ import {
 import {
   prepareTopicPatch,
   prepareTopicRow,
-  preparedTopicRowChangesRow,
   type InvalidRowErrorFactory,
   type PreparedTopicRow,
   type TopicRowPreparationContext,
@@ -62,6 +62,11 @@ type RawProjectionColumn = {
 
 type AppendBatchReservation = {
   reserveFrom(startIndex: number): void;
+};
+
+type PreparedTopicRowReplacement = {
+  readonly changedFields: TopicRowChangedFields | undefined;
+  readonly previous: object;
 };
 
 const noopAppendBatchReservation: AppendBatchReservation = {
@@ -176,16 +181,16 @@ export class TopicRowStorage {
   setPrepared(prepared: PreparedTopicRow): void {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
-      if (!this.preparedRowChangesCurrentSlot(prepared, existingSlot)) {
+      const replacement = this.preparedReplacementForCurrentSlot(prepared, existingSlot);
+      if (replacement === undefined) {
         return;
       }
-      const previous = this.slots[existingSlot]!.row;
       this.removeSlotFromScalarIndexes(existingSlot);
-      this.removeSlotFromReplacementOrderedIndexes(existingSlot, prepared.changedFields);
+      this.removeSlotFromReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordPreparedReplacementChange(prepared, previous);
-      this.insertSlotIntoReplacementOrderedIndexes(existingSlot, prepared.changedFields);
+      this.recordPreparedReplacementChange(prepared, replacement);
+      this.insertSlotIntoReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       return;
     }
 
@@ -202,27 +207,17 @@ export class TopicRowStorage {
   }
 
   setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>): void {
-    const changedPreparedRows = preparedRows.filter((prepared) => {
-      const existingSlot = this.keyToSlot.get(prepared.key);
-      return (
-        existingSlot === undefined || this.preparedRowChangesCurrentSlot(prepared, existingSlot)
-      );
-    });
-    const appendReservation = this.createAppendBatchReservation(changedPreparedRows);
-    if (changedPreparedRows.length > 1 && this.orderedSlotIndexes.size > 0) {
+    const appendReservation = this.createAppendBatchReservation(preparedRows);
+    if (preparedRows.length > 1 && this.orderedSlotIndexes.size > 0) {
       this.orderedSlotIndexes.clear();
-      for (let index = 0; index < changedPreparedRows.length; index += 1) {
-        this.setPreparedWithoutIndexMaintenance(
-          changedPreparedRows[index]!,
-          appendReservation,
-          index,
-        );
+      for (let index = 0; index < preparedRows.length; index += 1) {
+        this.setPreparedWithoutIndexMaintenance(preparedRows[index]!, appendReservation, index);
       }
       return;
     }
 
-    for (let index = 0; index < changedPreparedRows.length; index += 1) {
-      this.setPreparedInBatch(changedPreparedRows[index]!, appendReservation, index);
+    for (let index = 0; index < preparedRows.length; index += 1) {
+      this.setPreparedInBatch(preparedRows[index]!, appendReservation, index);
     }
   }
 
@@ -421,13 +416,16 @@ export class TopicRowStorage {
   ): void {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
-      const previous = this.slots[existingSlot]!.row;
+      const replacement = this.preparedReplacementForCurrentSlot(prepared, existingSlot);
+      if (replacement === undefined) {
+        return;
+      }
       this.removeSlotFromScalarIndexes(existingSlot);
-      this.removeSlotFromReplacementOrderedIndexes(existingSlot, prepared.changedFields);
+      this.removeSlotFromReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordPreparedReplacementChange(prepared, previous);
-      this.insertSlotIntoReplacementOrderedIndexes(existingSlot, prepared.changedFields);
+      this.recordPreparedReplacementChange(prepared, replacement);
+      this.insertSlotIntoReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       return;
     }
 
@@ -488,11 +486,14 @@ export class TopicRowStorage {
   ): void {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
-      const previous = this.slots[existingSlot]!.row;
+      const replacement = this.preparedReplacementForCurrentSlot(prepared, existingSlot);
+      if (replacement === undefined) {
+        return;
+      }
       this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordPreparedReplacementChange(prepared, previous);
+      this.recordPreparedReplacementChange(prepared, replacement);
       return;
     }
 
@@ -508,27 +509,50 @@ export class TopicRowStorage {
     });
   }
 
-  private preparedRowChangesCurrentSlot(prepared: PreparedTopicRow, slot: number): boolean {
-    return preparedTopicRowChangesRow(prepared) || !rowsEqual(this.slots[slot]!.row, prepared.row);
+  private preparedReplacementForCurrentSlot(
+    prepared: PreparedTopicRow,
+    slot: number,
+  ): PreparedTopicRowReplacement | undefined {
+    const previous = this.slots[slot]!.row;
+    if (rowsEqual(previous, prepared.row)) {
+      return undefined;
+    }
+    if (prepared.source === "row") {
+      return {
+        changedFields: undefined,
+        previous,
+      };
+    }
+    return {
+      changedFields: topicRowChangedFieldsFromRows(
+        previous,
+        prepared.row,
+        this.rawQueryMetadata.fieldNames,
+      ),
+      previous,
+    };
   }
 
   private recordRowChange(change: TopicRowChange<object>): void {
     this.rowChangeJournal.record(change, this.versionValue);
   }
 
-  private recordPreparedReplacementChange(prepared: PreparedTopicRow, previous: object): void {
-    if (prepared.changedFields === undefined) {
+  private recordPreparedReplacementChange(
+    prepared: PreparedTopicRow,
+    replacement: PreparedTopicRowReplacement,
+  ): void {
+    if (replacement.changedFields === undefined) {
       this.recordRowChange({
         key: prepared.key,
-        previous,
+        previous: replacement.previous,
         next: prepared.row,
       });
       return;
     }
     this.recordRowChange({
-      changedFields: prepared.changedFields,
+      changedFields: replacement.changedFields,
       key: prepared.key,
-      previous,
+      previous: replacement.previous,
       next: prepared.row,
     });
   }

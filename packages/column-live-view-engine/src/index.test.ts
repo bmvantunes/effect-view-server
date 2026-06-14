@@ -8079,6 +8079,77 @@ describe("ColumnLiveViewEngine subscriptions", () => {
     }),
   );
 
+  it.effect("applies later stale no-op patches against earlier rows in the same batch", () =>
+    Effect.gen(function* () {
+      const storage = new TopicRowStorage("orders", Order, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      const initial = order("a", "open", 10, 1);
+      storage.setPrepared(yield* storage.prepareRow(initial, invalidRow));
+
+      const pricePatch = yield* storage.preparePatch("a", { price: 20 }, invalidRow);
+      const staleNoOpPatch = yield* storage.preparePatch("a", { updatedAt: 1 }, invalidRow);
+      storage.setPreparedMany([pricePatch, staleNoOpPatch]);
+
+      const rows: Array<object> = [];
+      storage.scanRows((_key, row) => {
+        rows.push(row);
+      });
+      expect(rows).toStrictEqual([initial]);
+    }),
+  );
+
+  it.effect("updates ordered indexes using apply-time fields for stale prepared patches", () =>
+    Effect.gen(function* () {
+      const storage = new TopicRowStorage("orders", Order, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      const compareByPriceThenKey = (
+        left: { readonly key: string; readonly row: object },
+        right: { readonly key: string; readonly row: object },
+      ) => {
+        const priceComparison =
+          numericRowField(left.row, "price") - numericRowField(right.row, "price");
+        return priceComparison === 0 ? left.key.localeCompare(right.key) : priceComparison;
+      };
+      storage.setPrepared(yield* storage.prepareRow(order("a", "open", 10, 1), invalidRow));
+      storage.setPrepared(yield* storage.prepareRow(order("b", "open", 20, 2), invalidRow));
+      storage.scanRawWindow({
+        predicate: {
+          callbackRequired: false,
+          callbackSkippable: true,
+          filters: [],
+        },
+        orderBy: [{ direction: "asc", field: "price" }],
+        storageOrderBy: [{ direction: "asc", field: "price" }],
+        matches: () => true,
+        compare: compareByPriceThenKey,
+        offset: 0,
+        limit: 2,
+      });
+
+      const stalePatch = yield* storage.preparePatch("a", { updatedAt: 2 }, invalidRow);
+      storage.setPrepared(yield* storage.prepareRow(order("a", "open", 30, 3), invalidRow));
+      storage.setPrepared(stalePatch);
+
+      const orderedWindow = storage.scanRawWindow({
+        predicate: {
+          callbackRequired: false,
+          callbackSkippable: true,
+          filters: [],
+        },
+        orderBy: [{ direction: "asc", field: "price" }],
+        storageOrderBy: [{ direction: "asc", field: "price" }],
+        matches: () => true,
+        compare: compareByPriceThenKey,
+        offset: 0,
+        limit: 2,
+      });
+
+      expect(orderedWindow.keys).toStrictEqual(["a", "b"]);
+    }),
+  );
+
   it.effect("keeps ordered raw indexes current after deletes move the last slot", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();

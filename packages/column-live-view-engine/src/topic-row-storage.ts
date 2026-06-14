@@ -175,11 +175,7 @@ export class TopicRowStorage {
       this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordRowChange({
-        key: prepared.key,
-        previous,
-        next: prepared.row,
-      });
+      this.recordPreparedReplacementChange(prepared, previous);
       this.orderedSlotIndexes.clear();
       return;
     }
@@ -408,11 +404,7 @@ export class TopicRowStorage {
       this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordRowChange({
-        key: prepared.key,
-        previous,
-        next: prepared.row,
-      });
+      this.recordPreparedReplacementChange(prepared, previous);
       this.orderedSlotIndexes.clear();
       return;
     }
@@ -445,11 +437,7 @@ export class TopicRowStorage {
       this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordRowChange({
-        key: prepared.key,
-        previous,
-        next: prepared.row,
-      });
+      this.recordPreparedReplacementChange(prepared, previous);
       return;
     }
 
@@ -467,6 +455,23 @@ export class TopicRowStorage {
 
   private recordRowChange(change: TopicRowChange<object>): void {
     this.rowChangeJournal.record(change, this.versionValue);
+  }
+
+  private recordPreparedReplacementChange(prepared: PreparedTopicRow, previous: object): void {
+    if (prepared.changedFields === undefined) {
+      this.recordRowChange({
+        key: prepared.key,
+        previous,
+        next: prepared.row,
+      });
+      return;
+    }
+    this.recordRowChange({
+      changedFields: prepared.changedFields,
+      key: prepared.key,
+      previous,
+      next: prepared.row,
+    });
   }
 
   private addSlotToScalarIndexes(slot: number): void {

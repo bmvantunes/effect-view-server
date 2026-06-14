@@ -2464,6 +2464,120 @@ describe("column-live-view-engine active query execution", () => {
     }),
   );
 
+  it.effect("filters batched retained removals once when a wider shared window has lookahead", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore(
+        "raw-visible-delete-shared-wide-lookahead",
+        Schema.Struct({
+          id: Schema.String,
+          status: Schema.String,
+          score: Schema.Number,
+        }),
+        "id",
+        () => {},
+      );
+      yield* publishTopicStoreRow(store, { id: "a", status: "open", score: 1 }, invalidRow);
+      yield* publishTopicStoreRow(store, { id: "b", status: "open", score: 2 }, invalidRow);
+      yield* publishTopicStoreRow(store, { id: "c", status: "open", score: 3 }, invalidRow);
+      yield* publishTopicStoreRow(store, { id: "d", status: "open", score: 4 }, invalidRow);
+      yield* publishTopicStoreRow(store, { id: "e", status: "open", score: 5 }, invalidRow);
+      yield* publishTopicStoreRow(store, { id: "f", status: "open", score: 6 }, invalidRow);
+
+      const scanLimits: Array<number | undefined> = [];
+      const readModel = topicStoreReadModel(store);
+      const observedReadModel = {
+        ...readModel,
+        scanRawWindow: (plan: Parameters<typeof readModel.scanRawWindow>[0]) => {
+          scanLimits.push(plan.limit);
+          return readModel.scanRawWindow(plan);
+        },
+      };
+
+      const wideCompiled = yield* prepareRawQuery(
+        "raw-visible-delete-shared-wide-lookahead",
+        topicStoreRawQueryMetadata(store),
+        {
+          select: ["id", "score"],
+          where: {
+            status: "open",
+          },
+          orderBy: [{ field: "score", direction: "desc" }],
+          limit: 128,
+        },
+      );
+      const narrowCompiled = yield* prepareRawQuery(
+        "raw-visible-delete-shared-wide-lookahead",
+        topicStoreRawQueryMetadata(store),
+        {
+          select: ["id", "score"],
+          where: {
+            status: "open",
+          },
+          orderBy: [{ field: "score", direction: "desc" }],
+          limit: 2,
+        },
+      );
+
+      const wideExecution = yield* acquireRawQueryExecution(observedReadModel, wideCompiled);
+      const narrowExecution = yield* acquireRawQueryExecution(observedReadModel, narrowCompiled);
+      expect(wideExecution.initial("wide-query").keys).toStrictEqual([
+        "f",
+        "e",
+        "d",
+        "c",
+        "b",
+        "a",
+      ]);
+      expect(narrowExecution.initial("query").keys).toStrictEqual(["f", "e"]);
+      const cursor = narrowExecution.createCursor();
+
+      yield* deleteTopicStoreRow(store, "f");
+      yield* deleteTopicStoreRow(store, "e");
+
+      const delta = yield* narrowExecution.next("query", cursor);
+      expect(Option.getOrThrow(delta)).toStrictEqual({
+        type: "delta",
+        topic: "raw-visible-delete-shared-wide-lookahead",
+        queryId: "query",
+        fromVersion: 6,
+        toVersion: 8,
+        operations: [
+          {
+            type: "remove",
+            key: "f",
+          },
+          {
+            type: "remove",
+            key: "e",
+          },
+          {
+            type: "insert",
+            key: "d",
+            row: {
+              id: "d",
+              score: 4,
+            },
+            index: 0,
+          },
+          {
+            type: "insert",
+            key: "c",
+            row: {
+              id: "c",
+              score: 3,
+            },
+            index: 1,
+          },
+        ],
+        totalRows: 4,
+      });
+      expect(scanLimits).toStrictEqual([192]);
+
+      yield* releaseRawQueryExecution(observedReadModel, narrowCompiled);
+      yield* releaseRawQueryExecution(observedReadModel, wideCompiled);
+    }),
+  );
+
   it.effect("shrinks shared base windows immediately when larger windows release", () =>
     Effect.gen(function* () {
       const store = new TopicStore(

@@ -9,7 +9,7 @@ import {
 } from "effect/BigDecimal";
 import { compareQueryValue, stableQueryValueString } from "./raw-query-compiler";
 import type { StoredRowOf } from "./query-result";
-import { cloneUnknown, fieldValue } from "./row-values";
+import { cloneUnknown, trustedFieldValue } from "./row-values";
 
 type RowObject = object;
 
@@ -204,7 +204,7 @@ const emptyReversibleAggregateState = (
 };
 
 const aggregateFieldValue = (row: RowObject, aggregate: RuntimeGroupedAggregate): unknown =>
-  "field" in aggregate ? fieldValue(row, aggregate.field) : undefined;
+  "field" in aggregate ? trustedFieldValue(row, aggregate.field) : undefined;
 
 export const updateAggregateState = (
   state: AggregateState,
@@ -396,7 +396,7 @@ export const newGroupState = (
 ): GroupState => {
   const resultRow: Record<string, unknown> = {};
   for (const field of groupBy) {
-    resultRow[field] = cloneUnknown(fieldValue(row, field));
+    resultRow[field] = cloneUnknown(trustedFieldValue(row, field));
   }
   const aggregateStates: Record<string, AggregateState> = {};
   for (const { alias, aggregate } of aggregates) {
@@ -417,7 +417,7 @@ export const newIncrementalGroupState = (
 ): MaterializedIncrementalGroupState => {
   const resultRow: Record<string, unknown> = {};
   for (const field of groupBy) {
-    resultRow[field] = cloneUnknown(fieldValue(row, field));
+    resultRow[field] = cloneUnknown(trustedFieldValue(row, field));
   }
   const aggregateStates: Record<string, ReversibleAggregateState> = {};
   for (const { alias, aggregate } of aggregates) {

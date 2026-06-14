@@ -49,6 +49,7 @@ import {
   fieldValue,
   rowsEqual,
   scalarEqualityKey,
+  trustedFieldValue,
   valuesEqual,
 } from "./row-values";
 import type { TopicRowChangeBatch, TopicRowEntry } from "./row-scan";
@@ -197,6 +198,22 @@ const position = (
 
 const makeEngine = (): Effect.Effect<Engine> =>
   createColumnLiveViewEngine({ topics: viewServer.topics });
+
+const withObjectPrototypeValue = <Value, Error, Requirements>(
+  field: string,
+  value: unknown,
+  effect: Effect.Effect<Value, Error, Requirements>,
+): Effect.Effect<Value, Error, Requirements> =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      Reflect.set(Object.prototype, field, value);
+    }),
+    () => effect,
+    () =>
+      Effect.sync(() => {
+        Reflect.deleteProperty(Object.prototype, field);
+      }),
+  );
 
 const registerTestTopicStoreSubscriber = (
   store: TopicStore,
@@ -5971,6 +5988,38 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(snapshot.totalRows).toBe(1);
     }),
   );
+
+  it.effect("keeps missing optional fields isolated from object prototype values", () =>
+    withObjectPrototypeValue(
+      "note",
+      "polluted",
+      Effect.gen(function* () {
+        const engine = yield* makeEngine();
+        yield* engine.publishMany("orders", [
+          order("missing-note", "open", 10, 1),
+          { ...order("own-note", "open", 20, 2), note: "polluted" },
+        ]);
+
+        const projected = yield* engine.snapshot("orders", {
+          select: ["id", "note"],
+          orderBy: [{ field: "id", direction: "asc" }],
+        });
+        const polluted = yield* engine.snapshot("orders", {
+          select: ["id"],
+          where: {
+            note: { eq: "polluted" },
+          },
+          orderBy: [{ field: "id", direction: "asc" }],
+        });
+
+        expect(projected.rows).toStrictEqual([
+          { id: "missing-note", note: undefined },
+          { id: "own-note", note: "polluted" },
+        ]);
+        expect(rowIds(polluted.rows)).toStrictEqual(["own-note"]);
+      }),
+    ),
+  );
 });
 
 describe("ColumnLiveViewEngine subscriptions", () => {
@@ -11409,6 +11458,7 @@ describe("ColumnLiveViewEngine validation and health", () => {
     expect(cloneRecord(inheritedRecord)).toStrictEqual({ id: "1", status: "open" });
     expect(cloneRow(inheritedRow)).toStrictEqual({ id: "1", status: "open" });
     expect(fieldValue(inheritedRow, "inherited")).toBeUndefined();
+    expect(trustedFieldValue(inheritedRow, "inherited")).toBe("hidden");
     expect(rowsEqual(inheritedRow, { id: "1", status: "open" })).toBe(true);
   });
 

@@ -25,7 +25,18 @@ const decodeTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decode")(functio
   return yield* Effect.try({
     try: () => {
       const decoded = Schema.decodeUnknownSync(context.schema)(row);
-      return cloneRow(decoded);
+      const cloned = cloneRow(decoded);
+      for (const field of context.fieldNames) {
+        if (!Object.hasOwn(cloned, field)) {
+          Object.defineProperty(cloned, field, {
+            configurable: true,
+            enumerable: false,
+            value: undefined,
+            writable: true,
+          });
+        }
+      }
+      return cloned;
     },
     catch: (cause) => invalidRow(context.topic, String(cause)),
   });

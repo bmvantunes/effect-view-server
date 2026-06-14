@@ -14,7 +14,7 @@ import type {
 import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { OrderedSlotIndex, RawStorageOrderColumn } from "./topic-ordered-window";
 import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
-import { cloneUnknown, fieldValue } from "./row-values";
+import { cloneUnknown, trustedFieldValue } from "./row-values";
 import {
   columnValue,
   createTopicColumnValues,
@@ -328,7 +328,7 @@ export class TopicRowStorage {
     for (let index = 0; index < this.columnWritePlan.length; index += 1) {
       this.columnWritePlan[index]!.set(
         slot,
-        fieldValue(prepared.row, this.columnWriteFields[index]!),
+        trustedFieldValue(prepared.row, this.columnWriteFields[index]!),
       );
     }
   }

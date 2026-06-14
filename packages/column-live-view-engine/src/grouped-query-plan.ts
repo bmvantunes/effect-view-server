@@ -6,7 +6,7 @@ import {
 } from "./grouped-aggregate-state";
 import { stableQueryValueString } from "./query-value";
 import type { StoredRowOf } from "./query-result";
-import { fieldValue } from "./row-values";
+import { trustedFieldValue } from "./row-values";
 
 type RowObject = object;
 
@@ -83,7 +83,7 @@ const compileGroupedKeyFields = <Row extends RowObject>(
 ): ReadonlyArray<CompiledGroupedKeyField<Row>> =>
   groupBy.map((field) => ({
     field,
-    value: (row) => fieldValue(row, field),
+    value: (row) => trustedFieldValue(row, field),
   }));
 
 const compileGroupedAggregates = (
@@ -99,8 +99,8 @@ const groupedFieldOrderColumn = (
   direction: "asc" | "desc",
 ): CompiledGroupedOrderBy => ({
   direction,
-  groupValue: (group) => fieldValue(group.row, field),
-  rowValue: (entry) => fieldValue(entry.row, field),
+  groupValue: (group) => trustedFieldValue(group.row, field),
+  rowValue: (entry) => trustedFieldValue(entry.row, field),
 });
 
 const groupedAggregateOrderColumn = (
@@ -109,7 +109,7 @@ const groupedAggregateOrderColumn = (
 ): CompiledGroupedOrderBy => ({
   direction,
   groupValue: (group) => aggregateStateCompareValue(group.aggregates[aggregate]!),
-  rowValue: (entry) => fieldValue(entry.row, aggregate),
+  rowValue: (entry) => trustedFieldValue(entry.row, aggregate),
 });
 
 const compileGroupedOrderBy = (

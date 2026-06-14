@@ -7,7 +7,7 @@ import {
   type TopicRawPredicatePlan,
 } from "./raw-predicate-plan";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
-import { fieldValue, isPlainRecord, valuesEqual } from "./row-values";
+import { isPlainRecord, trustedFieldValue, valuesEqual } from "./row-values";
 
 type RowObject = object;
 
@@ -236,7 +236,7 @@ export const compileRawPredicate = <Row extends RowObject>(
     plan: parts.plan,
     matches: (row) => {
       for (const clause of parts.clauses) {
-        if (!clause.matches(fieldValue(row, clause.field))) {
+        if (!clause.matches(trustedFieldValue(row, clause.field))) {
           return false;
         }
       }

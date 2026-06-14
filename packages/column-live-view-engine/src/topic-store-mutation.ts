@@ -97,19 +97,12 @@ const recordTopicStoreMutation = (
 };
 
 const topicStoreMutationContext = (state: TopicStoreMutationState): TopicStoreMutationContext => ({
-  publishPrepared: (prepared) => {
-    state.storage.setPrepared(prepared);
-    return 1;
-  },
-  publishPreparedMany: (preparedRows) => {
-    state.storage.setPreparedMany(preparedRows);
-    return preparedRows.length;
-  },
+  publishPrepared: (prepared) => state.storage.setPrepared(prepared),
+  publishPreparedMany: (preparedRows) => state.storage.setPreparedMany(preparedRows),
   patch: (key, patch, invalidRow) =>
     Effect.gen(function* () {
       const prepared = yield* state.storage.preparePatch(key, patch, invalidRow);
-      state.storage.setPrepared(prepared);
-      return 1;
+      return state.storage.setPrepared(prepared);
     }),
   delete: (key) => state.storage.delete(key),
 });

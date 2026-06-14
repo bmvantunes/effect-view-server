@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { topicRowChangedFieldsFromRows, type TopicRowChangedFields } from "./row-scan";
 import { cloneRow, fieldValue, isPlainRecord } from "./row-values";
 
 type RowObject = object;
@@ -6,6 +7,7 @@ type RowObject = object;
 export type InvalidRowErrorFactory<Error> = (topic: string, message: string) => Error;
 
 export type PreparedTopicRow = {
+  readonly changedFields?: TopicRowChangedFields;
   readonly key: string;
   readonly row: object;
 };
@@ -104,7 +106,20 @@ export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.
     if (decodedKey !== key) {
       return yield* Effect.fail(invalidRow(context.topic, "Patch must not change the row key."));
     }
+    const decodedFieldNames = new Set([...Object.keys(current), ...Object.keys(decoded)]);
+    const topicRowChangedFields = topicRowChangedFieldsFromRows(
+      current,
+      decoded,
+      decodedFieldNames,
+    );
+    if (topicRowChangedFields === undefined) {
+      return {
+        key,
+        row: decoded,
+      } satisfies PreparedTopicRow;
+    }
     return {
+      changedFields: topicRowChangedFields,
       key,
       row: decoded,
     } satisfies PreparedTopicRow;

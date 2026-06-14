@@ -34,6 +34,7 @@ declare const process: {
 
 const Order = Schema.Struct({
   id: Schema.String,
+  note: Schema.String,
   price: Schema.Finite,
   quantity: Schema.BigInt,
   region: Schema.String,
@@ -83,7 +84,9 @@ type BenchmarkProfile = {
   nextDeleteKeyIndex: number;
   nextExtremeReplaceIndex: number;
   nextGroupMoveKeyIndex: number;
+  nextNonAggregatePatchKeyIndex: number;
   nextSameGroupPatchKeyIndex: number;
+  nonAggregatePatchKeys: ReadonlyArray<string>;
   regionStatusReader: GroupedEventReader | undefined;
   regionStatusScope: Scope.Closeable | undefined;
   regionStatusSubscription: GroupedSubscription | undefined;
@@ -293,7 +296,9 @@ const profile: BenchmarkProfile = {
   nextDeleteKeyIndex: 0,
   nextExtremeReplaceIndex: 0,
   nextGroupMoveKeyIndex: 0,
+  nextNonAggregatePatchKeyIndex: 0,
   nextSameGroupPatchKeyIndex: 0,
+  nonAggregatePatchKeys: [],
   regionStatusReader: undefined,
   regionStatusScope: undefined,
   regionStatusSubscription: undefined,
@@ -350,6 +355,7 @@ const region = (index: number): string => {
 
 const seedOrder = (index: number): OrderRow => ({
   id: `order-${index}`,
+  note: `seed-note-${index}`,
   price: index % 1_000_000,
   quantity: BigInt((index % 997) + 1),
   region: region(index),
@@ -359,6 +365,7 @@ const seedOrder = (index: number): OrderRow => ({
 
 const generatedOrder = (prefix: string, index: number, generation: number): OrderRow => ({
   id: `${prefix}-${index}`,
+  note: `${prefix}-note-${generation}-${index}`,
   price: (index + generation) % 1_000_000,
   quantity: BigInt(((index + generation) % 997) + 1),
   region: region(index + generation),
@@ -413,6 +420,33 @@ const matchingSeedKeysForStatus = (
   if (keys.length !== requiredCount) {
     throw new Error(
       `Expected ${requiredCount} seeded ${status} key(s) for grouped write benchmark, found ${keys.length}.`,
+    );
+  }
+  return keys;
+};
+
+const matchingSeedKeysForStatusExcluding = (
+  searchStartIndex: number,
+  requiredCount: number,
+  status: OrderStatus,
+  excludedKeys: ReadonlySet<string>,
+): ReadonlyArray<string> => {
+  const keys: Array<string> = [];
+  let index = searchStartIndex;
+  while (index < benchmarkRowCount && keys.length < requiredCount) {
+    const key = `order-${index}`;
+    if (
+      !excludedKeys.has(key) &&
+      orderStatus(index) === status &&
+      rowMatchesGroupedWriteMode(index)
+    ) {
+      keys.push(key);
+    }
+    index += 1;
+  }
+  if (keys.length !== requiredCount) {
+    throw new Error(
+      `Expected ${requiredCount} non-excluded seeded ${status} key(s) for grouped write benchmark, found ${keys.length}.`,
     );
   }
   return keys;
@@ -723,6 +757,17 @@ beforeAll(async () => {
   );
   profile.memoryAfterSetup = memorySnapshot();
   profile.sameGroupPatchKeys = matchingSeedKeysForStatus(0, requiredMutationKeys, "open");
+  profile.nonAggregatePatchKeys = matchingSeedKeysForStatusExcluding(
+    Math.floor(benchmarkRowCount * 0.5),
+    requiredMutationKeys,
+    "open",
+    new Set([
+      ...profile.deleteKeys,
+      ...profile.extremeReplaceIndexes.map((index) => `order-${index}`),
+      ...profile.groupMoveKeys,
+      ...profile.sameGroupPatchKeys,
+    ]),
+  );
   profile.setupActiveFallbackGroupedViews = setupCounts.activeFallbackGroupedViews;
   profile.setupActiveIncrementalGroupedViews = setupCounts.activeIncrementalGroupedViews;
   profile.setupActiveViews = setupCounts.activeViews;
@@ -802,6 +847,7 @@ afterAll(async () => {
   profile.deleteKeys = [];
   profile.extremeReplaceIndexes = [];
   profile.groupMoveKeys = [];
+  profile.nonAggregatePatchKeys = [];
   profile.sameGroupPatchKeys = [];
   profile.statusReader = undefined;
   const memoryAfterBenchmark = memorySnapshot();
@@ -815,6 +861,7 @@ afterAll(async () => {
       "grouped patch aggregate values",
       "grouped patch group moves",
       "grouped delete existing rows",
+      "grouped patch non-aggregate values",
     ],
     benchmarkName: "grouped write engine benchmark",
     benchmarkScope: "engine-grouped-write",
@@ -851,7 +898,7 @@ afterAll(async () => {
     mutationCount: profile.rowMutationCount,
     notes: [
       "Latency percentiles are emitted by Vitest in outputJsonPath.",
-      "Timed bodies include the grouped write operation and draining one delta from each active grouped subscription.",
+      "Timed bodies include the grouped write operation and draining one delta from each active grouped subscription when the write changes the grouped result.",
       groupedWriteMode === "incremental"
         ? "Incremental mode uses selective grouped subscriptions sized under the current grouped incremental admission limits."
         : "Fallback mode intentionally uses broad grouped subscriptions with forced fallback admission limits and measures full grouped fallback rebuild pressure.",
@@ -864,6 +911,7 @@ afterAll(async () => {
         ? `Incremental mode price threshold: ${incrementalPriceThreshold(benchmarkRowCount)}.`
         : "Fallback mode has no selective price threshold.",
       `Grouped write engine versions during timed samples: ${profile.deltaVersionCount}.`,
+      "The grouped patch non-aggregate values case is expected to produce no grouped result delta.",
     ],
     outputJsonPath,
     preCleanupHealth,
@@ -974,6 +1022,27 @@ describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {
         profile.rowMutationCount += 1;
         await Effect.runPromise(engine.delete("orders", key));
         await drainDeltas(profile, "grouped delete existing rows");
+      }
+    },
+    benchOptions,
+  );
+
+  bench(
+    "grouped patch non-aggregate values",
+    async () => {
+      const engine = profileEngine(profile);
+      for (let offset = 0; offset < mutationBatchSize; offset += 1) {
+        const key = profile.nonAggregatePatchKeys[profile.nextNonAggregatePatchKeyIndex];
+        if (key === undefined) {
+          throw new Error("Grouped write benchmark exhausted non-aggregate patch keys.");
+        }
+        profile.nextNonAggregatePatchKeyIndex += 1;
+        profile.rowMutationCount += 1;
+        await Effect.runPromise(
+          engine.patch("orders", key, {
+            note: `non-aggregate-note-${profile.rowMutationCount}-${offset}`,
+          }),
+        );
       }
     },
     benchOptions,

@@ -1,4 +1,13 @@
+import { fieldValue, valuesEqual } from "./row-values";
+
 type RowObject = object;
+
+const changedFieldsTypeId = Symbol("view-server/TopicRowChangedFields");
+
+export type TopicRowChangedFields = {
+  readonly fields: ReadonlySet<string>;
+  readonly [changedFieldsTypeId]: typeof changedFieldsTypeId;
+};
 
 export type TopicRowEntry<Row extends RowObject> = {
   readonly key: string;
@@ -8,9 +17,38 @@ export type TopicRowEntry<Row extends RowObject> = {
 export type TopicRowVisitor<Row extends RowObject> = (key: string, row: Row) => false | void;
 
 export type TopicRowChange<Row extends RowObject> = {
+  readonly changedFields?: TopicRowChangedFields;
   readonly key: string;
   readonly next: Row | undefined;
   readonly previous: Row | undefined;
+};
+
+function makeTopicRowChangedFields(fields: Iterable<string>): TopicRowChangedFields | undefined {
+  const changedFields = new Set(fields);
+  if (changedFields.size === 0) {
+    return undefined;
+  }
+  return {
+    [changedFieldsTypeId]: changedFieldsTypeId,
+    fields: changedFields,
+  };
+}
+
+export const isTopicRowChangedFields = (value: unknown): value is TopicRowChangedFields =>
+  typeof value === "object" && value !== null && Object.hasOwn(value, changedFieldsTypeId);
+
+export const topicRowChangedFieldsFromRows = (
+  previous: RowObject,
+  next: RowObject,
+  fields: Iterable<string>,
+): TopicRowChangedFields | undefined => {
+  const changedFields = new Set<string>();
+  for (const field of fields) {
+    if (!valuesEqual(fieldValue(previous, field), fieldValue(next, field))) {
+      changedFields.add(field);
+    }
+  }
+  return makeTopicRowChangedFields(changedFields);
 };
 
 export type TopicRowChangeBatch<Row extends RowObject> = {

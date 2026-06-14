@@ -2833,7 +2833,6 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
           },
         },
       );
-
       expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
         {
           status: "cancelled",
@@ -2974,6 +2973,77 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       expect(scanCount).toBe(1);
       expect(fullEvaluationCount).toBe(0);
       expect(patchedEvaluationCount).toBe(3);
+    }),
+  );
+
+  it.effect("ignores unbranded changed-field metadata from manual grouped scans", () =>
+    Effect.gen(function* () {
+      let version = 0;
+      let batches: ReadonlyArray<TopicRowChangeBatch<object>> = [];
+      const rows = new Map<string, object>([
+        ["open-a", order("open-a", "open", 10, 2, "emea")],
+        ["open-b", order("open-b", "open", 20, 3, "emea")],
+      ]);
+      const store = {
+        changesSince: () => batches,
+        scanRows: (visitor: (key: string, row: object) => void) => {
+          for (const [key, row] of rows) {
+            visitor(key, row);
+          }
+        },
+        version: () => version,
+      };
+      const compiled = yield* prepareGroupedQuery<object, object>(
+        "orders",
+        rawQueryCompilerMetadata(Order),
+        {
+          groupBy: ["status"],
+          aggregates: {
+            totalPrice: { aggFunc: "sum", field: "price" },
+          },
+          orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
+          limit: 1,
+        },
+      );
+      const execution = makeIncrementalGroupedQueryExecution(
+        store,
+        compiled,
+        () => {},
+        defaultGroupedIncrementalAdmissionLimits,
+      );
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "open",
+          totalPrice: "30",
+        },
+      ]);
+
+      const previous = order("open-b", "open", 20, 3, "emea");
+      const next = order("open-b", "open", 25, 4, "emea");
+      rows.set("open-b", next);
+      version = 1;
+      batches = [
+        {
+          version,
+          changes: [
+            {
+              // @ts-expect-error manual row scans cannot forge trusted changed-field metadata.
+              changedFields: new Set(["updatedAt"]),
+              key: "open-b",
+              previous,
+              next,
+            },
+          ],
+        },
+      ];
+
+      expect(normalizeDecimalAndBigIntFields(execution.latest().rows)).toStrictEqual([
+        {
+          status: "open",
+          totalPrice: "35",
+        },
+      ]);
     }),
   );
 
@@ -5266,6 +5336,91 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       yield* subscription.close();
     }),
+  );
+
+  it.effect(
+    "skips grouped deltas for non-aggregate patches and preserves next delta versions",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* makeEngine();
+        yield* engine.publishMany("orders", [
+          { ...order("1", "open", 10, 1, "emea"), note: "before" },
+          order("2", "open", 20, 2, "emea"),
+        ]);
+        const query = {
+          groupBy: ["status"],
+          aggregates: {
+            maxPrice: { aggFunc: "max", field: "price" },
+            rowCount: { aggFunc: "count" },
+            totalPrice: { aggFunc: "sum", field: "price" },
+          },
+          orderBy: [{ field: "status", direction: "asc" }],
+          limit: 1,
+        } satisfies {
+          readonly groupBy: readonly ["status"];
+          readonly aggregates: {
+            readonly maxPrice: { readonly aggFunc: "max"; readonly field: "price" };
+            readonly rowCount: { readonly aggFunc: "count" };
+            readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" };
+          };
+          readonly orderBy: readonly [{ readonly field: "status"; readonly direction: "asc" }];
+          readonly limit: 1;
+        };
+
+        const subscription = yield* engine.subscribe("orders", query);
+        const read = yield* makeEventReader(subscription);
+        const snapshot = firstEvent(yield* read(1));
+        expectSnapshotEvent(snapshot);
+        const groupKey = expectDefined(snapshot.keys[0]);
+        expect(snapshot).toStrictEqual({
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 1,
+          rows: [
+            {
+              status: "open",
+              maxPrice: 20,
+              rowCount: 2n,
+              totalPrice: fromStringUnsafe("30"),
+            },
+          ],
+          keys: [groupKey],
+          totalRows: 1,
+        });
+
+        yield* engine.patch("orders", "1", { note: "after" });
+        const afterNonAggregatePatchHealth = yield* engine.health();
+        expect(afterNonAggregatePatchHealth.queuedEvents).toBe(0);
+        expect(afterNonAggregatePatchHealth.topics["orders"].queuedEvents).toBe(0);
+
+        yield* engine.patch("orders", "1", { price: 15 });
+        const delta = firstEvent(yield* read(1));
+        expectDeltaEvent(delta);
+        expect(delta).toStrictEqual({
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 1,
+          toVersion: 3,
+          operations: [
+            {
+              type: "update",
+              key: groupKey,
+              row: {
+                status: "open",
+                maxPrice: 20,
+                rowCount: 2n,
+                totalPrice: fromStringUnsafe("35"),
+              },
+              index: 0,
+            },
+          ],
+          totalRows: 1,
+        });
+
+        yield* subscription.close();
+      }),
   );
 
   it.effect("keeps grouped aggregate state exact across duplicate removals", () =>

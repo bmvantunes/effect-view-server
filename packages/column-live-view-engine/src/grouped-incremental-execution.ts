@@ -20,7 +20,12 @@ import {
   type GroupedIncrementalAdmissionLimits,
 } from "./grouped-incremental-admission";
 import type { QueryEvaluation } from "./query-result";
-import type { TopicRowChangeBatch, TopicRowScan } from "./row-scan";
+import {
+  isTopicRowChangedFields,
+  type TopicRowChangedFields,
+  type TopicRowChangeBatch,
+  type TopicRowScan,
+} from "./row-scan";
 import { trustedFieldValue, valuesEqual } from "./row-values";
 
 type RowObject = object;
@@ -399,9 +404,13 @@ const aggregateValueChanged = <Row extends RowObject>(
   aggregate: GroupedQueryPlan<Row>["aggregates"][string],
   previous: Row,
   next: Row,
+  changedFields: TopicRowChangedFields | undefined,
 ): boolean => {
   if (!("field" in aggregate)) {
     return false;
+  }
+  if (isTopicRowChangedFields(changedFields)) {
+    return changedFields.fields.has(aggregate.field);
   }
   return !valuesEqual(
     trustedFieldValue(previous, aggregate.field),
@@ -447,10 +456,11 @@ const replaceMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   key: string,
   previous: Row,
   next: Row,
+  changedFields: TopicRowChangedFields | undefined,
 ): void => {
   group.members.set(key, next);
   for (const { alias, aggregate } of plan.aggregatePlans) {
-    if (aggregateValueChanged(aggregate, previous, next)) {
+    if (aggregateValueChanged(aggregate, previous, next, changedFields)) {
       const state = group.aggregates[alias]!;
       markMaterializedAggregateChange(patch, plan, group, alias);
       markDirtyAggregateRecompute(
@@ -532,6 +542,7 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
           change.key,
           change.previous,
           change.next,
+          change.changedFields,
         );
         continue;
       }

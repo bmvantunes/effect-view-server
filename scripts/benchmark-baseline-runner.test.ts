@@ -384,6 +384,15 @@ describe("benchmark baseline runner", () => {
       },
       {
         batchSize: undefined,
+        caseName: "noop",
+        iterations: "100",
+        outputJsonPath:
+          ".artifacts/raw-active-retained-delta-noop-100000rows-1000limit-2batch.json",
+        rowCount: "100000",
+        windowLimit: "1000",
+      },
+      {
+        batchSize: undefined,
         caseName: "match-update",
         iterations: "100",
         outputJsonPath: ".artifacts/raw-active-retained-delta-match-update-100000rows.json",

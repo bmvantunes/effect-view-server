@@ -31,6 +31,7 @@ type RawQueryExecutionWindowSlot = {
 };
 
 type ActiveQueryBaseEvaluation<Row extends RowObject> = {
+  readonly keyIndex: ReadonlyMap<string, number>;
   readonly keys: ReadonlyArray<string>;
   readonly retainedWindowFilled: boolean;
   readonly totalRows: number;
@@ -55,6 +56,16 @@ const getActiveRawQueryMap = (store: ActiveQueryStoreState): Map<string, RawQuer
   return store.activeQueries.raw;
 };
 
+const retainedWindowKeyIndex = (
+  windowEntries: ReadonlyArray<RetainedWindowEntry>,
+): ReadonlyMap<string, number> => {
+  const keyIndex = new Map<string, number>();
+  for (const [index, entry] of windowEntries.entries()) {
+    keyIndex.set(entry.key, index);
+  }
+  return keyIndex;
+};
+
 const getActiveRawQueryEntry = <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   compiled: CompiledRawQuery<object, ResultRow>,
@@ -65,25 +76,6 @@ const getActiveRawQueryEntry = <ResultRow extends RowObject>(
   const key = compiled.plan.queryCacheKey;
   const map = getActiveRawQueryMap(store);
   return { map, key };
-};
-
-const insertionIndexForSortedRetainedEntries = <Row extends RowObject>(
-  windowEntries: ReadonlyArray<RetainedWindowEntry<Row>>,
-  nextEntry: RetainedWindowEntry<Row>,
-  compare: (left: RetainedWindowEntry<Row>, right: RetainedWindowEntry<Row>) => number,
-): number => {
-  let low = 0;
-  let high = windowEntries.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    const middleEntry = windowEntries[middle]!;
-    if (compare(nextEntry, middleEntry) < 0) {
-      high = middle;
-    } else {
-      low = middle + 1;
-    }
-  }
-  return low;
 };
 
 const evaluateBaseQuery = <Row extends RowObject, ResultRow extends RowObject>(
@@ -107,43 +99,30 @@ const evaluateBaseQuery = <Row extends RowObject, ResultRow extends RowObject>(
   );
   return {
     ...scanResult,
+    keyIndex: retainedWindowKeyIndex(window),
     retainedWindowFilled: retainedWindowFilled(window, scanResult.totalRows, queryWindow),
     version,
     window,
   };
 };
 
-const replaceRetainedMatchingEntryInPlace = <Row extends RowObject>(
+export const replaceRetainedMatchingEntryAtIndex = <Row extends RowObject>(
   windowEntries: Array<RetainedWindowEntry<Row>>,
+  previousIndex: number,
   key: string,
   row: Row,
   comparePrevious: (left: RetainedWindowEntry<Row>, right: RetainedWindowEntry<Row>) => number,
-  compareInsertion: (left: RetainedWindowEntry<Row>, right: RetainedWindowEntry<Row>) => number,
   retainedLimit: number | undefined,
 ): boolean | undefined => {
-  let previousIndex = -1;
-  let previousEntry: RetainedWindowEntry<Row> | undefined;
-  for (const [index, entry] of windowEntries.entries()) {
-    if (entry.key === key) {
-      previousIndex = index;
-      previousEntry = entry;
-      break;
-    }
-  }
-  if (previousEntry === undefined) {
+  const previousEntry = windowEntries[previousIndex];
+  if (previousEntry === undefined || previousEntry.key !== key) {
     return undefined;
   }
   const nextEntry: RetainedWindowEntry<Row> = { key, row };
   if (retainedLimit !== undefined && comparePrevious(nextEntry, previousEntry) > 0) {
     return undefined;
   }
-  windowEntries.splice(previousIndex, 1);
-  const insertionIndex = insertionIndexForSortedRetainedEntries(
-    windowEntries,
-    nextEntry,
-    compareInsertion,
-  );
-  windowEntries.splice(insertionIndex, 0, nextEntry);
+  windowEntries[previousIndex] = nextEntry;
   return true;
 };
 
@@ -180,6 +159,8 @@ const updateBaseEvaluationFromRetainedChanges = (
 
   let totalRows = evaluation.totalRows;
   let windowEntries = evaluation.window;
+  let windowKeyIndex = evaluation.keyIndex;
+  let mutableWindowKeyIndex: Map<string, number> | undefined;
   let mutableWindowEntries: Array<RetainedWindowEntry> | undefined;
   let removedRetainedEntry = false;
   let replacedRetainedEntry = false;
@@ -210,16 +191,20 @@ const updateBaseEvaluationFromRetainedChanges = (
             });
             continue;
           }
+          const previousIndex = windowKeyIndex.get(change.key);
+          if (previousIndex === undefined) {
+            return undefined;
+          }
           if (mutableWindowEntries === undefined) {
             mutableWindowEntries = [...windowEntries];
             windowEntries = mutableWindowEntries;
           }
-          const replaced = replaceRetainedMatchingEntryInPlace(
+          const replaced = replaceRetainedMatchingEntryAtIndex(
             mutableWindowEntries,
+            previousIndex,
             change.key,
             change.next,
             compiled.plan.compare,
-            compareRetainedEntries,
             queryWindow.limit,
           );
           if (replaced === undefined) {
@@ -231,10 +216,20 @@ const updateBaseEvaluationFromRetainedChanges = (
         if (previousMatches) {
           totalRows -= 1;
           insertedWindowEntries.delete(change.key);
-          const removedWindowEntries: ReadonlyArray<RetainedWindowEntry> = windowEntries.filter(
-            (entry) => entry.key !== change.key,
-          );
-          if (removedWindowEntries.length !== windowEntries.length) {
+          const previousIndex = windowKeyIndex.get(change.key);
+          if (previousIndex !== undefined) {
+            if (mutableWindowKeyIndex === undefined) {
+              mutableWindowKeyIndex = new Map(windowKeyIndex);
+              windowKeyIndex = mutableWindowKeyIndex;
+            }
+            const removedWindowEntries = [...windowEntries];
+            removedWindowEntries.splice(previousIndex, 1);
+            mutableWindowKeyIndex.delete(change.key);
+            for (const [key, index] of mutableWindowKeyIndex) {
+              if (index > previousIndex) {
+                mutableWindowKeyIndex.set(key, index - 1);
+              }
+            }
             windowEntries = removedWindowEntries;
             mutableWindowEntries = undefined;
             removedRetainedEntry = true;
@@ -262,6 +257,7 @@ const updateBaseEvaluationFromRetainedChanges = (
 
   if (queryWindow.limit === 0) {
     return {
+      keyIndex: new Map(),
       keys: [],
       retainedWindowFilled: true,
       totalRows,
@@ -293,6 +289,7 @@ const updateBaseEvaluationFromRetainedChanges = (
     }
     return {
       ...evaluation,
+      keyIndex: retainedWindowKeyIndex(windowEntries),
       keys: windowEntries.map((entry) => entry.key),
       retainedWindowFilled: retainedWindowFilled(windowEntries, totalRows, queryWindow),
       totalRows,
@@ -312,6 +309,7 @@ const updateBaseEvaluationFromRetainedChanges = (
       : queryWindow.limit;
   const limitedWindow = retainedLimit === undefined ? window : window.slice(0, retainedLimit);
   return {
+    keyIndex: retainedWindowKeyIndex(limitedWindow),
     keys: limitedWindow.map((entry) => entry.key),
     retainedWindowFilled: retainedWindowFilled(limitedWindow, totalRows, queryWindow),
     totalRows,

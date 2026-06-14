@@ -273,10 +273,14 @@ const replacementBatchSize = positiveIntegerFromEnv(
   "VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE",
   defaultReplacementBatchSize,
 );
-const outputJsonPath = benchmarkOutputJsonPath(
+const customRetainedWindowLimit =
+  retainedWindowLimit !== defaultRetainedWindowLimit &&
+  (retainedCaseName === "match-replacement-batch" || retainedCaseName === "noop");
+const customReplacementBatch =
   retainedCaseName === "match-replacement-batch" &&
-    (retainedWindowLimit !== defaultRetainedWindowLimit ||
-      replacementBatchSize !== defaultReplacementBatchSize)
+  replacementBatchSize !== defaultReplacementBatchSize;
+const outputJsonPath = benchmarkOutputJsonPath(
+  customRetainedWindowLimit || customReplacementBatch
     ? `raw-active-retained-delta-${retainedCaseName}-${benchmarkRowCount}rows-${retainedWindowLimit}limit-${replacementBatchSize}batch.json`
     : `raw-active-retained-delta-${retainedCaseName}-${benchmarkRowCount}rows.json`,
 );
@@ -347,9 +351,11 @@ if (
   retainedCaseName !== "match-replacement-batch" &&
   retainedWindowLimit !== defaultRetainedWindowLimit
 ) {
-  throw new Error(
-    "VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT is only supported for match-replacement-batch.",
-  );
+  if (retainedCaseName !== "noop") {
+    throw new Error(
+      "VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT is only supported for match-replacement-batch and noop.",
+    );
+  }
 }
 if (
   retainedCaseName === "exhausted-lookahead" &&

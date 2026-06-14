@@ -51,6 +51,11 @@ const retainedDeltaReleaseEnv = {
   VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
 };
 
+const retainedDeltaNoopWideReleaseEnv = {
+  ...retainedDeltaReleaseEnv,
+  VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT: "1000",
+};
+
 const retainedDeltaMoveDownReleaseEnv = {
   ...retainedDeltaReleaseEnv,
   VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "49",
@@ -284,11 +289,12 @@ const groupedWriteTask = (mode, rowCount, env) => {
 const rawActiveRetainedDeltaTask = (retainedCase, rowCount, env) => {
   const retainedWindowLimit = env["VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT"];
   const replacementBatchSize = env["VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE"];
-  const artifactSegment =
-    retainedCase === "match-replacement-batch" &&
+  const retainedWindowSuffix =
     retainedWindowLimit !== undefined &&
-    replacementBatchSize !== undefined
-      ? `${retainedCase}-${rowCount}rows-${retainedWindowLimit}limit-${replacementBatchSize}batch`
+    (retainedCase === "noop" || retainedCase === "match-replacement-batch");
+  const artifactSegment =
+    retainedWindowSuffix
+      ? `${retainedCase}-${rowCount}rows-${retainedWindowLimit}limit-${replacementBatchSize ?? "2"}batch`
       : `${retainedCase}-${rowCount}rows`;
   const outputJsonPath = engineArtifactName(
     `raw-active-retained-delta-${artifactSegment}.json`,
@@ -303,9 +309,9 @@ const rawActiveRetainedDeltaTask = (retainedCase, rowCount, env) => {
       ...env,
     },
     label:
-      retainedWindowLimit === undefined || replacementBatchSize === undefined
+      retainedWindowLimit === undefined
         ? `raw active retained delta ${retainedCase} ${rowCount} rows`
-        : `raw active retained delta ${retainedCase} ${rowCount} rows ${retainedWindowLimit} limit ${replacementBatchSize} batch`,
+        : `raw active retained delta ${retainedCase} ${rowCount} rows ${retainedWindowLimit} limit ${replacementBatchSize ?? "2"} batch`,
     minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
     outputJsonPath,
     packageDirectory: enginePackageDirectory,
@@ -452,6 +458,7 @@ export const profiles = new Map([
       groupedWriteTask("incremental", 1_000_000, groupedWriteReleaseEnv),
       groupedWriteTask("incremental", 5_000_000, groupedWriteReleaseEnv),
       rawActiveRetainedDeltaTask("noop", 100_000, retainedDeltaReleaseEnv),
+      rawActiveRetainedDeltaTask("noop", 100_000, retainedDeltaNoopWideReleaseEnv),
       rawActiveRetainedDeltaTask("match-update", 100_000, retainedDeltaReleaseEnv),
       rawActiveRetainedDeltaTask(
         "match-move-down",

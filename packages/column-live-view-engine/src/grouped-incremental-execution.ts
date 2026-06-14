@@ -21,7 +21,7 @@ import {
 } from "./grouped-incremental-admission";
 import type { QueryEvaluation } from "./query-result";
 import type { TopicRowChangeBatch, TopicRowScan } from "./row-scan";
-import { fieldValue, valuesEqual } from "./row-values";
+import { trustedFieldValue, valuesEqual } from "./row-values";
 
 type RowObject = object;
 
@@ -403,7 +403,10 @@ const aggregateValueChanged = <Row extends RowObject>(
   if (!("field" in aggregate)) {
     return false;
   }
-  return !valuesEqual(fieldValue(previous, aggregate.field), fieldValue(next, aggregate.field));
+  return !valuesEqual(
+    trustedFieldValue(previous, aggregate.field),
+    trustedFieldValue(next, aggregate.field),
+  );
 };
 
 const upsertMatchingMaterializedIncrementalGroupedMember = <Row extends RowObject>(

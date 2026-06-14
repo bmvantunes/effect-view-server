@@ -5,7 +5,7 @@ import type { RuntimeRawQuery } from "./raw-query-decoder";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
-import { cloneUnknown, fieldValue } from "./row-values";
+import { cloneUnknown, trustedFieldValue } from "./row-values";
 
 type RowObject = object;
 
@@ -70,15 +70,15 @@ const compareRowFieldValues = <Row extends RowObject>(
   left: Row,
   right: Row,
   field: string,
-): number => compareQueryValue(fieldValue(left, field), fieldValue(right, field));
+): number => compareQueryValue(trustedFieldValue(left, field), trustedFieldValue(right, field));
 
 const compareStringRowFieldValues = <Row extends RowObject>(
   left: Row,
   right: Row,
   field: string,
 ): number => {
-  const leftValue = fieldValue(left, field);
-  const rightValue = fieldValue(right, field);
+  const leftValue = trustedFieldValue(left, field);
+  const rightValue = trustedFieldValue(right, field);
   if (typeof leftValue === "string" && typeof rightValue === "string") {
     return Number(leftValue > rightValue) - Number(leftValue < rightValue);
   }
@@ -90,8 +90,8 @@ const compareNumberRowFieldValues = <Row extends RowObject>(
   right: Row,
   field: string,
 ): number => {
-  const leftValue = fieldValue(left, field);
-  const rightValue = fieldValue(right, field);
+  const leftValue = trustedFieldValue(left, field);
+  const rightValue = trustedFieldValue(right, field);
   if (
     typeof leftValue === "number" &&
     typeof rightValue === "number" &&
@@ -108,8 +108,8 @@ const compareBigintRowFieldValues = <Row extends RowObject>(
   right: Row,
   field: string,
 ): number => {
-  const leftValue = fieldValue(left, field);
-  const rightValue = fieldValue(right, field);
+  const leftValue = trustedFieldValue(left, field);
+  const rightValue = trustedFieldValue(right, field);
   if (typeof leftValue === "bigint" && typeof rightValue === "bigint") {
     return leftValue === rightValue ? 0 : leftValue < rightValue ? -1 : 1;
   }
@@ -121,8 +121,8 @@ const compareBigDecimalRowFieldValues = <Row extends RowObject>(
   right: Row,
   field: string,
 ): number => {
-  const leftValue = fieldValue(left, field);
-  const rightValue = fieldValue(right, field);
+  const leftValue = trustedFieldValue(left, field);
+  const rightValue = trustedFieldValue(right, field);
   if (isBigDecimal(leftValue) && isBigDecimal(rightValue)) {
     return orderBigDecimal(leftValue, rightValue);
   }
@@ -174,7 +174,7 @@ const compareRows = <Row extends RowObject>(
 const projectRow = (row: RowObject, select: ReadonlyArray<string>): RowObject => {
   const projected: Record<string, unknown> = {};
   for (const field of select) {
-    projected[field] = cloneUnknown(fieldValue(row, field));
+    projected[field] = cloneUnknown(trustedFieldValue(row, field));
   }
   return projected;
 };

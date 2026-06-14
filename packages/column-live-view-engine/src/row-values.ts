@@ -65,6 +65,10 @@ export const fieldValue = (row: RowObject, field: string): unknown => {
   return Reflect.get(row, field);
 };
 
+// Use only after the engine has decoded and shadowed schema fields as own properties.
+export const trustedFieldValue = (row: RowObject, field: string): unknown =>
+  Reflect.get(row, field);
+
 export const valuesEqual = (left: unknown, right: unknown): boolean => {
   if (isBigDecimal(left) && isBigDecimal(right)) {
     return equals(left, right);

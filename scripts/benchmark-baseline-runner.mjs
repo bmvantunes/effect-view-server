@@ -73,6 +73,13 @@ const retainedDeltaReplacementBatchWideReleaseEnv = {
   VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT: "1000",
 };
 
+const retainedDeltaVisibleDeleteBatchWideReleaseEnv = {
+  ...retainedDeltaReleaseEnv,
+  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "4",
+  VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE: "16",
+  VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT: "1000",
+};
+
 const groupedReadReleaseEnv = {
   VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "3",
   VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
@@ -291,7 +298,9 @@ const rawActiveRetainedDeltaTask = (retainedCase, rowCount, env) => {
   const replacementBatchSize = env["VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE"];
   const retainedWindowSuffix =
     retainedWindowLimit !== undefined &&
-    (retainedCase === "noop" || retainedCase === "match-replacement-batch");
+    (retainedCase === "noop" ||
+      retainedCase === "match-replacement-batch" ||
+      retainedCase === "visible-delete-batch");
   const artifactSegment =
     retainedWindowSuffix
       ? `${retainedCase}-${rowCount}rows-${retainedWindowLimit}limit-${replacementBatchSize ?? "2"}batch`
@@ -474,6 +483,11 @@ export const profiles = new Map([
         "match-replacement-batch",
         100_000,
         retainedDeltaReplacementBatchWideReleaseEnv,
+      ),
+      rawActiveRetainedDeltaTask(
+        "visible-delete-batch",
+        100_000,
+        retainedDeltaVisibleDeleteBatchWideReleaseEnv,
       ),
       rawActiveRetainedDeltaTask("predicate-enter", 100_000, retainedDeltaReleaseEnv),
       rawActiveRetainedDeltaTask("visible-delete", 100_000, retainedDeltaReleaseEnv),

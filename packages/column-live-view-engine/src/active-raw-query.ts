@@ -52,6 +52,13 @@ const retainedWindowFilled = (
 ): boolean =>
   queryWindow.limit === undefined || window.length >= Math.min(totalRows, queryWindow.limit);
 
+const retainedWindowLookahead = (window: RawQueryPlanWindow): number => {
+  if (window.limit === undefined || window.limit === 0) {
+    return 0;
+  }
+  return window.limit >= 128 ? 64 : 1;
+};
+
 const getActiveRawQueryMap = (store: ActiveQueryStoreState): Map<string, RawQueryExecutionSlot> => {
   return store.activeQueries.raw;
 };
@@ -149,6 +156,7 @@ const updateBaseEvaluationFromRetainedChanges = (
   store: ActiveQueryStoreState,
   compiled: CompiledRawQuery<object, object>,
   evaluation: ActiveQueryBaseEvaluation<object>,
+  baseWindow: RawQueryPlanWindow,
   queryWindow: RawQueryPlanWindow,
 ): ActiveQueryBaseEvaluation<object> | undefined => {
   const currentVersion = store.version();
@@ -159,12 +167,11 @@ const updateBaseEvaluationFromRetainedChanges = (
 
   let totalRows = evaluation.totalRows;
   let windowEntries = evaluation.window;
-  let windowKeyIndex = evaluation.keyIndex;
-  let mutableWindowKeyIndex: Map<string, number> | undefined;
   let mutableWindowEntries: Array<RetainedWindowEntry> | undefined;
   let removedRetainedEntry = false;
   let replacedRetainedEntry = false;
   const insertedWindowEntries = new Map<string, RetainedWindowEntry>();
+  const removedRetainedKeys = new Set<string>();
   const compareRetainedEntries = retainedEntrySortComparator(store, compiled, queryWindow);
   for (const batch of batches) {
     for (const change of batch.changes) {
@@ -191,8 +198,8 @@ const updateBaseEvaluationFromRetainedChanges = (
             });
             continue;
           }
-          const previousIndex = windowKeyIndex.get(change.key);
-          if (previousIndex === undefined) {
+          const previousIndex = evaluation.keyIndex.get(change.key);
+          if (previousIndex === undefined || removedRetainedKeys.has(change.key)) {
             return undefined;
           }
           if (mutableWindowEntries === undefined) {
@@ -216,22 +223,9 @@ const updateBaseEvaluationFromRetainedChanges = (
         if (previousMatches) {
           totalRows -= 1;
           insertedWindowEntries.delete(change.key);
-          const previousIndex = windowKeyIndex.get(change.key);
+          const previousIndex = evaluation.keyIndex.get(change.key);
           if (previousIndex !== undefined) {
-            if (mutableWindowKeyIndex === undefined) {
-              mutableWindowKeyIndex = new Map(windowKeyIndex);
-              windowKeyIndex = mutableWindowKeyIndex;
-            }
-            const removedWindowEntries = [...windowEntries];
-            removedWindowEntries.splice(previousIndex, 1);
-            mutableWindowKeyIndex.delete(change.key);
-            for (const [key, index] of mutableWindowKeyIndex) {
-              if (index > previousIndex) {
-                mutableWindowKeyIndex.set(key, index - 1);
-              }
-            }
-            windowEntries = removedWindowEntries;
-            mutableWindowEntries = undefined;
+            removedRetainedKeys.add(change.key);
             removedRetainedEntry = true;
           }
           continue;
@@ -255,6 +249,11 @@ const updateBaseEvaluationFromRetainedChanges = (
     }
   }
 
+  if (removedRetainedKeys.size > 0) {
+    windowEntries = windowEntries.filter((entry) => !removedRetainedKeys.has(entry.key));
+    mutableWindowEntries = undefined;
+  }
+
   if (queryWindow.limit === 0) {
     return {
       keyIndex: new Map(),
@@ -270,8 +269,7 @@ const updateBaseEvaluationFromRetainedChanges = (
     windowEntries = [...windowEntries].sort(compareRetainedEntries);
   }
 
-  const requiredWindowEntries =
-    queryWindow.limit === undefined ? undefined : Math.max(0, queryWindow.limit - 1);
+  const requiredWindowEntries = baseWindow.limit;
   if (
     requiredWindowEntries !== undefined &&
     windowEntries.length < Math.min(totalRows, requiredWindowEntries)
@@ -437,10 +435,10 @@ const baseWindowForActiveWindows = (
 };
 
 const retainedWindowForBaseWindow = (window: RawQueryPlanWindow): RawQueryPlanWindow => {
-  if (window.limit === undefined || window.limit === 0) {
+  if (window.limit === undefined) {
     return window;
   }
-  return rawQueryPlanWindow(window.offset, window.limit + 1);
+  return rawQueryPlanWindow(window.offset, window.limit + retainedWindowLookahead(window));
 };
 
 const acquireRawQueryWindow = (
@@ -509,6 +507,7 @@ const makeRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.ma
             store,
             canonicalCompiled,
             snapshot.evaluation,
+            baseWindow,
             retainedWindow,
           );
           snapshot = {

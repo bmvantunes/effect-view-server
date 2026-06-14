@@ -426,6 +426,15 @@ describe("benchmark baseline runner", () => {
         windowLimit: "1000",
       },
       {
+        batchSize: "16",
+        caseName: "visible-delete-batch",
+        iterations: "4",
+        outputJsonPath:
+          ".artifacts/raw-active-retained-delta-visible-delete-batch-100000rows-1000limit-16batch.json",
+        rowCount: "100000",
+        windowLimit: "1000",
+      },
+      {
         batchSize: undefined,
         caseName: "predicate-enter",
         iterations: "100",

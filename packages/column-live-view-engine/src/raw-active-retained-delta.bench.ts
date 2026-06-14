@@ -57,7 +57,8 @@ type RetainedDeltaCaseName =
   | "match-update"
   | "noop"
   | "predicate-enter"
-  | "visible-delete";
+  | "visible-delete"
+  | "visible-delete-batch";
 type OrderSubscription = ColumnLiveViewSubscription<SelectedOrderRow>;
 type OrderEvent = ColumnLiveViewEngineEvent<SelectedOrderRow>;
 type OrderDeltaEvent = Extract<OrderEvent, { readonly type: "delta" }>;
@@ -135,6 +136,15 @@ type VisibleDeleteValidation = {
   readonly toVersion: number;
   readonly totalRows: number;
 };
+type VisibleDeleteBatchValidation = {
+  readonly caseName: "visible-delete-batch";
+  readonly events: ReadonlyArray<OrderEvent>;
+  readonly fromVersion: number;
+  readonly insertedIndexes: ReadonlyArray<number>;
+  readonly removedIndexes: ReadonlyArray<number>;
+  readonly toVersion: number;
+  readonly totalRows: number;
+};
 type RecordedValidation =
   | CountOnlyValidation
   | ExhaustedLookaheadValidation
@@ -143,11 +153,13 @@ type RecordedValidation =
   | MatchReplacementBatchValidation
   | MatchUpdateValidation
   | PredicateEnterValidation
+  | VisibleDeleteBatchValidation
   | VisibleDeleteValidation;
 type RetainedDeltaCaseDefinition = {
   readonly benchmarkLabel: string;
   readonly subscribe: (
     engine: Engine,
+    profile: BenchmarkProfile,
   ) => Effect.Effect<OrderSubscription, ColumnLiveViewEngineError>;
   readonly run: (
     profile: BenchmarkProfile,
@@ -159,6 +171,8 @@ type BenchmarkProfile = {
   readonly rowCount: number;
   engine: Engine | undefined;
   eventReader: OrderEventReader | undefined;
+  extraEventReaders: Array<OrderEventReader>;
+  extraSubscriptions: Array<OrderSubscription>;
   lastDeliveredVersion: number;
   measuredMutationCount: number;
   memoryAfterSetup: BenchmarkMemorySnapshot | undefined;
@@ -174,6 +188,7 @@ type BenchmarkProfile = {
   nextMatchUpdateScore: number;
   nextNoopIndex: number;
   nextPredicateEnterIndex: number;
+  nextVisibleDeleteBatchIndex: number;
   nextVisibleDeleteIndex: number;
   scope: Scope.Closeable | undefined;
   subscription: OrderSubscription | undefined;
@@ -190,6 +205,10 @@ const defaultRowCount = 100_000;
 const defaultWarmupIterations = 0;
 const defaultWarmupTimeMs = 0;
 const minimumRowCount = 101;
+
+const retainedWindowLookaheadForLimit = (limit: number): number => {
+  return limit >= 128 ? 64 : 1;
+};
 
 const positiveIntegerFromEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];
@@ -253,12 +272,13 @@ const retainedCaseNameFromEnv = (): RetainedDeltaCaseName => {
     trimmed === "match-update" ||
     trimmed === "noop" ||
     trimmed === "predicate-enter" ||
-    trimmed === "visible-delete"
+    trimmed === "visible-delete" ||
+    trimmed === "visible-delete-batch"
   ) {
     return trimmed;
   }
   throw new Error(
-    "VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE must be count-only, exhausted-lookahead, match-move-down, match-move-up, match-replacement-batch, match-update, noop, predicate-enter, or visible-delete.",
+    "VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE must be count-only, exhausted-lookahead, match-move-down, match-move-up, match-replacement-batch, match-update, noop, predicate-enter, visible-delete, or visible-delete-batch.",
   );
 };
 
@@ -275,9 +295,11 @@ const replacementBatchSize = positiveIntegerFromEnv(
 );
 const customRetainedWindowLimit =
   retainedWindowLimit !== defaultRetainedWindowLimit &&
-  (retainedCaseName === "match-replacement-batch" || retainedCaseName === "noop");
+  (retainedCaseName === "match-replacement-batch" ||
+    retainedCaseName === "noop" ||
+    retainedCaseName === "visible-delete-batch");
 const customReplacementBatch =
-  retainedCaseName === "match-replacement-batch" &&
+  (retainedCaseName === "match-replacement-batch" || retainedCaseName === "visible-delete-batch") &&
   replacementBatchSize !== defaultReplacementBatchSize;
 const outputJsonPath = benchmarkOutputJsonPath(
   customRetainedWindowLimit || customReplacementBatch
@@ -318,13 +340,16 @@ if (retainedCaseName === "match-move-down" && benchOptions.iterations > 49) {
 if (retainedCaseName === "match-move-up" && benchOptions.iterations > 50) {
   throw new Error("VIEW_SERVER_ENGINE_BENCH_ITERATIONS must be at most 50 for match-move-up.");
 }
-if (retainedCaseName === "match-replacement-batch" && replacementBatchSize >= retainedWindowLimit) {
+if (
+  (retainedCaseName === "match-replacement-batch" || retainedCaseName === "visible-delete-batch") &&
+  replacementBatchSize >= retainedWindowLimit
+) {
   throw new Error(
     "VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE must be smaller than VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT.",
   );
 }
 if (
-  retainedCaseName === "match-replacement-batch" &&
+  (retainedCaseName === "match-replacement-batch" || retainedCaseName === "visible-delete-batch") &&
   replacementBatchSize * benchOptions.iterations > retainedWindowLimit - 1
 ) {
   throw new Error(
@@ -332,7 +357,16 @@ if (
   );
 }
 if (
-  retainedCaseName === "match-replacement-batch" &&
+  retainedCaseName === "visible-delete-batch" &&
+  replacementBatchSize * benchOptions.iterations >
+    retainedWindowLookaheadForLimit(retainedWindowLimit)
+) {
+  throw new Error(
+    "VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE multiplied by VIEW_SERVER_ENGINE_BENCH_ITERATIONS must fit inside the retained lookahead for visible-delete-batch.",
+  );
+}
+if (
+  (retainedCaseName === "match-replacement-batch" || retainedCaseName === "visible-delete-batch") &&
   replacementBatchSize * benchOptions.iterations > benchmarkRowCount - 1
 ) {
   throw new Error(
@@ -341,19 +375,21 @@ if (
 }
 if (
   retainedCaseName !== "match-replacement-batch" &&
+  retainedCaseName !== "visible-delete-batch" &&
   replacementBatchSize !== defaultReplacementBatchSize
 ) {
   throw new Error(
-    "VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE is only supported for match-replacement-batch.",
+    "VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE is only supported for match-replacement-batch and visible-delete-batch.",
   );
 }
 if (
   retainedCaseName !== "match-replacement-batch" &&
+  retainedCaseName !== "visible-delete-batch" &&
   retainedWindowLimit !== defaultRetainedWindowLimit
 ) {
   if (retainedCaseName !== "noop") {
     throw new Error(
-      "VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT is only supported for match-replacement-batch and noop.",
+      "VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT is only supported for match-replacement-batch, noop, and visible-delete-batch.",
     );
   }
 }
@@ -372,6 +408,8 @@ const profile: BenchmarkProfile = {
   rowCount: benchmarkRowCount,
   engine: undefined,
   eventReader: undefined,
+  extraEventReaders: [],
+  extraSubscriptions: [],
   lastDeliveredVersion: seedVersion,
   measuredMutationCount: 0,
   memoryAfterSetup: undefined,
@@ -387,6 +425,7 @@ const profile: BenchmarkProfile = {
   nextMatchUpdateScore: 5_000_000_000,
   nextNoopIndex: 0,
   nextPredicateEnterIndex: 0,
+  nextVisibleDeleteBatchIndex: benchmarkRowCount - 1,
   nextVisibleDeleteIndex: benchmarkRowCount - 1,
   scope: undefined,
   subscription: undefined,
@@ -411,15 +450,34 @@ const countOnlyQuery = {
   limit: 0,
 } as const;
 
+const visibleDeleteBatchNarrowQuery = {
+  select: ["id", "score", "status", "updatedAt"] as const,
+  where: {
+    status: { eq: "open" },
+  },
+  orderBy: [{ field: "score", direction: "desc" }] as const,
+  limit: replacementBatchSize,
+} as const;
+
 const subscribeTopK = (
   engine: Engine,
+  _profile: BenchmarkProfile,
 ): Effect.Effect<OrderSubscription, ColumnLiveViewEngineError> =>
   engine.subscribe("orders", topKQuery);
 
 const subscribeCountOnly = (
   engine: Engine,
+  _profile: BenchmarkProfile,
 ): Effect.Effect<OrderSubscription, ColumnLiveViewEngineError> =>
   engine.subscribe("orders", countOnlyQuery);
+
+const subscribeVisibleDeleteBatch = Effect.fn(
+  "ColumnLiveViewEngine.bench.rawActiveRetainedDelta.subscribeVisibleDeleteBatch",
+)(function* (engine: Engine, benchmarkProfile: BenchmarkProfile) {
+  const wideSubscription = yield* engine.subscribe("orders", topKQuery);
+  benchmarkProfile.extraSubscriptions.push(wideSubscription);
+  return yield* engine.subscribe("orders", visibleDeleteBatchNarrowQuery);
+});
 
 const seedOrder = (index: number): OrderRow => ({
   id: `order-${index}`,
@@ -521,6 +579,7 @@ const expectSingleDelta = (
     readonly fromVersion: number;
     readonly toVersion: number;
     readonly operations: OrderDeltaOperations;
+    readonly queryId?: string;
     readonly totalRows: number;
   },
 ): void => {
@@ -528,7 +587,7 @@ const expectSingleDelta = (
     {
       type: "delta",
       topic: "orders",
-      queryId: "query-0",
+      queryId: expected.queryId ?? "query-0",
       fromVersion: expected.fromVersion,
       toVersion: expected.toVersion,
       operations: expected.operations,
@@ -758,6 +817,36 @@ const validateVisibleDelete = (validation: VisibleDeleteValidation): void => {
   });
 };
 
+const validateVisibleDeleteBatch = (validation: VisibleDeleteBatchValidation): void => {
+  const operations: Array<OrderDeltaOperations[number]> = [];
+  for (const removedIndex of validation.removedIndexes) {
+    operations.push({
+      type: "remove",
+      key: `order-${removedIndex}`,
+    });
+  }
+  for (const [insertIndex, insertedIndex] of validation.insertedIndexes.entries()) {
+    operations.push({
+      type: "insert",
+      key: `order-${insertedIndex}`,
+      row: {
+        id: `order-${insertedIndex}`,
+        score: insertedIndex,
+        status: "open",
+        updatedAt: insertedIndex,
+      },
+      index: insertIndex,
+    });
+  }
+  expectSingleDelta(validation.events, {
+    fromVersion: validation.fromVersion,
+    toVersion: validation.toVersion,
+    operations,
+    queryId: "query-1",
+    totalRows: validation.totalRows,
+  });
+};
+
 const validateRecordedEvents = (validation: RecordedValidation): void => {
   switch (validation.caseName) {
     case "count-only": {
@@ -790,6 +879,10 @@ const validateRecordedEvents = (validation: RecordedValidation): void => {
     }
     case "visible-delete": {
       validateVisibleDelete(validation);
+      return;
+    }
+    case "visible-delete-batch": {
+      validateVisibleDeleteBatch(validation);
       return;
     }
   }
@@ -1090,6 +1183,48 @@ const retainedCases: Record<RetainedDeltaCaseName, RetainedDeltaCaseDefinition> 
       },
     ),
   },
+  "visible-delete-batch": {
+    benchmarkLabel: "retained visible delete batch refill",
+    subscribe: subscribeVisibleDeleteBatch,
+    run: Effect.fn("ColumnLiveViewEngine.bench.rawActiveRetainedDelta.visibleDeleteBatch")(
+      function* (benchmarkProfile) {
+        const engine = profileEngine(benchmarkProfile);
+        const readEvent = profileEventReader(benchmarkProfile);
+        const removedIndexes = Array.from(
+          { length: benchmarkProfile.replacementBatchSize },
+          (_item, offset) => benchmarkProfile.nextVisibleDeleteBatchIndex - offset,
+        );
+        const firstRemovedIndex = benchmarkProfile.nextVisibleDeleteBatchIndex;
+        const insertedIndexes = Array.from(
+          { length: benchmarkProfile.replacementBatchSize },
+          (_item, offset) => firstRemovedIndex - benchmarkProfile.replacementBatchSize - offset,
+        );
+        benchmarkProfile.nextVisibleDeleteBatchIndex -= benchmarkProfile.replacementBatchSize;
+        const rows = removedIndexes.map((removedIndex) => ({
+          ...seedOrder(removedIndex),
+          status: "closed" as const,
+        }));
+        const fromVersion = benchmarkProfile.lastDeliveredVersion;
+        const toVersion = fromVersion + 1;
+        yield* engine.publishMany("orders", rows);
+        benchmarkProfile.measuredMutationCount += benchmarkProfile.replacementBatchSize;
+        const events = yield* readEvent(1);
+        for (const extraEventReader of benchmarkProfile.extraEventReaders) {
+          yield* extraEventReader(1);
+        }
+        benchmarkProfile.validations.push({
+          caseName: "visible-delete-batch",
+          events,
+          fromVersion,
+          insertedIndexes,
+          removedIndexes,
+          toVersion,
+          totalRows: benchmarkProfile.nextVisibleDeleteBatchIndex + 1,
+        });
+        benchmarkProfile.lastDeliveredVersion = toVersion;
+      },
+    ),
+  },
 };
 
 const retainedCase = retainedCases[profile.retainedCaseName];
@@ -1097,10 +1232,17 @@ const retainedCase = retainedCases[profile.retainedCaseName];
 beforeAll(async () => {
   const engine = Effect.runSync(createColumnLiveViewEngine({ topics: viewServer.topics }));
   await Effect.runPromise(seedEngine(engine, profile.rowCount));
-  const subscription = await Effect.runPromise(retainedCase.subscribe(engine));
+  const subscription = await Effect.runPromise(retainedCase.subscribe(engine, profile));
   const scope = Effect.runSync(Scope.make("parallel"));
   const eventReader = await Effect.runPromise(makeEventReader(subscription, scope));
+  for (const extraSubscription of profile.extraSubscriptions) {
+    const extraEventReader = await Effect.runPromise(makeEventReader(extraSubscription, scope));
+    profile.extraEventReaders.push(extraEventReader);
+  }
   await Effect.runPromise(eventReader(1));
+  for (const extraEventReader of profile.extraEventReaders) {
+    await Effect.runPromise(extraEventReader(1));
+  }
   profile.engine = engine;
   profile.eventReader = eventReader;
   profile.memoryAfterSetup = memorySnapshot();
@@ -1119,7 +1261,8 @@ afterAll(async () => {
   if (!isBenchmarkEngineHealth(healthBeforeCleanup)) {
     throw new Error("Retained delta benchmark expected engine health before cleanup.");
   }
-  expect(healthBeforeCleanup.activeSubscriptions).toBe(1);
+  const subscriberCountBeforeCleanup = 1 + profile.extraSubscriptions.length;
+  expect(healthBeforeCleanup.activeSubscriptions).toBe(subscriberCountBeforeCleanup);
   expect(healthBeforeCleanup.backpressureEvents).toBe(0);
   const queuedEventCountBeforeCleanup = queuedEventCountFromEngineHealth(healthBeforeCleanup);
   expect(queuedEventCountBeforeCleanup).toBe(0);
@@ -1131,6 +1274,11 @@ afterAll(async () => {
     await Effect.runPromise(profile.subscription.close());
     profile.subscription = undefined;
   }
+  for (const extraSubscription of profile.extraSubscriptions) {
+    await Effect.runPromise(extraSubscription.close());
+  }
+  profile.extraEventReaders = [];
+  profile.extraSubscriptions = [];
   if (profile.scope !== undefined) {
     await Effect.runPromise(Scope.close(profile.scope, Exit.void));
     profile.scope = undefined;
@@ -1173,7 +1321,7 @@ afterAll(async () => {
     outputJsonPath,
     queuedEventCount: queuedEventCountBeforeCleanup,
     rowCount: profile.rowCount,
-    subscriberCount: 1,
+    subscriberCount: subscriberCountBeforeCleanup,
     topics: ["orders"],
   });
   failOnBenchmarkCleanupLeaks(cleanupLeakCount);

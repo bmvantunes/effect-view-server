@@ -114,6 +114,9 @@ export function scalarEqualityKey(value: unknown): string | undefined {
 }
 
 export const rowsEqual = <Row extends RowObject>(left: Row, right: Row): boolean => {
+  if (Object.is(left, right)) {
+    return true;
+  }
   const rightKeys = new Set(Object.keys(right));
   const leftKeys = Object.keys(left);
   if (leftKeys.length !== rightKeys.size) {

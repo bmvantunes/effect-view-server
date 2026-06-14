@@ -11372,6 +11372,20 @@ describe("ColumnLiveViewEngine validation and health", () => {
     expect(rowsEqual({ id: "1" }, { id: "1", note: "new" })).toBe(false);
   });
 
+  it("treats identical row references as equal without structural comparison", () => {
+    let getterReads = 0;
+    const row = {
+      id: "1",
+      get status() {
+        getterReads += 1;
+        return "open";
+      },
+    };
+
+    expect(rowsEqual(row, row)).toBe(true);
+    expect(getterReads).toBe(0);
+  });
+
   it("does not structurally compare map and set values on row hot paths", () => {
     expect(valuesEqual(new Map([["venue", "xnys"]]), new Map([["venue", "xnys"]]))).toBe(false);
     expect(valuesEqual(new Set(["xnys"]), new Set(["xnys"]))).toBe(false);

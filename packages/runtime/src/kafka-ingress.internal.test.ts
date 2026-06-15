@@ -9,6 +9,7 @@ import {
 } from "@view-server/config";
 import { makeViewServerRuntimeCore } from "@view-server/runtime-core";
 import { Buffer } from "node:buffer";
+import * as BigDecimal from "effect/BigDecimal";
 import {
   Cause,
   Clock,
@@ -74,10 +75,27 @@ const IncomingOrder = Schema.Struct({
   price: Schema.Number,
 });
 
+const PrecisePosition = Schema.Struct({
+  id: Schema.String,
+  accountId: Schema.String,
+  quantity: Schema.BigInt,
+  price: Schema.BigDecimal,
+});
+
+const IncomingPrecisePosition = Schema.Struct({
+  accountId: Schema.String,
+  quantity: Schema.BigInt,
+  price: Schema.BigDecimal,
+});
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
+      key: "id",
+    },
+    precisePositions: {
+      schema: PrecisePosition,
       key: "id",
     },
   },
@@ -3582,6 +3600,92 @@ describe("@view-server/runtime Kafka ingress internals", () => {
             lastError: "publish failed",
           },
         }),
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("preserves high-precision Kafka JSON values through runtime snapshots", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const preciseKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const preciseSourceTopic = "precise-position-source";
+      const preciseKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        consumerGroupId: "view-server-precise-json-test",
+        ...committedKafkaStart("view-server-precise-json-test"),
+        regions,
+        topics: {
+          [preciseSourceTopic]: preciseKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingPrecisePosition),
+            key: kafka.stringKey(),
+            viewServerTopic: "precisePositions",
+            mapping: ({ key, value }) => ({
+              id: key,
+              accountId: value.accountId,
+              quantity: value.quantity,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        startFrom: preciseKafkaOptions.consume,
+        regions: preciseKafkaOptions.regions,
+        topics: {
+          [preciseSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "precisePositions",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(preciseSourceTopic, "local", 1, 1_000);
+
+      yield* processKafkaMessage(
+        viewServer,
+        runtimeCore.client,
+        runtimeCore.requestHealthRefresh,
+        preciseKafkaOptions,
+        ledger,
+        "local",
+        kafkaMessage({
+          topic: preciseSourceTopic,
+          key: "position-precise-1",
+          value: JSON.stringify({
+            accountId: "account-precise-1",
+            quantity: "9007199254740993",
+            price: "1234567890.123456789",
+          }),
+          offset: 12n,
+        }),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("precisePositions", {
+        select: ["id", "accountId", "quantity", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect({
+        ...snapshot,
+        rows: snapshot.rows.map((row) => ({
+          ...row,
+          price: BigDecimal.format(row.price),
+        })),
+      }).toStrictEqual({
+        status: "ready",
+        statusCode: "Ready",
+        rows: [
+          {
+            id: "position-precise-1",
+            accountId: "account-precise-1",
+            quantity: 9007199254740993n,
+            price: "1234567890.123456789",
+          },
+        ],
+        totalRows: 1,
+        version: 1,
       });
 
       yield* runtimeCore.close;

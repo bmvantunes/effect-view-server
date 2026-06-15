@@ -167,6 +167,242 @@ describe("internal seam checker", () => {
     ]);
   });
 
+  it("reports restricted CommonJS package imports", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: [
+          'const runtime = require("@view-server/runtime");',
+          'const client = require("@view-server/client");',
+        ].join("\n"),
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("reports restricted CommonJS package resolution", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: [
+          'const runtime = require.resolve("@view-server/runtime");',
+          'const client = require.resolve("@view-server/client");',
+        ].join("\n"),
+        relativePath: "src/index.ts",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("does not hide CommonJS imports inside generic calls", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: 'const runtime = loader<Runtime>(require("@view-server/runtime"));',
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("does not hide CommonJS imports after TypeScript angle-bracket assertions", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: 'const cast = <Runtime>value; const runtime = require("@view-server/runtime");',
+        relativePath: "src/index.ts",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("does not hide CommonJS imports after less-than expressions", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: 'const ok = a < b; const runtime = require("@view-server/runtime");',
+        relativePath: "src/index.ts",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("ignores require identifiers that are not literal calls", () => {
+    expect(importSpecifiersFromSource("const label = require;")).toStrictEqual([]);
+  });
+
+  it("ignores require calls without quoted specifiers", () => {
+    expect(importSpecifiersFromSource("const runtime = require(packageName);")).toStrictEqual([]);
+  });
+
+  it("ignores require resolve calls without quoted specifiers", () => {
+    expect(importSpecifiersFromSource("const runtime = require.resolve(packageName);")).toStrictEqual(
+      [],
+    );
+  });
+
+  it("ignores require resolve property reads", () => {
+    expect(importSpecifiersFromSource("const runtime = require.resolve;")).toStrictEqual([]);
+  });
+
+  it("detects optional CommonJS literal calls", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'const runtime = require?.("@view-server/runtime");',
+          'const server = require.resolve?.("@view-server/server");',
+          'const client = require?.resolve?.("@view-server/client");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime", "@view-server/server", "@view-server/client"]);
+  });
+
+  it("detects bracketed CommonJS package resolution", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'const runtime = require["resolve"]("@view-server/runtime");',
+          "const server = require['resolve']('@view-server/server');",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime", "@view-server/server"]);
+  });
+
+  it("detects Node module.require literal calls", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'const runtime = module.require("@view-server/runtime");',
+          'const client = module.require("@view-server/client");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime", "@view-server/client"]);
+  });
+
+  it("ignores Node module.require calls without quoted specifiers", () => {
+    expect(importSpecifiersFromSource("const runtime = module.require(packageName);")).toStrictEqual(
+      [],
+    );
+  });
+
+  it("ignores member APIs named module.require", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'loader.module.require("@view-server/runtime");',
+          'this.#module.require("@view-server/server");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("ignores private member APIs named require", () => {
+    expect(
+      importSpecifiersFromSource('class Loader { load() { return this.#require("@view-server/runtime"); } }'),
+    ).toStrictEqual([]);
+  });
+
+  it("ignores interpolated CommonJS template specifiers", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "const packageName = 'runtime';",
+          "const runtime = require(`@external/${packageName}`);",
+          "const resolved = require.resolve(`@external/${packageName}`);",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("reports interpolated View Server CommonJS template specifiers conservatively", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "const packageName = 'runtime';",
+          "const runtime = require(`@view-server/${packageName}`);",
+          "const resolved = require.resolve(`@view-server/${packageName}`);",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/${packageName}", "@view-server/${packageName}"]);
+  });
+
+  it("detects no-substitution CommonJS template specifiers", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "const runtime = require(`@view-server/runtime`);",
+          "const server = require.resolve(`@view-server/server`);",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime", "@view-server/server"]);
+  });
+
+  it("ignores member APIs named require", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'validator.require("@view-server/runtime");',
+          'this.require("@view-server/server");',
+          'loader?.require("@view-server/client");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not hide CommonJS imports after self-closing JSX", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: 'const node = <Panel />; const runtime = require("@view-server/runtime");',
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
   it("rejects deep imports even when the package root is allowed", () => {
     const restriction = {
       allowedSpecifiers: new Set(["@view-server/client"]),
@@ -367,6 +603,152 @@ describe("internal seam checker", () => {
         ].join("\n"),
       ),
     ).toStrictEqual(["@view-server/client", "@view-server/runtime"]);
+  });
+
+  it("does not treat import-like JSX text as imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <p>Install from \"@view-server/runtime\" and import from \"@view-server/server\".</p>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not treat import-like JSX fragment text as imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <>Install from \"@view-server/runtime\" and import from \"@view-server/server\".</>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not treat import-like JSX text after logical operators as imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return condition && <p>Install from \"@view-server/runtime\".</p>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return fallback || <>Install from \"@view-server/server\".</>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not treat import-like JSX text inside underscore or dollar components as imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <_Panel>Install from \"@view-server/runtime\".</_Panel>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <$Panel>Install from \"@view-server/server\".</$Panel>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not treat import-like JSX text after nested self-closing children as imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <Panel><Icon />Install from \"@view-server/runtime\".</Panel>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not strip code after JSX text that looks like a block comment", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <p>/*</p>;",
+          "}",
+          'const runtime = require("@view-server/runtime");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+  });
+
+  it("does not strip code after JSX text that looks like a line comment", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function HelpText() {",
+          "  return <p>//</p>;",
+          "}",
+          'const runtime = require("@view-server/runtime");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+  });
+
+  it("detects imports inside JSX expressions", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function Loader() {",
+          "  return <Panel>{import(\"@view-server/runtime\")}</Panel>;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+  });
+
+  it("detects imports inside self-closing JSX expressions", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "export function Loader() {",
+          "  return <Panel value={import(\"@view-server/runtime\")} />;",
+          "}",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+  });
+
+  it("handles unfinished JSX tag expressions conservatively", () => {
+    expect(importSpecifiersFromSource("export const node = <Panel value={import(")).toStrictEqual(
+      [],
+    );
+  });
+
+  it("handles unfinished JSX tags conservatively", () => {
+    expect(importSpecifiersFromSource("export const node = <Panel")).toStrictEqual([]);
+  });
+
+  it("handles unfinished JSX child expressions conservatively", () => {
+    expect(importSpecifiersFromSource("export const node = <Panel>{import(")).toStrictEqual([]);
+  });
+
+  it("handles unfinished JSX roots conservatively", () => {
+    expect(importSpecifiersFromSource("export const node = <Panel>")).toStrictEqual([]);
   });
 
   it("detects imports inside template literal expressions", () => {

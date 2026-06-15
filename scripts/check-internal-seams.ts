@@ -119,6 +119,14 @@ export const sourceWithoutComments = (contents: string): string => {
       continue;
     }
 
+    if (isJsxTagStart(contents, index)) {
+      const jsxElement = jsxElementImportSpecifiers(contents, index);
+      const nextIndex = jsxElement.nextIndex;
+      output += contents.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+
     if (character === "/" && nextCharacter === "/") {
       lineComment = true;
       index += 2;
@@ -201,8 +209,116 @@ const readQuotedSpecifier = (
   return undefined;
 };
 
+const readStaticQuotedSpecifier = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const quoted = readQuotedSpecifier(contents, index);
+  if (quoted === undefined) {
+    return undefined;
+  }
+  if (
+    contents.charAt(index) === "`" &&
+    quoted.specifier.includes("${") &&
+    !isViewServerSpecifier(quoted.specifier)
+  ) {
+    return undefined;
+  }
+  return quoted;
+};
+
 const skipQuotedLiteral = (contents: string, index: number): number =>
   readQuotedSpecifier(contents, index)?.nextIndex ?? index + 1;
+
+const isJsxStartContext = (contents: string, index: number): boolean => {
+  const previous = previousNonWhitespaceCharacter(contents, index - 1);
+  const previousSource = contents.slice(0, index).trimEnd();
+  return (
+    previous === undefined ||
+    previous === "(" ||
+    previous === "[" ||
+    previous === "{" ||
+    previous === "=" ||
+    previous === ":" ||
+    previous === "," ||
+    previous === "?" ||
+    previous === ">" ||
+    previous === ";" ||
+    previous === "&" ||
+    previous === "|" ||
+    previous === "!" ||
+    /\breturn$/.test(previousSource)
+  );
+};
+
+const isJsxTagStart = (contents: string, index: number): boolean => {
+  const nextCharacter = contents.charAt(index + 1);
+  return (
+    contents.charAt(index) === "<" &&
+    (nextCharacter === ">" || /[A-Za-z_$/.]/.test(nextCharacter)) &&
+    isJsxStartContext(contents, index)
+  );
+};
+
+const isNestedJsxTagStart = (contents: string, index: number): boolean => {
+  const nextCharacter = contents.charAt(index + 1);
+  return contents.charAt(index) === "<" && (nextCharacter === ">" || /[A-Za-z_$/.]/.test(nextCharacter));
+};
+
+const isFreeRequireAt = (contents: string, index: number): boolean => {
+  const previous = contents.slice(0, index).trimEnd().at(-1);
+  return sourceHasKeywordAt(contents, index, "require") && previous !== "." && previous !== "#";
+};
+
+const isModuleRequireAt = (contents: string, index: number): boolean => {
+  const previous = contents.slice(0, index).trimEnd().at(-1);
+  if (previous === "." || previous === "#") {
+    return false;
+  }
+  if (!sourceHasKeywordAt(contents, index, "module")) {
+    return false;
+  }
+  const afterModule = skipWhitespace(contents, index + "module".length);
+  return contents.startsWith(".require", afterModule);
+};
+
+const callOpenParenIndex = (contents: string, index: number): number | undefined => {
+  const nextIndex = skipWhitespace(contents, index);
+  if (contents[nextIndex] === "(") {
+    return nextIndex;
+  }
+  return contents.startsWith("?.(", nextIndex) ? nextIndex + "?.".length : undefined;
+};
+
+const resolveAccessorAfterRequire = (contents: string, index: number): number | undefined => {
+  const nextIndex = skipWhitespace(contents, index);
+  if (contents.startsWith(".resolve", nextIndex)) {
+    return nextIndex + ".resolve".length;
+  }
+  if (contents.startsWith("?.resolve", nextIndex)) {
+    return nextIndex + "?.resolve".length;
+  }
+  const bracketResolve = '["resolve"]';
+  if (contents.startsWith(bracketResolve, nextIndex)) {
+    return nextIndex + bracketResolve.length;
+  }
+  const singleQuoteBracketResolve = "['resolve']";
+  if (contents.startsWith(singleQuoteBracketResolve, nextIndex)) {
+    return nextIndex + singleQuoteBracketResolve.length;
+  }
+  return undefined;
+};
+
+const readCallSpecifier = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const openParen = callOpenParenIndex(contents, index);
+  if (openParen === undefined) {
+    return undefined;
+  }
+  return readStaticQuotedSpecifier(contents, skipWhitespace(contents, openParen + 1));
+};
 
 const readTemplateExpression = (
   contents: string,
@@ -276,6 +392,128 @@ const templateExpressionImportSpecifiers = (
   };
 };
 
+const previousNonWhitespaceCharacter = (contents: string, index: number): string | undefined =>
+  contents.slice(0, index + 1).trimEnd().at(-1);
+
+const readJsxTag = (
+  contents: string,
+  index: number,
+): {
+  readonly _tag: "complete";
+  readonly closing: boolean;
+  readonly nextIndex: number;
+  readonly selfClosing: boolean;
+  readonly specifiers: ReadonlyArray<string>;
+} | {
+  readonly _tag: "incomplete";
+  readonly nextIndex: number;
+  readonly specifiers: ReadonlyArray<string>;
+} => {
+  const specifiers: Array<string> = [];
+  const closing = contents.charAt(index + 1) === "/";
+  let nextIndex = index + 1;
+
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    if (isImportQuote(character)) {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "{") {
+      const expression = readTemplateExpression(contents, nextIndex + 1);
+      if (expression === undefined) {
+        return {
+          _tag: "incomplete",
+          nextIndex: contents.length,
+          specifiers,
+        };
+      }
+      specifiers.push(...importSpecifiersFromSource(expression.expression));
+      nextIndex = expression.nextIndex;
+      continue;
+    }
+    if (character === ">") {
+      return {
+        _tag: "complete",
+        closing,
+        nextIndex: nextIndex + 1,
+        selfClosing: previousNonWhitespaceCharacter(contents, nextIndex - 1) === "/",
+        specifiers,
+      };
+    }
+    nextIndex += 1;
+  }
+
+  return {
+    _tag: "incomplete",
+    nextIndex,
+    specifiers,
+  };
+};
+
+const jsxElementImportSpecifiers = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifiers: ReadonlyArray<string> } => {
+  const specifiers: Array<string> = [];
+  let depth = 0;
+  let nextIndex = index;
+
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    if (character === "<" && isNestedJsxTagStart(contents, nextIndex)) {
+      const tag = readJsxTag(contents, nextIndex);
+      if (tag._tag === "incomplete") {
+        return {
+          nextIndex: index + 1,
+          specifiers: [],
+        };
+      }
+      specifiers.push(...tag.specifiers);
+      nextIndex = tag.nextIndex;
+      if (tag.closing) {
+        depth -= 1;
+        if (depth <= 0) {
+          return {
+            nextIndex,
+            specifiers,
+          };
+        }
+        continue;
+      }
+      if (!tag.selfClosing) {
+        depth += 1;
+        continue;
+      }
+      if (depth > 0) {
+        continue;
+      }
+      return {
+        nextIndex,
+        specifiers,
+      };
+    }
+    if (character === "{") {
+      const expression = readTemplateExpression(contents, nextIndex + 1);
+      if (expression === undefined) {
+        return {
+          nextIndex: contents.length,
+          specifiers,
+        };
+      }
+      specifiers.push(...importSpecifiersFromSource(expression.expression));
+      nextIndex = expression.nextIndex;
+      continue;
+    }
+    nextIndex += 1;
+  }
+
+  return {
+    nextIndex: index + 1,
+    specifiers: [],
+  };
+};
+
 export const importSpecifiersFromSource = (contents: string): ReadonlyArray<string> => {
   const source = sourceWithoutComments(contents);
   const specifiers: Array<string> = [];
@@ -283,6 +521,12 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
 
   while (index < source.length) {
     const character = source.charAt(index);
+    if (isJsxTagStart(source, index)) {
+      const jsxElement = jsxElementImportSpecifiers(source, index);
+      specifiers.push(...jsxElement.specifiers);
+      index = jsxElement.nextIndex;
+      continue;
+    }
     if (character === "`") {
       const template = templateExpressionImportSpecifiers(source, index);
       specifiers.push(...template.specifiers);
@@ -295,7 +539,10 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
     }
 
     if (sourceHasKeywordAt(source, index, "from")) {
-      const specifier = readQuotedSpecifier(source, skipWhitespace(source, index + "from".length));
+      const specifier = readStaticQuotedSpecifier(
+        source,
+        skipWhitespace(source, index + "from".length),
+      );
       if (specifier !== undefined) {
         specifiers.push(specifier.specifier);
         index = specifier.nextIndex;
@@ -305,14 +552,14 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
 
     if (sourceHasKeywordAt(source, index, "import")) {
       const afterImport = skipWhitespace(source, index + "import".length);
-      const sideEffectSpecifier = readQuotedSpecifier(source, afterImport);
+      const sideEffectSpecifier = readStaticQuotedSpecifier(source, afterImport);
       if (sideEffectSpecifier !== undefined) {
         specifiers.push(sideEffectSpecifier.specifier);
         index = sideEffectSpecifier.nextIndex;
         continue;
       }
       if (source[afterImport] === "(") {
-        const dynamicSpecifier = readQuotedSpecifier(
+        const dynamicSpecifier = readStaticQuotedSpecifier(
           source,
           skipWhitespace(source, afterImport + 1),
         );
@@ -321,6 +568,36 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
           index = dynamicSpecifier.nextIndex;
           continue;
         }
+      }
+    }
+
+    if (isFreeRequireAt(source, index)) {
+      const afterRequire = skipWhitespace(source, index + "require".length);
+      const requireSpecifier = readCallSpecifier(source, afterRequire);
+      if (requireSpecifier !== undefined) {
+        specifiers.push(requireSpecifier.specifier);
+        index = requireSpecifier.nextIndex;
+        continue;
+      }
+      const afterResolve = resolveAccessorAfterRequire(source, afterRequire);
+      if (afterResolve !== undefined) {
+        const resolvedSpecifier = readCallSpecifier(source, afterResolve);
+        if (resolvedSpecifier !== undefined) {
+          specifiers.push(resolvedSpecifier.specifier);
+          index = resolvedSpecifier.nextIndex;
+          continue;
+        }
+      }
+    }
+
+    if (isModuleRequireAt(source, index)) {
+      const afterModule = skipWhitespace(source, index + "module".length);
+      const afterRequire = skipWhitespace(source, afterModule + ".require".length);
+      const moduleRequireSpecifier = readCallSpecifier(source, afterRequire);
+      if (moduleRequireSpecifier !== undefined) {
+        specifiers.push(moduleRequireSpecifier.specifier);
+        index = moduleRequireSpecifier.nextIndex;
+        continue;
       }
     }
 

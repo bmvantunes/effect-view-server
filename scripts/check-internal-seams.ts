@@ -69,9 +69,6 @@ type RestrictedPackageImport = {
   readonly packageName: string;
 };
 
-const importSpecifierPattern =
-  /(?:from\s+|import\s*\(\s*|import\s+)[`"']([^`"']+)[`"']/g;
-
 const isViewServerSpecifier = (specifier: string): boolean =>
   specifier === "@view-server" || specifier.startsWith("@view-server/");
 
@@ -83,8 +80,8 @@ export const sourceWithoutComments = (contents: string): string => {
   let blockComment = false;
 
   while (index < contents.length) {
-    const character = contents[index] ?? "";
-    const nextCharacter = contents[index + 1] ?? "";
+    const character = contents.charAt(index);
+    const nextCharacter = contents.charAt(index + 1);
 
     if (lineComment) {
       if (character === "\n") {
@@ -145,12 +142,193 @@ export const sourceWithoutComments = (contents: string): string => {
 };
 
 const importedViewServerSpecifiers = (contents: string): ReadonlyArray<string> =>
-  Array.from(sourceWithoutComments(contents).matchAll(importSpecifierPattern), (match) =>
-    match[1] ?? "",
-  ).filter(isViewServerSpecifier);
+  importSpecifiersFromSource(contents).filter(isViewServerSpecifier);
 
 const specifierMatches = (specifier: string, packageSpecifier: string): boolean =>
   specifier === packageSpecifier || specifier.startsWith(`${packageSpecifier}/`);
+
+const isImportQuote = (character: string): character is '"' | "'" | "`" =>
+  character === '"' || character === "'" || character === "`";
+
+const identifierCharacterPattern = /[A-Za-z0-9_$]/;
+
+const isIdentifierCharacter = (character: string | undefined): boolean =>
+  character !== undefined && identifierCharacterPattern.test(character);
+
+const sourceHasKeywordAt = (contents: string, index: number, keyword: string): boolean =>
+  contents.startsWith(keyword, index) &&
+  !isIdentifierCharacter(contents[index - 1]) &&
+  !isIdentifierCharacter(contents[index + keyword.length]);
+
+const skipWhitespace = (contents: string, index: number): number => {
+  let nextIndex = index;
+  while (nextIndex < contents.length && /\s/.test(contents.charAt(nextIndex))) {
+    nextIndex += 1;
+  }
+  return nextIndex;
+};
+
+const readQuotedSpecifier = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const quote = contents.charAt(index);
+  if (!isImportQuote(quote)) {
+    return undefined;
+  }
+
+  let specifier = "";
+  let nextIndex = index + 1;
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === "\\") {
+      specifier += character;
+      specifier += nextCharacter;
+      nextIndex += 2;
+      continue;
+    }
+    if (character === quote) {
+      return {
+        nextIndex: nextIndex + 1,
+        specifier,
+      };
+    }
+    specifier += character;
+    nextIndex += 1;
+  }
+
+  return undefined;
+};
+
+const skipQuotedLiteral = (contents: string, index: number): number =>
+  readQuotedSpecifier(contents, index)?.nextIndex ?? index + 1;
+
+const readTemplateExpression = (
+  contents: string,
+  index: number,
+): { readonly expression: string; readonly nextIndex: number } | undefined => {
+  let depth = 1;
+  let nextIndex = index;
+
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    if (isImportQuote(character)) {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "{") {
+      depth += 1;
+    }
+    if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          expression: contents.slice(index, nextIndex),
+          nextIndex: nextIndex + 1,
+        };
+      }
+    }
+    nextIndex += 1;
+  }
+
+  return undefined;
+};
+
+const templateExpressionImportSpecifiers = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifiers: ReadonlyArray<string> } => {
+  const specifiers: Array<string> = [];
+  let nextIndex = index + 1;
+
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === "\\") {
+      nextIndex += 2;
+      continue;
+    }
+    if (character === "`") {
+      return {
+        nextIndex: nextIndex + 1,
+        specifiers,
+      };
+    }
+    if (character === "$" && nextCharacter === "{") {
+      const expression = readTemplateExpression(contents, nextIndex + 2);
+      if (expression === undefined) {
+        return {
+          nextIndex: contents.length,
+          specifiers,
+        };
+      }
+      specifiers.push(...importSpecifiersFromSource(expression.expression));
+      nextIndex = expression.nextIndex;
+      continue;
+    }
+    nextIndex += 1;
+  }
+
+  return {
+    nextIndex,
+    specifiers,
+  };
+};
+
+export const importSpecifiersFromSource = (contents: string): ReadonlyArray<string> => {
+  const source = sourceWithoutComments(contents);
+  const specifiers: Array<string> = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const character = source.charAt(index);
+    if (character === "`") {
+      const template = templateExpressionImportSpecifiers(source, index);
+      specifiers.push(...template.specifiers);
+      index = template.nextIndex;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      index = skipQuotedLiteral(source, index);
+      continue;
+    }
+
+    if (sourceHasKeywordAt(source, index, "from")) {
+      const specifier = readQuotedSpecifier(source, skipWhitespace(source, index + "from".length));
+      if (specifier !== undefined) {
+        specifiers.push(specifier.specifier);
+        index = specifier.nextIndex;
+        continue;
+      }
+    }
+
+    if (sourceHasKeywordAt(source, index, "import")) {
+      const afterImport = skipWhitespace(source, index + "import".length);
+      const sideEffectSpecifier = readQuotedSpecifier(source, afterImport);
+      if (sideEffectSpecifier !== undefined) {
+        specifiers.push(sideEffectSpecifier.specifier);
+        index = sideEffectSpecifier.nextIndex;
+        continue;
+      }
+      if (source[afterImport] === "(") {
+        const dynamicSpecifier = readQuotedSpecifier(
+          source,
+          skipWhitespace(source, afterImport + 1),
+        );
+        if (dynamicSpecifier !== undefined) {
+          specifiers.push(dynamicSpecifier.specifier);
+          index = dynamicSpecifier.nextIndex;
+          continue;
+        }
+      }
+    }
+
+    index += 1;
+  }
+
+  return specifiers;
+};
 
 export const packageImportViolationsFor = ({
   contents,
@@ -191,9 +369,7 @@ export const packageImportViolationsFor = ({
   });
 
 const relativeImportSpecifiers = (contents: string): ReadonlyArray<string> =>
-  Array.from(sourceWithoutComments(contents).matchAll(importSpecifierPattern), (match) =>
-    match[1] ?? "",
-  ).filter((specifier) => specifier.startsWith("."));
+  importSpecifiersFromSource(contents).filter((specifier) => specifier.startsWith("."));
 
 const approvedPublicViewServerSpecifiers = new Set([
   "@view-server/client",
@@ -243,8 +419,7 @@ export const packageRelativeImportViolationsFor = ({
         `${relative(packageRoot, path)} imports ${specifier}: relative imports must not cross package seams.`,
     );
 
-const violations: Array<string> = [];
-const topicStoreStateExportViolations: Array<string> = [];
+export const toPosixRelativePath = (path: string): string => path.replaceAll("\\", "/");
 
 const restrictedTopicStoreStateExports = [
   {
@@ -297,49 +472,95 @@ const restrictedTopicStoreStateExports = [
   },
 ] as const;
 
-for (const path of sourceFiles(engineSourceRoot)) {
-  if (isTestFile(path)) {
-    continue;
+export const topicStoreStateExportViolationsForFile = ({
+  contents,
+  path,
+}: {
+  readonly contents: string;
+  readonly path: string;
+}): ReadonlyArray<string> => {
+  if (path === topicStoreStateFile) {
+    return [];
   }
 
-  const contents = readFileSync(path, "utf8");
-  if (path !== topicStoreStateFile) {
-    for (const restriction of restrictedTopicStoreStateExports) {
-      if (!restriction.pattern.test(contents)) {
-        continue;
-      }
-      topicStoreStateExportViolations.push(
-        `${relative(repoRoot, path)} has a restricted ${restriction.label}`,
-      );
+  const violations: Array<string> = [];
+  for (const restriction of restrictedTopicStoreStateExports) {
+    if (restriction.pattern.test(contents)) {
+      violations.push(`${relative(repoRoot, path)} has a restricted ${restriction.label}`);
     }
   }
+  return violations;
+};
+
+export const topicStoreHelperViolationsForFile = ({
+  contents,
+  path,
+}: {
+  readonly contents: string;
+  readonly path: string;
+}): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
 
   for (const helper of restrictedTopicStoreHelpers) {
-    if (helper.allowedPaths.has(path) || !helper.pattern.test(contents)) {
+    if (!helper.allowedPaths.has(path) && helper.pattern.test(contents)) {
+      violations.push(`${relative(repoRoot, path)} uses ${helper.name}`);
+    }
+  }
+
+  return violations;
+};
+
+export const collectEngineSeamViolations = () => {
+  const helperViolations: Array<string> = [];
+  const stateExportViolations: Array<string> = [];
+
+  for (const path of sourceFiles(engineSourceRoot)) {
+    if (isTestFile(path)) {
       continue;
     }
-    violations.push(`${relative(repoRoot, path)} uses ${helper.name}`);
+
+    const contents = readFileSync(path, "utf8");
+    helperViolations.push(...topicStoreHelperViolationsForFile({ contents, path }));
+    stateExportViolations.push(...topicStoreStateExportViolationsForFile({ contents, path }));
   }
-}
 
-if (violations.length > 0) {
-  throw new Error(
-    [
-      "Production engine modules must not use restricted TopicStore state helpers.",
-      "Route query/read-model behavior through TopicStore helper operations instead.",
-      ...violations.map((path) => `- ${path}`),
-    ].join("\n"),
-  );
-}
+  return {
+    helperViolations,
+    stateExportViolations,
+  };
+};
 
-if (topicStoreStateExportViolations.length > 0) {
-  throw new Error(
-    [
-      "Production engine modules must not re-export restricted TopicStore state internals.",
-      ...topicStoreStateExportViolations.map((path) => `- ${path}`),
-    ].join("\n"),
-  );
-}
+export const topicStoreHelperViolationMessage = (violations: ReadonlyArray<string>): string =>
+  [
+    "Production engine modules must not use restricted TopicStore state helpers.",
+    "Route query/read-model behavior through TopicStore helper operations instead.",
+    ...violations.map((path) => `- ${path}`),
+  ].join("\n");
+
+export const topicStoreStateExportViolationMessage = (
+  violations: ReadonlyArray<string>,
+): string =>
+  [
+    "Production engine modules must not re-export restricted TopicStore state internals.",
+    ...violations.map((path) => `- ${path}`),
+  ].join("\n");
+
+export const assertNoEngineSeamViolations = ({
+  helperViolations,
+  stateExportViolations,
+}: {
+  readonly helperViolations: ReadonlyArray<string>;
+  readonly stateExportViolations: ReadonlyArray<string>;
+}) => {
+  if (helperViolations.length > 0) {
+    throw new Error(topicStoreHelperViolationMessage(helperViolations));
+  }
+  if (stateExportViolations.length > 0) {
+    throw new Error(topicStoreStateExportViolationMessage(stateExportViolations));
+  }
+};
+
+assertNoEngineSeamViolations(collectEngineSeamViolations());
 
 const viewServerPackages = {
   client: "@view-server/client",
@@ -450,35 +671,71 @@ const restrictedPackageImports: ReadonlyArray<RestrictedPackageImport> = [
   },
 ] as const;
 
-const packageImportViolations: Array<string> = [];
+export const packageImportViolationsForFile = ({
+  contents,
+  packageRoot,
+  path,
+  restriction,
+}: {
+  readonly contents: string;
+  readonly packageRoot: string;
+  readonly path: string;
+  readonly restriction: RestrictedPackageImport;
+}): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
 
-for (const restriction of restrictedPackageImports) {
-  for (const path of sourceFiles(packageSourceRoot(restriction.packageName))) {
-    if (isTestFile(path)) {
-      continue;
-    }
-    const contents = readFileSync(path, "utf8");
-    const packageRoot = join(repoRoot, "packages", restriction.packageName);
-    packageImportViolations.push(
-      ...packageRelativeImportViolationsFor({
-        contents,
-        packageRoot,
-        path,
-      }).map((violation) => `packages/${restriction.packageName}/${violation}`),
-      ...packageImportViolationsFor({
-        contents,
-        relativePath: relative(packageRoot, path),
-        restriction,
-      }).map((violation) => `packages/${restriction.packageName}/${violation}`),
-    );
+  for (const violation of packageRelativeImportViolationsFor({
+    contents,
+    packageRoot,
+    path,
+  })) {
+    violations.push(`packages/${restriction.packageName}/${violation}`);
   }
-}
 
-if (packageImportViolations.length > 0) {
-  throw new Error(
-    [
-      "Package architecture seam violations found.",
-      ...packageImportViolations.map((path) => `- ${path}`),
-    ].join("\n"),
-  );
-}
+  for (const violation of packageImportViolationsFor({
+    contents,
+    relativePath: toPosixRelativePath(relative(packageRoot, path)),
+    restriction,
+  })) {
+    violations.push(`packages/${restriction.packageName}/${violation}`);
+  }
+
+  return violations;
+};
+
+export const collectPackageImportViolations = (): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
+
+  for (const restriction of restrictedPackageImports) {
+    for (const path of sourceFiles(packageSourceRoot(restriction.packageName))) {
+      if (isTestFile(path)) {
+        continue;
+      }
+      violations.push(
+        ...packageImportViolationsForFile({
+          contents: readFileSync(path, "utf8"),
+          packageRoot: join(repoRoot, "packages", restriction.packageName),
+          path,
+          restriction,
+        }),
+      );
+    }
+  }
+
+  return violations;
+};
+
+export const packageImportViolationMessage = (violations: ReadonlyArray<string>): string =>
+  [
+    "Package architecture seam violations found.",
+    ...violations.map((path) => `- ${path}`),
+  ].join("\n");
+
+export const assertNoPackageImportViolations = (violations: ReadonlyArray<string>) => {
+  if (violations.length === 0) {
+    return;
+  }
+  throw new Error(packageImportViolationMessage(violations));
+};
+
+assertNoPackageImportViolations(collectPackageImportViolations());

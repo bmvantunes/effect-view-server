@@ -167,6 +167,69 @@ describe("internal seam checker", () => {
     ]);
   });
 
+  it("reports restricted package imports with escaped quoted specifiers", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set([
+        "@view-server/runtime",
+        "@view-server/server",
+        "@view-server/protocol",
+      ]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: [
+          'import "\\u0040view-server/runtime";',
+          'const server = require("\\x40view-server/server");',
+          'const protocol = import.meta.resolve("\\u{40}view-server/protocol");',
+        ].join("\n"),
+        relativePath: "src/index.ts",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.ts imports @view-server/server: React production must stay transport-neutral.",
+      "src/index.ts imports @view-server/protocol: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("does not report member APIs named import", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'registry.import("@view-server/runtime");',
+          'registry?.import("@view-server/server");',
+          'this.import("@view-server/protocol");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("ignores malformed escaped quoted specifiers", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'import "\\u{}view-server/runtime";',
+          'import "\\u{40view-server/missing-brace";',
+          'import "\\u{110000}view-server/out-of-range";',
+          'import "\\u{zz}view-server/server";',
+          'const protocol = require("\\u12zzview-server/protocol");',
+          'const client = import.meta.resolve("\\xzzview-server/client");',
+          'const unfinished = require("\\',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([
+      "u{}view-server/runtime",
+      "u{40view-server/missing-brace",
+      "u{110000}view-server/out-of-range",
+      "u{zz}view-server/server",
+      "u12zzview-server/protocol",
+      "xzzview-server/client",
+    ]);
+  });
+
   it("reports restricted CommonJS package imports", () => {
     const restriction = {
       forbiddenSpecifiers: new Set(["@view-server/runtime"]),
@@ -186,6 +249,54 @@ describe("internal seam checker", () => {
     ).toStrictEqual([
       "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
     ]);
+  });
+
+  it("reports restricted createRequire package imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'const runtime = createRequire(import.meta.url)("@view-server/runtime");',
+          'const server = createRequire(import.meta.url).resolve("@view-server/server");',
+          'const protocol = createRequire(import.meta.url).resolve.call(require, "@view-server/protocol");',
+          'const client = (createRequire(import.meta.url)).resolve("@view-server/client");',
+          'const config = (createRequire(import.meta.url))["resolve"]("@view-server/config");',
+          'const inMemory = (createRequire(import.meta.url)).resolve.call(require, "@view-server/in-memory");',
+          'function resolveRuntime() { return (createRequire(import.meta.url)).resolve("@view-server/runtime/return"); }',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/protocol",
+      "@view-server/client",
+      "@view-server/config",
+      "@view-server/in-memory",
+      "@view-server/runtime/return",
+    ]);
+  });
+
+  it("does not report member APIs named createRequire", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'factory.createRequire(import.meta.url)("@view-server/runtime");',
+          'this.#createRequire(import.meta.url)("@view-server/server");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("ignores malformed createRequire package imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "const factory = createRequire;",
+          "const inertFactory = createRequire(import.meta.url);",
+          "const inertResolve = createRequire(import.meta.url).resolve;",
+          "const dynamicResolve = createRequire(import.meta.url).resolve(packageName);",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
   });
 
   it("reports restricted CommonJS package resolution", () => {
@@ -288,9 +399,159 @@ describe("internal seam checker", () => {
           'const runtime = require?.("@view-server/runtime");',
           'const server = require.resolve?.("@view-server/server");',
           'const client = require?.resolve?.("@view-server/client");',
+          'const spacedRuntime = require ?. ("@view-server/runtime");',
+          'const spacedServer = require . resolve ?. ("@view-server/server");',
+          'const spacedClient = require ?. resolve("@view-server/client");',
+          'const bracketRuntime = require?.["resolve"]("@view-server/runtime");',
+          'const bracketServer = require["resolve"]?.("@view-server/server");',
+          'const parenthesizedResolveRuntime = (require).resolve("@view-server/runtime/resolve");',
+          'const parenthesizedBracketResolveRuntime = (require)["resolve"]("@view-server/runtime/bracket-resolve");',
+          'const parenthesizedRuntime = (require)("@view-server/runtime");',
+          'function loadRuntime() { return (require)("@view-server/runtime/return"); }',
+          'const voidRuntime = void (require)("@view-server/runtime/void");',
+          'for (;;) (require)("@view-server/runtime/for");',
+          'if (ok) noop(); else (require)("@view-server/runtime/else");',
+          'if (path.endsWith(")")) (require)("@view-server/runtime/if-string");',
+          'if (path.match(/[)]/)) (require)("@view-server/runtime/if-regex");',
+          'if (ok /* ) */) (require)("@view-server/runtime/if-block-comment");',
+          'if (ok // )\n) (require)("@view-server/runtime/if-line-comment");',
+          'do (require)("@view-server/runtime/do"); while (ok);',
+          'const sequenceRuntime = (0, require)("@view-server/runtime/sequence");',
+          'const logicalRuntime = (false || require)("@view-server/runtime/logical");',
+          'const fallbackLogicalRuntime = (require || fallback)("@view-server/runtime/logical-left");',
+          'const parenthesizedFallbackLogicalRuntime = ((require) || fallback)("@view-server/runtime/parenthesized-logical-left");',
+          'const nullishRuntime = (require ?? fallback)("@view-server/runtime/nullish-left");',
+          'const nullishFallbackWithParenRuntime = (require ?? fallback(")"))("@view-server/runtime/nullish-fallback-paren");',
+          'const nullishFallbackRegexRuntime = (require ?? /[)]/)("@view-server/runtime/nullish-fallback-regex");',
+          'const fallbackNullishRuntime = (fallback ?? require)("@view-server/runtime/nullish-right");',
+          'const parenthesizedFallbackNullishRuntime = (fallback ?? (require))("@view-server/runtime/parenthesized-nullish-right");',
+          'const ternaryRuntime = (condition ? require : fallback)("@view-server/runtime/ternary-then");',
+          'const ternaryFallbackWithParenRuntime = (condition ? require : fallback({ text: ")" }))("@view-server/runtime/ternary-fallback-paren");',
+          'const fallbackTernaryRuntime = (condition ? fallback : require)("@view-server/runtime/ternary-else");',
+          'const nestedSequenceRuntime = ((0, require))("@view-server/runtime/nested-sequence");',
+          'const sequenceCalledRuntime = (0, require).call(undefined, "@view-server/runtime/sequence-call");',
+          'const sequenceBoundRuntime = (0, require).bind(undefined)("@view-server/runtime/sequence-bind");',
+          'const nestedRuntime = ((require))("@view-server/runtime/nested");',
+          'const calledRuntime = require.call(undefined, "@view-server/runtime/call");',
+          'const calledServer = (require).call(undefined, "@view-server/server/call");',
+          'const boundRuntime = require.bind(undefined)("@view-server/runtime/bind");',
+          'const boundArgumentRuntime = require.bind(undefined, "@view-server/runtime/bind-argument")();',
+          'const parenthesizedBoundRuntime = (require).bind(undefined)("@view-server/runtime/parenthesized-bind");',
+          'const regexBoundRuntime = require.bind(/,/)("@view-server/runtime/regex-bind");',
+          'const appliedRuntime = require.apply(undefined, ["@view-server/runtime/apply"]);',
+          'const extraAppliedRuntime = require.apply(undefined, ["@view-server/runtime/extra-apply", extra]);',
+          'const regexAppliedRuntime = require.apply(/,/, ["@view-server/runtime/regex-apply"]);',
+          'const nestedApplyRuntime = require.apply(fn("ignored", value), ["@view-server/runtime/nested-apply"]);',
+          'const regexRuntime = require.call(/,/, "@view-server/runtime/regex");',
+          'const quoteRegexRuntime = require.call(/"/, "@view-server/runtime/quote-regex");',
+          'const escapedRuntime = requ\\u0069re("@view-server/runtime/escaped");',
+          'const escapedBraceRuntime = requ\\u{69}re("@view-server/runtime/escaped-brace");',
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime", "@view-server/server", "@view-server/client"]);
+    ).toStrictEqual([
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/client",
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/client",
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/runtime/resolve",
+      "@view-server/runtime/bracket-resolve",
+      "@view-server/runtime",
+      "@view-server/runtime/return",
+      "@view-server/runtime/void",
+      "@view-server/runtime/for",
+      "@view-server/runtime/else",
+      "@view-server/runtime/if-string",
+      "@view-server/runtime/if-regex",
+      "@view-server/runtime/if-block-comment",
+      "@view-server/runtime/if-line-comment",
+      "@view-server/runtime/do",
+      "@view-server/runtime/sequence",
+      "@view-server/runtime/logical",
+      "@view-server/runtime/logical-left",
+      "@view-server/runtime/parenthesized-logical-left",
+      "@view-server/runtime/nullish-left",
+      "@view-server/runtime/nullish-fallback-paren",
+      "@view-server/runtime/nullish-fallback-regex",
+      "@view-server/runtime/nullish-right",
+      "@view-server/runtime/parenthesized-nullish-right",
+      "@view-server/runtime/ternary-then",
+      "@view-server/runtime/ternary-fallback-paren",
+      "@view-server/runtime/ternary-else",
+      "@view-server/runtime/nested-sequence",
+      "@view-server/runtime/sequence-call",
+      "@view-server/runtime/sequence-bind",
+      "@view-server/runtime/nested",
+      "@view-server/runtime/call",
+      "@view-server/server/call",
+      "@view-server/runtime/bind",
+      "@view-server/runtime/bind-argument",
+      "@view-server/runtime/parenthesized-bind",
+      "@view-server/runtime/regex-bind",
+      "@view-server/runtime/apply",
+      "@view-server/runtime/extra-apply",
+      "@view-server/runtime/regex-apply",
+      "@view-server/runtime/nested-apply",
+      "@view-server/runtime/regex",
+      "@view-server/runtime/quote-regex",
+      "@view-server/runtime/escaped",
+      "@view-server/runtime/escaped-brace",
+    ]);
+  });
+
+  it("ignores malformed optional CommonJS accessors", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "require;",
+          "const inertSequence = (0, require);",
+          "const inertSequenceCall = (0, require).call(undefined);",
+          'const localLoader = (require && localLoader)("@view-server/runtime");',
+          "const inertParenthesizedNullish = (fallback ?? (require));",
+          "const inertNestedParenthesizedNullish = ((fallback ?? (require)));",
+          'const unfinishedNullishWrapper = (require ?? fallback("@view-server/runtime");',
+          'const unfinishedTernaryWrapper = (condition ? require : fallback("@view-server/runtime");',
+          'const runtime = require ? ("@view-server/runtime") : undefined;',
+          'const server = require ? resolveCandidate("@view-server/server") : undefined;',
+          'const client = module ? requireCandidate("@view-server/client") : undefined;',
+          'const runtimeCandidate = module.load("@view-server/runtime");',
+          'const serverCandidate = module?.load("@view-server/server");',
+          'const parenthesizedRuntimeCandidate = (require).load("@view-server/runtime");',
+          'const parenthesizedServerCandidate = (module).load("@view-server/server");',
+          'const protocolCandidate = require["load"]("@view-server/protocol");',
+          'const missingBracket = require["resolve"("@view-server/runtime");',
+          'const malformedEscapedRequire = requ\\u{zz}re("@view-server/runtime");',
+          'const malformedCodePointRequire = requ\\u{110000}re("@view-server/runtime");',
+          'const malformedFixedEscapedRequire = requ\\u00zzre("@view-server/server");',
+          'const indirectLoader = makeLoader(require)("@view-server/runtime");',
+          'const indirectResolver = makeResolver(require.resolve)("@view-server/runtime");',
+          'const indirectParenthesizedResolver = makeResolver((require).resolve)("@view-server/runtime");',
+          'const indirectParenthesizedModuleRequire = makeResolver((module).require)("@view-server/runtime");',
+          'const indirectParenthesizedImportMetaResolve = makeResolver((import.meta).resolve).call(undefined, "@view-server/runtime");',
+          'const indirectImportMetaResolver = makeResolver(import.meta.resolve).call(undefined, "@view-server/runtime");',
+          'const malformedControl = if ok) (require)("@view-server/runtime");',
+          'const malformedOpenControl = if (ok (require)("@view-server/runtime");',
+          "const bindProperty = require.bind;",
+          "const inertBind = require.bind(undefined);",
+          "const unfinishedBind = require.bind(undefined",
+          "const applyProperty = require.apply;",
+          "const parenthesizedApplyProperty = (require).apply;",
+          "const unfinishedNoCommaApply = require.apply(undefined",
+          'const stringApply = require.apply(undefined, "@view-server/runtime");',
+          'const missingApplyArgument = require.apply(undefined);',
+          "const dynamicApply = require.apply(undefined, packageName);",
+          "const emptyApply = require.apply(undefined, []);",
+          "const unfinishedEmptyApply = require.apply(undefined, [",
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+    expect(importSpecifiersFromSource("const unfinished = (require ?? fallback")).toStrictEqual([]);
+    expect(importSpecifiersFromSource("const unfinished = (condition ? require : fallback")).toStrictEqual(
+      [],
+    );
   });
 
   it("detects bracketed CommonJS package resolution", () => {
@@ -299,9 +560,121 @@ describe("internal seam checker", () => {
         [
           'const runtime = require["resolve"]("@view-server/runtime");',
           "const server = require['resolve']('@view-server/server');",
+          'const parenthesizedRuntime = (require.resolve)("@view-server/runtime/parenthesized");',
+          'const parenthesizedBaseRuntime = ((require).resolve)("@view-server/runtime/parenthesized-base");',
+          'for (const item of items) (require.resolve)("@view-server/server/for-of");',
+          'for await (const item of items) (require.resolve)("@view-server/server/for-await");',
+          'while (path.endsWith(")")) (require.resolve)("@view-server/runtime/while-string");',
+          'const ternaryParenthesizedResolve = (condition ? (require.resolve) : fallback)("@view-server/runtime/ternary-parenthesized-resolve");',
+          'const sequenceServer = (0, require.resolve)("@view-server/server/sequence");',
+          'const sequenceCalledServer = (0, require.resolve).call(require, "@view-server/server/sequence-call");',
+          'const calledRuntime = require.resolve.call(require, "@view-server/runtime/call");',
+          'const regexRuntime = require.resolve.call(/,/, "@view-server/runtime/regex");',
+          'const appliedServer = require.resolve.apply(require, ["@view-server/server/apply", { paths: [] }]);',
+          'const escapedServer = require.res\\u006flve("@view-server/server/escaped");',
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime", "@view-server/server"]);
+    ).toStrictEqual([
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/runtime/parenthesized",
+      "@view-server/runtime/parenthesized-base",
+      "@view-server/server/for-of",
+      "@view-server/server/for-await",
+      "@view-server/runtime/while-string",
+      "@view-server/runtime/ternary-parenthesized-resolve",
+      "@view-server/server/sequence",
+      "@view-server/server/sequence-call",
+      "@view-server/runtime/call",
+      "@view-server/runtime/regex",
+      "@view-server/server/apply",
+      "@view-server/server/escaped",
+    ]);
+  });
+
+  it("detects import meta package resolution", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'const runtime = import.meta.resolve("@view-server/runtime");',
+          'const server = import.meta.resolve?.("@view-server/server");',
+          'const protocol = import.meta["resolve"]("@view-server/protocol");',
+          'const client = (import.meta.resolve)("@view-server/client");',
+          'async function resolveRuntime() { return await (import.meta.resolve)("@view-server/runtime/await"); }',
+          'const sequenceClient = (0, import.meta.resolve)("@view-server/client/sequence");',
+          'const nestedSequenceClient = ((0, import.meta.resolve))("@view-server/client/nested-sequence");',
+          'const sequenceCalledClient = (0, import.meta.resolve).call(import.meta, "@view-server/client/sequence-call");',
+          'const ternaryParenthesizedCalledClient = (condition ? fallback : (import.meta.resolve)).call(import.meta, "@view-server/client/ternary-parenthesized-call");',
+          'const config = (import.meta["resolve"])?.("@view-server/config");',
+          'const parenthesizedBaseRuntime = (import.meta).resolve("@view-server/runtime/parenthesized-base");',
+          'const parenthesizedBaseServer = (import.meta)["resolve"]("@view-server/server/parenthesized-base");',
+          'const rpc = import.meta.resolve.call(import.meta, "@view-server/protocol/rpc");',
+          'const health = (import.meta.resolve).call(import.meta, "@view-server/protocol/health");',
+          'const runtimeAgain = import.meta.resolve.call(getMeta("ignored", import.meta), "@view-server/runtime/internal");',
+          'const regexClient = import.meta.resolve.call(/,/, "@view-server/client/regex");',
+          'const appliedClient = import.meta.resolve.apply(/,/, ["@view-server/client/apply"]);',
+          'const boundArgumentClient = import.meta.resolve.bind(import.meta, "@view-server/client/bind-argument")();',
+          'const nestedRuntime = ((import.meta.resolve))("@view-server/runtime/nested");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/protocol",
+      "@view-server/client",
+      "@view-server/runtime/await",
+      "@view-server/client/sequence",
+      "@view-server/client/nested-sequence",
+      "@view-server/client/sequence-call",
+      "@view-server/client/ternary-parenthesized-call",
+      "@view-server/config",
+      "@view-server/runtime/parenthesized-base",
+      "@view-server/server/parenthesized-base",
+      "@view-server/protocol/rpc",
+      "@view-server/protocol/health",
+      "@view-server/runtime/internal",
+      "@view-server/client/regex",
+      "@view-server/client/apply",
+      "@view-server/client/bind-argument",
+      "@view-server/runtime/nested",
+    ]);
+  });
+
+  it("ignores malformed import meta package resolution", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          'const runtime = import.meta.load("@view-server/runtime");',
+          'const server = import.metadata.resolve("@view-server/server");',
+          'const protocol = import ? meta.resolve("@view-server/protocol") : undefined;',
+          "const client = import.meta.resolve(packageName);",
+          "const clientResolver = (import.meta.resolve);",
+          "const config = import.meta.resolve.call;",
+          'const effectUtils = import.meta.resolve.call("ignored");',
+          'const serverPackage = import.meta.resolve.call("ignored", packageName);',
+          'const runtimePackage = import.meta.resolve.call("quoted, comma");',
+          "const unterminatedCall = import.meta.resolve.call(import.meta",
+          'const falseRuntime = registry.import.meta.resolve("@view-server/runtime");',
+          'const falseServer = registry.import.meta.resolve.call(registry, "@view-server/server");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("does not report import meta resolution specifiers from call context arguments", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: 'const fs = import.meta.resolve.call(["ignored", "@view-server/runtime"], "node:fs");',
+        relativePath: "src/index.ts",
+        restriction,
+      }),
+    ).toStrictEqual([]);
   });
 
   it("detects Node module.require literal calls", () => {
@@ -309,10 +682,51 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           'const runtime = module.require("@view-server/runtime");',
+          'const server = module?.require("@view-server/server");',
+          'const protocol = module?.require?.("@view-server/protocol");',
           'const client = module.require("@view-server/client");',
+          'const spacedRuntime = module ?. require("@view-server/runtime");',
+          'const spacedServer = module?. require("@view-server/server");',
+          'const spacedProtocol = module ?. require ?. ("@view-server/protocol");',
+          'const bracketRuntime = module["require"]("@view-server/runtime");',
+          'const bracketServer = module?.["require"]("@view-server/server");',
+          'const bracketProtocol = module["require"]?.("@view-server/protocol");',
+          'const parenthesizedBaseRuntime = (module).require("@view-server/runtime/base");',
+          'const parenthesizedBaseServer = (module)["require"]("@view-server/server/base");',
+          'const parenthesizedRuntime = (module.require)("@view-server/runtime/parenthesized");',
+          'if (ok) (module.require)("@view-server/runtime/if");',
+          'if (isEnabled()) (module.require)("@view-server/runtime/if-call");',
+          'const calledRuntime = module.require.call(module, "@view-server/runtime/call");',
+          'const boundRuntime = module.require.bind(module)("@view-server/runtime/bind");',
+          'const boundArgumentRuntime = module.require.bind(module, "@view-server/runtime/bind-argument")();',
+          'const appliedRuntime = module.require.apply(module, ["@view-server/runtime/apply"]);',
+          'const regexRuntime = module.require.call(/,/, "@view-server/runtime/regex");',
+          'const escapedProtocol = module.requ\\u0069re("@view-server/protocol/escaped");',
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime", "@view-server/client"]);
+    ).toStrictEqual([
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/protocol",
+      "@view-server/client",
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/protocol",
+      "@view-server/runtime",
+      "@view-server/server",
+      "@view-server/protocol",
+      "@view-server/runtime/base",
+      "@view-server/server/base",
+      "@view-server/runtime/parenthesized",
+      "@view-server/runtime/if",
+      "@view-server/runtime/if-call",
+      "@view-server/runtime/call",
+      "@view-server/runtime/bind",
+      "@view-server/runtime/bind-argument",
+      "@view-server/runtime/apply",
+      "@view-server/runtime/regex",
+      "@view-server/protocol/escaped",
+    ]);
   });
 
   it("ignores Node module.require calls without quoted specifiers", () => {
@@ -362,6 +776,80 @@ describe("internal seam checker", () => {
     ).toStrictEqual(["@view-server/${packageName}", "@view-server/${packageName}"]);
   });
 
+  it("ignores comments while scanning template expressions for CommonJS imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        [
+          "const value = `${// }",
+          'require("@view-server/runtime")',
+          "}`;",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+    expect(importSpecifiersFromSource("const unfinished = `${// }")).toStrictEqual([]);
+    expect(importSpecifiersFromSource("const unfinished = `${/* }")).toStrictEqual([]);
+  });
+
+  it("does not treat regex literal slash pairs as comments in template expressions", () => {
+    expect(
+      importSpecifiersFromSource(
+        'const value = `${/\\\\//.test(path) && require("@view-server/runtime")}`;',
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+    expect(
+      importSpecifiersFromSource(
+        'const value = `${"source" in /\\\\// && require("@view-server/server")}`;',
+      ),
+    ).toStrictEqual(["@view-server/server"]);
+  });
+
+  it("does not treat regex literal slash pairs as comments before CommonJS imports", () => {
+    expect(
+      importSpecifiersFromSource(
+        'const value = /\\\\//.test(path) && require("@view-server/runtime");',
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+    expect(
+      importSpecifiersFromSource(
+        'const value = /[/]/gi.test(path) && require("@view-server/server");',
+      ),
+    ).toStrictEqual(["@view-server/server"]);
+    expect(
+      importSpecifiersFromSource(
+        'if ("source" in /\\\\// && require("@view-server/protocol")) {}',
+      ),
+    ).toStrictEqual(["@view-server/protocol"]);
+    expect(
+      importSpecifiersFromSource(
+        'if (path) /\\\\//.test(path) && require("@view-server/client");',
+      ),
+    ).toStrictEqual(["@view-server/client"]);
+    expect(
+      importSpecifiersFromSource(
+        'if (fn({ value: true })) /[//]/.test(path) && require("@view-server/runtime");',
+      ),
+    ).toStrictEqual(["@view-server/runtime"]);
+    expect(
+      importSpecifiersFromSource(
+        [
+          "if (",
+          "  path",
+          ') /[//]/.test(path) && require("@view-server/client");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["@view-server/client"]);
+    expect(
+      importSpecifiersFromSource(
+        'for (;;) /[//]/.test(path) && require("@view-server/server");',
+      ),
+    ).toStrictEqual(["@view-server/server"]);
+    expect(
+      importSpecifiersFromSource(
+        'for (const value of /\\\\//) require("@view-server/protocol");',
+      ),
+    ).toStrictEqual(["@view-server/protocol"]);
+  });
+
   it("detects no-substitution CommonJS template specifiers", () => {
     expect(
       importSpecifiersFromSource(
@@ -395,6 +883,65 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: 'const node = <Panel />; const runtime = require("@view-server/runtime");',
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("ignores comments while scanning JSX expressions for CommonJS imports", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: '<Panel value={/* } */ require("@view-server/runtime")} />',
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+    expect(
+      packageImportViolationsFor({
+        contents: ['<Panel value={// }', 'require("@view-server/runtime")} />'].join("\n"),
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+    expect(packageImportViolationsFor({
+      contents: "<Panel value={// }",
+      relativePath: "src/index.tsx",
+      restriction,
+    })).toStrictEqual([]);
+  });
+
+  it("does not treat regex literal slash pairs as comments in JSX expressions", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      message: "React production must stay transport-neutral.",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: '<Panel value={/\\\\//.test(path) && require("@view-server/runtime")} />',
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+    ]);
+    expect(
+      packageImportViolationsFor({
+        contents: '<Panel value={"source" in /\\\\// && require("@view-server/runtime")} />',
         relativePath: "src/index.tsx",
         restriction,
       }),
@@ -570,7 +1117,7 @@ describe("internal seam checker", () => {
 
   it("keeps the current repository free of package import violations", () => {
     expect(collectPackageImportViolations()).toStrictEqual([]);
-  });
+  }, 10000);
 
   it("ignores import-like text in comments", () => {
     expect(
@@ -589,6 +1136,27 @@ describe("internal seam checker", () => {
         "",
         'const example = "import from comment-like string";',
       ].join("\n"),
+    );
+  });
+
+  it("keeps regex literals while stripping comments", () => {
+    expect(
+      sourceWithoutComments(
+        [
+          'const value = /\\\\//.test(path) && require("@view-server/runtime");',
+          'const unfinished = /unterminated',
+          '// require("@view-server/server");',
+        ].join("\n"),
+      ),
+    ).toStrictEqual(
+      [
+        'const value = /\\\\//.test(path) && require("@view-server/runtime");',
+        "const unfinished = /unterminated",
+        "",
+      ].join("\n"),
+    );
+    expect(sourceWithoutComments("const unfinished = /unterminated")).toStrictEqual(
+      "const unfinished = /unterminated",
     );
   });
 

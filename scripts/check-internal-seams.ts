@@ -72,6 +72,82 @@ type RestrictedPackageImport = {
 const isViewServerSpecifier = (specifier: string): boolean =>
   specifier === "@view-server" || specifier.startsWith("@view-server/");
 
+const previousNonWhitespaceCharacter = (contents: string, index: number): string | undefined => {
+  let nextIndex = index;
+  while (nextIndex >= 0) {
+    const character = contents.charAt(nextIndex);
+    if (!/\s/.test(character)) {
+      return character;
+    }
+    nextIndex -= 1;
+  }
+  return undefined;
+};
+
+const isRegexLiteralStartContext = (contents: string, index: number): boolean => {
+  const previous = previousNonWhitespaceCharacter(contents, index - 1);
+  const previousSource = contents.slice(0, index).trimEnd();
+  return (
+    previous === undefined ||
+    previous === "(" ||
+    previous === "[" ||
+    previous === "{" ||
+    previous === "=" ||
+    previous === ":" ||
+    previous === "," ||
+    previous === "?" ||
+    previous === ">" ||
+    previous === ";" ||
+    previous === "&" ||
+    previous === "|" ||
+    previous === "!" ||
+    previous === "+" ||
+    previous === "-" ||
+    previous === "*" ||
+    previous === "~" ||
+    previous === "^" ||
+    previous === "<" ||
+    /\b(?:return|throw|case|yield|await|typeof|void|delete|in|of|instanceof|else|do)$/.test(previousSource) ||
+    /\b(?:if|while|for|with)\s*\([\s\S]*\)$/.test(previousSource)
+  );
+};
+
+const skipRegexLiteral = (contents: string, index: number): number => {
+  let insideCharacterClass = false;
+  let nextIndex = index + 1;
+
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    if (character === "\n") {
+      return index + 1;
+    }
+    if (character === "\\") {
+      nextIndex += 2;
+      continue;
+    }
+    if (character === "[") {
+      insideCharacterClass = true;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === "]") {
+      insideCharacterClass = false;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === "/" && !insideCharacterClass) {
+      nextIndex += 1;
+      while (/[A-Za-z]/.test(contents.charAt(nextIndex))) {
+        nextIndex += 1;
+      }
+      return nextIndex;
+    }
+    nextIndex += 1;
+  }
+
+  return index + 1;
+};
+
 export const sourceWithoutComments = (contents: string): string => {
   let output = "";
   let index = 0;
@@ -127,6 +203,18 @@ export const sourceWithoutComments = (contents: string): string => {
       continue;
     }
 
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, index)
+    ) {
+      const nextIndex = skipRegexLiteral(contents, index);
+      output += contents.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+
     if (character === "/" && nextCharacter === "/") {
       lineComment = true;
       index += 2;
@@ -163,10 +251,73 @@ const identifierCharacterPattern = /[A-Za-z0-9_$]/;
 const isIdentifierCharacter = (character: string | undefined): boolean =>
   character !== undefined && identifierCharacterPattern.test(character);
 
-const sourceHasKeywordAt = (contents: string, index: number, keyword: string): boolean =>
-  contents.startsWith(keyword, index) &&
-  !isIdentifierCharacter(contents[index - 1]) &&
-  !isIdentifierCharacter(contents[index + keyword.length]);
+const isValidCodePoint = (codePoint: number): boolean =>
+  Number.isFinite(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff;
+
+const readEscapedIdentifierCharacter = (
+  contents: string,
+  index: number,
+): { readonly character: string; readonly nextIndex: number } | undefined => {
+  if (contents.charAt(index) !== "\\" || contents.charAt(index + 1) !== "u") {
+    return undefined;
+  }
+  if (contents.charAt(index + 2) === "{") {
+    const closeBraceIndex = contents.indexOf("}", index + 3);
+    const hex = contents.slice(index + 3, Math.max(index + 3, closeBraceIndex));
+    const codePoint = Number.parseInt(hex, 16);
+    return /^[0-9A-Fa-f]+$/.test(hex) && isValidCodePoint(codePoint)
+      ? {
+          character: String.fromCodePoint(codePoint),
+          nextIndex: closeBraceIndex + 1,
+        }
+      : undefined;
+  }
+  const hex = contents.slice(index + 2, index + 6);
+  const codePoint = Number.parseInt(hex, 16);
+  return /^[0-9A-Fa-f]{4}$/.test(hex) && isValidCodePoint(codePoint)
+    ? {
+        character: String.fromCodePoint(codePoint),
+        nextIndex: index + 6,
+      }
+    : undefined;
+};
+
+const readIdentifierNameAt = (
+  contents: string,
+  index: number,
+): { readonly name: string; readonly nextIndex: number } | undefined => {
+  let name = "";
+  let nextIndex = index;
+  while (nextIndex < contents.length) {
+    const escaped = readEscapedIdentifierCharacter(contents, nextIndex);
+    if (escaped !== undefined) {
+      name += escaped.character;
+      nextIndex = escaped.nextIndex;
+      continue;
+    }
+    const character = contents.charAt(nextIndex);
+    if (!isIdentifierCharacter(character)) {
+      break;
+    }
+    name += character;
+    nextIndex += 1;
+  }
+  return name === ""
+    ? undefined
+    : {
+        name,
+        nextIndex,
+      };
+};
+
+const afterKeywordAt = (contents: string, index: number, keyword: string): number | undefined => {
+  const identifier = readIdentifierNameAt(contents, index);
+  return identifier?.name === keyword &&
+    !isIdentifierCharacter(contents[index - 1]) &&
+    !isIdentifierCharacter(contents[identifier.nextIndex])
+    ? identifier.nextIndex
+    : undefined;
+};
 
 const skipWhitespace = (contents: string, index: number): number => {
   let nextIndex = index;
@@ -174,6 +325,64 @@ const skipWhitespace = (contents: string, index: number): number => {
     nextIndex += 1;
   }
   return nextIndex;
+};
+
+const readBracketAccessorAt = (
+  contents: string,
+  index: number,
+  property: string,
+): number | undefined => {
+  if (contents.charAt(index) !== "[") {
+    return undefined;
+  }
+  const propertySpecifier = readQuotedSpecifier(contents, skipWhitespace(contents, index + 1));
+  if (propertySpecifier?.specifier !== property) {
+    return undefined;
+  }
+  const closeBracketIndex = skipWhitespace(contents, propertySpecifier.nextIndex);
+  return contents.charAt(closeBracketIndex) === "]" ? closeBracketIndex + 1 : undefined;
+};
+
+const readPropertyAccessor = (
+  contents: string,
+  index: number,
+  property: string,
+): number | undefined => {
+  const nextIndex = skipWhitespace(contents, index);
+  if (contents.charAt(nextIndex) === ".") {
+    const propertyIndex = skipWhitespace(contents, nextIndex + 1);
+    return afterKeywordAt(contents, propertyIndex, property);
+  }
+  const bracketAccessor = readBracketAccessorAt(contents, nextIndex, property);
+  if (bracketAccessor !== undefined) {
+    return bracketAccessor;
+  }
+  if (contents.charAt(nextIndex) !== "?") {
+    return undefined;
+  }
+  const dotIndex = skipWhitespace(contents, nextIndex + 1);
+  if (contents.charAt(dotIndex) !== ".") {
+    return undefined;
+  }
+  const propertyIndex = skipWhitespace(contents, dotIndex + 1);
+  const optionalBracketAccessor = readBracketAccessorAt(contents, propertyIndex, property);
+  if (optionalBracketAccessor !== undefined) {
+    return optionalBracketAccessor;
+  }
+  return afterKeywordAt(contents, propertyIndex, property);
+};
+
+const readOptionalCallOpenParen = (contents: string, index: number): number | undefined => {
+  const nextIndex = skipWhitespace(contents, index);
+  if (contents.charAt(nextIndex) !== "?") {
+    return undefined;
+  }
+  const dotIndex = skipWhitespace(contents, nextIndex + 1);
+  if (contents.charAt(dotIndex) !== ".") {
+    return undefined;
+  }
+  const openParenIndex = skipWhitespace(contents, dotIndex + 1);
+  return contents.charAt(openParenIndex) === "(" ? openParenIndex : undefined;
 };
 
 const readQuotedSpecifier = (
@@ -191,9 +400,39 @@ const readQuotedSpecifier = (
     const character = contents.charAt(nextIndex);
     const nextCharacter = contents.charAt(nextIndex + 1);
     if (character === "\\") {
-      specifier += character;
+      if (nextCharacter === "u") {
+        if (contents.charAt(nextIndex + 2) === "{") {
+          const closeBraceIndex = contents.indexOf("}", nextIndex + 3);
+          const hex = contents.slice(
+            nextIndex + 3,
+            Math.max(nextIndex + 3, closeBraceIndex),
+          );
+          const codePoint = Number.parseInt(hex, 16);
+          if (/^[0-9A-Fa-f]+$/.test(hex) && isValidCodePoint(codePoint)) {
+            specifier += String.fromCodePoint(codePoint);
+            nextIndex = closeBraceIndex + 1;
+            continue;
+          }
+        }
+        const hex = contents.slice(nextIndex + 2, nextIndex + 6);
+        const codePoint = Number.parseInt(hex, 16);
+        if (/^[0-9A-Fa-f]{4}$/.test(hex) && isValidCodePoint(codePoint)) {
+          specifier += String.fromCodePoint(codePoint);
+          nextIndex += 6;
+          continue;
+        }
+      }
+      if (nextCharacter === "x") {
+        const hex = contents.slice(nextIndex + 2, nextIndex + 4);
+        const codePoint = Number.parseInt(hex, 16);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex) && isValidCodePoint(codePoint)) {
+          specifier += String.fromCodePoint(codePoint);
+          nextIndex += 4;
+          continue;
+        }
+      }
       specifier += nextCharacter;
-      nextIndex += 2;
+      nextIndex += nextCharacter === "" ? 1 : 2;
       continue;
     }
     if (character === quote) {
@@ -265,21 +504,33 @@ const isNestedJsxTagStart = (contents: string, index: number): boolean => {
   return contents.charAt(index) === "<" && (nextCharacter === ">" || /[A-Za-z_$/.]/.test(nextCharacter));
 };
 
-const isFreeRequireAt = (contents: string, index: number): boolean => {
-  const previous = contents.slice(0, index).trimEnd().at(-1);
-  return sourceHasKeywordAt(contents, index, "require") && previous !== "." && previous !== "#";
+const freeRequireKeywordEndAt = (contents: string, index: number): number | undefined => {
+  const previous = previousNonWhitespaceCharacter(contents, index - 1);
+  const afterRequire = afterKeywordAt(contents, index, "require");
+  return afterRequire !== undefined && previous !== "." && previous !== "#" ? afterRequire : undefined;
 };
 
-const isModuleRequireAt = (contents: string, index: number): boolean => {
-  const previous = contents.slice(0, index).trimEnd().at(-1);
+const freeCreateRequireKeywordEndAt = (
+  contents: string,
+  index: number,
+): number | undefined => {
+  const previous = previousNonWhitespaceCharacter(contents, index - 1);
+  const afterCreateRequire = afterKeywordAt(contents, index, "createRequire");
+  return afterCreateRequire !== undefined && previous !== "." && previous !== "#"
+    ? afterCreateRequire
+    : undefined;
+};
+
+const moduleRequireAccessorAt = (contents: string, index: number): number | undefined => {
+  const previous = previousNonWhitespaceCharacter(contents, index - 1);
   if (previous === "." || previous === "#") {
-    return false;
+    return undefined;
   }
-  if (!sourceHasKeywordAt(contents, index, "module")) {
-    return false;
+  const afterModule = afterKeywordAt(contents, index, "module");
+  if (afterModule === undefined) {
+    return undefined;
   }
-  const afterModule = skipWhitespace(contents, index + "module".length);
-  return contents.startsWith(".require", afterModule);
+  return readAccessorAfterCallee(contents, index, afterModule, "require");
 };
 
 const callOpenParenIndex = (contents: string, index: number): number | undefined => {
@@ -287,26 +538,36 @@ const callOpenParenIndex = (contents: string, index: number): number | undefined
   if (contents[nextIndex] === "(") {
     return nextIndex;
   }
-  return contents.startsWith("?.(", nextIndex) ? nextIndex + "?.".length : undefined;
+  return readOptionalCallOpenParen(contents, nextIndex);
 };
 
-const resolveAccessorAfterRequire = (contents: string, index: number): number | undefined => {
-  const nextIndex = skipWhitespace(contents, index);
-  if (contents.startsWith(".resolve", nextIndex)) {
-    return nextIndex + ".resolve".length;
+const resolveAccessorAfterRequire = (
+  contents: string,
+  requireStartIndex: number,
+  index: number,
+): number | undefined => {
+  return readAccessorAfterCallee(contents, requireStartIndex, index, "resolve");
+};
+
+const importMetaResolveAccessorAt = (contents: string, index: number): number | undefined => {
+  const previous = previousNonWhitespaceCharacter(contents, index - 1);
+  if (previous === "." || previous === "#") {
+    return undefined;
   }
-  if (contents.startsWith("?.resolve", nextIndex)) {
-    return nextIndex + "?.resolve".length;
+  const afterImportKeyword = afterKeywordAt(contents, index, "import");
+  if (afterImportKeyword === undefined) {
+    return undefined;
   }
-  const bracketResolve = '["resolve"]';
-  if (contents.startsWith(bracketResolve, nextIndex)) {
-    return nextIndex + bracketResolve.length;
+  const afterImport = skipWhitespace(contents, afterImportKeyword);
+  if (contents.charAt(afterImport) !== ".") {
+    return undefined;
   }
-  const singleQuoteBracketResolve = "['resolve']";
-  if (contents.startsWith(singleQuoteBracketResolve, nextIndex)) {
-    return nextIndex + singleQuoteBracketResolve.length;
+  const metaIndex = skipWhitespace(contents, afterImport + 1);
+  const afterMeta = afterKeywordAt(contents, metaIndex, "meta");
+  if (afterMeta === undefined) {
+    return undefined;
   }
-  return undefined;
+  return readAccessorAfterCallee(contents, index, afterMeta, "resolve");
 };
 
 const readCallSpecifier = (
@@ -320,6 +581,520 @@ const readCallSpecifier = (
   return readStaticQuotedSpecifier(contents, skipWhitespace(contents, openParen + 1));
 };
 
+const readCallSecondSpecifier = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const openParen = callOpenParenIndex(contents, index);
+  if (openParen === undefined) {
+    return undefined;
+  }
+  let depth = 0;
+  let nextIndex = skipWhitespace(contents, openParen + 1);
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === '"' || character === "'" || character === "`") {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, nextIndex)
+    ) {
+      nextIndex = skipRegexLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      depth += 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === ")" && depth === 0) {
+      return undefined;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === "," && depth === 0) {
+      return readStaticQuotedSpecifier(contents, skipWhitespace(contents, nextIndex + 1));
+    }
+    nextIndex += 1;
+  }
+  return undefined;
+};
+
+const readCallExpressionEnd = (contents: string, index: number): number | undefined => {
+  const openParen = callOpenParenIndex(contents, index);
+  if (openParen === undefined) {
+    return undefined;
+  }
+  let depth = 0;
+  let nextIndex = openParen + 1;
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === '"' || character === "'" || character === "`") {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, nextIndex)
+    ) {
+      nextIndex = skipRegexLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      depth += 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === ")" && depth === 0) {
+      return nextIndex + 1;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      nextIndex += 1;
+      continue;
+    }
+    nextIndex += 1;
+  }
+  return undefined;
+};
+
+const readApplyArraySpecifier = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const openParen = callOpenParenIndex(contents, index);
+  if (openParen === undefined) {
+    return undefined;
+  }
+  let depth = 0;
+  let nextIndex = openParen + 1;
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === '"' || character === "'" || character === "`") {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, nextIndex)
+    ) {
+      nextIndex = skipRegexLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      depth += 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === ")" && depth === 0) {
+      return undefined;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === "," && depth === 0) {
+      const openArrayIndex = skipWhitespace(contents, nextIndex + 1);
+      if (contents.charAt(openArrayIndex) !== "[") {
+        return undefined;
+      }
+      const specifier = readStaticQuotedSpecifier(
+        contents,
+        skipWhitespace(contents, openArrayIndex + 1),
+      );
+      if (specifier === undefined) {
+        return undefined;
+      }
+      return {
+        nextIndex: specifier.nextIndex,
+        specifier: specifier.specifier,
+      };
+    }
+    nextIndex += 1;
+  }
+  return undefined;
+};
+
+const matchingCloseParenIndexFromOpen = (
+  contents: string,
+  openParenIndex: number,
+): number | undefined => {
+  let depth = 0;
+  let nextIndex = openParenIndex + 1;
+  let closeParenIndex: number | undefined;
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === '"' || character === "'" || character === "`") {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, nextIndex)
+    ) {
+      nextIndex = skipRegexLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === ")") {
+      if (depth === 0) {
+        closeParenIndex = nextIndex;
+        break;
+      }
+      depth -= 1;
+      nextIndex += 1;
+      continue;
+    }
+    nextIndex += 1;
+  }
+  return closeParenIndex;
+};
+
+const endsWithControlCondition = (contents: string): boolean => {
+  const trimmed = contents.trimEnd();
+  const controlKeywords = ["if", "while", "with", "for", "switch"];
+  let index = 0;
+  while (index < trimmed.length) {
+    for (const keyword of controlKeywords) {
+      const afterKeyword = afterKeywordAt(trimmed, index, keyword);
+      if (afterKeyword === undefined) {
+        continue;
+      }
+      let openParenIndex = skipWhitespace(trimmed, afterKeyword);
+      if (keyword === "for") {
+        const afterAwait = afterKeywordAt(trimmed, openParenIndex, "await");
+        if (afterAwait !== undefined) {
+          openParenIndex = skipWhitespace(trimmed, afterAwait);
+        }
+      }
+      if (trimmed.charAt(openParenIndex) !== "(") {
+        continue;
+      }
+      const closeParenIndex = matchingCloseParenIndexFromOpen(trimmed, openParenIndex);
+      if (closeParenIndex !== undefined && skipWhitespace(trimmed, closeParenIndex + 1) === trimmed.length) {
+        return true;
+      }
+    }
+    index += 1;
+  }
+  return false;
+};
+
+const wrappingOpenParenCountBefore = (contents: string, index: number): number => {
+  let count = 0;
+  let nextIndex = index;
+  while (nextIndex > 0) {
+    const before = contents.slice(0, nextIndex).trimEnd();
+    if (before.at(-1) !== "(") {
+      return count;
+    }
+    const beforeOpenParen = before.slice(0, -1).trimEnd();
+    const precedingCharacter = beforeOpenParen.at(-1);
+    const previousToken = beforeOpenParen.match(/[A-Za-z_$][\w$]*$/)?.[0];
+    const followsKeyword =
+      previousToken === "return" ||
+      previousToken === "await" ||
+      previousToken === "void" ||
+      previousToken === "throw" ||
+      previousToken === "yield" ||
+      previousToken === "delete" ||
+      previousToken === "typeof" ||
+      previousToken === "new" ||
+      previousToken === "else" ||
+      previousToken === "do";
+    const followsControlCondition =
+      precedingCharacter === ")" && endsWithControlCondition(beforeOpenParen);
+    const isExpressionGrouping =
+      precedingCharacter === undefined ||
+      precedingCharacter === "(" ||
+      followsKeyword ||
+      followsControlCondition ||
+      "([{=,:;!?&|+-*/%~^<>".includes(precedingCharacter);
+    if (!isExpressionGrouping) {
+      return 0;
+    }
+    count += 1;
+    nextIndex = before.length - 1;
+  }
+  return count;
+};
+
+const afterWrappingCloseParens = (
+  contents: string,
+  index: number,
+  count: number,
+): number | undefined => {
+  let nextIndex = skipWhitespace(contents, index);
+  for (let parenIndex = 0; parenIndex < count; parenIndex += 1) {
+    if (contents.charAt(nextIndex) !== ")") {
+      return undefined;
+    }
+    nextIndex = skipWhitespace(contents, nextIndex + 1);
+  }
+  return nextIndex;
+};
+
+const readAccessorAfterCallee = (
+  contents: string,
+  calleeStartIndex: number,
+  afterCalleeIndex: number,
+  property: string,
+): number | undefined => {
+  const directAccessor = readPropertyAccessor(contents, afterCalleeIndex, property);
+  if (directAccessor !== undefined) {
+    return directAccessor;
+  }
+  const wrappingOpenParens = wrappingOpenParenCountBefore(contents, calleeStartIndex);
+  if (wrappingOpenParens === 0) {
+    return undefined;
+  }
+  for (let parenCount = wrappingOpenParens; parenCount > 0; parenCount -= 1) {
+    const afterWrappedCallee = afterWrappingCloseParens(contents, afterCalleeIndex, parenCount);
+    if (afterWrappedCallee === undefined) {
+      continue;
+    }
+    const wrappedAccessor = readPropertyAccessor(contents, afterWrappedCallee, property);
+    if (wrappedAccessor !== undefined) {
+      return wrappedAccessor;
+    }
+  }
+  return undefined;
+};
+
+const readBoundOrAppliedSpecifier = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const afterBindAccessor = readPropertyAccessor(contents, index, "bind");
+  if (afterBindAccessor !== undefined) {
+    const boundSpecifier = readCallSecondSpecifier(contents, afterBindAccessor);
+    if (boundSpecifier !== undefined) {
+      return boundSpecifier;
+    }
+    const afterBindCall = readCallExpressionEnd(contents, afterBindAccessor);
+    if (afterBindCall !== undefined) {
+      const boundCall = readCallSpecifier(contents, afterBindCall);
+      if (boundCall !== undefined) {
+        return boundCall;
+      }
+    }
+  }
+
+  const afterApplyAccessor = readPropertyAccessor(contents, index, "apply");
+  return afterApplyAccessor === undefined
+    ? undefined
+    : readApplyArraySpecifier(contents, afterApplyAccessor);
+};
+
+const expressionWrapperCloseParenIndex = (contents: string, index: number): number | undefined => {
+  let depth = 0;
+  let nextIndex = index;
+  while (nextIndex < contents.length) {
+    const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
+    if (character === '"' || character === "'" || character === "`") {
+      nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, nextIndex)
+    ) {
+      nextIndex = skipRegexLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      depth += 1;
+      nextIndex += 1;
+      continue;
+    }
+    if (character === ")" && depth === 0) {
+      return nextIndex;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      nextIndex += 1;
+      continue;
+    }
+    nextIndex += 1;
+  }
+  return undefined;
+};
+
+const readSpecifierAfterCallableExpression = (
+  contents: string,
+  index: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const directCall = readCallSpecifier(contents, index);
+  if (directCall !== undefined) {
+    return directCall;
+  }
+  const afterCallAccessor = readPropertyAccessor(contents, index, "call");
+  if (afterCallAccessor !== undefined) {
+    const calledSpecifier = readCallSecondSpecifier(contents, afterCallAccessor);
+    if (calledSpecifier !== undefined) {
+      return calledSpecifier;
+    }
+  }
+  return readBoundOrAppliedSpecifier(contents, index);
+};
+
+const afterExpressionWrappedCallee = (
+  contents: string,
+  calleeStartIndex: number,
+  afterCalleeIndex: number,
+): number | undefined => {
+  let previous = contents.slice(0, calleeStartIndex).trimEnd();
+  while (previous.endsWith("(")) {
+    previous = previous.slice(0, -1).trimEnd();
+  }
+  const hasExpressionWrapper =
+    previous.endsWith(",") ||
+    previous.endsWith("||") ||
+    previous.endsWith("&&") ||
+    previous.endsWith("?") ||
+    previous.endsWith(":") ||
+    previous.endsWith("??");
+  if (!hasExpressionWrapper) {
+    const afterCallee = skipWhitespace(contents, afterCalleeIndex);
+    const startsWrappedExpression =
+      contents.startsWith("??", afterCallee) ||
+      contents.startsWith("||", afterCallee) ||
+      contents.startsWith(":", afterCallee);
+    if (!startsWrappedExpression) {
+      return undefined;
+    }
+    const closeParenIndex = expressionWrapperCloseParenIndex(contents, afterCallee + 1);
+    return closeParenIndex === undefined ? undefined : closeParenIndex + 1;
+  }
+  const afterCallee = skipWhitespace(contents, afterCalleeIndex);
+  if (contents.charAt(afterCallee) === ")") {
+    return afterCallee + 1;
+  }
+  const startsTernaryTail = previous.endsWith("?") && contents.charAt(afterCallee) === ":";
+  if (!startsTernaryTail) {
+    return undefined;
+  }
+  const closeParenIndex = expressionWrapperCloseParenIndex(contents, afterCallee + 1);
+  return closeParenIndex === undefined ? undefined : closeParenIndex + 1;
+};
+
+const readCalleeCallSpecifier = (
+  contents: string,
+  calleeStartIndex: number,
+  afterCalleeIndex: number,
+): { readonly nextIndex: number; readonly specifier: string } | undefined => {
+  const directCall = readCallSpecifier(contents, afterCalleeIndex);
+  if (directCall !== undefined) {
+    return directCall;
+  }
+
+  const boundOrApplied = readBoundOrAppliedSpecifier(contents, afterCalleeIndex);
+  if (boundOrApplied !== undefined) {
+    return boundOrApplied;
+  }
+
+  const afterExpressionWrapper = afterExpressionWrappedCallee(
+    contents,
+    calleeStartIndex,
+    afterCalleeIndex,
+  );
+  if (afterExpressionWrapper !== undefined) {
+    let nextExpressionWrapper = skipWhitespace(contents, afterExpressionWrapper);
+    while (nextExpressionWrapper < contents.length) {
+      const expressionWrappedSpecifier = readSpecifierAfterCallableExpression(
+        contents,
+        nextExpressionWrapper,
+      );
+      if (expressionWrappedSpecifier !== undefined) {
+        return expressionWrappedSpecifier;
+      }
+      if (contents.charAt(nextExpressionWrapper) !== ")") {
+        break;
+      }
+      nextExpressionWrapper = skipWhitespace(contents, nextExpressionWrapper + 1);
+    }
+  }
+
+  const wrappingOpenParens = wrappingOpenParenCountBefore(contents, calleeStartIndex);
+  if (wrappingOpenParens > 0) {
+    for (let parenCount = wrappingOpenParens; parenCount > 0; parenCount -= 1) {
+      const afterWrappedCallee = afterWrappingCloseParens(contents, afterCalleeIndex, parenCount);
+      if (afterWrappedCallee === undefined) {
+        continue;
+      }
+      const parenthesizedCall = readCallSpecifier(contents, afterWrappedCallee);
+      if (parenthesizedCall !== undefined) {
+        return parenthesizedCall;
+      }
+      const afterParenthesizedCallAccessor = readPropertyAccessor(
+        contents,
+        afterWrappedCallee,
+        "call",
+      );
+      if (afterParenthesizedCallAccessor !== undefined) {
+        return readCallSecondSpecifier(contents, afterParenthesizedCallAccessor);
+      }
+      const parenthesizedBoundOrApplied = readBoundOrAppliedSpecifier(contents, afterWrappedCallee);
+      if (parenthesizedBoundOrApplied !== undefined) {
+        return parenthesizedBoundOrApplied;
+      }
+      const afterWrappedExpressionWrapper = afterExpressionWrappedCallee(
+        contents,
+        calleeStartIndex,
+        afterWrappedCallee,
+      );
+      if (afterWrappedExpressionWrapper !== undefined) {
+        let nextWrappedExpression = skipWhitespace(contents, afterWrappedExpressionWrapper);
+        while (nextWrappedExpression < contents.length) {
+          const wrappedExpressionSpecifier = readSpecifierAfterCallableExpression(
+            contents,
+            nextWrappedExpression,
+          );
+          if (wrappedExpressionSpecifier !== undefined) {
+            return wrappedExpressionSpecifier;
+          }
+          if (contents.charAt(nextWrappedExpression) !== ")") {
+            break;
+          }
+          nextWrappedExpression = skipWhitespace(contents, nextWrappedExpression + 1);
+        }
+      }
+    }
+  }
+
+  const afterCallAccessor = readPropertyAccessor(contents, afterCalleeIndex, "call");
+  if (afterCallAccessor !== undefined) {
+    return readCallSecondSpecifier(contents, afterCallAccessor);
+  }
+
+  return undefined;
+};
+
 const readTemplateExpression = (
   contents: string,
   index: number,
@@ -329,8 +1104,28 @@ const readTemplateExpression = (
 
   while (nextIndex < contents.length) {
     const character = contents.charAt(nextIndex);
+    const nextCharacter = contents.charAt(nextIndex + 1);
     if (isImportQuote(character)) {
       nextIndex = skipQuotedLiteral(contents, nextIndex);
+      continue;
+    }
+    if (
+      character === "/" &&
+      nextCharacter !== "/" &&
+      nextCharacter !== "*" &&
+      isRegexLiteralStartContext(contents, nextIndex)
+    ) {
+      nextIndex = skipRegexLiteral(contents, nextIndex);
+      continue;
+    }
+    if (character === "/" && nextCharacter === "/") {
+      const nextLineIndex = contents.indexOf("\n", nextIndex + 2);
+      nextIndex = nextLineIndex + 1 || contents.length;
+      continue;
+    }
+    if (character === "/" && nextCharacter === "*") {
+      const commentEndIndex = contents.indexOf("*/", nextIndex + 2);
+      nextIndex = commentEndIndex === -1 ? contents.length : commentEndIndex + 2;
       continue;
     }
     if (character === "{") {
@@ -391,9 +1186,6 @@ const templateExpressionImportSpecifiers = (
     specifiers,
   };
 };
-
-const previousNonWhitespaceCharacter = (contents: string, index: number): string | undefined =>
-  contents.slice(0, index + 1).trimEnd().at(-1);
 
 const readJsxTag = (
   contents: string,
@@ -538,10 +1330,11 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
       continue;
     }
 
-    if (sourceHasKeywordAt(source, index, "from")) {
+    const afterFromKeyword = afterKeywordAt(source, index, "from");
+    if (afterFromKeyword !== undefined) {
       const specifier = readStaticQuotedSpecifier(
         source,
-        skipWhitespace(source, index + "from".length),
+        skipWhitespace(source, afterFromKeyword),
       );
       if (specifier !== undefined) {
         specifiers.push(specifier.specifier);
@@ -550,8 +1343,15 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
       }
     }
 
-    if (sourceHasKeywordAt(source, index, "import")) {
-      const afterImport = skipWhitespace(source, index + "import".length);
+    const afterImportKeyword = afterKeywordAt(source, index, "import");
+    if (afterImportKeyword !== undefined) {
+      const previousImportCharacter = previousNonWhitespaceCharacter(source, index - 1);
+      const isFreeImport = previousImportCharacter !== "." && previousImportCharacter !== "#";
+      if (!isFreeImport) {
+        index += 1;
+        continue;
+      }
+      const afterImport = skipWhitespace(source, afterImportKeyword);
       const sideEffectSpecifier = readStaticQuotedSpecifier(source, afterImport);
       if (sideEffectSpecifier !== undefined) {
         specifiers.push(sideEffectSpecifier.specifier);
@@ -571,17 +1371,32 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
       }
     }
 
-    if (isFreeRequireAt(source, index)) {
-      const afterRequire = skipWhitespace(source, index + "require".length);
-      const requireSpecifier = readCallSpecifier(source, afterRequire);
+    const afterImportMetaResolveAccessor = importMetaResolveAccessorAt(source, index);
+    if (afterImportMetaResolveAccessor !== undefined) {
+      const resolvedSpecifier = readCalleeCallSpecifier(
+        source,
+        index,
+        afterImportMetaResolveAccessor,
+      );
+      if (resolvedSpecifier !== undefined) {
+        specifiers.push(resolvedSpecifier.specifier);
+        index = resolvedSpecifier.nextIndex;
+        continue;
+      }
+    }
+
+    const afterRequireKeyword = freeRequireKeywordEndAt(source, index);
+    if (afterRequireKeyword !== undefined) {
+      const afterRequire = skipWhitespace(source, afterRequireKeyword);
+      const requireSpecifier = readCalleeCallSpecifier(source, index, afterRequire);
       if (requireSpecifier !== undefined) {
         specifiers.push(requireSpecifier.specifier);
         index = requireSpecifier.nextIndex;
         continue;
       }
-      const afterResolve = resolveAccessorAfterRequire(source, afterRequire);
+      const afterResolve = resolveAccessorAfterRequire(source, index, afterRequire);
       if (afterResolve !== undefined) {
-        const resolvedSpecifier = readCallSpecifier(source, afterResolve);
+        const resolvedSpecifier = readCalleeCallSpecifier(source, index, afterResolve);
         if (resolvedSpecifier !== undefined) {
           specifiers.push(resolvedSpecifier.specifier);
           index = resolvedSpecifier.nextIndex;
@@ -590,10 +1405,41 @@ export const importSpecifiersFromSource = (contents: string): ReadonlyArray<stri
       }
     }
 
-    if (isModuleRequireAt(source, index)) {
-      const afterModule = skipWhitespace(source, index + "module".length);
-      const afterRequire = skipWhitespace(source, afterModule + ".require".length);
-      const moduleRequireSpecifier = readCallSpecifier(source, afterRequire);
+    const afterCreateRequireKeyword = freeCreateRequireKeywordEndAt(source, index);
+    if (afterCreateRequireKeyword !== undefined) {
+      const afterCreateRequireFactory = readCallExpressionEnd(source, afterCreateRequireKeyword);
+      if (afterCreateRequireFactory !== undefined) {
+        const createRequireSpecifier = readCalleeCallSpecifier(
+          source,
+          index,
+          afterCreateRequireFactory,
+        );
+        if (createRequireSpecifier !== undefined) {
+          specifiers.push(createRequireSpecifier.specifier);
+          index = createRequireSpecifier.nextIndex;
+          continue;
+        }
+        const afterResolve = readAccessorAfterCallee(
+          source,
+          index,
+          afterCreateRequireFactory,
+          "resolve",
+        );
+        if (afterResolve !== undefined) {
+          const resolvedSpecifier = readCalleeCallSpecifier(source, index, afterResolve);
+          if (resolvedSpecifier !== undefined) {
+            specifiers.push(resolvedSpecifier.specifier);
+            index = resolvedSpecifier.nextIndex;
+            continue;
+          }
+        }
+      }
+    }
+
+    const afterRequireAccessor = moduleRequireAccessorAt(source, index);
+    if (afterRequireAccessor !== undefined) {
+      const afterRequire = skipWhitespace(source, afterRequireAccessor);
+      const moduleRequireSpecifier = readCalleeCallSpecifier(source, index, afterRequire);
       if (moduleRequireSpecifier !== undefined) {
         specifiers.push(moduleRequireSpecifier.specifier);
         index = moduleRequireSpecifier.nextIndex;

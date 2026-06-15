@@ -2942,11 +2942,16 @@ describe("@view-server/runtime Kafka ingress internals", () => {
               operations.push(`publishMany:${topic}:${rows.length}`);
             }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
         };
+        let healthRefreshes = 0;
+        const requestHealthRefresh = Effect.sync(() => {
+          healthRefreshes += 1;
+          operations.push("healthRefresh");
+        });
 
         yield* runKafkaMessageStream(
           viewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
+          requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -2997,11 +3002,13 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
         expect({
+          healthRefreshes,
           operations,
           snapshot,
           kafkaTopic: health.kafka?.topics[ordersSourceTopic],
         }).toStrictEqual({
-          operations: ["publishMany:orders:3", "commit:1", "commit:2", "commit:3"],
+          healthRefreshes: 1,
+          operations: ["publishMany:orders:3", "commit:1", "commit:2", "commit:3", "healthRefresh"],
           snapshot: {
             status: "ready",
             statusCode: "Ready",

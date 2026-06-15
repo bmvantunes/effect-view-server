@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1513,6 +1513,482 @@ const approvedPublicViewServerSpecifiers = new Set([
   "@view-server/runtime-core",
   "@view-server/server",
 ]);
+
+type PackageExportConditionTarget = {
+  readonly condition: string;
+  readonly suffix: ".d.ts" | ".js";
+  readonly target: string;
+};
+
+type PackageManifest = {
+  readonly name?: unknown;
+  readonly exports?: unknown;
+};
+
+const packageManifestPath = (packageName: string): string =>
+  join(repoRoot, "packages", packageName, "package.json");
+
+const parsePackageManifest = (contents: string): PackageManifest => JSON.parse(contents);
+
+const manifestExportObject = (manifest: PackageManifest): object | undefined => {
+  if (typeof manifest.exports !== "object" || manifest.exports === null || Array.isArray(manifest.exports)) {
+    return undefined;
+  }
+  return manifest.exports;
+};
+
+const manifestExportsAreRootConditionMap = (exportsObject: object): boolean => {
+  const keys = Object.keys(exportsObject);
+  return keys.length > 0 && keys.every((key) => !key.startsWith("."));
+};
+
+const manifestExportEntries = (manifest: PackageManifest): ReadonlyArray<readonly [string, unknown]> => {
+  if (typeof manifest.exports === "string" || Array.isArray(manifest.exports)) {
+    return [[".", manifest.exports]];
+  }
+  const exportsObject = manifestExportObject(manifest);
+  if (exportsObject === undefined) {
+    return [];
+  }
+  if (manifestExportsAreRootConditionMap(exportsObject)) {
+    return [[".", exportsObject]];
+  }
+  return Object.entries(exportsObject);
+};
+
+const manifestExportKeys = (manifest: PackageManifest): ReadonlyArray<string> =>
+  manifestExportEntries(manifest).map(([exportKey]) => exportKey);
+
+const importTargetForExportTarget = (
+  target: unknown,
+):
+  | {
+      readonly _tag: "ExportTarget";
+      readonly importTarget: string | undefined;
+      readonly typesTarget: string | undefined;
+    }
+  | { readonly _tag: "Unsupported" } => {
+  if (typeof target !== "string" && !Array.isArray(target) && (typeof target !== "object" || target === null)) {
+    return {
+      _tag: "Unsupported",
+    };
+  }
+
+  const firstRuntimeTargetString = (target: unknown, conditionPath: string): string | undefined => {
+    if (typeof target === "string") {
+      return conditionPathIsTypes(conditionPath) ? undefined : target;
+    }
+    if (Array.isArray(target)) {
+      for (const conditionTarget of target) {
+        const nestedTarget = firstRuntimeTargetString(conditionTarget, conditionPath);
+        if (nestedTarget !== undefined) {
+          return nestedTarget;
+        }
+      }
+    }
+    if (typeof target === "object" && target !== null) {
+      for (const [condition, conditionTarget] of Object.entries(target)) {
+        const childConditionPath = conditionPath === "" ? condition : `${conditionPath}.${condition}`;
+        const nestedTarget = firstRuntimeTargetString(conditionTarget, childConditionPath);
+        if (nestedTarget !== undefined) {
+          return nestedTarget;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const firstTypesTargetString = (target: unknown, conditionPath: string): string | undefined => {
+    if (typeof target === "string") {
+      return conditionPathIsTypes(conditionPath) ? target : undefined;
+    }
+    if (Array.isArray(target)) {
+      for (const conditionTarget of target) {
+        const nestedTarget = firstTypesTargetString(conditionTarget, conditionPath);
+        if (nestedTarget !== undefined) {
+          return nestedTarget;
+        }
+      }
+    }
+    if (typeof target === "object" && target !== null) {
+      for (const [condition, conditionTarget] of Object.entries(target)) {
+        const childConditionPath = conditionPath === "" ? condition : `${conditionPath}.${condition}`;
+        const nestedTarget = firstTypesTargetString(conditionTarget, childConditionPath);
+        if (nestedTarget !== undefined) {
+          return nestedTarget;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const firstNamedRuntimeConditionTargetString = (
+    target: unknown,
+    condition: string,
+    conditionPath: string,
+  ): string | undefined => {
+    if (Array.isArray(target)) {
+      for (const conditionTarget of target) {
+        const nestedTarget = firstNamedRuntimeConditionTargetString(conditionTarget, condition, conditionPath);
+        if (nestedTarget !== undefined) {
+          return nestedTarget;
+        }
+      }
+    }
+    if (typeof target === "object" && target !== null) {
+      for (const [conditionKey, conditionTarget] of Object.entries(target)) {
+        const childConditionPath = conditionPath === "" ? conditionKey : `${conditionPath}.${conditionKey}`;
+        const nestedTarget =
+          conditionKey === condition
+            ? firstRuntimeTargetString(conditionTarget, childConditionPath)
+            : firstNamedRuntimeConditionTargetString(conditionTarget, condition, childConditionPath);
+        if (nestedTarget !== undefined) {
+          return nestedTarget;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  return {
+    _tag: "ExportTarget",
+    importTarget:
+      firstNamedRuntimeConditionTargetString(target, "import", "") ?? firstRuntimeTargetString(target, ""),
+    typesTarget: firstTypesTargetString(target, ""),
+  };
+};
+
+const conditionTargetSuffix = (condition: string): ".d.ts" | ".js" =>
+  conditionPathIsTypes(condition) ? ".d.ts" : ".js";
+
+function conditionWithoutArrayIndexes(condition: string): string {
+  return condition.replace(/\[\d+\]/g, "");
+}
+
+const conditionPartIsTypes = (conditionPart: string): boolean =>
+  conditionPart === "types" || conditionPart.startsWith("types@");
+
+const conditionPathIsTypes = (condition: string): boolean =>
+  conditionWithoutArrayIndexes(condition)
+    .split(".")
+    .some(conditionPartIsTypes);
+
+const stringConditionTargetsForExportTarget = (
+  target: unknown,
+  conditionPath: string,
+): ReadonlyArray<PackageExportConditionTarget> => {
+  if (typeof target === "string") {
+    return [
+      {
+        condition: conditionPath === "" ? "import" : conditionPath,
+        suffix: conditionTargetSuffix(conditionPath),
+        target,
+      },
+    ];
+  }
+  if (Array.isArray(target)) {
+    return target.flatMap((conditionTarget, index) =>
+      stringConditionTargetsForExportTarget(
+        conditionTarget,
+        conditionPath === "" ? "" : `${conditionPath}[${index}]`,
+      ),
+    );
+  }
+  if (typeof target !== "object" || target === null) {
+    return [];
+  }
+  return Object.entries(target).flatMap(([condition, conditionTarget]) => {
+    const childConditionPath = conditionPath === "" ? condition : `${conditionPath}.${condition}`;
+    return stringConditionTargetsForExportTarget(conditionTarget, childConditionPath);
+  });
+};
+
+const exportSpecifierFor = (packageSpecifier: string, exportKey: string): string =>
+  exportKey === "."
+    ? packageSpecifier
+    : `${packageSpecifier}/${exportKey.startsWith("./") ? exportKey.slice("./".length) : exportKey}`;
+
+export const packageExportSpecifiersForManifest = (
+  manifestContents: string,
+): ReadonlyArray<string> => {
+  const manifest = parsePackageManifest(manifestContents);
+  const packageSpecifier = manifest.name;
+  if (typeof packageSpecifier !== "string") {
+    return [];
+  }
+  return manifestExportKeys(manifest).map((exportKey) => exportSpecifierFor(packageSpecifier, exportKey));
+};
+
+const distTargetEntrypoint = (target: string, suffix: ".d.ts" | ".js"): string | undefined => {
+  const prefix = "./dist/";
+  if (!target.startsWith(prefix) || !target.endsWith(suffix)) {
+    return undefined;
+  }
+  const entrypoint = target.slice(prefix.length, -suffix.length);
+  const segments = entrypoint.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return undefined;
+  }
+  return entrypoint;
+};
+
+export const sourceEntrypointForRelativeDistEntrypoint = (
+  packageName: string,
+  relativeEntrypoint: string,
+): string | undefined => {
+  const sourceBase = join(repoRoot, "packages", packageName, "src", relativeEntrypoint);
+  const tsEntrypoint = `${sourceBase}.ts`;
+  if (existsSync(tsEntrypoint)) {
+    return tsEntrypoint;
+  }
+  const tsxEntrypoint = `${sourceBase}.tsx`;
+  return existsSync(tsxEntrypoint) ? tsxEntrypoint : undefined;
+};
+
+export const sourceEntrypointForPackEntry = (entryPath: string): string | undefined => {
+  if (!entryPath.startsWith("src/") || (!entryPath.endsWith(".ts") && !entryPath.endsWith(".tsx"))) {
+    return undefined;
+  }
+  const sourceExtension = entryPath.endsWith(".tsx") ? ".tsx" : ".ts";
+  const relativeEntrypoint = entryPath.slice("src/".length, -sourceExtension.length);
+  const segments = relativeEntrypoint.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return undefined;
+  }
+  return relativeEntrypoint;
+};
+
+export const libraryPackEntrypointPaths = (viteConfigContents: string): ReadonlyArray<string> => {
+  const viteConfigSource = sourceWithoutComments(viteConfigContents);
+  const stringMatch = /pack:\s*libraryPack\(\s*"[^"]+"\s*\)/m.exec(viteConfigSource);
+  if (stringMatch !== null) {
+    const callSource = stringMatch[0];
+    return [callSource.slice(callSource.indexOf('"') + 1, callSource.lastIndexOf('"'))];
+  }
+  const arrayMatch = /pack:\s*libraryPack\(\s*\[[\s\S]*?\]\s*\)/m.exec(viteConfigSource);
+  if (arrayMatch === null) {
+    return [];
+  }
+  const callSource = arrayMatch[0];
+  const arrayEntrypoints = callSource.slice(callSource.indexOf("[") + 1, callSource.lastIndexOf("]"));
+  return Array.from(arrayEntrypoints.matchAll(/"[^"]+"/g), (entrypointMatch) => entrypointMatch[0].slice(1, -1));
+};
+
+export const packedEntrypointsFromViteConfigContents = (viteConfigContents: string): ReadonlySet<string> => {
+  const entrypoints = libraryPackEntrypointPaths(viteConfigContents).flatMap((entryPath) => {
+    const entrypoint = sourceEntrypointForPackEntry(entryPath);
+    return entrypoint === undefined ? [] : [entrypoint];
+  });
+  return new Set(entrypoints);
+};
+
+export const packedPackageEntrypointsForPackage = (packageName: string): ReadonlySet<string> => {
+  const viteConfigPath = join(repoRoot, "packages", packageName, "vite.config.ts");
+  if (!existsSync(viteConfigPath)) {
+    return new Set();
+  }
+  return packedEntrypointsFromViteConfigContents(readFileSync(viteConfigPath, "utf8"));
+};
+
+const isPackedPackageEntrypoint = (packageName: string, relativeEntrypoint: string): boolean =>
+  packedPackageEntrypointsForPackage(packageName).has(relativeEntrypoint);
+
+const hasPackedSourceEntrypoint = (packageName: string, relativeEntrypoint: string): boolean =>
+  isPackedPackageEntrypoint(packageName, relativeEntrypoint) &&
+  sourceEntrypointForRelativeDistEntrypoint(packageName, relativeEntrypoint) !== undefined;
+
+const packageExportTargetViolation = ({
+  condition,
+  exportKey,
+  packageDirectoryName,
+  target,
+}: {
+  readonly condition: string;
+  readonly exportKey: string;
+  readonly packageDirectoryName: string;
+  readonly target: string;
+}): string => {
+  const normalizedCondition = conditionWithoutArrayIndexes(condition);
+  if (normalizedCondition === "import" || normalizedCondition === "types") {
+    return `packages/${packageDirectoryName}/package.json export ${exportKey} points at ${target} without a matching packed src entrypoint.`;
+  }
+  return `packages/${packageDirectoryName}/package.json export ${exportKey} condition ${condition} points at ${target} without a matching packed src entrypoint.`;
+};
+
+const packageExportTargetMismatchViolation = ({
+  condition,
+  exportKey,
+  importTarget,
+  packageDirectoryName,
+  target,
+}: {
+  readonly condition: string;
+  readonly exportKey: string;
+  readonly importTarget: string;
+  readonly packageDirectoryName: string;
+  readonly target: string;
+}): string => {
+  const normalizedCondition = conditionWithoutArrayIndexes(condition);
+  if (normalizedCondition === "types") {
+    return `packages/${packageDirectoryName}/package.json export ${exportKey} types target ${target} does not match import target ${importTarget}.`;
+  }
+  return `packages/${packageDirectoryName}/package.json export ${exportKey} condition ${condition} target ${target} does not match import target ${importTarget}.`;
+};
+
+export const packageExportViolationsForManifest = ({
+  manifestContents,
+  packageDirectoryName,
+}: {
+  readonly manifestContents: string;
+  readonly packageDirectoryName: string;
+}): ReadonlyArray<string> => {
+  const manifest = parsePackageManifest(manifestContents);
+  const packageSpecifier =
+    typeof manifest.name === "string" ? manifest.name : `packages/${packageDirectoryName}`;
+  const violations: Array<string> = [];
+
+  for (const [exportKey, target] of manifestExportEntries(manifest)) {
+    const specifier = exportSpecifierFor(packageSpecifier, exportKey);
+    if (!approvedPublicViewServerSpecifiers.has(specifier)) {
+      violations.push(
+        `packages/${packageDirectoryName}/package.json exports ${specifier}: add intentional public specifier approval or remove the export.`,
+      );
+    }
+    for (const conditionTarget of stringConditionTargetsForExportTarget(target, "")) {
+      const targetEntrypoint = distTargetEntrypoint(conditionTarget.target, conditionTarget.suffix);
+      if (
+        targetEntrypoint === undefined ||
+        !hasPackedSourceEntrypoint(packageDirectoryName, targetEntrypoint)
+      ) {
+        violations.push(
+          packageExportTargetViolation({
+            condition: conditionTarget.condition,
+            exportKey,
+            packageDirectoryName,
+            target: conditionTarget.target,
+          }),
+        );
+      }
+    }
+    const importTarget = importTargetForExportTarget(target);
+    if (importTarget._tag === "Unsupported") {
+      violations.push(
+        `packages/${packageDirectoryName}/package.json export ${exportKey} has no import target.`,
+      );
+      continue;
+    }
+    if (importTarget.importTarget === undefined) {
+      violations.push(
+        `packages/${packageDirectoryName}/package.json export ${exportKey} has no import target.`,
+      );
+      continue;
+    }
+    if (importTarget.typesTarget === undefined) {
+      violations.push(
+        `packages/${packageDirectoryName}/package.json export ${exportKey} has no types target.`,
+      );
+    }
+    const importEntrypoint = distTargetEntrypoint(importTarget.importTarget, ".js");
+    if (
+      importEntrypoint !== undefined &&
+      hasPackedSourceEntrypoint(packageDirectoryName, importEntrypoint)
+    ) {
+      for (const conditionTarget of stringConditionTargetsForExportTarget(target, "")) {
+        const targetEntrypoint = distTargetEntrypoint(conditionTarget.target, conditionTarget.suffix);
+        if (
+          targetEntrypoint !== undefined &&
+          hasPackedSourceEntrypoint(packageDirectoryName, targetEntrypoint) &&
+          targetEntrypoint !== importEntrypoint
+        ) {
+          violations.push(
+            packageExportTargetMismatchViolation({
+              condition: conditionTarget.condition,
+              exportKey,
+              importTarget: importTarget.importTarget,
+              packageDirectoryName,
+              target: conditionTarget.target,
+            }),
+          );
+        }
+      }
+    }
+  }
+
+  return violations;
+};
+
+const viewServerPackageDirectories = [
+  "client",
+  "column-live-view-engine",
+  "config",
+  "effect-utils",
+  "in-memory",
+  "protocol",
+  "react",
+  "runtime",
+  "runtime-core",
+  "server",
+] as const;
+
+export const staleApprovedPackageExportViolations = ({
+  approvedSpecifiers,
+  exportedSpecifiers,
+}: {
+  readonly approvedSpecifiers: ReadonlySet<string>;
+  readonly exportedSpecifiers: ReadonlySet<string>;
+}): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
+  for (const approvedSpecifier of approvedSpecifiers) {
+    if (!exportedSpecifiers.has(approvedSpecifier)) {
+      violations.push(
+        `${approvedSpecifier} is approved as public but is not exported by any package.json.`,
+      );
+    }
+  }
+  return violations;
+};
+
+export const collectPackageExportViolations = (): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
+  const exportedSpecifiers = new Set<string>();
+
+  for (const packageDirectoryName of viewServerPackageDirectories) {
+    const manifestContents = readFileSync(packageManifestPath(packageDirectoryName), "utf8");
+    for (const specifier of packageExportSpecifiersForManifest(manifestContents)) {
+      exportedSpecifiers.add(specifier);
+    }
+    violations.push(
+      ...packageExportViolationsForManifest({
+        manifestContents,
+        packageDirectoryName,
+      }),
+    );
+  }
+
+  violations.push(
+    ...staleApprovedPackageExportViolations({
+      approvedSpecifiers: approvedPublicViewServerSpecifiers,
+      exportedSpecifiers,
+    }),
+  );
+
+  return violations;
+};
+
+export const packageExportViolationMessage = (violations: ReadonlyArray<string>): string =>
+  [
+    "Package public export violations found.",
+    ...violations.map((violation) => `- ${violation}`),
+  ].join("\n");
+
+export const assertNoPackageExportViolations = (violations: ReadonlyArray<string>) => {
+  if (violations.length === 0) {
+    return;
+  }
+  throw new Error(packageExportViolationMessage(violations));
+};
+
+assertNoPackageExportViolations(collectPackageExportViolations());
 
 const isInsideDirectory = (parentDirectory: string, childPath: string): boolean => {
   const relativeChildPath = relative(parentDirectory, childPath);

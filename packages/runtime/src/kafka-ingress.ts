@@ -647,35 +647,36 @@ const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.commit"
   region: string,
   messages: ReadonlyArray<DecodedKafkaBatchMessage<Topics>>,
 ) {
-  for (const message of messages) {
-    yield* Effect.uninterruptible(
-      Effect.tryPromise({
-        try: () => Promise.resolve(message.message.commit()),
-        catch: (cause) => kafkaMessageCommitError(region, message.sourceTopic, cause),
-      }).pipe(
-        Effect.matchEffect({
-          onFailure: (error) =>
-            health
-              .messageProcessingFailed(message.sourceTopic, region, {
-                bytes: message.messageBytes,
-                message: `${error.message}: ${messageFromUnknown(error.cause)}`,
-                nowMillis: message.nowMillis,
-              })
-              .pipe(
-                Effect.andThen(requestKafkaHealthRefresh(requestHealthRefresh)),
-                Effect.andThen(Effect.fail(error)),
-              ),
-          onSuccess: () =>
-            health.messageDecoded(message.sourceTopic, region, {
-              bytes: message.messageBytes,
-              committedOffset: String(message.message.offset + 1n),
-              nowMillis: message.nowMillis,
-            }),
-        }),
-        Effect.andThen(requestKafkaHealthRefresh(requestHealthRefresh)),
-      ),
-    );
+  if (messages.length === 0) {
+    return;
   }
+  yield* Effect.gen(function* () {
+    for (const message of messages) {
+      yield* Effect.uninterruptible(
+        Effect.tryPromise({
+          try: () => Promise.resolve(message.message.commit()),
+          catch: (cause) => kafkaMessageCommitError(region, message.sourceTopic, cause),
+        }).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              health
+                .messageProcessingFailed(message.sourceTopic, region, {
+                  bytes: message.messageBytes,
+                  message: `${error.message}: ${messageFromUnknown(error.cause)}`,
+                  nowMillis: message.nowMillis,
+                })
+                .pipe(Effect.andThen(Effect.fail(error))),
+            onSuccess: () =>
+              health.messageDecoded(message.sourceTopic, region, {
+                bytes: message.messageBytes,
+                committedOffset: String(message.message.offset + 1n),
+                nowMillis: message.nowMillis,
+              }),
+          }),
+        ),
+      );
+    }
+  }).pipe(Effect.ensuring(requestKafkaHealthRefresh(requestHealthRefresh)));
 });
 
 export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messageBatch.process")(

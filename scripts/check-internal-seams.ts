@@ -1536,8 +1536,27 @@ const manifestExportObject = (manifest: PackageManifest): object | undefined => 
   return manifest.exports;
 };
 
+const manifestExportsAreRootConditionMap = (exportsObject: object): boolean => {
+  const keys = Object.keys(exportsObject);
+  return keys.length > 0 && keys.every((key) => !key.startsWith("."));
+};
+
+const manifestExportEntries = (manifest: PackageManifest): ReadonlyArray<readonly [string, unknown]> => {
+  if (typeof manifest.exports === "string") {
+    return [[".", manifest.exports]];
+  }
+  const exportsObject = manifestExportObject(manifest);
+  if (exportsObject === undefined) {
+    return [];
+  }
+  if (manifestExportsAreRootConditionMap(exportsObject)) {
+    return [[".", exportsObject]];
+  }
+  return Object.entries(exportsObject);
+};
+
 const manifestExportKeys = (manifest: PackageManifest): ReadonlyArray<string> =>
-  Object.keys(manifestExportObject(manifest) ?? {});
+  manifestExportEntries(manifest).map(([exportKey]) => exportKey);
 
 const importTargetForExportTarget = (
   target: unknown,
@@ -1569,7 +1588,9 @@ const importTargetForExportTarget = (
 };
 
 const exportSpecifierFor = (packageSpecifier: string, exportKey: string): string =>
-  exportKey === "." ? packageSpecifier : `${packageSpecifier}/${exportKey.slice("./".length)}`;
+  exportKey === "."
+    ? packageSpecifier
+    : `${packageSpecifier}/${exportKey.startsWith("./") ? exportKey.slice("./".length) : exportKey}`;
 
 export const packageExportSpecifiersForManifest = (
   manifestContents: string,
@@ -1587,10 +1608,15 @@ const distTargetEntrypoint = (target: string, suffix: ".d.ts" | ".js"): string |
   if (!target.startsWith(prefix) || !target.endsWith(suffix)) {
     return undefined;
   }
-  return target.slice(prefix.length, -suffix.length);
+  const entrypoint = target.slice(prefix.length, -suffix.length);
+  const segments = entrypoint.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return undefined;
+  }
+  return entrypoint;
 };
 
-const sourceEntrypointForRelativeDistEntrypoint = (
+export const sourceEntrypointForRelativeDistEntrypoint = (
   packageName: string,
   relativeEntrypoint: string,
 ): string | undefined => {
@@ -1602,6 +1628,58 @@ const sourceEntrypointForRelativeDistEntrypoint = (
   const tsxEntrypoint = `${sourceBase}.tsx`;
   return existsSync(tsxEntrypoint) ? tsxEntrypoint : undefined;
 };
+
+export const sourceEntrypointForPackEntry = (entryPath: string): string | undefined => {
+  if (!entryPath.startsWith("src/") || (!entryPath.endsWith(".ts") && !entryPath.endsWith(".tsx"))) {
+    return undefined;
+  }
+  const sourceExtension = entryPath.endsWith(".tsx") ? ".tsx" : ".ts";
+  const relativeEntrypoint = entryPath.slice("src/".length, -sourceExtension.length);
+  const segments = relativeEntrypoint.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return undefined;
+  }
+  return relativeEntrypoint;
+};
+
+export const libraryPackEntrypointPaths = (viteConfigContents: string): ReadonlyArray<string> => {
+  const viteConfigSource = sourceWithoutComments(viteConfigContents);
+  const stringMatch = /pack:\s*libraryPack\(\s*"[^"]+"\s*\)/m.exec(viteConfigSource);
+  if (stringMatch !== null) {
+    const callSource = stringMatch[0];
+    return [callSource.slice(callSource.indexOf('"') + 1, callSource.lastIndexOf('"'))];
+  }
+  const arrayMatch = /pack:\s*libraryPack\(\s*\[[\s\S]*?\]\s*\)/m.exec(viteConfigSource);
+  if (arrayMatch === null) {
+    return [];
+  }
+  const callSource = arrayMatch[0];
+  const arrayEntrypoints = callSource.slice(callSource.indexOf("[") + 1, callSource.lastIndexOf("]"));
+  return Array.from(arrayEntrypoints.matchAll(/"[^"]+"/g), (entrypointMatch) => entrypointMatch[0].slice(1, -1));
+};
+
+export const packedEntrypointsFromViteConfigContents = (viteConfigContents: string): ReadonlySet<string> => {
+  const entrypoints = libraryPackEntrypointPaths(viteConfigContents).flatMap((entryPath) => {
+    const entrypoint = sourceEntrypointForPackEntry(entryPath);
+    return entrypoint === undefined ? [] : [entrypoint];
+  });
+  return new Set(entrypoints);
+};
+
+export const packedPackageEntrypointsForPackage = (packageName: string): ReadonlySet<string> => {
+  const viteConfigPath = join(repoRoot, "packages", packageName, "vite.config.ts");
+  if (!existsSync(viteConfigPath)) {
+    return new Set();
+  }
+  return packedEntrypointsFromViteConfigContents(readFileSync(viteConfigPath, "utf8"));
+};
+
+const isPackedPackageEntrypoint = (packageName: string, relativeEntrypoint: string): boolean =>
+  packedPackageEntrypointsForPackage(packageName).has(relativeEntrypoint);
+
+const hasPackedSourceEntrypoint = (packageName: string, relativeEntrypoint: string): boolean =>
+  isPackedPackageEntrypoint(packageName, relativeEntrypoint) &&
+  sourceEntrypointForRelativeDistEntrypoint(packageName, relativeEntrypoint) !== undefined;
 
 export const packageExportViolationsForManifest = ({
   manifestContents,
@@ -1615,7 +1693,7 @@ export const packageExportViolationsForManifest = ({
     typeof manifest.name === "string" ? manifest.name : `packages/${packageDirectoryName}`;
   const violations: Array<string> = [];
 
-  for (const [exportKey, target] of Object.entries(manifestExportObject(manifest) ?? {})) {
+  for (const [exportKey, target] of manifestExportEntries(manifest)) {
     const specifier = exportSpecifierFor(packageSpecifier, exportKey);
     if (!approvedPublicViewServerSpecifiers.has(specifier)) {
       violations.push(
@@ -1643,20 +1721,20 @@ export const packageExportViolationsForManifest = ({
     const importEntrypoint = distTargetEntrypoint(importTarget.importTarget, ".js");
     if (
       importEntrypoint === undefined ||
-      sourceEntrypointForRelativeDistEntrypoint(packageDirectoryName, importEntrypoint) === undefined
+      !hasPackedSourceEntrypoint(packageDirectoryName, importEntrypoint)
     ) {
       violations.push(
-        `packages/${packageDirectoryName}/package.json export ${exportKey} points at ${importTarget.importTarget} without a matching src entrypoint.`,
+        `packages/${packageDirectoryName}/package.json export ${exportKey} points at ${importTarget.importTarget} without a matching packed src entrypoint.`,
       );
     }
     if (importTarget.typesTarget !== undefined) {
       const typesEntrypoint = distTargetEntrypoint(importTarget.typesTarget, ".d.ts");
       if (
         typesEntrypoint === undefined ||
-        sourceEntrypointForRelativeDistEntrypoint(packageDirectoryName, typesEntrypoint) === undefined
+        !hasPackedSourceEntrypoint(packageDirectoryName, typesEntrypoint)
       ) {
         violations.push(
-          `packages/${packageDirectoryName}/package.json export ${exportKey} points at ${importTarget.typesTarget} without a matching src entrypoint.`,
+          `packages/${packageDirectoryName}/package.json export ${exportKey} points at ${importTarget.typesTarget} without a matching packed src entrypoint.`,
         );
       }
       if (importEntrypoint !== undefined && typesEntrypoint !== undefined && importEntrypoint !== typesEntrypoint) {

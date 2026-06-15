@@ -10,14 +10,19 @@ import {
   collectPackageExportViolations,
   collectPackageImportViolations,
   importSpecifiersFromSource,
+  libraryPackEntrypointPaths,
   packageExportSpecifiersForManifest,
   packageExportViolationMessage,
   packageExportViolationsForManifest,
+  packedEntrypointsFromViteConfigContents,
+  packedPackageEntrypointsForPackage,
   packageImportViolationsFor,
   packageImportViolationsForFile,
   packageImportViolationMessage,
   packageRelativeImportViolationsFor,
   sourceFiles,
+  sourceEntrypointForPackEntry,
+  sourceEntrypointForRelativeDistEntrypoint,
   sourceWithoutComments,
   staleApprovedPackageExportViolations,
   topicStoreHelperViolationMessage,
@@ -1145,7 +1150,155 @@ describe("internal seam checker", () => {
     ).toStrictEqual(["@view-server/example", "@view-server/example/testing"]);
   });
 
-  it("ignores manifests without object export maps", () => {
+  it("parses Vite+ libraryPack entrypoint declarations", () => {
+    expect(libraryPackEntrypointPaths('export default { pack: libraryPack("src/index.ts") };')).toStrictEqual([
+      "src/index.ts",
+    ]);
+    expect(
+      libraryPackEntrypointPaths(
+        [
+          "export default {",
+          "  pack: libraryPack([",
+          '    "src/index.ts",',
+          '    // "src/internal.ts",',
+          '    "src/testing.tsx",',
+          "  ]),",
+          "};",
+        ].join("\n"),
+      ),
+    ).toStrictEqual(["src/index.ts", "src/testing.tsx"]);
+    expect(libraryPackEntrypointPaths("export default { fmt: {} };")).toStrictEqual([]);
+  });
+
+  it("normalizes safe libraryPack source entrypoints only", () => {
+    expect(sourceEntrypointForPackEntry("src/index.ts")).toStrictEqual("index");
+    expect(sourceEntrypointForPackEntry("src/testing.tsx")).toStrictEqual("testing");
+    expect(sourceEntrypointForPackEntry("generated/index.ts")).toStrictEqual(undefined);
+    expect(sourceEntrypointForPackEntry("src/index.js")).toStrictEqual(undefined);
+    expect(sourceEntrypointForPackEntry("src/../index.ts")).toStrictEqual(undefined);
+  });
+
+  it("collects packed entrypoints from Vite+ config contents", () => {
+    expect(
+      Array.from(
+        packedEntrypointsFromViteConfigContents(
+          [
+            "export default {",
+            "  pack: libraryPack([",
+            '    "generated/index.ts",',
+            '    "src/index.ts",',
+            '    "src/feature.tsx",',
+            '    "src/../escape.ts",',
+            "  ]),",
+            "};",
+          ].join("\n"),
+        ),
+      ).sort(),
+    ).toStrictEqual(["feature", "index"]);
+  });
+
+  it("collects packed entrypoints from package Vite+ config files", () => {
+    expect(Array.from(packedPackageEntrypointsForPackage("react")).sort()).toStrictEqual(["index", "testing"]);
+    expect(Array.from(packedPackageEntrypointsForPackage("missing-package"))).toStrictEqual([]);
+  });
+
+  it("resolves package source entrypoint files without normalizing missing files into existence", () => {
+    expect(sourceEntrypointForRelativeDistEntrypoint("react", "testing")?.endsWith("src/testing.tsx")).toStrictEqual(
+      true,
+    );
+    expect(sourceEntrypointForRelativeDistEntrypoint("react", "missing")).toStrictEqual(undefined);
+  });
+
+  it("collects root conditional package export maps as the root specifier", () => {
+    expect(
+      packageExportSpecifiersForManifest(
+        JSON.stringify({
+          name: "@view-server/client",
+          exports: {
+            import: "./dist/index.js",
+            types: "./dist/index.d.ts",
+          },
+        }),
+      ),
+    ).toStrictEqual(["@view-server/client"]);
+  });
+
+  it("collects types-only root conditional package export maps as the root specifier", () => {
+    expect(
+      packageExportSpecifiersForManifest(
+        JSON.stringify({
+          name: "@view-server/client",
+          exports: {
+            types: "./dist/index.d.ts",
+          },
+        }),
+      ),
+    ).toStrictEqual(["@view-server/client"]);
+  });
+
+  it("collects default-only root conditional package export maps as the root specifier", () => {
+    expect(
+      packageExportSpecifiersForManifest(
+        JSON.stringify({
+          name: "@view-server/client",
+          exports: {
+            default: "./dist/index.js",
+          },
+        }),
+      ),
+    ).toStrictEqual(["@view-server/client"]);
+  });
+
+  it("keeps non-subpath keys readable in mixed package export maps", () => {
+    expect(
+      packageExportSpecifiersForManifest(
+        JSON.stringify({
+          name: "@view-server/example",
+          exports: {
+            ".": {
+              import: "./dist/index.js",
+              types: "./dist/index.d.ts",
+            },
+            types: "./dist/index.d.ts",
+          },
+        }),
+      ),
+    ).toStrictEqual(["@view-server/example", "@view-server/example/types"]);
+  });
+
+  it("accepts root conditional package export maps for packed entries", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "@view-server/client",
+          exports: {
+            import: "./dist/index.js",
+            types: "./dist/index.d.ts",
+          },
+        }),
+        packageDirectoryName: "client",
+      }),
+    ).toStrictEqual([]);
+  });
+
+  it("accepts packed TSX package export entrypoints", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "@view-server/react",
+          exports: {
+            "./testing": {
+              import: "./dist/testing.js",
+              types: "./dist/testing.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "react",
+      }),
+    ).toStrictEqual([]);
+  });
+
+  it("collects root string package export maps as the root specifier", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
@@ -1153,6 +1306,28 @@ describe("internal seam checker", () => {
           name: "@view-server/example",
         }),
       ),
+    ).toStrictEqual(["@view-server/example"]);
+  });
+
+  it("ignores package export specifiers from unsupported top-level export shapes", () => {
+    expect(
+      packageExportSpecifiersForManifest(
+        JSON.stringify({
+          exports: ["./dist/index.js"],
+          name: "@view-server/example",
+        }),
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it("ignores package export violations from unsupported top-level export shapes", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "@view-server/react",
+        }),
+        packageDirectoryName: "react",
+      }),
     ).toStrictEqual([]);
   });
 
@@ -1221,13 +1396,14 @@ describe("internal seam checker", () => {
     ).toStrictEqual([
       "packages/react/package.json exports @view-server/react/internal: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./internal has no types target.",
+      "packages/react/package.json export ./internal points at ./dist/internal.js without a matching packed src entrypoint.",
       "packages/react/package.json exports @view-server/react/missing: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./missing has no types target.",
-      "packages/react/package.json export ./missing points at ./dist/missing.js without a matching src entrypoint.",
+      "packages/react/package.json export ./missing points at ./dist/missing.js without a matching packed src entrypoint.",
     ]);
   });
 
-  it("ignores manifests without supported export maps when checking violations", () => {
+  it("reports root string package exports through the same target checks", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
@@ -1236,7 +1412,7 @@ describe("internal seam checker", () => {
         }),
         packageDirectoryName: "react",
       }),
-    ).toStrictEqual([]);
+    ).toStrictEqual(["packages/react/package.json export . has no types target."]);
   });
 
   it("reports package exports that are not approved public specifiers", () => {
@@ -1255,6 +1431,8 @@ describe("internal seam checker", () => {
       }),
     ).toStrictEqual([
       "packages/react/package.json exports @view-server/react/internal: add intentional public specifier approval or remove the export.",
+      "packages/react/package.json export ./internal points at ./dist/internal.js without a matching packed src entrypoint.",
+      "packages/react/package.json export ./internal points at ./dist/internal.d.ts without a matching packed src entrypoint.",
     ]);
   });
 
@@ -1323,8 +1501,28 @@ describe("internal seam checker", () => {
         packageDirectoryName: "react",
       }),
     ).toStrictEqual([
-      "packages/react/package.json export ./testing points at ./dist/missing.js without a matching src entrypoint.",
-      "packages/react/package.json export ./testing points at ./dist/missing.d.ts without a matching src entrypoint.",
+      "packages/react/package.json export ./testing points at ./dist/missing.js without a matching packed src entrypoint.",
+      "packages/react/package.json export ./testing points at ./dist/missing.d.ts without a matching packed src entrypoint.",
+    ]);
+  });
+
+  it("reports package exports without a Vite+ pack config", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "@view-server/client",
+          exports: {
+            ".": {
+              import: "./dist/index.js",
+              types: "./dist/index.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "missing-package",
+      }),
+    ).toStrictEqual([
+      "packages/missing-package/package.json export . points at ./dist/index.js without a matching packed src entrypoint.",
+      "packages/missing-package/package.json export . points at ./dist/index.d.ts without a matching packed src entrypoint.",
     ]);
   });
 
@@ -1343,8 +1541,48 @@ describe("internal seam checker", () => {
         packageDirectoryName: "react",
       }),
     ).toStrictEqual([
-      "packages/react/package.json export ./testing points at ./generated/testing.js without a matching src entrypoint.",
-      "packages/react/package.json export ./testing points at ./generated/testing.d.ts without a matching src entrypoint.",
+      "packages/react/package.json export ./testing points at ./generated/testing.js without a matching packed src entrypoint.",
+      "packages/react/package.json export ./testing points at ./generated/testing.d.ts without a matching packed src entrypoint.",
+    ]);
+  });
+
+  it("reports package exports with traversal in dist entrypoint targets", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "@view-server/react",
+          exports: {
+            "./testing": {
+              import: "./dist/../src/testing.js",
+              types: "./dist/../src/testing.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "react",
+      }),
+    ).toStrictEqual([
+      "packages/react/package.json export ./testing points at ./dist/../src/testing.js without a matching packed src entrypoint.",
+      "packages/react/package.json export ./testing points at ./dist/../src/testing.d.ts without a matching packed src entrypoint.",
+    ]);
+  });
+
+  it("reports package exports that target unpacked source entrypoints", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "@view-server/react",
+          exports: {
+            "./testing": {
+              import: "./dist/live-query-state.js",
+              types: "./dist/live-query-state.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "react",
+      }),
+    ).toStrictEqual([
+      "packages/react/package.json export ./testing points at ./dist/live-query-state.js without a matching packed src entrypoint.",
+      "packages/react/package.json export ./testing points at ./dist/live-query-state.d.ts without a matching packed src entrypoint.",
     ]);
   });
 

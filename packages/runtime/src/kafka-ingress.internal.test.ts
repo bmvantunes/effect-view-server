@@ -4676,6 +4676,185 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("clears unaffected source topic errors during poison-message recovery flush", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const multiSourceKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        consumerGroupId: "view-server-unaffected-source-recovery-test",
+        ...committedKafkaStart("view-server-unaffected-source-recovery-test"),
+        regions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingOrder),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+          [paymentsSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingOrder),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: multiSourceKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+          [paymentsSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      yield* ledger.topicConnected(paymentsSourceTopic, "local", 1, 1_000);
+      yield* ledger.decodeFailed(ordersSourceTopic, "local", {
+        bytes: 1,
+        message: "stale orders decode error",
+        nowMillis: 0,
+      });
+      const operations: Array<string> = [];
+      const batchingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+      };
+
+      const error = yield* Effect.flip(
+        runKafkaMessageStream(
+          viewServer,
+          batchingClient,
+          runtimeCore.requestHealthRefresh,
+          multiSourceKafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "orders-prefix",
+              value: JSON.stringify({
+                customerId: "customer-orders-prefix",
+                price: 10,
+              }),
+              offset: 1n,
+              onCommit: () => {
+                operations.push("commit:orders-prefix");
+              },
+            });
+            yield kafkaMessage({
+              topic: paymentsSourceTopic,
+              key: "payments-poison",
+              value: "{",
+              offset: 2n,
+              onCommit: () => {
+                operations.push("commit:payments-poison");
+              },
+            });
+          })(),
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+      yield* ledger.regionRecovered("local", 2_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 2_000);
+      yield* ledger.topicConnected(paymentsSourceTopic, "local", 1, 2_000);
+      const reconnectedHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+
+      expect({
+        afterReconnect: {
+          ordersSource: {
+            lastError:
+              reconnectedHealth.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+            status: reconnectedHealth.kafka?.topics[ordersSourceTopic]?.status,
+          },
+          paymentsSource: {
+            lastError:
+              reconnectedHealth.kafka?.topics[paymentsSourceTopic]?.regions["local"]?.lastError,
+            status: reconnectedHealth.kafka?.topics[paymentsSourceTopic]?.status,
+          },
+        },
+        error: {
+          message: error.message,
+          region: error.region,
+          sourceTopic: error.sourceTopic,
+        },
+        operations,
+        ordersSource: {
+          lastError: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+        paymentsSource: {
+          lastError: health.kafka?.topics[paymentsSourceTopic]?.regions["local"]?.lastError,
+          status: health.kafka?.topics[paymentsSourceTopic]?.status,
+        },
+        snapshot,
+      }).toStrictEqual({
+        afterReconnect: {
+          ordersSource: {
+            lastError: null,
+            status: "ready",
+          },
+          paymentsSource: {
+            lastError: "Failed to parse Kafka JSON payload",
+            status: "degraded",
+          },
+        },
+        error: {
+          message: `Failed to decode Kafka message for source topic ${paymentsSourceTopic}`,
+          region: "local",
+          sourceTopic: paymentsSourceTopic,
+        },
+        operations: ["publishMany:orders:1", "commit:orders-prefix"],
+        ordersSource: {
+          lastError: `Failed to decode Kafka message for source topic ${paymentsSourceTopic}`,
+          status: "degraded",
+        },
+        paymentsSource: {
+          lastError: "Failed to parse Kafka JSON payload",
+          status: "degraded",
+        },
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "orders-prefix",
+              customerId: "customer-orders-prefix",
+              price: 10,
+            },
+          ],
+          totalRows: 1,
+          version: 1,
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("flushes decoded Kafka microbatch messages before a later codec defect", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

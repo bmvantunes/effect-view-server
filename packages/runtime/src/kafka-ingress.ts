@@ -814,7 +814,7 @@ const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.commit"
   region: string,
   messages: ReadonlyArray<DecodedKafkaBatchMessage<Topics>>,
   options?: {
-    readonly preserveLastError?: boolean;
+    readonly preserveLastErrorForSourceTopic: string | undefined;
   },
 ) {
   if (messages.length === 0) {
@@ -841,7 +841,9 @@ const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.commit"
                 bytes: message.messageBytes,
                 committedOffset: String(message.message.offset + 1n),
                 nowMillis: message.nowMillis,
-                ...(options?.preserveLastError === true ? { preserveLastError: true } : {}),
+                ...(options?.preserveLastErrorForSourceTopic === message.sourceTopic
+                  ? { preserveLastError: true }
+                  : {}),
               }),
           }),
         ),
@@ -874,6 +876,9 @@ export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messa
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);
           }
+          const preserveLastErrorForSourceTopic = Option.getOrUndefined(
+            Option.map(Cause.findErrorOption(cause), (error) => error.sourceTopic),
+          );
           return Effect.exit(
             publishKafkaDecodedBatch(
               client,
@@ -884,7 +889,7 @@ export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messa
             ).pipe(
               Effect.andThen(
                 commitKafkaDecodedBatch(requestHealthRefresh, health, region, decodedMessages, {
-                  preserveLastError: true,
+                  preserveLastErrorForSourceTopic,
                 }),
               ),
             ),

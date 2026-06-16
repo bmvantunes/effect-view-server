@@ -28,6 +28,7 @@ import { makeViewServerKafkaHealthLedger as makeViewServerKafkaHealthLedgerBase 
 import type { ViewServerKafkaHealthLedger } from "./kafka-health";
 import {
   assignedPartitionsForSourceTopic,
+  acquireStartedKafkaConsumerResources,
   bootstrapBrokers,
   closeKafkaConsumer,
   closeKafkaConsumerAfterStartFailure,
@@ -44,6 +45,7 @@ import {
   kafkaMessageProcessingError,
   kafkaStreamCloseError,
   kafkaStreamError,
+  makeScopedKafkaIngress,
   makeViewServerKafkaIngress,
   makeStartedKafkaConsumerResourcesFinalizer,
   mapKafkaConsumerStartError,
@@ -767,6 +769,74 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         closeForce: true,
         streamCloseCount: 1,
       });
+    }),
+  );
+
+  it.effect("registers started Kafka resource cleanup atomically after acquire", () =>
+    Effect.gen(function* () {
+      let closeForce: boolean | undefined = undefined;
+      let listenerCloseCount = 0;
+      let streamCloseCount = 0;
+      const scope = yield* Scope.make();
+      const consumer: StartedKafkaConsumerResources["consumer"] = {
+        close: (force?: boolean) => {
+          closeForce = force;
+        },
+      };
+      const stream: StartedKafkaConsumerResources["stream"] = {
+        close: () => {
+          streamCloseCount += 1;
+        },
+      };
+      const resources = yield* acquireStartedKafkaConsumerResources(
+        scope,
+        Effect.succeed({
+          consumer,
+          stream,
+        }),
+      );
+
+      resources.setHealthListeners({
+        close: Effect.sync(() => {
+          listenerCloseCount += 1;
+        }),
+        processed: Effect.succeed(0),
+        waitForProcessed: () => Effect.void,
+      });
+      yield* Scope.close(scope, Exit.void);
+
+      expect({
+        closeForce,
+        listenerCloseCount,
+        streamCloseCount,
+      }).toStrictEqual({
+        closeForce: true,
+        listenerCloseCount: 1,
+        streamCloseCount: 1,
+      });
+    }),
+  );
+
+  it.effect("closes scoped Kafka ingress resources when acquisition is interrupted", () =>
+    Effect.gen(function* () {
+      let scopeFinalizerCount = 0;
+      const consumerStarted = yield* Deferred.make<void>();
+      const ingressFiber = yield* makeScopedKafkaIngress((scope) =>
+        Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            scopeFinalizerCount += 1;
+          }),
+        ).pipe(
+          Effect.andThen(Deferred.succeed(consumerStarted, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Deferred.await(consumerStarted).pipe(Effect.timeout("1 second"));
+      yield* Fiber.interrupt(ingressFiber);
+
+      expect(scopeFinalizerCount).toBe(1);
     }),
   );
 

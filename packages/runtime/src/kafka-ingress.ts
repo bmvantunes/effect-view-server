@@ -520,6 +520,41 @@ export const closeKafkaConsumerOnPostConsumeStartupFailure = Effect.fn(
   );
 });
 
+export const acquireStartedKafkaConsumerResources = Effect.fn(
+  "ViewServerRuntime.kafka.consumer.acquireStartedResources",
+)(function* <Consumer extends CloseableKafkaConsumer, Stream extends CloseableKafkaStream, E>(
+  scope: Scope.Scope,
+  acquire: Effect.Effect<
+    {
+      readonly consumer: Consumer;
+      readonly stream: Stream;
+    },
+    E
+  >,
+) {
+  return yield* Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const { consumer, stream } = yield* restore(acquire);
+      let healthListeners: KafkaConsumerHealthListenerRegistration | null = null;
+      const resources: StartedKafkaConsumerResources = {
+        consumer,
+        healthListeners: () => healthListeners,
+        stream,
+      };
+      const closeResources = yield* makeStartedKafkaConsumerResourcesFinalizer(resources);
+      yield* registerStartedKafkaConsumerResourcesFinalizer(scope, closeResources);
+      return {
+        consumer,
+        closeResources,
+        setHealthListeners: (registration: KafkaConsumerHealthListenerRegistration) => {
+          healthListeners = registration;
+        },
+        stream,
+      };
+    }),
+  );
+});
+
 const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.decodeForBatch")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     config: ViewServerConfig<Topics>,
@@ -1117,19 +1152,15 @@ const startRegionConsumer = Effect.fn("ViewServerRuntime.kafka.region.start")(fu
   topics: ReadonlyArray<string>,
   scope: Scope.Scope,
 ) {
-  const { consumer, stream } = yield* makeKafkaConsumer(region, brokers, topics, options.consume);
-  let healthListeners: KafkaConsumerHealthListenerRegistration | null = null;
-  const resources: StartedKafkaConsumerResources = {
-    consumer,
-    healthListeners: () => healthListeners,
-    stream,
-  };
-  const closeResources = yield* makeStartedKafkaConsumerResourcesFinalizer(resources);
-  yield* registerStartedKafkaConsumerResourcesFinalizer(scope, closeResources);
+  const { consumer, stream, closeResources, setHealthListeners } =
+    yield* acquireStartedKafkaConsumerResources(
+      scope,
+      makeKafkaConsumer(region, brokers, topics, options.consume),
+    );
   return yield* closeKafkaConsumerOnPostConsumeStartupFailure(
     closeResources,
     Effect.gen(function* () {
-      healthListeners = yield* registerKafkaConsumerHealthListeners(
+      const healthListeners = yield* registerKafkaConsumerHealthListeners(
         consumer,
         health,
         requestHealthRefresh,
@@ -1137,6 +1168,7 @@ const startRegionConsumer = Effect.fn("ViewServerRuntime.kafka.region.start")(fu
         topics,
         scope,
       );
+      setHealthListeners(healthListeners);
       yield* startKafkaLagMonitoring(consumer, topics);
       const nowMillis = yield* Clock.currentTimeMillis;
       yield* health.regionConnected(region, nowMillis);
@@ -1219,6 +1251,27 @@ const makeIdempotentKafkaIngressClose = (
   );
 };
 
+export const makeScopedKafkaIngress = Effect.fn("ViewServerRuntime.kafka.ingress.makeScoped")(
+  function* <E>(
+    startConsumers: (
+      scope: Scope.Scope,
+    ) => Effect.Effect<ReadonlyArray<StartedKafkaRegionConsumer>, E>,
+  ) {
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const scope = yield* Scope.make("parallel");
+        const consumers = yield* restore(startConsumers(scope)).pipe(
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+        );
+        const close = yield* makeKafkaIngressClose(consumers, scope);
+        return {
+          close,
+        };
+      }),
+    );
+  },
+);
+
 export const makeViewServerKafkaIngress: <const Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
@@ -1234,10 +1287,8 @@ export const makeViewServerKafkaIngress: <const Topics extends ViewServerRuntime
   options: ResolvedViewServerKafkaRuntimeOptions<Topics>,
   health: ViewServerKafkaHealthLedger<Topics>,
 ) {
-  const scope = yield* Scope.make("parallel");
-  const consumers = yield* startKafkaRegionConsumers(
-    Object.entries(options.regions),
-    (region, brokers) => {
+  return yield* makeScopedKafkaIngress((scope) =>
+    startKafkaRegionConsumers(Object.entries(options.regions), (region, brokers) => {
       const topics = sourceTopicsForRegion(options, region);
       if (topics.length === 0) {
         return Effect.succeed({
@@ -1255,10 +1306,6 @@ export const makeViewServerKafkaIngress: <const Topics extends ViewServerRuntime
         topics,
         scope,
       );
-    },
-  ).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)));
-  const close = yield* makeKafkaIngressClose(consumers, scope);
-  return {
-    close,
-  };
+    }),
+  );
 });

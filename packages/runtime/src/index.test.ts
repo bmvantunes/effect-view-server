@@ -671,6 +671,98 @@ describe("@view-server/runtime", () => {
     }),
   );
 
+  it.live("run helper closes Kafka ingress when the main fiber is interrupted", () =>
+    Effect.gen(function* () {
+      let kafkaCloseCount = 0;
+      let runtimeCoreClosed = false;
+      let serverCloseCount = 0;
+      const kafkaStarted = yield* Deferred.make<void>();
+      const serverStarted = yield* Deferred.make<void>();
+      const regions = {
+        local: "localhost:9092",
+      };
+      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        makeRuntimeCore: (config, options) =>
+          makeViewServerRuntimeCore(config, options).pipe(
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              close: runtimeCore.close.pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    runtimeCoreClosed = true;
+                  }),
+                ),
+              ),
+            })),
+          ),
+        makeServer: () =>
+          Deferred.succeed(serverStarted, undefined).pipe(
+            Effect.as({
+              url: "ws://127.0.0.1:0/rpc",
+              healthUrl: "http://127.0.0.1:0/health",
+              close: Effect.sync(() => {
+                serverCloseCount += 1;
+              }),
+            }),
+          ),
+        makeKafkaIngress: () =>
+          Deferred.succeed(kafkaStarted, undefined).pipe(
+            Effect.as({
+              close: Effect.sync(() => {
+                kafkaCloseCount += 1;
+              }),
+            }),
+          ),
+      };
+
+      const fiber = yield* runViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        kafka: {
+          consumerGroupId: "view-server-test-runtime-interrupt",
+          regions,
+          topics: {
+            "orders-source": localKafkaTopic({
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              viewServerTopic: "orders",
+              mapping: ({ key, value }) => ({
+                id: key,
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      }).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(serverStarted);
+      yield* Deferred.await(kafkaStarted);
+      yield* Effect.sleep("10 millis");
+
+      expect({
+        kafkaCloseCount,
+        runtimeCoreClosed,
+        serverCloseCount,
+      }).toStrictEqual({
+        kafkaCloseCount: 0,
+        runtimeCoreClosed: false,
+        serverCloseCount: 0,
+      });
+
+      yield* Fiber.interrupt(fiber);
+
+      expect({
+        kafkaCloseCount,
+        runtimeCoreClosed,
+        serverCloseCount,
+      }).toStrictEqual({
+        kafkaCloseCount: 1,
+        runtimeCoreClosed: true,
+        serverCloseCount: 1,
+      });
+    }),
+  );
+
   it.live("public run helper starts a launchable websocket runtime", () =>
     Effect.gen(function* () {
       const fiber = yield* runViewServerRuntime(viewServer, {

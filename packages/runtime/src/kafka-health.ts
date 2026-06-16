@@ -98,6 +98,7 @@ export type ViewServerKafkaHealthLedger<Topics extends ViewServerRuntimeTopicDef
       readonly bytes: number;
       readonly committedOffset: string;
       readonly nowMillis: number;
+      readonly preserveLastError?: boolean;
     },
   ) => Effect.Effect<void>;
   readonly decodeFailed: (
@@ -504,7 +505,9 @@ export const makeViewServerKafkaHealthLedger = <
           ledger.lastMessageAt = input.nowMillis;
           ledger.lastCommitAt = input.nowMillis;
           ledger.committedOffset = input.committedOffset;
-          ledger.lastError = null;
+          if (input.preserveLastError !== true) {
+            ledger.lastError = null;
+          }
           refreshTopicStatus(topic);
         }
       }),

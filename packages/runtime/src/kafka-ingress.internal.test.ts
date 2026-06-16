@@ -61,15 +61,22 @@ import {
   runKafkaMessageStream,
   sourceTopicsForRegion,
   startKafkaRegionConsumers,
+  ViewServerKafkaIngressError,
 } from "./kafka-ingress";
 import type {
   StartedKafkaConsumerResources,
   StartedKafkaRegionConsumer,
   KafkaStreamQueueEvent,
-  ViewServerKafkaIngressError,
 } from "./kafka-ingress";
 import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
+
+class KafkaIngressTestError extends Schema.TaggedErrorClass<KafkaIngressTestError>()(
+  "KafkaIngressTestError",
+  {
+    message: Schema.String,
+  },
+) {}
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -202,6 +209,45 @@ const nullRecord = <Value>(entries: Record<string, Value>): Record<string, Value
   const record: Record<string, Value> = Object.create(null);
   return Object.assign(record, entries);
 };
+
+const causeReasonSummary = (
+  cause: unknown,
+): ReadonlyArray<{
+  readonly tag: string;
+  readonly message: string | null;
+}> =>
+  Cause.isCause(cause)
+    ? cause.reasons.map((reason) => ({
+        tag: reason._tag,
+        message:
+          reason._tag === "Fail"
+            ? messageFromUnknown(reason.error)
+            : reason._tag === "Die"
+              ? messageFromUnknown(reason.defect)
+              : null,
+      }))
+    : [];
+
+const failedKafkaStreamQueueEvent = (
+  event: KafkaStreamQueueEvent,
+): Effect.Effect<Extract<KafkaStreamQueueEvent, { readonly _tag: "Failed" }>, Error> =>
+  Effect.succeed(event).pipe(
+    Effect.filterOrFail(
+      (value): value is Extract<KafkaStreamQueueEvent, { readonly _tag: "Failed" }> =>
+        value._tag === "Failed",
+      () => new KafkaIngressTestError({ message: "Expected Kafka stream queue failure event." }),
+    ),
+  );
+
+const kafkaIngressErrorSummary = (error: unknown) =>
+  error instanceof ViewServerKafkaIngressError
+    ? {
+        cause: causeReasonSummary(error.cause),
+        message: error.message,
+        region: error.region,
+        sourceTopic: error.sourceTopic,
+      }
+    : null;
 
 const kafkaMessage = (input: {
   readonly topic: string;
@@ -3052,9 +3098,9 @@ describe("@view-server/runtime Kafka ingress internals", () => {
         kafkaTopic: health.kafka?.topics[ordersSourceTopic],
       }).toStrictEqual({
         error: {
-          message: "Kafka stream failed for region local",
+          message: `Failed to process Kafka message for source topic ${ordersSourceTopic}`,
           region: "local",
-          sourceTopic: undefined,
+          sourceTopic: ordersSourceTopic,
         },
         kafkaTopic: {
           status: "degraded",
@@ -3064,20 +3110,20 @@ describe("@view-server/runtime Kafka ingress internals", () => {
             local: {
               connected: false,
               assignedPartitions: 0,
-              messagesPerSecond: 0,
-              bytesPerSecond: 0,
+              messagesPerSecond: 1,
+              bytesPerSecond: 77,
               decodedMessagesPerSecond: 0,
               decodeFailuresPerSecond: 0,
               mappingFailuresPerSecond: 0,
-              publishFailuresPerSecond: 0,
+              publishFailuresPerSecond: 1,
               commitFailuresPerSecond: 0,
-              processingFailuresPerSecond: 0,
-              lastMessageAt: null,
+              processingFailuresPerSecond: 1,
+              lastMessageAt: 0,
               lastCommitAt: null,
               consumerLagMessages: null,
               lagSampledAt: null,
               committedOffset: null,
-              lastError: "Kafka stream failed for region local",
+              lastError: "publish defect",
             },
           }),
         },
@@ -3481,6 +3527,174 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("records generic Kafka stream defects before iterator creation", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const defectiveStream: AsyncIterable<KafkaMessage> = {
+        [Symbol.asyncIterator]: () => {
+          throw new Error("iterator creation defect");
+        },
+      };
+
+      const error = yield* Effect.flip(
+        runKafkaMessageStream(
+          viewServer,
+          runtimeCore.client,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          ledger,
+          "local",
+          defectiveStream,
+        ),
+      );
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        error: {
+          cause: messageFromUnknown(error.cause),
+          message: error.message,
+          region: error.region,
+          sourceTopic: error.sourceTopic,
+        },
+        kafkaTopic: health.kafka?.topics[ordersSourceTopic],
+      }).toStrictEqual({
+        error: {
+          cause: "iterator creation defect",
+          message: "Kafka stream failed for region local",
+          region: "local",
+          sourceTopic: undefined,
+        },
+        kafkaTopic: {
+          status: "degraded",
+          sourceTopic: ordersSourceTopic,
+          viewServerTopic: "orders",
+          regions: nullRecord({
+            local: {
+              connected: false,
+              assignedPartitions: 0,
+              messagesPerSecond: 0,
+              bytesPerSecond: 0,
+              decodedMessagesPerSecond: 0,
+              decodeFailuresPerSecond: 0,
+              mappingFailuresPerSecond: 0,
+              publishFailuresPerSecond: 0,
+              commitFailuresPerSecond: 0,
+              processingFailuresPerSecond: 0,
+              lastMessageAt: null,
+              lastCommitAt: null,
+              consumerLagMessages: null,
+              lagSampledAt: null,
+              committedOffset: null,
+              lastError: "Kafka stream failed for region local",
+            },
+          }),
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("records generic Kafka stream defects during message metadata construction", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const defectiveMessage = kafkaMessage({
+        topic: ordersSourceTopic,
+        key: "metadata-defect",
+        value: JSON.stringify({
+          customerId: "customer-metadata-defect",
+          price: 10,
+        }),
+      });
+      Object.defineProperty(defectiveMessage, "timestamp", {
+        get: () => {
+          throw new Error("timestamp metadata defect");
+        },
+      });
+
+      const error = yield* Effect.flip(
+        runKafkaMessageStream(
+          viewServer,
+          runtimeCore.client,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield defectiveMessage;
+          })(),
+        ),
+      );
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        error: {
+          cause: messageFromUnknown(error.cause),
+          message: error.message,
+          region: error.region,
+          sourceTopic: error.sourceTopic,
+        },
+        kafkaTopic: health.kafka?.topics[ordersSourceTopic],
+      }).toStrictEqual({
+        error: {
+          cause: "timestamp metadata defect",
+          message: "Kafka stream failed for region local",
+          region: "local",
+          sourceTopic: undefined,
+        },
+        kafkaTopic: {
+          status: "degraded",
+          sourceTopic: ordersSourceTopic,
+          viewServerTopic: "orders",
+          regions: nullRecord({
+            local: {
+              connected: false,
+              assignedPartitions: 0,
+              messagesPerSecond: 0,
+              bytesPerSecond: 0,
+              decodedMessagesPerSecond: 0,
+              decodeFailuresPerSecond: 0,
+              mappingFailuresPerSecond: 0,
+              publishFailuresPerSecond: 0,
+              commitFailuresPerSecond: 0,
+              processingFailuresPerSecond: 0,
+              lastMessageAt: null,
+              lastCommitAt: null,
+              consumerLagMessages: null,
+              lagSampledAt: null,
+              committedOffset: null,
+              lastError: "Kafka stream failed for region local",
+            },
+          }),
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("offers typed Kafka stream producer failures without remapping", () =>
     Effect.gen(function* () {
       const queue = yield* Queue.unbounded<KafkaStreamQueueEvent>();
@@ -3491,6 +3705,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
 
       expect(event).toStrictEqual({
         _tag: "Failed",
+        cause: Cause.fail(streamError),
         error: streamError,
       });
     }),
@@ -3511,6 +3726,111 @@ describe("@view-server/runtime Kafka ingress internals", () => {
       }).toStrictEqual({
         producerInterrupted: true,
         queueEmpty: true,
+      });
+    }),
+  );
+
+  it.effect("preserves mixed Kafka stream producer failures and interrupts", () =>
+    Effect.gen(function* () {
+      const queue = yield* Queue.unbounded<KafkaStreamQueueEvent>();
+      const streamError = kafkaStreamError("local", "typed producer failure with interrupt");
+
+      yield* offerKafkaStreamProducerFailure(
+        "local",
+        queue,
+        Cause.fromReasons([Cause.makeFailReason(streamError), Cause.makeInterruptReason()]),
+      );
+      const event = yield* Queue.take(queue);
+
+      expect(event).toStrictEqual({
+        _tag: "Failed",
+        cause: Cause.fromReasons([Cause.makeFailReason(streamError), Cause.makeInterruptReason()]),
+        error: streamError,
+      });
+    }),
+  );
+
+  it.effect("preserves raw Kafka stream producer failure reasons", () =>
+    Effect.gen(function* () {
+      const queue = yield* Queue.unbounded<KafkaStreamQueueEvent>();
+      const rawFailure = new Error("raw producer typed failure");
+
+      yield* offerKafkaStreamProducerFailure(
+        "local",
+        queue,
+        Cause.fromReasons([Cause.makeFailReason(rawFailure), Cause.makeInterruptReason()]),
+      );
+      const event = yield* Queue.take(queue).pipe(Effect.andThen(failedKafkaStreamQueueEvent));
+
+      expect({
+        cause: causeReasonSummary(event.cause),
+        error: {
+          cause: messageFromUnknown(event.error.cause),
+          message: event.error.message,
+          region: event.error.region,
+        },
+      }).toStrictEqual({
+        cause: [
+          {
+            tag: "Fail",
+            message: "Kafka stream failed for region local",
+          },
+          {
+            tag: "Fail",
+            message: "raw producer typed failure",
+          },
+          {
+            tag: "Interrupt",
+            message: null,
+          },
+        ],
+        error: {
+          cause: "raw producer typed failure",
+          message: "Kafka stream failed for region local",
+          region: "local",
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves raw Kafka stream producer failures without optional source context", () =>
+    Effect.gen(function* () {
+      const queue = yield* Queue.unbounded<KafkaStreamQueueEvent>();
+      const primaryError = new ViewServerKafkaIngressError({
+        cause: "primary producer failure",
+        message: "primary producer failure",
+      });
+      const failureReasons: ReadonlyArray<Cause.Reason<unknown>> = [
+        Cause.makeFailReason(primaryError),
+        Cause.makeFailReason("raw producer failure without context"),
+      ];
+
+      yield* offerKafkaStreamProducerFailure("local", queue, Cause.fromReasons(failureReasons));
+      const event = yield* Queue.take(queue).pipe(Effect.andThen(failedKafkaStreamQueueEvent));
+
+      expect({
+        cause: causeReasonSummary(event.cause),
+        error: {
+          message: event.error.message,
+          region: event.error.region,
+          sourceTopic: event.error.sourceTopic,
+        },
+      }).toStrictEqual({
+        cause: [
+          {
+            tag: "Fail",
+            message: "primary producer failure",
+          },
+          {
+            tag: "Fail",
+            message: "raw producer failure without context",
+          },
+        ],
+        error: {
+          message: "primary producer failure",
+          region: undefined,
+          sourceTopic: undefined,
+        },
       });
     }),
   );
@@ -4021,6 +4341,200 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("preserves mixed Kafka publish failures and defects", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+      const publishFailure = Cause.fromReasons([
+        Cause.makeFailReason(runtimeUnavailable),
+        Cause.makeDieReason(new Error("publish finalizer defect")),
+      ]);
+      const publishManyFailingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(Effect.failCause(publishFailure))),
+      };
+
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          publishManyFailingClient,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mixed-publish-failure",
+              value: JSON.stringify({
+                customerId: "customer-mixed-publish-failure",
+                price: 10,
+              }),
+              offset: 1n,
+            });
+          })(),
+        ),
+      );
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+      const exitSummary = Exit.match(exit, {
+        onFailure: (cause) => {
+          const error = Cause.findErrorOption(cause);
+          return {
+            error: Option.match(error, {
+              onNone: () => null,
+              onSome: (value) => ({
+                cause: causeReasonSummary(value.cause),
+                message: value.message,
+              }),
+            }),
+            topLevel: causeReasonSummary(cause),
+          };
+        },
+        onSuccess: () => ({ error: null, topLevel: [] }),
+      });
+
+      expect({
+        exit: exitSummary,
+        operations,
+        topicHealth: {
+          lastError: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+          publishFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.publishFailuresPerSecond,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+      }).toStrictEqual({
+        exit: {
+          error: {
+            cause: [
+              {
+                tag: "Fail",
+                message: "publish failed",
+              },
+              {
+                tag: "Die",
+                message: "publish finalizer defect",
+              },
+            ],
+            message: `Failed to process Kafka message for source topic ${ordersSourceTopic}`,
+          },
+          topLevel: [
+            {
+              tag: "Fail",
+              message: `Failed to process Kafka message for source topic ${ordersSourceTopic}`,
+            },
+            {
+              tag: "Fail",
+              message: "publish failed",
+            },
+            {
+              tag: "Die",
+              message: "publish finalizer defect",
+            },
+          ],
+        },
+        operations: ["publishMany:orders:1"],
+        topicHealth: {
+          lastError: "publish failed",
+          publishFailuresPerSecond: 1,
+          status: "degraded",
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("combines batch processing and same-batch terminal stream failures", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+      const publishManyFailingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
+      };
+
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          publishManyFailingClient,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "same-batch-terminal-failure",
+              value: JSON.stringify({
+                customerId: "customer-same-batch-terminal-failure",
+                price: 10,
+              }),
+              offset: 1n,
+            });
+            throw new Error("producer terminal failure");
+          })(),
+        ),
+      );
+      const exitSummary = Exit.match(exit, {
+        onFailure: causeReasonSummary,
+        onSuccess: () => [],
+      });
+
+      expect({
+        exit: exitSummary,
+        operations,
+      }).toStrictEqual({
+        exit: [
+          {
+            tag: "Fail",
+            message: `Failed to process Kafka message for source topic ${ordersSourceTopic}`,
+          },
+          {
+            tag: "Fail",
+            message: "publish failed",
+          },
+          {
+            tag: "Fail",
+            message: "Kafka stream failed for region local",
+          },
+        ],
+        operations: ["publishMany:orders:1"],
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("flushes decoded Kafka microbatch messages before a later decode failure", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
@@ -4152,9 +4666,740 @@ describe("@view-server/runtime Kafka ingress internals", () => {
               consumerLagMessages: null,
               lagSampledAt: null,
               committedOffset: "3",
-              lastError: "Failed to decode Kafka message for source topic orders-source",
+              lastError: "Failed to parse Kafka JSON payload",
             },
           }),
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("flushes decoded Kafka microbatch messages before a later codec defect", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const defectingKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        consumerGroupId: "view-server-codec-defect-microbatch-test",
+        ...committedKafkaStart("view-server-codec-defect-microbatch-test"),
+        regions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.codec({
+              name: "defecting-value-codec",
+              decode: (input) => {
+                const raw = Buffer.from(input.bytes).toString("utf8");
+                const defect = Effect.die(new Error("decode defect"));
+                const [customerId = "", price = "0"] = raw.split(":");
+                return raw === "defect"
+                  ? defect
+                  : Effect.succeed({
+                      customerId,
+                      price: Number(price),
+                    });
+              },
+            }),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: defectingKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+      const batchingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+      };
+      const firstMessage = kafkaMessage({
+        topic: ordersSourceTopic,
+        key: "defect-batch-1",
+        value: "customer-defect-batch-1:10",
+        offset: 1n,
+        onCommit: () => {
+          operations.push("commit:1");
+        },
+      });
+      const secondMessage = kafkaMessage({
+        topic: ordersSourceTopic,
+        key: "defect-batch-2",
+        value: "customer-defect-batch-2:20",
+        offset: 2n,
+        onCommit: () => {
+          operations.push("commit:2");
+        },
+      });
+      const defectMessage = kafkaMessage({
+        topic: ordersSourceTopic,
+        key: "defect-batch-3",
+        value: "defect",
+        offset: 3n,
+        onCommit: () => {
+          operations.push("commit:3");
+        },
+      });
+      const expectedMessageBytes = [firstMessage, secondMessage, defectMessage].reduce(
+        (totalBytes, message) =>
+          totalBytes + (message.key?.byteLength ?? 0) + (message.value?.byteLength ?? 0),
+        0,
+      );
+
+      const error = yield* Effect.flip(
+        runKafkaMessageStream(
+          viewServer,
+          batchingClient,
+          runtimeCore.requestHealthRefresh,
+          defectingKafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield firstMessage;
+            yield secondMessage;
+            yield defectMessage;
+          })(),
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        error: {
+          causeHasDefect: Cause.isCause(error.cause) && Cause.hasDies(error.cause),
+          causeIsCause: Cause.isCause(error.cause),
+          message: error.message,
+          region: error.region,
+          sourceTopic: error.sourceTopic,
+        },
+        operations,
+        snapshot,
+        topicHealth: {
+          bytesPerSecond: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.bytesPerSecond,
+          committedOffset:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.committedOffset,
+          decodeFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodeFailuresPerSecond,
+          decodedMessagesPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodedMessagesPerSecond,
+          lastError: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+          messagesPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.messagesPerSecond,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+      }).toStrictEqual({
+        error: {
+          causeHasDefect: true,
+          causeIsCause: true,
+          message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+          region: "local",
+          sourceTopic: ordersSourceTopic,
+        },
+        operations: ["publishMany:orders:2", "commit:1", "commit:2"],
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "defect-batch-1",
+              customerId: "customer-defect-batch-1",
+              price: 10,
+            },
+            {
+              id: "defect-batch-2",
+              customerId: "customer-defect-batch-2",
+              price: 20,
+            },
+          ],
+          totalRows: 2,
+          version: 1,
+        },
+        topicHealth: {
+          bytesPerSecond: expectedMessageBytes,
+          committedOffset: "3",
+          decodeFailuresPerSecond: 1,
+          decodedMessagesPerSecond: 2,
+          lastError: "decode defect",
+          messagesPerSecond: 3,
+          status: "degraded",
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("preserves poison-message cause when recovery commit fails", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+
+      const batchingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+      };
+      const commitFailure = new Error("recovery commit failed");
+
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          batchingClient,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "recovery-commit-failure-1",
+              value: JSON.stringify({
+                customerId: "customer-recovery-commit-failure-1",
+                price: 10,
+              }),
+              offset: 1n,
+              commitFailure,
+            });
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "recovery-commit-failure-2",
+              value: JSON.stringify({
+                customerId: "customer-recovery-commit-failure-2",
+                price: 20,
+              }),
+              offset: 2n,
+              onCommit: () => {
+                operations.push("commit:2");
+              },
+            });
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "bad-json",
+              value: "{",
+              offset: 3n,
+            });
+          })(),
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+      const exitSummary = Exit.match(exit, {
+        onFailure: causeReasonSummary,
+        onSuccess: () => [],
+      });
+
+      expect({
+        exit: exitSummary,
+        operations,
+        snapshot,
+        topicHealth: {
+          commitFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.commitFailuresPerSecond,
+          decodeFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodeFailuresPerSecond,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+      }).toStrictEqual({
+        exit: [
+          {
+            tag: "Fail",
+            message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+          },
+          {
+            tag: "Fail",
+            message: "Failed to parse Kafka JSON payload",
+          },
+          {
+            tag: "Fail",
+            message: `Failed to commit Kafka message for source topic ${ordersSourceTopic}`,
+          },
+        ],
+        operations: ["publishMany:orders:2"],
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "recovery-commit-failure-1",
+            },
+            {
+              id: "recovery-commit-failure-2",
+            },
+          ],
+          totalRows: 2,
+          version: 1,
+        },
+        topicHealth: {
+          commitFailuresPerSecond: 1,
+          decodeFailuresPerSecond: 1,
+          status: "degraded",
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("preserves mixed codec typed failures and interrupts", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const operations: Array<string> = [];
+      const mixedInterruptKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        consumerGroupId: "view-server-codec-mixed-interrupt-test",
+        ...committedKafkaStart("view-server-codec-mixed-interrupt-test"),
+        regions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.codec({
+              name: "mixed-interrupt-value-codec",
+              decode: (input) => {
+                const raw = Buffer.from(input.bytes).toString("utf8");
+                const [customerId = "", price = "0"] = raw.split(":");
+                return raw === "typed-failure-with-interrupt"
+                  ? Effect.failCause(
+                      Cause.fromReasons([
+                        Cause.makeFailReason("typed decode interrupted"),
+                        Cause.makeInterruptReason(),
+                      ]),
+                    )
+                  : Effect.succeed({
+                      customerId,
+                      price: Number(price),
+                    });
+              },
+            }),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: mixedInterruptKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const batchingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+      };
+
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          batchingClient,
+          runtimeCore.requestHealthRefresh,
+          mixedInterruptKafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mixed-interrupt-batch-1",
+              value: "customer-mixed-interrupt-batch-1:10",
+              offset: 1n,
+              onCommit: () => {
+                operations.push("commit:1");
+              },
+            });
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mixed-interrupt-batch-2",
+              value: "typed-failure-with-interrupt",
+              offset: 2n,
+            });
+          })(),
+        ),
+      );
+      const exitSummary = Exit.match(exit, {
+        onFailure: (cause) => {
+          const error = Cause.findErrorOption(cause);
+          return {
+            error: Option.match(error, {
+              onNone: () => null,
+              onSome: (value) => ({
+                cause: causeReasonSummary(value.cause),
+                message: value.message,
+              }),
+            }),
+            topLevel: causeReasonSummary(cause),
+          };
+        },
+        onSuccess: () => ({ error: null, topLevel: [] }),
+      });
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        exit: exitSummary,
+        operations,
+        snapshot,
+        topicHealth: {
+          decodeFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodeFailuresPerSecond,
+          lastError: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+      }).toStrictEqual({
+        exit: {
+          error: {
+            cause: [
+              {
+                tag: "Fail",
+                message: "typed decode interrupted",
+              },
+              {
+                tag: "Interrupt",
+                message: null,
+              },
+            ],
+            message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+          },
+          topLevel: [
+            {
+              tag: "Fail",
+              message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+            },
+            {
+              tag: "Fail",
+              message: "typed decode interrupted",
+            },
+            {
+              tag: "Interrupt",
+              message: null,
+            },
+          ],
+        },
+        operations: ["publishMany:orders:1", "commit:1"],
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "mixed-interrupt-batch-1",
+            },
+          ],
+          totalRows: 1,
+          version: 1,
+        },
+        topicHealth: {
+          decodeFailuresPerSecond: 1,
+          lastError: "typed decode interrupted",
+          status: "degraded",
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("preserves mixed codec typed failures and finalizer defects", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const mixedCauseKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        consumerGroupId: "view-server-codec-mixed-cause-test",
+        ...committedKafkaStart("view-server-codec-mixed-cause-test"),
+        regions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.codec({
+              name: "mixed-cause-value-codec",
+              decode: () =>
+                Effect.failCause(
+                  Cause.fromReasons([
+                    Cause.makeFailReason("typed decode failed"),
+                    Cause.makeDieReason(new Error("decode finalizer defect")),
+                  ]),
+                ),
+            }),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key }) => ({
+              id: key,
+              customerId: "unreachable",
+              price: 0,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: mixedCauseKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          runtimeCore.client,
+          runtimeCore.requestHealthRefresh,
+          mixedCauseKafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mixed-cause-batch-1",
+              value: "typed-failure-with-defect",
+              offset: 1n,
+            });
+          })(),
+        ),
+      );
+      const exitSummary = Exit.match(exit, {
+        onFailure: (cause) => {
+          const error = Cause.findErrorOption(cause);
+          return {
+            error: Option.match(error, {
+              onNone: () => null,
+              onSome: kafkaIngressErrorSummary,
+            }),
+            topLevel: causeReasonSummary(cause),
+          };
+        },
+        onSuccess: () => ({ error: null, topLevel: [] }),
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        exit: exitSummary,
+        topicHealth: {
+          decodeFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodeFailuresPerSecond,
+          lastError: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+      }).toStrictEqual({
+        exit: {
+          error: {
+            cause: [
+              {
+                tag: "Fail",
+                message: "typed decode failed",
+              },
+              {
+                tag: "Die",
+                message: "decode finalizer defect",
+              },
+            ],
+            message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+            region: "local",
+            sourceTopic: ordersSourceTopic,
+          },
+          topLevel: [
+            {
+              tag: "Fail",
+              message: `Failed to decode Kafka message for source topic ${ordersSourceTopic}`,
+            },
+            {
+              tag: "Fail",
+              message: "typed decode failed",
+            },
+            {
+              tag: "Die",
+              message: "decode finalizer defect",
+            },
+          ],
+        },
+        topicHealth: {
+          decodeFailuresPerSecond: 1,
+          lastError: "typed decode failed",
+          status: "degraded",
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("does not record Kafka stream failures when microbatch decoding is interrupted", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const interruptingKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        consumerGroupId: "view-server-codec-interrupt-microbatch-test",
+        ...committedKafkaStart("view-server-codec-interrupt-microbatch-test"),
+        regions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.codec({
+              name: "interrupting-value-codec",
+              decode: (input) => {
+                const raw = Buffer.from(input.bytes).toString("utf8");
+                const [customerId = "", price = "0"] = raw.split(":");
+                return raw === "interrupt"
+                  ? Effect.interrupt
+                  : Effect.succeed({
+                      customerId,
+                      price: Number(price),
+                    });
+              },
+            }),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: interruptingKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+      const batchingClient: ViewServerRuntimeClient<Topics> = {
+        ...runtimeCore.client,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishMany: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+      };
+
+      const exit = yield* Effect.exit(
+        runKafkaMessageStream(
+          viewServer,
+          batchingClient,
+          runtimeCore.requestHealthRefresh,
+          interruptingKafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "interrupt-batch-1",
+              value: "customer-interrupt-batch-1:10",
+              offset: 1n,
+              onCommit: () => {
+                operations.push("commit:1");
+              },
+            });
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "interrupt-batch-2",
+              value: "interrupt",
+              offset: 2n,
+              onCommit: () => {
+                operations.push("commit:2");
+              },
+            });
+          })(),
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        interrupted: Exit.hasInterrupts(exit),
+        operations,
+        snapshot,
+        topicHealth: {
+          connected: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.connected,
+          decodeFailuresPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodeFailuresPerSecond,
+          decodedMessagesPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.decodedMessagesPerSecond,
+          lastError: health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.lastError,
+          messagesPerSecond:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.messagesPerSecond,
+          status: health.kafka?.topics[ordersSourceTopic]?.status,
+        },
+      }).toStrictEqual({
+        interrupted: true,
+        operations: [],
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [],
+          totalRows: 0,
+          version: 0,
+        },
+        topicHealth: {
+          connected: true,
+          decodeFailuresPerSecond: 0,
+          decodedMessagesPerSecond: 0,
+          lastError: null,
+          messagesPerSecond: 0,
+          status: "ready",
         },
       });
 

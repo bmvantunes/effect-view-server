@@ -135,7 +135,7 @@ export type ViewServerHealthSummary<Topics extends object = Record<string, objec
   readonly connectionStatus: ViewServerHealthConnectionStatus;
   readonly unhealthyTopics: ReadonlyArray<Extract<keyof Topics, string>>;
   readonly updatedAtNanos: bigint;
-  readonly maxKafkaLag: bigint;
+  readonly maxKafkaLag: bigint | null;
 };
 
 export type ViewServerHealthSummaryRow<Topics extends object = Record<string, object>> =
@@ -166,7 +166,7 @@ export type ViewServerHealthTopicRow<Topic extends string = string> = {
   readonly memoryBytes: number;
   readonly tombstoneCount: number;
   readonly compactionPending: boolean;
-  readonly kafkaLag: bigint;
+  readonly kafkaLag: bigint | null;
   readonly updatedAtNanos: bigint;
 };
 
@@ -244,25 +244,83 @@ const kafkaTopicIsUnhealthy = (
   return status !== undefined && status !== "ready";
 };
 
-const kafkaRegionLag = (region: KafkaTopicRegionHealth): bigint =>
-  region.consumerLagMessages === null ? 0n : region.consumerLagMessages;
+const kafkaRegionLag = (region: KafkaTopicRegionHealth): bigint | null =>
+  region.consumerLagMessages;
+
+type KafkaLagState = {
+  readonly hasKafkaSource: boolean;
+  readonly hasUnknownLag: boolean;
+  readonly maxLag: bigint | null;
+};
+
+const emptyKafkaLagState = (): KafkaLagState => ({
+  hasKafkaSource: false,
+  hasUnknownLag: false,
+  maxLag: null,
+});
+
+const addKafkaRegionLag = (state: KafkaLagState, region: KafkaTopicRegionHealth): KafkaLagState => {
+  const lag = kafkaRegionLag(region);
+  if (lag === null) {
+    return {
+      hasKafkaSource: true,
+      hasUnknownLag: true,
+      maxLag: state.maxLag,
+    };
+  }
+  return {
+    hasKafkaSource: true,
+    hasUnknownLag: state.hasUnknownLag,
+    maxLag: state.maxLag === null || lag > state.maxLag ? lag : state.maxLag,
+  };
+};
+
+const mergeKafkaLagState = (left: KafkaLagState, right: KafkaLagState): KafkaLagState => ({
+  hasKafkaSource: left.hasKafkaSource || right.hasKafkaSource,
+  hasUnknownLag: left.hasUnknownLag || right.hasUnknownLag,
+  maxLag:
+    left.maxLag === null
+      ? right.maxLag
+      : right.maxLag === null || left.maxLag > right.maxLag
+        ? left.maxLag
+        : right.maxLag,
+});
+
+const kafkaLagStateToPublicLag = (state: KafkaLagState): bigint | null => {
+  if (!state.hasKafkaSource || state.hasUnknownLag) {
+    return null;
+  }
+  return state.maxLag;
+};
+
+const kafkaLagStateForViewTopic = (
+  health: Pick<ViewServerHealth, "kafka">,
+  viewServerTopic: string,
+): KafkaLagState => {
+  let state = emptyKafkaLagState();
+  for (const kafkaTopic of Object.values(health.kafka?.topics ?? {})) {
+    if (kafkaTopic.viewServerTopic === viewServerTopic) {
+      for (const region of Object.values(kafkaTopic.regions)) {
+        state = addKafkaRegionLag(state, region);
+      }
+    }
+  }
+  return state;
+};
 
 const maxKafkaLagForViewTopic = (
   health: Pick<ViewServerHealth, "kafka">,
   viewServerTopic: string,
-): bigint => {
-  let maxLag = 0n;
-  for (const kafkaTopic of Object.values(health.kafka?.topics ?? {})) {
-    if (kafkaTopic.viewServerTopic === viewServerTopic) {
-      for (const region of Object.values(kafkaTopic.regions)) {
-        const lag = kafkaRegionLag(region);
-        if (lag > maxLag) {
-          maxLag = lag;
-        }
-      }
-    }
+): bigint | null => kafkaLagStateToPublicLag(kafkaLagStateForViewTopic(health, viewServerTopic));
+
+const maxKafkaLagForHealth = (
+  health: Pick<ViewServerHealth, "engine" | "kafka">,
+): bigint | null => {
+  let state = emptyKafkaLagState();
+  for (const topic of Object.keys(health.engine.topics)) {
+    state = mergeKafkaLagState(state, kafkaLagStateForViewTopic(health, topic));
   }
-  return maxLag;
+  return kafkaLagStateToPublicLag(state);
 };
 
 export const viewServerHealthSummaryFromHealth = <Topics extends object>(
@@ -275,20 +333,13 @@ export const viewServerHealthSummaryFromHealth = <Topics extends object>(
       ([topicName, topic]) => topicIsUnhealthy(topic) || kafkaTopicIsUnhealthy(health, topicName),
     )
     .map(([topic]) => topic);
-  let maxKafkaLag = 0n;
-  for (const topic of Object.keys(health.engine.topics)) {
-    const lag = maxKafkaLagForViewTopic(health, topic);
-    if (lag > maxKafkaLag) {
-      maxKafkaLag = lag;
-    }
-  }
   return {
     status: health.status,
     runtimeStatus: health.status,
     connectionStatus: "connected",
     unhealthyTopics: typedTopicNames<Topics>(unhealthyTopics),
     updatedAtNanos,
-    maxKafkaLag,
+    maxKafkaLag: maxKafkaLagForHealth(health),
   };
 };
 

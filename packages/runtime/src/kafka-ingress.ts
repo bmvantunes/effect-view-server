@@ -369,7 +369,7 @@ export const recordKafkaLag = Effect.fn("ViewServerRuntime.kafka.consumer.record
       const sourceTopicLag = lag.get(sourceTopic);
       return health.topicLagSampled(sourceTopic, region, {
         consumerLagMessages:
-          sourceTopicLag === undefined ? 0n : consumerLagMessagesFromLag(sourceTopicLag),
+          sourceTopicLag === undefined ? null : consumerLagMessagesFromLag(sourceTopicLag),
         nowMillis,
       });
     },

@@ -1186,12 +1186,30 @@ describe("@view-server/protocol", () => {
             connectionStatus: "disconnected",
             unhealthyTopics: [],
             updatedAtNanos: "1",
-            maxKafkaLag: "0",
+            maxKafkaLag: null,
           },
         ],
         totalRows: 1,
       });
-      expect(disconnectedSummary.type).toBe("snapshot");
+      expect(disconnectedSummary).toStrictEqual({
+        type: "snapshot",
+        topic: VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+        queryId: "health-summary",
+        version: 1,
+        keys: ["summary"],
+        rows: [
+          {
+            id: "summary",
+            status: "disconnected",
+            runtimeStatus: "ready",
+            connectionStatus: "disconnected",
+            unhealthyTopics: [],
+            updatedAtNanos: 1n,
+            maxKafkaLag: null,
+          },
+        ],
+        totalRows: 1,
+      });
 
       const summaryDelta = yield* viewServerEncodeHealthSummaryEvent(viewServer, {
         type: "delta",
@@ -1261,6 +1279,7 @@ describe("@view-server/protocol", () => {
       const badJsonHealthTopicRow: ViewServerHealthTopicRow<"badjson"> = {
         ...healthTopicRow,
         id: "badjson",
+        kafkaLag: null,
         rowCount: 0,
         liveRowCount: 0,
         version: 0,
@@ -1310,7 +1329,6 @@ describe("@view-server/protocol", () => {
           },
           {
             ...badJsonHealthTopicRow,
-            kafkaLag: "7",
             updatedAtNanos: "456",
           },
         ],

@@ -1455,7 +1455,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("keeps negative-only Kafka lag samples uninitialized", () =>
+  it.effect("clears Kafka lag to unknown when later samples only contain negative sentinels", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
       yield* Effect.gen(function* () {
@@ -1486,6 +1486,14 @@ describe("@view-server/runtime Kafka ingress internals", () => {
           requestHealthRefresh,
           "local",
           [ordersSourceTopic],
+          new Map([[ordersSourceTopic, [5n]]]),
+          1_500,
+        );
+        yield* recordKafkaLag(
+          ledger,
+          requestHealthRefresh,
+          "local",
+          [ordersSourceTopic],
           new Map([[ordersSourceTopic, [-1n]]]),
           2_000,
         );
@@ -1495,7 +1503,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
           healthRefreshRequestCount,
           orders: health.kafka?.topics[ordersSourceTopic],
         }).toStrictEqual({
-          healthRefreshRequestCount: 2,
+          healthRefreshRequestCount: 3,
           orders: {
             status: "ready",
             sourceTopic: ordersSourceTopic,
@@ -1526,7 +1534,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("resets omitted configured source topics from full Kafka lag snapshots", () =>
+  it.effect("marks omitted configured source topics as unknown in full Kafka lag snapshots", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
       yield* Effect.gen(function* () {
@@ -1629,7 +1637,7 @@ describe("@view-server/runtime Kafka ingress internals", () => {
                 processingFailuresPerSecond: 0,
                 lastMessageAt: null,
                 lastCommitAt: null,
-                consumerLagMessages: 0n,
+                consumerLagMessages: null,
                 lagSampledAt: 3_000,
                 committedOffset: null,
                 lastError: null,
@@ -1855,6 +1863,117 @@ describe("@view-server/runtime Kafka ingress internals", () => {
           lastMessageAt: null,
           lastCommitAt: null,
           consumerLagMessages: 0n,
+          lagSampledAt: expect.any(Number),
+          committedOffset: null,
+          lastError: null,
+        },
+      });
+
+      yield* listenerRegistration.close;
+      yield* Scope.close(scope, Exit.void);
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true)));
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("marks omitted Kafka listener lag topics as unknown without changing assignments", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+          [paymentsSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      let healthRefreshRequestCount = 0;
+      const requestHealthRefresh = Effect.sync(() => {
+        healthRefreshRequestCount += 1;
+      });
+      const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
+        bootstrapBrokers: ["127.0.0.1:1"],
+        clientId: "view-server-listener-omitted-lag-test",
+        groupId: "view-server-listener-omitted-lag-test",
+      });
+      const scope = yield* Scope.make("parallel");
+      yield* ledger.regionConnected("local", 1_000);
+      const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
+        consumer,
+        ledger,
+        requestHealthRefresh,
+        "local",
+        [ordersSourceTopic, paymentsSourceTopic],
+        scope,
+      );
+      yield* listenerRegistration.waitForProcessed(0);
+
+      const processedWait = yield* listenerRegistration
+        .waitForProcessed(3)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      consumer.emit("consumer:group:join", {
+        groupId: "view-server-listener-omitted-lag-test",
+        memberId: "member-1",
+        assignments: [
+          { topic: ordersSourceTopic, partitions: [0] },
+          { topic: paymentsSourceTopic, partitions: [0, 1] },
+        ],
+      });
+      consumer.emit(
+        "consumer:lag",
+        new Map([
+          [ordersSourceTopic, [5n]],
+          [paymentsSourceTopic, [9n]],
+        ]),
+      );
+      consumer.emit("consumer:lag", new Map([[ordersSourceTopic, [0n]]]));
+      yield* Fiber.join(processedWait);
+
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+
+      expect({
+        healthRefreshRequestCount,
+        orders: health.kafka?.topics[ordersSourceTopic]?.regions["local"],
+        payments: health.kafka?.topics[paymentsSourceTopic]?.regions["local"],
+      }).toStrictEqual({
+        healthRefreshRequestCount: 3,
+        orders: {
+          connected: true,
+          assignedPartitions: 1,
+          messagesPerSecond: 0,
+          bytesPerSecond: 0,
+          decodedMessagesPerSecond: 0,
+          decodeFailuresPerSecond: 0,
+          mappingFailuresPerSecond: 0,
+          publishFailuresPerSecond: 0,
+          commitFailuresPerSecond: 0,
+          processingFailuresPerSecond: 0,
+          lastMessageAt: null,
+          lastCommitAt: null,
+          consumerLagMessages: 0n,
+          lagSampledAt: expect.any(Number),
+          committedOffset: null,
+          lastError: null,
+        },
+        payments: {
+          connected: true,
+          assignedPartitions: 2,
+          messagesPerSecond: 0,
+          bytesPerSecond: 0,
+          decodedMessagesPerSecond: 0,
+          decodeFailuresPerSecond: 0,
+          mappingFailuresPerSecond: 0,
+          publishFailuresPerSecond: 0,
+          commitFailuresPerSecond: 0,
+          processingFailuresPerSecond: 0,
+          lastMessageAt: null,
+          lastCommitAt: null,
+          consumerLagMessages: null,
           lagSampledAt: expect.any(Number),
           committedOffset: null,
           lastError: null,

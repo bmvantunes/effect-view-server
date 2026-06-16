@@ -83,6 +83,7 @@ export type KafkaStreamQueueEvent =
     }
   | {
       readonly _tag: "Failed";
+      readonly cause: Cause.Cause<ViewServerKafkaIngressError>;
       readonly error: ViewServerKafkaIngressError;
     }
   | {
@@ -312,6 +313,48 @@ export const kafkaMessageProcessingError = (
     sourceTopic,
   });
 
+const isNonFailureKafkaCauseReason = (
+  reason: Cause.Reason<unknown>,
+): reason is Cause.Die | Cause.Interrupt =>
+  Cause.isDieReason(reason) || Cause.isInterruptReason(reason);
+
+const kafkaFailureCause = (error: unknown, cause: Cause.Cause<unknown>): unknown =>
+  cause.reasons.length > 1 || Cause.hasDies(cause) || Cause.hasInterrupts(cause) ? cause : error;
+
+const preservedKafkaFailureError = (
+  primaryError: ViewServerKafkaIngressError,
+  error: unknown,
+): ViewServerKafkaIngressError =>
+  error instanceof ViewServerKafkaIngressError
+    ? error
+    : new ViewServerKafkaIngressError({
+        cause: error,
+        message: messageFromUnknown(error),
+        ...(primaryError.region === undefined ? {} : { region: primaryError.region }),
+        ...(primaryError.sourceTopic === undefined
+          ? {}
+          : { sourceTopic: primaryError.sourceTopic }),
+      });
+
+const kafkaIngressFailureCause = (
+  error: ViewServerKafkaIngressError,
+  cause: Cause.Cause<unknown>,
+): Cause.Cause<ViewServerKafkaIngressError> => {
+  const failureReasons = cause.reasons
+    .filter(Cause.isFailReason)
+    .map((reason) => Cause.makeFailReason(preservedKafkaFailureError(error, reason.error)));
+  const nonFailureReasons = cause.reasons.filter(isNonFailureKafkaCauseReason);
+  const hasPrimaryFailure = failureReasons.some((reason) => reason.error === error);
+  return Cause.fromReasons([
+    ...(hasPrimaryFailure ? [] : [Cause.makeFailReason(error)]),
+    ...failureReasons,
+    ...nonFailureReasons,
+  ]);
+};
+
+const kafkaNonFailureCause = (cause: Cause.Cause<unknown>): Cause.Cause<never> =>
+  Cause.fromReasons(cause.reasons.filter(isNonFailureKafkaCauseReason));
+
 export const recordKafkaStreamError = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   health: ViewServerKafkaHealthLedger<Topics>,
   region: string,
@@ -323,6 +366,19 @@ export const recordKafkaStreamError = <const Topics extends ViewServerRuntimeTop
   health
     .regionDisconnected(region, error.message, options)
     .pipe(Effect.andThen(Effect.fail(error)));
+
+const recordKafkaStreamCause = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  health: ViewServerKafkaHealthLedger<Topics>,
+  region: string,
+  error: ViewServerKafkaIngressError,
+  cause: Cause.Cause<ViewServerKafkaIngressError>,
+  options?: {
+    readonly preserveTopicErrors?: boolean;
+  },
+): Effect.Effect<never, ViewServerKafkaIngressError> =>
+  health
+    .regionDisconnected(region, error.message, options)
+    .pipe(Effect.andThen(Effect.failCause(cause)));
 
 const requestKafkaHealthRefresh = (requestHealthRefresh: ViewServerKafkaHealthRefreshRequest) =>
   requestHealthRefresh.pipe(ignoreKafkaHealthRefreshFailure);
@@ -596,29 +652,78 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
       region,
       metadata,
     }).pipe(
-      Effect.matchEffect({
-        onFailure: (error) => {
-          if (kafkaErrorIsMapping(error)) {
+      Effect.matchCauseEffect({
+        onFailure: (cause) => {
+          const error = Cause.findErrorOption(cause);
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(kafkaNonFailureCause(cause));
+          }
+          if (Option.isSome(error)) {
+            if (kafkaErrorIsMapping(error.value)) {
+              return health
+                .mappingFailed(sourceTopic, region, {
+                  bytes: messageBytes,
+                  message: messageFromUnknown(error.value),
+                  nowMillis,
+                })
+                .pipe(
+                  Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
+                  Effect.andThen(
+                    Effect.failCause(
+                      kafkaIngressFailureCause(
+                        kafkaMessageMappingError(
+                          region,
+                          sourceTopic,
+                          kafkaFailureCause(error.value, cause),
+                        ),
+                        cause,
+                      ),
+                    ),
+                  ),
+                );
+            }
             return health
-              .mappingFailed(sourceTopic, region, {
+              .decodeFailed(sourceTopic, region, {
                 bytes: messageBytes,
-                message: messageFromUnknown(error),
+                message: messageFromUnknown(error.value),
                 nowMillis,
               })
               .pipe(
                 Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
-                Effect.andThen(Effect.fail(kafkaMessageMappingError(region, sourceTopic, error))),
+                Effect.andThen(
+                  Effect.failCause(
+                    kafkaIngressFailureCause(
+                      kafkaMessageDecodeError(
+                        region,
+                        sourceTopic,
+                        kafkaFailureCause(error.value, cause),
+                      ),
+                      cause,
+                    ),
+                  ),
+                ),
               );
           }
           return health
             .decodeFailed(sourceTopic, region, {
               bytes: messageBytes,
-              message: messageFromUnknown(error),
+              message: messageFromUnknown(Cause.squash(cause)),
               nowMillis,
             })
             .pipe(
               Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
-              Effect.andThen(Effect.fail(kafkaMessageDecodeError(region, sourceTopic, error))),
+              Effect.andThen(
+                Effect.failCause(
+                  kafkaIngressFailureCause(
+                    kafkaMessageDecodeError(
+                      region,
+                      sourceTopic,
+                      kafkaFailureCause(Cause.squash(cause), cause),
+                    ),
+                    cause,
+                  ),
+                ),
+              ),
             );
         },
         onSuccess: (decodedMessage) => Effect.succeed(decodedMessage),
@@ -666,22 +771,33 @@ const publishKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.publis
   }
   for (const [topic, group] of rowsByTopic) {
     yield* client.publishMany(topic, group.rows).pipe(
-      Effect.matchEffect({
+      Effect.matchCauseEffect({
         onFailure: (cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(kafkaNonFailureCause(cause));
+          }
+          const error = Cause.findErrorOption(cause);
+          const failure = Option.match(error, {
+            onNone: () => Cause.squash(cause),
+            onSome: (value) => value,
+          });
+          const processingError = kafkaMessageProcessingError(
+            region,
+            group.sourceTopic,
+            kafkaFailureCause(failure, cause),
+          );
           return Effect.forEach(
             group.messages,
             (message) =>
               health.messagePublishFailed(message.sourceTopic, region, {
                 bytes: message.messageBytes,
-                message: messageFromUnknown(cause),
+                message: messageFromUnknown(failure),
                 nowMillis: message.nowMillis,
               }),
             { discard: true },
           ).pipe(
             Effect.andThen(requestKafkaHealthRefresh(requestHealthRefresh)),
-            Effect.andThen(
-              Effect.fail(kafkaMessageProcessingError(region, group.sourceTopic, cause)),
-            ),
+            Effect.andThen(Effect.failCause(kafkaIngressFailureCause(processingError, cause))),
           );
         },
         onSuccess: () => Effect.succeed(true),
@@ -697,6 +813,9 @@ const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.commit"
   health: ViewServerKafkaHealthLedger<Topics>,
   region: string,
   messages: ReadonlyArray<DecodedKafkaBatchMessage<Topics>>,
+  options?: {
+    readonly preserveLastErrorForSourceTopic: string | undefined;
+  },
 ) {
   if (messages.length === 0) {
     return;
@@ -722,6 +841,9 @@ const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.commit"
                 bytes: message.messageBytes,
                 committedOffset: String(message.message.offset + 1n),
                 nowMillis: message.nowMillis,
+                ...(options?.preserveLastErrorForSourceTopic === message.sourceTopic
+                  ? { preserveLastError: true }
+                  : {}),
               }),
           }),
         ),
@@ -750,20 +872,35 @@ export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messa
         region,
         message,
       ).pipe(
-        Effect.catch((error: ViewServerKafkaIngressError) =>
-          publishKafkaDecodedBatch(
-            client,
-            requestHealthRefresh,
-            health,
-            region,
-            decodedMessages,
-          ).pipe(
-            Effect.andThen(
-              commitKafkaDecodedBatch(requestHealthRefresh, health, region, decodedMessages),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          const preserveLastErrorForSourceTopic = Option.getOrUndefined(
+            Option.map(Cause.findErrorOption(cause), (error) => error.sourceTopic),
+          );
+          return Effect.exit(
+            publishKafkaDecodedBatch(
+              client,
+              requestHealthRefresh,
+              health,
+              region,
+              decodedMessages,
+            ).pipe(
+              Effect.andThen(
+                commitKafkaDecodedBatch(requestHealthRefresh, health, region, decodedMessages, {
+                  preserveLastErrorForSourceTopic,
+                }),
+              ),
             ),
-            Effect.andThen(Effect.fail(error)),
-          ),
-        ),
+          ).pipe(
+            Effect.andThen((flushExit) =>
+              Exit.isFailure(flushExit)
+                ? Effect.failCause(Cause.combine(cause, flushExit.cause))
+                : Effect.failCause(cause),
+            ),
+          );
+        }),
       );
       if (Option.isSome(decoded)) {
         decodedMessages.push(decoded.value);
@@ -809,6 +946,7 @@ const produceKafkaStreamQueueEvents = Effect.fn(
       Effect.catch((error: ViewServerKafkaIngressError) =>
         Queue.offer(queue, {
           _tag: "Failed",
+          cause: Cause.fail(error),
           error,
         }).pipe(Effect.as(undefined)),
       ),
@@ -854,6 +992,7 @@ export const offerKafkaStreamProducerFailure = Effect.fn(
   );
   yield* Queue.offer(queue, {
     _tag: "Failed",
+    cause: kafkaIngressFailureCause(error, cause),
     error,
   });
 });
@@ -935,41 +1074,57 @@ export const runKafkaMessageStream = Effect.fn("ViewServerRuntime.kafka.stream.r
           if (terminal._tag === "End") {
             return;
           }
-          return yield* terminal.error;
+          return yield* Effect.failCause(terminal.cause);
         }
-        yield* processKafkaMessageBatch(
-          config,
-          client,
-          requestHealthRefresh,
-          options,
-          health,
-          region,
-          next.batch,
+        const processExit = yield* Effect.exit(
+          processKafkaMessageBatch(
+            config,
+            client,
+            requestHealthRefresh,
+            options,
+            health,
+            region,
+            next.batch,
+          ),
         );
         const terminal = next.terminal;
+        if (Exit.isFailure(processExit)) {
+          if (terminal?._tag === "Failed") {
+            return yield* Effect.failCause(Cause.combine(processExit.cause, terminal.cause));
+          }
+          return yield* Effect.failCause(processExit.cause);
+        }
         if (terminal?._tag === "End") {
           return;
         }
         if (terminal?._tag === "Failed") {
-          return yield* terminal.error;
+          return yield* Effect.failCause(terminal.cause);
         }
       }
     }),
   ).pipe(
     Effect.catchCause((cause) => {
       if (Cause.hasInterruptsOnly(cause)) {
-        return Effect.failCause(cause);
+        return Effect.failCause(kafkaNonFailureCause(cause));
       }
       const error = Cause.findErrorOption(cause);
       if (Option.isSome(error) && error.value instanceof ViewServerKafkaIngressError) {
-        return recordKafkaStreamError(health, region, error.value, {
-          preserveTopicErrors: true,
-        }).pipe(Effect.ensuring(requestKafkaHealthRefresh(requestHealthRefresh)));
+        return recordKafkaStreamCause(
+          health,
+          region,
+          error.value,
+          kafkaIngressFailureCause(error.value, cause),
+          {
+            preserveTopicErrors: true,
+          },
+        ).pipe(Effect.ensuring(requestKafkaHealthRefresh(requestHealthRefresh)));
       }
-      return recordKafkaStreamError(
+      const streamError = kafkaStreamError(region, Cause.squash(cause));
+      return recordKafkaStreamCause(
         health,
         region,
-        kafkaStreamError(region, Cause.squash(cause)),
+        streamError,
+        kafkaIngressFailureCause(streamError, cause),
       ).pipe(Effect.ensuring(requestKafkaHealthRefresh(requestHealthRefresh)));
     }),
   );

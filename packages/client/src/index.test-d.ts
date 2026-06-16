@@ -103,6 +103,7 @@ describe("client type contracts", () => {
     >["operations"][number];
     expectTypeOf<SummarySnapshot["keys"]>().toEqualTypeOf<readonly ["summary"]>();
     expectTypeOf<SummarySnapshot["rows"][0]["id"]>().toEqualTypeOf<"summary">();
+    expectTypeOf<SummarySnapshot["rows"][0]["maxKafkaLag"]>().toEqualTypeOf<bigint | null>();
     expectTypeOf<SummarySnapshot["totalRows"]>().toEqualTypeOf<1>();
     expectTypeOf<
       Extract<SummaryDeltaOperation, { readonly type: "insert" }>
@@ -119,6 +120,7 @@ describe("client type contracts", () => {
     >["operations"][number];
     expectTypeOf<DetailSnapshot["keys"][number]>().toEqualTypeOf<"orders">();
     expectTypeOf<DetailSnapshot["rows"][number]["id"]>().toEqualTypeOf<"orders">();
+    expectTypeOf<DetailSnapshot["rows"][number]["kafkaLag"]>().toEqualTypeOf<bigint | null>();
     expectTypeOf<
       Extract<DetailDeltaOperation, { readonly type: "insert" }>
     >().toEqualTypeOf<never>();

@@ -250,6 +250,7 @@ describe("React type contracts", () => {
     expectTypeOf(healthSummary.status).toEqualTypeOf<
       "ready" | "degraded" | "starting" | "stopping" | "connecting" | "disconnected"
     >();
+    expectTypeOf(healthSummary.maxKafkaLag).toEqualTypeOf<bigint | null>();
     expectTypeOf(provider).toEqualTypeOf<ReactNode>();
     expectTypeOf(clientProvider).toEqualTypeOf<ReactNode>();
     expectTypeOf<Parameters<Client["publish"]>>().toEqualTypeOf<

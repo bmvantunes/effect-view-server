@@ -221,7 +221,7 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
     connectionStatus,
     unhealthyTopics: [],
     updatedAtNanos: 0n,
-    maxKafkaLag: 0n,
+    maxKafkaLag: null,
   });
 
   const summaryFromRow = (

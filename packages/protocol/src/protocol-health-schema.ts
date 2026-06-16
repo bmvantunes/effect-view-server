@@ -141,7 +141,7 @@ export const ViewServerHealthSummaryRowSchema: Schema.Codec<
   connectionStatus: Schema.Literals(["connecting", "connected", "disconnected"]),
   unhealthyTopics: Schema.Array(Schema.String),
   updatedAtNanos: BigIntString,
-  maxKafkaLag: BigIntString,
+  maxKafkaLag: Schema.NullOr(BigIntString),
 });
 
 export const ViewServerHealthTopicRowSchema: Schema.Codec<
@@ -172,6 +172,6 @@ export const ViewServerHealthTopicRowSchema: Schema.Codec<
   memoryBytes: Schema.Number,
   tombstoneCount: Schema.Number,
   compactionPending: Schema.Boolean,
-  kafkaLag: BigIntString,
+  kafkaLag: Schema.NullOr(BigIntString),
   updatedAtNanos: BigIntString,
 });

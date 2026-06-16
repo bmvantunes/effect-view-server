@@ -139,9 +139,6 @@ const arrayValue = (value, path) => {
 const optionalObjectValue = (value, path) =>
   value === undefined ? undefined : objectValue(value, path);
 
-const optionalArrayValue = (value, path) =>
-  value === undefined ? undefined : arrayValue(value, path);
-
 const optionalFiniteNumber = (value, path) =>
   value === undefined ? undefined : finiteNumber(value, path);
 
@@ -149,6 +146,14 @@ const positiveFiniteNumber = (value, path) => {
   const number = finiteNumber(value, path);
   if (number <= 0) {
     throw new Error(`Benchmark artifact field ${path} must be a positive finite number.`);
+  }
+  return number;
+};
+
+const nonNegativeFiniteNumber = (value, path) => {
+  const number = finiteNumber(value, path);
+  if (number < 0) {
+    throw new Error(`Benchmark artifact field ${path} must be a non-negative finite number.`);
   }
   return number;
 };
@@ -202,6 +207,14 @@ const nonNegativeInteger = (value, path) => {
   return number;
 };
 
+const nonNegativeSafeInteger = (value, path) => {
+  const number = nonNegativeInteger(value, path);
+  if (!Number.isSafeInteger(number)) {
+    throw new Error(`Benchmark artifact field ${path} must be a safe non-negative integer.`);
+  }
+  return number;
+};
+
 const comparableBenchmark = (groupName, benchmark) => ({
   groupName,
   maxMs: finiteNumber(benchmark.max, `${benchmark.name}.max`),
@@ -217,7 +230,16 @@ const nonNegativeIntegerString = (value, path) => {
   if (!/^(0|[1-9]\d*)$/u.test(text)) {
     throw new Error(`Benchmark artifact field ${path} must be a non-negative integer string.`);
   }
-  return Number.parseInt(text, 10);
+  return text;
+};
+
+const nonNegativeSafeIntegerString = (value, path) => {
+  const text = nonNegativeIntegerString(value, path);
+  const number = Number.parseInt(text, 10);
+  if (!Number.isSafeInteger(number)) {
+    throw new Error(`Benchmark artifact field ${path} must be a safe integer string.`);
+  }
+  return number;
 };
 
 const kafkaIngestLaneValue = (value, path) => {
@@ -249,6 +271,65 @@ const comparableKafkaIngestLaneValue = (value, path) => {
     region: stringValue(lane.region, `${path}.region`),
     sourceTopicAlias: stringValue(lane.sourceTopicAlias, `${path}.sourceTopicAlias`),
   };
+};
+
+const nonNegativeIntegerStringOrNumber = (value, path) => {
+  if (typeof value === "number") {
+    return String(nonNegativeSafeInteger(value, path));
+  }
+  return nonNegativeIntegerString(value, path);
+};
+
+const optionalNonNegativeIntegerStringOrNumber = (value, path) =>
+  value === null ? null : nonNegativeIntegerStringOrNumber(value, path);
+
+const runtimeMetricsValue = (value, path) => {
+  const metrics = objectValue(value, path);
+  const eventLoopDelay = objectValue(metrics.eventLoopDelay, `${path}.eventLoopDelay`);
+  const healthPolling = objectValue(metrics.healthPolling, `${path}.healthPolling`);
+  const kafkaLag = objectValue(metrics.kafkaLag, `${path}.kafkaLag`);
+  const normalized = {
+    eventLoopDelay: {
+      maxMs: nonNegativeFiniteNumber(eventLoopDelay.maxMs, `${path}.eventLoopDelay.maxMs`),
+      meanMs: nonNegativeFiniteNumber(eventLoopDelay.meanMs, `${path}.eventLoopDelay.meanMs`),
+      p99Ms: nonNegativeFiniteNumber(eventLoopDelay.p99Ms, `${path}.eventLoopDelay.p99Ms`),
+    },
+    healthPolling: {
+      count: nonNegativeInteger(healthPolling.count, `${path}.healthPolling.count`),
+      maxMs: nonNegativeFiniteNumber(healthPolling.maxMs, `${path}.healthPolling.maxMs`),
+      totalMs: nonNegativeFiniteNumber(healthPolling.totalMs, `${path}.healthPolling.totalMs`),
+    },
+    kafkaLag: {
+      maxConsumerLagMessages: optionalNonNegativeIntegerStringOrNumber(
+        kafkaLag.maxConsumerLagMessages,
+        `${path}.kafkaLag.maxConsumerLagMessages`,
+      ),
+      sampledRegionCount: nonNegativeInteger(
+        kafkaLag.sampledRegionCount,
+        `${path}.kafkaLag.sampledRegionCount`,
+      ),
+      totalConsumerLagMessages: nonNegativeIntegerStringOrNumber(
+        kafkaLag.totalConsumerLagMessages,
+        `${path}.kafkaLag.totalConsumerLagMessages`,
+      ),
+    },
+  };
+  if (normalized.eventLoopDelay.p99Ms > normalized.eventLoopDelay.maxMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.eventLoopDelay.p99Ms must be less than or equal to ${path}.eventLoopDelay.maxMs.`,
+    );
+  }
+  if (normalized.eventLoopDelay.meanMs > normalized.eventLoopDelay.maxMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.eventLoopDelay.meanMs must be less than or equal to ${path}.eventLoopDelay.maxMs.`,
+    );
+  }
+  if (normalized.healthPolling.totalMs < normalized.healthPolling.maxMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.healthPolling.totalMs must be greater than or equal to ${path}.healthPolling.maxMs.`,
+    );
+  }
+  return normalized;
 };
 
 const throughputCaseValue = (value, path, options) => {
@@ -460,7 +541,7 @@ const validateRuntimeSummaryIngestCompleteness = (summary, path, mutationCount) 
         `Benchmark artifact field ${path}.health.kafka.topics.${lane.sourceTopic}.viewServerTopic must equal internalTopic ${lane.internalTopic} for Kafka ingest lane ${lane.lane} but was ${viewServerTopic}.`,
       );
     }
-    const committedOffset = nonNegativeIntegerString(
+    const committedOffset = nonNegativeSafeIntegerString(
       objectValue(
         objectValue(
           kafkaTopicHealth.regions,
@@ -634,6 +715,14 @@ export const readBenchmarkObservation = (task) => {
     outputJsonPath: task.outputJsonPath,
     queuedEventCount: finiteNumber(summary.queuedEventCount, `${task.summaryPath}.queuedEventCount`),
     rowCount,
+    ...(summary.runtimeMetrics === undefined
+      ? {}
+      : {
+          runtimeMetrics: runtimeMetricsValue(
+            summary.runtimeMetrics,
+            `${task.summaryPath}.runtimeMetrics`,
+          ),
+        }),
     seedBatchSize: optionalFiniteNumber(summary.seedBatchSize, `${task.summaryPath}.seedBatchSize`),
     subscriberCount: finiteNumber(summary.subscriberCount, `${task.summaryPath}.subscriberCount`),
     summaryPath: task.summaryPath,
@@ -759,8 +848,8 @@ const validateTask = (task, path) => {
   const artifactKind = summaryArtifactKind(task.artifactKind, `${path}.artifactKind`);
   const benchmarkScope = stringValue(task.benchmarkScope, `${path}.benchmarkScope`);
   const mutationCount = nonNegativeInteger(task.mutationCount, `${path}.mutationCount`);
-  const requiresKafkaThroughput =
-    artifactKind === "runtime-benchmark-summary" && benchmarkScope.startsWith("runtime-kafka-");
+  const isKafkaScope = benchmarkScope.startsWith("runtime-kafka-");
+  const requiresKafkaThroughput = artifactKind === "runtime-benchmark-summary" && isKafkaScope;
   const memoryRssTotalDeltaBytes = optionalFiniteNumber(
     task.memoryRssTotalDeltaBytes,
     `${path}.memoryRssTotalDeltaBytes`,
@@ -801,6 +890,17 @@ const validateTask = (task, path) => {
       );
     }
   }
+  const kafkaIngestLanes =
+    task.kafkaIngestLanes === undefined
+      ? undefined
+      : nonEmptyArrayValue(task.kafkaIngestLanes, `${path}.kafkaIngestLanes`).map(
+          (lane, index) => comparableKafkaIngestLaneValue(lane, `${path}.kafkaIngestLanes[${index}]`),
+        );
+  if (isKafkaScope && kafkaIngestLanes === undefined) {
+    throw new Error(
+      `Benchmark artifact field ${path}.kafkaIngestLanes is required for ${benchmarkScope}.`,
+    );
+  }
   return {
     ...(task.activeViewCountBeforeCleanup === undefined
       ? {}
@@ -826,9 +926,7 @@ const validateTask = (task, path) => {
       task.groupedWriteAdmission,
       `${path}.groupedWriteAdmission`,
     ),
-    kafkaIngestLanes: optionalArrayValue(task.kafkaIngestLanes, `${path}.kafkaIngestLanes`)?.map(
-      (lane, index) => comparableKafkaIngestLaneValue(lane, `${path}.kafkaIngestLanes[${index}]`),
-    ),
+    kafkaIngestLanes,
     latencySource: stringValue(task.latencySource, `${path}.latencySource`),
     memoryRssTotalDeltaBytes,
     minimumSampleCount: positiveInteger(task.minimumSampleCount, `${path}.minimumSampleCount`),
@@ -836,6 +934,11 @@ const validateTask = (task, path) => {
     outputJsonPath: stringValue(task.outputJsonPath, `${path}.outputJsonPath`),
     queuedEventCount: finiteNumber(task.queuedEventCount, `${path}.queuedEventCount`),
     rowCount: finiteNumber(task.rowCount, `${path}.rowCount`),
+    ...(task.runtimeMetrics === undefined
+      ? {}
+      : {
+          runtimeMetrics: runtimeMetricsValue(task.runtimeMetrics, `${path}.runtimeMetrics`),
+        }),
     seedBatchSize: optionalFiniteNumber(task.seedBatchSize, `${path}.seedBatchSize`),
     subscriberCount: finiteNumber(task.subscriberCount, `${path}.subscriberCount`),
     summaryPath: stringValue(task.summaryPath, `${path}.summaryPath`),
@@ -1045,6 +1148,41 @@ const compareThroughputCases = (regressions, taskLabel, threshold, baselineCases
   }
 };
 
+const compareReportOnlyRuntimeMetricsPresence = (regressions, taskLabel, baselineTask, actualTask) => {
+  if (baselineTask.runtimeMetrics !== undefined && actualTask.runtimeMetrics === undefined) {
+    pushRegression(regressions, `${taskLabel}: runtimeMetrics presence changed.`);
+  }
+};
+
+const compareKafkaSustainedFirehoseFinalLag = (regressions, taskLabel, actualTask) => {
+  if (actualTask.benchmarkScope !== "runtime-kafka-sustained-firehose") {
+    return;
+  }
+  const kafkaLag = actualTask.runtimeMetrics?.kafkaLag;
+  if (kafkaLag === undefined) {
+    pushRegression(regressions, `${taskLabel}: runtimeMetrics.kafkaLag is required.`);
+    return;
+  }
+  if (kafkaLag.sampledRegionCount !== actualTask.kafkaIngestLanes.length) {
+    pushRegression(
+      regressions,
+      `${taskLabel}: runtimeMetrics.kafkaLag sampled ${kafkaLag.sampledRegionCount} regions but expected ${actualTask.kafkaIngestLanes.length}.`,
+    );
+  }
+  if (kafkaLag.totalConsumerLagMessages !== "0") {
+    pushRegression(
+      regressions,
+      `${taskLabel}: final Kafka lag must be 0 but was ${kafkaLag.totalConsumerLagMessages}.`,
+    );
+  }
+  if (kafkaLag.maxConsumerLagMessages !== "0") {
+    pushRegression(
+      regressions,
+      `${taskLabel}: max final Kafka lag must be 0 but was ${kafkaLag.maxConsumerLagMessages}.`,
+    );
+  }
+};
+
 const benchmarkScopeRequiresExactMutationCount = (benchmarkScope) =>
   benchmarkScope === "runtime-kafka-ingest" || benchmarkScope === "runtime-websocket-firehose";
 
@@ -1169,6 +1307,8 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
       baselineTask.throughputCases,
       actualTask.throughputCases,
     );
+    compareReportOnlyRuntimeMetricsPresence(regressions, taskLabel, baselineTask, actualTask);
+    compareKafkaSustainedFirehoseFinalLag(regressions, taskLabel, actualTask);
     compareExact(
       regressions,
       taskLabel,

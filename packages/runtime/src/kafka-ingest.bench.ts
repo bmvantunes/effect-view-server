@@ -8,7 +8,7 @@ import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/
 import { Buffer } from "node:buffer";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { performance } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { Crypto, Effect, Exit, Schedule, Schema } from "effect";
 import { makeViewServerRuntime, type ViewServerRuntime } from "./index";
 import { OrderKeySchema, OrderValueSchema } from "./test-fixtures/runtime_orders_pb";
@@ -79,6 +79,12 @@ type IngestThroughputCaseSummary = {
   readonly readSnapshotRowsPerSample: number;
   readonly sampleCount: number;
   readonly totalProducedRows: number;
+};
+
+type BenchmarkHealthPollingMetrics = {
+  readonly count: number;
+  readonly maxMs: number;
+  readonly totalMs: number;
 };
 
 class KafkaIngestBenchmarkError extends Schema.TaggedErrorClass<KafkaIngestBenchmarkError>()(
@@ -225,6 +231,12 @@ const profile: BenchmarkProfile = {
 };
 
 const ingestSamples: Array<IngestSample> = [];
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 10 });
+const healthPollingMetrics = {
+  count: 0,
+  maxMs: 0,
+  totalMs: 0,
+};
 const internalTopicNames = ["jsonOrders", "protobufOrders"] as const;
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
@@ -405,6 +417,30 @@ const binaryProducer = (): Producer<Buffer, Buffer, Buffer, Buffer> => {
   return producer;
 };
 
+const readRuntimeHealth = Effect.fn("ViewServerRuntime.kafka.bench.health")(function* () {
+  const startedAt = performance.now();
+  const health = yield* startedRuntime().client.health();
+  const elapsedMs = performance.now() - startedAt;
+  healthPollingMetrics.count += 1;
+  healthPollingMetrics.totalMs += elapsedMs;
+  healthPollingMetrics.maxMs = Math.max(healthPollingMetrics.maxMs, elapsedMs);
+  return health;
+});
+
+const healthPollingSnapshot = (): BenchmarkHealthPollingMetrics => ({
+  count: healthPollingMetrics.count,
+  maxMs: healthPollingMetrics.maxMs,
+  totalMs: healthPollingMetrics.totalMs,
+});
+
+const nanosecondsToMilliseconds = (nanoseconds: number): number => nanoseconds / 1_000_000;
+
+const eventLoopDelaySnapshot = () => ({
+  maxMs: nanosecondsToMilliseconds(eventLoopDelay.max),
+  meanMs: nanosecondsToMilliseconds(eventLoopDelay.mean),
+  p99Ms: nanosecondsToMilliseconds(eventLoopDelay.percentile(99)),
+});
+
 const jsonMessages = (
   sourceTopic: string,
   startIndex: number,
@@ -457,16 +493,14 @@ const waitForRows = Effect.fn("ViewServerRuntime.kafka.bench.waitForRows")(funct
 ) {
   const expectedSourceTopic =
     topic === "jsonOrders" ? sourceTopics().jsonOrders : sourceTopics().protobufOrders;
-  const health = yield* startedRuntime()
-    .client.health()
-    .pipe(
-      Effect.repeat({
-        schedule: healthPollSchedule,
-        until: (currentHealth) =>
-          currentHealth.engine.topics[topic].rowCount === expectedRows &&
-          committedOffset(currentHealth, expectedSourceTopic) === expectedRows,
-      }),
-    );
+  const health = yield* readRuntimeHealth().pipe(
+    Effect.repeat({
+      schedule: healthPollSchedule,
+      until: (currentHealth) =>
+        currentHealth.engine.topics[topic].rowCount === expectedRows &&
+        committedOffset(currentHealth, expectedSourceTopic) === expectedRows,
+    }),
+  );
   const actualRows = health.engine.topics[topic].rowCount;
   const actualCommittedOffset = committedOffset(health, expectedSourceTopic);
   if (actualRows !== expectedRows || actualCommittedOffset !== expectedRows) {
@@ -490,30 +524,86 @@ const committedOffset = (health: ViewServerHealth<Topics>, sourceTopic: string):
   return Number.isSafeInteger(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
 };
 
+const sourceTopicLagIsFreshlyDrained = (
+  health: ViewServerHealth<Topics>,
+  sourceTopic: string,
+): boolean => {
+  const region = health.kafka?.topics[sourceTopic]?.regions["local"];
+  if (region === undefined) {
+    return false;
+  }
+  return (
+    region.consumerLagMessages === 0n &&
+    region.lastCommitAt !== null &&
+    region.lagSampledAt !== null &&
+    region.lagSampledAt >= region.lastCommitAt
+  );
+};
+
+const kafkaLagSummary = (health: ViewServerHealth<Topics>) => {
+  let maxConsumerLagMessages: bigint | null = null;
+  let sampledRegionCount = 0;
+  let totalConsumerLagMessages = 0n;
+  for (const topicHealth of Object.values(health.kafka?.topics ?? {})) {
+    for (const regionHealth of Object.values(topicHealth.regions ?? {})) {
+      const consumerLagMessages = regionHealth.consumerLagMessages;
+      if (consumerLagMessages !== null) {
+        sampledRegionCount += 1;
+        totalConsumerLagMessages += consumerLagMessages;
+        if (maxConsumerLagMessages === null || consumerLagMessages > maxConsumerLagMessages) {
+          maxConsumerLagMessages = consumerLagMessages;
+        }
+      }
+    }
+  }
+  return {
+    maxConsumerLagMessages,
+    sampledRegionCount,
+    totalConsumerLagMessages,
+  };
+};
+
+const kafkaLagIsDrained = (
+  health: ViewServerHealth<Topics>,
+  topics: NonNullable<BenchmarkProfile["sourceTopics"]>,
+): boolean => {
+  return (
+    sourceTopicLagIsFreshlyDrained(health, topics.jsonOrders) &&
+    sourceTopicLagIsFreshlyDrained(health, topics.protobufOrders)
+  );
+};
+
+const finalKafkaLagHasExpectedSamples = (health: ViewServerHealth<Topics>): boolean =>
+  kafkaLagSummary(health).sampledRegionCount === internalTopicNames.length;
+
 const waitForFinalHealth = Effect.fn("ViewServerRuntime.kafka.bench.waitForFinalHealth")(
   function* () {
     const topics = sourceTopics();
-    const health = yield* startedRuntime()
-      .client.health()
-      .pipe(
-        Effect.repeat({
-          schedule: healthPollSchedule,
-          until: (health) =>
-            health.engine.topics.jsonOrders.rowCount === profile.jsonProducedRows &&
-            health.engine.topics.protobufOrders.rowCount === profile.protobufProducedRows &&
-            committedOffset(health, topics.jsonOrders) === profile.jsonProducedRows &&
-            committedOffset(health, topics.protobufOrders) === profile.protobufProducedRows,
-        }),
-      );
+    const health = yield* readRuntimeHealth().pipe(
+      Effect.repeat({
+        schedule: healthPollSchedule,
+        until: (health) =>
+          health.engine.topics.jsonOrders.rowCount === profile.jsonProducedRows &&
+          health.engine.topics.protobufOrders.rowCount === profile.protobufProducedRows &&
+          committedOffset(health, topics.jsonOrders) === profile.jsonProducedRows &&
+          committedOffset(health, topics.protobufOrders) === profile.protobufProducedRows &&
+          (benchmarkMode !== "sustained-firehose" ||
+            (kafkaLagIsDrained(health, topics) && finalKafkaLagHasExpectedSamples(health))),
+      }),
+    );
     const jsonRows = health.engine.topics.jsonOrders.rowCount;
     const protobufRows = health.engine.topics.protobufOrders.rowCount;
     const jsonOffset = committedOffset(health, topics.jsonOrders);
     const protobufOffset = committedOffset(health, topics.protobufOrders);
+    const finalKafkaLag = kafkaLagSummary(health);
     if (
       jsonRows !== profile.jsonProducedRows ||
       protobufRows !== profile.protobufProducedRows ||
       jsonOffset !== profile.jsonProducedRows ||
-      protobufOffset !== profile.protobufProducedRows
+      protobufOffset !== profile.protobufProducedRows ||
+      (benchmarkMode === "sustained-firehose" &&
+        (finalKafkaLag.totalConsumerLagMessages !== 0n ||
+          finalKafkaLag.sampledRegionCount !== internalTopicNames.length))
     ) {
       return yield* new KafkaIngestBenchmarkError({
         message: [
@@ -522,6 +612,7 @@ const waitForFinalHealth = Effect.fn("ViewServerRuntime.kafka.bench.waitForFinal
           `protobufRows=${protobufRows}/${profile.protobufProducedRows}`,
           `jsonCommittedOffset=${jsonOffset}/${profile.jsonProducedRows}`,
           `protobufCommittedOffset=${protobufOffset}/${profile.protobufProducedRows}`,
+          `totalConsumerLagMessages=${finalKafkaLag.totalConsumerLagMessages}`,
         ].join(" "),
       });
     }
@@ -874,6 +965,7 @@ const publishSustainedMixedFirehose = async (): Promise<void> => {
 };
 
 beforeAll(async () => {
+  eventLoopDelay.enable();
   const setup = await Effect.runPromise(setupBenchmark().pipe(Effect.provide(NodeCrypto.layer)));
   profile.binaryProducer = setup.binaryProducer;
   profile.runtime = setup.runtime;
@@ -908,6 +1000,7 @@ afterAll(async () => {
   const cleanupLeakCount = cleanupLeakCountFromHealth(health);
   const backpressureCount = backpressureCountFromHealth(health);
   const queuedEventCount = queuedEventCountFromHealth(health);
+  eventLoopDelay.disable();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
     artifactKind: "runtime-benchmark-summary",
     backpressureCount,
@@ -965,6 +1058,11 @@ afterAll(async () => {
     ],
     queuedEventCount,
     rowCount: batchSize,
+    runtimeMetrics: {
+      eventLoopDelay: eventLoopDelaySnapshot(),
+      healthPolling: healthPollingSnapshot(),
+      kafkaLag: kafkaLagSummary(health),
+    },
     subscriberCount: 0,
     topics: ["jsonOrders", "protobufOrders"],
     throughput: {

@@ -27,6 +27,7 @@
     "check:internal-seams": "tsc --ignoreConfig --noEmit --strict --skipLibCheck --module preserve --moduleResolution bundler scripts/node-ambient.d.ts scripts/check-internal-seams.ts && node --experimental-strip-types scripts/check-internal-seams.ts",
     "check:package-exports": "tsc --ignoreConfig --noEmit --strict --skipLibCheck --module preserve --moduleResolution bundler scripts/node-ambient.d.ts scripts/check-package-exports.ts && node --experimental-strip-types scripts/check-package-exports.ts",
     "ready": "vp run -r build && pnpm run check:package-exports && pnpm run check:internal-seams && pnpm run test:repository-scripts && vp check && pnpm run check:effect && vp run --filter '@view-server/*' --filter '!@view-server/runtime' test && vp run @view-server/runtime#test",
+    "pre-grpc:gate": "pnpm run ready && pnpm run bench:baseline:smoke && pnpm run bench:baseline:raw-read-write && pnpm run bench:baseline:active-query-sharing && pnpm run bench:baseline:grouped-admission && pnpm run bench:baseline:grouped-order-neutral && pnpm run bench:baseline:websocket-firehose && pnpm run bench:baseline:kafka-ingest && pnpm run bench:baseline:kafka-sustained-firehose",
     "test:benchmark-baseline": "pnpm run test:repository-scripts",
     "test:repository-scripts": "vp test run scripts/benchmark-baseline.test.ts scripts/benchmark-baseline-runner.test.ts scripts/bench-runtime-kafka-ingest.test.ts scripts/check-internal-seams.test.ts --coverage",
     "prepare": "vp config && effect-language-service patch"

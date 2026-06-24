@@ -202,6 +202,7 @@ describe("benchmark baseline runner", () => {
       kafkaIngestUpdate: scripts["bench:baseline:kafka-ingest:update"],
       kafkaSustainedFirehose: scripts["bench:baseline:kafka-sustained-firehose"],
       kafkaSustainedFirehoseUpdate: scripts["bench:baseline:kafka-sustained-firehose:update"],
+      preGrpcGate: scripts["pre-grpc:gate"],
       rawReadWrite: scripts["bench:baseline:raw-read-write"],
       rawReadWriteUpdate: scripts["bench:baseline:raw-read-write:update"],
       release: scripts["bench:baseline:release"],
@@ -225,6 +226,8 @@ describe("benchmark baseline runner", () => {
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose",
       kafkaSustainedFirehoseUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose --update-baseline",
+      preGrpcGate:
+        "pnpm run ready && pnpm run bench:baseline:smoke && pnpm run bench:baseline:raw-read-write && pnpm run bench:baseline:active-query-sharing && pnpm run bench:baseline:grouped-admission && pnpm run bench:baseline:grouped-order-neutral && pnpm run bench:baseline:websocket-firehose && pnpm run bench:baseline:kafka-ingest && pnpm run bench:baseline:kafka-sustained-firehose",
       rawReadWrite: "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write",
       rawReadWriteUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write --update-baseline",
@@ -233,6 +236,36 @@ describe("benchmark baseline runner", () => {
       webSocketFirehoseUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=websocket-firehose --update-baseline",
     });
+  });
+
+  it("keeps the pre-gRPC gate covering every strict compare-mode benchmark gate", () => {
+    const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+    const preGrpcGateSteps = scripts["pre-grpc:gate"].split(" && ");
+    const preGrpcBenchmarkGates = preGrpcGateSteps
+      .slice(1)
+      .map((step: string) => step.replace("pnpm run ", ""));
+    const strictCompareBenchmarkGates = Object.entries(scripts)
+      .filter(([name, command]) =>
+        name.startsWith("bench:baseline:") &&
+        !name.endsWith(":update") &&
+        command === command.replace(" --no-compare", ""),
+      )
+      .map(([name]) => name)
+      .sort();
+
+    expect(preGrpcGateSteps).toStrictEqual([
+      "pnpm run ready",
+      "pnpm run bench:baseline:smoke",
+      "pnpm run bench:baseline:raw-read-write",
+      "pnpm run bench:baseline:active-query-sharing",
+      "pnpm run bench:baseline:grouped-admission",
+      "pnpm run bench:baseline:grouped-order-neutral",
+      "pnpm run bench:baseline:websocket-firehose",
+      "pnpm run bench:baseline:kafka-ingest",
+      "pnpm run bench:baseline:kafka-sustained-firehose",
+    ]);
+    expect(preGrpcBenchmarkGates.toSorted()).toStrictEqual(strictCompareBenchmarkGates);
+    expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:release");
   });
 
   it("defines raw read and write performance gate tasks", () => {

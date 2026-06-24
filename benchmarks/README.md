@@ -24,6 +24,17 @@ small and noisy; structural metadata, counters, sample counts, and RSS remain st
 
 Do not run benchmark profiles in parallel when comparing results.
 
+Before starting the gRPC ingress adapter, run the serial pre-gRPC gate:
+
+```bash
+pnpm run pre-grpc:gate
+```
+
+This first runs the full correctness gate (`pnpm run ready`), then runs the strict smoke, raw
+read/write, active-query-sharing, grouped admission, grouped order-neutral, WebSocket firehose, Kafka
+ingest, and Kafka sustained-firehose baseline gates. It intentionally excludes
+`bench:baseline:release`, which is a broad no-compare collection profile rather than a pass/fail gate.
+
 Active-query sharing has a focused engine gate:
 
 ```bash

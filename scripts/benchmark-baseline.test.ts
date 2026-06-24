@@ -1760,6 +1760,70 @@ describe("benchmark baseline comparison", () => {
     });
   });
 
+  it("keeps raw read/write sub-millisecond mean jitter report-only inside the absolute window", () => {
+    const subMillisecondObservation = {
+      ...observation,
+      benchmarks: [
+        {
+          ...observation.benchmarks[0],
+          meanMs: 0.067,
+          p99Ms: 0.3,
+        },
+      ],
+    };
+    const baseline = buildBenchmarkBaseline("raw-read-write", [subMillisecondObservation]);
+    const actual = buildBenchmarkBaseline("raw-read-write", [
+      {
+        ...subMillisecondObservation,
+        benchmarks: [
+          {
+            ...subMillisecondObservation.benchmarks[0],
+            meanMs: 0.239,
+            p99Ms: 0.3,
+          },
+        ],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: true,
+      regressions: [],
+    });
+  });
+
+  it("rejects raw read/write mean regressions outside the focused absolute window", () => {
+    const subMillisecondObservation = {
+      ...observation,
+      benchmarks: [
+        {
+          ...observation.benchmarks[0],
+          meanMs: 0.125,
+          p99Ms: 0.3,
+        },
+      ],
+    };
+    const baseline = buildBenchmarkBaseline("raw-read-write", [subMillisecondObservation]);
+    const actual = buildBenchmarkBaseline("raw-read-write", [
+      {
+        ...subMillisecondObservation,
+        benchmarks: [
+          {
+            ...subMillisecondObservation.benchmarks[0],
+            meanMs: 0.7,
+            p99Ms: 0.3,
+          },
+        ],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a / src/example.bench.ts > example benchmark group / case a: mean regressed from 0.125ms to 0.700ms; allowed <= 0.625ms.",
+      ],
+    });
+  });
+
   it("reports missing tasks, counter regressions, memory regressions, and latency regressions", () => {
     const baseline = buildBenchmarkBaseline("smoke", [observation]);
     const regressed = buildBenchmarkBaseline("smoke", [

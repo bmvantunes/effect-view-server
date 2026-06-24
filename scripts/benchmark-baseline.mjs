@@ -51,7 +51,7 @@ export const groupedOrderNeutralBenchmarkThresholds = {
 
 export const rawReadWriteBenchmarkThresholds = {
   latencyMean: {
-    maxAbsoluteDeltaMs: 0.1,
+    maxAbsoluteDeltaMs: 0.5,
     maxRatio: 3,
   },
   latencyP99: {

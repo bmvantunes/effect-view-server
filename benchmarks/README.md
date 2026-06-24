@@ -57,8 +57,9 @@ reads, base writes, and indexed writes. It exists to catch the common failure mo
 optimization wins filtered/sorted queries but silently taxes ingestion. Keep this gate serial and do
 not compare it against runs collected while another benchmark is active.
 Raw write cases run with exact sample and mutation counts. The profile keeps mean latency tighter
-than smoke; p99 remains a wider tail-noise guard because with exact local samples it behaves like max
-latency and is sensitive to scheduler/GC spikes.
+than smoke for millisecond-scale work, but keeps a small absolute window for sub-millisecond cases so
+GitHub runner jitter does not fail healthy 0.xms operations. p99 remains a wider tail-noise guard
+because with exact local samples it behaves like max latency and is sensitive to scheduler/GC spikes.
 
 WebSocket firehose smoke has a focused runtime transport gate:
 

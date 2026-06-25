@@ -143,7 +143,7 @@ export type {
   GrpcRuntimeValue,
   GrpcServerStreamingMethodName,
   GrpcTopicSource,
-  GrpcTopicSourceKind,
+  GrpcTopicSourceLifecycle,
 } from "./grpc-contract";
 export { defineGrpcFeed } from "./grpc-contract";
 export type {

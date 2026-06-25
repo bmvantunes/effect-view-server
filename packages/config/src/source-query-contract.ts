@@ -24,6 +24,12 @@ type ExactRouteWhere<Row, QueryWhere, RouteBy extends string> = QueryWhere & {
     : never;
 };
 
+type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => void : never) extends (
+  value: infer Intersection,
+) => void
+  ? Intersection
+  : never;
+
 export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
   readonly source: TopicLeasedSourceDefinition<infer RouteBy>;
 }
@@ -38,8 +44,10 @@ export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic
     : never
   : never;
 
+type NoLeasedRouteRequirement = Readonly<Record<never, never>>;
+
 export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy] extends [never]
-  ? unknown
+  ? NoLeasedRouteRequirement
   : Query extends {
         readonly where: infer QueryWhere;
       }
@@ -50,10 +58,18 @@ export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy
         readonly where: never;
       };
 
+type ExactLeasedRouteQueryForTopic<
+  Topics,
+  Topic extends keyof Topics,
+  Query,
+> = Topic extends keyof Topics
+  ? ExactLeasedRouteQuery<TopicRow<Topics, Topic>, TopicRouteBy<Topics, Topic>, Query>
+  : never;
+
 export type ExactLiveQueryInputForTopic<Topics, Topic extends keyof Topics, Query> = Query &
   ExactLiveQuery<TopicRow<Topics, Topic>, Query> &
   ValidateLiveQuery<Query> &
-  ExactLeasedRouteQuery<TopicRow<Topics, Topic>, TopicRouteBy<Topics, Topic>, Query>;
+  UnionToIntersection<ExactLeasedRouteQueryForTopic<Topics, Topic, Query>>;
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);

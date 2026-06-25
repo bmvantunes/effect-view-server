@@ -25,7 +25,7 @@ const brandGrpcFeedMap = <Mapping extends (...args: ReadonlyArray<never>) => unk
   mapping: Mapping,
 ) => Object.assign(mapping, grpcFeedMapBrand);
 
-export type GrpcTopicSourceKind = "materialized" | "leased";
+export type GrpcTopicSourceLifecycle = "materialized" | "leased";
 
 export type GrpcMaterializedTopicSource = TopicMaterializedSourceDefinition & {
   readonly _tag: "GrpcMaterializedTopicSource";

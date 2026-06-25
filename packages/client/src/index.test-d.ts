@@ -43,8 +43,26 @@ const leasedViewServer = defineViewServerConfig({
   },
 });
 
+const mixedSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      source: grpc.leased({
+        routeBy: ["id"],
+      }),
+    },
+    positions: {
+      schema: Order,
+      key: "id",
+    },
+  },
+});
+
 declare const client: ViewServerLiveClient<typeof viewServer.topics>;
 declare const leasedClient: ViewServerLiveClient<typeof leasedViewServer.topics>;
+declare const mixedSourceClient: ViewServerLiveClient<typeof mixedSourceViewServer.topics>;
+declare const mixedSourceTopic: "orders" | "positions";
 
 describe("client type contracts", () => {
   it("preserves selected row types through live subscriptions", () => {
@@ -113,6 +131,36 @@ describe("client type contracts", () => {
     >();
     expectTypeOf(missingRouteSubscription).not.toBeAny();
     expectTypeOf(shorthandRouteSubscription).not.toBeAny();
+  });
+
+  it("keeps leased gRPC route predicates when the topic is a union", () => {
+    const routedUnionSubscription = mixedSourceClient.subscribe(mixedSourceTopic, {
+      where: {
+        id: { eq: "order-1" },
+      },
+      select: ["id"],
+    });
+    const missingRouteQuery = {
+      select: ["id"],
+    } satisfies {
+      readonly select: readonly ["id"];
+    };
+
+    const missingRouteSubscription = mixedSourceClient.subscribe(
+      mixedSourceTopic,
+      // @ts-expect-error dynamic topic unions that include a leased topic still require route filters.
+      missingRouteQuery,
+    );
+
+    expectTypeOf<Effect.Success<typeof routedUnionSubscription>>().toEqualTypeOf<
+      ViewServerLiveSubscription<{
+        readonly id: string;
+      }>
+    >();
+    expectTypeOf<Effect.Error<typeof routedUnionSubscription>>().toEqualTypeOf<
+      ViewServerRuntimeError | ViewServerTransportError
+    >();
+    expectTypeOf(missingRouteSubscription).not.toBeAny();
   });
 
   it("exposes health as a read-only ref", () => {

@@ -274,6 +274,84 @@ describe("@view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("validates leased route predicates when subscription effects execute", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
+      const delayedSubscribeQuery = {
+        where: {
+          region: { eq: "usa" },
+          status: { eq: "open" },
+        },
+        select: ["id"],
+        limit: 1,
+      } satisfies {
+        readonly where: {
+          readonly region: {
+            readonly eq: "usa";
+          };
+          readonly status: {
+            readonly eq: "open";
+          };
+        };
+        readonly select: readonly ["id"];
+        readonly limit: 1;
+      };
+      const subscribeEffect = runtimeCore.liveClient.subscribe("orders", delayedSubscribeQuery);
+      expect(Reflect.deleteProperty(delayedSubscribeQuery.where.status, "eq")).toBe(true);
+      Object.defineProperty(delayedSubscribeQuery.where.status, "in", {
+        enumerable: true,
+        value: ["open"],
+      });
+
+      const subscribeRouteError = yield* Effect.flip(subscribeEffect);
+      expect(subscribeRouteError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Leased topic orders route field status must use an exact eq filter.",
+      });
+
+      const delayedRuntimeQuery = {
+        where: {
+          region: { eq: "usa" },
+          status: { eq: "open" },
+        },
+        select: ["id"],
+        limit: 1,
+      } satisfies {
+        readonly where: {
+          readonly region: {
+            readonly eq: "usa";
+          };
+          readonly status: {
+            readonly eq: "open";
+          };
+        };
+        readonly select: readonly ["id"];
+        readonly limit: 1;
+      };
+      const subscribeRuntimeEffect = runtimeCore.liveClient.subscribeRuntime(
+        "orders",
+        delayedRuntimeQuery,
+      );
+      expect(Reflect.deleteProperty(delayedRuntimeQuery.where.status, "eq")).toBe(true);
+      Object.defineProperty(delayedRuntimeQuery.where.status, "in", {
+        enumerable: true,
+        value: ["open"],
+      });
+
+      const subscribeRuntimeRouteError = yield* Effect.flip(subscribeRuntimeEffect);
+      expect(subscribeRuntimeRouteError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Leased topic orders route field status must use an exact eq filter.",
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("forwards grouped admission limits to the engine", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {

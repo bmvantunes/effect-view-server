@@ -99,45 +99,49 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError | ViewServerTransportError
       > {
-        const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
-        const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
-        if (routeError !== undefined) {
-          return Effect.fail(invalidRuntimeQueryError(topic, routeError));
-        }
-        return engine.subscribe<Topic, Query>(topic, query).pipe(
-          Effect.mapError(engineErrorToRuntimeError),
-          Effect.flatMap((subscription) =>
-            refreshHealth.pipe(
-              Effect.as({
-                events: subscription.events,
-                close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
-              }),
-              Effect.onError(() => subscription.close().pipe(ignoreLiveSubscriptionCloseFailure)),
+        return Effect.suspend(() => {
+          const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
+          const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
+          if (routeError !== undefined) {
+            return Effect.fail(invalidRuntimeQueryError(topic, routeError));
+          }
+          return engine.subscribe<Topic, Query>(topic, query).pipe(
+            Effect.mapError(engineErrorToRuntimeError),
+            Effect.flatMap((subscription) =>
+              refreshHealth.pipe(
+                Effect.as({
+                  events: subscription.events,
+                  close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
+                }),
+                Effect.onError(() => subscription.close().pipe(ignoreLiveSubscriptionCloseFailure)),
+              ),
             ),
-          ),
-        );
+          );
+        });
       }
       const subscribeRuntime: ViewServerRuntimeLiveClient<Topics>["subscribeRuntime"] = (
         topic,
         query,
       ) => {
-        const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
-        const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
-        if (routeError !== undefined) {
-          return Effect.fail(invalidRuntimeQueryError(topic, routeError));
-        }
-        return engine.subscribeRuntime(topic, query).pipe(
-          Effect.mapError(engineErrorToRuntimeError),
-          Effect.flatMap((subscription) =>
-            refreshHealth.pipe(
-              Effect.as({
-                events: subscription.events,
-                close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
-              }),
-              Effect.onError(() => subscription.close().pipe(ignoreLiveSubscriptionCloseFailure)),
+        return Effect.suspend(() => {
+          const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
+          const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
+          if (routeError !== undefined) {
+            return Effect.fail(invalidRuntimeQueryError(topic, routeError));
+          }
+          return engine.subscribeRuntime(topic, query).pipe(
+            Effect.mapError(engineErrorToRuntimeError),
+            Effect.flatMap((subscription) =>
+              refreshHealth.pipe(
+                Effect.as({
+                  events: subscription.events,
+                  close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
+                }),
+                Effect.onError(() => subscription.close().pipe(ignoreLiveSubscriptionCloseFailure)),
+              ),
             ),
-          ),
-        );
+          );
+        });
       };
       type ActiveHealthSubscription = {
         close: Effect.Effect<void>;

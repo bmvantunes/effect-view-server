@@ -3,7 +3,7 @@ import {
   createColumnLiveViewEngine,
   type ColumnLiveViewEngineHealth,
 } from "@view-server/column-live-view-engine";
-import { defineViewServerConfig, type ViewServerRuntimeError } from "@view-server/config";
+import { defineViewServerConfig, grpc, type ViewServerRuntimeError } from "@view-server/config";
 import { Deferred, Effect, Fiber, Queue, Schema, Stream } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
@@ -29,6 +29,18 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
+    },
+  },
+});
+
+const leasedViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      source: grpc.leased({
+        routeBy: ["region", "status"],
+      }),
     },
   },
 });
@@ -176,6 +188,92 @@ describe("@view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("rejects leased topic queries without exact runtime route filters", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
+      const missingRouteQuery = {
+        where: {
+          region: { eq: "usa" },
+        },
+        select: ["id"],
+        limit: 1,
+      } as const;
+
+      const missingRoute = yield* Effect.flip(
+        // @ts-expect-error hostile callers can bypass compile-time leased-route checks.
+        runtimeCore.client.snapshot("orders", missingRouteQuery),
+      );
+      expect(missingRoute).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Leased topic orders route field status must use an exact eq filter.",
+      });
+
+      const missingSubscribeRoute = yield* Effect.flip(
+        // @ts-expect-error hostile callers can bypass compile-time leased-route subscribe checks.
+        runtimeCore.liveClient.subscribe("orders", missingRouteQuery),
+      );
+      expect(missingSubscribeRoute).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Leased topic orders route field status must use an exact eq filter.",
+      });
+
+      const nonEqRoute = yield* Effect.flip(
+        runtimeCore.liveClient.subscribeRuntime("orders", {
+          where: {
+            region: { eq: "usa" },
+            status: { in: ["open"] },
+          },
+          select: ["id"],
+          limit: 1,
+        }),
+      );
+      expect(nonEqRoute).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Leased topic orders route field status must use an exact eq filter.",
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("allows leased topic queries with exact runtime route filters", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
+      yield* runtimeCore.client.publish("orders", order("a", 10));
+
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        where: {
+          region: { eq: "usa" },
+          status: { eq: "open" },
+        },
+        select: ["id", "region", "status"],
+        limit: 1,
+      });
+
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            id: "a",
+            region: "usa",
+            status: "open",
+          },
+        ],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("forwards grouped admission limits to the engine", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {
@@ -234,6 +332,7 @@ describe("@view-server/runtime-core", () => {
       const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
+        viewServer,
         engine,
         health,
         Effect.fail(refreshFailed),
@@ -268,6 +367,7 @@ describe("@view-server/runtime-core", () => {
       const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
+        viewServer,
         engine,
         health,
         Effect.fail(refreshFailed),
@@ -589,6 +689,7 @@ describe("@view-server/runtime-core", () => {
       const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
+        viewServer,
         engine,
         health,
         Effect.sync(() => health.value),
@@ -630,6 +731,7 @@ describe("@view-server/runtime-core", () => {
         const refreshStarted = yield* Deferred.make<void>();
         const releaseRefresh = yield* Deferred.make<void>();
         const liveClient = yield* makeRuntimeCoreLiveClient(
+          viewServer,
           engine,
           health,
           Effect.gen(function* () {
@@ -744,6 +846,7 @@ describe("@view-server/runtime-core", () => {
         const refreshStarted = yield* Deferred.make<void>();
         const releaseRefresh = yield* Deferred.make<void>();
         const liveClient = yield* makeRuntimeCoreLiveClient(
+          viewServer,
           engine,
           health,
           Effect.gen(function* () {
@@ -811,6 +914,7 @@ describe("@view-server/runtime-core", () => {
       const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
+        viewServer,
         engine,
         health,
         Effect.sync(() => health.value),

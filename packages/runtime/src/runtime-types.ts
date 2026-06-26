@@ -9,6 +9,8 @@ import type {
   ViewServerKafkaStartFrom,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
+  GrpcFeedDefinition,
+  GrpcRuntimeClients,
 } from "@view-server/config";
 import type { Effect, Schema } from "effect";
 
@@ -33,15 +35,25 @@ export type ViewServerKafkaRuntimeOptions<
   readonly topics: Record<string, KafkaRuntimeTopicDefinition<Topics, Regions>>;
 };
 
+export type ViewServerGrpcRuntimeOptions<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> = {
+  readonly clients: Clients;
+  readonly feeds: Record<string, GrpcFeedDefinition<Topics, Clients>>;
+};
+
 export type ViewServerRuntimeOptions<
   Topics extends ViewServerRuntimeTopicDefinitions = ViewServerRuntimeTopicDefinitions,
   Regions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
 > = {
   readonly host?: string;
   readonly websocketPort?: number;
   readonly rpcPath?: RuntimeHttpPath;
   readonly healthPath?: RuntimeHttpPath;
   readonly kafka?: ViewServerKafkaRuntimeOptions<Topics, Regions>;
+  readonly grpc?: ViewServerGrpcRuntimeOptions<Topics, GrpcClients>;
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
 };
@@ -100,14 +112,81 @@ type RuntimeKafkaStartFromExactKeysConstraint<Options> = Options extends {
     : unknown
   : unknown;
 
+type RuntimeGrpcExactKeysConstraint<Options> = Options extends {
+  readonly grpc: infer CandidateGrpc;
+}
+  ? {
+      readonly grpc: CandidateGrpc &
+        RejectExtraKeys<
+          CandidateGrpc,
+          ViewServerGrpcRuntimeOptions<ViewServerRuntimeTopicDefinitions>
+        >;
+    }
+  : unknown;
+
+type RuntimeGrpcFeedConstraint<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  Options,
+> = Options extends {
+  readonly grpc: {
+    readonly clients: infer Clients extends GrpcRuntimeClients;
+    readonly feeds: infer Feeds extends Record<string, object>;
+  };
+}
+  ? {
+      readonly grpc: {
+        readonly feeds: {
+          readonly [FeedName in keyof Feeds]: Feeds[FeedName] extends GrpcFeedDefinition<
+            Topics,
+            Clients
+          >
+            ? Feeds[FeedName]
+            : never;
+        };
+      };
+    }
+  : unknown;
+
+type RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> = Options extends {
+  readonly groupedIncrementalAdmissionLimits: infer CandidateLimits;
+}
+  ? {
+      readonly groupedIncrementalAdmissionLimits: CandidateLimits &
+        RejectExtraKeys<CandidateLimits, Partial<GroupedIncrementalAdmissionLimits>>;
+    }
+  : unknown;
+
+type RuntimeRegionsOf<Options> = Options extends {
+  readonly kafka: {
+    readonly regions: infer Regions extends RuntimeRegions;
+  };
+}
+  ? Regions
+  : RuntimeRegions;
+
+type RuntimeGrpcClientsOf<Options> = Options extends {
+  readonly grpc: {
+    readonly clients: infer Clients extends GrpcRuntimeClients;
+  };
+}
+  ? Clients
+  : GrpcRuntimeClients;
+
 export type ViewServerRuntimeOptionsInput<
   Topics extends ViewServerRuntimeTopicDefinitions,
-  Options extends ViewServerRuntimeOptions<Topics> = ViewServerRuntimeOptions<Topics>,
+  Options extends object = ViewServerRuntimeOptions<Topics>,
 > = Options &
-  RejectExtraKeys<Options, ViewServerRuntimeOptions<Topics>> &
+  ViewServerRuntimeOptions<Topics, RuntimeRegionsOf<Options>, RuntimeGrpcClientsOf<Options>> &
+  RejectExtraKeys<
+    Options,
+    ViewServerRuntimeOptions<Topics, RuntimeRegionsOf<Options>, RuntimeGrpcClientsOf<Options>>
+  > &
   RuntimeKafkaExactKeysConstraint<Options> &
   RuntimeKafkaRegionConstraint<Topics, Options> &
-  RuntimeKafkaStartFromExactKeysConstraint<Options>;
+  RuntimeKafkaStartFromExactKeysConstraint<Options> &
+  RuntimeGrpcExactKeysConstraint<Options> &
+  RuntimeGrpcFeedConstraint<Topics, Options> &
+  RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options>;
 
 export type ViewServerRuntime<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly url: string;

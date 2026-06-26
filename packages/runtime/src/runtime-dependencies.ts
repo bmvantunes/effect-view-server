@@ -1,4 +1,9 @@
-import type { ViewServerConfig, ViewServerRuntimeClient } from "@view-server/config";
+import type {
+  GrpcRuntimeClients,
+  RuntimeRegions,
+  ViewServerConfig,
+  ViewServerRuntimeClient,
+} from "@view-server/config";
 import {
   makeViewServerRuntimeCore,
   type ViewServerRuntimeCoreInstance,
@@ -13,12 +18,21 @@ import {
 import type { Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import { makeViewServerKafkaHealthLedger, type ViewServerKafkaHealthLedger } from "./kafka-health";
+import { makeViewServerGrpcHealthLedger, type ViewServerGrpcHealthLedger } from "./grpc-health";
+import {
+  makeViewServerGrpcIngress,
+  type ViewServerGrpcIngress,
+  type ViewServerGrpcIngressError,
+} from "./grpc-ingress";
 import {
   makeViewServerKafkaIngress,
   type ViewServerKafkaIngress,
   type ViewServerKafkaIngressError,
 } from "./kafka-ingress";
-import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
+import type {
+  ResolvedViewServerGrpcRuntimeOptions,
+  ResolvedViewServerKafkaRuntimeOptions,
+} from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicDefinitions> = {
@@ -31,17 +45,28 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
     input: ViewServerWebSocketServerInput<Topics>,
     options: ViewServerWebSocketServerOptions,
   ) => Effect.Effect<ViewServerWebSocketServer, HttpServerError.ServeError>;
-  readonly makeKafkaHealthLedger: (
+  readonly makeKafkaHealthLedger: <const Regions extends RuntimeRegions>(
     config: ViewServerConfig<Topics>,
-    options: ResolvedViewServerKafkaRuntimeOptions<Topics>,
+    options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
   ) => ViewServerKafkaHealthLedger<Topics>;
-  readonly makeKafkaIngress: (
+  readonly makeGrpcHealthLedger: <const Clients extends GrpcRuntimeClients>(
+    config: ViewServerConfig<Topics>,
+    options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
+  ) => ViewServerGrpcHealthLedger<Topics>;
+  readonly makeKafkaIngress: <const Regions extends RuntimeRegions>(
     config: ViewServerConfig<Topics>,
     client: ViewServerRuntimeClient<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
-    options: ResolvedViewServerKafkaRuntimeOptions<Topics>,
+    options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
     health: ViewServerKafkaHealthLedger<Topics>,
   ) => Effect.Effect<ViewServerKafkaIngress, ViewServerKafkaIngressError>;
+  readonly makeGrpcIngress: <const Clients extends GrpcRuntimeClients>(
+    config: ViewServerConfig<Topics>,
+    client: ViewServerRuntimeClient<Topics>,
+    requestHealthRefresh: Effect.Effect<void>,
+    options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
+    health: ViewServerGrpcHealthLedger<Topics>,
+  ) => Effect.Effect<ViewServerGrpcIngress, ViewServerGrpcIngressError>;
 };
 
 export const makeDefaultRuntimeDependencies = <
@@ -63,5 +88,20 @@ export const makeDefaultRuntimeDependencies = <
         ]),
       ),
     }),
+  makeGrpcHealthLedger: (_config, options) =>
+    makeViewServerGrpcHealthLedger({
+      clients: options.clientBaseUrls,
+      feeds: Object.fromEntries(
+        Object.entries(options.feeds).map(([feedName, feed]) => [
+          feedName,
+          {
+            client: feed.client,
+            lifecycle: feed.lifecycle,
+            topic: feed.topic,
+          },
+        ]),
+      ),
+    }),
   makeKafkaIngress: makeViewServerKafkaIngress,
+  makeGrpcIngress: makeViewServerGrpcIngress,
 });

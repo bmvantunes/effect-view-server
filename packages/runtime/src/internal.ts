@@ -1,5 +1,10 @@
 import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@view-server/client";
-import type { RuntimeRegions, ViewServerConfig, ViewServerHealth } from "@view-server/config";
+import type {
+  GrpcRuntimeClients,
+  RuntimeRegions,
+  ViewServerConfig,
+  ViewServerHealth,
+} from "@view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
 import type { ViewServerRuntimeCoreOptionsFor } from "@view-server/runtime-core";
 import { Config, Effect, Exit, Layer } from "effect";
@@ -9,7 +14,11 @@ import {
   type ViewServerRuntimeDependencies,
 } from "./runtime-dependencies";
 import type { ViewServerKafkaIngressError } from "./kafka-ingress";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import type { ViewServerGrpcIngressError } from "./grpc-ingress";
+import {
+  resolveViewServerRuntimeOptions,
+  type ResolvedViewServerRuntimeOptions,
+} from "./runtime-options";
 import type {
   ViewServerRuntime,
   ViewServerRuntimeOptionsInput,
@@ -53,48 +62,87 @@ type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions>
   healthOverlay?: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["healthOverlay"]>;
 };
 
-export const makeViewServerRuntimeWithDependencies: <
+type ViewServerRuntimeFactoryError =
+  | HttpServerError.ServeError
+  | Config.ConfigError
+  | ViewServerKafkaIngressError
+  | ViewServerGrpcIngressError;
+
+type MakeViewServerRuntimeWithDependencies = {
+  <const Topics extends ViewServerRuntimeTopicDefinitions>(
+    dependencies: ViewServerRuntimeDependencies<Topics>,
+    config: ViewServerConfig<Topics>,
+  ): Effect.Effect<ViewServerRuntime<Topics>, ViewServerRuntimeFactoryError>;
+  <const Topics extends ViewServerRuntimeTopicDefinitions, const Options extends object>(
+    dependencies: ViewServerRuntimeDependencies<Topics>,
+    config: ViewServerConfig<Topics>,
+    options: Options & ViewServerRuntimeOptionsInput<Topics, Options>,
+  ): Effect.Effect<ViewServerRuntime<Topics>, ViewServerRuntimeFactoryError>;
+};
+
+export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDependencies =
+  Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Options extends object,
+  >(
+    dependencies: ViewServerRuntimeDependencies<Topics>,
+    config: ViewServerConfig<Topics>,
+    options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+  ) {
+    if (options === undefined) {
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
+        Topics,
+        RuntimeRegions,
+        GrpcRuntimeClients
+      >({});
+      return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
+    }
+    const resolvedOptions = yield* resolveViewServerRuntimeOptions(options);
+    return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
+  });
+
+const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
+  "ViewServerRuntime.makeFromResolvedOptions",
+)(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Options extends ViewServerRuntimeOptions<Topics> = ViewServerRuntimeOptions<Topics>,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
-) => Effect.Effect<
-  ViewServerRuntime<Topics>,
-  HttpServerError.ServeError | Config.ConfigError | ViewServerKafkaIngressError
-> = Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Options extends ViewServerRuntimeOptions<Topics>,
->(
-  dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+  resolvedOptions: ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
 ) {
-  const { runtimeCoreOptions, serverOptions, kafkaOptions } =
-    options === undefined
-      ? yield* resolveViewServerRuntimeOptions<Topics, RuntimeRegions>({})
-      : yield* resolveViewServerRuntimeOptions(options);
+  const kafkaOptions = resolvedOptions.kafkaOptions;
+  const grpcOptions = resolvedOptions.grpcOptions;
   const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
   const kafkaHealth =
     kafkaOptions === undefined
       ? undefined
       : dependencies.makeKafkaHealthLedger(config, kafkaOptions);
+  const grpcHealth =
+    grpcOptions === undefined ? undefined : dependencies.makeGrpcHealthLedger(config, grpcOptions);
   const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
     transportHealth: transportHealth.transportHealth,
   };
-  if (runtimeCoreOptions.groupedIncrementalAdmissionLimits !== undefined) {
+  if (resolvedOptions.runtimeCoreOptions.groupedIncrementalAdmissionLimits !== undefined) {
     runtimeCoreInput.groupedIncrementalAdmissionLimits =
-      runtimeCoreOptions.groupedIncrementalAdmissionLimits;
+      resolvedOptions.runtimeCoreOptions.groupedIncrementalAdmissionLimits;
   }
-  if (runtimeCoreOptions.subscriptionQueueCapacity !== undefined) {
-    runtimeCoreInput.subscriptionQueueCapacity = runtimeCoreOptions.subscriptionQueueCapacity;
+  if (resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity !== undefined) {
+    runtimeCoreInput.subscriptionQueueCapacity =
+      resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity;
   }
-  if (kafkaHealth !== undefined) {
+  if (kafkaHealth !== undefined || grpcHealth !== undefined) {
     runtimeCoreInput.healthOverlay = (
       health: ViewServerHealth<Topics>,
       nowMillis: number,
-    ): ViewServerHealth<Topics> => kafkaHealth.healthOverlay(health, nowMillis);
+    ): ViewServerHealth<Topics> => {
+      const kafkaOverlayed =
+        kafkaHealth === undefined ? health : kafkaHealth.healthOverlay(health, nowMillis);
+      return grpcHealth === undefined
+        ? kafkaOverlayed
+        : grpcHealth.healthOverlay(kafkaOverlayed, nowMillis);
+    };
   }
   const runtimeCore = yield* dependencies.makeRuntimeCore(config, runtimeCoreInput);
   const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
@@ -111,7 +159,7 @@ export const makeViewServerRuntimeWithDependencies: <
           streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshTransportHealth)),
         },
       },
-      serverOptions,
+      resolvedOptions.serverOptions,
     )
     .pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? runtimeCore.close : Effect.void)));
   const kafkaIngress =
@@ -132,7 +180,29 @@ export const makeViewServerRuntimeWithDependencies: <
                 : Effect.void,
             ),
           );
-  const close = (kafkaIngress?.close ?? Effect.void).pipe(
+  const grpcIngress =
+    grpcOptions === undefined || grpcHealth === undefined
+      ? undefined
+      : yield* dependencies
+          .makeGrpcIngress(
+            config,
+            runtimeCore.client,
+            runtimeCore.requestHealthRefresh,
+            grpcOptions,
+            grpcHealth,
+          )
+          .pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? (kafkaIngress?.close ?? Effect.void).pipe(
+                    Effect.ensuring(server.close),
+                    Effect.ensuring(runtimeCore.close),
+                  )
+                : Effect.void,
+            ),
+          );
+  const close = (grpcIngress?.close ?? Effect.void).pipe(
+    Effect.ensuring(kafkaIngress?.close ?? Effect.void),
     Effect.ensuring(server.close),
     Effect.ensuring(runtimeCore.close),
   );
@@ -156,7 +226,7 @@ const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <
 
 const makeViewServerRuntimeLaunchLayer = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Options extends ViewServerRuntimeOptions<Topics>,
+  const Options extends object,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
@@ -174,17 +244,20 @@ const makeViewServerRuntimeLaunchLayer = <
 
 export const runViewServerRuntimeWithDependencies: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Options extends ViewServerRuntimeOptions<Topics> = ViewServerRuntimeOptions<Topics>,
+  const Options extends object = ViewServerRuntimeOptions<Topics>,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,
   options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) => Effect.Effect<
   never,
-  HttpServerError.ServeError | Config.ConfigError | ViewServerKafkaIngressError
+  | HttpServerError.ServeError
+  | Config.ConfigError
+  | ViewServerKafkaIngressError
+  | ViewServerGrpcIngressError
 > = Effect.fn("ViewServerRuntime.runWithDependencies")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Options extends ViewServerRuntimeOptions<Topics>,
+  const Options extends object,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics>,

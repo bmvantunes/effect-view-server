@@ -24,6 +24,7 @@ import {
   Effect,
   Exit,
   Fiber,
+  Option,
   Queue,
   Schedule,
   Schema,
@@ -5931,8 +5932,16 @@ describe("@view-server/runtime", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
+      const eventQueue = yield* Queue.unbounded<unknown>();
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.runForEach((event) => Queue.offer(eventQueue, event)),
+        Effect.forkChild,
+      );
+      const snapshotEvent = yield* Queue.take(eventQueue);
+      const insertEvent = yield* Queue.take(eventQueue);
       yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 1);
       yield* manager.close;
+      const shutdownStatusEvent = yield* Queue.poll(eventQueue);
       yield* Deferred.await(streamInterrupted);
       const closedSubscribeError = yield* manager.liveClient
         .subscribe("orders", leasedOrdersQuery("usa"))
@@ -5946,6 +5955,9 @@ describe("@view-server/runtime", () => {
 
       expect({
         closedSubscribeError,
+        snapshotEvent,
+        insertEvent,
+        shutdownStatusEvent,
         released,
         rows: emptySnapshot.rows,
         totalRows: emptySnapshot.totalRows,
@@ -5957,11 +5969,43 @@ describe("@view-server/runtime", () => {
           topic: "orders",
           message: "gRPC leased feed manager is closed.",
         },
+        snapshotEvent: {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 0,
+          keys: [],
+          rows: [],
+          totalRows: 0,
+        },
+        insertEvent: {
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 0,
+          toVersion: 1,
+          operations: [
+            {
+              type: "insert",
+              key: "usa:usa-order-1",
+              row: {
+                id: "usa:usa-order-1",
+                customerId: "usa-order-1",
+                price: 10,
+                region: "usa",
+              },
+              index: 0,
+            },
+          ],
+          totalRows: 1,
+        },
+        shutdownStatusEvent: Option.none(),
         released: 1,
         rows: [],
         totalRows: 0,
         leasedFeeds: [],
       });
+      yield* Fiber.interrupt(eventsFiber);
       yield* subscription.close();
       yield* runtimeCore.close;
     }),

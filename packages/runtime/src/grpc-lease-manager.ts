@@ -997,10 +997,13 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
         });
       }
       if (Cause.hasInterruptsOnly(exit.cause)) {
-        return degradeInactiveLease({
-          publicMessage: "gRPC leased upstream interrupted unexpectedly.",
-          healthMessage: `gRPC leased feed ${lease.feedName} interrupted unexpectedly.`,
-        });
+        return Effect.when(
+          degradeInactiveLease({
+            publicMessage: "gRPC leased upstream interrupted unexpectedly.",
+            healthMessage: `gRPC leased feed ${lease.feedName} interrupted unexpectedly.`,
+          }),
+          Effect.sync(() => lease.acceptingSubscribers),
+        ).pipe(Effect.asVoid);
       }
       return degradeInactiveLease({
         publicMessage: "gRPC leased upstream failed.",

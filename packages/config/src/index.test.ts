@@ -31,6 +31,7 @@ import {
   viewServerHealthTopicRowsFromHealth,
   validateLiveQuerySourceRoute,
   type GrpcClientValue,
+  type GrpcFeedDefinition,
   type GrpcTopicFeedsHealth,
   type KafkaCodec,
   type KafkaMappingInput,
@@ -2338,6 +2339,26 @@ describe("defineViewServerConfig", () => {
       }),
     };
     expectTypeOf(invalidSpreadRuntimeFeedDefinition).not.toBeNever();
+
+    // @ts-expect-error spread-mutated materialized feeds must preserve client/method/request/acquire/map correlation.
+    const invalidMaterializedFeedClientMutation: GrpcFeedDefinition<
+      typeof grpcViewServer.topics,
+      typeof clients
+    > = {
+      ...materializedTrades,
+      client: "trades",
+    };
+    expectTypeOf(invalidMaterializedFeedClientMutation).not.toBeNever();
+
+    // @ts-expect-error spread-mutated leased feeds must preserve method/request/acquire/map correlation.
+    const invalidLeasedFeedMethodMutation: GrpcFeedDefinition<
+      typeof grpcViewServer.topics,
+      typeof clients
+    > = {
+      ...leasedOrders,
+      method: "streamTrades",
+    };
+    expectTypeOf(invalidLeasedFeedMethodMutation).not.toBeNever();
 
     feed.materializedFeed({
       topic: "trades",

@@ -4530,6 +4530,104 @@ describe("@view-server/runtime", () => {
     }),
   );
 
+  it.live("accepts decoded transform schema values for leased gRPC routes", () =>
+    Effect.gen(function* () {
+      const BigIntRouteOrder = Schema.Struct({
+        id: Schema.String,
+        accountId: Schema.BigIntFromString,
+        customerId: Schema.String,
+        price: Schema.Number,
+      });
+      const localViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: BigIntRouteOrder,
+            key: "id",
+            source: grpc.leased({
+              routeBy: ["accountId"],
+            }),
+          },
+        },
+      });
+      const localGrpcFeed = localViewServer.grpcFeed<typeof grpcClients>();
+      let acquiredRoute: bigint | null = null;
+      const feed = localGrpcFeed.leasedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["accountId"],
+        request: ({ accountId }) => ({ orderId: accountId.toString() }),
+        acquire: ({ route }) => {
+          acquiredRoute = route.accountId;
+          return Stream.never;
+        },
+        map: ({ value, route }) => ({
+          id: `${route.accountId}:${value.customerId}`,
+          accountId: route.accountId,
+          customerId: value.customerId,
+          price: value.price,
+        }),
+      });
+      const grpcOptions = yield* resolveViewServerRuntimeOptions<
+        typeof localViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          clients: grpcClients,
+          feeds: {
+            ordersLease: feed,
+          },
+        },
+      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+
+      const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        select: ["id", "accountId", "customerId"],
+        where: {
+          accountId: { eq: 7n },
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const snapshot = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect({
+        acquiredRoute,
+        snapshot,
+      }).toStrictEqual({
+        acquiredRoute: 7n,
+        snapshot: [
+          {
+            type: "snapshot",
+            topic: "orders",
+            queryId: "query-0",
+            version: 0,
+            keys: [],
+            rows: [],
+            totalRows: 0,
+          },
+        ],
+      });
+      yield* subscription.close();
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.live("rejects decoded leased gRPC route values that fail topic schema validation", () =>
     Effect.gen(function* () {
       const feed = grpcLeasedFeed({
@@ -5312,10 +5410,32 @@ describe("@view-server/runtime", () => {
 
       expect({
         released,
-        leasedFeedKeys: Object.keys(idleHealth.grpc?.feeds["orders"]?.leased ?? {}),
+        leasedFeed:
+          idleHealth.grpc?.feeds["orders"]?.leased[
+            "orders/ordersLease/leased/region=string%3A3%3Ausa"
+          ],
       }).toStrictEqual({
         released: 1,
-        leasedFeedKeys: [],
+        leasedFeed: {
+          status: "degraded",
+          lifecycle: "leased",
+          feedName: "ordersLease",
+          feedKey: "orders/ordersLease/leased/region=string%3A3%3Ausa",
+          topic: "orders",
+          subscriberCount: 0,
+          rowCount: 1,
+          messagesPerSecond: 0,
+          rowsPerSecond: 0,
+          decodeFailuresPerSecond: 0,
+          mappingFailuresPerSecond: 0,
+          publishFailuresPerSecond: 0,
+          reconnects: 0,
+          lastMessageAt:
+            idleHealth.grpc?.feeds["orders"]?.leased[
+              "orders/ordersLease/leased/region=string%3A3%3Ausa"
+            ]?.lastMessageAt,
+          lastError: "gRPC leased feed row cleanup failed for ordersLease",
+        },
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -5360,10 +5480,32 @@ describe("@view-server/runtime", () => {
 
       expect({
         released,
-        leasedFeedKeys: Object.keys(idleHealth.grpc?.feeds["orders"]?.leased ?? {}),
+        leasedFeed:
+          idleHealth.grpc?.feeds["orders"]?.leased[
+            "orders/ordersLease/leased/region=string%3A3%3Ausa"
+          ],
       }).toStrictEqual({
         released: 1,
-        leasedFeedKeys: [],
+        leasedFeed: {
+          status: "degraded",
+          lifecycle: "leased",
+          feedName: "ordersLease",
+          feedKey: "orders/ordersLease/leased/region=string%3A3%3Ausa",
+          topic: "orders",
+          subscriberCount: 0,
+          rowCount: 1,
+          messagesPerSecond: 0,
+          rowsPerSecond: 0,
+          decodeFailuresPerSecond: 0,
+          mappingFailuresPerSecond: 0,
+          publishFailuresPerSecond: 0,
+          reconnects: 0,
+          lastMessageAt:
+            idleHealth.grpc?.feeds["orders"]?.leased[
+              "orders/ordersLease/leased/region=string%3A3%3Ausa"
+            ]?.lastMessageAt,
+          lastError: "gRPC leased feed row cleanup failed for ordersLease",
+        },
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -5891,13 +6033,26 @@ describe("@view-server/runtime", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
-      const deltaEvents = yield* subscription.events.pipe(
-        Stream.filter((event) => event.type === "delta"),
-        Stream.take(2),
-        Stream.runCollect,
+      const eventQueue = yield* Queue.unbounded<unknown>();
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.runForEach((event) => Queue.offer(eventQueue, event)),
+        Effect.forkChild,
       );
+      const snapshot = yield* Queue.take(eventQueue);
+      const insertDelta = yield* Queue.take(eventQueue);
+      const removeDelta = yield* Queue.take(eventQueue);
+      const terminalStatus = yield* Queue.take(eventQueue);
 
-      expect(deltaEvents[0]).toStrictEqual({
+      expect(snapshot).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+      expect(insertDelta).toStrictEqual({
         type: "delta",
         topic: "orders",
         queryId: "query-0",
@@ -5918,7 +6073,7 @@ describe("@view-server/runtime", () => {
         ],
         totalRows: 1,
       });
-      expect(deltaEvents[1]).toStrictEqual({
+      expect(removeDelta).toStrictEqual({
         type: "delta",
         topic: "orders",
         queryId: "query-0",
@@ -5932,8 +6087,136 @@ describe("@view-server/runtime", () => {
         ],
         totalRows: 0,
       });
+      expect(terminalStatus).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "query-0",
+        status: "error",
+        code: "RuntimeUnavailable",
+        message: "gRPC leased upstream completed unexpectedly.",
+      });
+      const degradedHealth = yield* Effect.gen(function* () {
+        return health.healthOverlay(yield* runtimeCore.client.health(), 3_000);
+      }).pipe(
+        Effect.repeat({
+          schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
+          until: (currentHealth) =>
+            currentHealth.grpc?.feeds["orders"]?.leased[
+              "orders/ordersLease/leased/region=string%3A3%3Ausa"
+            ]?.rowCount === 0,
+        }),
+      );
+      expect(
+        degradedHealth.grpc?.feeds["orders"]?.leased[
+          "orders/ordersLease/leased/region=string%3A3%3Ausa"
+        ]?.rowCount,
+      ).toBe(0);
 
       yield* subscription.close();
+      yield* Fiber.interrupt(eventsFiber);
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.live("keeps leased gRPC subscribers informed when upstream cleanup delete fails", () =>
+    Effect.gen(function* () {
+      const completeUpstream = yield* Deferred.make<void>();
+      const feed = grpcLeasedFeed({
+        streamForRegion: (region) =>
+          Stream.make(grpcOrderValue(`${region}-order-1`, 10)).pipe(
+            Stream.concat(Stream.fromEffect(Deferred.await(completeUpstream)).pipe(Stream.drain)),
+          ),
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const health = makeLeasedGrpcHealth(grpcOptions);
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        leasedGrpcViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+
+      const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
+      const eventQueue = yield* Queue.unbounded<unknown>();
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.runForEach((event) => Queue.offer(eventQueue, event)),
+        Effect.forkChild,
+      );
+      const snapshot = yield* Queue.take(eventQueue);
+      const insertDelta = yield* Queue.take(eventQueue);
+      Object.defineProperty(runtimeCore.internalClient, "delete", {
+        value: () =>
+          Effect.fail(
+            new RuntimeTestFailure({
+              message: "runtime delete failed during upstream cleanup",
+            }),
+          ),
+      });
+      yield* Deferred.succeed(completeUpstream, undefined);
+      const terminalStatus = yield* Queue.take(eventQueue);
+
+      expect(snapshot).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+      expect(insertDelta).toStrictEqual({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-0",
+        fromVersion: 0,
+        toVersion: 1,
+        operations: [
+          {
+            type: "insert",
+            key: "usa:usa-order-1",
+            row: {
+              id: "usa:usa-order-1",
+              customerId: "usa-order-1",
+              price: 10,
+              region: "usa",
+            },
+            index: 0,
+          },
+        ],
+        totalRows: 1,
+      });
+      expect(terminalStatus).toStrictEqual({
+        type: "status",
+        topic: "orders",
+        queryId: "query-0",
+        status: "error",
+        code: "RuntimeUnavailable",
+        message: "gRPC leased upstream completed unexpectedly.",
+      });
+      const degradedHealth = yield* Effect.gen(function* () {
+        return health.healthOverlay(yield* runtimeCore.client.health(), 3_000);
+      }).pipe(
+        Effect.repeat({
+          schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
+          until: (currentHealth) =>
+            currentHealth.grpc?.feeds["orders"]?.leased[
+              "orders/ordersLease/leased/region=string%3A3%3Ausa"
+            ]?.rowCount === 1,
+        }),
+      );
+      expect(
+        degradedHealth.grpc?.feeds["orders"]?.leased[
+          "orders/ordersLease/leased/region=string%3A3%3Ausa"
+        ]?.lastError,
+      ).toContain("gRPC leased feed ordersLease completed unexpectedly");
+
+      yield* subscription.close();
+      yield* Fiber.interrupt(eventsFiber);
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -6240,9 +6523,9 @@ describe("@view-server/runtime", () => {
         leasedFeeds: Object.keys(idleHealth.grpc?.feeds["orders"]?.leased ?? {}),
       }).toStrictEqual({
         released: 1,
-        runtimeStatus: "ready",
-        clientStatus: "connected",
-        leasedFeeds: [],
+        runtimeStatus: "degraded",
+        clientStatus: "degraded",
+        leasedFeeds: ["orders/ordersLease/leased/region=string%3A3%3Ausa"],
       });
       yield* manager.close;
       yield* runtimeCore.close;

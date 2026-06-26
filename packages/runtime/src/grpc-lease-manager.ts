@@ -99,9 +99,14 @@ type ActiveLease = {
   readonly internalToPublicKeys: Map<string, string>;
   readonly internalToPublicGroupedKeys: Map<string, string>;
   readonly statusQueues: Set<Queue.Queue<StatusEvent>>;
+  readonly subscriptions: Set<ActiveLeaseSubscription>;
   subscribers: number;
   acceptingSubscribers: boolean;
   resourcesReleased: boolean;
+};
+
+type ActiveLeaseSubscription = {
+  readonly close: () => Effect.Effect<void, ViewServerTransportError, never>;
 };
 
 type AcquiredLease = {
@@ -279,7 +284,7 @@ const extractRoute = Effect.fn("ViewServerRuntime.grpc.leased.route.extract")(fu
         }),
       );
     }
-    const routeValue = yield* Schema.decodeUnknownEffect(fieldSchema)(value.value).pipe(
+    yield* Schema.encodeUnknownEffect(fieldSchema)(value.value).pipe(
       Effect.mapError(() =>
         runtimeError({
           code: "InvalidQuery",
@@ -287,7 +292,9 @@ const extractRoute = Effect.fn("ViewServerRuntime.grpc.leased.route.extract")(fu
           message: `Leased topic ${topic} route field ${field} value does not match the topic schema.`,
         }),
       ),
+      Effect.asVoid,
     );
+    const routeValue = value.value;
     if (!isCanonicalRouteValue(routeValue)) {
       return yield* Effect.fail(
         runtimeError({
@@ -722,9 +729,33 @@ const leasedFeedUnavailableStatus = (lease: ActiveLease, message: string): Statu
 const notifyLeaseSubscribers = Effect.fn("ViewServerRuntime.grpc.leased.subscribers.notify")(
   function* (lease: ActiveLease, message: string) {
     const status = leasedFeedUnavailableStatus(lease, message);
+    yield* Effect.forEach(
+      lease.subscriptions,
+      (subscription) => subscription.close().pipe(ignoreLeasedSubscriptionCloseFailure),
+      {
+        discard: true,
+      },
+    );
     yield* Effect.forEach(lease.statusQueues, (queue) => Queue.offer(queue, status), {
       discard: true,
     });
+  },
+);
+
+const resetLeaseRowCount = Effect.fn("ViewServerRuntime.grpc.leased.health.rowCount.reset")(
+  function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+    requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
+    health: ViewServerGrpcHealthLedger<Topics>,
+    lease: ActiveLease,
+  ) {
+    const nowMillis = yield* Clock.currentTimeMillis;
+    yield* health.rowsPublished(lease.feedKey, {
+      messages: 0,
+      rows: 0,
+      rowCount: 0,
+      nowMillis,
+    });
+    yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
   },
 );
 
@@ -937,12 +968,17 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
     lock.withPermit(
       Effect.gen(function* () {
         lease.acceptingSubscribers = false;
-        yield* notifyLeaseSubscribers(lease, input.publicMessage);
         yield* releaseResources();
         yield* health.feedDegraded(lease.feedKey, input.healthMessage);
         yield* health.clientDegraded(lease.feed.client, input.healthMessage);
-        yield* closeLeaseRows(runtimeClient, lease).pipe(ignoreLeasedReleaseFailure);
-        yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
+        const cleanupExit = yield* closeLeaseRows(runtimeClient, lease).pipe(Effect.exit);
+        if (Exit.isSuccess(cleanupExit)) {
+          yield* resetLeaseRowCount(requestHealthRefresh, health, lease);
+        } else {
+          yield* ignoreLeasedReleaseFailure(Effect.failCause(cleanupExit.cause));
+          yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
+        }
+        yield* notifyLeaseSubscribers(lease, input.publicMessage);
       }),
     );
   const runFeed = stream.pipe(
@@ -1172,6 +1208,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       internalToPublicKeys: new Map<string, string>(),
       internalToPublicGroupedKeys: new Map<string, string>(),
       statusQueues: new Set<Queue.Queue<StatusEvent>>([statusQueue]),
+      subscriptions: new Set<ActiveLeaseSubscription>(),
       subscribers: 1,
       acceptingSubscribers: true,
       resourcesReleased: false,
@@ -1253,6 +1290,10 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
       return Option.none();
     }
+    if (!current.acceptingSubscribers) {
+      yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
+      return Option.none();
+    }
     current.acceptingSubscribers = false;
     yield* health.feedStopping(lease.feedKey);
     yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
@@ -1263,7 +1304,21 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     "ViewServerRuntime.grpc.leased.releaseLease.cleanup",
   )(function* (lease: ActiveLease) {
     yield* Scope.close(lease.scope, Exit.void);
-    yield* closeLeaseRows(runtimeClient, lease).pipe(ignoreLeasedReleaseFailure);
+    const cleanupExit = yield* closeLeaseRows(runtimeClient, lease).pipe(Effect.exit);
+    if (Exit.isFailure(cleanupExit)) {
+      yield* ignoreLeasedReleaseFailure(Effect.failCause(cleanupExit.cause));
+      yield* health.feedDegraded(
+        lease.feedKey,
+        `gRPC leased feed row cleanup failed for ${lease.feedName}`,
+      );
+      yield* health.clientDegraded(
+        lease.feed.client,
+        `gRPC leased feed row cleanup failed for ${lease.feedName}`,
+      );
+      yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
+      return;
+    }
+    yield* resetLeaseRowCount(requestHealthRefresh, health, lease);
     yield* lock.withPermit(
       Effect.gen(function* () {
         leases.delete(lease.feedKey);
@@ -1300,12 +1355,14 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           }
           closed = true;
           input.lease.statusQueues.delete(input.statusQueue);
+          input.lease.subscriptions.delete(input.subscription);
           yield* Queue.shutdown(input.statusQueue);
           yield* input.subscription.close().pipe(ignoreLeasedSubscriptionCloseFailure);
           yield* releaseLease(input.lease);
         }),
       );
     });
+    input.lease.subscriptions.add(input.subscription);
     const runtimeEvents = input.subscription.events.pipe(
       Stream.map((event) =>
         externalizeLeasedEvent(input.lease, input.keyField, input.query, event),
@@ -1315,6 +1372,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     const fallbackStatusQueryId = `${input.lease.feed.topic}/leased-status`;
     const statusEventsWithQueryId = (queryId: string) =>
       Stream.fromQueue(input.statusQueue).pipe(
+        Stream.take(1),
         Stream.map((event) => ({
           ...event,
           queryId,
@@ -1329,7 +1387,8 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
         }
         const statusEvents = statusEventsWithQueryId(initialEvent.queryId);
         return Stream.succeed(initialEvent).pipe(
-          Stream.concat(remainingEvents.pipe(Stream.merge(statusEvents))),
+          Stream.concat(remainingEvents),
+          Stream.concat(statusEvents),
         );
       }),
     );
@@ -1505,6 +1564,16 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     yield* runAllFinalizers(
       activeLeases.map((lease) =>
         Scope.close(lease.scope, Exit.void).pipe(
+          Effect.andThen(
+            Effect.forEach(
+              lease.subscriptions,
+              (subscription) => subscription.close().pipe(ignoreLeasedSubscriptionCloseFailure),
+              {
+                discard: true,
+              },
+            ),
+          ),
+          Effect.andThen(Effect.sync(() => lease.subscriptions.clear())),
           Effect.andThen(
             Effect.forEach(lease.statusQueues, (queue) => Queue.shutdown(queue), {
               discard: true,

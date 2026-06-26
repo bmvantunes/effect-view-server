@@ -479,7 +479,9 @@ export const makeViewServerGrpcHealthLedger = <
             publishFailed: 0,
           });
           feed.lastMessageAt = input.nowMillis;
-          feed.lastError = null;
+          if (input.messages > 0 || input.rows > 0) {
+            feed.lastError = null;
+          }
         }
       }),
     mappingFailed: (feedName, input) =>

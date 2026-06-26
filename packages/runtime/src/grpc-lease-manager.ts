@@ -97,6 +97,7 @@ type ActiveLease = {
   readonly scope: Scope.Scope;
   readonly publicToInternalKeys: Map<string, string>;
   readonly internalToPublicKeys: Map<string, string>;
+  readonly internalToPublicGroupedKeys: Map<string, string>;
   readonly statusQueues: Set<Queue.Queue<StatusEvent>>;
   subscribers: number;
   acceptingSubscribers: boolean;
@@ -551,6 +552,9 @@ const internalizeLeasedRow = Effect.fn("ViewServerRuntime.grpc.leased.row.intern
 const publicKeyForInternalKey = (lease: ActiveLease, key: string): string =>
   lease.internalToPublicKeys.get(key) ?? key;
 
+const publicGroupedKeyForInternalKey = (lease: ActiveLease, key: string): string | undefined =>
+  lease.internalToPublicGroupedKeys.get(key);
+
 const externalizeLeasedRow = <Row extends object>(
   lease: ActiveLease,
   keyField: string,
@@ -564,6 +568,92 @@ const externalizeLeasedRow = <Row extends object>(
   Reflect.set(cloned, keyField, publicKeyForInternalKey(lease, rowKeyValue));
   return cloned;
 };
+
+const isGroupedRuntimeQuery = (query: unknown): query is Pick<GroupedQuery<object>, "groupBy"> =>
+  isRecord(query) && Array.isArray(query["groupBy"]);
+
+const groupedKeyEncodingErrorPrefix =
+  "Leased gRPC grouped key value cannot be encoded as a stable public key";
+
+const stableGroupedKeyValueTokenString = (value: unknown): string | undefined => {
+  if (BigDecimal.isBigDecimal(value)) {
+    return `["bigDecimal",${JSON.stringify(BigDecimal.format(BigDecimal.normalize(value)))}]`;
+  }
+  if (value === null) {
+    return `["null"]`;
+  }
+  if (typeof value === "bigint") {
+    return `["bigint",${JSON.stringify(value.toString())}]`;
+  }
+  if (typeof value === "number") {
+    return `["number",${JSON.stringify(Object.is(value, -0) ? "-0" : String(value))}]`;
+  }
+  if (typeof value === "string") {
+    return `["string",${JSON.stringify(value)}]`;
+  }
+  if (typeof value === "boolean") {
+    return `["boolean",${value ? "true" : "false"}]`;
+  }
+  if (value === undefined) {
+    return `["undefined"]`;
+  }
+  if (isCanonicalRouteValue(value)) {
+    return `["canonical",${JSON.stringify(encodeRouteValue(value))}]`;
+  }
+  return undefined;
+};
+
+const stableGroupedKeyFieldTokenString = (field: string, value: unknown): string | undefined => {
+  const valueToken = stableGroupedKeyValueTokenString(value);
+  if (valueToken === undefined) {
+    return undefined;
+  }
+  return `["array",[["string",${JSON.stringify(field)}],${valueToken}]]`;
+};
+
+const groupedKeyFromExternalizedRow = (
+  query: Pick<GroupedQuery<object>, "groupBy">,
+  row: object,
+): string | undefined => {
+  const tokens: Array<string> = [];
+  for (const field of query.groupBy) {
+    const token = stableGroupedKeyFieldTokenString(field, Reflect.get(row, field));
+    if (token === undefined) {
+      return undefined;
+    }
+    tokens.push(token);
+  }
+  return `["array",[${tokens.join(",")}]]`;
+};
+
+const externalizedGroupedOperationKey = (
+  lease: ActiveLease,
+  key: string,
+  query: Pick<GroupedQuery<object>, "groupBy">,
+  row: object,
+): string | undefined => {
+  const publicKey = groupedKeyFromExternalizedRow(query, row);
+  if (publicKey === undefined) {
+    return undefined;
+  }
+  lease.internalToPublicGroupedKeys.set(key, publicKey);
+  return publicKey;
+};
+
+const groupedKeyEncodingErrorStatus = (lease: ActiveLease, queryId: string): StatusEvent => ({
+  type: "status",
+  topic: lease.feed.topic,
+  queryId,
+  status: "error",
+  code: "RuntimeUnavailable",
+  message: groupedKeyEncodingErrorPrefix,
+});
+
+const isGroupedKeyEncodingErrorStatus = (event: ViewServerLiveEvent<unknown>): boolean =>
+  event.type === "status" &&
+  event.status === "error" &&
+  event.code === "RuntimeUnavailable" &&
+  event.message?.startsWith(groupedKeyEncodingErrorPrefix) === true;
 
 const rewriteKeyPredicateValue = (lease: ActiveLease, value: unknown): unknown => {
   if (typeof value === "string") {
@@ -641,31 +731,68 @@ const notifyLeaseSubscribers = Effect.fn("ViewServerRuntime.grpc.leased.subscrib
 const externalizeLeasedEvent = <Row extends object>(
   lease: ActiveLease,
   keyField: string,
+  query: unknown,
   event: ViewServerLiveEvent<Row>,
 ): ViewServerLiveEvent<Row> => {
+  const groupedQuery = isGroupedRuntimeQuery(query) ? query : undefined;
   if (event.type === "snapshot") {
+    const rows = event.rows.map((row) => externalizeLeasedRow(lease, keyField, row));
+    const keys: Array<string> = [];
+    if (groupedQuery === undefined) {
+      for (const key of event.keys) {
+        keys.push(publicKeyForInternalKey(lease, key));
+      }
+    } else {
+      for (const [index, internalKey] of event.keys.entries()) {
+        const row = Object(rows[index]);
+        const publicKey = groupedKeyFromExternalizedRow(groupedQuery, row);
+        if (publicKey === undefined) {
+          return groupedKeyEncodingErrorStatus(lease, event.queryId);
+        }
+        lease.internalToPublicGroupedKeys.set(internalKey, publicKey);
+        keys.push(publicKey);
+      }
+    }
     return {
       ...event,
-      keys: event.keys.map((key) => publicKeyForInternalKey(lease, key)),
-      rows: event.rows.map((row) => externalizeLeasedRow(lease, keyField, row)),
+      keys,
+      rows,
     };
   }
   if (event.type === "delta") {
+    const operations: Array<(typeof event.operations)[number]> = [];
+    for (const operation of event.operations) {
+      if (operation.type === "move" || operation.type === "remove") {
+        const publicGroupedKey =
+          groupedQuery === undefined
+            ? undefined
+            : publicGroupedKeyForInternalKey(lease, operation.key);
+        if (groupedQuery !== undefined && publicGroupedKey === undefined) {
+          return groupedKeyEncodingErrorStatus(lease, event.queryId);
+        }
+        operations.push({
+          ...operation,
+          key: publicGroupedKey ?? publicKeyForInternalKey(lease, operation.key),
+        });
+        continue;
+      }
+      const row = externalizeLeasedRow(lease, keyField, operation.row);
+      const publicGroupedKey =
+        groupedQuery === undefined
+          ? undefined
+          : externalizedGroupedOperationKey(lease, operation.key, groupedQuery, row);
+      if (groupedQuery !== undefined && publicGroupedKey === undefined) {
+        return groupedKeyEncodingErrorStatus(lease, event.queryId);
+      }
+      operations.push({
+        ...operation,
+        key: publicGroupedKey ?? publicKeyForInternalKey(lease, operation.key),
+        row,
+      });
+    }
     return {
       ...event,
-      operations: event.operations.map((operation) => {
-        if (operation.type === "move" || operation.type === "remove") {
-          return {
-            ...operation,
-            key: publicKeyForInternalKey(lease, operation.key),
-          };
-        }
-        return {
-          ...operation,
-          key: publicKeyForInternalKey(lease, operation.key),
-          row: externalizeLeasedRow(lease, keyField, operation.row),
-        };
-      }),
+      operations,
     };
   }
   return event;
@@ -864,8 +991,6 @@ const closeLeaseRows = Effect.fn("ViewServerRuntime.grpc.leased.rows.close")(fun
       discard: true,
     },
   );
-  lease.publicToInternalKeys.clear();
-  lease.internalToPublicKeys.clear();
 });
 
 const leasedFeedsByTopic = <
@@ -1045,6 +1170,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       scope,
       publicToInternalKeys: new Map<string, string>(),
       internalToPublicKeys: new Map<string, string>(),
+      internalToPublicGroupedKeys: new Map<string, string>(),
       statusQueues: new Set<Queue.Queue<StatusEvent>>([statusQueue]),
       subscribers: 1,
       acceptingSubscribers: true,
@@ -1160,6 +1286,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     readonly subscription: ViewServerLiveSubscription<Row>;
     readonly lease: ActiveLease;
     readonly keyField: string;
+    readonly query: unknown;
     readonly statusQueue: Queue.Queue<StatusEvent>;
   }): ViewServerLiveSubscription<Row> => {
     let closed = false;
@@ -1180,7 +1307,10 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       );
     });
     const runtimeEvents = input.subscription.events.pipe(
-      Stream.map((event) => externalizeLeasedEvent(input.lease, input.keyField, event)),
+      Stream.map((event) =>
+        externalizeLeasedEvent(input.lease, input.keyField, input.query, event),
+      ),
+      Stream.takeUntil(isGroupedKeyEncodingErrorStatus),
     );
     const fallbackStatusQueryId = `${input.lease.feed.topic}/leased-status`;
     const statusEventsWithQueryId = (queryId: string) =>
@@ -1204,7 +1334,10 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       }),
     );
     return {
-      events: eventsWithStableStatusQueryId.pipe(Stream.ensuring(close())),
+      events: eventsWithStableStatusQueryId.pipe(
+        Stream.takeUntil(isGroupedKeyEncodingErrorStatus),
+        Stream.ensuring(close()),
+      ),
       close: () => close(),
     };
   };
@@ -1270,6 +1403,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           subscription,
           lease: acquired.lease,
           keyField,
+          query,
           statusQueue: acquired.statusQueue,
         });
       }).pipe(Effect.onError(() => releaseAcquiredLease(acquired)));
@@ -1305,6 +1439,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           subscription,
           lease: acquired.lease,
           keyField,
+          query,
           statusQueue: acquired.statusQueue,
         });
       }).pipe(Effect.onError(() => releaseAcquiredLease(acquired)));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@view-server/config";
+import { defineViewServerConfig, grpc } from "@view-server/config";
 import { Effect, Schema, Stream } from "effect";
 import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
 import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
@@ -14,6 +14,18 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
+    },
+  },
+});
+
+const leasedViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      source: grpc.leased({
+        routeBy: ["id"],
+      }),
     },
   },
 });
@@ -190,6 +202,33 @@ describe("@view-server/in-memory", () => {
       expect("subscribeRuntime" in inMemory.client).toBe(false);
 
       yield* runtimeSubscription.close();
+      yield* inMemory.close;
+    }),
+  );
+
+  it.effect("testing adapter subscribes to leased gRPC topics through the internal live seam", () =>
+    Effect.gen(function* () {
+      const inMemory = yield* makeInMemoryViewServerTesting(leasedViewServer, {});
+      const subscription = yield* inMemory.liveClient.subscribe("orders", {
+        select: ["id", "price"],
+        where: {
+          id: { eq: "order-1" },
+        },
+        limit: 10,
+      });
+      const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect(events[0]).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+
+      yield* subscription.close();
       yield* inMemory.close;
     }),
   );

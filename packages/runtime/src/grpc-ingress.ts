@@ -170,7 +170,7 @@ const mapMaterializedValue = Effect.fn("ViewServerRuntime.grpc.materialized.map"
   value: GrpcMethodValue<Clients[ClientName], MethodName>,
 ) {
   const topicDefinition = config.topics[feed.topic];
-  return yield* Effect.try({
+  const row = yield* Effect.try({
     try: (): TopicRow<Topics, Topic> =>
       feed.map({
         value,
@@ -185,6 +185,17 @@ const mapMaterializedValue = Effect.fn("ViewServerRuntime.grpc.materialized.map"
         topic: feed.topic,
       }),
   });
+  yield* Schema.decodeUnknownEffect(topicDefinition.schema)(row).pipe(
+    Effect.mapError((cause) =>
+      grpcIngressError({
+        message: `gRPC feed mapping produced an invalid row for ${feedName}`,
+        cause,
+        feedName,
+        topic: feed.topic,
+      }),
+    ),
+  );
+  return row;
 });
 
 const publishMaterializedBatch = Effect.fn("ViewServerRuntime.grpc.materialized.publishBatch")(

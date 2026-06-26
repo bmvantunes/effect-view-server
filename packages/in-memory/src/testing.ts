@@ -37,7 +37,14 @@ const toInMemoryTestingInstance = <const Topics extends DecodableTopicDefinition
 ): ViewServerInMemoryTestingInstance<Topics> => ({
   client: runtimeCore.publicClient,
   close: runtimeCore.close,
-  liveClient: runtimeCore.liveClient,
+  liveClient: {
+    close: runtimeCore.liveClient.close,
+    health: runtimeCore.liveClient.health,
+    subscribe: runtimeCore.internalLiveClient.subscribeInternal,
+    subscribeRuntime: runtimeCore.internalLiveClient.subscribeRuntimeInternal,
+    subscribeHealth: runtimeCore.liveClient.subscribeHealth,
+    subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
+  },
 });
 
 export const makeInMemoryViewServerTesting: <const Topics extends DecodableTopicDefinitions>(

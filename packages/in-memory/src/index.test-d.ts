@@ -4,6 +4,7 @@ import { defineViewServerConfig, grpc, type ViewServerRuntimeError } from "@view
 import type { Effect } from "effect";
 import { Schema } from "effect";
 import { createInMemoryViewServer } from "./index";
+import { createInMemoryViewServerTesting } from "./testing";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -37,6 +38,7 @@ const leasedViewServer = defineViewServerConfig({
   },
 });
 const leasedInMemory = createInMemoryViewServer(leasedViewServer);
+const leasedTestingInMemory = createInMemoryViewServerTesting(leasedViewServer);
 const invalidTransportHealthOption = createInMemoryViewServer(viewServer, {
   // @ts-expect-error in-memory does not expose Runtime Core transport adapter hooks.
   transportHealth: () => ({
@@ -140,5 +142,37 @@ describe("in-memory type contracts", () => {
     expectTypeOf(invalidLeasedPatch).not.toBeAny();
     expectTypeOf(invalidLeasedDelete).not.toBeAny();
     expectTypeOf(invalidLeasedReset).not.toBeAny();
+  });
+
+  it("allows leased gRPC topics from the testing live client only", () => {
+    const leasedQuery = {
+      where: {
+        id: { eq: "order-1" },
+      },
+      select: ["id"],
+    } satisfies {
+      readonly where: {
+        readonly id: {
+          readonly eq: "order-1";
+        };
+      };
+      readonly select: readonly ["id"];
+    };
+    const testingLeasedSubscribe = leasedTestingInMemory.liveClient.subscribe(
+      "orders",
+      leasedQuery,
+    );
+    // @ts-expect-error testing in-memory still exposes only the public mutation client.
+    const invalidTestingLeasedPublish = leasedTestingInMemory.client.publish("orders", {
+      id: "order-1",
+      price: 42,
+    });
+
+    expectTypeOf<Effect.Success<typeof testingLeasedSubscribe>>().toEqualTypeOf<
+      ViewServerLiveSubscription<{
+        readonly id: string;
+      }>
+    >();
+    expectTypeOf(invalidTestingLeasedPublish).not.toBeAny();
   });
 });

@@ -66,7 +66,7 @@ export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopi
     const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
   >(
     topic: Topic,
-    query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
   ) => Effect.Effect<
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
@@ -114,7 +114,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
           | GroupedQuery<TopicRow<Topics, Topic>>,
       >(
         topic: Topic,
-        query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
+        query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
       ): Effect.Effect<
         ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError | ViewServerTransportError

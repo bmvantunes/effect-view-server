@@ -234,9 +234,13 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
                 : Effect.void,
             ),
           );
-  const close = (grpcIngress?.close ?? Effect.void).pipe(
+  const closeGrpcIngress: Effect.Effect<void> =
+    grpcIngress === undefined ? Effect.void : grpcIngress.close;
+  const closeKafkaIngress: Effect.Effect<void> =
+    kafkaIngress === undefined ? Effect.void : kafkaIngress.close;
+  const close: Effect.Effect<void> = closeGrpcIngress.pipe(
     Effect.ensuring(closeGrpcLeaseManager),
-    Effect.ensuring(kafkaIngress?.close ?? Effect.void),
+    Effect.ensuring(closeKafkaIngress),
     Effect.ensuring(server.close),
     Effect.ensuring(runtimeCore.close),
   );
@@ -244,6 +248,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
   return {
     url: server.url,
     healthUrl: server.healthUrl,
+    metricsUrl: server.metricsUrl,
     client: runtimeClient,
     liveClient: publicLiveClient,
     health: runtimeClient.health,
@@ -256,6 +261,7 @@ const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <
 >(runtime: ViewServerRuntime<Topics>) {
   yield* Effect.logInfo(`View Server WebSocket listening at ${runtime.url}`);
   yield* Effect.logInfo(`View Server health endpoint listening at ${runtime.healthUrl}`);
+  yield* Effect.logInfo(`View Server metrics endpoint listening at ${runtime.metricsUrl}`);
 });
 
 const makeViewServerRuntimeLaunchLayer = <

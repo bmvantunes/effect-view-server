@@ -64,6 +64,7 @@ export type ViewServerRuntimeOptions<
   readonly websocketPort?: number;
   readonly rpcPath?: RuntimeHttpPath;
   readonly healthPath?: RuntimeHttpPath;
+  readonly metricsPath?: RuntimeHttpPath;
   readonly kafka?: ViewServerKafkaRuntimeOptions<Topics, Regions>;
   readonly grpc?: ViewServerGrpcRuntimeOptions<Topics, GrpcClients>;
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
@@ -279,6 +280,7 @@ type ViewServerPublicRuntimeClient<Topics extends object> = Omit<
 export type ViewServerRuntime<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly url: string;
   readonly healthUrl: string;
+  readonly metricsUrl: string;
   readonly client: ViewServerPublicRuntimeClient<Topics>;
   readonly liveClient: ViewServerLiveClient<Topics>;
   readonly health: () => Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;

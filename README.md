@@ -2,8 +2,8 @@
 
 ## Remote React provider
 
-Server code starts a runtime through Effect RPC WebSocket and same-server
-`GET /health`:
+Server code starts a runtime through Effect RPC WebSocket plus same-server
+`GET /health` and `GET /metrics` endpoints:
 
 Node entrypoints should use `@effect/platform-node`'s `NodeRuntime.runMain` so
 `SIGINT` and `SIGTERM` interrupt the main fiber and run Effect finalizers.
@@ -24,6 +24,13 @@ NodeRuntime.runMain(
 The same-server `GET /health` endpoint serves the cached runtime health snapshot
 for deployment readiness checks. Internal `bigint` health fields, such as Kafka
 lag, are encoded as decimal strings in the JSON response.
+
+The same-server `GET /metrics` endpoint serves Prometheus text exposition derived
+from the same cached health snapshot. It exposes scrape-safe runtime, transport,
+engine, Kafka, and gRPC gauges/counters. It is not a full mirror of health:
+high-cardinality values such as raw error messages and route-specific leased
+feed keys remain in `GET /health`. Scrape failures that cannot decode health return `200` with
+`view_server_metrics_error 1` so the scrape itself remains observable.
 
 Browser React code keeps using the normal provider and hooks:
 

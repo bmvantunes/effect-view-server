@@ -96,6 +96,9 @@ describe("runtime type contracts", () => {
     expectTypeOf(runtime.healthUrl).toEqualTypeOf<
       ViewServerRuntime<typeof viewServer.topics>["healthUrl"]
     >();
+    expectTypeOf(runtime.metricsUrl).toEqualTypeOf<
+      ViewServerRuntime<typeof viewServer.topics>["metricsUrl"]
+    >();
     expectTypeOf(runtime.health).toEqualTypeOf<
       ViewServerRuntime<typeof viewServer.topics>["health"]
     >();
@@ -229,6 +232,10 @@ describe("runtime type contracts", () => {
     const invalidHealthPathOptions = makeViewServerRuntime(viewServer, {
       healthPath: "runtime-health",
     });
+    // @ts-expect-error runtime metrics paths must be absolute HTTP paths.
+    const invalidMetricsPathOptions = makeViewServerRuntime(viewServer, {
+      metricsPath: "runtime-metrics",
+    });
     // @ts-expect-error runtime RPC path must be a concrete slash-prefixed client URL path.
     const invalidWildcardRpcPathOptions = makeViewServerRuntime(viewServer, {
       rpcPath: "*",
@@ -236,6 +243,10 @@ describe("runtime type contracts", () => {
     // @ts-expect-error runtime health path must be a concrete slash-prefixed client URL path.
     const invalidWildcardHealthPathOptions = makeViewServerRuntime(viewServer, {
       healthPath: "*",
+    });
+    // @ts-expect-error runtime metrics path must be a concrete slash-prefixed client URL path.
+    const invalidWildcardMetricsPathOptions = makeViewServerRuntime(viewServer, {
+      metricsPath: "*",
     });
     const invalidGroupedAdmissionLimitKey = makeViewServerRuntime(viewServer, {
       groupedIncrementalAdmissionLimits: {
@@ -488,8 +499,10 @@ describe("runtime type contracts", () => {
     expectTypeOf(invalidTcpPublishPortOptions).not.toBeAny();
     expectTypeOf(invalidPathOptions).not.toBeAny();
     expectTypeOf(invalidHealthPathOptions).not.toBeAny();
+    expectTypeOf(invalidMetricsPathOptions).not.toBeAny();
     expectTypeOf(invalidWildcardRpcPathOptions).not.toBeAny();
     expectTypeOf(invalidWildcardHealthPathOptions).not.toBeAny();
+    expectTypeOf(invalidWildcardMetricsPathOptions).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitKey).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
     expectTypeOf<Effect.Success<typeof runtimeWithKafka>>().toMatchTypeOf<

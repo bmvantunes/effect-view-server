@@ -229,6 +229,12 @@ const fetchJson = Effect.fn("ViewServerServer.test.fetchJson")(function* (url: s
   return { response, value };
 });
 
+const fetchText = Effect.fn("ViewServerServer.test.fetchText")(function* (url: string) {
+  const response = yield* Effect.promise(() => fetch(url));
+  const text = yield* Effect.promise(() => response.text());
+  return { response, text };
+});
+
 const reserveTcpPort = Effect.fn("ViewServerServer.test.tcp.reservePort")(function* () {
   const server = yield* Effect.acquireRelease(
     Effect.callback<Net.Server, ServerTestTcpError>((resume) => {
@@ -660,6 +666,40 @@ describe("@view-server/server", () => {
     }),
   );
 
+  it.live("serves GET /metrics beside the websocket RPC endpoint", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: inMemory.client,
+      });
+
+      yield* inMemory.client.publish("orders", order("a", 10));
+
+      const metrics = yield* fetchText(server.metricsUrl);
+
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.response.headers.get("content-type")).toContain("text/plain");
+      expect(metrics.text).toContain("# TYPE view_server_runtime_status gauge");
+      expect(metrics.text).toContain("# TYPE view_server_runtime_version gauge");
+      expect(metrics.text).toContain("# TYPE view_server_transport_backpressure_events gauge");
+      expect(metrics.text).toContain("# TYPE view_server_engine_topic_grouped_evaluations gauge");
+      expect(metrics.text).toContain("# TYPE view_server_engine_topic_backpressure_events gauge");
+      expect(metrics.text).toContain("# TYPE view_server_grpc_feed_reconnects gauge");
+      expect(metrics.text).toContain('view_server_runtime_status{status="ready"} 1');
+      expect(metrics.text).toContain(
+        'view_server_engine_topic_rows{topic="orders",state="total"} 1',
+      );
+      expect(metrics.text).toContain(
+        'view_server_engine_topic_rows{topic="orders",state="live"} 1',
+      );
+      expect(metrics.text).toContain("view_server_transport_active_clients 0");
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+
   it.live("composes with the public runtime-core live client", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
@@ -766,9 +806,12 @@ describe("@view-server/server", () => {
       });
 
       const health = yield* fetchJson(server.healthUrl);
+      const metrics = yield* fetchText(server.metricsUrl);
 
       expect(health.response.status).toBe(500);
       expect(health.value).toStrictEqual(healthError);
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.text).toBe("view_server_metrics_error 1\n");
 
       yield* server.close;
       yield* inMemory.close;
@@ -851,6 +894,94 @@ describe("@view-server/server", () => {
                   committedOffset: null,
                   lastError: null,
                 },
+                london: {
+                  connected: false,
+                  assignedPartitions: 0,
+                  messagesPerSecond: 7,
+                  bytesPerSecond: 70,
+                  decodedMessagesPerSecond: 6,
+                  decodeFailuresPerSecond: 1,
+                  mappingFailuresPerSecond: 2,
+                  publishFailuresPerSecond: 3,
+                  commitFailuresPerSecond: 4,
+                  processingFailuresPerSecond: 5,
+                  lastMessageAt: null,
+                  lastCommitAt: null,
+                  consumerLagMessages: null,
+                  lagSampledAt: null,
+                  committedOffset: "11",
+                  lastError: "disconnected",
+                },
+              },
+            },
+          },
+        },
+        grpc: {
+          clients: {
+            ordersClient: {
+              status: "connected",
+              baseUrl: "http://127.0.0.1:8080",
+              activeFeeds: 3,
+              lastConnectedAt: null,
+              lastError: null,
+            },
+          },
+          feeds: {
+            orders: {
+              materialized: {
+                ordersFeed: {
+                  status: "ready",
+                  lifecycle: "materialized",
+                  feedName: "ordersFeed",
+                  feedKey: "ordersFeed",
+                  topic: "orders",
+                  subscriberCount: 2,
+                  rowCount: 5,
+                  messagesPerSecond: 9,
+                  rowsPerSecond: 8,
+                  decodeFailuresPerSecond: 0,
+                  mappingFailuresPerSecond: 0,
+                  publishFailuresPerSecond: 0,
+                  reconnects: 0,
+                  lastMessageAt: null,
+                  lastError: null,
+                },
+              },
+              leased: {
+                "ordersLease:strategy=strat-1": {
+                  status: "ready",
+                  lifecycle: "leased",
+                  feedName: "ordersLease",
+                  feedKey: "ordersLease:strategy=strat-1",
+                  topic: "orders",
+                  subscriberCount: 1,
+                  rowCount: 3,
+                  messagesPerSecond: 4,
+                  rowsPerSecond: 3,
+                  decodeFailuresPerSecond: 0,
+                  mappingFailuresPerSecond: 0,
+                  publishFailuresPerSecond: 0,
+                  reconnects: 0,
+                  lastMessageAt: null,
+                  lastError: null,
+                },
+                "ordersLease:strategy=strat-2": {
+                  status: "ready",
+                  lifecycle: "leased",
+                  feedName: "ordersLease",
+                  feedKey: "ordersLease:strategy=strat-2",
+                  topic: "orders",
+                  subscriberCount: 2,
+                  rowCount: 7,
+                  messagesPerSecond: 6,
+                  rowsPerSecond: 5,
+                  decodeFailuresPerSecond: 1,
+                  mappingFailuresPerSecond: 2,
+                  publishFailuresPerSecond: 3,
+                  reconnects: 4,
+                  lastMessageAt: null,
+                  lastError: null,
+                },
               },
             },
           },
@@ -866,9 +997,64 @@ describe("@view-server/server", () => {
       const expectedHealth =
         yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(degradedHealth);
       const health = yield* fetchJson(server.healthUrl);
+      const metrics = yield* fetchText(server.metricsUrl);
 
       expect(health.response.status).toBe(503);
       expect(health.value).toStrictEqual(expectedHealth);
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.text).toContain(
+        'view_server_kafka_region_connected{region="usa",sourceTopic="source_orders",viewServerTopic="orders"} 1',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_bytes_per_second{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 70',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_processing_failures_per_second{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 5',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_consumer_lag_messages{region="usa",sourceTopic="source_orders",viewServerTopic="orders"} 42',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_region_connected{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 0',
+      );
+      expect(metrics.text).not.toContain(
+        'view_server_kafka_consumer_lag_messages{region="london",sourceTopic="source_orders",viewServerTopic="orders"}',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_rows{lifecycle="materialized",topic="orders",feed="ordersFeed"} 5',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_client_active_feeds{client="ordersClient",baseUrl="http://127.0.0.1:8080"} 3',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_subscribers{lifecycle="leased",topic="orders",feed="ordersLease"} 3',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_messages_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_rows_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 8',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_mapping_failures_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 2',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_reconnects{lifecycle="leased",topic="orders",feed="ordersLease"} 4',
+      );
+      expect(
+        metrics.text
+          .split("\n")
+          .filter((line) =>
+            line.startsWith('view_server_grpc_feed_rows{lifecycle="leased",topic="orders"'),
+          ),
+      ).toStrictEqual([
+        'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
+      ]);
+      expect(metrics.text).not.toContain("ordersLease:strategy=strat-1");
+      expect(metrics.text).not.toContain("ordersLease:strategy=strat-2");
 
       yield* server.close;
       yield* inMemory.close;

@@ -64,10 +64,12 @@ describe("server type contracts", () => {
     const options = {
       path: "/rpc",
       healthPath: "/health",
+      metricsPath: "/metrics",
     } satisfies ViewServerWebSocketServerOptions;
     const prefixedOptions = {
       path: "/view-server/rpc",
       healthPath: "/view-server/health",
+      metricsPath: "/view-server/metrics",
     } satisfies ViewServerWebSocketServerOptions;
 
     const invalidWildcardRpcPath: ViewServerWebSocketServerOptions = {
@@ -86,14 +88,26 @@ describe("server type contracts", () => {
       // @ts-expect-error health path must be slash-prefixed.
       healthPath: "health",
     };
+    const invalidWildcardMetricsPath: ViewServerWebSocketServerOptions = {
+      // @ts-expect-error metrics path must produce a concrete fetch URL.
+      metricsPath: "*",
+    };
+    const invalidBareMetricsPath: ViewServerWebSocketServerOptions = {
+      // @ts-expect-error metrics path must be slash-prefixed.
+      metricsPath: "metrics",
+    };
 
     expectTypeOf(options.path).toEqualTypeOf<"/rpc">();
     expectTypeOf(options.healthPath).toEqualTypeOf<"/health">();
+    expectTypeOf(options.metricsPath).toEqualTypeOf<"/metrics">();
     expectTypeOf(prefixedOptions.path).toEqualTypeOf<"/view-server/rpc">();
     expectTypeOf(prefixedOptions.healthPath).toEqualTypeOf<"/view-server/health">();
+    expectTypeOf(prefixedOptions.metricsPath).toEqualTypeOf<"/view-server/metrics">();
     expectTypeOf(invalidWildcardRpcPath).not.toBeAny();
     expectTypeOf(invalidWildcardHealthPath).not.toBeAny();
     expectTypeOf(invalidBareRpcPath).not.toBeAny();
     expectTypeOf(invalidBareHealthPath).not.toBeAny();
+    expectTypeOf(invalidWildcardMetricsPath).not.toBeAny();
+    expectTypeOf(invalidBareMetricsPath).not.toBeAny();
   });
 });

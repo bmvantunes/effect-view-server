@@ -6,6 +6,7 @@ import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest } from "effe
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 import * as Http from "node:http";
 import { makeViewServerHealthRoute } from "./health-route";
+import { makeViewServerMetricsRoute } from "./metrics-route";
 import { makeViewServerRpcHandlers } from "./rpc-handlers";
 import type {
   Jsonify,
@@ -72,6 +73,7 @@ export const makeViewServerWebSocketServer: <const Topics extends TopicDefinitio
 ) {
   const path = options.path ?? "/rpc";
   const healthPath = options.healthPath ?? "/health";
+  const metricsPath = options.metricsPath ?? "/metrics";
   const handlerScope = yield* Scope.make("parallel");
   const activeSocketClosers: ActiveSocketClosers = new Set();
   const protocol = makeTrackedWebSocketProtocolLayer(path, input, activeSocketClosers).pipe(
@@ -79,7 +81,8 @@ export const makeViewServerWebSocketServer: <const Topics extends TopicDefinitio
   );
   const handlers = ViewServerRpcs.toLayer(makeViewServerRpcHandlers(config, input, handlerScope));
   const healthRoute = makeViewServerHealthRoute(config, input, healthPath);
-  const httpApp = Layer.merge(protocol, healthRoute);
+  const metricsRoute = makeViewServerMetricsRoute(config, input, metricsPath);
+  const httpApp = Layer.mergeAll(protocol, healthRoute, metricsRoute);
   const rpcLayer = RpcServer.layer(ViewServerRpcs, {
     disableFatalDefects: true,
   }).pipe(
@@ -112,6 +115,7 @@ export const makeViewServerWebSocketServer: <const Topics extends TopicDefinitio
   return {
     url: `${serverUrl}${path}`,
     healthUrl: `${publicHttpUrl}${healthPath}`,
+    metricsUrl: `${publicHttpUrl}${metricsPath}`,
     close: Scope.close(handlerScope, Exit.void).pipe(
       Effect.andThen(closeTrackedSockets(activeSocketClosers)),
       Effect.andThen(managedRuntime.disposeEffect),

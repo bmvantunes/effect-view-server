@@ -8,29 +8,29 @@
       "benchmarks": [
         {
           "groupName": "src/grpc-materialized.bench.ts > runtime gRPC materialized benchmark",
-          "maxMs": 8.290083000000038,
-          "meanMs": 8.082249666666693,
-          "minMs": 7.859915999999998,
+          "maxMs": 11.309332999999981,
+          "meanMs": 9.537347333333344,
+          "minMs": 7.8572920000000295,
           "name": "gRPC materialized stream batch",
-          "p99Ms": 8.290083000000038,
+          "p99Ms": 11.309332999999981,
           "sampleCount": 3
         },
         {
           "groupName": "src/grpc-materialized.bench.ts > runtime gRPC materialized benchmark",
-          "maxMs": 28.022166999999968,
-          "meanMs": 26.921097333333325,
-          "minMs": 26.145040999999992,
+          "maxMs": 25.704166999999984,
+          "meanMs": 25.087791666666664,
+          "minMs": 24.470916999999986,
           "name": "gRPC materialized burst",
-          "p99Ms": 28.022166999999968,
+          "p99Ms": 25.704166999999984,
           "sampleCount": 3
         },
         {
           "groupName": "src/grpc-materialized.bench.ts > runtime gRPC materialized benchmark",
-          "maxMs": 0.09816699999998946,
-          "meanMs": 0.08781933333333806,
-          "minMs": 0.08258299999999963,
+          "maxMs": 0.09954099999993105,
+          "meanMs": 0.08881933333331442,
+          "minMs": 0.08254199999998946,
           "name": "gRPC materialized health overlay",
-          "p99Ms": 0.09816699999998946,
+          "p99Ms": 0.09954099999993105,
           "sampleCount": 3
         }
       ],
@@ -47,12 +47,50 @@
         "seedRows": 1000
       },
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 44187648,
+      "memoryRssTotalDeltaBytes": 44171264,
       "minimumSampleCount": 3,
       "mutationCount": 7400,
       "outputJsonPath": "packages/runtime/.artifacts/grpc-materialized-1000seed-256batch.json",
       "queuedEventCount": 0,
       "rowCount": 1000,
+      "runtimeOperationCases": [
+        {
+          "maxHealthOverlayMs": 0.203125,
+          "maxSnapshotMs": 0.44929199999995717,
+          "maxStreamConvergenceMs": 10.76558399999999,
+          "meanHealthOverlayMs": 0.17764999999998282,
+          "meanRowsPerSecond": 31008.813740619342,
+          "meanSnapshotMs": 0.39160819999998464,
+          "meanStreamConvergenceMs": 8.435575000000005,
+          "name": "gRPC materialized stream batch",
+          "sampleCount": 5,
+          "totalRows": 2280
+        },
+        {
+          "maxHealthOverlayMs": 0.20495900000003076,
+          "maxSnapshotMs": 0.7369999999999663,
+          "maxStreamConvergenceMs": 31.96308300000004,
+          "meanHealthOverlayMs": 0.16196640000002843,
+          "meanRowsPerSecond": 40218.55704677621,
+          "meanSnapshotMs": 0.5642667999999503,
+          "meanStreamConvergenceMs": 25.782674999999983,
+          "name": "gRPC materialized burst",
+          "sampleCount": 5,
+          "totalRows": 7400
+        },
+        {
+          "maxHealthOverlayMs": 0.16908300000000054,
+          "maxSnapshotMs": 0,
+          "maxStreamConvergenceMs": 0,
+          "meanHealthOverlayMs": 0.10463340000001153,
+          "meanRowsPerSecond": 0,
+          "meanSnapshotMs": 0,
+          "meanStreamConvergenceMs": 0,
+          "name": "gRPC materialized health overlay",
+          "sampleCount": 5,
+          "totalRows": 7400
+        }
+      ],
       "subscriberCount": 0,
       "summaryPath": "packages/runtime/.artifacts/grpc-materialized-1000seed-256batch.summary.json",
       "taskLabel": "gRPC materialized 1000 seed rows 256 batch",
@@ -71,6 +109,14 @@
     "memoryRssTotalDelta": {
       "maxAbsoluteDeltaBytes": 134217728,
       "maxRatio": 3
+    },
+    "operationMax": {
+      "maxAbsoluteDeltaMs": 100,
+      "maxRatio": 16
+    },
+    "operationMean": {
+      "maxAbsoluteDeltaMs": 25,
+      "maxRatio": 12
     },
     "throughputAggregateRowsPerSecond": {
       "minRatio": 0.5

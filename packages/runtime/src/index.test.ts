@@ -43,6 +43,15 @@ import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import { makeViewServerRuntime, runViewServerRuntime } from "./index";
 import { ViewServerKafkaIngressError } from "./kafka-ingress";
 import {
+  installTcpPublishAcceptedSocket,
+  installTcpServerSteadyStateErrorHandler,
+  makeViewServerTcpPublishIngress,
+  rejectTcpSocketWhenClosed,
+  tcpPublishUrl,
+  ViewServerTcpPublishIngressError,
+  writeTcpJsonLine,
+} from "./tcp-publish-ingress";
+import {
   resolveViewServerRuntimeOptions,
   validateGrpcSourceFeeds,
   validateSourceOwnership,
@@ -50,6 +59,7 @@ import {
   type ResolvedViewServerKafkaRuntimeOptions,
 } from "./runtime-options";
 import { makeViewServerRuntimeTransportHealth } from "./transport-health";
+import * as Net from "node:net";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -81,10 +91,142 @@ class RuntimeTestFailure extends Schema.TaggedErrorClass<RuntimeTestFailure>()(
   },
 ) {}
 
+class RuntimeTcpTestFailure extends Schema.TaggedErrorClass<RuntimeTcpTestFailure>()(
+  "RuntimeTcpTestFailure",
+  {
+    cause: Schema.Unknown,
+    message: Schema.String,
+  },
+) {}
+
+const TcpPublishResponse = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    error: Schema.Struct({
+      _tag: Schema.String,
+      code: Schema.optional(Schema.String),
+      message: Schema.String,
+      phase: Schema.optional(Schema.String),
+      topic: Schema.optional(Schema.String),
+    }),
+  }),
+]);
+
+type TcpPublishResponse = typeof TcpPublishResponse.Type;
+
+const TestTcpAddress = Schema.Struct({
+  address: Schema.String,
+  family: Schema.String,
+  port: Schema.Number,
+});
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
+      key: "id",
+    },
+  },
+});
+
+const NestedTcpOrder = Schema.Struct({
+  id: Schema.String,
+  meta: Schema.Struct({
+    desk: Schema.String,
+  }),
+});
+
+const nestedTcpViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: NestedTcpOrder,
+      key: "id",
+    },
+  },
+});
+
+const TransformTcpOrder = Schema.Struct({
+  id: Schema.String,
+  quantity: Schema.BigIntFromString,
+});
+
+const transformTcpViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: TransformTcpOrder,
+      key: "id",
+    },
+  },
+});
+
+const JsonCodecTcpNested = Schema.Struct({
+  encodedQuantity: Schema.BigIntFromString,
+  runtimeAmount: Schema.BigDecimal,
+  runtimeQuantity: Schema.optionalKey(Schema.BigInt),
+});
+
+const JsonCodecTcpOrder = Schema.Struct({
+  allocations: Schema.Record(Schema.String, JsonCodecTcpNested).check(Schema.isMinProperties(1)),
+  fills: Schema.Array(JsonCodecTcpNested).check(Schema.isMinLength(1)),
+  id: Schema.String,
+  amount: Schema.BigDecimal,
+  checkedOptionalMeta: Schema.optionalKey(JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
+  checkedSuspendedMeta: Schema.optionalKey(
+    Schema.suspend(() => JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
+  ),
+  meta: JsonCodecTcpNested,
+  nullableMeta: Schema.NullOr(JsonCodecTcpNested),
+  optionalMeta: Schema.optionalKey(JsonCodecTcpNested),
+  optionalValueMeta: Schema.optional(JsonCodecTcpNested),
+  quantity: Schema.BigInt,
+  suspendedMeta: Schema.suspend(() => JsonCodecTcpNested),
+  tuple: Schema.Tuple([JsonCodecTcpNested]),
+  tupleRest: Schema.TupleWithRest(Schema.Tuple([JsonCodecTcpNested]), [JsonCodecTcpNested]),
+  tupleRestTrailing: Schema.TupleWithRest(Schema.Tuple([JsonCodecTcpNested]), [
+    JsonCodecTcpNested,
+    JsonCodecTcpNested,
+  ]),
+  unionMeta: Schema.Union([JsonCodecTcpNested, Schema.Undefined]),
+});
+
+const jsonCodecTcpViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: JsonCodecTcpOrder,
+      key: "id",
+    },
+  },
+});
+
+type JsonCodecTcpRecursiveNode = {
+  readonly id: bigint;
+  readonly amount: BigDecimal.BigDecimal;
+  readonly runtimeQuantity: bigint;
+  readonly child: JsonCodecTcpRecursiveNode | null;
+};
+
+const JsonCodecTcpRecursiveNode: Schema.Codec<JsonCodecTcpRecursiveNode, unknown, never, never> =
+  Schema.suspend(
+    (): Schema.Codec<JsonCodecTcpRecursiveNode, unknown, never, never> =>
+      Schema.Struct({
+        id: Schema.BigIntFromString,
+        amount: Schema.BigDecimal,
+        runtimeQuantity: Schema.BigInt,
+        child: Schema.NullOr(JsonCodecTcpRecursiveNode),
+      }),
+  );
+const JsonCodecTcpRecursiveOrder = Schema.Struct({
+  id: Schema.String,
+  node: JsonCodecTcpRecursiveNode,
+});
+
+const jsonCodecTcpRecursiveViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: JsonCodecTcpRecursiveOrder,
       key: "id",
     },
   },
@@ -587,6 +729,190 @@ const fetchText = Effect.fn("ViewServerRuntime.test.text.fetch")(function* (url:
   return { response, text };
 });
 
+const tcpUrlConnectHost = (hostname: string): string =>
+  hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+
+const connectTcpPublishSocket = Effect.fn("ViewServerRuntime.test.tcp.connect")(function* (
+  url: string,
+) {
+  const parsedUrl = new URL(url);
+  const port = Number(parsedUrl.port);
+  if (!Number.isSafeInteger(port)) {
+    return yield* new RuntimeTcpTestFailure({
+      message: "TCP publish URL did not include a valid port.",
+      cause: url,
+    });
+  }
+  return yield* Effect.callback<Net.Socket, RuntimeTcpTestFailure>((resume) => {
+    const socket = Net.createConnection({
+      host: tcpUrlConnectHost(parsedUrl.hostname),
+      port,
+    });
+    socket.setEncoding("utf8");
+    socket.once("connect", () => {
+      resume(Effect.succeed(socket));
+    });
+    socket.once("error", (cause) => {
+      resume(
+        Effect.fail(
+          new RuntimeTcpTestFailure({
+            message: "TCP publish socket failed to connect.",
+            cause,
+          }),
+        ),
+      );
+    });
+  });
+});
+
+const readTcpPublishResponse = Effect.fn("ViewServerRuntime.test.tcp.response.read")(function* (
+  socket: Net.Socket,
+) {
+  const line = yield* Effect.callback<string, RuntimeTcpTestFailure>((resume) => {
+    let buffer = "";
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex >= 0) {
+        resume(Effect.succeed(buffer.slice(0, newlineIndex)));
+      }
+    });
+    socket.once("error", (cause) => {
+      resume(
+        Effect.fail(
+          new RuntimeTcpTestFailure({
+            message: "TCP publish socket failed while reading response.",
+            cause,
+          }),
+        ),
+      );
+    });
+  });
+  const value = yield* Effect.try({
+    try: (): unknown => JSON.parse(line),
+    catch: (cause) =>
+      new RuntimeTcpTestFailure({
+        message: "TCP publish response was not valid JSON.",
+        cause,
+      }),
+  });
+  return yield* Schema.decodeUnknownEffect(TcpPublishResponse)(value).pipe(
+    Effect.mapError(
+      (cause) =>
+        new RuntimeTcpTestFailure({
+          message: "TCP publish response did not match the test schema.",
+          cause,
+        }),
+    ),
+  );
+});
+
+const readTcpPublishResponses = Effect.fn("ViewServerRuntime.test.tcp.responses.read")(function* (
+  socket: Net.Socket,
+  count: number,
+) {
+  const lines = yield* Effect.callback<ReadonlyArray<string>, RuntimeTcpTestFailure>((resume) => {
+    let buffer = "";
+    const responses: Array<string> = [];
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        responses.push(buffer.slice(0, newlineIndex));
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
+      }
+      if (responses.length === count) {
+        resume(Effect.succeed(responses));
+      }
+    });
+    socket.once("error", (cause) => {
+      resume(
+        Effect.fail(
+          new RuntimeTcpTestFailure({
+            message: "TCP publish socket failed while reading responses.",
+            cause,
+          }),
+        ),
+      );
+    });
+  });
+  return yield* Effect.forEach(lines, (line) =>
+    Effect.try({
+      try: (): unknown => JSON.parse(line),
+      catch: (cause) =>
+        new RuntimeTcpTestFailure({
+          message: "TCP publish response was not valid JSON.",
+          cause,
+        }),
+    }).pipe(
+      Effect.flatMap((value) => Schema.decodeUnknownEffect(TcpPublishResponse)(value)),
+      Effect.mapError(
+        (cause) =>
+          new RuntimeTcpTestFailure({
+            message: "TCP publish response did not match the test schema.",
+            cause,
+          }),
+      ),
+    ),
+  );
+});
+
+const sendTcpPublishLine = Effect.fn("ViewServerRuntime.test.tcp.line.send")(function* (
+  url: string,
+  line: string,
+) {
+  const socket = yield* Effect.acquireRelease(connectTcpPublishSocket(url), (socket) =>
+    Effect.sync(() => socket.destroy()),
+  );
+  socket.write(`${line}\n`);
+  return yield* readTcpPublishResponse(socket).pipe(Effect.timeout("1 second"));
+});
+
+const sendTcpPublishCommand = Effect.fn("ViewServerRuntime.test.tcp.command.send")(function* (
+  url: string,
+  command: object,
+) {
+  return yield* sendTcpPublishLine(url, JSON.stringify(command));
+});
+
+const closeTestTcpServer = (server: Net.Server): Effect.Effect<void> =>
+  Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  );
+
+const reserveTcpPort = Effect.fn("ViewServerRuntime.test.tcp.port.reserve")(function* () {
+  const server = yield* Effect.callback<Net.Server, RuntimeTcpTestFailure>((resume) => {
+    const nextServer = Net.createServer();
+    nextServer.once("error", (cause) => {
+      resume(
+        Effect.fail(
+          new RuntimeTcpTestFailure({
+            message: "Test TCP server failed to reserve a port.",
+            cause,
+          }),
+        ),
+      );
+    });
+    nextServer.listen({ host: "127.0.0.1", port: 0 }, () => {
+      resume(Effect.succeed(nextServer));
+    });
+  });
+  const address = yield* Schema.decodeUnknownEffect(TestTcpAddress)(server.address()).pipe(
+    Effect.mapError(
+      (cause) =>
+        new RuntimeTcpTestFailure({
+          message: "Test TCP server produced an invalid listen address.",
+          cause,
+        }),
+    ),
+  );
+  return { server, port: address.port };
+});
+
 const waitForTransportHealth = Effect.fn("ViewServerRuntime.test.transportHealth.wait")(function* (
   health: () => Effect.Effect<{ readonly transport: TransportHealth }, unknown>,
   expected: {
@@ -851,6 +1177,2151 @@ describe("@view-server/runtime", () => {
     }),
   );
 
+  it.live("accepts TCP publish commands through the runtime mutation path", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+      const subscription = yield* runtime.liveClient.subscribe("orders", {
+        select: ["id", "price"],
+        where: {
+          price: { gte: 10 },
+        },
+        orderBy: [{ field: "price", direction: "asc" }],
+        limit: 10,
+      });
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.take(5),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const responses = [
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+          patch: { price: 5 },
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publishMany",
+          topic: "orders",
+          rows: [order("b", 20), order("c", 30)],
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "delete",
+          topic: "orders",
+          key: "b",
+        }),
+      ];
+
+      expect(responses).toStrictEqual([{ ok: true }, { ok: true }, { ok: true }, { ok: true }]);
+
+      const events = yield* Fiber.join(eventsFiber);
+      expect(events).toStrictEqual([
+        {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 0,
+          keys: [],
+          rows: [],
+          totalRows: 0,
+        },
+        {
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 0,
+          toVersion: 1,
+          operations: [{ type: "insert", key: "a", row: { id: "a", price: 10 }, index: 0 }],
+          totalRows: 1,
+        },
+        {
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 1,
+          toVersion: 2,
+          operations: [{ type: "remove", key: "a" }],
+          totalRows: 0,
+        },
+        {
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 2,
+          toVersion: 3,
+          operations: [
+            { type: "insert", key: "b", row: { id: "b", price: 20 }, index: 0 },
+            { type: "insert", key: "c", row: { id: "c", price: 30 }, index: 1 },
+          ],
+          totalRows: 2,
+        },
+        {
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 3,
+          toVersion: 4,
+          operations: [{ type: "remove", key: "b" }],
+          totalRows: 1,
+        },
+      ]);
+      yield* subscription.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("passes TCP JSON rows to runtime core without double-decoding transform schemas", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(transformTcpViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const responses = [
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "publish",
+          topic: "orders",
+          row: { id: "a", quantity: "9007199254740993" },
+        }),
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+          patch: { quantity: "9007199254740995" },
+        }),
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "publishMany",
+          topic: "orders",
+          rows: [{ id: "b", quantity: "9007199254740997" }],
+        }),
+      ];
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "quantity"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(responses).toStrictEqual([{ ok: true }, { ok: true }, { ok: true }]);
+      expect(snapshot).toStrictEqual({
+        rows: [
+          { id: "a", quantity: 9007199254740995n },
+          { id: "b", quantity: 9007199254740997n },
+        ],
+        totalRows: 2,
+        version: 3,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("decodes TCP rows and patches through topic JSON codecs before publishing", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(jsonCodecTcpViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const responses = [
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "publish",
+          topic: "orders",
+          row: {
+            allocations: {
+              ["__proto__"]: {
+                encodedQuantity: "2002",
+                runtimeAmount: "22.25",
+                runtimeQuantity: "21002",
+              },
+              primary: {
+                encodedQuantity: "2001",
+                runtimeAmount: "21.25",
+                runtimeQuantity: "21001",
+              },
+            },
+            fills: [
+              {
+                encodedQuantity: "3001",
+                runtimeAmount: "31.25",
+                runtimeQuantity: "31001",
+              },
+            ],
+            id: "a",
+            amount: "123.45",
+            meta: {
+              encodedQuantity: "1001",
+              runtimeAmount: "11.25",
+              runtimeQuantity: "11001",
+            },
+            nullableMeta: {
+              encodedQuantity: "7001",
+              runtimeAmount: "71.25",
+            },
+            optionalMeta: {
+              encodedQuantity: "8001",
+              runtimeAmount: "81.25",
+            },
+            optionalValueMeta: {
+              encodedQuantity: "9001",
+              runtimeAmount: "91.25",
+            },
+            quantity: "9007199254740993",
+            suspendedMeta: {
+              encodedQuantity: "11001",
+              runtimeAmount: "111.25",
+              runtimeQuantity: "111001",
+            },
+            tuple: [
+              {
+                encodedQuantity: "4001",
+                runtimeAmount: "41.25",
+                runtimeQuantity: "41001",
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: "5001",
+                runtimeAmount: "51.25",
+                runtimeQuantity: "51001",
+              },
+              {
+                encodedQuantity: "5002",
+                runtimeAmount: "52.25",
+                runtimeQuantity: "51002",
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: "6001",
+                runtimeAmount: "61.25",
+                runtimeQuantity: "61001",
+              },
+              {
+                encodedQuantity: "6002",
+                runtimeAmount: "62.25",
+                runtimeQuantity: "61002",
+              },
+              {
+                encodedQuantity: "6003",
+                runtimeAmount: "63.25",
+                runtimeQuantity: "61003",
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: "10001",
+              runtimeAmount: "101.25",
+              runtimeQuantity: "101001",
+            },
+          },
+        }),
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+          patch: {
+            allocations: {
+              ["__proto__"]: {
+                encodedQuantity: "2004",
+                runtimeAmount: "24.25",
+                runtimeQuantity: "21004",
+              },
+              primary: {
+                encodedQuantity: "2003",
+                runtimeAmount: "23.25",
+                runtimeQuantity: "21003",
+              },
+            },
+            amount: "678.90",
+            fills: [
+              {
+                encodedQuantity: "3003",
+                runtimeAmount: "33.25",
+                runtimeQuantity: "31003",
+              },
+            ],
+            meta: {
+              encodedQuantity: "1003",
+              runtimeAmount: "33.75",
+              runtimeQuantity: "11003",
+            },
+            nullableMeta: {
+              encodedQuantity: "7003",
+              runtimeAmount: "73.25",
+            },
+            optionalMeta: {
+              encodedQuantity: "8003",
+              runtimeAmount: "83.25",
+            },
+            optionalValueMeta: {
+              encodedQuantity: "9003",
+              runtimeAmount: "93.25",
+            },
+            quantity: "9007199254740995",
+            suspendedMeta: {
+              encodedQuantity: "11003",
+              runtimeAmount: "113.25",
+              runtimeQuantity: "111003",
+            },
+            tuple: [
+              {
+                encodedQuantity: "4003",
+                runtimeAmount: "43.25",
+                runtimeQuantity: "41003",
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: "5003",
+                runtimeAmount: "53.25",
+                runtimeQuantity: "51003",
+              },
+              {
+                encodedQuantity: "5004",
+                runtimeAmount: "54.25",
+                runtimeQuantity: "51004",
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: "6003",
+                runtimeAmount: "63.25",
+                runtimeQuantity: "61003",
+              },
+              {
+                encodedQuantity: "6004",
+                runtimeAmount: "64.25",
+                runtimeQuantity: "61004",
+              },
+              {
+                encodedQuantity: "6005",
+                runtimeAmount: "65.25",
+                runtimeQuantity: "61005",
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: "10003",
+              runtimeAmount: "103.25",
+              runtimeQuantity: "101003",
+            },
+          },
+        }),
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "publishMany",
+          topic: "orders",
+          rows: [
+            {
+              allocations: {
+                primary: {
+                  encodedQuantity: "2005",
+                  runtimeAmount: "25.25",
+                },
+              },
+              fills: [
+                {
+                  encodedQuantity: "3005",
+                  runtimeAmount: "35.25",
+                },
+              ],
+              id: "b",
+              amount: "42.25",
+              meta: {
+                encodedQuantity: "1005",
+                runtimeAmount: "55.50",
+                runtimeQuantity: "11005",
+              },
+              nullableMeta: null,
+              optionalMeta: {
+                encodedQuantity: "8005",
+                runtimeAmount: "85.25",
+              },
+              optionalValueMeta: {
+                encodedQuantity: "9005",
+                runtimeAmount: "95.25",
+              },
+              quantity: "9007199254740997",
+              suspendedMeta: {
+                encodedQuantity: "11005",
+                runtimeAmount: "115.25",
+              },
+              tuple: [
+                {
+                  encodedQuantity: "4005",
+                  runtimeAmount: "45.25",
+                },
+              ],
+              tupleRest: [
+                {
+                  encodedQuantity: "5005",
+                  runtimeAmount: "55.25",
+                },
+                {
+                  encodedQuantity: "5006",
+                  runtimeAmount: "56.25",
+                },
+              ],
+              tupleRestTrailing: [
+                {
+                  encodedQuantity: "6005",
+                  runtimeAmount: "65.25",
+                },
+                {
+                  encodedQuantity: "6006",
+                  runtimeAmount: "66.25",
+                },
+                {
+                  encodedQuantity: "6007",
+                  runtimeAmount: "67.25",
+                },
+              ],
+              unionMeta: {
+                encodedQuantity: "10005",
+                runtimeAmount: "105.25",
+              },
+            },
+          ],
+        }),
+      ];
+      const invalidNestedResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          meta: {
+            encodedQuantity: "1007",
+          },
+        },
+      });
+      const invalidNullNestedResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          meta: null,
+        },
+      });
+      const invalidArrayResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          fills: [],
+        },
+      });
+      const invalidRecordResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          allocations: {},
+        },
+      });
+      const invalidTupleResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          tuple: [],
+        },
+      });
+      const invalidTupleExtraResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          tuple: [
+            {
+              encodedQuantity: "4007",
+              runtimeAmount: "47.25",
+              runtimeQuantity: "41007",
+            },
+            {
+              encodedQuantity: "4008",
+              runtimeAmount: "48.25",
+              runtimeQuantity: "41008",
+            },
+          ],
+        },
+      });
+      const invalidTupleRestResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          tupleRest: [],
+        },
+      });
+      const invalidOptionalWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          optionalMeta: {
+            encodedQuantity: "8007",
+          },
+        },
+      });
+      const invalidNullableWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          nullableMeta: {
+            encodedQuantity: "7007",
+          },
+        },
+      });
+      const invalidUnionWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          unionMeta: {
+            encodedQuantity: "10007",
+          },
+        },
+      });
+      const invalidCheckedWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          checkedOptionalMeta: {
+            encodedQuantity: "11007",
+            runtimeAmount: "111.25",
+          },
+        },
+      });
+      const invalidSuspendedWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          suspendedMeta: {
+            encodedQuantity: "11009",
+          },
+        },
+      });
+      const invalidCheckedSuspendedWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          checkedSuspendedMeta: {
+            encodedQuantity: "12009",
+            runtimeAmount: "129.25",
+            runtimeQuantity: "121009",
+          },
+        },
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: [
+          "allocations",
+          "amount",
+          "fills",
+          "id",
+          "meta",
+          "nullableMeta",
+          "optionalMeta",
+          "optionalValueMeta",
+          "quantity",
+          "suspendedMeta",
+          "tuple",
+          "tupleRest",
+          "tupleRestTrailing",
+          "unionMeta",
+        ],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(responses).toStrictEqual([{ ok: true }, { ok: true }, { ok: true }]);
+      expect(invalidNestedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidNullNestedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidArrayResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidRecordResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidTupleResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidTupleExtraResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidTupleRestResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidOptionalWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidNullableWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidUnionWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidCheckedWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidSuspendedWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidCheckedSuspendedWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            allocations: {
+              ["__proto__"]: {
+                encodedQuantity: 2004n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("24.25"),
+                runtimeQuantity: 21004n,
+              },
+              primary: {
+                encodedQuantity: 2003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("23.25"),
+                runtimeQuantity: 21003n,
+              },
+            },
+            id: "a",
+            amount: BigDecimal.fromStringUnsafe("678.90"),
+            fills: [
+              {
+                encodedQuantity: 3003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("33.25"),
+                runtimeQuantity: 31003n,
+              },
+            ],
+            meta: {
+              encodedQuantity: 1003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("33.75"),
+              runtimeQuantity: 11003n,
+            },
+            nullableMeta: {
+              encodedQuantity: 7003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("73.25"),
+            },
+            optionalMeta: {
+              encodedQuantity: 8003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("83.25"),
+            },
+            optionalValueMeta: {
+              encodedQuantity: 9003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("93.25"),
+            },
+            quantity: 9007199254740995n,
+            suspendedMeta: {
+              encodedQuantity: 11003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("113.25"),
+              runtimeQuantity: 111003n,
+            },
+            tuple: [
+              {
+                encodedQuantity: 4003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("43.25"),
+                runtimeQuantity: 41003n,
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: 5003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("53.25"),
+                runtimeQuantity: 51003n,
+              },
+              {
+                encodedQuantity: 5004n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("54.25"),
+                runtimeQuantity: 51004n,
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: 6003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("63.25"),
+                runtimeQuantity: 61003n,
+              },
+              {
+                encodedQuantity: 6004n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("64.25"),
+                runtimeQuantity: 61004n,
+              },
+              {
+                encodedQuantity: 6005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("65.25"),
+                runtimeQuantity: 61005n,
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: 10003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("103.25"),
+              runtimeQuantity: 101003n,
+            },
+          },
+          {
+            allocations: {
+              primary: {
+                encodedQuantity: 2005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("25.25"),
+              },
+            },
+            id: "b",
+            amount: BigDecimal.fromStringUnsafe("42.25"),
+            fills: [
+              {
+                encodedQuantity: 3005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("35.25"),
+              },
+            ],
+            meta: {
+              encodedQuantity: 1005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("55.50"),
+              runtimeQuantity: 11005n,
+            },
+            nullableMeta: null,
+            optionalMeta: {
+              encodedQuantity: 8005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("85.25"),
+            },
+            optionalValueMeta: {
+              encodedQuantity: 9005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("95.25"),
+            },
+            quantity: 9007199254740997n,
+            suspendedMeta: {
+              encodedQuantity: 11005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("115.25"),
+            },
+            tuple: [
+              {
+                encodedQuantity: 4005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("45.25"),
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: 5005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("55.25"),
+              },
+              {
+                encodedQuantity: 5006n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("56.25"),
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: 6005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("65.25"),
+              },
+              {
+                encodedQuantity: 6006n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("66.25"),
+              },
+              {
+                encodedQuantity: 6007n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("67.25"),
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: 10005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("105.25"),
+            },
+          },
+        ],
+        totalRows: 2,
+        version: 3,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("decodes recursive suspended TCP rows through topic JSON codecs", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(jsonCodecTcpRecursiveViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const response = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "publish",
+        topic: "orders",
+        row: {
+          id: "recursive",
+          node: {
+            id: "1",
+            amount: "10.25",
+            runtimeQuantity: "9007199254740993",
+            child: {
+              id: "2",
+              amount: "20.25",
+              runtimeQuantity: "9007199254740995",
+              child: {
+                id: "3",
+                amount: "30.25",
+                runtimeQuantity: "9007199254740997",
+                child: null,
+              },
+            },
+          },
+        },
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "node"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(response).toStrictEqual({ ok: true });
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            id: "recursive",
+            node: {
+              id: 1n,
+              amount: BigDecimal.fromStringUnsafe("10.25"),
+              runtimeQuantity: 9007199254740993n,
+              child: {
+                id: 2n,
+                amount: BigDecimal.fromStringUnsafe("20.25"),
+                runtimeQuantity: 9007199254740995n,
+                child: {
+                  id: 3n,
+                  amount: BigDecimal.fromStringUnsafe("30.25"),
+                  runtimeQuantity: 9007199254740997n,
+                  child: null,
+                },
+              },
+            },
+          },
+        ],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("returns a usable bracketed TCP publish URL for IPv6 hosts", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        tcpPublishHost: "::1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+      const response = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "publish",
+        topic: "orders",
+        row: order("ipv6", 42),
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+
+      expect(tcpUrl.startsWith("tcp://[")).toBe(true);
+      expect(tcpUrl.includes("]:")).toBe(true);
+      expect(response).toStrictEqual({ ok: true });
+      expect(snapshot).toStrictEqual({
+        rows: [{ id: "ipv6", price: 42 }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("rejects invalid TCP publish batches without partial mutation", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const response = yield* sendTcpPublishCommand(tcpPublishUrl, {
+        op: "publishMany",
+        topic: "orders",
+        rows: [order("valid", 10), { id: "invalid", price: "not-a-number" }],
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "price"],
+        orderBy: [{ field: "price", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(response).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish row did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(snapshot).toStrictEqual({
+        rows: [],
+        totalRows: 0,
+        version: 0,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("preserves runtime error codes in TCP publish responses", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const response = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "missing",
+        patch: { price: 11 },
+      });
+
+      expect(response).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidRow",
+          message: "Cannot patch missing key: missing",
+          topic: "orders",
+        },
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("returns typed TCP publish errors for malformed commands", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const responses = [
+        yield* sendTcpPublishLine(tcpPublishUrl, "{"),
+        yield* sendTcpPublishLine(tcpPublishUrl, JSON.stringify("not-object")),
+        yield* sendTcpPublishLine(tcpPublishUrl, "   \n{}"),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publishMany",
+          topic: "orders",
+          rows: {},
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "patch",
+          topic: "orders",
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "delete",
+          topic: "orders",
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "noop",
+          topic: "orders",
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+          rows: [order("b", 20)],
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+          unknown: true,
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "unknown",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+          row: { ...order("a", 10), unknown: true },
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+          row: { id: "missing-price" },
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+          patch: { unknown: true },
+        }),
+        yield* sendTcpPublishLine(
+          tcpPublishUrl,
+          `{"op":"patch","topic":"orders","key":"a","patch":{"constructor":10}}\n`,
+        ),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+          patch: { price: "expensive" },
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "delete",
+          topic: "unknown",
+          key: "a",
+        }),
+      ];
+
+      expect(responses).toStrictEqual([
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must be valid JSON.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command must match the publish command schema.",
+            phase: "decode",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish cannot find View Server topic unknown.",
+            phase: "decode",
+            topic: "unknown",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish row did not match View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish row did not match View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish patch did not match View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish patch did not match View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish patch did not match View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish cannot find View Server topic unknown.",
+            phase: "decode",
+            topic: "unknown",
+          },
+        },
+      ]);
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("rejects non-strict TCP publish patch field values at the decode boundary", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(nestedTcpViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const response = yield* sendTcpPublishCommand(tcpPublishUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: { meta: { desk: "LDN", unknown: true } },
+      });
+
+      expect(response).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("rejects invalid TCP publish server options before listening", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        websocketPort: 0,
+      });
+      const invalidOptions = [
+        { port: -1 },
+        { port: 65536 },
+        { port: 1.5 },
+        { port: Number.NaN },
+        { port: Number.POSITIVE_INFINITY },
+        { maxLineBytes: 0, port: 0 },
+        { maxConnections: 0, port: 0 },
+        { maxQueuedCommands: 0, port: 0 },
+        { maxGlobalQueuedCommands: 0, port: 0 },
+      ];
+      const errors = yield* Effect.forEach(invalidOptions, (options) =>
+        makeViewServerTcpPublishIngress(viewServer, runtime.client, options).pipe(Effect.flip),
+      );
+
+      expect(
+        errors.map((error) => ({
+          message: error.message,
+          phase: error.phase,
+        })),
+      ).toStrictEqual([
+        {
+          message: "TCP publish port must be a safe integer between 0 and 65535.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish port must be a safe integer between 0 and 65535.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish port must be a safe integer between 0 and 65535.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish port must be a safe integer between 0 and 65535.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish port must be a safe integer between 0 and 65535.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish maxLineBytes must be a positive safe integer.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish maxConnections must be a positive safe integer.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish maxQueuedCommands must be a positive safe integer.",
+          phase: "configuration",
+        },
+        {
+          message: "TCP publish maxGlobalQueuedCommands must be a positive safe integer.",
+          phase: "configuration",
+        },
+      ]);
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("rejects TCP publish commands for source-owned topics", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        websocketPort: 0,
+      });
+      const ingress = yield* makeViewServerTcpPublishIngress(viewServer, runtime.client, {
+        port: 0,
+        rejectedTopics: new Set(["orders"]),
+      });
+
+      const response = yield* sendTcpPublishCommand(ingress.url, {
+        op: "publish",
+        topic: "orders",
+        row: order("a", 10),
+      });
+
+      expect(response).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish cannot mutate source-owned View Server topic orders.",
+          phase: "runtime",
+          topic: "orders",
+        },
+      });
+      yield* ingress.close;
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("passes source-owned topics into TCP publish ingress rejection policy", () =>
+    Effect.gen(function* () {
+      type MixedTopics = typeof grpcAndKafkaViewServer.topics;
+      type RuntimeDependencies = ViewServerRuntimeDependencies<MixedTopics>;
+      const regions = {
+        local: "localhost:9092",
+      };
+      const localKafkaTopic = grpcAndKafkaViewServer.kafkaTopic<typeof regions>();
+      const feed = mixedGrpcFeed.materializedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => Stream.never,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      });
+      let rejectedTopics: ReadonlyArray<string> = [];
+      const dependencies: RuntimeDependencies = {
+        ...makeDefaultRuntimeDependencies<MixedTopics>(),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
+            close: Effect.void,
+          }),
+        makeKafkaIngress: () => Effect.succeed({ close: Effect.void }),
+        makeGrpcIngress: () => Effect.succeed({ close: Effect.void }),
+        makeTcpPublishIngress: (_config, _client, options) => {
+          rejectedTopics = Array.from(options.rejectedTopics ?? []);
+          return Effect.succeed({
+            url: "tcp://127.0.0.1:1235",
+            close: Effect.void,
+          });
+        },
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        grpcAndKafkaViewServer,
+        {
+          host: "127.0.0.1",
+          tcpPublishPort: 1235,
+          kafka: {
+            consumerGroupId: "view-server-tcp-source-owned",
+            regions,
+            topics: {
+              "audit-source": localKafkaTopic({
+                regions: ["local"],
+                value: kafka.json(Order),
+                key: kafka.stringKey(),
+                viewServerTopic: "audit",
+                mapping: ({ key, value }) => ({
+                  id: key,
+                  price: value.price,
+                }),
+              }),
+            },
+          },
+          grpc: {
+            clients: grpcClients,
+            feeds: {
+              ordersFeed: feed,
+            },
+          },
+        },
+      );
+
+      expect({
+        rejectedTopics,
+        tcpPublishUrl: runtime.tcpPublishUrl,
+      }).toStrictEqual({
+        rejectedTopics: ["audit", "orders"],
+        tcpPublishUrl: "tcp://127.0.0.1:1235",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("bounds TCP publish line size and command queue", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        websocketPort: 0,
+      });
+      const rejectedAcceptedSocket = new Net.Socket();
+      installTcpPublishAcceptedSocket(
+        rejectedAcceptedSocket,
+        {
+          activeChains: new Set(),
+          activeFibers: new Set(),
+          closed: true,
+          queuedCommands: 0,
+          socketStates: new Map(),
+          sockets: new Set(),
+        },
+        viewServer,
+        runtime.client,
+        { port: 0 },
+      );
+      const slowPublishStarted = yield* Deferred.make<void>();
+      const slowPublishInterrupted = yield* Deferred.make<void>();
+      const globalPublishStarted = yield* Deferred.make<void>();
+      const globalPublishInterrupted = yield* Deferred.make<void>();
+      const disconnectedPublishStarted = yield* Deferred.make<void>();
+      const disconnectedPublishInterrupted = yield* Deferred.make<void>();
+      const closedQueuePublishStarted = yield* Deferred.make<void>();
+      const closedQueuePublishInterrupted = yield* Deferred.make<void>();
+      const slowPublishClient = Object.create(runtime.client);
+      Object.defineProperty(slowPublishClient, "publish", {
+        value: () =>
+          Deferred.succeed(slowPublishStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(slowPublishInterrupted, undefined)),
+          ),
+      });
+      const globalPublishClient = Object.create(runtime.client);
+      Object.defineProperty(globalPublishClient, "publish", {
+        value: () =>
+          Deferred.succeed(globalPublishStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(globalPublishInterrupted, undefined)),
+          ),
+      });
+      const disconnectedPublishClient = Object.create(runtime.client);
+      Object.defineProperty(disconnectedPublishClient, "publish", {
+        value: () =>
+          Deferred.succeed(disconnectedPublishStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(disconnectedPublishInterrupted, undefined)),
+          ),
+      });
+      const closedQueuePublishClient = Object.create(runtime.client);
+      Object.defineProperty(closedQueuePublishClient, "publish", {
+        value: () =>
+          Deferred.succeed(closedQueuePublishStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(closedQueuePublishInterrupted, undefined)),
+          ),
+      });
+      const compactCommandLine = `${JSON.stringify({
+        op: "publish",
+        topic: "orders",
+        row: order("a", 10),
+      })}\n`;
+      const oversizedIngress = yield* makeViewServerTcpPublishIngress(viewServer, runtime.client, {
+        maxLineBytes: 8,
+        port: 0,
+      });
+      const oversizedCompleteLineIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        runtime.client,
+        {
+          maxLineBytes: 8,
+          port: 0,
+        },
+      );
+      const coalescedIngress = yield* makeViewServerTcpPublishIngress(viewServer, runtime.client, {
+        maxLineBytes: Buffer.byteLength(compactCommandLine, "utf8"),
+        port: 0,
+      });
+      const queuedIngress = yield* makeViewServerTcpPublishIngress(viewServer, slowPublishClient, {
+        maxQueuedCommands: 2,
+        port: 0,
+      });
+      const globalQueuedIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        globalPublishClient,
+        {
+          maxGlobalQueuedCommands: 1,
+          maxQueuedCommands: 2,
+          port: 0,
+        },
+      );
+      const disconnectedIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        disconnectedPublishClient,
+        { port: 0 },
+      );
+      const connectionCappedIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        runtime.client,
+        {
+          maxConnections: 1,
+          port: 0,
+        },
+      );
+      const closedQueueIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        closedQueuePublishClient,
+        {
+          maxQueuedCommands: 1,
+          port: 0,
+        },
+      );
+      const oversizedSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(oversizedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      oversizedSocket.write("this-line-is-too-large");
+      const oversizedResponse = yield* readTcpPublishResponse(oversizedSocket).pipe(
+        Effect.timeout("1 second"),
+      );
+
+      const oversizedCompleteLineSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(oversizedCompleteLineIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      oversizedCompleteLineSocket.write("this-line-is-too-large\n");
+      const oversizedCompleteLineResponse = yield* readTcpPublishResponse(
+        oversizedCompleteLineSocket,
+      ).pipe(Effect.timeout("1 second"));
+
+      const coalescedSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(coalescedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      coalescedSocket.write(`${compactCommandLine}${compactCommandLine}`);
+      const coalescedResponses = yield* readTcpPublishResponses(coalescedSocket, 2).pipe(
+        Effect.timeout("1 second"),
+      );
+
+      const queuedSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(queuedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      const commandLine = `${JSON.stringify({
+        op: "publish",
+        topic: "orders",
+        row: order("a", 10),
+      })}\n`;
+      queuedSocket.write(commandLine);
+      yield* Deferred.await(slowPublishStarted);
+      queuedSocket.write(commandLine);
+      queuedSocket.write(commandLine);
+      const queuedResponse = yield* readTcpPublishResponse(queuedSocket).pipe(
+        Effect.timeout("1 second"),
+      );
+
+      const globalQueuedFirstSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(globalQueuedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      const globalQueuedSecondSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(globalQueuedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      globalQueuedFirstSocket.write(commandLine);
+      yield* Deferred.await(globalPublishStarted);
+      globalQueuedSecondSocket.write(commandLine);
+      const globalQueuedResponse = yield* readTcpPublishResponse(globalQueuedSecondSocket).pipe(
+        Effect.timeout("1 second"),
+      );
+
+      const disconnectedSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(disconnectedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      disconnectedSocket.write(commandLine);
+      yield* Deferred.await(disconnectedPublishStarted);
+      disconnectedSocket.destroy();
+      yield* Deferred.await(disconnectedPublishInterrupted).pipe(Effect.timeout("1 second"));
+
+      const closedQueueSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(closedQueueIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      closedQueueSocket.write(`${commandLine}${commandLine}${commandLine}`);
+      const closedQueueResponse = yield* readTcpPublishResponse(closedQueueSocket).pipe(
+        Effect.timeout("1 second"),
+      );
+
+      const heldConnectionCappedSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(connectionCappedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      const rejectedConnectionCappedSocket = yield* Effect.acquireRelease(
+        connectTcpPublishSocket(connectionCappedIngress.url),
+        (socket) => Effect.sync(() => socket.destroy()),
+      );
+      const connectionCappedResponse = yield* readTcpPublishResponse(
+        rejectedConnectionCappedSocket,
+      ).pipe(Effect.timeout("1 second"));
+      yield* Effect.sleep("10 millis");
+
+      expect(oversizedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish command exceeded 8 bytes without a newline.",
+          phase: "backpressure",
+        },
+      });
+      expect(oversizedCompleteLineResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish command exceeded 8 bytes.",
+          phase: "backpressure",
+        },
+      });
+      expect(coalescedResponses).toStrictEqual([{ ok: true }, { ok: true }]);
+      expect(queuedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish command queue exceeded 2 commands.",
+          phase: "backpressure",
+        },
+      });
+      expect(globalQueuedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish global command queue exceeded 1 commands.",
+          phase: "backpressure",
+        },
+      });
+      expect(closedQueueResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish command queue exceeded 1 commands.",
+          phase: "backpressure",
+        },
+      });
+      expect(connectionCappedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish connection count exceeded 1 sockets.",
+          phase: "backpressure",
+        },
+      });
+      expect(oversizedSocket.destroyed).toBe(true);
+      expect(oversizedCompleteLineSocket.destroyed).toBe(true);
+      expect(rejectedConnectionCappedSocket.destroyed).toBe(true);
+      expect(rejectedAcceptedSocket.destroyed).toBe(true);
+
+      heldConnectionCappedSocket.destroy();
+      yield* connectionCappedIngress.close;
+      yield* closedQueueIngress.close.pipe(Effect.timeout("1 second"));
+      yield* disconnectedIngress.close;
+      yield* globalQueuedIngress.close.pipe(Effect.timeout("1 second"));
+      yield* Deferred.await(globalPublishInterrupted);
+      yield* queuedIngress.close.pipe(Effect.timeout("1 second"));
+      yield* queuedIngress.close.pipe(Effect.timeout("1 second"));
+      yield* Deferred.await(slowPublishInterrupted);
+      yield* coalescedIngress.close;
+      yield* oversizedCompleteLineIngress.close;
+      yield* oversizedIngress.close;
+      yield* oversizedIngress.close;
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("keeps TCP response backpressure non-fatal through deterministic internals", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        websocketPort: 0,
+      });
+      const writtenChunks: Array<string> = [];
+      const destroyed: Array<"socket"> = [];
+      const listeners: Partial<Record<"close" | "error", () => void>> = {};
+      let writeCallback: () => void = () => undefined;
+      const closedServerState = {
+        activeChains: new Set<Promise<void>>(),
+        activeFibers: new Set<Fiber.Fiber<void, never>>(),
+        closed: false,
+        queuedCommands: 0,
+        socketStates: new Map(),
+        sockets: new Set<Net.Socket>(),
+      };
+      const ignoredAfterCloseSocket = new Net.Socket();
+      const state = {
+        activeFibers: new Set<Fiber.Fiber<void, never>>(),
+        buffer: "",
+        chain: Promise.resolve(),
+        closed: false,
+        queuedCommands: 0,
+      };
+
+      const pendingWrite = writeTcpJsonLine(
+        {
+          destroyed: false,
+          off: (event) => {
+            delete listeners[event];
+            return new Net.Socket();
+          },
+          once: (event, listener) => {
+            listeners[event] = () => listener();
+            return new Net.Socket();
+          },
+          write: (chunk, callback) => {
+            writtenChunks.push(chunk);
+            writeCallback = callback;
+            return false;
+          },
+        },
+        state,
+        { ok: true },
+      );
+      yield* Effect.promise(() => Promise.resolve());
+      expect({
+        listenerNames: Object.keys(listeners),
+        stateClosed: state.closed,
+        writtenChunks,
+      }).toStrictEqual({
+        listenerNames: ["close", "error"],
+        stateClosed: false,
+        writtenChunks: ['{"ok":true}\n'],
+      });
+      writeCallback();
+      writeCallback();
+      yield* Effect.promise(() => pendingWrite);
+      yield* Effect.promise(() =>
+        writeTcpJsonLine(
+          {
+            destroyed: true,
+            off: () => new Net.Socket(),
+            once: () => new Net.Socket(),
+            write: (chunk, callback) => {
+              writtenChunks.push(chunk);
+              callback();
+              return true;
+            },
+          },
+          state,
+          { ok: false },
+        ),
+      );
+      const acceptedWhileClosed = rejectTcpSocketWhenClosed(true, {
+        destroy: () => {
+          destroyed.push("socket");
+        },
+      });
+      const acceptedWhileOpen = rejectTcpSocketWhenClosed(false, {
+        destroy: () => {
+          destroyed.push("socket");
+        },
+      });
+      installTcpPublishAcceptedSocket(
+        ignoredAfterCloseSocket,
+        closedServerState,
+        viewServer,
+        runtime.client,
+        { port: 0 },
+      );
+      closedServerState.closed = true;
+      ignoredAfterCloseSocket.emit("data", "ignored\n");
+      ignoredAfterCloseSocket.destroy();
+
+      expect({
+        acceptedWhileClosed,
+        acceptedWhileOpen,
+        destroyed,
+        ignoredAfterCloseQueuedCommands: closedServerState.queuedCommands,
+        listenerNames: Object.keys(listeners),
+        stateClosed: state.closed,
+        writtenChunks,
+      }).toStrictEqual({
+        acceptedWhileClosed: true,
+        acceptedWhileOpen: false,
+        destroyed: ["socket"],
+        ignoredAfterCloseQueuedCommands: 0,
+        listenerNames: [],
+        stateClosed: false,
+        writtenChunks: ['{"ok":true}\n'],
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("returns typed TCP publish errors for malformed runtime clients", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        websocketPort: 0,
+      });
+      const missingPublishClient = Object.create(runtime.client);
+      Object.defineProperty(missingPublishClient, "publish", {
+        value: undefined,
+      });
+      const nonEffectPublishClient = Object.create(runtime.client);
+      Object.defineProperty(nonEffectPublishClient, "publish", {
+        value: () => "not-an-effect",
+      });
+      const defectPublishClient = Object.create(runtime.client);
+      Object.defineProperty(defectPublishClient, "publish", {
+        value: () => Effect.die("tcp publish defect"),
+      });
+      const failingPublishClient = Object.create(runtime.client);
+      Object.defineProperty(failingPublishClient, "publish", {
+        value: () =>
+          Effect.fail(
+            new RuntimeTcpTestFailure({
+              cause: "typed runtime failure",
+              message: "typed runtime publish failure",
+            }),
+          ),
+      });
+      const stringFailingPublishClient = Object.create(runtime.client);
+      Object.defineProperty(stringFailingPublishClient, "publish", {
+        value: () => Effect.fail("string runtime failure"),
+      });
+      const unavailablePublishClient = Object.create(runtime.client);
+      Object.defineProperty(unavailablePublishClient, "publish", {
+        value: () =>
+          Effect.fail({
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message: "runtime unavailable for tcp test",
+          } satisfies ViewServerRuntimeError),
+      });
+      const missingPublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        missingPublishClient,
+        { port: 0 },
+      );
+      const nonEffectPublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        nonEffectPublishClient,
+        { port: 0 },
+      );
+      const defectPublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        defectPublishClient,
+        { port: 0 },
+      );
+      const failingPublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        failingPublishClient,
+        { port: 0 },
+      );
+      const stringFailingPublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        stringFailingPublishClient,
+        { port: 0 },
+      );
+      const unavailablePublishIngress = yield* makeViewServerTcpPublishIngress(
+        viewServer,
+        unavailablePublishClient,
+        { port: 0 },
+      );
+
+      const responses = [
+        yield* sendTcpPublishCommand(missingPublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(nonEffectPublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(defectPublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(failingPublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(stringFailingPublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+        yield* sendTcpPublishCommand(unavailablePublishIngress.url, {
+          op: "publish",
+          topic: "orders",
+          row: order("a", 10),
+        }),
+      ];
+
+      expect(responses).toStrictEqual([
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "Runtime publish did not return an Effect for TCP publish topic orders.",
+            phase: "runtime",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "Runtime publish did not return an Effect for TCP publish topic orders.",
+            phase: "runtime",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish command failed with an untyped cause.",
+            phase: "runtime",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish runtime publish failed for topic orders.",
+            phase: "runtime",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish runtime publish failed for topic orders.",
+            phase: "runtime",
+            topic: "orders",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerRuntimeError",
+            code: "RuntimeUnavailable",
+            message: "runtime unavailable for tcp test",
+          },
+        },
+      ]);
+
+      yield* unavailablePublishIngress.close;
+      yield* stringFailingPublishIngress.close;
+      yield* failingPublishIngress.close;
+      yield* defectPublishIngress.close;
+      yield* nonEffectPublishIngress.close;
+      yield* missingPublishIngress.close;
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("closes TCP publish servers on steady-state server errors", () =>
+    Effect.gen(function* () {
+      const closed = yield* Deferred.make<void>();
+      const server = new Net.Server();
+      const listenerCountBefore = server.listenerCount("error");
+      installTcpServerSteadyStateErrorHandler(
+        server,
+        Deferred.succeed(closed, undefined).pipe(Effect.asVoid),
+      );
+      const listenerCountAfter = server.listenerCount("error");
+
+      server.emit("error", new Error("tcp test steady-state failure"));
+      yield* Deferred.await(closed).pipe(Effect.timeout("1 second"));
+
+      expect({
+        listenerCountAfter,
+        listenerCountBefore,
+      }).toStrictEqual({
+        listenerCountAfter: 1,
+        listenerCountBefore: 0,
+      });
+      yield* Effect.sync(() => server.removeAllListeners());
+    }),
+  );
+
+  it.live("fails startup when the TCP publish port is already bound", () =>
+    Effect.gen(function* () {
+      const reserved = yield* Effect.acquireRelease(reserveTcpPort(), ({ server }) =>
+        closeTestTcpServer(server),
+      );
+      const exit = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: reserved.port,
+        websocketPort: 0,
+      }).pipe(Effect.exit);
+
+      expect(
+        Exit.isFailure(exit)
+          ? Option.match(Cause.findErrorOption(exit.cause), {
+              onNone: () => null,
+              onSome: (error) => ({
+                message: error instanceof Error ? error.message : undefined,
+                phase: error instanceof ViewServerTcpPublishIngressError ? error.phase : undefined,
+                tag: error instanceof ViewServerTcpPublishIngressError ? error._tag : undefined,
+              }),
+            })
+          : null,
+      ).toStrictEqual({
+        message: "TCP publish server failed to listen.",
+        phase: "listen",
+        tag: "ViewServerTcpPublishIngressError",
+      });
+    }),
+  );
+
+  it.live("closes the TCP publish endpoint with runtime shutdown", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+      const response = yield* sendTcpPublishCommand(tcpPublishUrl, {
+        op: "publish",
+        topic: "orders",
+        row: order("a", 10),
+      });
+
+      expect(response).toStrictEqual({ ok: true });
+
+      const heldSocket = yield* connectTcpPublishSocket(tcpPublishUrl);
+      yield* runtime.close;
+      heldSocket.destroy();
+      const connectExit = yield* connectTcpPublishSocket(tcpPublishUrl).pipe(Effect.exit);
+      expect(Exit.isFailure(connectExit)).toBe(true);
+    }),
+  );
+
   it.live("supports default paths and queue capacity options", () =>
     Effect.gen(function* () {
       const defaultRuntime = yield* makeViewServerRuntime(viewServer);
@@ -862,11 +3333,19 @@ describe("@view-server/runtime", () => {
 
       const configuredRuntime = yield* makeViewServerRuntime(viewServer, {
         websocketPort: 0,
+        tcpPublishPort: 0,
         subscriptionQueueCapacity: 1,
       });
       expect(configuredRuntime.url.endsWith("/rpc")).toBe(true);
       expect(configuredRuntime.healthUrl.endsWith("/health")).toBe(true);
       expect(configuredRuntime.metricsUrl.endsWith("/metrics")).toBe(true);
+      const configuredTcpPublishUrl = yield* Effect.fromNullishOr(configuredRuntime.tcpPublishUrl);
+      expect(configuredTcpPublishUrl.startsWith("tcp://")).toBe(true);
+      expect([
+        tcpPublishUrl({ address: "127.0.0.1", port: 1234 }),
+        tcpPublishUrl({ address: "::1", port: 1234 }),
+        tcpPublishUrl({ address: "::", port: 1234 }),
+      ]).toStrictEqual(["tcp://127.0.0.1:1234", "tcp://[::1]:1234", "tcp://[::]:1234"]);
       yield* configuredRuntime.close;
     }),
   );
@@ -943,6 +3422,9 @@ describe("@view-server/runtime", () => {
       let runtimeCoreOptions: Parameters<RuntimeDependencies["makeRuntimeCore"]>[1] | undefined;
       let serverInput: Parameters<RuntimeDependencies["makeServer"]>[1] | undefined;
       let serverOptions: Parameters<RuntimeDependencies["makeServer"]>[2] | undefined;
+      let tcpPublishOptions:
+        | Parameters<RuntimeDependencies["makeTcpPublishIngress"]>[2]
+        | undefined;
       const dependencies: RuntimeDependencies = {
         ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
         makeRuntimeCore: (config, options) => {
@@ -959,6 +3441,13 @@ describe("@view-server/runtime", () => {
             close: Effect.void,
           });
         },
+        makeTcpPublishIngress: (_config, _client, options) => {
+          tcpPublishOptions = options;
+          return Effect.succeed({
+            url: `tcp://${options.host ?? "127.0.0.1"}:${options.port}`,
+            close: Effect.void,
+          });
+        },
       };
 
       const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
@@ -967,6 +3456,9 @@ describe("@view-server/runtime", () => {
         },
         host: "0.0.0.0",
         websocketPort: 1234,
+        tcpPublishHost: "127.0.0.1",
+        tcpPublishMaxConnections: 9,
+        tcpPublishPort: 1235,
         rpcPath: "/custom-rpc",
         healthPath: "/custom-health",
         metricsPath: "/custom-metrics",
@@ -986,6 +3478,8 @@ describe("@view-server/runtime", () => {
           streamClosedType: typeof serverInput?.transport?.streamClosed,
         },
         serverOptions,
+        tcpPublishOptions,
+        tcpPublishUrl: runtime.tcpPublishUrl,
       }).toStrictEqual({
         runtimeCoreOptions: {
           subscriptionQueueCapacity: 7,
@@ -1007,6 +3501,13 @@ describe("@view-server/runtime", () => {
           healthPath: "/custom-health",
           metricsPath: "/custom-metrics",
         },
+        tcpPublishOptions: {
+          host: "127.0.0.1",
+          maxConnections: 9,
+          port: 1235,
+          rejectedTopics: new Set(),
+        },
+        tcpPublishUrl: "tcp://127.0.0.1:1235",
       });
       yield* runtime.close;
     }),
@@ -9157,6 +11658,7 @@ describe("@view-server/runtime", () => {
     Effect.gen(function* () {
       const fiber = yield* runViewServerRuntime(viewServer, {
         host: "127.0.0.1",
+        tcpPublishPort: 0,
         websocketPort: 0,
       }).pipe(Effect.forkChild({ startImmediately: true }));
 

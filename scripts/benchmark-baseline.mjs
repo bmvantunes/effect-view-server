@@ -765,10 +765,22 @@ const validateBenchmarkCasesMatchBenchmarks = (benchmarkCases, benchmarks, path)
 const validateRuntimeOperationCasesMatchBenchmarkCases = (
   operationCases,
   benchmarkCases,
+  benchmarks,
   minimumSampleCount,
   path,
+  benchmarkPath,
 ) => {
   const benchmarkCaseNames = new Set(benchmarkCases);
+  const benchmarkSampleCountByName = new Map();
+  for (const benchmark of benchmarks) {
+    const previousSampleCount = benchmarkSampleCountByName.get(benchmark.name);
+    if (previousSampleCount !== undefined) {
+      throw new Error(
+        `Benchmark artifact field ${benchmarkPath} contains duplicate benchmark name for runtime operation case: ${benchmark.name}.`,
+      );
+    }
+    benchmarkSampleCountByName.set(benchmark.name, benchmark.sampleCount);
+  }
   const operationCaseNames = new Set();
   for (const operationCase of operationCases) {
     if (operationCase.sampleCount < minimumSampleCount) {
@@ -779,6 +791,17 @@ const validateRuntimeOperationCasesMatchBenchmarkCases = (
     if (!benchmarkCaseNames.has(operationCase.name)) {
       throw new Error(
         `Benchmark artifact field ${path} contains runtime operation case without matching benchmarkCase: ${operationCase.name}.`,
+      );
+    }
+    const benchmarkSampleCount = benchmarkSampleCountByName.get(operationCase.name);
+    if (operationCase.sampleCount !== benchmarkSampleCount) {
+      throw new Error(
+        `Benchmark artifact field ${path}.${operationCase.name}.sampleCount must equal Vitest benchmark sampleCount ${benchmarkSampleCount} but was ${operationCase.sampleCount}.`,
+      );
+    }
+    if (operationCaseNames.has(operationCase.name)) {
+      throw new Error(
+        `Benchmark artifact field ${path} contains duplicate runtime operation case: ${operationCase.name}.`,
       );
     }
     operationCaseNames.add(operationCase.name);
@@ -1055,8 +1078,10 @@ export const readBenchmarkObservation = (task) => {
     validateRuntimeOperationCasesMatchBenchmarkCases(
       runtimeOperationCases,
       benchmarkCases,
+      benchmarks,
       minimumSampleCount,
       `${task.summaryPath}.cases`,
+      `${task.summaryPath}.benchmarks`,
     );
   }
 
@@ -1336,8 +1361,10 @@ const validateTask = (task, path) => {
     validateRuntimeOperationCasesMatchBenchmarkCases(
       runtimeOperationCases,
       benchmarkCases,
+      benchmarks,
       minimumSampleCount,
       `${path}.runtimeOperationCases`,
+      `${path}.benchmarks`,
     );
   }
   return {

@@ -38,6 +38,7 @@
     "prepare": "vp config && effect-language-service patch"
   },
   "devDependencies": {
+    "@bufbuild/protobuf": "2.12.0",
     "@effect/language-service": "catalog:",
     "@effect/vitest": "catalog:",
     "@view-server/client": "workspace:*",

@@ -150,10 +150,10 @@ const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngre
 const parseCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.parse")(function* (
   line: string,
 ) {
-  const value = yield* Effect.try({
-    try: (): unknown => JSON.parse(line),
-    catch: (cause) => tcpDecodeError(line, cause),
-  });
+  const value = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
+    line,
+    strictParseOptions,
+  ).pipe(Effect.mapError((cause) => tcpDecodeError(line, cause)));
   return yield* Result.match(
     Schema.decodeUnknownResult(TcpPublishCommandSchema)(value, strictParseOptions),
     {

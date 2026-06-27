@@ -3,9 +3,9 @@
 Production runtime composition for View Server.
 
 This package wires Runtime Core, Effect RPC WebSocket transport, `GET /health`,
-and optional Kafka ingestion. The in-memory engine remains the single mutation
-path; Kafka and future ingress adapters publish into the same runtime core used
-by tests.
+`GET /metrics`, and optional Kafka ingestion. The in-memory engine remains the
+single mutation path; Kafka and future ingress adapters publish into the same
+runtime core used by tests.
 
 ## Entrypoint
 
@@ -25,8 +25,8 @@ NodeRuntime.runMain(
 );
 ```
 
-`runViewServerRuntime` logs the WebSocket and health URLs when the runtime starts
-and keeps the server alive until the main fiber is interrupted.
+`runViewServerRuntime` logs the WebSocket, health, and metrics URLs when the
+runtime starts and keeps the server alive until the main fiber is interrupted.
 
 ## Health
 
@@ -39,6 +39,32 @@ fields, such as Kafka lag, are encoded as decimal strings.
 
 React applications should use the pushed health hooks from `@view-server/react`;
 `GET /health` is for infrastructure and smoke checks, not UI polling.
+
+## Metrics
+
+The runtime exposes a same-server `GET /metrics` endpoint for Prometheus-style
+scrapes. The response uses `text/plain; version=0.0.4; charset=utf-8` and is
+derived from the same cached runtime health snapshot as `GET /health`.
+
+Metrics include runtime status/version/uptime, transport pressure, engine topic
+rows/versions/queues/backpressure, Kafka region lag and failure rates, and gRPC
+client/feed counters. It intentionally keeps labels low-cardinality: raw error
+messages, timestamps, committed offsets, and route-specific leased feed keys
+remain available from `GET /health` instead of Prometheus labels. If health
+cannot be read or decoded, the endpoint returns `200` with
+`view_server_metrics_error 1` so the scrape result is still visible to the
+metrics system.
+
+`metricsPath` can override the default `/metrics` path:
+
+```ts
+NodeRuntime.runMain(
+  runViewServerRuntime(viewServer, {
+    websocketPort: 8080,
+    metricsPath: "/view-server/metrics",
+  }),
+);
+```
 
 ## Kafka Ingestion
 

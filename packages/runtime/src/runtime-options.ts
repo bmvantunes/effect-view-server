@@ -392,6 +392,7 @@ export const resolveViewServerRuntimeOptions: <
     ...(options.websocketPort === undefined ? {} : { port: options.websocketPort }),
     ...(options.rpcPath === undefined ? {} : { path: options.rpcPath }),
     ...(options.healthPath === undefined ? {} : { healthPath: options.healthPath }),
+    ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),
   };
   const kafkaOptions =
     options.kafka === undefined ? undefined : yield* resolveKafkaOptions(options.kafka);

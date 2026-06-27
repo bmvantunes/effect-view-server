@@ -27,11 +27,13 @@ export type ViewServerWebSocketServerOptions = {
   readonly port?: number;
   readonly path?: `/${string}`;
   readonly healthPath?: `/${string}`;
+  readonly metricsPath?: `/${string}`;
 };
 
 export type ViewServerWebSocketServer = {
   readonly url: string;
   readonly healthUrl: string;
+  readonly metricsUrl: string;
   readonly close: Effect.Effect<void>;
 };
 

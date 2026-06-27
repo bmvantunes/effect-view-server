@@ -581,6 +581,12 @@ const fetchHealth = Effect.fn("ViewServerRuntime.test.health.fetch")(function* (
   return { response, health };
 });
 
+const fetchText = Effect.fn("ViewServerRuntime.test.text.fetch")(function* (url: string) {
+  const response = yield* Effect.promise(() => fetch(url));
+  const text = yield* Effect.promise(() => response.text());
+  return { response, text };
+});
+
 const waitForTransportHealth = Effect.fn("ViewServerRuntime.test.transportHealth.wait")(function* (
   health: () => Effect.Effect<{ readonly transport: TransportHealth }, unknown>,
   expected: {
@@ -756,6 +762,7 @@ describe("@view-server/runtime", () => {
         host: "127.0.0.1",
         rpcPath: "/runtime-rpc",
         healthPath: "/runtime-health",
+        metricsPath: "/runtime-metrics",
       });
       const remoteClient = yield* makeViewServerClient(viewServer, { url: runtime.url });
       const subscription = yield* remoteClient.subscribe("orders", {
@@ -810,10 +817,16 @@ describe("@view-server/runtime", () => {
       });
 
       const health = yield* fetchHealth(runtime.healthUrl);
+      const metrics = yield* fetchText(runtime.metricsUrl);
       expect(runtime.url.endsWith("/runtime-rpc")).toBe(true);
       expect(runtime.healthUrl.endsWith("/runtime-health")).toBe(true);
+      expect(runtime.metricsUrl.endsWith("/runtime-metrics")).toBe(true);
       expect(health.response.status).toBe(200);
       expect(health.health.engine.topics.orders.rowCount).toBe(1);
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.text).toContain(
+        'view_server_engine_topic_rows{topic="orders",state="total"} 1',
+      );
 
       yield* subscription.close().pipe(Effect.timeout("1 second"));
       yield* remoteClient.close;
@@ -843,6 +856,7 @@ describe("@view-server/runtime", () => {
       const defaultRuntime = yield* makeViewServerRuntime(viewServer);
       expect(defaultRuntime.url.endsWith("/rpc")).toBe(true);
       expect(defaultRuntime.healthUrl.endsWith("/health")).toBe(true);
+      expect(defaultRuntime.metricsUrl.endsWith("/metrics")).toBe(true);
       expect("subscribeRuntime" in defaultRuntime.liveClient).toBe(false);
       yield* defaultRuntime.close;
 
@@ -852,6 +866,7 @@ describe("@view-server/runtime", () => {
       });
       expect(configuredRuntime.url.endsWith("/rpc")).toBe(true);
       expect(configuredRuntime.healthUrl.endsWith("/health")).toBe(true);
+      expect(configuredRuntime.metricsUrl.endsWith("/metrics")).toBe(true);
       yield* configuredRuntime.close;
     }),
   );
@@ -940,6 +955,7 @@ describe("@view-server/runtime", () => {
           return Effect.succeed({
             url: "ws://127.0.0.1:0/custom-rpc",
             healthUrl: "http://127.0.0.1:0/custom-health",
+            metricsUrl: "http://127.0.0.1:0/custom-metrics",
             close: Effect.void,
           });
         },
@@ -953,6 +969,7 @@ describe("@view-server/runtime", () => {
         websocketPort: 1234,
         rpcPath: "/custom-rpc",
         healthPath: "/custom-health",
+        metricsPath: "/custom-metrics",
         subscriptionQueueCapacity: 7,
       });
 
@@ -988,6 +1005,7 @@ describe("@view-server/runtime", () => {
           port: 1234,
           path: "/custom-rpc",
           healthPath: "/custom-health",
+          metricsPath: "/custom-metrics",
         },
       });
       yield* runtime.close;
@@ -1025,6 +1043,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
         makeKafkaIngress: (_config, _client, _requestHealthRefresh, options) => {
@@ -1126,6 +1145,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
         makeGrpcHealthLedger: (config, options) => {
@@ -1520,6 +1540,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
       };
@@ -1569,6 +1590,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
       };
@@ -1737,6 +1759,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
       };
@@ -2195,6 +2218,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.sync(() => {
               serverClosed += 1;
             }),
@@ -2282,6 +2306,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.sync(() => {
               serverClosed += 1;
             }),
@@ -8880,6 +8905,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
         makeKafkaIngress: (_config, _client, _requestHealthRefresh, options) => {
@@ -8986,6 +9012,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.sync(() => {
               serverCloseCount += 1;
             }),
@@ -9013,6 +9040,7 @@ describe("@view-server/runtime", () => {
             Effect.as({
               url: "ws://127.0.0.1:0/rpc",
               healthUrl: "http://127.0.0.1:0/health",
+              metricsUrl: "http://127.0.0.1:0/metrics",
               close: Effect.sync(() => {
                 serverCloseCount += 1;
               }),
@@ -9063,6 +9091,7 @@ describe("@view-server/runtime", () => {
             Effect.as({
               url: "ws://127.0.0.1:0/rpc",
               healthUrl: "http://127.0.0.1:0/health",
+              metricsUrl: "http://127.0.0.1:0/metrics",
               close: Effect.sync(() => {
                 serverCloseCount += 1;
               }),
@@ -9204,6 +9233,7 @@ describe("@view-server/runtime", () => {
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
             healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.sync(() => {
               serverClosed = true;
             }),

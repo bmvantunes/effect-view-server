@@ -779,6 +779,7 @@ Current leased-feed benchmark command:
 pnpm --filter @view-server/runtime run bench:grpc-leased
 pnpm run bench:baseline:grpc-leased
 pnpm run bench:baseline:grpc-leased-retained
+pnpm run bench:baseline:grpc-leased-retained:update
 pnpm run bench:baseline:grpc-leased-retained:repeat
 ```
 
@@ -798,10 +799,11 @@ Current leased benchmark profiles:
 - retained local-filter snapshot report metadata over the configured retained rows. The direct
   `bench:grpc-leased` script defaults this retained case to 50k rows. The committed
   `grpc:gate` smoke baseline intentionally overrides it to 500 rows, while
-  `bench:baseline:grpc-leased-retained` runs the 50k retained-row profile in report-only mode.
+  `bench:baseline:grpc-leased-retained` gates the 50k retained-row profile with a committed
+  baseline.
 - repeated retained local-filter stability runs with isolated artifacts through
-  `bench:baseline:grpc-leased-retained:repeat`. This remains report-only until repeated local
-  runs are stable enough for a heavier gate.
+  `bench:baseline:grpc-leased-retained:repeat`. This remains report-only for local stability
+  investigation before tightening inner-operation thresholds.
 - leased delta fanout report metadata for multiple subscribers over one feed
 - leased last-subscriber cleanup report metadata as an explicit case
 - many routes with one subscriber each, including health overlay timing metadata
@@ -809,15 +811,14 @@ Current leased benchmark profiles:
 
 Future leased benchmark profiles:
 
-- promote the 50k retained local-filter snapshot report profile into a strict compare gate once
-  repeated runs prove it is stable enough for CI
 - repeated-run stability before tightening remaining inner-operation max-latency gates
 
 The smoke gRPC benchmark baselines are part of `pnpm run grpc:gate`, not the
 pre-gRPC gate. `pre-grpc:gate` remains the Kafka/performance readiness gate
 before gRPC work. gRPC whole-case p99 is gated with loose runtime thresholds;
-inner retained-snapshot, delta-fanout, and cleanup max timings remain report-only
-until repeated local runs are stable.
+the 50k retained leased-feed profile is a strict compare gate, and inner retained-snapshot,
+delta-fanout, and cleanup max timings remain report-only until repeated local runs are stable enough
+for tighter thresholds.
 
 ## Acceptance Criteria
 

@@ -5,12 +5,20 @@ import type { GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import * as BigDecimal from "effect/BigDecimal";
-import * as Duration from "effect/Duration";
 import * as HashMap from "effect/HashMap";
 import * as HashSet from "effect/HashSet";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
-import { Config, Effect, Exit, Schema, SchemaGetter, SchemaTransformation, Stream } from "effect";
+import {
+  Config,
+  Duration,
+  Effect,
+  Exit,
+  Schema,
+  SchemaGetter,
+  SchemaTransformation,
+  Stream,
+} from "effect";
 import {
   decodeKafkaCodec,
   decodeKafkaTopicMessage,

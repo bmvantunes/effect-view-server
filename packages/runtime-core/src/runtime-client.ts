@@ -13,7 +13,7 @@ import type {
   ViewServerRuntimeError,
 } from "@view-server/config";
 import { validateLiveQuerySourceRoute } from "@view-server/config";
-import { Effect } from "effect";
+import { Effect, type Duration } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import {
   makeHealthRefreshScheduler,
@@ -22,7 +22,6 @@ import {
   type RuntimeCoreHealthOverlay,
   type RuntimeCoreTransportHealth,
 } from "./health";
-import type * as Duration from "effect/Duration";
 import {
   engineErrorToRuntimeError,
   invalidRuntimeQueryError,

@@ -11,8 +11,7 @@ import type {
 } from "@view-server/config";
 import type { ViewServerRuntimeLiveClient } from "@view-server/client";
 import { runAllFinalizers } from "@view-server/effect-utils";
-import { Clock, Effect } from "effect";
-import type * as Duration from "effect/Duration";
+import { Clock, Effect, type Duration } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
   defaultRuntimeCoreTransportHealth,

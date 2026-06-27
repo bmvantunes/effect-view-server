@@ -9,6 +9,7 @@ import {
   compareBenchmarkBaseline,
   defaultBenchmarkThresholds,
   grpcRuntimeBenchmarkThresholds,
+  grpcRetainedRuntimeBenchmarkThresholds,
   groupedOrderNeutralBenchmarkThresholds,
   kafkaIngestBenchmarkThresholds,
   kafkaSustainedFirehoseBenchmarkThresholds,
@@ -347,7 +348,7 @@ describe("benchmark baseline comparison", () => {
     }).toStrictEqual({
       groupedOrderNeutral: groupedOrderNeutralBenchmarkThresholds,
       grpcLeased: grpcRuntimeBenchmarkThresholds,
-      grpcLeasedRetained: grpcRuntimeBenchmarkThresholds,
+      grpcLeasedRetained: grpcRetainedRuntimeBenchmarkThresholds,
       grpcMaterialized: grpcRuntimeBenchmarkThresholds,
       kafkaIngest: kafkaIngestBenchmarkThresholds,
       kafkaSustainedFirehose: kafkaSustainedFirehoseBenchmarkThresholds,
@@ -361,7 +362,7 @@ describe("benchmark baseline comparison", () => {
       websocketFirehoseBaseline: websocketFirehoseBenchmarkThresholds,
       orderNeutralBaseline: groupedOrderNeutralBenchmarkThresholds,
       grpcLeasedBaseline: grpcRuntimeBenchmarkThresholds,
-      grpcLeasedRetainedBaseline: grpcRuntimeBenchmarkThresholds,
+      grpcLeasedRetainedBaseline: grpcRetainedRuntimeBenchmarkThresholds,
       grpcMaterializedBaseline: grpcRuntimeBenchmarkThresholds,
     });
   });

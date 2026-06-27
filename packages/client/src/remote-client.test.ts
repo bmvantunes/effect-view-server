@@ -16,10 +16,10 @@ import {
   Schema,
   SchemaGetter,
   Stream,
+  type Duration,
 } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
-import type * as Duration from "effect/Duration";
 import * as Http from "node:http";
 import {
   ViewServerRpcs,

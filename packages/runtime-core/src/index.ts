@@ -7,9 +7,8 @@ import type {
   ViewServerHealth,
   ViewServerRuntimeError,
 } from "@view-server/config";
-import { Effect } from "effect";
+import { Effect, type Duration } from "effect";
 import { type RuntimeCoreHealthOverlay, type RuntimeCoreTransportHealth } from "./health";
-import type * as Duration from "effect/Duration";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import type {
   ViewServerRuntimeCorePublicClient,

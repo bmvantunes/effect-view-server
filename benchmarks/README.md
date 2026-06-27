@@ -109,3 +109,28 @@ compares exact produced-row/sample metadata and guards `aggregateRowsPerSecond`,
 divided by total measured time across samples; per-sample mean/min rows-per-second stay in the
 artifact for diagnosis but are intentionally not the regression gate because tiny Kafka sample sets
 can contain one unusually fast or slow sample.
+
+gRPC runtime profiles are gated separately from `pre-grpc:gate`:
+
+```bash
+pnpm run grpc:gate
+```
+
+This runs `pnpm run ready`, then the materialized, leased smoke, and retained leased baselines. The
+retained leased profile uses 50k retained rows to keep the expensive local-filter snapshot path under
+a committed baseline. Its latency stays gated with the gRPC runtime thresholds; RSS uses the wider
+noisy-runtime allowance because the retained profile deliberately exercises a large in-memory row
+set. Refresh it only when the retained-feed performance change is intentional:
+
+```bash
+pnpm run bench:baseline:grpc-leased-retained:update
+```
+
+Use repeated retained runs for local stability investigation before tightening thresholds:
+
+```bash
+pnpm run bench:baseline:grpc-leased-retained:repeat
+```
+
+The repeat command writes isolated ignored artifacts and stays report-only; it does not update or
+compare committed baselines.

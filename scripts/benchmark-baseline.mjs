@@ -139,6 +139,11 @@ export const grpcRuntimeBenchmarkThresholds = {
     defaultBenchmarkThresholds.throughputAggregateRowsPerSecond,
 };
 
+export const grpcRetainedRuntimeBenchmarkThresholds = {
+  ...grpcRuntimeBenchmarkThresholds,
+  memoryRssTotalDelta: kafkaRssReportThresholds,
+};
+
 export const benchmarkThresholdsForProfile = (profile) =>
   profile === "grouped-order-neutral"
     ? groupedOrderNeutralBenchmarkThresholds
@@ -150,9 +155,9 @@ export const benchmarkThresholdsForProfile = (profile) =>
       ? kafkaSustainedFirehoseBenchmarkThresholds
     : profile === "websocket-firehose"
       ? websocketFirehoseBenchmarkThresholds
-    : profile === "grpc-materialized" ||
-        profile === "grpc-leased" ||
-        profile === "grpc-leased-retained"
+    : profile === "grpc-leased-retained"
+      ? grpcRetainedRuntimeBenchmarkThresholds
+    : profile === "grpc-materialized" || profile === "grpc-leased"
       ? grpcRuntimeBenchmarkThresholds
     : defaultBenchmarkThresholds;
 

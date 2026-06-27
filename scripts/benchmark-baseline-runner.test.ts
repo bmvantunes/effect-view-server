@@ -280,6 +280,7 @@ describe("benchmark baseline runner", () => {
       grpcLeased: scripts["bench:baseline:grpc-leased"],
       grpcLeasedRetained: scripts["bench:baseline:grpc-leased-retained"],
       grpcLeasedRetainedRepeat: scripts["bench:baseline:grpc-leased-retained:repeat"],
+      grpcLeasedRetainedUpdate: scripts["bench:baseline:grpc-leased-retained:update"],
       grpcLeasedUpdate: scripts["bench:baseline:grpc-leased:update"],
       grpcMaterialized: scripts["bench:baseline:grpc-materialized"],
       grpcMaterializedUpdate: scripts["bench:baseline:grpc-materialized:update"],
@@ -305,12 +306,13 @@ describe("benchmark baseline runner", () => {
       groupedOrderNeutralUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grouped-order-neutral --update-baseline",
       grpcGate:
-        "pnpm run ready && pnpm run bench:baseline:grpc-materialized && pnpm run bench:baseline:grpc-leased",
+        "pnpm run ready && pnpm run bench:baseline:grpc-materialized && pnpm run bench:baseline:grpc-leased && pnpm run bench:baseline:grpc-leased-retained",
       grpcLeased: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased",
-      grpcLeasedRetained:
-        "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained --no-compare",
+      grpcLeasedRetained: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained",
       grpcLeasedRetainedRepeat:
         "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained --repeat=3 --no-compare",
+      grpcLeasedRetainedUpdate:
+        "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained --update-baseline",
       grpcLeasedUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased --update-baseline",
       grpcMaterialized: "node scripts/run-benchmark-baseline.mjs --profile=grpc-materialized",
@@ -378,10 +380,8 @@ describe("benchmark baseline runner", () => {
       "pnpm run ready",
       "pnpm run bench:baseline:grpc-materialized",
       "pnpm run bench:baseline:grpc-leased",
-    ]);
-    expect(scripts["grpc:gate"].split(" && ")).not.toContain(
       "pnpm run bench:baseline:grpc-leased-retained",
-    );
+    ]);
   });
 
   it("defines raw read and write performance gate tasks", () => {
@@ -643,9 +643,9 @@ describe("benchmark baseline runner", () => {
         retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
         routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT"],
         rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROWS_PER_FEED"],
-          task: task.args,
-          timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
-        })),
+        task: task.args,
+        timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
+      })),
       retained: retainedTasks.map((task) => ({
         artifactKind: task.expectedArtifactKind,
         benchmarkScope: task.expectedBenchmarkScope,

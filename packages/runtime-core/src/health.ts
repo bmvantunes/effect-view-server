@@ -3,8 +3,7 @@ import type {
   DecodableTopicDefinitions,
 } from "@view-server/column-live-view-engine";
 import type { TransportHealth, ViewServerHealth } from "@view-server/config";
-import { Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
-import type * as Duration from "effect/Duration";
+import { Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore, type Duration } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 
 type EngineHealthReader<Topics extends DecodableTopicDefinitions> = {

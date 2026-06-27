@@ -135,6 +135,14 @@ export const grpcRuntimeBenchmarkThresholds = {
     maxRatio: 16,
   },
   memoryRssTotalDelta: defaultBenchmarkThresholds.memoryRssTotalDelta,
+  operationMax: {
+    maxAbsoluteDeltaMs: 100,
+    maxRatio: 16,
+  },
+  operationMean: {
+    maxAbsoluteDeltaMs: 25,
+    maxRatio: 12,
+  },
   throughputAggregateRowsPerSecond:
     defaultBenchmarkThresholds.throughputAggregateRowsPerSecond,
 };
@@ -142,6 +150,14 @@ export const grpcRuntimeBenchmarkThresholds = {
 export const grpcRetainedRuntimeBenchmarkThresholds = {
   ...grpcRuntimeBenchmarkThresholds,
   memoryRssTotalDelta: kafkaRssReportThresholds,
+  operationMax: {
+    maxAbsoluteDeltaMs: 500,
+    maxRatio: 16,
+  },
+  operationMean: {
+    maxAbsoluteDeltaMs: 250,
+    maxRatio: 12,
+  },
 };
 
 export const benchmarkThresholdsForProfile = (profile) =>
@@ -565,6 +581,217 @@ const throughputCasesValue = (value, path, options) => {
   );
 };
 
+const grpcMaterializedOperationCaseValue = (value, path) => {
+  const operationCase = exactObjectValue(value, path, [
+    "maxHealthOverlayMs",
+    "maxSnapshotMs",
+    "maxStreamConvergenceMs",
+    "meanHealthOverlayMs",
+    "meanRowsPerSecond",
+    "meanSnapshotMs",
+    "meanStreamConvergenceMs",
+    "name",
+    "sampleCount",
+    "totalRows",
+  ]);
+  const result = {
+    maxHealthOverlayMs: nonNegativeFiniteNumber(
+      operationCase.maxHealthOverlayMs,
+      `${path}.maxHealthOverlayMs`,
+    ),
+    maxSnapshotMs: nonNegativeFiniteNumber(operationCase.maxSnapshotMs, `${path}.maxSnapshotMs`),
+    maxStreamConvergenceMs: nonNegativeFiniteNumber(
+      operationCase.maxStreamConvergenceMs,
+      `${path}.maxStreamConvergenceMs`,
+    ),
+    meanHealthOverlayMs: nonNegativeFiniteNumber(
+      operationCase.meanHealthOverlayMs,
+      `${path}.meanHealthOverlayMs`,
+    ),
+    meanRowsPerSecond: nonNegativeFiniteNumber(
+      operationCase.meanRowsPerSecond,
+      `${path}.meanRowsPerSecond`,
+    ),
+    meanSnapshotMs: nonNegativeFiniteNumber(operationCase.meanSnapshotMs, `${path}.meanSnapshotMs`),
+    meanStreamConvergenceMs: nonNegativeFiniteNumber(
+      operationCase.meanStreamConvergenceMs,
+      `${path}.meanStreamConvergenceMs`,
+    ),
+    name: stringValue(operationCase.name, `${path}.name`),
+    sampleCount: positiveInteger(operationCase.sampleCount, `${path}.sampleCount`),
+    totalRows: nonNegativeInteger(operationCase.totalRows, `${path}.totalRows`),
+  };
+  if (result.meanHealthOverlayMs > result.maxHealthOverlayMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanHealthOverlayMs must be less than or equal to maxHealthOverlayMs.`,
+    );
+  }
+  if (result.meanSnapshotMs > result.maxSnapshotMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanSnapshotMs must be less than or equal to maxSnapshotMs.`,
+    );
+  }
+  if (result.meanStreamConvergenceMs > result.maxStreamConvergenceMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanStreamConvergenceMs must be less than or equal to maxStreamConvergenceMs.`,
+    );
+  }
+  return result;
+};
+
+const grpcLeasedOperationCaseValue = (value, path) => {
+  const operationCase = exactObjectValue(value, path, [
+    "maxActiveLeasedFeeds",
+    "maxCleanupActiveLeasedFeeds",
+    "maxCleanupMs",
+    "maxDeltaFanoutMs",
+    "maxHealthOverlayMs",
+    "maxSnapshotMs",
+    "maxSubscriptionMs",
+    "meanCleanupMs",
+    "meanDeltaFanoutMs",
+    "meanHealthOverlayMs",
+    "meanRowsPerSecond",
+    "meanSnapshotMs",
+    "meanSubscriptionMs",
+    "name",
+    "sampleCount",
+  ]);
+  const result = {
+    maxActiveLeasedFeeds: nonNegativeInteger(
+      operationCase.maxActiveLeasedFeeds,
+      `${path}.maxActiveLeasedFeeds`,
+    ),
+    maxCleanupActiveLeasedFeeds: nonNegativeInteger(
+      operationCase.maxCleanupActiveLeasedFeeds,
+      `${path}.maxCleanupActiveLeasedFeeds`,
+    ),
+    maxCleanupMs: nonNegativeFiniteNumber(operationCase.maxCleanupMs, `${path}.maxCleanupMs`),
+    maxDeltaFanoutMs: nonNegativeFiniteNumber(
+      operationCase.maxDeltaFanoutMs,
+      `${path}.maxDeltaFanoutMs`,
+    ),
+    maxHealthOverlayMs: nonNegativeFiniteNumber(
+      operationCase.maxHealthOverlayMs,
+      `${path}.maxHealthOverlayMs`,
+    ),
+    maxSnapshotMs: nonNegativeFiniteNumber(operationCase.maxSnapshotMs, `${path}.maxSnapshotMs`),
+    maxSubscriptionMs: nonNegativeFiniteNumber(
+      operationCase.maxSubscriptionMs,
+      `${path}.maxSubscriptionMs`,
+    ),
+    meanCleanupMs: nonNegativeFiniteNumber(operationCase.meanCleanupMs, `${path}.meanCleanupMs`),
+    meanDeltaFanoutMs: nonNegativeFiniteNumber(
+      operationCase.meanDeltaFanoutMs,
+      `${path}.meanDeltaFanoutMs`,
+    ),
+    meanHealthOverlayMs: nonNegativeFiniteNumber(
+      operationCase.meanHealthOverlayMs,
+      `${path}.meanHealthOverlayMs`,
+    ),
+    meanRowsPerSecond: nonNegativeFiniteNumber(
+      operationCase.meanRowsPerSecond,
+      `${path}.meanRowsPerSecond`,
+    ),
+    meanSnapshotMs: nonNegativeFiniteNumber(operationCase.meanSnapshotMs, `${path}.meanSnapshotMs`),
+    meanSubscriptionMs: nonNegativeFiniteNumber(
+      operationCase.meanSubscriptionMs,
+      `${path}.meanSubscriptionMs`,
+    ),
+    name: stringValue(operationCase.name, `${path}.name`),
+    sampleCount: positiveInteger(operationCase.sampleCount, `${path}.sampleCount`),
+  };
+  if (result.meanCleanupMs > result.maxCleanupMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanCleanupMs must be less than or equal to maxCleanupMs.`,
+    );
+  }
+  if (result.meanDeltaFanoutMs > result.maxDeltaFanoutMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanDeltaFanoutMs must be less than or equal to maxDeltaFanoutMs.`,
+    );
+  }
+  if (result.meanHealthOverlayMs > result.maxHealthOverlayMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanHealthOverlayMs must be less than or equal to maxHealthOverlayMs.`,
+    );
+  }
+  if (result.meanSnapshotMs > result.maxSnapshotMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanSnapshotMs must be less than or equal to maxSnapshotMs.`,
+    );
+  }
+  if (result.meanSubscriptionMs > result.maxSubscriptionMs) {
+    throw new Error(
+      `Benchmark artifact field ${path}.meanSubscriptionMs must be less than or equal to maxSubscriptionMs.`,
+    );
+  }
+  return result;
+};
+
+const runtimeOperationCaseValue = (value, path, benchmarkScope) => {
+  if (benchmarkScope === "runtime-grpc-materialized") {
+    return grpcMaterializedOperationCaseValue(value, path);
+  }
+  if (benchmarkScope === "runtime-grpc-leased") {
+    return grpcLeasedOperationCaseValue(value, path);
+  }
+  throw new Error(`Benchmark artifact field ${path} is only supported for gRPC runtime scopes.`);
+};
+
+const runtimeOperationCasesValue = (value, path, benchmarkScope) =>
+  nonEmptyArrayValue(value, path).map((operationCase, index) =>
+    runtimeOperationCaseValue(operationCase, `${path}[${index}]`, benchmarkScope),
+  );
+
+const validateBenchmarkCasesMatchBenchmarks = (benchmarkCases, benchmarks, path) => {
+  const benchmarkNames = new Set(benchmarks.map((benchmark) => benchmark.name));
+  for (const benchmarkCase of benchmarkCases) {
+    if (!benchmarkNames.has(benchmarkCase)) {
+      throw new Error(
+        `Benchmark artifact field ${path} contains benchmarkCase without matching Vitest benchmark: ${benchmarkCase}.`,
+      );
+    }
+  }
+  for (const benchmarkName of benchmarkNames) {
+    if (!benchmarkCases.includes(benchmarkName)) {
+      throw new Error(
+        `Benchmark artifact field ${path} is missing benchmarkCase for Vitest benchmark: ${benchmarkName}.`,
+      );
+    }
+  }
+};
+
+const validateRuntimeOperationCasesMatchBenchmarkCases = (
+  operationCases,
+  benchmarkCases,
+  minimumSampleCount,
+  path,
+) => {
+  const benchmarkCaseNames = new Set(benchmarkCases);
+  const operationCaseNames = new Set();
+  for (const operationCase of operationCases) {
+    if (operationCase.sampleCount < minimumSampleCount) {
+      throw new Error(
+        `Benchmark artifact field ${path}.${operationCase.name}.sampleCount must be at least ${minimumSampleCount} but was ${operationCase.sampleCount}.`,
+      );
+    }
+    if (!benchmarkCaseNames.has(operationCase.name)) {
+      throw new Error(
+        `Benchmark artifact field ${path} contains runtime operation case without matching benchmarkCase: ${operationCase.name}.`,
+      );
+    }
+    operationCaseNames.add(operationCase.name);
+  }
+  for (const benchmarkCase of benchmarkCases) {
+    if (!operationCaseNames.has(benchmarkCase)) {
+      throw new Error(
+        `Benchmark artifact field ${path} is missing runtime operation case for benchmarkCase: ${benchmarkCase}.`,
+      );
+    }
+  }
+};
+
 const validateThroughputCasesMatchBenchmarks = (throughputCases, benchmarks, path) => {
   const benchmarkSampleCountByName = new Map();
   for (const benchmark of benchmarks) {
@@ -806,6 +1033,32 @@ export const readBenchmarkObservation = (task) => {
     `${task.summaryPath}.grpcParameters`,
     benchmarkScope,
   );
+  const requiresGrpcOperationCases =
+    benchmarkScope === "runtime-grpc-materialized" || benchmarkScope === "runtime-grpc-leased";
+  if (requiresGrpcOperationCases) {
+    validateBenchmarkCasesMatchBenchmarks(
+      benchmarkCases,
+      benchmarks,
+      `${task.summaryPath}.benchmarkCases`,
+    );
+  }
+  const runtimeOperationCases =
+    summary.cases === undefined
+      ? undefined
+      : runtimeOperationCasesValue(summary.cases, `${task.summaryPath}.cases`, benchmarkScope);
+  if (requiresGrpcOperationCases && runtimeOperationCases === undefined) {
+    throw new Error(
+      `Benchmark artifact field ${task.summaryPath}.cases is required for ${benchmarkScope}.`,
+    );
+  }
+  if (runtimeOperationCases !== undefined) {
+    validateRuntimeOperationCasesMatchBenchmarkCases(
+      runtimeOperationCases,
+      benchmarkCases,
+      minimumSampleCount,
+      `${task.summaryPath}.cases`,
+    );
+  }
 
   return {
     ...(summary.activeViewCountBeforeCleanup === undefined
@@ -844,6 +1097,7 @@ export const readBenchmarkObservation = (task) => {
     outputJsonPath: task.outputJsonPath,
     queuedEventCount: finiteNumber(summary.queuedEventCount, `${task.summaryPath}.queuedEventCount`),
     rowCount,
+    ...(runtimeOperationCases === undefined ? {} : { runtimeOperationCases }),
     ...(summary.runtimeMetrics === undefined
       ? {}
       : {
@@ -952,6 +1206,18 @@ const thresholdsValue = (value, path, expectedThresholds) => {
     thresholds.memoryRssTotalDelta,
     `${path}.memoryRssTotalDelta`,
   );
+  if (expectedThresholds.operationMax !== undefined) {
+    validatedThresholds.operationMax = deltaThresholdValue(
+      thresholds.operationMax,
+      `${path}.operationMax`,
+    );
+  }
+  if (expectedThresholds.operationMean !== undefined) {
+    validatedThresholds.operationMean = deltaThresholdValue(
+      thresholds.operationMean,
+      `${path}.operationMean`,
+    );
+  }
   validatedThresholds.throughputAggregateRowsPerSecond = throughputThresholdValue(
     thresholds.throughputAggregateRowsPerSecond,
     `${path}.throughputAggregateRowsPerSecond`,
@@ -1046,6 +1312,34 @@ const validateTask = (task, path) => {
     `${path}.grpcParameters`,
     benchmarkScope,
   );
+  const requiresGrpcOperationCases =
+    benchmarkScope === "runtime-grpc-materialized" || benchmarkScope === "runtime-grpc-leased";
+  const runtimeOperationCases =
+    task.runtimeOperationCases === undefined
+      ? undefined
+      : runtimeOperationCasesValue(
+          task.runtimeOperationCases,
+          `${path}.runtimeOperationCases`,
+          benchmarkScope,
+        );
+  if (requiresGrpcOperationCases && runtimeOperationCases === undefined) {
+    throw new Error(
+      `Benchmark artifact field ${path}.runtimeOperationCases is required for ${benchmarkScope}.`,
+    );
+  }
+  const benchmarkCases = stringArrayValue(task.benchmarkCases, `${path}.benchmarkCases`);
+  const minimumSampleCount = positiveInteger(task.minimumSampleCount, `${path}.minimumSampleCount`);
+  if (requiresGrpcOperationCases) {
+    validateBenchmarkCasesMatchBenchmarks(benchmarkCases, benchmarks, `${path}.benchmarkCases`);
+  }
+  if (runtimeOperationCases !== undefined) {
+    validateRuntimeOperationCasesMatchBenchmarkCases(
+      runtimeOperationCases,
+      benchmarkCases,
+      minimumSampleCount,
+      `${path}.runtimeOperationCases`,
+    );
+  }
   return {
     ...(task.activeViewCountBeforeCleanup === undefined
       ? {}
@@ -1058,7 +1352,7 @@ const validateTask = (task, path) => {
     artifactKind,
     backpressureCount: finiteNumber(task.backpressureCount, `${path}.backpressureCount`),
     benchmarks,
-    benchmarkCases: stringArrayValue(task.benchmarkCases, `${path}.benchmarkCases`),
+    benchmarkCases,
     benchmarkName: stringValue(task.benchmarkName, `${path}.benchmarkName`),
     benchmarkScope,
     browser: optionalObjectValue(task.browser, `${path}.browser`),
@@ -1075,11 +1369,12 @@ const validateTask = (task, path) => {
     kafkaIngestLanes,
     latencySource: stringValue(task.latencySource, `${path}.latencySource`),
     memoryRssTotalDeltaBytes,
-    minimumSampleCount: positiveInteger(task.minimumSampleCount, `${path}.minimumSampleCount`),
+    minimumSampleCount,
     mutationCount,
     outputJsonPath: stringValue(task.outputJsonPath, `${path}.outputJsonPath`),
     queuedEventCount: finiteNumber(task.queuedEventCount, `${path}.queuedEventCount`),
     rowCount: finiteNumber(task.rowCount, `${path}.rowCount`),
+    ...(runtimeOperationCases === undefined ? {} : { runtimeOperationCases }),
     ...(task.runtimeMetrics === undefined
       ? {}
       : {
@@ -1133,6 +1428,14 @@ const benchmarkByName = (benchmarks, path) =>
 
 const throughputCaseByName = (throughputCases, path) =>
   mapByUniqueKey(throughputCases, (throughputCase) => throughputCase.name, path, "throughput case");
+
+const runtimeOperationCaseByName = (operationCases, path) =>
+  mapByUniqueKey(
+    operationCases,
+    (operationCase) => operationCase.name,
+    path,
+    "runtime operation case",
+  );
 
 const pushRegression = (regressions, message) => {
   regressions.push(message);
@@ -1202,6 +1505,10 @@ const compareThroughput = (
   baseline,
   actual,
 ) => {
+  if (baseline === 0) {
+    compareExact(regressions, taskLabel, `${caseName} ${metricName}`, baseline, actual);
+    return;
+  }
   const minimum = baseline * threshold.minRatio;
   if (actual < minimum) {
     pushRegression(
@@ -1312,6 +1619,244 @@ const compareThroughputCases = (regressions, taskLabel, threshold, baselineCases
   }
 };
 
+const compareRuntimeOperationLatencyField = (
+  regressions,
+  taskLabel,
+  thresholds,
+  baselineCase,
+  actualCase,
+  field,
+  thresholdName,
+) => {
+  if (baselineCase[field] === 0) {
+    compareExact(
+      regressions,
+      taskLabel,
+      `${baselineCase.name} runtime operation ${field}`,
+      baselineCase[field],
+      actualCase[field],
+    );
+    return;
+  }
+  compareLatency(
+    regressions,
+    taskLabel,
+    baselineCase.name,
+    field,
+    thresholds[thresholdName],
+    baselineCase[field],
+    actualCase[field],
+  );
+};
+
+const compareRuntimeOperationExactField = (
+  regressions,
+  taskLabel,
+  baselineCase,
+  actualCase,
+  field,
+) => {
+  compareExact(
+    regressions,
+    taskLabel,
+    `${baselineCase.name} runtime operation ${field}`,
+    baselineCase[field],
+    actualCase[field],
+  );
+};
+
+const compareGrpcMaterializedOperationCase = (
+  regressions,
+  taskLabel,
+  thresholds,
+  baselineCase,
+  actualCase,
+) => {
+  compareRuntimeOperationExactField(regressions, taskLabel, baselineCase, actualCase, "sampleCount");
+  compareRuntimeOperationExactField(regressions, taskLabel, baselineCase, actualCase, "totalRows");
+  compareRuntimeOperationLatencyField(
+    regressions,
+    taskLabel,
+    thresholds,
+    baselineCase,
+    actualCase,
+    "meanHealthOverlayMs",
+    "operationMean",
+  );
+  compareRuntimeOperationLatencyField(
+    regressions,
+    taskLabel,
+    thresholds,
+    baselineCase,
+    actualCase,
+    "meanSnapshotMs",
+    "operationMean",
+  );
+  compareRuntimeOperationLatencyField(
+    regressions,
+    taskLabel,
+    thresholds,
+    baselineCase,
+    actualCase,
+    "meanStreamConvergenceMs",
+    "operationMean",
+  );
+  compareRuntimeOperationLatencyField(
+    regressions,
+    taskLabel,
+    thresholds,
+    baselineCase,
+    actualCase,
+    "maxHealthOverlayMs",
+    "operationMax",
+  );
+  compareRuntimeOperationLatencyField(
+    regressions,
+    taskLabel,
+    thresholds,
+    baselineCase,
+    actualCase,
+    "maxSnapshotMs",
+    "operationMax",
+  );
+  compareRuntimeOperationLatencyField(
+    regressions,
+    taskLabel,
+    thresholds,
+    baselineCase,
+    actualCase,
+    "maxStreamConvergenceMs",
+    "operationMax",
+  );
+  compareThroughput(
+    regressions,
+    taskLabel,
+    baselineCase.name,
+    "meanRowsPerSecond",
+    thresholds.throughputAggregateRowsPerSecond,
+    baselineCase.meanRowsPerSecond,
+    actualCase.meanRowsPerSecond,
+  );
+};
+
+const compareGrpcLeasedOperationCase = (
+  regressions,
+  taskLabel,
+  thresholds,
+  baselineCase,
+  actualCase,
+) => {
+  compareRuntimeOperationExactField(regressions, taskLabel, baselineCase, actualCase, "sampleCount");
+  compareRuntimeOperationExactField(
+    regressions,
+    taskLabel,
+    baselineCase,
+    actualCase,
+    "maxActiveLeasedFeeds",
+  );
+  compareRuntimeOperationExactField(
+    regressions,
+    taskLabel,
+    baselineCase,
+    actualCase,
+    "maxCleanupActiveLeasedFeeds",
+  );
+  for (const field of [
+    "meanCleanupMs",
+    "meanDeltaFanoutMs",
+    "meanHealthOverlayMs",
+    "meanSnapshotMs",
+    "meanSubscriptionMs",
+  ]) {
+    compareRuntimeOperationLatencyField(
+      regressions,
+      taskLabel,
+      thresholds,
+      baselineCase,
+      actualCase,
+      field,
+      "operationMean",
+    );
+  }
+  for (const field of [
+    "maxCleanupMs",
+    "maxDeltaFanoutMs",
+    "maxHealthOverlayMs",
+    "maxSnapshotMs",
+    "maxSubscriptionMs",
+  ]) {
+    compareRuntimeOperationLatencyField(
+      regressions,
+      taskLabel,
+      thresholds,
+      baselineCase,
+      actualCase,
+      field,
+      "operationMax",
+    );
+  }
+  compareThroughput(
+    regressions,
+    taskLabel,
+    baselineCase.name,
+    "meanRowsPerSecond",
+    thresholds.throughputAggregateRowsPerSecond,
+    baselineCase.meanRowsPerSecond,
+    actualCase.meanRowsPerSecond,
+  );
+};
+
+const compareRuntimeOperationCases = (
+  regressions,
+  taskLabel,
+  thresholds,
+  benchmarkScope,
+  baselineCases,
+  actualCases,
+) => {
+  if (baselineCases === undefined && actualCases === undefined) {
+    return;
+  }
+  if (baselineCases === undefined || actualCases === undefined) {
+    pushRegression(regressions, `${taskLabel}: runtimeOperationCases presence changed.`);
+    return;
+  }
+  const baselineByName = runtimeOperationCaseByName(
+    baselineCases,
+    `baseline.tasks[${taskLabel}]`,
+  );
+  const actualByName = runtimeOperationCaseByName(actualCases, `actual.tasks[${taskLabel}]`);
+  for (const caseName of actualByName.keys()) {
+    if (!baselineByName.has(caseName)) {
+      pushRegression(regressions, `${taskLabel}: unexpected runtime operation case ${caseName}.`);
+    }
+  }
+  for (const baselineCase of baselineCases) {
+    const actualCase = actualByName.get(baselineCase.name);
+    if (actualCase === undefined) {
+      pushRegression(regressions, `${taskLabel}: missing runtime operation case ${baselineCase.name}.`);
+      continue;
+    }
+    if (benchmarkScope === "runtime-grpc-materialized") {
+      compareGrpcMaterializedOperationCase(
+        regressions,
+        taskLabel,
+        thresholds,
+        baselineCase,
+        actualCase,
+      );
+    } else {
+      compareGrpcLeasedOperationCase(
+        regressions,
+        taskLabel,
+        thresholds,
+        baselineCase,
+        actualCase,
+      );
+    }
+  }
+};
+
 const compareReportOnlyRuntimeMetricsPresence = (regressions, taskLabel, baselineTask, actualTask) => {
   if (baselineTask.runtimeMetrics !== undefined && actualTask.runtimeMetrics === undefined) {
     pushRegression(regressions, `${taskLabel}: runtimeMetrics presence changed.`);
@@ -1361,6 +1906,18 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
   const validatedBaseline = validateBenchmarkBaseline(baseline, "baseline");
   const validatedActual = validateBenchmarkBaseline(actualBaseline, "actual");
   const thresholds = validatedBaseline.thresholds;
+  if (
+    validatedBaseline.tasks.some(
+      (task) =>
+        task.benchmarkScope === "runtime-grpc-materialized" ||
+        task.benchmarkScope === "runtime-grpc-leased",
+    ) &&
+    (thresholds.operationMean === undefined || thresholds.operationMax === undefined)
+  ) {
+    throw new Error(
+      `Benchmark baseline ${validatedBaseline.profile} contains gRPC runtime operation cases but does not define operationMean and operationMax thresholds.`,
+    );
+  }
   const baselineTasks = taskByLabel(validatedBaseline.tasks, "baseline.tasks");
   const actualTasks = taskByLabel(validatedActual.tasks, "actual.tasks");
   const regressions = [];
@@ -1477,6 +2034,14 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
       thresholds,
       baselineTask.throughputCases,
       actualTask.throughputCases,
+    );
+    compareRuntimeOperationCases(
+      regressions,
+      taskLabel,
+      thresholds,
+      baselineTask.benchmarkScope,
+      baselineTask.runtimeOperationCases,
+      actualTask.runtimeOperationCases,
     );
     compareReportOnlyRuntimeMetricsPresence(regressions, taskLabel, baselineTask, actualTask);
     compareKafkaSustainedFirehoseFinalLag(regressions, taskLabel, actualTask);

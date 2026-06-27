@@ -769,9 +769,9 @@ Stream -> groupedWithin -> map -> runtime-core publishMany -> snapshot/readback 
 
 It records whole-case Vitest latency, stream convergence, filtered/sorted snapshot
 latency, health overlay latency, rows/sec, final health, mutation count, explicit
-gRPC parameters, and memory deltas. The baseline gate compares the whole-case
-Vitest timing and memory summary; inner operation timings are report metadata
-until repeated runs prove they are stable enough for tighter gates.
+gRPC parameters, `runtimeOperationCases`, and memory deltas. The baseline gate
+compares whole-case Vitest timing, memory summary, operation mean/max timings,
+operation throughput, sample counts, and structural counters.
 
 Current leased-feed benchmark command:
 
@@ -796,29 +796,27 @@ Current leased benchmark profiles:
 - leased local-filter live convergence over the configured rows per feed
 - leased partitioned write convergence over `routeCount` active routed feeds
 - leased health refresh overhead while `routeCount` routed feeds remain active
-- retained local-filter snapshot report metadata over the configured retained rows. The direct
+- retained local-filter snapshot timing over the configured retained rows. The direct
   `bench:grpc-leased` script defaults this retained case to 50k rows. The committed
   `grpc:gate` smoke baseline intentionally overrides it to 500 rows, while
   `bench:baseline:grpc-leased-retained` gates the 50k retained-row profile with a committed
   baseline.
 - repeated retained local-filter stability runs with isolated artifacts through
-  `bench:baseline:grpc-leased-retained:repeat`. This remains report-only for local stability
-  investigation before tightening inner-operation thresholds.
-- leased delta fanout report metadata for multiple subscribers over one feed
-- leased last-subscriber cleanup report metadata as an explicit case
+  `bench:baseline:grpc-leased-retained:repeat`. Repeated runs remain report-only for local
+  stability investigation; the single-run retained baseline is a committed, loose
+  regression gate for large retained-local-filter behavior.
+- leased delta fanout timing for multiple subscribers over one feed
+- leased last-subscriber cleanup timing as an explicit case
 - many routes with one subscriber each, including health overlay timing metadata
 - one route with many subscribers
 
-Future leased benchmark profiles:
-
-- repeated-run stability before tightening remaining inner-operation max-latency gates
-
 The smoke gRPC benchmark baselines are part of `pnpm run grpc:gate`, not the
 pre-gRPC gate. `pre-grpc:gate` remains the Kafka/performance readiness gate
-before gRPC work. gRPC whole-case p99 is gated with loose runtime thresholds;
-the 50k retained leased-feed profile is a strict compare gate, and inner retained-snapshot,
-delta-fanout, and cleanup max timings remain report-only until repeated local runs are stable enough
-for tighter thresholds.
+before gRPC work. gRPC whole-case p99 is gated with loose runtime thresholds.
+The 50k retained leased-feed profile also gates retained-snapshot, delta-fanout,
+cleanup, health, and subscription operation timings through `runtimeOperationCases`,
+but uses wider thresholds than smoke profiles because the retained case is large
+and more sensitive to local machine noise.
 
 ## Acceptance Criteria
 

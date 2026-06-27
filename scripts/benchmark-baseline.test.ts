@@ -231,6 +231,37 @@ const comparableNonKafkaRuntimeThroughputCases = [
   },
 ];
 
+const runtimeGrpcLeasedOperationCase = {
+  maxActiveLeasedFeeds: 1,
+  maxCleanupActiveLeasedFeeds: 0,
+  maxCleanupMs: 3,
+  maxDeltaFanoutMs: 5,
+  maxHealthOverlayMs: 2,
+  maxSnapshotMs: 8,
+  maxSubscriptionMs: 4,
+  meanCleanupMs: 2,
+  meanDeltaFanoutMs: 4,
+  meanHealthOverlayMs: 1,
+  meanRowsPerSecond: 1000,
+  meanSnapshotMs: 7,
+  meanSubscriptionMs: 3,
+  name: "case a",
+  sampleCount: 7,
+};
+
+const runtimeGrpcMaterializedOperationCase = {
+  maxHealthOverlayMs: 2,
+  maxSnapshotMs: 8,
+  maxStreamConvergenceMs: 7,
+  meanHealthOverlayMs: 1,
+  meanRowsPerSecond: 1000,
+  meanSnapshotMs: 7,
+  meanStreamConvergenceMs: 6,
+  name: "case a",
+  sampleCount: 7,
+  totalRows: 100,
+};
+
 const observation = {
   artifactKind: "engine-benchmark-summary",
   backpressureCount: 0,
@@ -383,6 +414,30 @@ describe("benchmark baseline comparison", () => {
     });
   });
 
+  it("reads non-gRPC observations with descriptive benchmark case metadata", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-descriptive-case-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const benchmarkCases = [
+      "publish matching row through runtime client and observe through live client",
+    ];
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        benchmarkCases,
+      })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(readBenchmarkObservation(taskPaths(summaryPath, outputJsonPath))).toStrictEqual({
+      ...observation,
+      benchmarkCases,
+      outputJsonPath,
+      summaryPath,
+    });
+  });
+
   it("reads active-query sharing structural counters from summary artifacts", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
     const summaryPath = join(directory, "actual.summary.json");
@@ -418,6 +473,7 @@ describe("benchmark baseline comparison", () => {
       `${JSON.stringify({
         ...summary,
         benchmarkScope: "runtime-grpc-leased",
+        cases: [runtimeGrpcLeasedOperationCase],
         grpcParameters,
       })}\n`,
     );
@@ -433,6 +489,7 @@ describe("benchmark baseline comparison", () => {
       benchmarkScope: "runtime-grpc-leased",
       grpcParameters,
       outputJsonPath,
+      runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
       summaryPath,
     });
 
@@ -446,6 +503,7 @@ describe("benchmark baseline comparison", () => {
             benchmarkScope: "runtime-grpc-leased",
             grpcParameters,
             outputJsonPath,
+            runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
             summaryPath,
           },
         ],
@@ -460,10 +518,45 @@ describe("benchmark baseline comparison", () => {
           benchmarkScope: "runtime-grpc-leased",
           grpcParameters,
           outputJsonPath,
+          runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
           summaryPath,
         },
       ],
       thresholds: grpcRuntimeBenchmarkThresholds,
+    });
+  });
+
+  it("reads materialized gRPC operation cases from summary artifacts", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const grpcParameters = {
+      batchSize: 256,
+      seedRows: 1000,
+    };
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        benchmarkScope: "runtime-grpc-materialized",
+        cases: [runtimeGrpcMaterializedOperationCase],
+        grpcParameters,
+      })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(
+      readBenchmarkObservation({
+        ...taskPaths(summaryPath, outputJsonPath),
+        expectedBenchmarkScope: "runtime-grpc-materialized",
+      }),
+    ).toStrictEqual({
+      ...observation,
+      benchmarkScope: "runtime-grpc-materialized",
+      grpcParameters,
+      outputJsonPath,
+      runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+      summaryPath,
     });
   });
 
@@ -1729,6 +1822,17 @@ describe("benchmark baseline comparison", () => {
     expect(validateBenchmarkBaseline(baseline)).toStrictEqual(baseline);
   });
 
+  it("accepts descriptive benchmark case metadata for non-gRPC baseline manifests", () => {
+    const descriptiveCaseBaseline = buildBenchmarkBaseline("smoke", [
+      {
+        ...observation,
+        benchmarkCases: ["publish matching row through runtime client and observe through live client"],
+      },
+    ]);
+
+    expect(validateBenchmarkBaseline(descriptiveCaseBaseline)).toStrictEqual(descriptiveCaseBaseline);
+  });
+
   it("rejects baseline writes with nonzero invariant counters", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-baseline-counter-"));
     const baselinePath = join(directory, "baseline.json");
@@ -1813,6 +1917,7 @@ describe("benchmark baseline comparison", () => {
           routeCount: 25,
           rowsPerFeed: 50,
         },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
       },
     ]);
     const actual = buildBenchmarkBaseline("grpc-leased", [
@@ -1824,6 +1929,7 @@ describe("benchmark baseline comparison", () => {
           routeCount: 25,
           rowsPerFeed: 50,
         },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
       },
     ]);
 
@@ -1833,6 +1939,711 @@ describe("benchmark baseline comparison", () => {
         'task a: grpcParameters changed from {"retainedRows":500,"routeCount":25,"rowsPerFeed":50} to {"retainedRows":1000,"routeCount":25,"rowsPerFeed":50}.',
       ],
     });
+  });
+
+  it("reports gRPC runtime operation regressions", () => {
+    const baseline = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [
+          {
+            ...runtimeGrpcLeasedOperationCase,
+            maxActiveLeasedFeeds: 2,
+            maxSnapshotMs: 1000,
+            meanRowsPerSecond: 400,
+          },
+        ],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: case a runtime operation maxActiveLeasedFeeds changed from 1 to 2.",
+        "task a / case a: maxSnapshotMs regressed from 8.000ms to 1000.000ms; allowed <= 128.000ms.",
+        "task a / case a: meanRowsPerSecond throughput regressed from 1000.000 rows/sec to 400.000 rows/sec; allowed >= 500.000 rows/sec.",
+      ],
+    });
+  });
+
+  it("reports materialized gRPC runtime operation regressions", () => {
+    const baseline = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-materialized",
+        grpcParameters: {
+          batchSize: 256,
+          seedRows: 1000,
+        },
+        runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-materialized",
+        grpcParameters: {
+          batchSize: 256,
+          seedRows: 1000,
+        },
+        runtimeOperationCases: [
+          {
+            ...runtimeGrpcMaterializedOperationCase,
+            maxStreamConvergenceMs: 1000,
+            meanRowsPerSecond: 400,
+            totalRows: 200,
+          },
+        ],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: case a runtime operation totalRows changed from 100 to 200.",
+        "task a / case a: maxStreamConvergenceMs regressed from 7.000ms to 1000.000ms; allowed <= 112.000ms.",
+        "task a / case a: meanRowsPerSecond throughput regressed from 1000.000 rows/sec to 400.000 rows/sec; allowed >= 500.000 rows/sec.",
+      ],
+    });
+  });
+
+  it("reports missing gRPC runtime operation cases", () => {
+    const baseline = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarks: [
+          observation.benchmarks[0],
+          {
+            ...observation.benchmarks[0],
+            name: "case b",
+          },
+        ],
+        benchmarkCases: ["case a", "case b"],
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [
+          runtimeGrpcLeasedOperationCase,
+          {
+            ...runtimeGrpcLeasedOperationCase,
+            name: "case b",
+          },
+        ],
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+	      regressions: [
+	        'task a: benchmarkCases changed from ["case a","case b"] to ["case a"].',
+	        "task a: missing runtime operation case case b.",
+	        "task a: missing benchmark case src/example.bench.ts > example benchmark group / case b.",
+	      ],
+	    });
+	  });
+
+  it("reports unexpected gRPC runtime operation cases", () => {
+    const baseline = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarks: [
+          observation.benchmarks[0],
+          {
+            ...observation.benchmarks[0],
+            name: "case b",
+          },
+        ],
+        benchmarkCases: ["case a", "case b"],
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [
+          runtimeGrpcLeasedOperationCase,
+          {
+            ...runtimeGrpcLeasedOperationCase,
+            name: "case b",
+          },
+        ],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+	      regressions: [
+	        'task a: benchmarkCases changed from ["case a"] to ["case a","case b"].',
+	        "task a: unexpected runtime operation case case b.",
+	        "task a: unexpected benchmark case src/example.bench.ts > example benchmark group / case b.",
+	      ],
+	    });
+	  });
+
+  it("reports runtime operation case presence changes without throwing", () => {
+    const baseline = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "engine-raw-snapshot",
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: benchmarkScope changed from runtime-grpc-leased to engine-raw-snapshot.",
+        "task a: runtimeOperationCases presence changed.",
+        'task a: grpcParameters changed from {"retainedRows":500,"routeCount":25,"rowsPerFeed":50} to undefined.',
+      ],
+    });
+  });
+
+  it("treats zero baseline runtime operation metrics as exact invariants", () => {
+    const baseline = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-materialized",
+        grpcParameters: {
+          batchSize: 256,
+          seedRows: 1000,
+        },
+        runtimeOperationCases: [
+	          {
+	            ...runtimeGrpcMaterializedOperationCase,
+	            maxHealthOverlayMs: 0,
+	            meanRowsPerSecond: 0,
+	            meanHealthOverlayMs: 0,
+	          },
+        ],
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-materialized",
+        grpcParameters: {
+          batchSize: 256,
+          seedRows: 1000,
+        },
+        runtimeOperationCases: [
+	          {
+	            ...runtimeGrpcMaterializedOperationCase,
+	            maxHealthOverlayMs: 1,
+	            meanRowsPerSecond: 1,
+	            meanHealthOverlayMs: 1,
+	          },
+        ],
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+	      regressions: [
+	        "task a: case a runtime operation meanHealthOverlayMs changed from 0 to 1.",
+	        "task a: case a runtime operation maxHealthOverlayMs changed from 0 to 1.",
+	        "task a: case a meanRowsPerSecond changed from 0 to 1.",
+	      ],
+	    });
+	  });
+
+  it("rejects runtime operation cases that do not match benchmark cases", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                name: "case b",
+              },
+            ],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases contains runtime operation case without matching benchmarkCase: case b.",
+    );
+
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarks: [
+              observation.benchmarks[0],
+              {
+                ...observation.benchmarks[0],
+                name: "case b",
+              },
+            ],
+            benchmarkCases: ["case a", "case b"],
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases is missing runtime operation case for benchmarkCase: case b.",
+    );
+  });
+
+  it("rejects gRPC runtime benchmark cases that do not match Vitest benchmarks", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkCases: ["case b"],
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                name: "case b",
+              },
+            ],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].benchmarkCases contains benchmarkCase without matching Vitest benchmark: case b.",
+    );
+
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkCases: [],
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].benchmarkCases is missing benchmarkCase for Vitest benchmark: case a.",
+    );
+  });
+
+  it("rejects under-sampled runtime operation cases", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                sampleCount: 4,
+              },
+            ],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases.case a.sampleCount must be at least 5 but was 4.",
+    );
+  });
+
+  it("rejects malformed gRPC runtime operation cases", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                maxSubscriptionMs: 1,
+                meanSubscriptionMs: 2,
+              },
+            ],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanSubscriptionMs must be less than or equal to maxSubscriptionMs.",
+    );
+  });
+
+  it("rejects malformed leased gRPC runtime operation timing fields", () => {
+    const baseline = {
+      artifactKind: "view-server-benchmark-baseline",
+      profile: "grpc-leased",
+      tasks: [
+        {
+          ...observation,
+          benchmarkScope: "runtime-grpc-leased",
+          grpcParameters: {
+            retainedRows: 500,
+            routeCount: 25,
+            rowsPerFeed: 50,
+          },
+          runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+        },
+      ],
+      thresholds: grpcRuntimeBenchmarkThresholds,
+    };
+
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                maxCleanupMs: 1,
+                meanCleanupMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanCleanupMs must be less than or equal to maxCleanupMs.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                maxDeltaFanoutMs: 1,
+                meanDeltaFanoutMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanDeltaFanoutMs must be less than or equal to maxDeltaFanoutMs.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                maxHealthOverlayMs: 1,
+                meanHealthOverlayMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanHealthOverlayMs must be less than or equal to maxHealthOverlayMs.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                maxSnapshotMs: 1,
+                meanSnapshotMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanSnapshotMs must be less than or equal to maxSnapshotMs.",
+    );
+  });
+
+  it("rejects malformed materialized gRPC runtime operation timing fields", () => {
+    const baseline = {
+      artifactKind: "view-server-benchmark-baseline",
+      profile: "grpc-materialized",
+      tasks: [
+        {
+          ...observation,
+          benchmarkScope: "runtime-grpc-materialized",
+          grpcParameters: {
+            batchSize: 256,
+            seedRows: 1000,
+          },
+          runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+        },
+      ],
+      thresholds: grpcRuntimeBenchmarkThresholds,
+    };
+
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcMaterializedOperationCase,
+                maxHealthOverlayMs: 1,
+                meanHealthOverlayMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanHealthOverlayMs must be less than or equal to maxHealthOverlayMs.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcMaterializedOperationCase,
+                maxSnapshotMs: 1,
+                meanSnapshotMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanSnapshotMs must be less than or equal to maxSnapshotMs.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline({
+        ...baseline,
+        tasks: [
+          {
+            ...baseline.tasks[0],
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcMaterializedOperationCase,
+                maxStreamConvergenceMs: 1,
+                meanStreamConvergenceMs: 2,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanStreamConvergenceMs must be less than or equal to maxStreamConvergenceMs.",
+    );
+  });
+
+  it("requires gRPC runtime operation cases in summaries and baselines", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+      })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(() =>
+      readBenchmarkObservation({
+        ...taskPaths(summaryPath, outputJsonPath),
+        expectedBenchmarkScope: "runtime-grpc-leased",
+      }),
+    ).toThrow(
+      `Benchmark artifact field ${summaryPath}.cases is required for runtime-grpc-leased.`,
+    );
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases is required for runtime-grpc-leased.",
+    );
+  });
+
+  it("rejects runtime operation cases outside gRPC runtime scopes", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "smoke",
+        tasks: [
+          {
+            ...observation,
+            runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+          },
+        ],
+        thresholds: defaultBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0] is only supported for gRPC runtime scopes.",
+    );
+  });
+
+  it("rejects gRPC runtime operation cases without operation thresholds", () => {
+    const baseline = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...observation,
+        benchmarkScope: "runtime-grpc-leased",
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+      },
+    ]);
+
+    expect(() =>
+      compareBenchmarkBaseline(
+        {
+          ...baseline,
+          profile: "smoke",
+          thresholds: defaultBenchmarkThresholds,
+        },
+        {
+          ...baseline,
+          profile: "smoke",
+          thresholds: defaultBenchmarkThresholds,
+        },
+      ),
+    ).toThrow(
+      "Benchmark baseline smoke contains gRPC runtime operation cases but does not define operationMean and operationMax thresholds.",
+    );
   });
 
   it("rejects malformed gRPC benchmark parameters", () => {
@@ -1848,6 +2659,7 @@ describe("benchmark baseline comparison", () => {
               batchSize: 256,
               seedRows: 1000,
             },
+            runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
           },
         ],
         thresholds: grpcRuntimeBenchmarkThresholds,
@@ -1863,6 +2675,7 @@ describe("benchmark baseline comparison", () => {
             batchSize: 256,
             seedRows: 1000,
           },
+          runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
         },
       ],
       thresholds: grpcRuntimeBenchmarkThresholds,
@@ -1881,6 +2694,7 @@ describe("benchmark baseline comparison", () => {
               routeCount: 25,
               rowsPerFeed: 50,
             },
+            runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
           },
         ],
         thresholds: grpcRuntimeBenchmarkThresholds,
@@ -2135,26 +2949,28 @@ describe("benchmark baseline comparison", () => {
     });
   });
 
-  it("reports missing benchmark cases", () => {
-    const baseline = buildBenchmarkBaseline("smoke", [observation]);
-    const changedCases = buildBenchmarkBaseline("smoke", [
-      {
-        ...observation,
-        benchmarks: [
-          {
-            ...observation.benchmarks[0],
-            name: "case b",
-          },
-        ],
-      },
-    ]);
+	  it("reports missing benchmark cases", () => {
+	    const baseline = buildBenchmarkBaseline("smoke", [observation]);
+	    const changedCases = buildBenchmarkBaseline("smoke", [
+	      {
+	        ...observation,
+	        benchmarks: [
+	          {
+	            ...observation.benchmarks[0],
+	            name: "case b",
+	          },
+	        ],
+	        benchmarkCases: ["case b"],
+	      },
+	    ]);
 
-    expect(compareBenchmarkBaseline(baseline, changedCases)).toStrictEqual({
-      ok: false,
-      regressions: [
-        "task a: unexpected benchmark case src/example.bench.ts > example benchmark group / case b.",
-        "task a: missing benchmark case src/example.bench.ts > example benchmark group / case a.",
-      ],
+	    expect(compareBenchmarkBaseline(baseline, changedCases)).toStrictEqual({
+	      ok: false,
+	      regressions: [
+	        'task a: benchmarkCases changed from ["case a"] to ["case b"].',
+	        "task a: unexpected benchmark case src/example.bench.ts > example benchmark group / case b.",
+	        "task a: missing benchmark case src/example.bench.ts > example benchmark group / case a.",
+	      ],
     });
   });
 
@@ -2244,6 +3060,7 @@ describe("benchmark baseline comparison", () => {
       },
       groupedWriteAdmission: undefined,
       mutationCount: 4130,
+      runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
     };
     const baseline = buildBenchmarkBaseline("grpc-leased", [grpcObservation]);
     const increasedMutationCount = buildBenchmarkBaseline("grpc-leased", [
@@ -2965,11 +3782,17 @@ describe("benchmark baseline comparison", () => {
   it("reports benchmark metadata drift", () => {
     const baseline = buildBenchmarkBaseline("smoke", [observation]);
     const changedMetadata = buildBenchmarkBaseline("smoke", [
-      {
-        ...observation,
-        artifactKind: "react-browser-benchmark-summary",
-        benchmarkCases: ["case b"],
-        benchmarkName: "other benchmark",
+	      {
+	        ...observation,
+	        artifactKind: "react-browser-benchmark-summary",
+	        benchmarks: [
+	          {
+	            ...observation.benchmarks[0],
+	            name: "case b",
+	          },
+	        ],
+	        benchmarkCases: ["case b"],
+	        benchmarkName: "other benchmark",
         benchmarkScope: "react-in-memory-live-query",
         browser: {
           browser: "firefox",
@@ -3024,12 +3847,14 @@ describe("benchmark baseline comparison", () => {
         'task a: groupedKeyWidthParameters changed from undefined to {"constantGroupCount":257,"keyWidths":[1,2,4,8],"orderedKeyCount":8,"semanticProbe":{"groupByEightOrderedTotalRows":4,"groupByEightTotalRows":5,"groupByFourTotalRows":3,"groupByOneTotalRows":1,"groupByTwoTotalRows":2,"orderedFirstGroupKey8":"probe-8-z","orderedFirstRowCount":"10","orderedSecondGroupKey8":"probe-8-y","orderedSecondRowCount":"9","orderedWindowRows":4},"windowLimit":250}.',
         'task a: groupedWriteAdmission changed from {"configuredMode":"incremental","expectedAdmission":"incremental"} to undefined.',
         "task a: minimumSampleCount changed from 5 to 1.",
-        "task a: outputJsonPath changed from actual.json to different.json.",
-        "task a: summaryPath changed from actual.summary.json to different.summary.json.",
-        "task a: memoryRssTotalDeltaBytes presence changed between baseline and actual run.",
-      ],
-    });
-  });
+	        "task a: outputJsonPath changed from actual.json to different.json.",
+	        "task a: summaryPath changed from actual.summary.json to different.summary.json.",
+	        "task a: memoryRssTotalDeltaBytes presence changed between baseline and actual run.",
+	        "task a: unexpected benchmark case src/example.bench.ts > example benchmark group / case b.",
+	        "task a: missing benchmark case src/example.bench.ts > example benchmark group / case a.",
+	      ],
+	    });
+	  });
 
   it("accepts browser benchmark manifests without process memory when the baseline also omits memory", () => {
     const withoutMemoryObservation = {

@@ -414,6 +414,30 @@ describe("benchmark baseline comparison", () => {
     });
   });
 
+  it("reads non-gRPC observations with descriptive benchmark case metadata", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-descriptive-case-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const benchmarkCases = [
+      "publish matching row through runtime client and observe through live client",
+    ];
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        benchmarkCases,
+      })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(readBenchmarkObservation(taskPaths(summaryPath, outputJsonPath))).toStrictEqual({
+      ...observation,
+      benchmarkCases,
+      outputJsonPath,
+      summaryPath,
+    });
+  });
+
   it("reads active-query sharing structural counters from summary artifacts", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
     const summaryPath = join(directory, "actual.summary.json");
@@ -1798,6 +1822,17 @@ describe("benchmark baseline comparison", () => {
     expect(validateBenchmarkBaseline(baseline)).toStrictEqual(baseline);
   });
 
+  it("accepts descriptive benchmark case metadata for non-gRPC baseline manifests", () => {
+    const descriptiveCaseBaseline = buildBenchmarkBaseline("smoke", [
+      {
+        ...observation,
+        benchmarkCases: ["publish matching row through runtime client and observe through live client"],
+      },
+    ]);
+
+    expect(validateBenchmarkBaseline(descriptiveCaseBaseline)).toStrictEqual(descriptiveCaseBaseline);
+  });
+
   it("rejects baseline writes with nonzero invariant counters", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-baseline-counter-"));
     const baselinePath = join(directory, "baseline.json");
@@ -2227,7 +2262,7 @@ describe("benchmark baseline comparison", () => {
     );
   });
 
-  it("rejects benchmark cases that do not match Vitest benchmarks", () => {
+  it("rejects gRPC runtime benchmark cases that do not match Vitest benchmarks", () => {
     expect(() =>
       validateBenchmarkBaseline({
         artifactKind: "view-server-benchmark-baseline",

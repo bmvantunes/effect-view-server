@@ -995,11 +995,6 @@ export const readBenchmarkObservation = (task) => {
   }
 
   const benchmarkCases = stringArrayValue(summary.benchmarkCases, `${task.summaryPath}.benchmarkCases`);
-  validateBenchmarkCasesMatchBenchmarks(
-    benchmarkCases,
-    benchmarks,
-    `${task.summaryPath}.benchmarkCases`,
-  );
   const mutationCount = nonNegativeInteger(summary.mutationCount, `${task.summaryPath}.mutationCount`);
   const topics = stringArrayValue(summary.topics, `${task.summaryPath}.topics`);
   const requiresKafkaThroughput =
@@ -1040,6 +1035,13 @@ export const readBenchmarkObservation = (task) => {
   );
   const requiresGrpcOperationCases =
     benchmarkScope === "runtime-grpc-materialized" || benchmarkScope === "runtime-grpc-leased";
+  if (requiresGrpcOperationCases) {
+    validateBenchmarkCasesMatchBenchmarks(
+      benchmarkCases,
+      benchmarks,
+      `${task.summaryPath}.benchmarkCases`,
+    );
+  }
   const runtimeOperationCases =
     summary.cases === undefined
       ? undefined
@@ -1326,8 +1328,10 @@ const validateTask = (task, path) => {
     );
   }
   const benchmarkCases = stringArrayValue(task.benchmarkCases, `${path}.benchmarkCases`);
-  validateBenchmarkCasesMatchBenchmarks(benchmarkCases, benchmarks, `${path}.benchmarkCases`);
   const minimumSampleCount = positiveInteger(task.minimumSampleCount, `${path}.minimumSampleCount`);
+  if (requiresGrpcOperationCases) {
+    validateBenchmarkCasesMatchBenchmarks(benchmarkCases, benchmarks, `${path}.benchmarkCases`);
+  }
   if (runtimeOperationCases !== undefined) {
     validateRuntimeOperationCasesMatchBenchmarkCases(
       runtimeOperationCases,

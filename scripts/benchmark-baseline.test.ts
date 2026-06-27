@@ -2344,6 +2344,124 @@ describe("benchmark baseline comparison", () => {
     );
   });
 
+  it("rejects runtime operation sample counts that differ from Vitest benchmark samples", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [
+              {
+                ...runtimeGrpcLeasedOperationCase,
+                sampleCount: 6,
+              },
+            ],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases.case a.sampleCount must equal Vitest benchmark sampleCount 7 but was 6.",
+    );
+  });
+
+  it("rejects duplicate Vitest benchmark names for runtime operation cases", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarks: [
+              observation.benchmarks[0],
+              {
+                ...observation.benchmarks[0],
+                sampleCount: 8,
+              },
+            ],
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].benchmarks contains duplicate benchmark name for runtime operation case: case a.",
+    );
+  });
+
+  it("rejects duplicate Vitest benchmark names with matching sample counts for runtime operation cases", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarks: [
+              observation.benchmarks[0],
+              {
+                ...observation.benchmarks[0],
+                groupName: "src/example.bench.ts > another benchmark group",
+              },
+            ],
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [runtimeGrpcLeasedOperationCase],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].benchmarks contains duplicate benchmark name for runtime operation case: case a.",
+    );
+  });
+
+  it("rejects duplicate runtime operation case names", () => {
+    expect(() =>
+      validateBenchmarkBaseline({
+        artifactKind: "view-server-benchmark-baseline",
+        profile: "grpc-leased",
+        tasks: [
+          {
+            ...observation,
+            benchmarkScope: "runtime-grpc-leased",
+            grpcParameters: {
+              retainedRows: 500,
+              routeCount: 25,
+              rowsPerFeed: 50,
+            },
+            runtimeOperationCases: [
+              runtimeGrpcLeasedOperationCase,
+              runtimeGrpcLeasedOperationCase,
+            ],
+          },
+        ],
+        thresholds: grpcRuntimeBenchmarkThresholds,
+      }),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases contains duplicate runtime operation case: case a.",
+    );
+  });
+
   it("rejects malformed gRPC runtime operation cases", () => {
     expect(() =>
       validateBenchmarkBaseline({

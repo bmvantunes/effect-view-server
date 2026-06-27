@@ -1200,10 +1200,14 @@ const summarizeSamples = (
   readonly sampleCount: number;
 } => {
   const matching = samples.filter((sample) => sample.name === name);
-  if (matching.length === 0) {
-    throw new Error(`gRPC leased benchmark case ${name} produced no samples.`);
+  // Vitest can probe async bench bodies before the reported samples; keep the reported window.
+  const reportedSamples = matching.slice(-benchOptions.iterations);
+  if (reportedSamples.length !== benchOptions.iterations) {
+    throw new Error(
+      `gRPC leased benchmark case ${name} produced ${reportedSamples.length} reported sample(s), expected ${benchOptions.iterations}.`,
+    );
   }
-  const totals = matching.reduce(
+  const totals = reportedSamples.reduce(
     (accumulator, sample) => ({
       cleanupMs: accumulator.cleanupMs + sample.cleanupMs,
       deltaFanoutMs: accumulator.deltaFanoutMs + sample.deltaFanoutMs,
@@ -1221,17 +1225,17 @@ const summarizeSamples = (
       subscriptionMs: 0,
     },
   );
-  const sampleCount = matching.length;
+  const sampleCount = reportedSamples.length;
   return {
-    maxActiveLeasedFeeds: Math.max(...matching.map((sample) => sample.activeLeasedFeeds)),
-    maxCleanupMs: Math.max(...matching.map((sample) => sample.cleanupMs)),
+    maxActiveLeasedFeeds: Math.max(...reportedSamples.map((sample) => sample.activeLeasedFeeds)),
+    maxCleanupMs: Math.max(...reportedSamples.map((sample) => sample.cleanupMs)),
     maxCleanupActiveLeasedFeeds: Math.max(
-      ...matching.map((sample) => sample.cleanupActiveLeasedFeeds),
+      ...reportedSamples.map((sample) => sample.cleanupActiveLeasedFeeds),
     ),
-    maxDeltaFanoutMs: Math.max(...matching.map((sample) => sample.deltaFanoutMs)),
-    maxHealthOverlayMs: Math.max(...matching.map((sample) => sample.healthOverlayMs)),
-    maxSnapshotMs: Math.max(...matching.map((sample) => sample.snapshotMs)),
-    maxSubscriptionMs: Math.max(...matching.map((sample) => sample.subscriptionMs)),
+    maxDeltaFanoutMs: Math.max(...reportedSamples.map((sample) => sample.deltaFanoutMs)),
+    maxHealthOverlayMs: Math.max(...reportedSamples.map((sample) => sample.healthOverlayMs)),
+    maxSnapshotMs: Math.max(...reportedSamples.map((sample) => sample.snapshotMs)),
+    maxSubscriptionMs: Math.max(...reportedSamples.map((sample) => sample.subscriptionMs)),
     meanCleanupMs: totals.cleanupMs / sampleCount,
     meanDeltaFanoutMs: totals.deltaFanoutMs / sampleCount,
     meanHealthOverlayMs: totals.healthOverlayMs / sampleCount,

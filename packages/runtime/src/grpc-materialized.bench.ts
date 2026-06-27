@@ -515,7 +515,14 @@ const summarizeSamples = (
   readonly totalRows: number;
 } => {
   const matching = samples.filter((sample) => sample.name === name);
-  const totals = matching.reduce(
+  // Vitest can probe async bench bodies before the reported samples; keep the reported window.
+  const reportedSamples = matching.slice(-benchOptions.iterations);
+  if (reportedSamples.length !== benchOptions.iterations) {
+    throw new Error(
+      `gRPC materialized benchmark case ${name} produced ${reportedSamples.length} reported sample(s), expected ${benchOptions.iterations}.`,
+    );
+  }
+  const totals = reportedSamples.reduce(
     (accumulator, sample) => ({
       healthOverlayMs: accumulator.healthOverlayMs + sample.healthOverlayMs,
       rowsPerSecond: accumulator.rowsPerSecond + sample.rowsPerSecond,
@@ -529,18 +536,20 @@ const summarizeSamples = (
       streamConvergenceMs: 0,
     },
   );
-  const sampleCount = matching.length;
+  const sampleCount = reportedSamples.length;
   return {
-    maxHealthOverlayMs: Math.max(...matching.map((sample) => sample.healthOverlayMs)),
-    maxSnapshotMs: Math.max(...matching.map((sample) => sample.snapshotMs)),
-    maxStreamConvergenceMs: Math.max(...matching.map((sample) => sample.streamConvergenceMs)),
+    maxHealthOverlayMs: Math.max(...reportedSamples.map((sample) => sample.healthOverlayMs)),
+    maxSnapshotMs: Math.max(...reportedSamples.map((sample) => sample.snapshotMs)),
+    maxStreamConvergenceMs: Math.max(
+      ...reportedSamples.map((sample) => sample.streamConvergenceMs),
+    ),
     meanHealthOverlayMs: totals.healthOverlayMs / sampleCount,
     meanRowsPerSecond: totals.rowsPerSecond / sampleCount,
     meanSnapshotMs: totals.snapshotMs / sampleCount,
     meanStreamConvergenceMs: totals.streamConvergenceMs / sampleCount,
     name,
     sampleCount,
-    totalRows: matching[matching.length - 1]?.totalRows ?? 0,
+    totalRows: reportedSamples[reportedSamples.length - 1]?.totalRows ?? 0,
   };
 };
 

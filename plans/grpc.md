@@ -706,6 +706,7 @@ Current materialized runtime/e2e tests:
 - runtime shutdown releases all materialized gRPC streams
 - health reports materialized feed keys, row counts, rates, and failures
 - materialized benchmark exercises the production ingress path into runtime-core and the engine
+- real ConnectRPC HTTP/2 integration proves materialized feeds use the configured ConnectRPC client path
 
 Current leased manager runtime/e2e tests:
 
@@ -718,11 +719,11 @@ Current leased manager runtime/e2e tests:
 - invalid leased query returns `InvalidQueryError`
 - health reports leased feed keys, subscriber counts, row counts, and failures
 - runtime shutdown releases all leased gRPC streams
+- real ConnectRPC HTTP/2 integration proves same-route leased subscriptions share one upstream stream through the configured ConnectRPC client path
 
 Future leased tests:
 
 - session-scoped feed does not share across users once session-scoped leases exist
-- real ConnectRPC integration coverage if the tooling cost is acceptable
 
 Tests should use a fake/in-process generated-compatible gRPC stream first so lifecycle, routing, and retained-row cleanup stay deterministic.
 

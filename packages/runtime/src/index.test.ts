@@ -162,6 +162,76 @@ const transformTcpViewServer = defineViewServerConfig({
   },
 });
 
+const JsonCodecTcpNested = Schema.Struct({
+  encodedQuantity: Schema.BigIntFromString,
+  runtimeAmount: Schema.BigDecimal,
+  runtimeQuantity: Schema.optionalKey(Schema.BigInt),
+});
+
+const JsonCodecTcpOrder = Schema.Struct({
+  allocations: Schema.Record(Schema.String, JsonCodecTcpNested).check(Schema.isMinProperties(1)),
+  fills: Schema.Array(JsonCodecTcpNested).check(Schema.isMinLength(1)),
+  id: Schema.String,
+  amount: Schema.BigDecimal,
+  checkedOptionalMeta: Schema.optionalKey(JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
+  checkedSuspendedMeta: Schema.optionalKey(
+    Schema.suspend(() => JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
+  ),
+  meta: JsonCodecTcpNested,
+  nullableMeta: Schema.NullOr(JsonCodecTcpNested),
+  optionalMeta: Schema.optionalKey(JsonCodecTcpNested),
+  optionalValueMeta: Schema.optional(JsonCodecTcpNested),
+  quantity: Schema.BigInt,
+  suspendedMeta: Schema.suspend(() => JsonCodecTcpNested),
+  tuple: Schema.Tuple([JsonCodecTcpNested]),
+  tupleRest: Schema.TupleWithRest(Schema.Tuple([JsonCodecTcpNested]), [JsonCodecTcpNested]),
+  tupleRestTrailing: Schema.TupleWithRest(Schema.Tuple([JsonCodecTcpNested]), [
+    JsonCodecTcpNested,
+    JsonCodecTcpNested,
+  ]),
+  unionMeta: Schema.Union([JsonCodecTcpNested, Schema.Undefined]),
+});
+
+const jsonCodecTcpViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: JsonCodecTcpOrder,
+      key: "id",
+    },
+  },
+});
+
+type JsonCodecTcpRecursiveNode = {
+  readonly id: bigint;
+  readonly amount: BigDecimal.BigDecimal;
+  readonly runtimeQuantity: bigint;
+  readonly child: JsonCodecTcpRecursiveNode | null;
+};
+
+const JsonCodecTcpRecursiveNode: Schema.Codec<JsonCodecTcpRecursiveNode, unknown, never, never> =
+  Schema.suspend(
+    (): Schema.Codec<JsonCodecTcpRecursiveNode, unknown, never, never> =>
+      Schema.Struct({
+        id: Schema.BigIntFromString,
+        amount: Schema.BigDecimal,
+        runtimeQuantity: Schema.BigInt,
+        child: Schema.NullOr(JsonCodecTcpRecursiveNode),
+      }),
+  );
+const JsonCodecTcpRecursiveOrder = Schema.Struct({
+  id: Schema.String,
+  node: JsonCodecTcpRecursiveNode,
+});
+
+const jsonCodecTcpRecursiveViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: JsonCodecTcpRecursiveOrder,
+      key: "id",
+    },
+  },
+});
+
 type OrderRow = typeof Order.Type;
 
 type GrpcOrderValueMessage = Message<"viewserver.runtime.OrderValue"> & {
@@ -1259,6 +1329,768 @@ describe("@view-server/runtime", () => {
     }),
   );
 
+  it.live("decodes TCP rows and patches through topic JSON codecs before publishing", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(jsonCodecTcpViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const responses = [
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "publish",
+          topic: "orders",
+          row: {
+            allocations: {
+              primary: {
+                encodedQuantity: "2001",
+                runtimeAmount: "21.25",
+                runtimeQuantity: "21001",
+              },
+            },
+            fills: [
+              {
+                encodedQuantity: "3001",
+                runtimeAmount: "31.25",
+                runtimeQuantity: "31001",
+              },
+            ],
+            id: "a",
+            amount: "123.45",
+            meta: {
+              encodedQuantity: "1001",
+              runtimeAmount: "11.25",
+              runtimeQuantity: "11001",
+            },
+            nullableMeta: {
+              encodedQuantity: "7001",
+              runtimeAmount: "71.25",
+            },
+            optionalMeta: {
+              encodedQuantity: "8001",
+              runtimeAmount: "81.25",
+            },
+            optionalValueMeta: {
+              encodedQuantity: "9001",
+              runtimeAmount: "91.25",
+            },
+            quantity: "9007199254740993",
+            suspendedMeta: {
+              encodedQuantity: "11001",
+              runtimeAmount: "111.25",
+              runtimeQuantity: "111001",
+            },
+            tuple: [
+              {
+                encodedQuantity: "4001",
+                runtimeAmount: "41.25",
+                runtimeQuantity: "41001",
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: "5001",
+                runtimeAmount: "51.25",
+                runtimeQuantity: "51001",
+              },
+              {
+                encodedQuantity: "5002",
+                runtimeAmount: "52.25",
+                runtimeQuantity: "51002",
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: "6001",
+                runtimeAmount: "61.25",
+                runtimeQuantity: "61001",
+              },
+              {
+                encodedQuantity: "6002",
+                runtimeAmount: "62.25",
+                runtimeQuantity: "61002",
+              },
+              {
+                encodedQuantity: "6003",
+                runtimeAmount: "63.25",
+                runtimeQuantity: "61003",
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: "10001",
+              runtimeAmount: "101.25",
+              runtimeQuantity: "101001",
+            },
+          },
+        }),
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "patch",
+          topic: "orders",
+          key: "a",
+          patch: {
+            allocations: {
+              primary: {
+                encodedQuantity: "2003",
+                runtimeAmount: "23.25",
+                runtimeQuantity: "21003",
+              },
+            },
+            amount: "678.90",
+            fills: [
+              {
+                encodedQuantity: "3003",
+                runtimeAmount: "33.25",
+                runtimeQuantity: "31003",
+              },
+            ],
+            meta: {
+              encodedQuantity: "1003",
+              runtimeAmount: "33.75",
+              runtimeQuantity: "11003",
+            },
+            nullableMeta: {
+              encodedQuantity: "7003",
+              runtimeAmount: "73.25",
+            },
+            optionalMeta: {
+              encodedQuantity: "8003",
+              runtimeAmount: "83.25",
+            },
+            optionalValueMeta: {
+              encodedQuantity: "9003",
+              runtimeAmount: "93.25",
+            },
+            quantity: "9007199254740995",
+            suspendedMeta: {
+              encodedQuantity: "11003",
+              runtimeAmount: "113.25",
+              runtimeQuantity: "111003",
+            },
+            tuple: [
+              {
+                encodedQuantity: "4003",
+                runtimeAmount: "43.25",
+                runtimeQuantity: "41003",
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: "5003",
+                runtimeAmount: "53.25",
+                runtimeQuantity: "51003",
+              },
+              {
+                encodedQuantity: "5004",
+                runtimeAmount: "54.25",
+                runtimeQuantity: "51004",
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: "6003",
+                runtimeAmount: "63.25",
+                runtimeQuantity: "61003",
+              },
+              {
+                encodedQuantity: "6004",
+                runtimeAmount: "64.25",
+                runtimeQuantity: "61004",
+              },
+              {
+                encodedQuantity: "6005",
+                runtimeAmount: "65.25",
+                runtimeQuantity: "61005",
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: "10003",
+              runtimeAmount: "103.25",
+              runtimeQuantity: "101003",
+            },
+          },
+        }),
+        yield* sendTcpPublishCommand(tcpUrl, {
+          op: "publishMany",
+          topic: "orders",
+          rows: [
+            {
+              allocations: {
+                primary: {
+                  encodedQuantity: "2005",
+                  runtimeAmount: "25.25",
+                },
+              },
+              fills: [
+                {
+                  encodedQuantity: "3005",
+                  runtimeAmount: "35.25",
+                },
+              ],
+              id: "b",
+              amount: "42.25",
+              meta: {
+                encodedQuantity: "1005",
+                runtimeAmount: "55.50",
+                runtimeQuantity: "11005",
+              },
+              nullableMeta: null,
+              optionalMeta: {
+                encodedQuantity: "8005",
+                runtimeAmount: "85.25",
+              },
+              optionalValueMeta: {
+                encodedQuantity: "9005",
+                runtimeAmount: "95.25",
+              },
+              quantity: "9007199254740997",
+              suspendedMeta: {
+                encodedQuantity: "11005",
+                runtimeAmount: "115.25",
+              },
+              tuple: [
+                {
+                  encodedQuantity: "4005",
+                  runtimeAmount: "45.25",
+                },
+              ],
+              tupleRest: [
+                {
+                  encodedQuantity: "5005",
+                  runtimeAmount: "55.25",
+                },
+                {
+                  encodedQuantity: "5006",
+                  runtimeAmount: "56.25",
+                },
+              ],
+              tupleRestTrailing: [
+                {
+                  encodedQuantity: "6005",
+                  runtimeAmount: "65.25",
+                },
+                {
+                  encodedQuantity: "6006",
+                  runtimeAmount: "66.25",
+                },
+                {
+                  encodedQuantity: "6007",
+                  runtimeAmount: "67.25",
+                },
+              ],
+              unionMeta: {
+                encodedQuantity: "10005",
+                runtimeAmount: "105.25",
+              },
+            },
+          ],
+        }),
+      ];
+      const invalidNestedResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          meta: {
+            encodedQuantity: "1007",
+          },
+        },
+      });
+      const invalidNullNestedResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          meta: null,
+        },
+      });
+      const invalidArrayResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          fills: [],
+        },
+      });
+      const invalidRecordResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          allocations: {},
+        },
+      });
+      const invalidTupleResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          tuple: [],
+        },
+      });
+      const invalidTupleExtraResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          tuple: [
+            {
+              encodedQuantity: "4007",
+              runtimeAmount: "47.25",
+              runtimeQuantity: "41007",
+            },
+            {
+              encodedQuantity: "4008",
+              runtimeAmount: "48.25",
+              runtimeQuantity: "41008",
+            },
+          ],
+        },
+      });
+      const invalidTupleRestResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          tupleRest: [],
+        },
+      });
+      const invalidOptionalWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          optionalMeta: {
+            encodedQuantity: "8007",
+          },
+        },
+      });
+      const invalidNullableWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          nullableMeta: {
+            encodedQuantity: "7007",
+          },
+        },
+      });
+      const invalidUnionWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          unionMeta: {
+            encodedQuantity: "10007",
+          },
+        },
+      });
+      const invalidCheckedWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          checkedOptionalMeta: {
+            encodedQuantity: "11007",
+            runtimeAmount: "111.25",
+          },
+        },
+      });
+      const invalidSuspendedWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          suspendedMeta: {
+            encodedQuantity: "11009",
+          },
+        },
+      });
+      const invalidCheckedSuspendedWrapperResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "patch",
+        topic: "orders",
+        key: "a",
+        patch: {
+          checkedSuspendedMeta: {
+            encodedQuantity: "12009",
+            runtimeAmount: "129.25",
+            runtimeQuantity: "121009",
+          },
+        },
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: [
+          "allocations",
+          "amount",
+          "fills",
+          "id",
+          "meta",
+          "nullableMeta",
+          "optionalMeta",
+          "optionalValueMeta",
+          "quantity",
+          "suspendedMeta",
+          "tuple",
+          "tupleRest",
+          "tupleRestTrailing",
+          "unionMeta",
+        ],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(responses).toStrictEqual([{ ok: true }, { ok: true }, { ok: true }]);
+      expect(invalidNestedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidNullNestedResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidArrayResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidRecordResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidTupleResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidTupleExtraResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidTupleRestResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidOptionalWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidNullableWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidUnionWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidCheckedWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidSuspendedWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(invalidCheckedSuspendedWrapperResponse).toStrictEqual({
+        ok: false,
+        error: {
+          _tag: "ViewServerTcpPublishIngressError",
+          message: "TCP publish patch did not match View Server topic orders.",
+          phase: "decode",
+          topic: "orders",
+        },
+      });
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            allocations: {
+              primary: {
+                encodedQuantity: 2003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("23.25"),
+                runtimeQuantity: 21003n,
+              },
+            },
+            id: "a",
+            amount: BigDecimal.fromStringUnsafe("678.90"),
+            fills: [
+              {
+                encodedQuantity: 3003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("33.25"),
+                runtimeQuantity: 31003n,
+              },
+            ],
+            meta: {
+              encodedQuantity: 1003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("33.75"),
+              runtimeQuantity: 11003n,
+            },
+            nullableMeta: {
+              encodedQuantity: 7003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("73.25"),
+            },
+            optionalMeta: {
+              encodedQuantity: 8003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("83.25"),
+            },
+            optionalValueMeta: {
+              encodedQuantity: 9003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("93.25"),
+            },
+            quantity: 9007199254740995n,
+            suspendedMeta: {
+              encodedQuantity: 11003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("113.25"),
+              runtimeQuantity: 111003n,
+            },
+            tuple: [
+              {
+                encodedQuantity: 4003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("43.25"),
+                runtimeQuantity: 41003n,
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: 5003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("53.25"),
+                runtimeQuantity: 51003n,
+              },
+              {
+                encodedQuantity: 5004n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("54.25"),
+                runtimeQuantity: 51004n,
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: 6003n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("63.25"),
+                runtimeQuantity: 61003n,
+              },
+              {
+                encodedQuantity: 6004n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("64.25"),
+                runtimeQuantity: 61004n,
+              },
+              {
+                encodedQuantity: 6005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("65.25"),
+                runtimeQuantity: 61005n,
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: 10003n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("103.25"),
+              runtimeQuantity: 101003n,
+            },
+          },
+          {
+            allocations: {
+              primary: {
+                encodedQuantity: 2005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("25.25"),
+              },
+            },
+            id: "b",
+            amount: BigDecimal.fromStringUnsafe("42.25"),
+            fills: [
+              {
+                encodedQuantity: 3005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("35.25"),
+              },
+            ],
+            meta: {
+              encodedQuantity: 1005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("55.50"),
+              runtimeQuantity: 11005n,
+            },
+            nullableMeta: null,
+            optionalMeta: {
+              encodedQuantity: 8005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("85.25"),
+            },
+            optionalValueMeta: {
+              encodedQuantity: 9005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("95.25"),
+            },
+            quantity: 9007199254740997n,
+            suspendedMeta: {
+              encodedQuantity: 11005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("115.25"),
+            },
+            tuple: [
+              {
+                encodedQuantity: 4005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("45.25"),
+              },
+            ],
+            tupleRest: [
+              {
+                encodedQuantity: 5005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("55.25"),
+              },
+              {
+                encodedQuantity: 5006n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("56.25"),
+              },
+            ],
+            tupleRestTrailing: [
+              {
+                encodedQuantity: 6005n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("65.25"),
+              },
+              {
+                encodedQuantity: 6006n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("66.25"),
+              },
+              {
+                encodedQuantity: 6007n,
+                runtimeAmount: BigDecimal.fromStringUnsafe("67.25"),
+              },
+            ],
+            unionMeta: {
+              encodedQuantity: 10005n,
+              runtimeAmount: BigDecimal.fromStringUnsafe("105.25"),
+            },
+          },
+        ],
+        totalRows: 2,
+        version: 3,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("decodes recursive suspended TCP rows through topic JSON codecs", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(jsonCodecTcpRecursiveViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const response = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "publish",
+        topic: "orders",
+        row: {
+          id: "recursive",
+          node: {
+            id: "1",
+            amount: "10.25",
+            runtimeQuantity: "9007199254740993",
+            child: {
+              id: "2",
+              amount: "20.25",
+              runtimeQuantity: "9007199254740995",
+              child: {
+                id: "3",
+                amount: "30.25",
+                runtimeQuantity: "9007199254740997",
+                child: null,
+              },
+            },
+          },
+        },
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "node"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(response).toStrictEqual({ ok: true });
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            id: "recursive",
+            node: {
+              id: 1n,
+              amount: BigDecimal.fromStringUnsafe("10.25"),
+              runtimeQuantity: 9007199254740993n,
+              child: {
+                id: 2n,
+                amount: BigDecimal.fromStringUnsafe("20.25"),
+                runtimeQuantity: 9007199254740995n,
+                child: {
+                  id: 3n,
+                  amount: BigDecimal.fromStringUnsafe("30.25"),
+                  runtimeQuantity: 9007199254740997n,
+                  child: null,
+                },
+              },
+            },
+          },
+        ],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
   it.live("returns a usable bracketed TCP publish URL for IPv6 hosts", () =>
     Effect.gen(function* () {
       const runtime = yield* makeViewServerRuntime(viewServer, {
@@ -1425,6 +2257,11 @@ describe("@view-server/runtime", () => {
           row: { ...order("a", 10), unknown: true },
         }),
         yield* sendTcpPublishCommand(tcpPublishUrl, {
+          op: "publish",
+          topic: "orders",
+          row: { id: "missing-price" },
+        }),
+        yield* sendTcpPublishCommand(tcpPublishUrl, {
           op: "patch",
           topic: "orders",
           key: "a",
@@ -1551,6 +2388,15 @@ describe("@view-server/runtime", () => {
             message: "TCP publish cannot find View Server topic unknown.",
             phase: "decode",
             topic: "unknown",
+          },
+        },
+        {
+          ok: false,
+          error: {
+            _tag: "ViewServerTcpPublishIngressError",
+            message: "TCP publish row did not match View Server topic orders.",
+            phase: "decode",
+            topic: "orders",
           },
         },
         {

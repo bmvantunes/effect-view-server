@@ -63,6 +63,11 @@ const unsupportedRuntimeDomainDescriptors = [
   unsupportedRuntimeDomainDescriptor("Duration", Schema.Duration),
   unsupportedRuntimeDomainDescriptor("Error", Schema.Error()),
   unsupportedRuntimeDomainDescriptor("ErrorWithStack", Schema.Error({ includeStack: true })),
+  unsupportedRuntimeDomainDescriptor("ErrorWithoutCause", Schema.Error({ excludeCause: true })),
+  unsupportedRuntimeDomainDescriptor(
+    "ErrorWithStackWithoutCause",
+    Schema.Error({ includeStack: true, excludeCause: true }),
+  ),
   unsupportedRuntimeDomainDescriptor("File", Schema.File),
   unsupportedRuntimeDomainDescriptor("FormData", Schema.FormData),
   unsupportedRuntimeDomainDescriptor("RegExp", Schema.RegExp),

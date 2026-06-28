@@ -325,6 +325,11 @@ const decodeTcpFieldForRuntimeInternal: (
       phase,
       value,
     );
+    const decodeError = tcpDecodeSchemaError.bind(undefined, topic, phase);
+    yield* Schema.decodeUnknownEffect(schema)(decodedValue, strictParseOptions).pipe(
+      Effect.asVoid,
+      Effect.mapError(decodeError),
+    );
     return decodedValue;
   }
   if (SchemaAST.isObjects(schema.ast) && isPlainRecord(value)) {

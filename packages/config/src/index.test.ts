@@ -596,6 +596,8 @@ const AmbiguousJsonErrorObjectsPosition = Schema.Struct({
   id: Schema.String,
   error: Schema.Error().annotate({ title: "error" }),
   errorWithStack: Schema.Error({ includeStack: true }),
+  errorWithoutCause: Schema.Error({ excludeCause: true }),
+  errorWithStackWithoutCause: Schema.Error({ includeStack: true, excludeCause: true }),
   pattern: Schema.RegExp,
 });
 
@@ -2704,6 +2706,18 @@ describe("defineViewServerConfig", () => {
       "DateTimeZoned",
     );
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Duration)).toBe("Duration");
+    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error())).toBe("Error");
+    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error({ includeStack: true }))).toBe(
+      "ErrorWithStack",
+    );
+    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error({ excludeCause: true }))).toBe(
+      "ErrorWithoutCause",
+    );
+    expect(
+      viewServerUnsupportedRuntimeFieldDomain(
+        Schema.Error({ includeStack: true, excludeCause: true }),
+      ),
+    ).toBe("ErrorWithStackWithoutCause");
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Symbol)).toBe("Symbol");
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZone)).toBe("TimeZone");
     expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZoneFromString)).toBe("TimeZone");
@@ -3686,6 +3700,15 @@ describe("defineViewServerConfig", () => {
                 name: "RangeError",
                 stack: "RangeError: stacked error",
               },
+              errorWithoutCause: {
+                message: "cause-free error",
+                name: "TypeError",
+              },
+              errorWithStackWithoutCause: {
+                message: "stacked cause-free error",
+                name: "SyntaxError",
+                stack: "SyntaxError: stacked cause-free error",
+              },
               pattern: {
                 source: "orders-[0-9]+",
                 flags: "i",
@@ -3702,6 +3725,12 @@ describe("defineViewServerConfig", () => {
         errorWithStackMessage: decodedErrorObjectsPosition.errorWithStack.message,
         errorWithStackName: decodedErrorObjectsPosition.errorWithStack.name,
         errorWithStack: decodedErrorObjectsPosition.errorWithStack.stack,
+        errorWithoutCauseMessage: decodedErrorObjectsPosition.errorWithoutCause.message,
+        errorWithoutCauseName: decodedErrorObjectsPosition.errorWithoutCause.name,
+        errorWithStackWithoutCauseMessage:
+          decodedErrorObjectsPosition.errorWithStackWithoutCause.message,
+        errorWithStackWithoutCauseName: decodedErrorObjectsPosition.errorWithStackWithoutCause.name,
+        errorWithStackWithoutCause: decodedErrorObjectsPosition.errorWithStackWithoutCause.stack,
         patternSource: decodedErrorObjectsPosition.pattern.source,
         patternFlags: decodedErrorObjectsPosition.pattern.flags,
       }).toStrictEqual({
@@ -3711,6 +3740,11 @@ describe("defineViewServerConfig", () => {
         errorWithStackMessage: "stacked error",
         errorWithStackName: "RangeError",
         errorWithStack: "RangeError: stacked error",
+        errorWithoutCauseMessage: "cause-free error",
+        errorWithoutCauseName: "TypeError",
+        errorWithStackWithoutCauseMessage: "stacked cause-free error",
+        errorWithStackWithoutCauseName: "SyntaxError",
+        errorWithStackWithoutCause: "SyntaxError: stacked cause-free error",
         patternSource: "orders-[0-9]+",
         patternFlags: "i",
       });

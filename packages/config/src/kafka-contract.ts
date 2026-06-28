@@ -393,6 +393,8 @@ const knownEffectJsonDeclarations = [
   Schema.Duration,
   Schema.Error(),
   Schema.Error({ includeStack: true }),
+  Schema.Error({ excludeCause: true }),
+  Schema.Error({ includeStack: true, excludeCause: true }),
   Schema.File,
   Schema.FormData,
   Schema.Json,

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vp dev --port 3001",
-    "clean-routes": "node ../../scripts/clean-tanstack-route-tree.mjs src/routeTree.gen.ts",
+    "clean-routes": "node ../../scripts/clean-tanstack-route-tree.mjs src/routeTree.gen.ts && vp check --fix src/routeTree.gen.ts",
     "generate-routes": "vp exec tsr generate && vp run clean-routes",
     "build": "vp run -t @view-server/react#build && vp run generate-routes && vp build && vp run clean-routes",
     "preview": "vp preview",

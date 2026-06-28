@@ -24,7 +24,7 @@
     "bench:baseline:kafka-ingest:update": "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest --update-baseline",
     "bench:baseline:kafka-sustained-firehose": "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose",
     "bench:baseline:kafka-sustained-firehose:update": "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose --update-baseline",
-    "bench:baseline:release": "node scripts/run-benchmark-baseline.mjs --profile=release --no-compare",
+    "bench:baseline:release": "NODE_OPTIONS=--max-old-space-size=12288 node scripts/run-benchmark-baseline.mjs --profile=release --no-compare",
     "bench:baseline:release:update": "node scripts/run-benchmark-baseline.mjs --profile=release --update-baseline",
     "bench:baseline:smoke": "node scripts/run-benchmark-baseline.mjs --profile=smoke",
     "bench:baseline:smoke:update": "node scripts/run-benchmark-baseline.mjs --profile=smoke --update-baseline",
@@ -39,6 +39,7 @@
     "examples:test": "vp run @view-server/example-in-memory-react#test && vp run @view-server/example-kafka-react#test && vp run @view-server/example-grpc-leased-react#test && vp run @view-server/example-grpc-materialized-react#test && vp run @view-server/example-combined-sources-react#test && vp run @view-server/example-ssr-react#test && vp run @view-server/example-tcp-publisher-react#test && pnpm run examples:check:effect",
     "ready": "vp run -r build && pnpm run check:package-exports && pnpm run check:internal-seams && pnpm run test:repository-scripts && vp check && pnpm run check:effect && vp run --filter '@view-server/*' --filter '!@view-server/runtime' test && vp run @view-server/runtime#test",
     "pre-grpc:gate": "pnpm run ready && pnpm run bench:baseline:smoke && pnpm run bench:baseline:raw-read-write && pnpm run bench:baseline:active-query-sharing && pnpm run bench:baseline:grouped-admission && pnpm run bench:baseline:grouped-order-neutral && pnpm run bench:baseline:websocket-firehose && pnpm run bench:baseline:kafka-ingest && pnpm run bench:baseline:kafka-sustained-firehose",
+    "release-candidate:capacity": "pnpm run examples:test && pnpm run examples:build && pnpm run pre-grpc:gate && pnpm run grpc:gate && pnpm run bench:baseline:release",
     "test:benchmark-baseline": "pnpm run test:repository-scripts",
     "test:repository-scripts": "vp test run scripts/benchmark-baseline.test.ts scripts/benchmark-baseline-runner.test.ts scripts/bench-runtime-kafka-ingest.test.ts scripts/check-internal-seams.test.ts --coverage",
     "prepare": "vp config && effect-language-service patch"

@@ -25,14 +25,23 @@ ownership.
 
 ## Kubernetes
 
-Use `GET /health` for readiness and liveness checks. The endpoint returns `200`
-only when the runtime is ready. If runtime auth is enabled, probes must be
+Use `GET /health` for readiness and startup checks. The endpoint returns `200`
+only when the runtime is ready, and returns a non-`200` status while the runtime
+is starting, degraded, or stopping. Do not use it as liveness unless degraded
+source/runtime health should restart the only active runtime and rebuild
+in-memory state. Prefer a process-level or TCP liveness check until a separate
+liveness endpoint exists. If runtime auth is enabled, readiness probes must be
 accepted by `auth.validateRequest` or auth must whitelist the health path;
 otherwise probes can receive auth failures instead of runtime health. Use
 `GET /metrics` for Prometheus scraping.
 
 Kafka and gRPC credentials, broker addresses, and base URLs should be loaded
 through Effect `Config`. Missing required values should fail startup.
+
+The current supported deployment model is one active View Server runtime per
+logical deployment. Give each deployment a unique Kafka consumer group id. Kafka
+multi-replica rebalance/revoke handoff is intentionally out of scope for the
+current milestone.
 
 ## Network Surface
 
@@ -60,10 +69,9 @@ authoritative source:
 Before promoting a runtime build, run:
 
 ```sh
-pnpm run ready
-pnpm run pre-grpc:gate
-pnpm run grpc:gate
+pnpm run release-candidate:capacity
 ```
 
-The gates cover build, package seam checks, strict Effect diagnostics, tests,
-coverage, and benchmark baseline profiles.
+The gate covers examples, build, package seam checks, strict Effect diagnostics,
+tests, coverage, and benchmark baseline profiles. See
+[Operations](./operations.md) for Prometheus, probe, and resource guidance.

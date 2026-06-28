@@ -12,6 +12,7 @@ design sketches.
 - [Query Semantics](./query-semantics.md)
 - [Benchmarks And Capacity](./benchmarks-and-capacity.md)
 - [Deployment](./deployment.md)
+- [Operations](./operations.md)
 
 The production browser transport is Effect RPC WebSocket with NDJSON
 serialization. Kafka, gRPC, TCP publish, and in-memory testing all feed the same

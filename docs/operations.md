@@ -22,7 +22,7 @@ view_server_runtime_status{status!="ready"} == 1
 ```
 
 ```promql
-max(view_server_kafka_region_lag)
+max(view_server_kafka_consumer_lag_messages)
 ```
 
 ```promql
@@ -38,7 +38,15 @@ max(view_server_transport_active_subscriptions)
 ```
 
 ```promql
-increase(view_server_grpc_feed_failures[5m]) > 0
+max_over_time(view_server_grpc_feed_decode_failures_per_second[5m]) > 0
+```
+
+```promql
+max_over_time(view_server_grpc_feed_mapping_failures_per_second[5m]) > 0
+```
+
+```promql
+max_over_time(view_server_grpc_feed_publish_failures_per_second[5m]) > 0
 ```
 
 Metric names can grow as the health contract grows. Treat these examples as
@@ -46,7 +54,9 @@ starting points and validate names against the current `/metrics` output.
 
 ## Kubernetes Probes
 
-Use `GET /health` for readiness and liveness.
+Use `GET /health` for readiness and startup checks. It returns `200` only when
+the runtime is ready, and returns a non-`200` status while the runtime is
+starting, degraded, or stopping.
 
 ```yaml
 readinessProbe:
@@ -56,15 +66,19 @@ readinessProbe:
   periodSeconds: 5
   failureThreshold: 3
 livenessProbe:
-  httpGet:
-    path: /health
+  tcpSocket:
     port: websocket
   periodSeconds: 10
   failureThreshold: 6
 ```
 
-If runtime auth is configured, either allow probe requests in
-`auth.validateRequest` or configure probes to send accepted credentials.
+Do not use `GET /health` as liveness unless degraded source/runtime health
+should restart the only active pod and rebuild in-memory state. Prefer a
+process-level or TCP liveness check until a separate liveness endpoint exists.
+
+If runtime auth is configured, either allow readiness probe requests in
+`auth.validateRequest` or configure readiness probes to send accepted
+credentials.
 
 ## Resource Sizing
 

@@ -16,7 +16,7 @@ service with:
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
 import { runViewServerRuntime } from "@view-server/runtime";
-import { Config } from "effect";
+import { Config, Effect } from "effect";
 import {
   viewServer,
   kafkaRegions,
@@ -25,11 +25,11 @@ import {
   grpcFeeds,
 } from "./view-server.config";
 
-const websocketPort = Config.number("VIEW_SERVER_WEBSOCKET_PORT");
-const kafkaConsumerGroupId = Config.string("VIEW_SERVER_KAFKA_GROUP_ID");
+const program = Effect.gen(function* () {
+  const websocketPort = yield* Config.number("VIEW_SERVER_WEBSOCKET_PORT");
+  const kafkaConsumerGroupId = yield* Config.string("VIEW_SERVER_KAFKA_GROUP_ID");
 
-NodeRuntime.runMain(
-  runViewServerRuntime(viewServer, {
+  return yield* runViewServerRuntime(viewServer, {
     host: "0.0.0.0",
     websocketPort,
     healthPath: "/health",
@@ -44,8 +44,10 @@ NodeRuntime.runMain(
       clients: grpcClients,
       feeds: grpcFeeds,
     },
-  }),
-);
+  });
+});
+
+NodeRuntime.runMain(program);
 ```
 
 Use a deployment-unique `VIEW_SERVER_KAFKA_GROUP_ID`. The current supported
@@ -134,8 +136,7 @@ spec:
             periodSeconds: 5
             failureThreshold: 3
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: websocket
             periodSeconds: 10
             failureThreshold: 6
@@ -152,6 +153,11 @@ Size CPU and memory from `pnpm run release-candidate:capacity` on a
 production-like machine. Do not copy the resource values above without testing
 your topic count, row count, grouped queries, Kafka rate, gRPC routes, and
 WebSocket fanout.
+
+`GET /health` is a readiness/startup probe: it returns a non-`200` status while
+the runtime is starting, degraded, or stopping. Use a process-level or TCP
+liveness check unless you intentionally want recoverable source degradation to
+restart the pod and rebuild in-memory state.
 
 ## Release Candidate Gate
 

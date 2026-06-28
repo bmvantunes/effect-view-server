@@ -626,7 +626,7 @@ Streaming health should use the same WebSocket transport as everything else, but
 const health = useViewServerHealth();
 ```
 
-`useViewServerHealth()` should return the whole runtime health object, including all topics. The common operator question is overall runtime health, not a single topic's health. Topic filtering can be derived by the UI from the returned object if needed.
+`useViewServerHealth()` should return detailed live health rows for all topics, plus runtime, connection, and merged status fields. The full cached runtime health document remains available from `/health` for deployment checks and admin integrations. The common operator question is overall runtime health, not a single topic's health. Topic filtering can be derived by the UI from the returned rows if needed.
 
 Kubernetes/readiness/liveness should use the full cached `/health` document. Dashboards that need live health should use WebSockets through `useViewServerHealth()`. Do not add HTTP streaming for health.
 
@@ -850,7 +850,7 @@ type SnapshotEvent<Row> = {
   queryId: string;
   version: number;
   rows: ReadonlyArray<Row>;
-  totalRows?: number;
+  totalRows: number;
 };
 ```
 
@@ -869,7 +869,7 @@ type DeltaEvent<Row> = {
     | { type: "move"; key: string; fromIndex: number; toIndex: number }
     | { type: "remove"; key: string }
   >;
-  totalRows?: number;
+  totalRows: number;
 };
 ```
 

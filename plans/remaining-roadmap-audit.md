@@ -82,8 +82,9 @@ These are in the plan, but should remain future work unless explicitly promoted.
 
 ### Stale Or Needs Rewrite
 
-No stale current-scope plan text remains known after reconciling the public API
-and raw-query examples with the implemented packages.
+| Plan text                                                                                                                       | Status            | Action                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Earlier public API/runtime examples used obsolete package names, lazy Effect calls, and optional `totalRows` live-event fields. | Remove or rewrite | Reconciled with implemented `@view-server/*` packages, `Effect.runPromise` / `NodeRuntime.runMain` examples, required raw-query `select`, required `totalRows`, and current health hook return shape. |
 
 ## Recommended Implementation Order
 

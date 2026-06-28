@@ -1,5 +1,5 @@
 {
-  "name": "@view-server/config",
+  "name": "@effect-view-server/config",
   "version": "0.0.0",
   "private": true,
   "files": [

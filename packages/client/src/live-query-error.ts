@@ -1,4 +1,4 @@
-import type { LiveQueryResult } from "@view-server/config";
+import type { LiveQueryResult } from "@effect-view-server/config";
 import { Cause, Option } from "effect";
 import { initialClientState, liveQueryResult } from "./live-query-state";
 

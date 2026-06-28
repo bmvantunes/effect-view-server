@@ -1,11 +1,11 @@
 import {
   type DecodableTopicDefinitions,
   type ViewServerInMemoryOptions,
-} from "@view-server/in-memory";
+} from "@effect-view-server/in-memory";
 import {
   createInMemoryViewServerTesting,
   type ViewServerInMemoryTestingInstance,
-} from "@view-server/in-memory/testing";
+} from "@effect-view-server/in-memory/testing";
 import * as AtomReact from "@effect/atom-react";
 import { Effect } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
 import type { ViewServerReactBindings } from "./index";
 import { ViewServerReactClientProvider, ViewServerReactConfig } from "./internal";
 
-export type { ViewServerInMemoryOptions } from "@view-server/in-memory";
+export type { ViewServerInMemoryOptions } from "@effect-view-server/in-memory";
 
 export type ViewServerInMemoryProviderProps = {
   readonly children?: ReactNode;

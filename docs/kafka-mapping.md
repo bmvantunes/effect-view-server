@@ -7,8 +7,8 @@ row that matches the target View Server topic schema.
 ```ts
 import { Config } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
-import { kafka } from "@view-server/config";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { kafka } from "@effect-view-server/config";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { viewServer } from "./view-server-config";
 import { OrderKeySchema, OrderValueSchema } from "./generated/orders";
 

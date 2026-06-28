@@ -5,15 +5,15 @@ import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/
 import { createClient } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createGrpcTransport } from "@connectrpc/connect-node";
-import { applyEvent, initialClientState, liveQueryResult } from "@view-server/client";
-import type { ViewServerLiveSubscription } from "@view-server/client";
+import { applyEvent, initialClientState, liveQueryResult } from "@effect-view-server/client";
+import type { ViewServerLiveSubscription } from "@effect-view-server/client";
 import {
   defineViewServerConfig,
   grpc,
   type LiveQueryResult,
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema, Stream } from "effect";
 import * as Http2 from "node:http2";
@@ -389,7 +389,7 @@ const closeWithin = Effect.fn("ViewServerRuntime.grpc.connectRpc.closeWithin")(f
   }
 });
 
-describe("@view-server/runtime ConnectRPC gRPC integration", () => {
+describe("@effect-view-server/runtime ConnectRPC gRPC integration", () => {
   it.live("reads rows through a direct ConnectRPC gRPC client", () =>
     Effect.scoped(
       Effect.gen(function* () {

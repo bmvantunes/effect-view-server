@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import type { DeltaEvent, SnapshotEvent } from "@view-server/config";
+import type { DeltaEvent, SnapshotEvent } from "@effect-view-server/config";
 import type { QueryEvaluation } from "./query-result";
 import type { TopicRawWindowScan } from "./raw-window-scan";
 import type { TopicRowScan } from "./row-scan";

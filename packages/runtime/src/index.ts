@@ -1,4 +1,4 @@
-import type { ViewServerConfig, ViewServerRuntimeError } from "@view-server/config";
+import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
 import { Config, Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import type { ViewServerGrpcIngressError } from "./grpc-ingress";

@@ -2,7 +2,7 @@ import type {
   ViewServerLiveClient,
   ViewServerLiveSubscription,
   ViewServerRuntimeLiveClient,
-} from "@view-server/client";
+} from "@effect-view-server/client";
 import type {
   ExactLiveQueryInputForTopic,
   ExactPatch,
@@ -16,7 +16,7 @@ import type {
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Effect } from "effect";
 
 type RuntimeCorePublicTopic<Topics extends TopicDefinitions> = Extract<

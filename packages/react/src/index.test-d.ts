@@ -1,16 +1,16 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { ViewServerLiveClient } from "@view-server/client";
+import type { ViewServerLiveClient } from "@effect-view-server/client";
 import {
   defineViewServerConfig,
   grpc,
   type LiveQueryResult,
   type ViewServerRuntimeError,
-} from "@view-server/config";
-import { createViewServerReact as createViewServerReactFromPackage } from "@view-server/react";
+} from "@effect-view-server/config";
+import { createViewServerReact as createViewServerReactFromPackage } from "@effect-view-server/react";
 import {
   createInMemoryViewServerReact as createInMemoryViewServerReactFromPackageTesting,
   type ViewServerInMemoryOptions as ViewServerInMemoryOptionsFromPackageTesting,
-} from "@view-server/react/testing";
+} from "@effect-view-server/react/testing";
 import type { Effect } from "effect";
 import { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
@@ -407,7 +407,7 @@ describe("React type contracts", () => {
     });
   });
 
-  it("preserves consumer types through @view-server/react package imports", () => {
+  it("preserves consumer types through @effect-view-server/react package imports", () => {
     const consumerReact = createViewServerReactFromPackage(viewServer);
     const selected = consumerReact.useLiveQuery("orders", {
       select: ["id", "price"],
@@ -447,7 +447,7 @@ describe("React type contracts", () => {
     });
   });
 
-  it("preserves consumer testing types through @view-server/react/testing package imports", () => {
+  it("preserves consumer testing types through @effect-view-server/react/testing package imports", () => {
     const consumerReact = createViewServerReactFromPackage(viewServer);
     const options = {
       subscriptionQueueCapacity: 1,

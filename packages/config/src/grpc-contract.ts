@@ -16,9 +16,11 @@ import type {
   TopicMaterializedSourceDefinition,
 } from "./source-contract";
 
-const GrpcTopicSourceTypeId: unique symbol = Symbol("@view-server/config/GrpcTopicSource");
-const GrpcFeedDefinitionTypeId: unique symbol = Symbol("@view-server/config/GrpcFeedDefinition");
-const GrpcFeedMapTypeId: unique symbol = Symbol("@view-server/config/GrpcFeedMap");
+const GrpcTopicSourceTypeId: unique symbol = Symbol("@effect-view-server/config/GrpcTopicSource");
+const GrpcFeedDefinitionTypeId: unique symbol = Symbol(
+  "@effect-view-server/config/GrpcFeedDefinition",
+);
+const GrpcFeedMapTypeId: unique symbol = Symbol("@effect-view-server/config/GrpcFeedMap");
 const grpcFeedMapBrand = { [GrpcFeedMapTypeId]: true } as const;
 
 const brandGrpcFeedMap = <Mapping extends (...args: ReadonlyArray<never>) => unknown>(

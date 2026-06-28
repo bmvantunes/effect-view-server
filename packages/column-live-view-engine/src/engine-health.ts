@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { TopicRuntimeHealth } from "@view-server/config";
+import type { TopicRuntimeHealth } from "@effect-view-server/config";
 import { collectTopicStoreHealth } from "./topic-store";
 import type { TopicStore } from "./topic-store";
 

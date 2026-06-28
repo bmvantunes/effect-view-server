@@ -1,14 +1,14 @@
 import { describe, expect, inject, it, vi } from "@effect/vitest";
-import type { ViewServerLiveClient } from "@view-server/client";
-import { makeViewServerClient } from "@view-server/client/remote";
+import type { ViewServerLiveClient } from "@effect-view-server/client";
+import { makeViewServerClient } from "@effect-view-server/client/remote";
 import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
   type ViewServerHealthSummaryRow,
   type ViewServerHealthTopicRow,
-} from "@view-server/config";
-import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@view-server/in-memory";
+} from "@effect-view-server/config";
+import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@effect-view-server/in-memory";
 import { Effect, Schema, Stream } from "effect";
 import { Component, type ReactNode } from "react";
 import { render } from "vitest-browser-react";

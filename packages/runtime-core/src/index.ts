@@ -1,12 +1,12 @@
 import type {
   DecodableTopicDefinitions,
   GroupedIncrementalAdmissionLimits,
-} from "@view-server/column-live-view-engine";
+} from "@effect-view-server/column-live-view-engine";
 import type {
   ViewServerConfig,
   ViewServerHealth,
   ViewServerRuntimeError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect, type Duration } from "effect";
 import { type RuntimeCoreHealthOverlay, type RuntimeCoreTransportHealth } from "./health";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
@@ -16,8 +16,8 @@ import type {
   ViewServerRuntimeCoreServerLiveClient,
 } from "./public-client";
 
-export type { DecodableTopicDefinitions } from "@view-server/column-live-view-engine";
-export type { GroupedIncrementalAdmissionLimits } from "@view-server/column-live-view-engine";
+export type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
+export type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/column-live-view-engine";
 export type { RuntimeCoreTransportHealth } from "./health";
 export type { RuntimeCoreHealthOverlay } from "./health";
 export type {

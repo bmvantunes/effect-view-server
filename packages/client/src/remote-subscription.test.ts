@@ -11,7 +11,7 @@ import {
   Scope,
   Stream,
 } from "effect";
-import type { StatusEvent } from "@view-server/config";
+import type { StatusEvent } from "@effect-view-server/config";
 import type { ViewServerLiveEvent } from "./live-client";
 import { makeRemoteSubscription } from "./remote-subscription";
 

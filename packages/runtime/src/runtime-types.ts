@@ -1,6 +1,6 @@
-import type { ViewServerLiveClient } from "@view-server/client";
-import type { GroupedIncrementalAdmissionLimits } from "@view-server/runtime-core";
-import type { ViewServerAuth } from "@view-server/server";
+import type { ViewServerLiveClient } from "@effect-view-server/client";
+import type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/runtime-core";
+import type { ViewServerAuth } from "@effect-view-server/server";
 import type {
   KafkaRuntimeTopicDefinition,
   LiveQueryRow,
@@ -20,7 +20,7 @@ import type {
   ViewServerRuntimeError,
   GrpcFeedDefinition,
   GrpcRuntimeClients,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Duration, Effect, Schema } from "effect";
 
 export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &

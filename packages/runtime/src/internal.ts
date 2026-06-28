@@ -1,13 +1,13 @@
-import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@view-server/client";
+import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import type {
   GrpcRuntimeClients,
   RuntimeRegions,
   ViewServerConfig,
   ViewServerHealth,
   ViewServerRuntimeError,
-} from "@view-server/config";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
-import type { ViewServerRuntimeCoreOptionsFor } from "@view-server/runtime-core";
+} from "@effect-view-server/config";
+import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
+import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {

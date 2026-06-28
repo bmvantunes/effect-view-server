@@ -2,8 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   createColumnLiveViewEngine,
   type ColumnLiveViewEngineHealth,
-} from "@view-server/column-live-view-engine";
-import { defineViewServerConfig, grpc, type ViewServerRuntimeError } from "@view-server/config";
+} from "@effect-view-server/column-live-view-engine";
+import {
+  defineViewServerConfig,
+  grpc,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Deferred, Effect, Fiber, Option, Queue, Schema, Stream, Tracer } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
@@ -192,7 +196,7 @@ const engineHealth = (
   backpressureEvents: 0,
 });
 
-describe("@view-server/runtime-core", () => {
+describe("@effect-view-server/runtime-core", () => {
   it.effect("records runtime core publish, engine mutation, and subscription fanout spans", () =>
     Effect.gen(function* () {
       const recording = makeRecordingTracer();

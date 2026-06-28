@@ -1,9 +1,9 @@
 # View Server Examples
 
 All examples are generated TanStack Start React apps, then adapted to consume the
-public View Server packages. They are intentionally small: each one isolates one
-runtime/source shape while keeping the React code close to normal application
-code.
+internal View Server workspace packages. They are intentionally small: each one
+isolates one runtime/source shape while keeping the React code close to normal
+application code.
 
 | Example                                                | Source                       | Runtime              | Purpose                                                                        |
 | ------------------------------------------------------ | ---------------------------- | -------------------- | ------------------------------------------------------------------------------ |
@@ -21,9 +21,9 @@ code.
 Run commands through Vite+:
 
 ```bash
-vp run @view-server/example-in-memory-react#test
-vp run @view-server/example-in-memory-react#build
-vp run @view-server/example-kafka-react#build
+vp run @effect-view-server/example-in-memory-react#test
+vp run @effect-view-server/example-in-memory-react#build
+vp run @effect-view-server/example-kafka-react#build
 ```
 
 Every example has:
@@ -41,18 +41,18 @@ Source-backed examples also expose `runtime` scripts that start the View Server
 runtime:
 
 ```bash
-vp run @view-server/example-kafka-react#runtime
-vp run @view-server/example-grpc-leased-react#runtime
-vp run @view-server/example-grpc-materialized-react#runtime
-vp run @view-server/example-combined-sources-react#runtime
-vp run @view-server/example-tcp-publisher-react#runtime
+vp run @effect-view-server/example-kafka-react#runtime
+vp run @effect-view-server/example-grpc-leased-react#runtime
+vp run @effect-view-server/example-grpc-materialized-react#runtime
+vp run @effect-view-server/example-combined-sources-react#runtime
+vp run @effect-view-server/example-tcp-publisher-react#runtime
 ```
 
 The TCP example additionally exposes an external publisher:
 
 ```bash
-vp run @view-server/example-tcp-publisher-react#publisher
-vp run @view-server/example-tcp-publisher-react#publisher:invalid
+vp run @effect-view-server/example-tcp-publisher-react#publisher
+vp run @effect-view-server/example-tcp-publisher-react#publisher:invalid
 ```
 
 Kafka examples assume Apache Kafka is reachable at `127.0.0.1:9092`, matching

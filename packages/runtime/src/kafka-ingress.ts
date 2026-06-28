@@ -15,11 +15,11 @@ import {
   type TopicRow,
   type ViewServerConfig,
   type ViewServerRuntimeClient,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
-} from "@view-server/effect-utils";
+} from "@effect-view-server/effect-utils";
 import {
   Cause,
   Clock,

@@ -4,13 +4,13 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { defineViewServerConfig, grpc, type ViewServerHealth } from "@view-server/config";
-import type { ViewServerLiveSubscription } from "@view-server/client";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
+import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
+import type { ViewServerLiveSubscription } from "@effect-view-server/client";
+import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalInstance,
-} from "@view-server/runtime-core/internal";
+} from "@effect-view-server/runtime-core/internal";
 import { Clock, Config, Effect, Exit, Fiber, Queue, Schema, Scope, Stream } from "effect";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

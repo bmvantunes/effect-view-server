@@ -1,5 +1,9 @@
-import type { TopicDefinitions, ViewServerConfig, ViewServerHealth } from "@view-server/config";
-import { viewServerDecodeHealth } from "@view-server/protocol";
+import type {
+  TopicDefinitions,
+  ViewServerConfig,
+  ViewServerHealth,
+} from "@effect-view-server/config";
+import { viewServerDecodeHealth } from "@effect-view-server/protocol";
 import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { validateViewServerHttpRequest, viewServerAuthErrorResponse } from "./auth";

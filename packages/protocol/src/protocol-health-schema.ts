@@ -7,7 +7,7 @@ import type {
   TransportHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Schema } from "effect";
 
 const StringOrNull = Schema.NullOr(Schema.String);

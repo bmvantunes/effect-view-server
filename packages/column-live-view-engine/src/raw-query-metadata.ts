@@ -1,4 +1,4 @@
-import { viewServerSchemaFieldMetadata } from "@view-server/config";
+import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
 import { Schema, SchemaAST } from "effect";
 import { isRecord } from "./row-values";
 

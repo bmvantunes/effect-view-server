@@ -5,7 +5,7 @@ import {
   VIEW_SERVER_HEALTH_TOPIC,
   type ViewServerHealthSummaryRow,
   type ViewServerHealthTopicRow,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
@@ -155,7 +155,7 @@ const grpcFeedHealth = {
   lastError: null,
 } as const;
 
-describe("@view-server/protocol", () => {
+describe("@effect-view-server/protocol", () => {
   it.effect("decodes the public wire schemas", () =>
     Effect.gen(function* () {
       const row = yield* Schema.decodeUnknownEffect(ViewServerWireRowSchema)({

@@ -6,8 +6,8 @@ import {
   type GrpcFeedDefinition,
   type GrpcRuntimeClients,
   type ViewServerRuntimeError,
-} from "@view-server/config";
-import type { ViewServerAuth } from "@view-server/server";
+} from "@effect-view-server/config";
+import type { ViewServerAuth } from "@effect-view-server/server";
 import type { Config } from "effect";
 import { Effect, Schema } from "effect";
 import type { HttpServerError } from "effect/unstable/http";

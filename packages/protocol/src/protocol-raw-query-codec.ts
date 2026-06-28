@@ -6,7 +6,7 @@ import type {
   TopicRow,
   ViewServerRuntimeError,
   Where,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   decodeWhere,

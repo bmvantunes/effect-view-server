@@ -1,6 +1,6 @@
 // Benchmarks intentionally import Vitest directly: @effect/vitest does not expose `bench`.
 import { afterAll, beforeAll, bench, describe } from "vitest";
-import { defineViewServerConfig } from "@view-server/config";
+import { defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { createColumnLiveViewEngine, type ColumnLiveViewEngine } from "./index";

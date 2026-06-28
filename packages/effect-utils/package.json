@@ -1,5 +1,5 @@
 {
-  "name": "@view-server/effect-utils",
+  "name": "@effect-view-server/effect-utils",
   "version": "0.0.0",
   "private": true,
   "files": [

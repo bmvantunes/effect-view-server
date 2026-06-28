@@ -7,7 +7,7 @@ That lets process signals interrupt the main Effect fiber and run finalizers.
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { viewServer } from "./view-server-config";
 
 NodeRuntime.runMain(

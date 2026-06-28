@@ -1,8 +1,8 @@
 import type {
   ColumnLiveViewEngineHealth,
   DecodableTopicDefinitions,
-} from "@view-server/column-live-view-engine";
-import type { TransportHealth, ViewServerHealth } from "@view-server/config";
+} from "@effect-view-server/column-live-view-engine";
+import type { TransportHealth, ViewServerHealth } from "@effect-view-server/config";
 import { Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore, type Duration } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 

@@ -34,12 +34,12 @@ type ExactObject<Candidate, Shape> = Candidate & RejectExtraKeys<Candidate, Shap
 type ExactMappingReturn<Input, Row, Mapping extends (input: Input) => Row> = Mapping &
   ((input: Input) => ExactObject<ReturnType<Mapping>, Row>);
 
-const KafkaCodecValueTypeId = Symbol("@view-server/config/KafkaCodecValue");
-const KafkaCodecErrorTypeId = Symbol("@view-server/config/KafkaCodecError");
-const KafkaCodecDecodeTypeId = Symbol("@view-server/config/KafkaCodecDecode");
-const KafkaTopicDefinitionTypeId = Symbol("@view-server/config/KafkaTopicDefinition");
-const KafkaTopicDecodeTypeId = Symbol("@view-server/config/KafkaTopicDecode");
-const KafkaTopicSchemaTypeId = Symbol("@view-server/config/KafkaTopicSchema");
+const KafkaCodecValueTypeId = Symbol("@effect-view-server/config/KafkaCodecValue");
+const KafkaCodecErrorTypeId = Symbol("@effect-view-server/config/KafkaCodecError");
+const KafkaCodecDecodeTypeId = Symbol("@effect-view-server/config/KafkaCodecDecode");
+const KafkaTopicDefinitionTypeId = Symbol("@effect-view-server/config/KafkaTopicDefinition");
+const KafkaTopicDecodeTypeId = Symbol("@effect-view-server/config/KafkaTopicDecode");
+const KafkaTopicSchemaTypeId = Symbol("@effect-view-server/config/KafkaTopicSchema");
 const EffectSchemaClassAnnotationKey = "~effect/Schema/Class";
 
 export type KafkaDecodeError = {
@@ -48,7 +48,9 @@ export type KafkaDecodeError = {
   readonly cause?: unknown;
 };
 
-const KafkaMappingErrorTypeId: unique symbol = Symbol("@view-server/config/KafkaMappingError");
+const KafkaMappingErrorTypeId: unique symbol = Symbol(
+  "@effect-view-server/config/KafkaMappingError",
+);
 
 export type KafkaMappingError = {
   readonly _tag: "KafkaMappingError";

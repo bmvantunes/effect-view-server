@@ -11,17 +11,17 @@ import type {
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
-import { validateLiveQuerySourceRoute } from "@view-server/config";
+} from "@effect-view-server/config";
+import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
-} from "@view-server/effect-utils";
+} from "@effect-view-server/effect-utils";
 import type {
   ViewServerLiveEvent,
   ViewServerRuntimeLiveClient,
   ViewServerLiveSubscription,
-} from "@view-server/client";
+} from "@effect-view-server/client";
 import {
   Cause,
   Clock,
@@ -47,7 +47,7 @@ import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 import type {
   ViewServerRuntimeCoreInternalClient,
   ViewServerRuntimeCoreInternalLiveClient,
-} from "@view-server/runtime-core/internal";
+} from "@effect-view-server/runtime-core/internal";
 
 type ViewServerGrpcHealthRefreshRequest = Effect.Effect<void>;
 

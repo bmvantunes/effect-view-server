@@ -124,20 +124,20 @@ export const createKafkaIngestBenchmarkRunner = ({
   };
 
   const runMain = async () => {
-    let exitCode = await run("vp", ["run", "-t", "@view-server/effect-utils#build"]);
+    let exitCode = await run("vp", ["run", "-t", "@effect-view-server/effect-utils#build"]);
     if (interruptedSignal !== undefined) {
       return returnInterrupted();
     }
 
     if (exitCode === 0) {
-      exitCode = await run("vp", ["run", "-t", "@view-server/runtime-core#build"]);
+      exitCode = await run("vp", ["run", "-t", "@effect-view-server/runtime-core#build"]);
       if (interruptedSignal !== undefined) {
         return returnInterrupted();
       }
     }
 
     if (exitCode === 0) {
-      exitCode = await run("vp", ["run", "-t", "@view-server/server#build"]);
+      exitCode = await run("vp", ["run", "-t", "@effect-view-server/server#build"]);
       if (interruptedSignal !== undefined) {
         return returnInterrupted();
       }

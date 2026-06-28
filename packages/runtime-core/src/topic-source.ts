@@ -1,5 +1,5 @@
-import type { DecodableTopicDefinitions } from "@view-server/column-live-view-engine";
-import type { ViewServerConfig } from "@view-server/config";
+import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
+import type { ViewServerConfig } from "@effect-view-server/config";
 
 export const grpcLeasedSourceTopics = <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerConfig<Topics>,

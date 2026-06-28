@@ -4,7 +4,7 @@ import type {
   StatusEvent,
   TopicDefinitions,
   ViewServerRuntimeError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   ViewServerTrustedWireEventSchema,

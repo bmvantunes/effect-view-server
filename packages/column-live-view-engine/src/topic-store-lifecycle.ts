@@ -1,4 +1,4 @@
-import type { StatusEvent } from "@view-server/config";
+import type { StatusEvent } from "@effect-view-server/config";
 import { Effect } from "effect";
 import {
   withTopicStoreStateTransition,

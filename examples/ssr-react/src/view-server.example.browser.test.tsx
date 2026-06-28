@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { createInMemoryViewServerReact } from "@view-server/react/testing";
+import { createInMemoryViewServerReact } from "@effect-view-server/react/testing";
 import { Effect } from "effect";
 import { render } from "vitest-browser-react";
 import { SsrExampleApp } from "./view-server.example";

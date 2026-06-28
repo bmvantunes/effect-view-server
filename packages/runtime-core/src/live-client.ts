@@ -1,16 +1,16 @@
 import type {
   ColumnLiveViewEngine,
   DecodableTopicDefinitions,
-} from "@view-server/column-live-view-engine";
+} from "@effect-view-server/column-live-view-engine";
 import type {
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
   ViewServerRuntimeLiveClient,
-} from "@view-server/client";
+} from "@effect-view-server/client";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
-} from "@view-server/effect-utils";
+} from "@effect-view-server/effect-utils";
 import type {
   ExactLiveQueryInput,
   ExactLiveQueryInputForTopic,
@@ -24,13 +24,13 @@ import type {
   ViewServerHealthTopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import {
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Cause, Clock, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import { engineErrorToRuntimeError, leasedRuntimeAccessError } from "./runtime-error";

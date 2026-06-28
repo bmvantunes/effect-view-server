@@ -150,9 +150,9 @@ describe("internal seam checker", () => {
   it("reports restricted package imports including subexports and dynamic imports", () => {
     const restriction = {
       forbiddenSpecifiers: new Set([
-        "@view-server/in-memory",
-        "@view-server/runtime",
-        "@view-server/server",
+        "@effect-view-server/in-memory",
+        "@effect-view-server/runtime",
+        "@effect-view-server/server",
       ]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
@@ -161,29 +161,29 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'import "@view-server/runtime";',
-          'import { createInMemoryViewServer } from "@view-server/in-memory";',
-          'const runtime = import("@view-server/runtime/internal");',
-          "const server = import(`@view-server/server`);",
-          'import type { ViewServerLiveClient } from "@view-server/client";',
+          'import "@effect-view-server/runtime";',
+          'import { createInMemoryViewServer } from "@effect-view-server/in-memory";',
+          'const runtime = import("@effect-view-server/runtime/internal");',
+          "const server = import(`@effect-view-server/server`);",
+          'import type { ViewServerLiveClient } from "@effect-view-server/client";',
         ].join("\n"),
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
-      "src/index.tsx imports @view-server/in-memory: React production must stay transport-neutral.",
-      "src/index.tsx imports @view-server/runtime/internal: View Server imports must use approved package exports.",
-      "src/index.tsx imports @view-server/server: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/in-memory: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime/internal: View Server imports must use approved package exports.",
+      "src/index.tsx imports @effect-view-server/server: React production must stay transport-neutral.",
     ]);
   });
 
   it("reports restricted package imports with escaped quoted specifiers", () => {
     const restriction = {
       forbiddenSpecifiers: new Set([
-        "@view-server/runtime",
-        "@view-server/server",
-        "@view-server/protocol",
+        "@effect-view-server/runtime",
+        "@effect-view-server/server",
+        "@effect-view-server/protocol",
       ]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
@@ -192,17 +192,44 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'import "\\u0040view-server/runtime";',
-          'const server = require("\\x40view-server/server");',
-          'const protocol = import.meta.resolve("\\u{40}view-server/protocol");',
+          'import "\\u0040effect-view-server/runtime";',
+          'const server = require("\\x40effect-view-server/server");',
+          'const protocol = import.meta.resolve("\\u{40}effect-view-server/protocol");',
         ].join("\n"),
         relativePath: "src/index.ts",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
-      "src/index.ts imports @view-server/server: React production must stay transport-neutral.",
-      "src/index.ts imports @view-server/protocol: React production must stay transport-neutral.",
+      "src/index.ts imports @effect-view-server/runtime: React production must stay transport-neutral.",
+      "src/index.ts imports @effect-view-server/server: React production must stay transport-neutral.",
+      "src/index.ts imports @effect-view-server/protocol: React production must stay transport-neutral.",
+    ]);
+  });
+
+  it("reports stale View Server package scope imports", () => {
+    const staleScope = "@view" + "-server";
+    const restriction = {
+      forbiddenSpecifiers: new Set<string>(),
+      message: "unused",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: [
+          `import "${staleScope}/runtime";`,
+          `const protocol = import("${staleScope}/protocol");`,
+          `const client = require("${staleScope}/client");`,
+          'const server = import("\\u0040view-server/server");',
+        ].join("\n"),
+        relativePath: "src/index.ts",
+        restriction,
+      }),
+    ).toStrictEqual([
+      `src/index.ts imports ${staleScope}/runtime: stale View Server package scope; use @effect-view-server/* workspace packages.`,
+      `src/index.ts imports ${staleScope}/protocol: stale View Server package scope; use @effect-view-server/* workspace packages.`,
+      `src/index.ts imports ${staleScope}/client: stale View Server package scope; use @effect-view-server/* workspace packages.`,
+      `src/index.ts imports ${staleScope}/server: stale View Server package scope; use @effect-view-server/* workspace packages.`,
     ]);
   });
 
@@ -210,9 +237,9 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'registry.import("@view-server/runtime");',
-          'registry?.import("@view-server/server");',
-          'this.import("@view-server/protocol");',
+          'registry.import("@effect-view-server/runtime");',
+          'registry?.import("@effect-view-server/server");',
+          'this.import("@effect-view-server/protocol");',
         ].join("\n"),
       ),
     ).toStrictEqual([]);
@@ -243,7 +270,7 @@ describe("internal seam checker", () => {
 
   it("reports restricted CommonJS package imports", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
@@ -251,14 +278,14 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'const runtime = require("@view-server/runtime");',
-          'const client = require("@view-server/client");',
+          'const runtime = require("@effect-view-server/runtime");',
+          'const client = require("@effect-view-server/client");',
         ].join("\n"),
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
@@ -266,23 +293,23 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const runtime = createRequire(import.meta.url)("@view-server/runtime");',
-          'const server = createRequire(import.meta.url).resolve("@view-server/server");',
-          'const protocol = createRequire(import.meta.url).resolve.call(require, "@view-server/protocol");',
-          'const client = (createRequire(import.meta.url)).resolve("@view-server/client");',
-          'const config = (createRequire(import.meta.url))["resolve"]("@view-server/config");',
-          'const inMemory = (createRequire(import.meta.url)).resolve.call(require, "@view-server/in-memory");',
-          'function resolveRuntime() { return (createRequire(import.meta.url)).resolve("@view-server/runtime/return"); }',
+          'const runtime = createRequire(import.meta.url)("@effect-view-server/runtime");',
+          'const server = createRequire(import.meta.url).resolve("@effect-view-server/server");',
+          'const protocol = createRequire(import.meta.url).resolve.call(require, "@effect-view-server/protocol");',
+          'const client = (createRequire(import.meta.url)).resolve("@effect-view-server/client");',
+          'const config = (createRequire(import.meta.url))["resolve"]("@effect-view-server/config");',
+          'const inMemory = (createRequire(import.meta.url)).resolve.call(require, "@effect-view-server/in-memory");',
+          'function resolveRuntime() { return (createRequire(import.meta.url)).resolve("@effect-view-server/runtime/return"); }',
         ].join("\n"),
       ),
     ).toStrictEqual([
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/protocol",
-      "@view-server/client",
-      "@view-server/config",
-      "@view-server/in-memory",
-      "@view-server/runtime/return",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/protocol",
+      "@effect-view-server/client",
+      "@effect-view-server/config",
+      "@effect-view-server/in-memory",
+      "@effect-view-server/runtime/return",
     ]);
   });
 
@@ -290,8 +317,8 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'factory.createRequire(import.meta.url)("@view-server/runtime");',
-          'this.#createRequire(import.meta.url)("@view-server/server");',
+          'factory.createRequire(import.meta.url)("@effect-view-server/runtime");',
+          'this.#createRequire(import.meta.url)("@effect-view-server/server");',
         ].join("\n"),
       ),
     ).toStrictEqual([]);
@@ -312,7 +339,7 @@ describe("internal seam checker", () => {
 
   it("reports restricted CommonJS package resolution", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
@@ -320,68 +347,68 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'const runtime = require.resolve("@view-server/runtime");',
-          'const client = require.resolve("@view-server/client");',
+          'const runtime = require.resolve("@effect-view-server/runtime");',
+          'const client = require.resolve("@effect-view-server/client");',
         ].join("\n"),
         relativePath: "src/index.ts",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.ts imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
   it("does not hide CommonJS imports inside generic calls", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'const runtime = loader<Runtime>(require("@view-server/runtime"));',
+        contents: 'const runtime = loader<Runtime>(require("@effect-view-server/runtime"));',
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
   it("does not hide CommonJS imports after TypeScript angle-bracket assertions", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'const cast = <Runtime>value; const runtime = require("@view-server/runtime");',
+        contents: 'const cast = <Runtime>value; const runtime = require("@effect-view-server/runtime");',
         relativePath: "src/index.ts",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.ts imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
   it("does not hide CommonJS imports after less-than expressions", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'const ok = a < b; const runtime = require("@view-server/runtime");',
+        contents: 'const ok = a < b; const runtime = require("@effect-view-server/runtime");',
         relativePath: "src/index.ts",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.ts imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.ts imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
@@ -407,109 +434,109 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const runtime = require?.("@view-server/runtime");',
-          'const server = require.resolve?.("@view-server/server");',
-          'const client = require?.resolve?.("@view-server/client");',
-          'const spacedRuntime = require ?. ("@view-server/runtime");',
-          'const spacedServer = require . resolve ?. ("@view-server/server");',
-          'const spacedClient = require ?. resolve("@view-server/client");',
-          'const bracketRuntime = require?.["resolve"]("@view-server/runtime");',
-          'const bracketServer = require["resolve"]?.("@view-server/server");',
-          'const parenthesizedResolveRuntime = (require).resolve("@view-server/runtime/resolve");',
-          'const parenthesizedBracketResolveRuntime = (require)["resolve"]("@view-server/runtime/bracket-resolve");',
-          'const parenthesizedRuntime = (require)("@view-server/runtime");',
-          'function loadRuntime() { return (require)("@view-server/runtime/return"); }',
-          'const voidRuntime = void (require)("@view-server/runtime/void");',
-          'for (;;) (require)("@view-server/runtime/for");',
-          'if (ok) noop(); else (require)("@view-server/runtime/else");',
-          'if (path.endsWith(")")) (require)("@view-server/runtime/if-string");',
-          'if (path.match(/[)]/)) (require)("@view-server/runtime/if-regex");',
-          'if (ok /* ) */) (require)("@view-server/runtime/if-block-comment");',
-          'if (ok // )\n) (require)("@view-server/runtime/if-line-comment");',
-          'do (require)("@view-server/runtime/do"); while (ok);',
-          'const sequenceRuntime = (0, require)("@view-server/runtime/sequence");',
-          'const logicalRuntime = (false || require)("@view-server/runtime/logical");',
-          'const fallbackLogicalRuntime = (require || fallback)("@view-server/runtime/logical-left");',
-          'const parenthesizedFallbackLogicalRuntime = ((require) || fallback)("@view-server/runtime/parenthesized-logical-left");',
-          'const nullishRuntime = (require ?? fallback)("@view-server/runtime/nullish-left");',
-          'const nullishFallbackWithParenRuntime = (require ?? fallback(")"))("@view-server/runtime/nullish-fallback-paren");',
-          'const nullishFallbackRegexRuntime = (require ?? /[)]/)("@view-server/runtime/nullish-fallback-regex");',
-          'const fallbackNullishRuntime = (fallback ?? require)("@view-server/runtime/nullish-right");',
-          'const parenthesizedFallbackNullishRuntime = (fallback ?? (require))("@view-server/runtime/parenthesized-nullish-right");',
-          'const ternaryRuntime = (condition ? require : fallback)("@view-server/runtime/ternary-then");',
-          'const ternaryFallbackWithParenRuntime = (condition ? require : fallback({ text: ")" }))("@view-server/runtime/ternary-fallback-paren");',
-          'const fallbackTernaryRuntime = (condition ? fallback : require)("@view-server/runtime/ternary-else");',
-          'const nestedSequenceRuntime = ((0, require))("@view-server/runtime/nested-sequence");',
-          'const sequenceCalledRuntime = (0, require).call(undefined, "@view-server/runtime/sequence-call");',
-          'const sequenceBoundRuntime = (0, require).bind(undefined)("@view-server/runtime/sequence-bind");',
-          'const nestedRuntime = ((require))("@view-server/runtime/nested");',
-          'const calledRuntime = require.call(undefined, "@view-server/runtime/call");',
-          'const calledServer = (require).call(undefined, "@view-server/server/call");',
-          'const boundRuntime = require.bind(undefined)("@view-server/runtime/bind");',
-          'const boundArgumentRuntime = require.bind(undefined, "@view-server/runtime/bind-argument")();',
-          'const parenthesizedBoundRuntime = (require).bind(undefined)("@view-server/runtime/parenthesized-bind");',
-          'const regexBoundRuntime = require.bind(/,/)("@view-server/runtime/regex-bind");',
-          'const appliedRuntime = require.apply(undefined, ["@view-server/runtime/apply"]);',
-          'const extraAppliedRuntime = require.apply(undefined, ["@view-server/runtime/extra-apply", extra]);',
-          'const regexAppliedRuntime = require.apply(/,/, ["@view-server/runtime/regex-apply"]);',
-          'const nestedApplyRuntime = require.apply(fn("ignored", value), ["@view-server/runtime/nested-apply"]);',
-          'const regexRuntime = require.call(/,/, "@view-server/runtime/regex");',
-          'const quoteRegexRuntime = require.call(/"/, "@view-server/runtime/quote-regex");',
-          'const escapedRuntime = requ\\u0069re("@view-server/runtime/escaped");',
-          'const escapedBraceRuntime = requ\\u{69}re("@view-server/runtime/escaped-brace");',
+          'const runtime = require?.("@effect-view-server/runtime");',
+          'const server = require.resolve?.("@effect-view-server/server");',
+          'const client = require?.resolve?.("@effect-view-server/client");',
+          'const spacedRuntime = require ?. ("@effect-view-server/runtime");',
+          'const spacedServer = require . resolve ?. ("@effect-view-server/server");',
+          'const spacedClient = require ?. resolve("@effect-view-server/client");',
+          'const bracketRuntime = require?.["resolve"]("@effect-view-server/runtime");',
+          'const bracketServer = require["resolve"]?.("@effect-view-server/server");',
+          'const parenthesizedResolveRuntime = (require).resolve("@effect-view-server/runtime/resolve");',
+          'const parenthesizedBracketResolveRuntime = (require)["resolve"]("@effect-view-server/runtime/bracket-resolve");',
+          'const parenthesizedRuntime = (require)("@effect-view-server/runtime");',
+          'function loadRuntime() { return (require)("@effect-view-server/runtime/return"); }',
+          'const voidRuntime = void (require)("@effect-view-server/runtime/void");',
+          'for (;;) (require)("@effect-view-server/runtime/for");',
+          'if (ok) noop(); else (require)("@effect-view-server/runtime/else");',
+          'if (path.endsWith(")")) (require)("@effect-view-server/runtime/if-string");',
+          'if (path.match(/[)]/)) (require)("@effect-view-server/runtime/if-regex");',
+          'if (ok /* ) */) (require)("@effect-view-server/runtime/if-block-comment");',
+          'if (ok // )\n) (require)("@effect-view-server/runtime/if-line-comment");',
+          'do (require)("@effect-view-server/runtime/do"); while (ok);',
+          'const sequenceRuntime = (0, require)("@effect-view-server/runtime/sequence");',
+          'const logicalRuntime = (false || require)("@effect-view-server/runtime/logical");',
+          'const fallbackLogicalRuntime = (require || fallback)("@effect-view-server/runtime/logical-left");',
+          'const parenthesizedFallbackLogicalRuntime = ((require) || fallback)("@effect-view-server/runtime/parenthesized-logical-left");',
+          'const nullishRuntime = (require ?? fallback)("@effect-view-server/runtime/nullish-left");',
+          'const nullishFallbackWithParenRuntime = (require ?? fallback(")"))("@effect-view-server/runtime/nullish-fallback-paren");',
+          'const nullishFallbackRegexRuntime = (require ?? /[)]/)("@effect-view-server/runtime/nullish-fallback-regex");',
+          'const fallbackNullishRuntime = (fallback ?? require)("@effect-view-server/runtime/nullish-right");',
+          'const parenthesizedFallbackNullishRuntime = (fallback ?? (require))("@effect-view-server/runtime/parenthesized-nullish-right");',
+          'const ternaryRuntime = (condition ? require : fallback)("@effect-view-server/runtime/ternary-then");',
+          'const ternaryFallbackWithParenRuntime = (condition ? require : fallback({ text: ")" }))("@effect-view-server/runtime/ternary-fallback-paren");',
+          'const fallbackTernaryRuntime = (condition ? fallback : require)("@effect-view-server/runtime/ternary-else");',
+          'const nestedSequenceRuntime = ((0, require))("@effect-view-server/runtime/nested-sequence");',
+          'const sequenceCalledRuntime = (0, require).call(undefined, "@effect-view-server/runtime/sequence-call");',
+          'const sequenceBoundRuntime = (0, require).bind(undefined)("@effect-view-server/runtime/sequence-bind");',
+          'const nestedRuntime = ((require))("@effect-view-server/runtime/nested");',
+          'const calledRuntime = require.call(undefined, "@effect-view-server/runtime/call");',
+          'const calledServer = (require).call(undefined, "@effect-view-server/server/call");',
+          'const boundRuntime = require.bind(undefined)("@effect-view-server/runtime/bind");',
+          'const boundArgumentRuntime = require.bind(undefined, "@effect-view-server/runtime/bind-argument")();',
+          'const parenthesizedBoundRuntime = (require).bind(undefined)("@effect-view-server/runtime/parenthesized-bind");',
+          'const regexBoundRuntime = require.bind(/,/)("@effect-view-server/runtime/regex-bind");',
+          'const appliedRuntime = require.apply(undefined, ["@effect-view-server/runtime/apply"]);',
+          'const extraAppliedRuntime = require.apply(undefined, ["@effect-view-server/runtime/extra-apply", extra]);',
+          'const regexAppliedRuntime = require.apply(/,/, ["@effect-view-server/runtime/regex-apply"]);',
+          'const nestedApplyRuntime = require.apply(fn("ignored", value), ["@effect-view-server/runtime/nested-apply"]);',
+          'const regexRuntime = require.call(/,/, "@effect-view-server/runtime/regex");',
+          'const quoteRegexRuntime = require.call(/"/, "@effect-view-server/runtime/quote-regex");',
+          'const escapedRuntime = requ\\u0069re("@effect-view-server/runtime/escaped");',
+          'const escapedBraceRuntime = requ\\u{69}re("@effect-view-server/runtime/escaped-brace");',
         ].join("\n"),
       ),
     ).toStrictEqual([
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/client",
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/client",
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/runtime/resolve",
-      "@view-server/runtime/bracket-resolve",
-      "@view-server/runtime",
-      "@view-server/runtime/return",
-      "@view-server/runtime/void",
-      "@view-server/runtime/for",
-      "@view-server/runtime/else",
-      "@view-server/runtime/if-string",
-      "@view-server/runtime/if-regex",
-      "@view-server/runtime/if-block-comment",
-      "@view-server/runtime/if-line-comment",
-      "@view-server/runtime/do",
-      "@view-server/runtime/sequence",
-      "@view-server/runtime/logical",
-      "@view-server/runtime/logical-left",
-      "@view-server/runtime/parenthesized-logical-left",
-      "@view-server/runtime/nullish-left",
-      "@view-server/runtime/nullish-fallback-paren",
-      "@view-server/runtime/nullish-fallback-regex",
-      "@view-server/runtime/nullish-right",
-      "@view-server/runtime/parenthesized-nullish-right",
-      "@view-server/runtime/ternary-then",
-      "@view-server/runtime/ternary-fallback-paren",
-      "@view-server/runtime/ternary-else",
-      "@view-server/runtime/nested-sequence",
-      "@view-server/runtime/sequence-call",
-      "@view-server/runtime/sequence-bind",
-      "@view-server/runtime/nested",
-      "@view-server/runtime/call",
-      "@view-server/server/call",
-      "@view-server/runtime/bind",
-      "@view-server/runtime/bind-argument",
-      "@view-server/runtime/parenthesized-bind",
-      "@view-server/runtime/regex-bind",
-      "@view-server/runtime/apply",
-      "@view-server/runtime/extra-apply",
-      "@view-server/runtime/regex-apply",
-      "@view-server/runtime/nested-apply",
-      "@view-server/runtime/regex",
-      "@view-server/runtime/quote-regex",
-      "@view-server/runtime/escaped",
-      "@view-server/runtime/escaped-brace",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/client",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/client",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/runtime/resolve",
+      "@effect-view-server/runtime/bracket-resolve",
+      "@effect-view-server/runtime",
+      "@effect-view-server/runtime/return",
+      "@effect-view-server/runtime/void",
+      "@effect-view-server/runtime/for",
+      "@effect-view-server/runtime/else",
+      "@effect-view-server/runtime/if-string",
+      "@effect-view-server/runtime/if-regex",
+      "@effect-view-server/runtime/if-block-comment",
+      "@effect-view-server/runtime/if-line-comment",
+      "@effect-view-server/runtime/do",
+      "@effect-view-server/runtime/sequence",
+      "@effect-view-server/runtime/logical",
+      "@effect-view-server/runtime/logical-left",
+      "@effect-view-server/runtime/parenthesized-logical-left",
+      "@effect-view-server/runtime/nullish-left",
+      "@effect-view-server/runtime/nullish-fallback-paren",
+      "@effect-view-server/runtime/nullish-fallback-regex",
+      "@effect-view-server/runtime/nullish-right",
+      "@effect-view-server/runtime/parenthesized-nullish-right",
+      "@effect-view-server/runtime/ternary-then",
+      "@effect-view-server/runtime/ternary-fallback-paren",
+      "@effect-view-server/runtime/ternary-else",
+      "@effect-view-server/runtime/nested-sequence",
+      "@effect-view-server/runtime/sequence-call",
+      "@effect-view-server/runtime/sequence-bind",
+      "@effect-view-server/runtime/nested",
+      "@effect-view-server/runtime/call",
+      "@effect-view-server/server/call",
+      "@effect-view-server/runtime/bind",
+      "@effect-view-server/runtime/bind-argument",
+      "@effect-view-server/runtime/parenthesized-bind",
+      "@effect-view-server/runtime/regex-bind",
+      "@effect-view-server/runtime/apply",
+      "@effect-view-server/runtime/extra-apply",
+      "@effect-view-server/runtime/regex-apply",
+      "@effect-view-server/runtime/nested-apply",
+      "@effect-view-server/runtime/regex",
+      "@effect-view-server/runtime/quote-regex",
+      "@effect-view-server/runtime/escaped",
+      "@effect-view-server/runtime/escaped-brace",
     ]);
   });
 
@@ -520,38 +547,38 @@ describe("internal seam checker", () => {
           "require;",
           "const inertSequence = (0, require);",
           "const inertSequenceCall = (0, require).call(undefined);",
-          'const localLoader = (require && localLoader)("@view-server/runtime");',
+          'const localLoader = (require && localLoader)("@effect-view-server/runtime");',
           "const inertParenthesizedNullish = (fallback ?? (require));",
           "const inertNestedParenthesizedNullish = ((fallback ?? (require)));",
-          'const unfinishedNullishWrapper = (require ?? fallback("@view-server/runtime");',
-          'const unfinishedTernaryWrapper = (condition ? require : fallback("@view-server/runtime");',
-          'const runtime = require ? ("@view-server/runtime") : undefined;',
-          'const server = require ? resolveCandidate("@view-server/server") : undefined;',
-          'const client = module ? requireCandidate("@view-server/client") : undefined;',
-          'const runtimeCandidate = module.load("@view-server/runtime");',
-          'const serverCandidate = module?.load("@view-server/server");',
-          'const parenthesizedRuntimeCandidate = (require).load("@view-server/runtime");',
-          'const parenthesizedServerCandidate = (module).load("@view-server/server");',
-          'const protocolCandidate = require["load"]("@view-server/protocol");',
-          'const missingBracket = require["resolve"("@view-server/runtime");',
-          'const malformedEscapedRequire = requ\\u{zz}re("@view-server/runtime");',
-          'const malformedCodePointRequire = requ\\u{110000}re("@view-server/runtime");',
-          'const malformedFixedEscapedRequire = requ\\u00zzre("@view-server/server");',
-          'const indirectLoader = makeLoader(require)("@view-server/runtime");',
-          'const indirectResolver = makeResolver(require.resolve)("@view-server/runtime");',
-          'const indirectParenthesizedResolver = makeResolver((require).resolve)("@view-server/runtime");',
-          'const indirectParenthesizedModuleRequire = makeResolver((module).require)("@view-server/runtime");',
-          'const indirectParenthesizedImportMetaResolve = makeResolver((import.meta).resolve).call(undefined, "@view-server/runtime");',
-          'const indirectImportMetaResolver = makeResolver(import.meta.resolve).call(undefined, "@view-server/runtime");',
-          'const malformedControl = if ok) (require)("@view-server/runtime");',
-          'const malformedOpenControl = if (ok (require)("@view-server/runtime");',
+          'const unfinishedNullishWrapper = (require ?? fallback("@effect-view-server/runtime");',
+          'const unfinishedTernaryWrapper = (condition ? require : fallback("@effect-view-server/runtime");',
+          'const runtime = require ? ("@effect-view-server/runtime") : undefined;',
+          'const server = require ? resolveCandidate("@effect-view-server/server") : undefined;',
+          'const client = module ? requireCandidate("@effect-view-server/client") : undefined;',
+          'const runtimeCandidate = module.load("@effect-view-server/runtime");',
+          'const serverCandidate = module?.load("@effect-view-server/server");',
+          'const parenthesizedRuntimeCandidate = (require).load("@effect-view-server/runtime");',
+          'const parenthesizedServerCandidate = (module).load("@effect-view-server/server");',
+          'const protocolCandidate = require["load"]("@effect-view-server/protocol");',
+          'const missingBracket = require["resolve"("@effect-view-server/runtime");',
+          'const malformedEscapedRequire = requ\\u{zz}re("@effect-view-server/runtime");',
+          'const malformedCodePointRequire = requ\\u{110000}re("@effect-view-server/runtime");',
+          'const malformedFixedEscapedRequire = requ\\u00zzre("@effect-view-server/server");',
+          'const indirectLoader = makeLoader(require)("@effect-view-server/runtime");',
+          'const indirectResolver = makeResolver(require.resolve)("@effect-view-server/runtime");',
+          'const indirectParenthesizedResolver = makeResolver((require).resolve)("@effect-view-server/runtime");',
+          'const indirectParenthesizedModuleRequire = makeResolver((module).require)("@effect-view-server/runtime");',
+          'const indirectParenthesizedImportMetaResolve = makeResolver((import.meta).resolve).call(undefined, "@effect-view-server/runtime");',
+          'const indirectImportMetaResolver = makeResolver(import.meta.resolve).call(undefined, "@effect-view-server/runtime");',
+          'const malformedControl = if ok) (require)("@effect-view-server/runtime");',
+          'const malformedOpenControl = if (ok (require)("@effect-view-server/runtime");',
           "const bindProperty = require.bind;",
           "const inertBind = require.bind(undefined);",
           "const unfinishedBind = require.bind(undefined",
           "const applyProperty = require.apply;",
           "const parenthesizedApplyProperty = (require).apply;",
           "const unfinishedNoCommaApply = require.apply(undefined",
-          'const stringApply = require.apply(undefined, "@view-server/runtime");',
+          'const stringApply = require.apply(undefined, "@effect-view-server/runtime");',
           'const missingApplyArgument = require.apply(undefined);',
           "const dynamicApply = require.apply(undefined, packageName);",
           "const emptyApply = require.apply(undefined, []);",
@@ -569,37 +596,37 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const runtime = require["resolve"]("@view-server/runtime");',
-          "const server = require['resolve']('@view-server/server');",
-          'const parenthesizedRuntime = (require.resolve)("@view-server/runtime/parenthesized");',
-          'const parenthesizedBaseRuntime = ((require).resolve)("@view-server/runtime/parenthesized-base");',
-          'for (const item of items) (require.resolve)("@view-server/server/for-of");',
-          'for await (const item of items) (require.resolve)("@view-server/server/for-await");',
-          'while (path.endsWith(")")) (require.resolve)("@view-server/runtime/while-string");',
-          'const ternaryParenthesizedResolve = (condition ? (require.resolve) : fallback)("@view-server/runtime/ternary-parenthesized-resolve");',
-          'const sequenceServer = (0, require.resolve)("@view-server/server/sequence");',
-          'const sequenceCalledServer = (0, require.resolve).call(require, "@view-server/server/sequence-call");',
-          'const calledRuntime = require.resolve.call(require, "@view-server/runtime/call");',
-          'const regexRuntime = require.resolve.call(/,/, "@view-server/runtime/regex");',
-          'const appliedServer = require.resolve.apply(require, ["@view-server/server/apply", { paths: [] }]);',
-          'const escapedServer = require.res\\u006flve("@view-server/server/escaped");',
+          'const runtime = require["resolve"]("@effect-view-server/runtime");',
+          "const server = require['resolve']('@effect-view-server/server');",
+          'const parenthesizedRuntime = (require.resolve)("@effect-view-server/runtime/parenthesized");',
+          'const parenthesizedBaseRuntime = ((require).resolve)("@effect-view-server/runtime/parenthesized-base");',
+          'for (const item of items) (require.resolve)("@effect-view-server/server/for-of");',
+          'for await (const item of items) (require.resolve)("@effect-view-server/server/for-await");',
+          'while (path.endsWith(")")) (require.resolve)("@effect-view-server/runtime/while-string");',
+          'const ternaryParenthesizedResolve = (condition ? (require.resolve) : fallback)("@effect-view-server/runtime/ternary-parenthesized-resolve");',
+          'const sequenceServer = (0, require.resolve)("@effect-view-server/server/sequence");',
+          'const sequenceCalledServer = (0, require.resolve).call(require, "@effect-view-server/server/sequence-call");',
+          'const calledRuntime = require.resolve.call(require, "@effect-view-server/runtime/call");',
+          'const regexRuntime = require.resolve.call(/,/, "@effect-view-server/runtime/regex");',
+          'const appliedServer = require.resolve.apply(require, ["@effect-view-server/server/apply", { paths: [] }]);',
+          'const escapedServer = require.res\\u006flve("@effect-view-server/server/escaped");',
         ].join("\n"),
       ),
     ).toStrictEqual([
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/runtime/parenthesized",
-      "@view-server/runtime/parenthesized-base",
-      "@view-server/server/for-of",
-      "@view-server/server/for-await",
-      "@view-server/runtime/while-string",
-      "@view-server/runtime/ternary-parenthesized-resolve",
-      "@view-server/server/sequence",
-      "@view-server/server/sequence-call",
-      "@view-server/runtime/call",
-      "@view-server/runtime/regex",
-      "@view-server/server/apply",
-      "@view-server/server/escaped",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/runtime/parenthesized",
+      "@effect-view-server/runtime/parenthesized-base",
+      "@effect-view-server/server/for-of",
+      "@effect-view-server/server/for-await",
+      "@effect-view-server/runtime/while-string",
+      "@effect-view-server/runtime/ternary-parenthesized-resolve",
+      "@effect-view-server/server/sequence",
+      "@effect-view-server/server/sequence-call",
+      "@effect-view-server/runtime/call",
+      "@effect-view-server/runtime/regex",
+      "@effect-view-server/server/apply",
+      "@effect-view-server/server/escaped",
     ]);
   });
 
@@ -607,47 +634,47 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const runtime = import.meta.resolve("@view-server/runtime");',
-          'const server = import.meta.resolve?.("@view-server/server");',
-          'const protocol = import.meta["resolve"]("@view-server/protocol");',
-          'const client = (import.meta.resolve)("@view-server/client");',
-          'async function resolveRuntime() { return await (import.meta.resolve)("@view-server/runtime/await"); }',
-          'const sequenceClient = (0, import.meta.resolve)("@view-server/client/sequence");',
-          'const nestedSequenceClient = ((0, import.meta.resolve))("@view-server/client/nested-sequence");',
-          'const sequenceCalledClient = (0, import.meta.resolve).call(import.meta, "@view-server/client/sequence-call");',
-          'const ternaryParenthesizedCalledClient = (condition ? fallback : (import.meta.resolve)).call(import.meta, "@view-server/client/ternary-parenthesized-call");',
-          'const config = (import.meta["resolve"])?.("@view-server/config");',
-          'const parenthesizedBaseRuntime = (import.meta).resolve("@view-server/runtime/parenthesized-base");',
-          'const parenthesizedBaseServer = (import.meta)["resolve"]("@view-server/server/parenthesized-base");',
-          'const rpc = import.meta.resolve.call(import.meta, "@view-server/protocol/rpc");',
-          'const health = (import.meta.resolve).call(import.meta, "@view-server/protocol/health");',
-          'const runtimeAgain = import.meta.resolve.call(getMeta("ignored", import.meta), "@view-server/runtime/internal");',
-          'const regexClient = import.meta.resolve.call(/,/, "@view-server/client/regex");',
-          'const appliedClient = import.meta.resolve.apply(/,/, ["@view-server/client/apply"]);',
-          'const boundArgumentClient = import.meta.resolve.bind(import.meta, "@view-server/client/bind-argument")();',
-          'const nestedRuntime = ((import.meta.resolve))("@view-server/runtime/nested");',
+          'const runtime = import.meta.resolve("@effect-view-server/runtime");',
+          'const server = import.meta.resolve?.("@effect-view-server/server");',
+          'const protocol = import.meta["resolve"]("@effect-view-server/protocol");',
+          'const client = (import.meta.resolve)("@effect-view-server/client");',
+          'async function resolveRuntime() { return await (import.meta.resolve)("@effect-view-server/runtime/await"); }',
+          'const sequenceClient = (0, import.meta.resolve)("@effect-view-server/client/sequence");',
+          'const nestedSequenceClient = ((0, import.meta.resolve))("@effect-view-server/client/nested-sequence");',
+          'const sequenceCalledClient = (0, import.meta.resolve).call(import.meta, "@effect-view-server/client/sequence-call");',
+          'const ternaryParenthesizedCalledClient = (condition ? fallback : (import.meta.resolve)).call(import.meta, "@effect-view-server/client/ternary-parenthesized-call");',
+          'const config = (import.meta["resolve"])?.("@effect-view-server/config");',
+          'const parenthesizedBaseRuntime = (import.meta).resolve("@effect-view-server/runtime/parenthesized-base");',
+          'const parenthesizedBaseServer = (import.meta)["resolve"]("@effect-view-server/server/parenthesized-base");',
+          'const rpc = import.meta.resolve.call(import.meta, "@effect-view-server/protocol/rpc");',
+          'const health = (import.meta.resolve).call(import.meta, "@effect-view-server/protocol/health");',
+          'const runtimeAgain = import.meta.resolve.call(getMeta("ignored", import.meta), "@effect-view-server/runtime/internal");',
+          'const regexClient = import.meta.resolve.call(/,/, "@effect-view-server/client/regex");',
+          'const appliedClient = import.meta.resolve.apply(/,/, ["@effect-view-server/client/apply"]);',
+          'const boundArgumentClient = import.meta.resolve.bind(import.meta, "@effect-view-server/client/bind-argument")();',
+          'const nestedRuntime = ((import.meta.resolve))("@effect-view-server/runtime/nested");',
         ].join("\n"),
       ),
     ).toStrictEqual([
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/protocol",
-      "@view-server/client",
-      "@view-server/runtime/await",
-      "@view-server/client/sequence",
-      "@view-server/client/nested-sequence",
-      "@view-server/client/sequence-call",
-      "@view-server/client/ternary-parenthesized-call",
-      "@view-server/config",
-      "@view-server/runtime/parenthesized-base",
-      "@view-server/server/parenthesized-base",
-      "@view-server/protocol/rpc",
-      "@view-server/protocol/health",
-      "@view-server/runtime/internal",
-      "@view-server/client/regex",
-      "@view-server/client/apply",
-      "@view-server/client/bind-argument",
-      "@view-server/runtime/nested",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/protocol",
+      "@effect-view-server/client",
+      "@effect-view-server/runtime/await",
+      "@effect-view-server/client/sequence",
+      "@effect-view-server/client/nested-sequence",
+      "@effect-view-server/client/sequence-call",
+      "@effect-view-server/client/ternary-parenthesized-call",
+      "@effect-view-server/config",
+      "@effect-view-server/runtime/parenthesized-base",
+      "@effect-view-server/server/parenthesized-base",
+      "@effect-view-server/protocol/rpc",
+      "@effect-view-server/protocol/health",
+      "@effect-view-server/runtime/internal",
+      "@effect-view-server/client/regex",
+      "@effect-view-server/client/apply",
+      "@effect-view-server/client/bind-argument",
+      "@effect-view-server/runtime/nested",
     ]);
   });
 
@@ -655,9 +682,9 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const runtime = import.meta.load("@view-server/runtime");',
-          'const server = import.metadata.resolve("@view-server/server");',
-          'const protocol = import ? meta.resolve("@view-server/protocol") : undefined;',
+          'const runtime = import.meta.load("@effect-view-server/runtime");',
+          'const server = import.metadata.resolve("@effect-view-server/server");',
+          'const protocol = import ? meta.resolve("@effect-view-server/protocol") : undefined;',
           "const client = import.meta.resolve(packageName);",
           "const clientResolver = (import.meta.resolve);",
           "const config = import.meta.resolve.call;",
@@ -665,8 +692,8 @@ describe("internal seam checker", () => {
           'const serverPackage = import.meta.resolve.call("ignored", packageName);',
           'const runtimePackage = import.meta.resolve.call("quoted, comma");',
           "const unterminatedCall = import.meta.resolve.call(import.meta",
-          'const falseRuntime = registry.import.meta.resolve("@view-server/runtime");',
-          'const falseServer = registry.import.meta.resolve.call(registry, "@view-server/server");',
+          'const falseRuntime = registry.import.meta.resolve("@effect-view-server/runtime");',
+          'const falseServer = registry.import.meta.resolve.call(registry, "@effect-view-server/server");',
         ].join("\n"),
       ),
     ).toStrictEqual([]);
@@ -674,14 +701,14 @@ describe("internal seam checker", () => {
 
   it("does not report import meta resolution specifiers from call context arguments", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'const fs = import.meta.resolve.call(["ignored", "@view-server/runtime"], "node:fs");',
+        contents: 'const fs = import.meta.resolve.call(["ignored", "@effect-view-server/runtime"], "node:fs");',
         relativePath: "src/index.ts",
         restriction,
       }),
@@ -692,51 +719,51 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const runtime = module.require("@view-server/runtime");',
-          'const server = module?.require("@view-server/server");',
-          'const protocol = module?.require?.("@view-server/protocol");',
-          'const client = module.require("@view-server/client");',
-          'const spacedRuntime = module ?. require("@view-server/runtime");',
-          'const spacedServer = module?. require("@view-server/server");',
-          'const spacedProtocol = module ?. require ?. ("@view-server/protocol");',
-          'const bracketRuntime = module["require"]("@view-server/runtime");',
-          'const bracketServer = module?.["require"]("@view-server/server");',
-          'const bracketProtocol = module["require"]?.("@view-server/protocol");',
-          'const parenthesizedBaseRuntime = (module).require("@view-server/runtime/base");',
-          'const parenthesizedBaseServer = (module)["require"]("@view-server/server/base");',
-          'const parenthesizedRuntime = (module.require)("@view-server/runtime/parenthesized");',
-          'if (ok) (module.require)("@view-server/runtime/if");',
-          'if (isEnabled()) (module.require)("@view-server/runtime/if-call");',
-          'const calledRuntime = module.require.call(module, "@view-server/runtime/call");',
-          'const boundRuntime = module.require.bind(module)("@view-server/runtime/bind");',
-          'const boundArgumentRuntime = module.require.bind(module, "@view-server/runtime/bind-argument")();',
-          'const appliedRuntime = module.require.apply(module, ["@view-server/runtime/apply"]);',
-          'const regexRuntime = module.require.call(/,/, "@view-server/runtime/regex");',
-          'const escapedProtocol = module.requ\\u0069re("@view-server/protocol/escaped");',
+          'const runtime = module.require("@effect-view-server/runtime");',
+          'const server = module?.require("@effect-view-server/server");',
+          'const protocol = module?.require?.("@effect-view-server/protocol");',
+          'const client = module.require("@effect-view-server/client");',
+          'const spacedRuntime = module ?. require("@effect-view-server/runtime");',
+          'const spacedServer = module?. require("@effect-view-server/server");',
+          'const spacedProtocol = module ?. require ?. ("@effect-view-server/protocol");',
+          'const bracketRuntime = module["require"]("@effect-view-server/runtime");',
+          'const bracketServer = module?.["require"]("@effect-view-server/server");',
+          'const bracketProtocol = module["require"]?.("@effect-view-server/protocol");',
+          'const parenthesizedBaseRuntime = (module).require("@effect-view-server/runtime/base");',
+          'const parenthesizedBaseServer = (module)["require"]("@effect-view-server/server/base");',
+          'const parenthesizedRuntime = (module.require)("@effect-view-server/runtime/parenthesized");',
+          'if (ok) (module.require)("@effect-view-server/runtime/if");',
+          'if (isEnabled()) (module.require)("@effect-view-server/runtime/if-call");',
+          'const calledRuntime = module.require.call(module, "@effect-view-server/runtime/call");',
+          'const boundRuntime = module.require.bind(module)("@effect-view-server/runtime/bind");',
+          'const boundArgumentRuntime = module.require.bind(module, "@effect-view-server/runtime/bind-argument")();',
+          'const appliedRuntime = module.require.apply(module, ["@effect-view-server/runtime/apply"]);',
+          'const regexRuntime = module.require.call(/,/, "@effect-view-server/runtime/regex");',
+          'const escapedProtocol = module.requ\\u0069re("@effect-view-server/protocol/escaped");',
         ].join("\n"),
       ),
     ).toStrictEqual([
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/protocol",
-      "@view-server/client",
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/protocol",
-      "@view-server/runtime",
-      "@view-server/server",
-      "@view-server/protocol",
-      "@view-server/runtime/base",
-      "@view-server/server/base",
-      "@view-server/runtime/parenthesized",
-      "@view-server/runtime/if",
-      "@view-server/runtime/if-call",
-      "@view-server/runtime/call",
-      "@view-server/runtime/bind",
-      "@view-server/runtime/bind-argument",
-      "@view-server/runtime/apply",
-      "@view-server/runtime/regex",
-      "@view-server/protocol/escaped",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/protocol",
+      "@effect-view-server/client",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/protocol",
+      "@effect-view-server/runtime",
+      "@effect-view-server/server",
+      "@effect-view-server/protocol",
+      "@effect-view-server/runtime/base",
+      "@effect-view-server/server/base",
+      "@effect-view-server/runtime/parenthesized",
+      "@effect-view-server/runtime/if",
+      "@effect-view-server/runtime/if-call",
+      "@effect-view-server/runtime/call",
+      "@effect-view-server/runtime/bind",
+      "@effect-view-server/runtime/bind-argument",
+      "@effect-view-server/runtime/apply",
+      "@effect-view-server/runtime/regex",
+      "@effect-view-server/protocol/escaped",
     ]);
   });
 
@@ -750,8 +777,8 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'loader.module.require("@view-server/runtime");',
-          'this.#module.require("@view-server/server");',
+          'loader.module.require("@effect-view-server/runtime");',
+          'this.#module.require("@effect-view-server/server");',
         ].join("\n"),
       ),
     ).toStrictEqual([]);
@@ -759,7 +786,7 @@ describe("internal seam checker", () => {
 
   it("ignores private member APIs named require", () => {
     expect(
-      importSpecifiersFromSource('class Loader { load() { return this.#require("@view-server/runtime"); } }'),
+      importSpecifiersFromSource('class Loader { load() { return this.#require("@effect-view-server/runtime"); } }'),
     ).toStrictEqual([]);
   });
 
@@ -780,11 +807,11 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "const packageName = 'runtime';",
-          "const runtime = require(`@view-server/${packageName}`);",
-          "const resolved = require.resolve(`@view-server/${packageName}`);",
+          "const runtime = require(`@effect-view-server/${packageName}`);",
+          "const resolved = require.resolve(`@effect-view-server/${packageName}`);",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/${packageName}", "@view-server/${packageName}"]);
+    ).toStrictEqual(["@effect-view-server/${packageName}", "@effect-view-server/${packageName}"]);
   });
 
   it("ignores comments while scanning template expressions for CommonJS imports", () => {
@@ -792,11 +819,11 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "const value = `${// }",
-          'require("@view-server/runtime")',
+          'require("@effect-view-server/runtime")',
           "}`;",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
     expect(importSpecifiersFromSource("const unfinished = `${// }")).toStrictEqual([]);
     expect(importSpecifiersFromSource("const unfinished = `${/* }")).toStrictEqual([]);
   });
@@ -804,81 +831,81 @@ describe("internal seam checker", () => {
   it("does not treat regex literal slash pairs as comments in template expressions", () => {
     expect(
       importSpecifiersFromSource(
-        'const value = `${/\\\\//.test(path) && require("@view-server/runtime")}`;',
+        'const value = `${/\\\\//.test(path) && require("@effect-view-server/runtime")}`;',
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
     expect(
       importSpecifiersFromSource(
-        'const value = `${"source" in /\\\\// && require("@view-server/server")}`;',
+        'const value = `${"source" in /\\\\// && require("@effect-view-server/server")}`;',
       ),
-    ).toStrictEqual(["@view-server/server"]);
+    ).toStrictEqual(["@effect-view-server/server"]);
   });
 
   it("does not treat regex literal slash pairs as comments before CommonJS imports", () => {
     expect(
       importSpecifiersFromSource(
-        'const value = /\\\\//.test(path) && require("@view-server/runtime");',
+        'const value = /\\\\//.test(path) && require("@effect-view-server/runtime");',
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
     expect(
       importSpecifiersFromSource(
-        'const value = /[/]/gi.test(path) && require("@view-server/server");',
+        'const value = /[/]/gi.test(path) && require("@effect-view-server/server");',
       ),
-    ).toStrictEqual(["@view-server/server"]);
+    ).toStrictEqual(["@effect-view-server/server"]);
     expect(
       importSpecifiersFromSource(
-        'if ("source" in /\\\\// && require("@view-server/protocol")) {}',
+        'if ("source" in /\\\\// && require("@effect-view-server/protocol")) {}',
       ),
-    ).toStrictEqual(["@view-server/protocol"]);
+    ).toStrictEqual(["@effect-view-server/protocol"]);
     expect(
       importSpecifiersFromSource(
-        'if (path) /\\\\//.test(path) && require("@view-server/client");',
+        'if (path) /\\\\//.test(path) && require("@effect-view-server/client");',
       ),
-    ).toStrictEqual(["@view-server/client"]);
+    ).toStrictEqual(["@effect-view-server/client"]);
     expect(
       importSpecifiersFromSource(
-        'if (fn({ value: true })) /[//]/.test(path) && require("@view-server/runtime");',
+        'if (fn({ value: true })) /[//]/.test(path) && require("@effect-view-server/runtime");',
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
     expect(
       importSpecifiersFromSource(
         [
           "if (",
           "  path",
-          ') /[//]/.test(path) && require("@view-server/client");',
+          ') /[//]/.test(path) && require("@effect-view-server/client");',
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/client"]);
+    ).toStrictEqual(["@effect-view-server/client"]);
     expect(
       importSpecifiersFromSource(
-        'for (;;) /[//]/.test(path) && require("@view-server/server");',
+        'for (;;) /[//]/.test(path) && require("@effect-view-server/server");',
       ),
-    ).toStrictEqual(["@view-server/server"]);
+    ).toStrictEqual(["@effect-view-server/server"]);
     expect(
       importSpecifiersFromSource(
-        'for (const value of /\\\\//) require("@view-server/protocol");',
+        'for (const value of /\\\\//) require("@effect-view-server/protocol");',
       ),
-    ).toStrictEqual(["@view-server/protocol"]);
+    ).toStrictEqual(["@effect-view-server/protocol"]);
   });
 
   it("detects no-substitution CommonJS template specifiers", () => {
     expect(
       importSpecifiersFromSource(
         [
-          "const runtime = require(`@view-server/runtime`);",
-          "const server = require.resolve(`@view-server/server`);",
+          "const runtime = require(`@effect-view-server/runtime`);",
+          "const server = require.resolve(`@effect-view-server/server`);",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime", "@view-server/server"]);
+    ).toStrictEqual(["@effect-view-server/runtime", "@effect-view-server/server"]);
   });
 
   it("ignores member APIs named require", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'validator.require("@view-server/runtime");',
-          'this.require("@view-server/server");',
-          'loader?.require("@view-server/client");',
+          'validator.require("@effect-view-server/runtime");',
+          'this.require("@effect-view-server/server");',
+          'loader?.require("@effect-view-server/client");',
         ].join("\n"),
       ),
     ).toStrictEqual([]);
@@ -886,46 +913,46 @@ describe("internal seam checker", () => {
 
   it("does not hide CommonJS imports after self-closing JSX", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'const node = <Panel />; const runtime = require("@view-server/runtime");',
+        contents: 'const node = <Panel />; const runtime = require("@effect-view-server/runtime");',
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
   it("ignores comments while scanning JSX expressions for CommonJS imports", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: '<Panel value={/* } */ require("@view-server/runtime")} />',
+        contents: '<Panel value={/* } */ require("@effect-view-server/runtime")} />',
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
     expect(
       packageImportViolationsFor({
-        contents: ['<Panel value={// }', 'require("@view-server/runtime")} />'].join("\n"),
+        contents: ['<Panel value={// }', 'require("@effect-view-server/runtime")} />'].join("\n"),
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
     expect(packageImportViolationsFor({
       contents: "<Panel value={// }",
@@ -936,35 +963,35 @@ describe("internal seam checker", () => {
 
   it("does not treat regex literal slash pairs as comments in JSX expressions", () => {
     const restriction = {
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: '<Panel value={/\\\\//.test(path) && require("@view-server/runtime")} />',
+        contents: '<Panel value={/\\\\//.test(path) && require("@effect-view-server/runtime")} />',
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
     expect(
       packageImportViolationsFor({
-        contents: '<Panel value={"source" in /\\\\// && require("@view-server/runtime")} />',
+        contents: '<Panel value={"source" in /\\\\// && require("@effect-view-server/runtime")} />',
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
   it("rejects deep imports even when the package root is allowed", () => {
     const restriction = {
-      allowedSpecifiers: new Set(["@view-server/client"]),
-      forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+      allowedSpecifiers: new Set(["@effect-view-server/client"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
@@ -972,21 +999,21 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'import type { ViewServerLiveClient } from "@view-server/client";',
-          'import { makeViewServerClient } from "@view-server/client/remote/internal";',
+          'import type { ViewServerLiveClient } from "@effect-view-server/client";',
+          'import { makeViewServerClient } from "@effect-view-server/client/remote/internal";',
         ].join("\n"),
         relativePath: "src/index.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.tsx imports @view-server/client/remote/internal: View Server imports must use approved package exports.",
+      "src/index.tsx imports @effect-view-server/client/remote/internal: View Server imports must use approved package exports.",
     ]);
   });
 
   it("rejects approved subexports that are not explicitly allowed for a package", () => {
     const restriction = {
-      allowedSpecifiers: new Set(["@view-server/client"]),
-      forbiddenSpecifiers: new Set(["@view-server/client"]),
+      allowedSpecifiers: new Set(["@effect-view-server/client"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/client"]),
       message: "Server code may depend on client contracts only.",
       packageName: "server",
     };
@@ -994,30 +1021,30 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'import type { ViewServerLiveClient } from "@view-server/client";',
-          'import { makeViewServerClient } from "@view-server/client/remote";',
+          'import type { ViewServerLiveClient } from "@effect-view-server/client";',
+          'import { makeViewServerClient } from "@effect-view-server/client/remote";',
         ].join("\n"),
         relativePath: "src/index.ts",
         restriction,
       }),
     ).toStrictEqual([
-      "src/index.ts imports @view-server/client/remote: Server code may depend on client contracts only.",
+      "src/index.ts imports @effect-view-server/client/remote: Server code may depend on client contracts only.",
     ]);
   });
 
   it("allows intentionally carved testing entrypoints", () => {
     const restriction = {
       allowedRelativePathSpecifiers: new Map([
-        ["src/testing.tsx", new Set(["@view-server/in-memory"])],
+        ["src/testing.tsx", new Set(["@effect-view-server/in-memory"])],
       ]),
-      forbiddenSpecifiers: new Set(["@view-server/in-memory"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/in-memory"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'import { createInMemoryViewServer } from "@view-server/in-memory";',
+        contents: 'import { createInMemoryViewServer } from "@effect-view-server/in-memory";',
         relativePath: "src/testing.tsx",
         restriction,
       }),
@@ -1027,16 +1054,16 @@ describe("internal seam checker", () => {
   it("matches relative path carveouts across path separators", () => {
     const restriction = {
       allowedRelativePathSpecifiers: new Map([
-        ["src/testing.tsx", new Set(["@view-server/in-memory"])],
+        ["src/testing.tsx", new Set(["@effect-view-server/in-memory"])],
       ]),
-      forbiddenSpecifiers: new Set(["@view-server/in-memory"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/in-memory"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
 
     expect(
       packageImportViolationsFor({
-        contents: 'import { createInMemoryViewServer } from "@view-server/in-memory";',
+        contents: 'import { createInMemoryViewServer } from "@effect-view-server/in-memory";',
         relativePath: toPosixRelativePath("src\\testing.tsx"),
         restriction,
       }),
@@ -1046,9 +1073,9 @@ describe("internal seam checker", () => {
   it("does not allow testing entrypoint carveouts to hide unrelated forbidden packages", () => {
     const restriction = {
       allowedRelativePathSpecifiers: new Map([
-        ["src/testing.tsx", new Set(["@view-server/in-memory"])],
+        ["src/testing.tsx", new Set(["@effect-view-server/in-memory"])],
       ]),
-      forbiddenSpecifiers: new Set(["@view-server/in-memory", "@view-server/runtime"]),
+      forbiddenSpecifiers: new Set(["@effect-view-server/in-memory", "@effect-view-server/runtime"]),
       message: "React production must stay transport-neutral.",
       packageName: "react",
     };
@@ -1056,14 +1083,14 @@ describe("internal seam checker", () => {
     expect(
       packageImportViolationsFor({
         contents: [
-          'import { createInMemoryViewServer } from "@view-server/in-memory";',
-          'import { createViewServerRuntime } from "@view-server/runtime";',
+          'import { createInMemoryViewServer } from "@effect-view-server/in-memory";',
+          'import { createViewServerRuntime } from "@effect-view-server/runtime";',
         ].join("\n"),
         relativePath: "src/testing.tsx",
         restriction,
       }),
     ).toStrictEqual([
-      "src/testing.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "src/testing.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
@@ -1093,31 +1120,31 @@ describe("internal seam checker", () => {
       packageImportViolationsForFile({
         contents: [
           'import { local } from "./internal";',
-          'import { createViewServerRuntime } from "@view-server/runtime";',
+          'import { createViewServerRuntime } from "@effect-view-server/runtime";',
           'import { server } from "../../server/src/index";',
         ].join("\n"),
         packageRoot,
         path,
         restriction: {
-          allowedSpecifiers: new Set(["@view-server/client"]),
-          forbiddenSpecifiers: new Set(["@view-server/runtime"]),
+          allowedSpecifiers: new Set(["@effect-view-server/client"]),
+          forbiddenSpecifiers: new Set(["@effect-view-server/runtime"]),
           message: "React production must stay transport-neutral.",
           packageName: "react",
         },
       }),
     ).toStrictEqual([
       "packages/react/src/index.tsx imports ../../server/src/index: relative imports must not cross package seams.",
-      "packages/react/src/index.tsx imports @view-server/runtime: React production must stay transport-neutral.",
+      "packages/react/src/index.tsx imports @effect-view-server/runtime: React production must stay transport-neutral.",
     ]);
   });
 
   it("formats and throws package import violation summaries", () => {
-    const violations = ["packages/react/src/index.tsx imports @view-server/runtime: no"];
+    const violations = ["packages/react/src/index.tsx imports @effect-view-server/runtime: no"];
 
     expect(packageImportViolationMessage(violations)).toStrictEqual(
       [
         "Package architecture seam violations found.",
-        "- packages/react/src/index.tsx imports @view-server/runtime: no",
+        "- packages/react/src/index.tsx imports @effect-view-server/runtime: no",
       ].join("\n"),
     );
     expect(() => assertNoPackageImportViolations(violations)).toThrowError(
@@ -1134,7 +1161,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
-          name: "@view-server/example",
+          name: "@effect-view-server/example",
           exports: {
             ".": {
               import: "./dist/index.js",
@@ -1147,7 +1174,7 @@ describe("internal seam checker", () => {
           },
         }),
       ),
-    ).toStrictEqual(["@view-server/example", "@view-server/example/testing"]);
+    ).toStrictEqual(["@effect-view-server/example", "@effect-view-server/example/testing"]);
   });
 
   it("parses Vite+ libraryPack entrypoint declarations", () => {
@@ -1213,47 +1240,47 @@ describe("internal seam checker", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
-          name: "@view-server/client",
+          name: "@effect-view-server/client",
           exports: {
             import: "./dist/index.js",
             types: "./dist/index.d.ts",
           },
         }),
       ),
-    ).toStrictEqual(["@view-server/client"]);
+    ).toStrictEqual(["@effect-view-server/client"]);
   });
 
   it("collects types-only root conditional package export maps as the root specifier", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
-          name: "@view-server/client",
+          name: "@effect-view-server/client",
           exports: {
             types: "./dist/index.d.ts",
           },
         }),
       ),
-    ).toStrictEqual(["@view-server/client"]);
+    ).toStrictEqual(["@effect-view-server/client"]);
   });
 
   it("collects default-only root conditional package export maps as the root specifier", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
-          name: "@view-server/client",
+          name: "@effect-view-server/client",
           exports: {
             default: "./dist/index.js",
           },
         }),
       ),
-    ).toStrictEqual(["@view-server/client"]);
+    ).toStrictEqual(["@effect-view-server/client"]);
   });
 
   it("keeps non-subpath keys readable in mixed package export maps", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
-          name: "@view-server/example",
+          name: "@effect-view-server/example",
           exports: {
             ".": {
               import: "./dist/index.js",
@@ -1263,14 +1290,14 @@ describe("internal seam checker", () => {
           },
         }),
       ),
-    ).toStrictEqual(["@view-server/example", "@view-server/example/types"]);
+    ).toStrictEqual(["@effect-view-server/example", "@effect-view-server/example/types"]);
   });
 
   it("accepts root conditional package export maps for packed entries", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/client",
+          name: "@effect-view-server/client",
           exports: {
             import: "./dist/index.js",
             types: "./dist/index.d.ts",
@@ -1285,7 +1312,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               browser: ["./dist/testing.js", null],
@@ -1305,7 +1332,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: [null, "./dist/testing.js"],
@@ -1322,7 +1349,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": [
               {
@@ -1341,7 +1368,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               default: "./dist/testing.js",
@@ -1358,7 +1385,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               default: "./dist/testing.js",
@@ -1377,7 +1404,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/testing.js",
@@ -1394,7 +1421,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               node: {
@@ -1413,7 +1440,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": [
               {
@@ -1434,10 +1461,10 @@ describe("internal seam checker", () => {
       packageExportSpecifiersForManifest(
         JSON.stringify({
           exports: "./dist/index.js",
-          name: "@view-server/example",
+          name: "@effect-view-server/example",
         }),
       ),
-    ).toStrictEqual(["@view-server/example"]);
+    ).toStrictEqual(["@effect-view-server/example"]);
   });
 
   it("collects root fallback array package export maps as the root specifier", () => {
@@ -1445,17 +1472,17 @@ describe("internal seam checker", () => {
       packageExportSpecifiersForManifest(
         JSON.stringify({
           exports: ["./dist/index.js"],
-          name: "@view-server/example",
+          name: "@effect-view-server/example",
         }),
       ),
-    ).toStrictEqual(["@view-server/example"]);
+    ).toStrictEqual(["@effect-view-server/example"]);
   });
 
   it("ignores package export violations from unsupported top-level export shapes", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
         }),
         packageDirectoryName: "react",
       }),
@@ -1481,7 +1508,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportSpecifiersForManifest(
         JSON.stringify({
-          name: "@view-server/example",
+          name: "@effect-view-server/example",
           exports: {
             ".": "./dist/index.js",
             "./array": ["./dist/array.js"],
@@ -1489,14 +1516,14 @@ describe("internal seam checker", () => {
           },
         }),
       ),
-    ).toStrictEqual(["@view-server/example", "@view-server/example/array", "@view-server/example/null"]);
+    ).toStrictEqual(["@effect-view-server/example", "@effect-view-server/example/array", "@effect-view-server/example/null"]);
   });
 
   it("reports unsupported package export map targets", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./array": ["./dist/array.js"],
             "./null": null,
@@ -1505,10 +1532,10 @@ describe("internal seam checker", () => {
         packageDirectoryName: "react",
       }),
     ).toStrictEqual([
-      "packages/react/package.json exports @view-server/react/array: add intentional public specifier approval or remove the export.",
+      "packages/react/package.json exports @effect-view-server/react/array: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./array points at ./dist/array.js without a matching packed src entrypoint.",
       "packages/react/package.json export ./array has no types target.",
-      "packages/react/package.json exports @view-server/react/null: add intentional public specifier approval or remove the export.",
+      "packages/react/package.json exports @effect-view-server/react/null: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./null has no import target.",
     ]);
   });
@@ -1517,7 +1544,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./internal": "./dist/internal.js",
             "./missing": "./dist/missing.js",
@@ -1526,10 +1553,10 @@ describe("internal seam checker", () => {
         packageDirectoryName: "react",
       }),
     ).toStrictEqual([
-      "packages/react/package.json exports @view-server/react/internal: add intentional public specifier approval or remove the export.",
+      "packages/react/package.json exports @effect-view-server/react/internal: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./internal points at ./dist/internal.js without a matching packed src entrypoint.",
       "packages/react/package.json export ./internal has no types target.",
-      "packages/react/package.json exports @view-server/react/missing: add intentional public specifier approval or remove the export.",
+      "packages/react/package.json exports @effect-view-server/react/missing: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./missing points at ./dist/missing.js without a matching packed src entrypoint.",
       "packages/react/package.json export ./missing has no types target.",
     ]);
@@ -1539,7 +1566,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: "./dist/index.js",
         }),
         packageDirectoryName: "react",
@@ -1551,7 +1578,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: ["./dist/live-query-state.js"],
         }),
         packageDirectoryName: "react",
@@ -1566,7 +1593,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": [
               {
@@ -1584,7 +1611,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               types: {
@@ -1602,7 +1629,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./internal": {
               import: "./dist/internal.js",
@@ -1613,7 +1640,7 @@ describe("internal seam checker", () => {
         packageDirectoryName: "react",
       }),
     ).toStrictEqual([
-      "packages/react/package.json exports @view-server/react/internal: add intentional public specifier approval or remove the export.",
+      "packages/react/package.json exports @effect-view-server/react/internal: add intentional public specifier approval or remove the export.",
       "packages/react/package.json export ./internal points at ./dist/internal.js without a matching packed src entrypoint.",
       "packages/react/package.json export ./internal points at ./dist/internal.d.ts without a matching packed src entrypoint.",
     ]);
@@ -1641,7 +1668,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               types: "./dist/testing.d.ts",
@@ -1657,7 +1684,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/testing.js",
@@ -1673,7 +1700,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/missing.js",
@@ -1693,7 +1720,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: ["./dist/live-query-state.js"],
@@ -1713,7 +1740,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               browser: {
@@ -1739,7 +1766,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/client",
+          name: "@effect-view-server/client",
           exports: {
             ".": {
               import: "./dist/index.js",
@@ -1759,7 +1786,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./generated/testing.js",
@@ -1779,7 +1806,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/../src/testing.js",
@@ -1799,7 +1826,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/live-query-state.js",
@@ -1819,7 +1846,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/live-query-state.js",
@@ -1838,7 +1865,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/testing.js",
@@ -1857,7 +1884,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               browser: "./dist/index.js",
@@ -1877,7 +1904,7 @@ describe("internal seam checker", () => {
     expect(
       packageExportViolationsForManifest({
         manifestContents: JSON.stringify({
-          name: "@view-server/react",
+          name: "@effect-view-server/react",
           exports: {
             "./testing": {
               import: "./dist/testing.js",
@@ -1896,23 +1923,23 @@ describe("internal seam checker", () => {
   it("reports stale approved public package export specifiers", () => {
     expect(
       staleApprovedPackageExportViolations({
-        approvedSpecifiers: new Set(["@view-server/client", "@view-server/client/missing"]),
-        exportedSpecifiers: new Set(["@view-server/client"]),
+        approvedSpecifiers: new Set(["@effect-view-server/client", "@effect-view-server/client/missing"]),
+        exportedSpecifiers: new Set(["@effect-view-server/client"]),
       }),
     ).toStrictEqual([
-      "@view-server/client/missing is approved as public but is not exported by any package.json.",
+      "@effect-view-server/client/missing is approved as public but is not exported by any package.json.",
     ]);
   });
 
   it("formats and throws package export violation summaries", () => {
     const violations = [
-      "packages/react/package.json exports @view-server/react/internal: remove it.",
+      "packages/react/package.json exports @effect-view-server/react/internal: remove it.",
     ];
 
     expect(packageExportViolationMessage(violations)).toStrictEqual(
       [
         "Package public export violations found.",
-        "- packages/react/package.json exports @view-server/react/internal: remove it.",
+        "- packages/react/package.json exports @effect-view-server/react/internal: remove it.",
       ].join("\n"),
     );
     expect(() => assertNoPackageExportViolations(violations)).toThrowError(
@@ -1929,15 +1956,15 @@ describe("internal seam checker", () => {
     expect(
       sourceWithoutComments(
         [
-          'import { client } from "@view-server/client";',
-          '// import { runtime } from "@view-server/runtime";',
-          '/* import { server } from "@view-server/server"; */',
+          'import { client } from "@effect-view-server/client";',
+          '// import { runtime } from "@effect-view-server/runtime";',
+          '/* import { server } from "@effect-view-server/server"; */',
           'const example = "import from comment-like string";',
         ].join("\n"),
       ),
     ).toStrictEqual(
       [
-        'import { client } from "@view-server/client";',
+        'import { client } from "@effect-view-server/client";',
         "",
         "",
         'const example = "import from comment-like string";',
@@ -1949,14 +1976,14 @@ describe("internal seam checker", () => {
     expect(
       sourceWithoutComments(
         [
-          'const value = /\\\\//.test(path) && require("@view-server/runtime");',
+          'const value = /\\\\//.test(path) && require("@effect-view-server/runtime");',
           'const unfinished = /unterminated',
-          '// require("@view-server/server");',
+          '// require("@effect-view-server/server");',
         ].join("\n"),
       ),
     ).toStrictEqual(
       [
-        'const value = /\\\\//.test(path) && require("@view-server/runtime");',
+        'const value = /\\\\//.test(path) && require("@effect-view-server/runtime");',
         "const unfinished = /unterminated",
         "",
       ].join("\n"),
@@ -1970,13 +1997,13 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          'const message = "Do not import from \\"@view-server/runtime\\"";',
-          "const docs = `import { server } from \"@view-server/server\"`;",
-          'import { client } from "@view-server/client";',
-          "const runtime = import(`@view-server/runtime`);",
+          'const message = "Do not import from \\"@effect-view-server/runtime\\"";',
+          "const docs = `import { server } from \"@effect-view-server/server\"`;",
+          'import { client } from "@effect-view-server/client";',
+          "const runtime = import(`@effect-view-server/runtime`);",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/client", "@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/client", "@effect-view-server/runtime"]);
   });
 
   it("does not treat import-like JSX text as imports", () => {
@@ -1984,7 +2011,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return <p>Install from \"@view-server/runtime\" and import from \"@view-server/server\".</p>;",
+          "  return <p>Install from \"@effect-view-server/runtime\" and import from \"@effect-view-server/server\".</p>;",
           "}",
         ].join("\n"),
       ),
@@ -1996,7 +2023,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return <>Install from \"@view-server/runtime\" and import from \"@view-server/server\".</>;",
+          "  return <>Install from \"@effect-view-server/runtime\" and import from \"@effect-view-server/server\".</>;",
           "}",
         ].join("\n"),
       ),
@@ -2008,7 +2035,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return condition && <p>Install from \"@view-server/runtime\".</p>;",
+          "  return condition && <p>Install from \"@effect-view-server/runtime\".</p>;",
           "}",
         ].join("\n"),
       ),
@@ -2017,7 +2044,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return fallback || <>Install from \"@view-server/server\".</>;",
+          "  return fallback || <>Install from \"@effect-view-server/server\".</>;",
           "}",
         ].join("\n"),
       ),
@@ -2029,7 +2056,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return <_Panel>Install from \"@view-server/runtime\".</_Panel>;",
+          "  return <_Panel>Install from \"@effect-view-server/runtime\".</_Panel>;",
           "}",
         ].join("\n"),
       ),
@@ -2038,7 +2065,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return <$Panel>Install from \"@view-server/server\".</$Panel>;",
+          "  return <$Panel>Install from \"@effect-view-server/server\".</$Panel>;",
           "}",
         ].join("\n"),
       ),
@@ -2050,7 +2077,7 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function HelpText() {",
-          "  return <Panel><Icon />Install from \"@view-server/runtime\".</Panel>;",
+          "  return <Panel><Icon />Install from \"@effect-view-server/runtime\".</Panel>;",
           "}",
         ].join("\n"),
       ),
@@ -2064,10 +2091,10 @@ describe("internal seam checker", () => {
           "export function HelpText() {",
           "  return <p>/*</p>;",
           "}",
-          'const runtime = require("@view-server/runtime");',
+          'const runtime = require("@effect-view-server/runtime");',
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
   });
 
   it("does not strip code after JSX text that looks like a line comment", () => {
@@ -2077,10 +2104,10 @@ describe("internal seam checker", () => {
           "export function HelpText() {",
           "  return <p>//</p>;",
           "}",
-          'const runtime = require("@view-server/runtime");',
+          'const runtime = require("@effect-view-server/runtime");',
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
   });
 
   it("detects imports inside JSX expressions", () => {
@@ -2088,11 +2115,11 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function Loader() {",
-          "  return <Panel>{import(\"@view-server/runtime\")}</Panel>;",
+          "  return <Panel>{import(\"@effect-view-server/runtime\")}</Panel>;",
           "}",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
   });
 
   it("detects imports inside self-closing JSX expressions", () => {
@@ -2100,11 +2127,11 @@ describe("internal seam checker", () => {
       importSpecifiersFromSource(
         [
           "export function Loader() {",
-          "  return <Panel value={import(\"@view-server/runtime\")} />;",
+          "  return <Panel value={import(\"@effect-view-server/runtime\")} />;",
           "}",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
   });
 
   it("handles unfinished JSX tag expressions conservatively", () => {
@@ -2129,11 +2156,11 @@ describe("internal seam checker", () => {
     expect(
       importSpecifiersFromSource(
         [
-          "const text = `plain import { server } from \"@view-server/server\"`;",
-          "const runtime = `${await import(\"@view-server/runtime\")}`;",
+          "const text = `plain import { server } from \"@effect-view-server/server\"`;",
+          "const runtime = `${await import(\"@effect-view-server/runtime\")}`;",
         ].join("\n"),
       ),
-    ).toStrictEqual(["@view-server/runtime"]);
+    ).toStrictEqual(["@effect-view-server/runtime"]);
   });
 
   it("handles unfinished template literal expressions conservatively", () => {
@@ -2145,7 +2172,7 @@ describe("internal seam checker", () => {
   });
 
   it("ignores unterminated quoted import specifiers", () => {
-    expect(importSpecifiersFromSource('const broken = import("@view-server/runtime')).toStrictEqual(
+    expect(importSpecifiersFromSource('const broken = import("@effect-view-server/runtime')).toStrictEqual(
       [],
     );
   });

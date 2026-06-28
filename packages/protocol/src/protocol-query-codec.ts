@@ -1,4 +1,8 @@
-import type { TopicDefinitions, TopicRow, ViewServerRuntimeError } from "@view-server/config";
+import type {
+  TopicDefinitions,
+  TopicRow,
+  ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Effect } from "effect";
 import {
   viewServerDecodeGroupedQuery,

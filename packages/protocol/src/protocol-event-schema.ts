@@ -1,4 +1,4 @@
-import type { StatusEvent } from "@view-server/config";
+import type { StatusEvent } from "@effect-view-server/config";
 import { Schema } from "effect";
 
 export const ViewServerWireRowSchema: Schema.Codec<Schema.JsonObject> = Schema.Record(

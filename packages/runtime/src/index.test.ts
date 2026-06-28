@@ -2,9 +2,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
 import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import type { ColumnLiveViewEngineHealth } from "@view-server/column-live-view-engine";
-import { makeViewServerClient } from "@view-server/client/remote";
-import { ViewServerAuthError } from "@view-server/server";
+import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
+import { makeViewServerClient } from "@effect-view-server/client/remote";
+import { ViewServerAuthError } from "@effect-view-server/server";
 import {
   defineViewServerConfig,
   grpc,
@@ -13,9 +13,9 @@ import {
   type ViewServerHealth,
   type ViewServerRuntimeError,
   type ViewServerRuntimeClient,
-} from "@view-server/config";
-import { makeViewServerRuntimeCoreInternal } from "@view-server/runtime-core/internal";
-import type { ViewServerRuntimeCoreInternalLiveClient } from "@view-server/runtime-core/internal";
+} from "@effect-view-server/config";
+import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
+import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import {
   Cause,
@@ -1126,7 +1126,7 @@ const waitForLeasedGrpcSnapshotRows = Effect.fn(
   );
 });
 
-describe("@view-server/runtime", () => {
+describe("@effect-view-server/runtime", () => {
   it.live("starts a websocket runtime with health endpoint and runtime-core mutation client", () =>
     Effect.gen(function* () {
       const runtime = yield* makeViewServerRuntime(viewServer, {

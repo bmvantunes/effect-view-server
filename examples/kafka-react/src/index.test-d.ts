@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { LiveQueryResult } from "@view-server/config";
+import type { LiveQueryResult } from "@effect-view-server/config";
 import { kafkaTopics, useLiveQuery } from "./view-server.config";
 
 describe("kafka example type contracts", () => {

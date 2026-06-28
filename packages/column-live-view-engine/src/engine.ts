@@ -11,7 +11,7 @@ import type {
   RawQuery,
   TopicRow,
   ValidateLiveQuery,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect } from "effect";
 import type {
   ColumnLiveViewEngine,

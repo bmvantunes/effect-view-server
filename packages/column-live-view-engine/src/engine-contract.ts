@@ -17,7 +17,7 @@ import type {
   StringFieldKey,
   TopicRow,
   ValidateLiveQuery,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Effect, Schema, Stream } from "effect";
 import type { ColumnLiveViewEngineHealth } from "./engine-health";
 import type { ColumnLiveViewEngineError, EngineClosedError } from "./engine-errors";

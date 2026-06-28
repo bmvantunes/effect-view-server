@@ -3,8 +3,8 @@ import type {
   InvalidQueryError,
   InvalidRowError,
   InvalidTopicError,
-} from "@view-server/column-live-view-engine";
-import type { ViewServerRuntimeError } from "@view-server/config";
+} from "@effect-view-server/column-live-view-engine";
+import type { ViewServerRuntimeError } from "@effect-view-server/config";
 
 type EngineRuntimeError =
   | InvalidTopicError

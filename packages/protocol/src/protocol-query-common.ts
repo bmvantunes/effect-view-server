@@ -1,4 +1,8 @@
-import type { RowSchema, TopicDefinitions, ViewServerRuntimeError } from "@view-server/config";
+import type {
+  RowSchema,
+  TopicDefinitions,
+  ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { decodeFilterValue, encodeFilterValue } from "./protocol-field-filter-codec";
 import { ViewServerHealthQuerySchema } from "./protocol-query-schema";

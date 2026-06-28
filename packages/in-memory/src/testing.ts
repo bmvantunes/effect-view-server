@@ -1,14 +1,14 @@
-import type { ViewServerRuntimeLiveClient } from "@view-server/client";
+import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import type {
   ViewServerConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalInstance,
   type ViewServerRuntimeCoreInternalOptionsFor,
-} from "@view-server/runtime-core/internal";
+} from "@effect-view-server/runtime-core/internal";
 import { Effect } from "effect";
 import type { DecodableTopicDefinitions, ViewServerInMemoryOptions } from "./index";
 

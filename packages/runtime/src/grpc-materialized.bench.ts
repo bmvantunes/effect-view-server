@@ -3,7 +3,7 @@ import { afterAll, beforeAll, bench, describe } from "vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
 import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import { defineViewServerConfig, grpc, type ViewServerHealth } from "@view-server/config";
+import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
@@ -11,7 +11,7 @@ import { Clock, Config, Effect, Queue, Schedule, Schema, Stream } from "effect";
 import {
   makeViewServerRuntimeCore,
   type ViewServerRuntimeCoreInstance,
-} from "@view-server/runtime-core";
+} from "@effect-view-server/runtime-core";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcIngress, type ViewServerGrpcIngress } from "./grpc-ingress";
 

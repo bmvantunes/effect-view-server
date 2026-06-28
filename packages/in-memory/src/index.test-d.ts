@@ -1,6 +1,10 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { ViewServerLiveSubscription } from "@view-server/client";
-import { defineViewServerConfig, grpc, type ViewServerRuntimeError } from "@view-server/config";
+import type { ViewServerLiveSubscription } from "@effect-view-server/client";
+import {
+  defineViewServerConfig,
+  grpc,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import type { Effect } from "effect";
 import { Schema } from "effect";
 import { createInMemoryViewServer } from "./index";

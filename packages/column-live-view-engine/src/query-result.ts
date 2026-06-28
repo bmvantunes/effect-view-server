@@ -3,7 +3,7 @@ import type {
   DeltaOperation,
   LiveQueryResult,
   SnapshotEvent,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { cloneRow, rowsEqual } from "./row-values";
 
 type RowObject = object;

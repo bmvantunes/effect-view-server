@@ -6,7 +6,7 @@ import {
   type LiveQueryResult,
   type RawQuery,
   type SnapshotEvent,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Effect, Stream } from "effect";
 import type { BigDecimal } from "effect/BigDecimal";
 import { Schema } from "effect";

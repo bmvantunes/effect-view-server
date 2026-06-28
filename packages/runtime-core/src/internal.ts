@@ -1,16 +1,16 @@
 import {
   type DecodableTopicDefinitions,
   type GroupedIncrementalAdmissionLimits,
-} from "@view-server/column-live-view-engine";
-import { createColumnLiveViewEngineInternal } from "@view-server/column-live-view-engine/internal";
+} from "@effect-view-server/column-live-view-engine";
+import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   ViewServerConfig,
   ViewServerHealth,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
-} from "@view-server/config";
-import type { ViewServerRuntimeLiveClient } from "@view-server/client";
-import { runAllFinalizers } from "@view-server/effect-utils";
+} from "@effect-view-server/config";
+import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
+import { runAllFinalizers } from "@effect-view-server/effect-utils";
 import { Clock, Effect, type Duration } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {

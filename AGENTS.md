@@ -66,9 +66,9 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 - React components in tests and examples should be `function Component() { ... }`, not arrow component constants.
 - Production React must be transport-agnostic. Hooks consume a provider/client seam; hooks must not know whether the backend is in-memory, RPC, WebSocket, HTTP, or something else.
-- `@view-server/react` production code must not depend on `@view-server/in-memory`.
+- `@effect-view-server/react` production code must not depend on `@effect-view-server/in-memory`.
 - In-memory behavior must use the same shared runtime core and Column Live View Engine as production. Only transport/ingress Adapters may differ.
-- In-memory React helpers belong under `@view-server/react/testing`.
+- In-memory React helpers belong under `@effect-view-server/react/testing`.
 - Provider ownership must be explicit. Generic providers receiving caller-owned clients must not close those clients. Testing/in-memory providers that create clients may own cleanup.
 - Do not use `useEffect` for Effect runtime integration when `@effect/atom-react` / Effect reactivity primitives are the right fit.
 - Do not use `act`, `flushSync`, manual `react-dom/client`, Testing Library, `getByTestId`, or `data-testid`.
@@ -141,7 +141,7 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
   - in-memory: in-process Adapter over runtime-core for tests, demos, Storybook, and browser benchmarks.
   - runtime: production composition of runtime-core plus server and future Kafka/TCP/gRPC ingress Adapters.
 - Do not make production packages depend on testing packages or in-memory implementations.
-- Package export checks must cover approved root exports, approved subexports, and rejected deep/internal subpaths. A package seam is not enforced if `@view-server/package/src/...`, `@view-server/package/dist/...`, or unapproved nested subexports can resolve.
+- Package export checks must cover approved root exports, approved subexports, and rejected deep/internal subpaths. A package seam is not enforced if `@effect-view-server/package/src/...`, `@effect-view-server/package/dist/...`, or unapproved nested subexports can resolve.
 
 ## Common Blockers
 

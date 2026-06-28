@@ -1,7 +1,7 @@
 import { NodeSocket } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import type { ViewServerLiveEvent, ViewServerRuntimeLiveClient } from "@view-server/client";
-import { makeViewServerClient } from "@view-server/client/remote";
+import type { ViewServerLiveEvent, ViewServerRuntimeLiveClient } from "@effect-view-server/client";
+import { makeViewServerClient } from "@effect-view-server/client/remote";
 import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_TOPIC,
@@ -10,14 +10,14 @@ import {
   type ViewServerHealth,
   type ViewServerRuntimeError,
   type ViewServerTransportError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import {
   ViewServerHealthSchema,
   ViewServerRpcErrorSchema,
   ViewServerRpcs,
-} from "@view-server/protocol";
-import { makeViewServerRuntimeCore } from "@view-server/runtime-core";
-import { makeViewServerRuntimeCoreInternal } from "@view-server/runtime-core/internal";
+} from "@effect-view-server/protocol";
+import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
+import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import {
   Context,
   Cause,
@@ -390,7 +390,7 @@ const openRawWebSocket = Effect.fn("ViewServerServer.test.websocket.raw.open")(f
   );
 });
 
-describe("@view-server/server", () => {
+describe("@effect-view-server/server", () => {
   it.live("serves an in-memory runtime through Effect RPC WebSocket", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);

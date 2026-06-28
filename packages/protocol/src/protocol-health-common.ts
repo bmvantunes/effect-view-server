@@ -1,4 +1,8 @@
-import type { StatusEvent, TopicDefinitions, ViewServerRuntimeError } from "@view-server/config";
+import type {
+  StatusEvent,
+  TopicDefinitions,
+  ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Effect } from "effect";
 import type {
   ViewServerProtocolEvent as _ViewServerProtocolEvent,

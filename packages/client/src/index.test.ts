@@ -12,7 +12,7 @@ import {
   type ClientState,
 } from "./index";
 
-describe("@view-server/client", () => {
+describe("@effect-view-server/client", () => {
   it("applies snapshot, delta, and status events", () => {
     const snapshotState = applyEvent(initialClientState<{ readonly id: string }>(), {
       type: "snapshot",

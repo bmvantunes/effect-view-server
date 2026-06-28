@@ -1,4 +1,4 @@
-import type { DeltaEvent, SnapshotEvent, StatusEvent } from "@view-server/config";
+import type { DeltaEvent, SnapshotEvent, StatusEvent } from "@effect-view-server/config";
 import { Cause, Effect, Option, Queue, Stream } from "effect";
 import type { LiveQueryExecution } from "./active-query";
 import type { TopicStore, TopicStoreSubscriptionPermit } from "./topic-store";

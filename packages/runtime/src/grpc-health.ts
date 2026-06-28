@@ -3,7 +3,7 @@ import type {
   GrpcFeedHealth,
   GrpcTopicFeedsHealth,
   ViewServerHealth,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect } from "effect";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 

@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@view-server/config";
-import type { ViewServerRuntimeError, ViewServerTransportError } from "@view-server/config";
+import { defineViewServerConfig } from "@effect-view-server/config";
+import type { ViewServerRuntimeError, ViewServerTransportError } from "@effect-view-server/config";
 import type { Effect } from "effect";
 import { Schema } from "effect";
 import type { ViewServerLiveSubscription } from "./index";

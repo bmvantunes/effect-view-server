@@ -5,8 +5,8 @@ TanStack Start app showing the current SSR-safe contract.
 Run:
 
 ```bash
-vp run @view-server/example-ssr-react#build
-vp run @view-server/example-ssr-react#dev
+vp run @effect-view-server/example-ssr-react#build
+vp run @effect-view-server/example-ssr-react#dev
 ```
 
 The shell runs without a View Server runtime. To try the optional live panel, start a compatible

@@ -6,8 +6,8 @@ Run:
 
 ```bash
 docker compose up -d kafka
-vp run @view-server/example-kafka-react#runtime
-vp run @view-server/example-kafka-react#dev
+vp run @effect-view-server/example-kafka-react#runtime
+vp run @effect-view-server/example-kafka-react#dev
 ```
 
 This example demonstrates:

@@ -23,7 +23,7 @@ Node entrypoints should use `@effect/platform-node`'s `NodeRuntime.runMain` so
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { viewServer } from "./view-server-config";
 
 NodeRuntime.runMain(
@@ -59,7 +59,7 @@ feed keys remain in `GET /health`. Scrape failures that cannot decode health ret
 Browser React code keeps using the normal provider and hooks:
 
 ```tsx
-import { createViewServerReact } from "@view-server/react";
+import { createViewServerReact } from "@effect-view-server/react";
 import { viewServer } from "./view-server-config";
 
 const react = createViewServerReact(viewServer);

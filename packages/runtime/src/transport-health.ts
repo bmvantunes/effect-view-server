@@ -1,4 +1,4 @@
-import type { RuntimeCoreTransportHealth } from "@view-server/runtime-core";
+import type { RuntimeCoreTransportHealth } from "@effect-view-server/runtime-core";
 import { Effect } from "effect";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 

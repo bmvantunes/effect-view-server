@@ -1,4 +1,17 @@
 import { useLiveQuery, useViewServerHealthSummary, ViewServerProvider } from "./view-server.config";
+import { useSyncExternalStore } from "react";
+
+const subscribeToBrowserReady = (notify: () => void) => {
+  queueMicrotask(notify);
+  return () => undefined;
+};
+
+const browserSnapshot = () => true;
+const serverSnapshot = () => false;
+
+function useBrowserReady() {
+  return useSyncExternalStore(subscribeToBrowserReady, browserSnapshot, serverSnapshot);
+}
 
 export function SsrExampleApp() {
   return (
@@ -17,7 +30,9 @@ export function SsrExampleApp() {
 }
 
 function ClientOnlyLivePanel() {
-  if (globalThis.document === undefined) {
+  const isBrowserReady = useBrowserReady();
+
+  if (!isBrowserReady) {
     return (
       <section className="panel" aria-label="ssr placeholder">
         <h2>Live data</h2>

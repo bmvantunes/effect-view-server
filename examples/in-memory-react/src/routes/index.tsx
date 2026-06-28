@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect } from "effect";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { InMemoryExampleApp, createInMemoryExample } from "../view-server.example";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -9,9 +9,11 @@ const inMemoryExample = createInMemoryExample();
 
 function Home() {
   const [publishedCount, setPublishedCount] = useState(0);
+  const nextOrderIndex = useRef(0);
 
   const publishOrder = async () => {
-    const next = publishedCount + 1;
+    const next = nextOrderIndex.current + 1;
+    nextOrderIndex.current = next;
     await Effect.runPromise(
       inMemoryExample.client.publish("orders", {
         id: `order-${next}`,
@@ -22,7 +24,7 @@ function Home() {
         updatedAt: next,
       }),
     );
-    setPublishedCount(next);
+    setPublishedCount((count) => Math.max(count, next));
   };
 
   return (

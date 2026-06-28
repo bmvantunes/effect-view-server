@@ -38,6 +38,22 @@ import * as reactPackage from "@effect-view-server/react";
 import * as reactTestingPackage from "@effect-view-server/react/testing";
 import * as runtimeRootPackage from "@effect-view-server/runtime";
 import * as serverPackage from "@effect-view-server/server";
+import * as publicClientPackage from "effect-view-server/client";
+import * as publicClientRemotePackage from "effect-view-server/client/remote";
+import * as publicConfigPackage from "effect-view-server/config";
+import * as publicConfigGrpcPackage from "effect-view-server/config/grpc";
+import * as publicConfigHealthPackage from "effect-view-server/config/health";
+import * as publicConfigKafkaPackage from "effect-view-server/config/kafka";
+import * as publicConfigLiveProtocolPackage from "effect-view-server/config/live-protocol";
+import * as publicConfigQueryPackage from "effect-view-server/config/query";
+import * as publicConfigRuntimePackage from "effect-view-server/config/runtime";
+import * as publicEnginePackage from "effect-view-server/column-live-view-engine";
+import * as publicInMemoryPackage from "effect-view-server/in-memory";
+import * as publicInMemoryTestingPackage from "effect-view-server/in-memory/testing";
+import * as publicReactPackage from "effect-view-server/react";
+import * as publicReactTestingPackage from "effect-view-server/react/testing";
+import * as publicRuntimePackage from "effect-view-server/runtime";
+import * as publicServerPackage from "effect-view-server/server";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const packagesRoot = join(repoRoot, "packages");
@@ -111,12 +127,28 @@ const approvedPackageExports = [
   "@effect-view-server/runtime-core",
   "@effect-view-server/runtime-core/internal",
   "@effect-view-server/server",
+  "effect-view-server/client",
+  "effect-view-server/client/remote",
+  "effect-view-server/column-live-view-engine",
+  "effect-view-server/config",
+  "effect-view-server/config/grpc",
+  "effect-view-server/config/health",
+  "effect-view-server/config/kafka",
+  "effect-view-server/config/live-protocol",
+  "effect-view-server/config/query",
+  "effect-view-server/config/runtime",
+  "effect-view-server/in-memory",
+  "effect-view-server/in-memory/testing",
+  "effect-view-server/react",
+  "effect-view-server/react/testing",
+  "effect-view-server/runtime",
+  "effect-view-server/server",
 ].sort();
 
 const staleViewServerScope = "@view" + "-server";
-const stalePackageExports = approvedPackageExports.map((specifier) =>
-  specifier.replace("@effect-view-server", staleViewServerScope),
-);
+const stalePackageExports = approvedPackageExports
+  .filter((specifier) => specifier.startsWith("@effect-view-server"))
+  .map((specifier) => specifier.replace("@effect-view-server", staleViewServerScope));
 
 const describeSpecifiers = (specifiers: ReadonlyArray<string>): string =>
   specifiers.map((specifier) => `- ${specifier}`).join("\n");
@@ -173,6 +205,29 @@ const requireResolvablePackageExport = (specifier: string) => {
     throw new Error(`${specifier} should resolve as a public package export`, { cause: error });
   }
 };
+
+const publicPackageDistRoot = join(packagesRoot, "effect-view-server", "dist");
+
+const distFiles = (directory: string): ReadonlyArray<string> =>
+  readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return distFiles(path);
+    }
+    return entry.isFile() && (entry.name.endsWith(".js") || entry.name.endsWith(".d.ts"))
+      ? [path]
+      : [];
+  });
+
+const internalViewServerImportPattern =
+  /\b(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']@effect-view-server(?:\/[^"']*)?["']|\bimport\s*\(\s*["']@effect-view-server(?:\/[^"']*)?["']\s*\)/;
+
+const publicPackageInternalImportViolations = (): ReadonlyArray<string> =>
+  distFiles(publicPackageDistRoot).flatMap((path) =>
+    internalViewServerImportPattern.test(readFileSync(path, "utf8"))
+      ? [`${path.slice(repoRoot.length + 1)} imports internal @effect-view-server/* packages.`]
+      : [],
+  );
 
 const rejectResolvablePackageExport = (specifier: string) => {
   const unexpectedMessage = `${specifier} unexpectedly resolves as a public package export`;
@@ -261,6 +316,16 @@ for (const specifier of stalePackageExports) {
 
 for (const specifier of forbiddenPackageDeepImports) {
   rejectResolvablePackageExport(specifier);
+}
+
+const internalImportViolations = publicPackageInternalImportViolations();
+if (internalImportViolations.length > 0) {
+  throw new Error(
+    [
+      "Public effect-view-server package must not emit imports to internal workspace packages.",
+      ...internalImportViolations.map((violation) => `- ${violation}`),
+    ].join("\n"),
+  );
 }
 
 requireExport("@effect-view-server/config", configPackage, "defineViewServerConfig");
@@ -356,6 +421,78 @@ requireExport("@effect-view-server/runtime", runtimeRootPackage, "createViewServ
 requireExport("@effect-view-server/runtime", runtimeRootPackage, "runViewServerRuntime");
 requireExport("@effect-view-server/server", serverPackage, "makeViewServerWebSocketServer");
 requireExport("@effect-view-server/server", serverPackage, "createViewServerWebSocketServer");
+
+requireExport("effect-view-server/config", publicConfigPackage, "defineViewServerConfig");
+requireExport("effect-view-server/config", publicConfigPackage, "defineKafkaTopic");
+requireExport("effect-view-server/config", publicConfigPackage, "defineGrpcFeed");
+requireExport("effect-view-server/config", publicConfigPackage, "grpc");
+requireExport("effect-view-server/config", publicConfigPackage, "kafka");
+requireModule("effect-view-server/config/query", publicConfigQueryPackage);
+requireModule("effect-view-server/config/grpc", publicConfigGrpcPackage);
+requireModule("effect-view-server/config/health", publicConfigHealthPackage);
+requireModule("effect-view-server/config/live-protocol", publicConfigLiveProtocolPackage);
+rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "grpc");
+rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "defineGrpcFeed");
+rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "GrpcTopicSource");
+rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "GrpcLeasedTopicSource");
+requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "defineKafkaTopic");
+requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "kafka");
+requireExport("effect-view-server/config/grpc", publicConfigGrpcPackage, "grpc");
+requireExport("effect-view-server/config/grpc", publicConfigGrpcPackage, "defineGrpcFeed");
+requireExport("effect-view-server/config/runtime", publicConfigRuntimePackage, "runtimeConfig");
+requireExport(
+  "effect-view-server/config/runtime",
+  publicConfigRuntimePackage,
+  "runtimeEnvironmentConfig",
+);
+requireExport("effect-view-server/client", publicClientPackage, "stableQueryKey");
+requireExport("effect-view-server/client", publicClientPackage, "applyEvent");
+rejectExport("effect-view-server/client", publicClientPackage, "makeViewServerClient");
+rejectExport("effect-view-server/client", publicClientPackage, "createViewServerClient");
+rejectExport("effect-view-server/client", publicClientPackage, "ViewServerRpcs");
+requireExport("effect-view-server/client/remote", publicClientRemotePackage, "makeViewServerClient");
+requireExport(
+  "effect-view-server/client/remote",
+  publicClientRemotePackage,
+  "createViewServerClient",
+);
+requireExport(
+  "effect-view-server/column-live-view-engine",
+  publicEnginePackage,
+  "createColumnLiveViewEngine",
+);
+requireExport(
+  "effect-view-server/column-live-view-engine",
+  publicEnginePackage,
+  "InvalidTopicError",
+);
+rejectExport(
+  "effect-view-server/column-live-view-engine",
+  publicEnginePackage,
+  "createColumnLiveViewEngineInternal",
+);
+requireExport("effect-view-server/in-memory", publicInMemoryPackage, "createInMemoryViewServer");
+requireExport("effect-view-server/in-memory", publicInMemoryPackage, "makeInMemoryViewServer");
+requireExport(
+  "effect-view-server/in-memory/testing",
+  publicInMemoryTestingPackage,
+  "createInMemoryViewServerTesting",
+);
+requireExport(
+  "effect-view-server/in-memory/testing",
+  publicInMemoryTestingPackage,
+  "makeInMemoryViewServerTesting",
+);
+rejectExport("effect-view-server/in-memory", publicInMemoryPackage, "createInMemoryViewServerTesting");
+rejectExport("effect-view-server/in-memory", publicInMemoryPackage, "makeInMemoryViewServerTesting");
+requireExport("effect-view-server/react", publicReactPackage, "createViewServerReact");
+rejectExport("effect-view-server/react", publicReactPackage, "createInMemoryViewServerReact");
+requireExport("effect-view-server/react/testing", publicReactTestingPackage, "createInMemoryViewServerReact");
+requireExport("effect-view-server/runtime", publicRuntimePackage, "makeViewServerRuntime");
+requireExport("effect-view-server/runtime", publicRuntimePackage, "createViewServerRuntime");
+requireExport("effect-view-server/runtime", publicRuntimePackage, "runViewServerRuntime");
+requireExport("effect-view-server/server", publicServerPackage, "makeViewServerWebSocketServer");
+requireExport("effect-view-server/server", publicServerPackage, "createViewServerWebSocketServer");
 
 const _clientType: ViewServerLiveClient<Record<string, never>> | undefined = undefined;
 const _engineType: ColumnLiveViewEngine<Record<string, never>> | undefined = undefined;

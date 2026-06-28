@@ -71,6 +71,7 @@ type RestrictedPackageImport = {
 
 const currentViewServerScope = "@effect-view-server";
 const staleViewServerScope = "@view" + "-server";
+const publicViewServerPackage = "effect-view-server";
 
 const isCurrentViewServerSpecifier = (specifier: string): boolean =>
   specifier === currentViewServerScope || specifier.startsWith(`${currentViewServerScope}/`);
@@ -78,8 +79,13 @@ const isCurrentViewServerSpecifier = (specifier: string): boolean =>
 const isStaleViewServerSpecifier = (specifier: string): boolean =>
   specifier === staleViewServerScope || specifier.startsWith(`${staleViewServerScope}/`);
 
+const isPublicViewServerSpecifier = (specifier: string): boolean =>
+  specifier === publicViewServerPackage || specifier.startsWith(`${publicViewServerPackage}/`);
+
 const isViewServerSpecifier = (specifier: string): boolean =>
-  isCurrentViewServerSpecifier(specifier) || isStaleViewServerSpecifier(specifier);
+  isCurrentViewServerSpecifier(specifier) ||
+  isStaleViewServerSpecifier(specifier) ||
+  isPublicViewServerSpecifier(specifier);
 
 const previousNonWhitespaceCharacter = (contents: string, index: number): string | undefined => {
   let nextIndex = index;
@@ -1478,6 +1484,12 @@ export const packageImportViolationsFor = ({
       ];
     }
 
+    if (isPublicViewServerSpecifier(specifier)) {
+      return [
+        `${relativePath} imports ${specifier}: public effect-view-server facade is for consumers; internal packages must import ${currentViewServerScope}/* workspace packages.`,
+      ];
+    }
+
     if (!approvedPublicViewServerSpecifiers.has(specifier)) {
       return [
         `${relativePath} imports ${specifier}: View Server imports must use approved package exports.`,
@@ -1531,6 +1543,22 @@ const approvedPublicViewServerSpecifiers = new Set([
   "@effect-view-server/runtime-core",
   "@effect-view-server/runtime-core/internal",
   "@effect-view-server/server",
+  "effect-view-server/client",
+  "effect-view-server/client/remote",
+  "effect-view-server/column-live-view-engine",
+  "effect-view-server/config",
+  "effect-view-server/config/grpc",
+  "effect-view-server/config/health",
+  "effect-view-server/config/kafka",
+  "effect-view-server/config/live-protocol",
+  "effect-view-server/config/query",
+  "effect-view-server/config/runtime",
+  "effect-view-server/in-memory",
+  "effect-view-server/in-memory/testing",
+  "effect-view-server/react",
+  "effect-view-server/react/testing",
+  "effect-view-server/runtime",
+  "effect-view-server/server",
 ]);
 
 type PackageExportConditionTarget = {
@@ -1941,6 +1969,7 @@ const viewServerPackageDirectories = [
   "column-live-view-engine",
   "config",
   "effect-utils",
+  "effect-view-server",
   "in-memory",
   "protocol",
   "react",

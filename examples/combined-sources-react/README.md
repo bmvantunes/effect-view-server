@@ -7,8 +7,8 @@ Run:
 
 ```bash
 docker compose up -d kafka
-vp run @effect-view-server/example-combined-sources-react#runtime
-vp run @effect-view-server/example-combined-sources-react#dev
+vp run -view-server/example-combined-sources-react#runtime
+vp run -view-server/example-combined-sources-react#dev
 ```
 
 This example demonstrates:

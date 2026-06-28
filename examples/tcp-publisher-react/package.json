@@ -10,28 +10,25 @@
     "dev": "vp dev --port 3006",
     "clean-routes": "node ../../scripts/clean-tanstack-route-tree.mjs src/routeTree.gen.ts && vp check --fix src/routeTree.gen.ts",
     "generate-routes": "vp exec tsr generate && vp run clean-routes",
-    "runtime": "vp run -t @effect-view-server/react#build && vp run -t @effect-view-server/runtime#build && vp exec tsx src/runtime.ts",
+    "runtime": "vp run -t effect-view-server#build && vp exec tsx src/runtime.ts",
     "publisher": "vp exec tsx src/tcp-publisher.ts",
     "publisher:invalid": "vp exec tsx src/tcp-invalid-publisher.ts",
-    "build": "vp run -t @effect-view-server/react#build && vp run -t @effect-view-server/runtime#build && vp run generate-routes && vp build && vp run clean-routes",
+    "build": "vp run -t effect-view-server#build && vp run generate-routes && vp build && vp run clean-routes",
     "preview": "vp preview",
-    "test": "vp run -t @effect-view-server/react#build && vp run -t @effect-view-server/runtime#build && vp run generate-routes && vp test run --typecheck.enabled=false && vp test run --browser.enabled=false --typecheck && vp run clean-routes"
+    "test": "vp run -t effect-view-server#build && vp run generate-routes && vp test run --typecheck.enabled=false && vp test run --browser.enabled=false --typecheck && vp run clean-routes"
   },
   "dependencies": {
-    "@effect-view-server/config": "workspace:*",
-    "@effect-view-server/react": "workspace:*",
-    "@effect-view-server/runtime": "workspace:*",
     "@effect/platform-node": "catalog:",
     "@tanstack/react-router": "catalog:",
     "@tanstack/react-start": "catalog:",
     "@tanstack/router-plugin": "catalog:",
     "effect": "catalog:",
+    "effect-view-server": "workspace:*",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "tailwindcss": "catalog:"
   },
   "devDependencies": {
-    "@effect-view-server/in-memory": "workspace:*",
     "@effect/vitest": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-cli": "catalog:",

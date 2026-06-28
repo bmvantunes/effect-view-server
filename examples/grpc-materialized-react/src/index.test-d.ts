@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { LiveQueryResult } from "@effect-view-server/config";
+import type { LiveQueryResult } from "effect-view-server/config";
 import { grpcClients, useLiveQuery } from "./view-server.config";
 
 describe("materialized gRPC example type contracts", () => {

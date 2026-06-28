@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { LiveQueryResult } from "@effect-view-server/config";
-import type { ViewServerInMemoryProviderProps } from "@effect-view-server/react/testing";
+import type { LiveQueryResult } from "effect-view-server/config";
+import type { ViewServerInMemoryProviderProps } from "effect-view-server/react/testing";
 import { createInMemoryExample } from "./view-server.example";
 import { useLiveQuery } from "./view-server.config";
 

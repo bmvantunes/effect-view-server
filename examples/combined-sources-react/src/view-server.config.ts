@@ -1,5 +1,5 @@
-import { defineViewServerConfig, grpc, kafka } from "@effect-view-server/config";
-import { createViewServerReact } from "@effect-view-server/react";
+import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
+import { createViewServerReact } from "effect-view-server/react";
 import { Schema } from "effect";
 import { combinedService } from "./grpc-descriptors";
 

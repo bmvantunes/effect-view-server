@@ -142,6 +142,8 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
   - runtime: production composition of runtime-core plus server and future Kafka/TCP/gRPC ingress Adapters.
 - Do not make production packages depend on testing packages or in-memory implementations.
 - Package export checks must cover approved root exports, approved subexports, and rejected deep/internal subpaths. A package seam is not enforced if `@effect-view-server/package/src/...`, `@effect-view-server/package/dist/...`, or unapproved nested subexports can resolve.
+- Consumer docs, examples, and application code must import the publishable package subpaths (`effect-view-server/config`, `effect-view-server/react`, etc.). The `@effect-view-server/*` workspace packages are internal implementation packages and should appear only in workspace package manifests, internal package source, build scripts, and seam tests.
+- The publishable `effect-view-server` package must not emit runtime `.js` or `.d.ts` imports to internal `@effect-view-server/*` packages. Build or export checks must fail if the facade leaks internal workspace package specifiers.
 
 ## Common Blockers
 

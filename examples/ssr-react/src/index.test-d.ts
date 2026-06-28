@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { LiveQueryResult } from "@effect-view-server/config";
+import type { LiveQueryResult } from "effect-view-server/config";
 import type { ReactNode } from "react";
 import { SsrExampleApp } from "./view-server.example";
 import { useLiveQuery } from "./view-server.config";

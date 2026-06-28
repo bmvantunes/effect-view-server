@@ -4,7 +4,7 @@ import type {
   LiveQueryResult,
   RawQuery,
   TopicRow,
-} from "@effect-view-server/config";
+} from "effect-view-server/config";
 import { grpcClients, useLiveQuery, viewServer } from "./view-server.config";
 
 describe("leased gRPC example type contracts", () => {

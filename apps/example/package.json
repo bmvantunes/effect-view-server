@@ -4,18 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vp run -t @effect-view-server/react#build && vp build",
-    "test": "vp run -t @effect-view-server/react#build && vp test run --coverage --typecheck"
+    "build": "vp run -t effect-view-server#build && vp build",
+    "test": "vp run -t effect-view-server#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
-    "@effect-view-server/config": "workspace:*",
-    "@effect-view-server/react": "workspace:*",
     "effect": "catalog:",
+    "effect-view-server": "workspace:*",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@effect-view-server/in-memory": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",

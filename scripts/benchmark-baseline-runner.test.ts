@@ -330,7 +330,8 @@ describe("benchmark baseline runner", () => {
       rawReadWrite: "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write",
       rawReadWriteUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write --update-baseline",
-      release: "node scripts/run-benchmark-baseline.mjs --profile=release --no-compare",
+      release:
+        "NODE_OPTIONS=--max-old-space-size=12288 node scripts/run-benchmark-baseline.mjs --profile=release --no-compare",
       webSocketFirehose: "node scripts/run-benchmark-baseline.mjs --profile=websocket-firehose",
       webSocketFirehoseUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=websocket-firehose --update-baseline",
@@ -381,6 +382,18 @@ describe("benchmark baseline runner", () => {
       "pnpm run bench:baseline:grpc-materialized",
       "pnpm run bench:baseline:grpc-leased",
       "pnpm run bench:baseline:grpc-leased-retained",
+    ]);
+  });
+
+  it("keeps the release-candidate capacity gate serial and complete", () => {
+    const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+
+    expect(scripts["release-candidate:capacity"].split(" && ")).toStrictEqual([
+      "pnpm run examples:test",
+      "pnpm run examples:build",
+      "pnpm run pre-grpc:gate",
+      "pnpm run grpc:gate",
+      "pnpm run bench:baseline:release",
     ]);
   });
 

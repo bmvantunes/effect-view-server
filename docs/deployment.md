@@ -34,6 +34,11 @@ otherwise probes can receive auth failures instead of runtime health. Use
 Kafka and gRPC credentials, broker addresses, and base URLs should be loaded
 through Effect `Config`. Missing required values should fail startup.
 
+The current supported deployment model is one active View Server runtime per
+logical deployment. Give each deployment a unique Kafka consumer group id. Kafka
+multi-replica rebalance/revoke handoff is intentionally out of scope for the
+current milestone.
+
 ## Network Surface
 
 - Browser clients connect through Effect RPC WebSocket with NDJSON.
@@ -60,10 +65,9 @@ authoritative source:
 Before promoting a runtime build, run:
 
 ```sh
-pnpm run ready
-pnpm run pre-grpc:gate
-pnpm run grpc:gate
+pnpm run release-candidate:capacity
 ```
 
-The gates cover build, package seam checks, strict Effect diagnostics, tests,
-coverage, and benchmark baseline profiles.
+The gate covers examples, build, package seam checks, strict Effect diagnostics,
+tests, coverage, and benchmark baseline profiles. See
+[Operations](./operations.md) for Prometheus, probe, and resource guidance.

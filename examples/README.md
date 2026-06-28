@@ -14,6 +14,7 @@ code.
 | [`combined-sources-react`](./combined-sources-react)   | Kafka + gRPC                 | server runtime       | Production-shaped app with Kafka, leased gRPC, and materialized gRPC together. |
 | [`tcp-publisher-react`](./tcp-publisher-react)         | external TCP                 | server runtime       | Non-browser publisher pushing rows into schema-safe TCP ingress.               |
 | [`ssr-react`](./ssr-react)                             | optional WebSocket live data | TanStack Start SSR   | Server-rendered shell with browser-only live query hydration.                  |
+| [`production-deployment`](./production-deployment)     | deployment recipe            | server runtime       | K8s, Prometheus, runtime config, and browser URL injection guidance.           |
 
 ## Commands
 

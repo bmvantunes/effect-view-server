@@ -24,6 +24,21 @@ pnpm run bench:baseline:grpc-leased-retained
 Use `pnpm run pre-grpc:gate` before gRPC-focused work and `pnpm run grpc:gate`
 for the gRPC profiles.
 
+For a release-candidate capacity pass, run:
+
+```sh
+pnpm run release-candidate:capacity
+```
+
+This runs example browser/type checks, example builds, `pre-grpc:gate`,
+`grpc:gate`, and the broad no-compare `bench:baseline:release` profile
+serially. Do not run competing benchmark suites in parallel when recording
+release-candidate numbers.
+
+The release profile runs 10M-row engine cases and sets
+`NODE_OPTIONS=--max-old-space-size=12288` so the benchmark process is not
+limited by Node's default old-space cap.
+
 ## What To Measure
 
 Read optimizations must measure write cost. For example, adding a column vector
@@ -48,3 +63,22 @@ Benchmark artifacts are written under package-local `.artifacts/` directories.
 Stable baseline comparisons are managed by `scripts/run-benchmark-baseline.mjs`.
 Noisy maximum latency should stay report-only unless repeated runs prove the
 threshold is stable enough to gate CI.
+
+## Release Candidate Notes
+
+Record the machine/container shape beside any release-candidate benchmark
+results:
+
+- CPU model and allocated cores
+- memory limit
+- Node version
+- Kafka broker location and topic partition counts
+- row counts per View Server topic
+- active browser/client count
+- active subscription count
+- Kafka input rate
+- gRPC leased route count
+- WebSocket fanout shape
+
+The baseline gates catch regressions against committed smoke profiles. They are
+not a substitute for one production-like capacity run before a real deployment.

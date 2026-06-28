@@ -121,6 +121,7 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 - `pnpm run bench:baseline:websocket-firehose` is the small runtime WebSocket firehose smoke gate. It uses the production Effect RPC WebSocket + NDJSON path and bounded Vitest benchmark reads; update it only for accepted WebSocket transport or fanout performance changes.
 - `pnpm run pre-grpc:gate` is the serial pre-gRPC release gate. It runs `ready`, smoke, raw read/write, active-query-sharing, grouped admission, grouped order-neutral, WebSocket firehose, Kafka ingest, and Kafka sustained-firehose gates. Run it before starting gRPC work or declaring Kafka/performance readiness.
 - `pnpm run grpc:gate` is the gRPC runtime smoke gate. It runs `ready`, materialized gRPC baselines, and leased gRPC baselines. Keep it separate from `pre-grpc:gate`.
+- `pnpm run release-candidate:capacity` is the serial production-candidate gate. It runs example tests/builds, `pre-grpc:gate`, `grpc:gate`, and the broad no-compare release benchmark profile; use it before promoting a runtime image or claiming production-like capacity readiness.
 - Do not run competing benchmark suites in parallel when comparing results.
 
 ## Package And Architecture Rules

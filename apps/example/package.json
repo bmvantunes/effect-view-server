@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vp run -t @view-server/react#build && vp check",
+    "build": "vp run -t @view-server/react#build && vp build",
     "test": "vp run -t @view-server/react#build && vp test run --coverage --typecheck"
   },
   "dependencies": {

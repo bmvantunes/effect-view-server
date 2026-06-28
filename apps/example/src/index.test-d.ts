@@ -32,14 +32,13 @@ describe("example app type contracts", () => {
   });
 
   it("rejects implicit all-column queries", () => {
-    const missingSelectQuery = {
+    // @ts-expect-error raw example queries must explicitly select columns.
+    useLiveQuery("orders", {
       where: {
         status: { eq: "open" },
       },
       limit: 20,
-    };
-    // @ts-expect-error raw example queries must explicitly select columns.
-    useLiveQuery("orders", missingSelectQuery);
+    });
   });
 
   it("exposes an in-memory provider and typed client for examples and tests", () => {

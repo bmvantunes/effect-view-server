@@ -2,6 +2,9 @@ import { defineConfig } from "vite-plus";
 import { playwright } from "vitest/browser/providers/playwright";
 
 export default defineConfig({
+  optimizeDeps: {
+    include: ["react-dom/client"],
+  },
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     typecheck: {
@@ -23,7 +26,12 @@ export default defineConfig({
     coverage: {
       provider: "istanbul",
       include: ["src/**/*.ts", "src/**/*.tsx"],
-      exclude: ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.test-d.ts"],
+      exclude: [
+        "src/browser-entry.tsx",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "src/**/*.test-d.ts",
+      ],
       reporter: ["text"],
       thresholds: {
         "100": true,

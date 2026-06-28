@@ -46,6 +46,7 @@ The TCP example additionally exposes an external publisher:
 
 ```bash
 vp run @view-server/example-tcp-publisher-react#publisher
+vp run @view-server/example-tcp-publisher-react#publisher:invalid
 ```
 
 Kafka examples assume Apache Kafka is reachable at `127.0.0.1:9092`, matching

@@ -1,50 +1,6 @@
 import { NodeRuntime } from "@effect/platform-node";
 import { Clock, Effect, Schedule } from "effect";
-import * as Net from "node:net";
-
-type TcpCommand = {
-  readonly op: "publish";
-  readonly topic: "orders";
-  readonly row: {
-    readonly id: string;
-    readonly customerId: string;
-    readonly status: "open";
-    readonly price: number;
-    readonly region: string;
-    readonly updatedAt: number;
-  };
-};
-
-const writeCommand = (command: TcpCommand) =>
-  Effect.tryPromise({
-    try: () =>
-      new Promise<void>((resolve, reject) => {
-        let isSettled = false;
-        const socket = Net.createConnection({ host: "127.0.0.1", port: 8081 }, () => {
-          socket.write(`${JSON.stringify(command)}\n`);
-        });
-        const finish = () => {
-          if (!isSettled) {
-            isSettled = true;
-            socket.end();
-            resolve();
-          }
-        };
-        const fail = (cause: Error) => {
-          if (!isSettled) {
-            isSettled = true;
-            socket.destroy();
-            reject(cause);
-          }
-        };
-        socket.setTimeout(5_000, () =>
-          fail(new Error("Timed out waiting for TCP publish acknowledgement.")),
-        );
-        socket.once("error", fail);
-        socket.once("data", finish);
-      }),
-    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-  });
+import { TcpPublisherExampleError, writeCommand } from "./tcp-client";
 
 const publishNext = (index: number) =>
   writeCommand({
@@ -58,7 +14,17 @@ const publishNext = (index: number) =>
       region: index % 2 === 0 ? "london" : "usa",
       updatedAt: index,
     },
-  });
+  }).pipe(
+    Effect.tap((response) =>
+      response.ok
+        ? Effect.void
+        : Effect.fail(
+            new TcpPublisherExampleError({
+              message: `TCP publish failed: ${response.error.message}`,
+            }),
+          ),
+    ),
+  );
 
 NodeRuntime.runMain(
   Effect.repeat(

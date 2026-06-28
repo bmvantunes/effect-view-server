@@ -1,4 +1,5 @@
 {
+  "extends": "../../tsconfig.json",
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["vite.config.ts"],
   "compilerOptions": {

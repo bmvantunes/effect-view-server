@@ -12,6 +12,7 @@
     "generate-routes": "vp exec tsr generate && vp run clean-routes",
     "runtime": "vp run -t @view-server/runtime#build && vp exec tsx src/runtime.ts",
     "publisher": "vp exec tsx src/tcp-publisher.ts",
+    "publisher:invalid": "vp exec tsx src/tcp-invalid-publisher.ts",
     "build": "vp run -t @view-server/react#build && vp run -t @view-server/runtime#build && vp run generate-routes && vp build && vp run clean-routes",
     "preview": "vp preview",
     "test": "vp run -t @view-server/react#build && vp run -t @view-server/runtime#build && vp run generate-routes && vp test run --typecheck && vp run clean-routes"
@@ -37,6 +38,7 @@
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

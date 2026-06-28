@@ -1,10 +1,10 @@
 # In-Memory Browser Testing
 
-Production React imports from `@effect-view-server/react`. Browser tests import the
-testing helper from `@effect-view-server/react/testing`.
+Production React imports from `effect-view-server/react`. Browser tests import the
+testing helper from `effect-view-server/react/testing`.
 
 ```tsx
-import { createInMemoryViewServerReact } from "@effect-view-server/react/testing";
+import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { viewServerReact } from "./view-server.config";
 
 export const createInMemoryExampleViewServer = () => createInMemoryViewServerReact(viewServerReact);

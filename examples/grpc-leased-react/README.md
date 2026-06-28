@@ -5,8 +5,8 @@ TanStack Start app backed by an on-demand leased gRPC feed.
 Run:
 
 ```bash
-vp run @effect-view-server/example-grpc-leased-react#runtime
-vp run @effect-view-server/example-grpc-leased-react#dev
+vp run -view-server/example-grpc-leased-react#runtime
+vp run -view-server/example-grpc-leased-react#dev
 ```
 
 This example demonstrates:

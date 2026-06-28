@@ -1,0 +1,120 @@
+{
+  "name": "effect-view-server",
+  "version": "0.0.0",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./client/remote": {
+      "types": "./dist/client-remote.d.ts",
+      "import": "./dist/client-remote.js"
+    },
+    "./column-live-view-engine": {
+      "types": "./dist/column-live-view-engine.d.ts",
+      "import": "./dist/column-live-view-engine.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    },
+    "./config/grpc": {
+      "types": "./dist/config-grpc.d.ts",
+      "import": "./dist/config-grpc.js"
+    },
+    "./config/health": {
+      "types": "./dist/config-health.d.ts",
+      "import": "./dist/config-health.js"
+    },
+    "./config/kafka": {
+      "types": "./dist/config-kafka.d.ts",
+      "import": "./dist/config-kafka.js"
+    },
+    "./config/live-protocol": {
+      "types": "./dist/config-live-protocol.d.ts",
+      "import": "./dist/config-live-protocol.js"
+    },
+    "./config/query": {
+      "types": "./dist/config-query.d.ts",
+      "import": "./dist/config-query.js"
+    },
+    "./config/runtime": {
+      "types": "./dist/config-runtime.d.ts",
+      "import": "./dist/config-runtime.js"
+    },
+    "./in-memory": {
+      "types": "./dist/in-memory.d.ts",
+      "import": "./dist/in-memory.js"
+    },
+    "./in-memory/testing": {
+      "types": "./dist/in-memory-testing.d.ts",
+      "import": "./dist/in-memory-testing.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    },
+    "./react/testing": {
+      "types": "./dist/react-testing.d.ts",
+      "import": "./dist/react-testing.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
+  "publishConfig": {
+    "provenance": true
+  },
+  "scripts": {
+    "build": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/config#build && vp run -t @effect-view-server/in-memory#build && vp run -t @effect-view-server/react#build && vp run -t @effect-view-server/runtime#build && vp run -t @effect-view-server/server#build && vp pack",
+    "test": "vp run -t effect-view-server#build && vp test run --typecheck"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.12.0",
+    "@connectrpc/connect": "2.1.2",
+    "@connectrpc/connect-node": "2.1.2",
+    "@effect/atom-react": "4.0.0-beta.91",
+    "@effect/platform-browser": "4.0.0-beta.91",
+    "@effect/platform-node": "4.0.0-beta.91",
+    "@platformatic/kafka": "2.2.3",
+    "effect": "4.0.0-beta.91",
+    "scheduler": "0.27.0"
+  },
+  "devDependencies": {
+    "@effect-view-server/client": "workspace:*",
+    "@effect-view-server/column-live-view-engine": "workspace:*",
+    "@effect-view-server/config": "workspace:*",
+    "@effect-view-server/in-memory": "workspace:*",
+    "@effect-view-server/react": "workspace:*",
+    "@effect-view-server/runtime": "workspace:*",
+    "@effect-view-server/server": "workspace:*",
+    "@effect/vitest": "catalog:",
+    "@types/react": "19.2.15",
+    "@types/react-dom": "19.2.3",
+    "@vitest/coverage-istanbul": "catalog:",
+    "@vitest/runner": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  }
+}

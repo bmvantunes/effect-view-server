@@ -334,7 +334,7 @@ Sketch:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@effect-view-server/runtime";
+import { runViewServerRuntime } from "effect-view-server/runtime";
 
 const grpcClients = {
   orders: grpc.connectClient({
@@ -468,7 +468,7 @@ Runtime feed definitions then reference those topics:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@effect-view-server/runtime";
+import { runViewServerRuntime } from "effect-view-server/runtime";
 
 const grpcFeed = viewServer.grpcFeed<typeof grpcClients>();
 

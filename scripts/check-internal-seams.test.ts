@@ -233,6 +233,30 @@ describe("internal seam checker", () => {
     ]);
   });
 
+  it("reports public facade package imports from internal package source", () => {
+    const restriction = {
+      forbiddenSpecifiers: new Set<string>(),
+      message: "unused",
+      packageName: "react",
+    };
+
+    expect(
+      packageImportViolationsFor({
+        contents: [
+          'import { createViewServerReact } from "effect-view-server/react";',
+          'const runtime = import("effect-view-server/runtime");',
+          'const server = require("effect-view-server/server");',
+        ].join("\n"),
+        relativePath: "src/index.tsx",
+        restriction,
+      }),
+    ).toStrictEqual([
+      "src/index.tsx imports effect-view-server/react: public effect-view-server facade is for consumers; internal packages must import @effect-view-server/* workspace packages.",
+      "src/index.tsx imports effect-view-server/runtime: public effect-view-server facade is for consumers; internal packages must import @effect-view-server/* workspace packages.",
+      "src/index.tsx imports effect-view-server/server: public effect-view-server facade is for consumers; internal packages must import @effect-view-server/* workspace packages.",
+    ]);
+  });
+
   it("does not report member APIs named import", () => {
     expect(
       importSpecifiersFromSource(
@@ -1326,6 +1350,52 @@ describe("internal seam checker", () => {
         packageDirectoryName: "react",
       }),
     ).toStrictEqual([]);
+  });
+
+  it("accepts public effect-view-server facade package export entrypoints", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "effect-view-server",
+          exports: {
+            "./client": {
+              import: "./dist/client.js",
+              types: "./dist/client.d.ts",
+            },
+            "./config": {
+              import: "./dist/config.js",
+              types: "./dist/config.d.ts",
+            },
+            "./react/testing": {
+              import: "./dist/react-testing.js",
+              types: "./dist/react-testing.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "effect-view-server",
+      }),
+    ).toStrictEqual([]);
+  });
+
+  it("rejects unapproved public effect-view-server facade deep exports", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "effect-view-server",
+          exports: {
+            "./react/internal": {
+              import: "./dist/react-internal.js",
+              types: "./dist/react-internal.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "effect-view-server",
+      }),
+    ).toStrictEqual([
+      "packages/effect-view-server/package.json exports effect-view-server/react/internal: add intentional public specifier approval or remove the export.",
+      "packages/effect-view-server/package.json export ./react/internal points at ./dist/react-internal.js without a matching packed src entrypoint.",
+      "packages/effect-view-server/package.json export ./react/internal points at ./dist/react-internal.d.ts without a matching packed src entrypoint.",
+    ]);
   });
 
   it("accepts packed package export fallback arrays", () => {

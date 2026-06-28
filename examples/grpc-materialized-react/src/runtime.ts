@@ -1,5 +1,5 @@
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@effect-view-server/runtime";
+import { runViewServerRuntime } from "effect-view-server/runtime";
 import { Stream } from "effect";
 import { grpcClients, viewServer } from "./view-server.config";
 

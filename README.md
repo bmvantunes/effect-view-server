@@ -1,5 +1,16 @@
 # view-server-smart
 
+## Guides
+
+- [Public API](./docs/public-api.md)
+- [Runtime Config](./docs/runtime-config.md)
+- [Kafka Mapping](./docs/kafka-mapping.md)
+- [In-Memory Browser Testing](./docs/in-memory-browser-testing.md)
+- [Health And Metrics](./docs/health-and-metrics.md)
+- [Query Semantics](./docs/query-semantics.md)
+- [Benchmarks And Capacity](./docs/benchmarks-and-capacity.md)
+- [Deployment](./docs/deployment.md)
+
 ## Remote React provider
 
 Server code starts a runtime through Effect RPC WebSocket plus same-server

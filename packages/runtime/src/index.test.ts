@@ -189,7 +189,7 @@ const JsonCodecTcpOrder = Schema.Struct({
   amount: Schema.BigDecimal,
   checkedOptionalMeta: Schema.optionalKey(JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
   checkedSuspendedMeta: Schema.optionalKey(
-    Schema.suspend(() => JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
+    Schema.suspend(() => JsonCodecTcpNested.check(Schema.isMaxProperties(0))),
   ),
   meta: JsonCodecTcpNested,
   nullableMeta: Schema.NullOr(JsonCodecTcpNested),

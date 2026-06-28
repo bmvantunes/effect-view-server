@@ -334,7 +334,7 @@ Sketch:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 
 const grpcClients = {
   orders: grpc.connectClient({
@@ -468,7 +468,7 @@ Runtime feed definitions then reference those topics:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 
 const grpcFeed = viewServer.grpcFeed<typeof grpcClients>();
 
@@ -762,7 +762,7 @@ Initial benchmark profiles:
 Current materialized-feed benchmark command:
 
 ```sh
-vp run --filter @view-server/runtime bench:grpc-materialized
+vp run --filter @effect-view-server/runtime bench:grpc-materialized
 vp run -w bench:baseline:grpc-materialized
 ```
 
@@ -782,7 +782,7 @@ operation throughput, sample counts, and structural counters.
 Current leased-feed benchmark command:
 
 ```sh
-vp run --filter @view-server/runtime bench:grpc-leased
+vp run --filter @effect-view-server/runtime bench:grpc-leased
 vp run -w bench:baseline:grpc-leased
 vp run -w bench:baseline:grpc-leased-retained
 vp run -w bench:baseline:grpc-leased-retained:update

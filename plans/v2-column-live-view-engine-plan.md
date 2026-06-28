@@ -133,13 +133,15 @@ LSP diagnostics must be part of the normal validation loop and must report zero 
 ## Public API Direction
 
 The external API should prioritize strong type inference and low boilerplate:
+The imports below use the current internal workspace package scope. The published
+package surface is still planned separately as `effect-view-server/*` subpaths.
 
 ```ts
 // view-server.config.ts
 import { Schema } from "effect";
-import { defineViewServerConfig } from "@view-server/config";
-import { createViewServerReact } from "@view-server/react";
-import type { ViewServerInMemoryOptions } from "@view-server/react/testing";
+import { defineViewServerConfig } from "@effect-view-server/config";
+import { createViewServerReact } from "@effect-view-server/react";
+import type { ViewServerInMemoryOptions } from "@effect-view-server/react/testing";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -196,7 +198,7 @@ Test/browser-in-memory shape:
 
 ```tsx
 import { Effect } from "effect";
-import { createInMemoryViewServerReact } from "@view-server/react/testing";
+import { createInMemoryViewServerReact } from "@effect-view-server/react/testing";
 import { viewServerReact } from "./view-server.config";
 
 const { ViewServerInMemoryProvider, client } = createInMemoryViewServerReact(viewServerReact);
@@ -278,8 +280,8 @@ import {
   ordersBufProtoValue,
   tradesBufProtoValue,
 } from "@buf/generated_code/orders_buf_proto";
-import { kafka } from "@view-server/config";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { kafka } from "@effect-view-server/config";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { viewServer } from "./view-server.config";
 
 const kafkaRegions = {
@@ -347,11 +349,11 @@ NodeRuntime.runMain(
 The in-memory API should be generated from the same config:
 
 ```ts
-import { createViewServerReact } from "@view-server/react";
+import { createViewServerReact } from "@effect-view-server/react";
 import {
   createInMemoryViewServerReact,
   type ViewServerInMemoryOptions,
-} from "@view-server/react/testing";
+} from "@effect-view-server/react/testing";
 
 export const viewServerReact = createViewServerReact(viewServer);
 

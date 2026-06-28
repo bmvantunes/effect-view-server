@@ -2,7 +2,7 @@ import type {
   ViewServerBackpressureError,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Rpc, RpcGroup } from "effect/unstable/rpc";
 import { Schema } from "effect";
 import { ViewServerTrustedWireEventSchema } from "./protocol-event-schema";

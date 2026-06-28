@@ -6,7 +6,7 @@ import {
   type RawQuery,
   type SnapshotEvent,
   type StatusEvent,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema, Scope, Stream } from "effect";
 import { format as formatBigDecimal, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
 import {

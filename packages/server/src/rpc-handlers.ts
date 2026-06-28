@@ -1,11 +1,14 @@
-import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC, VIEW_SERVER_HEALTH_TOPIC } from "@view-server/config";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
+import {
+  VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+  VIEW_SERVER_HEALTH_TOPIC,
+} from "@effect-view-server/config";
+import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type {
   TopicDefinitions,
   ViewServerConfig,
   ViewServerHealth,
   ViewServerRuntimeError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import {
   ViewServerRpcs,
   viewServerDecodeHealth,
@@ -15,7 +18,7 @@ import {
   viewServerEncodeHealthSummaryEvent,
   viewServerEncodeHealthTopicEvent,
   viewServerEncodeLiveEvent,
-} from "@view-server/protocol";
+} from "@effect-view-server/protocol";
 import { Deferred, Effect, Exit, Fiber, Scope, Semaphore, Stream } from "effect";
 import type { ViewServerWebSocketServerInput } from "./server-types";
 

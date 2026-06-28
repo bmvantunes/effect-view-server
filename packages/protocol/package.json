@@ -1,5 +1,5 @@
 {
-  "name": "@view-server/protocol",
+  "name": "@effect-view-server/protocol",
   "version": "0.0.0",
   "private": true,
   "files": [
@@ -17,7 +17,7 @@
     "test": "vp test run --coverage --typecheck"
   },
   "dependencies": {
-    "@view-server/config": "workspace:*",
+    "@effect-view-server/config": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

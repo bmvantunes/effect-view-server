@@ -1,5 +1,5 @@
 {
-  "name": "@view-server/runtime-core",
+  "name": "@effect-view-server/runtime-core",
   "version": "0.0.0",
   "private": true,
   "files": [
@@ -17,14 +17,14 @@
     }
   },
   "scripts": {
-    "build": "vp run -t @view-server/client#build && vp run -t @view-server/column-live-view-engine#build && vp run -t @view-server/effect-utils#build && vp pack",
-    "test": "vp run -t @view-server/client#build && vp run -t @view-server/column-live-view-engine#build && vp run -t @view-server/effect-utils#build && vp test run --coverage --typecheck"
+    "build": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/effect-utils#build && vp pack",
+    "test": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/effect-utils#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
-    "@view-server/client": "workspace:*",
-    "@view-server/column-live-view-engine": "workspace:*",
-    "@view-server/config": "workspace:*",
-    "@view-server/effect-utils": "workspace:*",
+    "@effect-view-server/client": "workspace:*",
+    "@effect-view-server/column-live-view-engine": "workspace:*",
+    "@effect-view-server/config": "workspace:*",
+    "@effect-view-server/effect-utils": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

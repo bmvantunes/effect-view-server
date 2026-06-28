@@ -16,7 +16,7 @@ import type {
   ViewServerHealthTopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Effect, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 

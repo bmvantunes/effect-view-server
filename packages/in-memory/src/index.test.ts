@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, grpc } from "@view-server/config";
+import { defineViewServerConfig, grpc } from "@effect-view-server/config";
 import { Effect, Schema, Stream } from "effect";
 import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
 import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
@@ -30,7 +30,7 @@ const leasedViewServer = defineViewServerConfig({
   },
 });
 
-describe("@view-server/in-memory", () => {
+describe("@effect-view-server/in-memory", () => {
   it.effect("adapts the shared runtime core to the public in-memory API", () =>
     Effect.gen(function* () {
       const inMemory = yield* makeInMemoryViewServer(viewServer, {

@@ -3,8 +3,8 @@ import type {
   ViewServerConfig,
   ViewServerHealthSummaryRow,
   ViewServerRuntimeError,
-} from "@view-server/config";
-import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC } from "@view-server/config";
+} from "@effect-view-server/config";
+import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   decodeSystemLiveEvent,

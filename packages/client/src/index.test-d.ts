@@ -4,14 +4,14 @@ import {
   grpc,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type {
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Effect } from "effect";
 import type { Stream } from "effect";
 import { Schema } from "effect";

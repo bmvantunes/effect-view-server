@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import type { DeltaEvent } from "@view-server/config";
+import type { DeltaEvent } from "@effect-view-server/config";
 import type { ActiveQueryStoreState, RawQueryExecution } from "./active-query";
 import type { CompiledRawQuery } from "./raw-query-compiler";
 import {

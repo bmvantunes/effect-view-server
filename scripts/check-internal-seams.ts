@@ -69,8 +69,17 @@ type RestrictedPackageImport = {
   readonly packageName: string;
 };
 
+const currentViewServerScope = "@effect-view-server";
+const staleViewServerScope = "@view" + "-server";
+
+const isCurrentViewServerSpecifier = (specifier: string): boolean =>
+  specifier === currentViewServerScope || specifier.startsWith(`${currentViewServerScope}/`);
+
+const isStaleViewServerSpecifier = (specifier: string): boolean =>
+  specifier === staleViewServerScope || specifier.startsWith(`${staleViewServerScope}/`);
+
 const isViewServerSpecifier = (specifier: string): boolean =>
-  specifier === "@view-server" || specifier.startsWith("@view-server/");
+  isCurrentViewServerSpecifier(specifier) || isStaleViewServerSpecifier(specifier);
 
 const previousNonWhitespaceCharacter = (contents: string, index: number): string | undefined => {
   let nextIndex = index;
@@ -1463,6 +1472,12 @@ export const packageImportViolationsFor = ({
   readonly restriction: RestrictedPackageImport;
 }): ReadonlyArray<string> =>
   importedViewServerSpecifiers(contents).flatMap((specifier) => {
+    if (isStaleViewServerSpecifier(specifier)) {
+      return [
+        `${relativePath} imports ${specifier}: stale View Server package scope; use ${currentViewServerScope}/* workspace packages.`,
+      ];
+    }
+
     if (!approvedPublicViewServerSpecifiers.has(specifier)) {
       return [
         `${relativePath} imports ${specifier}: View Server imports must use approved package exports.`,
@@ -1495,27 +1510,27 @@ const relativeImportSpecifiers = (contents: string): ReadonlyArray<string> =>
   importSpecifiersFromSource(contents).filter((specifier) => specifier.startsWith("."));
 
 const approvedPublicViewServerSpecifiers = new Set([
-  "@view-server/client",
-  "@view-server/client/remote",
-  "@view-server/column-live-view-engine",
-  "@view-server/column-live-view-engine/internal",
-  "@view-server/config",
-  "@view-server/config/grpc",
-  "@view-server/config/health",
-  "@view-server/config/kafka",
-  "@view-server/config/live-protocol",
-  "@view-server/config/query",
-  "@view-server/config/runtime",
-  "@view-server/effect-utils",
-  "@view-server/in-memory",
-  "@view-server/in-memory/testing",
-  "@view-server/protocol",
-  "@view-server/react",
-  "@view-server/react/testing",
-  "@view-server/runtime",
-  "@view-server/runtime-core",
-  "@view-server/runtime-core/internal",
-  "@view-server/server",
+  "@effect-view-server/client",
+  "@effect-view-server/client/remote",
+  "@effect-view-server/column-live-view-engine",
+  "@effect-view-server/column-live-view-engine/internal",
+  "@effect-view-server/config",
+  "@effect-view-server/config/grpc",
+  "@effect-view-server/config/health",
+  "@effect-view-server/config/kafka",
+  "@effect-view-server/config/live-protocol",
+  "@effect-view-server/config/query",
+  "@effect-view-server/config/runtime",
+  "@effect-view-server/effect-utils",
+  "@effect-view-server/in-memory",
+  "@effect-view-server/in-memory/testing",
+  "@effect-view-server/protocol",
+  "@effect-view-server/react",
+  "@effect-view-server/react/testing",
+  "@effect-view-server/runtime",
+  "@effect-view-server/runtime-core",
+  "@effect-view-server/runtime-core/internal",
+  "@effect-view-server/server",
 ]);
 
 type PackageExportConditionTarget = {
@@ -2166,19 +2181,19 @@ export const assertNoEngineSeamViolations = ({
 assertNoEngineSeamViolations(collectEngineSeamViolations());
 
 const viewServerPackages = {
-  client: "@view-server/client",
-  config: "@view-server/config",
-  effectUtils: "@view-server/effect-utils",
-  engine: "@view-server/column-live-view-engine",
-  engineInternal: "@view-server/column-live-view-engine/internal",
-  inMemory: "@view-server/in-memory",
-  inMemoryTesting: "@view-server/in-memory/testing",
-  protocol: "@view-server/protocol",
-  react: "@view-server/react",
-  runtime: "@view-server/runtime",
-  runtimeCore: "@view-server/runtime-core",
-  runtimeCoreInternal: "@view-server/runtime-core/internal",
-  server: "@view-server/server",
+  client: "@effect-view-server/client",
+  config: "@effect-view-server/config",
+  effectUtils: "@effect-view-server/effect-utils",
+  engine: "@effect-view-server/column-live-view-engine",
+  engineInternal: "@effect-view-server/column-live-view-engine/internal",
+  inMemory: "@effect-view-server/in-memory",
+  inMemoryTesting: "@effect-view-server/in-memory/testing",
+  protocol: "@effect-view-server/protocol",
+  react: "@effect-view-server/react",
+  runtime: "@effect-view-server/runtime",
+  runtimeCore: "@effect-view-server/runtime-core",
+  runtimeCoreInternal: "@effect-view-server/runtime-core/internal",
+  server: "@effect-view-server/server",
 } as const;
 
 const allViewServerPackages = new Set(Object.values(viewServerPackages));

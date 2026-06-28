@@ -1,4 +1,4 @@
-import type { StatusEvent } from "@view-server/config";
+import type { StatusEvent } from "@effect-view-server/config";
 import type { Effect } from "effect";
 import type { TopicStore } from "./topic-store";
 

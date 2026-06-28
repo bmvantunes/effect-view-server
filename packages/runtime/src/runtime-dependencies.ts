@@ -4,18 +4,18 @@ import type {
   ViewServerConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
-} from "@view-server/config";
-import { type ViewServerRuntimeCoreOptionsFor } from "@view-server/runtime-core";
+} from "@effect-view-server/config";
+import { type ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalInstance,
-} from "@view-server/runtime-core/internal";
+} from "@effect-view-server/runtime-core/internal";
 import {
   makeViewServerWebSocketServer,
   type ViewServerWebSocketServer,
   type ViewServerWebSocketServerInput,
   type ViewServerWebSocketServerOptions,
-} from "@view-server/server";
+} from "@effect-view-server/server";
 import type { Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import { makeViewServerKafkaHealthLedger, type ViewServerKafkaHealthLedger } from "./kafka-health";

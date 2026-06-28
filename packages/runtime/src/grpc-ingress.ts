@@ -13,8 +13,8 @@ import {
   type TopicRow,
   type ViewServerConfig,
   type ViewServerRuntimeClient,
-} from "@view-server/config";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
+} from "@effect-view-server/config";
+import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import { Cause, Clock, Effect, Exit, Fiber, Option, Schema, Scope, Stream } from "effect";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";

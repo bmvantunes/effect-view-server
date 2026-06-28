@@ -13,9 +13,9 @@ export const setup = async (project: Project) => {
     return () => Promise.resolve();
   }
 
-  const { defineViewServerConfig } = await import("@view-server/config");
-  const { createInMemoryViewServerTesting } = await import("@view-server/in-memory/testing");
-  const { makeViewServerWebSocketServer } = await import("@view-server/server");
+  const { defineViewServerConfig } = await import("@effect-view-server/config");
+  const { createInMemoryViewServerTesting } = await import("@effect-view-server/in-memory/testing");
+  const { makeViewServerWebSocketServer } = await import("@effect-view-server/server");
   const { Effect, Schema } = await import("effect");
 
   const Order = Schema.Struct({

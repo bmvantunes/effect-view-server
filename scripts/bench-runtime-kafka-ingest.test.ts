@@ -122,9 +122,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(0);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       [
         "vp",
@@ -170,7 +170,7 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -191,7 +191,7 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls).toStrictEqual([
       {
-        args: ["run", "-t", "@view-server/effect-utils#build"],
+        args: ["run", "-t", "@effect-view-server/effect-utils#build"],
         command: "vp",
         options: {
           cwd: fileURLToPath(new URL("../packages/runtime/", import.meta.url)),
@@ -216,9 +216,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(4);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -266,9 +266,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(9);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       [
         "vp",
@@ -303,9 +303,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -329,9 +329,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -365,9 +365,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -390,9 +390,9 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       [
         "vp",
@@ -520,7 +520,7 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -553,9 +553,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(exitCodePromise).resolves.toBe(4);
     await expect(runner.cleanup()).resolves.toBe(7);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -571,7 +571,7 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(137);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -585,7 +585,7 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(130);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -599,7 +599,7 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(129);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -613,7 +613,7 @@ describe("Kafka ingest benchmark wrapper", () => {
 
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -631,8 +631,8 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(exitCodePromise).resolves.toBe(130);
     expect(fakeSpawn.children[1].killSignals).toStrictEqual(["SIGTERM"]);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
     ]);
   });
 
@@ -651,9 +651,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(exitCodePromise).resolves.toBe(130);
     expect(fakeSpawn.children[2].killSignals).toStrictEqual(["SIGTERM"]);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
     ]);
   });
 
@@ -675,9 +675,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(exitCodePromise).resolves.toBe(130);
     expect(fakeSpawn.children[4].killSignals).toStrictEqual(["SIGTERM"]);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       [
         "vp",
@@ -711,9 +711,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(cleanupPromise).resolves.toBe(0);
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -736,9 +736,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     await expect(cleanupPromise).resolves.toBe(0);
     await expect(exitCodePromise).resolves.toBe(1);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -785,7 +785,7 @@ describe("Kafka ingest benchmark wrapper", () => {
     expect(exitCodes).toStrictEqual([143]);
     expect(fakeSpawn.children[0].killSignals).toStrictEqual(["SIGTERM"]);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
     ]);
   });
 
@@ -819,9 +819,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     expect(exitCodes).toStrictEqual([7]);
     expect(fakeSpawn.children[3].killSignals).toStrictEqual(["SIGTERM"]);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);
@@ -889,9 +889,9 @@ describe("Kafka ingest benchmark wrapper", () => {
     expect(exitCodes).toStrictEqual([143]);
     expect(fakeSpawn.children[4].killSignals).toStrictEqual([]);
     expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
-      ["vp", "run", "-t", "@view-server/effect-utils#build"],
-      ["vp", "run", "-t", "@view-server/runtime-core#build"],
-      ["vp", "run", "-t", "@view-server/server#build"],
+      ["vp", "run", "-t", "@effect-view-server/effect-utils#build"],
+      ["vp", "run", "-t", "@effect-view-server/runtime-core#build"],
+      ["vp", "run", "-t", "@effect-view-server/server#build"],
       ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
       ["docker", "compose", "-f", "compose.yaml", "down"],
     ]);

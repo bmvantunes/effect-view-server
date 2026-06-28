@@ -6,8 +6,8 @@ import {
   kafka,
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
-} from "@view-server/config";
-import { makeViewServerRuntimeCore } from "@view-server/runtime-core";
+} from "@effect-view-server/config";
+import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { Buffer } from "node:buffer";
 import * as BigDecimal from "effect/BigDecimal";
 import {
@@ -152,8 +152,8 @@ const forgedMappingTagCodecError: {
   readonly message: "forged mapping tag";
 } = {
   _tag: "KafkaMappingError",
-  [Symbol.for("@view-server/config/KafkaMappingError")]: Symbol.for(
-    "@view-server/config/KafkaMappingError",
+  [Symbol.for("@effect-view-server/config/KafkaMappingError")]: Symbol.for(
+    "@effect-view-server/config/KafkaMappingError",
   ),
   message: "forged mapping tag",
 };
@@ -343,7 +343,7 @@ async function* decodeFailureThenSuccessKafkaStream(
   });
 }
 
-describe("@view-server/runtime Kafka ingress internals", () => {
+describe("@effect-view-server/runtime Kafka ingress internals", () => {
   it("normalizes Kafka helper values", () => {
     const headers = new Map([
       [Buffer.from("trace"), Buffer.from("abc")],

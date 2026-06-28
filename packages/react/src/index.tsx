@@ -1,5 +1,5 @@
 import * as AtomReact from "@effect/atom-react";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
+import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import {
   applyEvent,
   initialClientState,
@@ -7,8 +7,11 @@ import {
   stableQueryKey,
   type ViewServerLiveClient,
   type ViewServerLiveSubscription,
-} from "@view-server/client";
-import { makeViewServerClient, type ViewServerClientOptions } from "@view-server/client/remote";
+} from "@effect-view-server/client";
+import {
+  makeViewServerClient,
+  type ViewServerClientOptions,
+} from "@effect-view-server/client/remote";
 import type {
   ExactLiveQueryInputForTopic,
   GroupedQuery,
@@ -25,7 +28,7 @@ import type {
   ViewServerHealthSummary,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";

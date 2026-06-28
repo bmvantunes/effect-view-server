@@ -1,8 +1,11 @@
 // Benchmarks intentionally import Vitest directly: @effect/vitest does not expose `bench`.
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
-import { makeViewServerClient, type ViewServerRemoteClient } from "@view-server/client/remote";
-import type { ViewServerLiveEvent, ViewServerLiveSubscription } from "@view-server/client";
-import { defineViewServerConfig, type ViewServerHealth } from "@view-server/config";
+import {
+  makeViewServerClient,
+  type ViewServerRemoteClient,
+} from "@effect-view-server/client/remote";
+import type { ViewServerLiveEvent, ViewServerLiveSubscription } from "@effect-view-server/client";
+import { defineViewServerConfig, type ViewServerHealth } from "@effect-view-server/config";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";

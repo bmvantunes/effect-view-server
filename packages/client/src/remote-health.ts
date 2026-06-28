@@ -4,7 +4,7 @@ import type {
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import { Effect } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import type { ViewServerLiveEvent } from "./live-client";

@@ -6,8 +6,11 @@ import {
   type ViewServerHealth,
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
-} from "@view-server/config";
-import { createInMemoryViewServer, type ViewServerInMemoryInstance } from "@view-server/in-memory";
+} from "@effect-view-server/config";
+import {
+  createInMemoryViewServer,
+  type ViewServerInMemoryInstance,
+} from "@effect-view-server/in-memory";
 import { Effect, Schema } from "effect";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";

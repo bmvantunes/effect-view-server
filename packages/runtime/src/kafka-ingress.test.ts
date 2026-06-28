@@ -2,7 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { Admin, Producer, stringSerializers } from "@platformatic/kafka";
-import { defineViewServerConfig, kafka } from "@view-server/config";
+import { defineViewServerConfig, kafka } from "@effect-view-server/config";
 import { Buffer } from "node:buffer";
 import { Crypto, Effect, Schedule, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
@@ -182,7 +182,7 @@ const kafkaRestartPollSchedule = Schedule.addDelay(Schedule.recurs(400), () =>
   Effect.succeed("25 millis"),
 );
 
-describe("@view-server/runtime Kafka ingress", () => {
+describe("@effect-view-server/runtime Kafka ingress", () => {
   it.live(
     "ingests isolated Kafka topics into independent View Server topics and reports health",
     () =>

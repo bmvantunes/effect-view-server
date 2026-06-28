@@ -1,5 +1,5 @@
-import type { DecodableTopicDefinitions } from "@view-server/column-live-view-engine";
-import type { ColumnLiveViewEngineInternal } from "@view-server/column-live-view-engine/internal";
+import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
+import type { ColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   ExactLiveQueryInputForTopic,
   GroupedQuery,
@@ -11,8 +11,8 @@ import type {
   ViewServerHealth,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
-} from "@view-server/config";
-import { validateLiveQuerySourceRoute } from "@view-server/config";
+} from "@effect-view-server/config";
+import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import { Effect, type Duration } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import {

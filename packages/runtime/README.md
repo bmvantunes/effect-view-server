@@ -1,4 +1,4 @@
-# @view-server/runtime
+# @effect-view-server/runtime
 
 Production runtime composition for View Server.
 
@@ -14,7 +14,7 @@ main fiber and run Effect finalizers.
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { viewServer } from "./view-server-config";
 
 NodeRuntime.runMain(
@@ -40,7 +40,7 @@ non-`200` status when the runtime is starting, degraded, or stopping.
 The JSON response is the current runtime health snapshot. Internal `bigint`
 fields, such as Kafka lag, are encoded as decimal strings.
 
-React applications should use the pushed health hooks from `@view-server/react`;
+React applications should use the pushed health hooks from `@effect-view-server/react`;
 `GET /health` is for infrastructure and smoke checks, not UI polling.
 
 ## Metrics
@@ -77,8 +77,8 @@ consumer group and typed source topics:
 ```ts
 import { Config } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
-import { kafka } from "@view-server/config";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { kafka } from "@effect-view-server/config";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { viewServer } from "./view-server-config";
 import { OrdersKey, OrdersValue } from "./generated/orders";
 

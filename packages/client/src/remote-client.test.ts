@@ -4,7 +4,7 @@ import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import {
   Clock,
   Context,
@@ -30,7 +30,7 @@ import {
   type ViewServerTrustedWireEvent,
   type ViewServerWireEvent,
   type ViewServerWireHealth,
-} from "@view-server/protocol";
+} from "@effect-view-server/protocol";
 import { makeViewServerClient } from "./remote";
 import { mapViewServerRemoteError } from "./remote-client";
 import { makeRemoteHealthState } from "./remote-health";

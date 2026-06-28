@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import type { SnapshotEvent, DeltaEvent } from "@view-server/config";
+import type { SnapshotEvent, DeltaEvent } from "@effect-view-server/config";
 import type { ActiveQueryStoreState, LiveQueryExecution } from "./active-query";
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation } from "./query-result";

@@ -1,5 +1,5 @@
-import type { ViewServerConfig } from "@view-server/config";
-import type { ViewServerRuntimeError } from "@view-server/config";
+import type { ViewServerConfig } from "@effect-view-server/config";
+import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import {
   createViewServerRuntimeCore,
   makeViewServerRuntimeCore,
@@ -8,10 +8,10 @@ import {
   type ViewServerRuntimeCoreOptionsFor,
   type ViewServerRuntimeCorePublicClient,
   type ViewServerRuntimeCorePublicLiveClient,
-} from "@view-server/runtime-core";
+} from "@effect-view-server/runtime-core";
 import { Effect } from "effect";
 
-export type { DecodableTopicDefinitions } from "@view-server/runtime-core";
+export type { DecodableTopicDefinitions } from "@effect-view-server/runtime-core";
 
 export type ViewServerInMemoryInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerRuntimeCorePublicClient<Topics>;

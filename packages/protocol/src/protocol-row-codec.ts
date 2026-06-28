@@ -1,4 +1,4 @@
-import type { TopicDefinitions, ViewServerRuntimeError } from "@view-server/config";
+import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { decodeAggregateValue, encodeAggregateValue } from "./protocol-aggregate-row-codec";
 import { ViewServerWireRowSchema, type ViewServerWireRow } from "./protocol-event-schema";

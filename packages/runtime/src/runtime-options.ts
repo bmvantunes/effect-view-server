@@ -1,5 +1,5 @@
-import type { ViewServerRuntimeCoreOptionsFor } from "@view-server/runtime-core";
-import type { ViewServerWebSocketServerOptions } from "@view-server/server";
+import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import type { ViewServerWebSocketServerOptions } from "@effect-view-server/server";
 import type {
   GrpcRuntimeClients,
   KafkaStartFromHealth,
@@ -7,7 +7,7 @@ import type {
   RuntimeValue,
   ViewServerConfig,
   ViewServerKafkaStartFrom,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Duration } from "effect";
 import { Config, Duration as EffectDuration, Effect, Option } from "effect";
 import type {

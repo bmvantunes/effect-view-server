@@ -69,19 +69,19 @@ let exitCode = shouldStartKafka
   : 0;
 
 if (exitCode === 0) {
-  exitCode = run("vp", ["run", "-t", "@view-server/effect-utils#build"], {
+  exitCode = run("vp", ["run", "-t", "@effect-view-server/effect-utils#build"], {
     cwd: runtimeDirectory,
   });
 }
 
 if (exitCode === 0) {
-  exitCode = run("vp", ["run", "-t", "@view-server/runtime-core#build"], {
+  exitCode = run("vp", ["run", "-t", "@effect-view-server/runtime-core#build"], {
     cwd: runtimeDirectory,
   });
 }
 
 if (exitCode === 0) {
-  exitCode = run("vp", ["run", "-t", "@view-server/server#build"], {
+  exitCode = run("vp", ["run", "-t", "@effect-view-server/server#build"], {
     cwd: runtimeDirectory,
   });
 }

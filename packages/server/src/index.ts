@@ -1,6 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node";
-import type { TopicDefinitions, ViewServerConfig } from "@view-server/config";
-import { ViewServerRpcs } from "@view-server/protocol";
+import type { TopicDefinitions, ViewServerConfig } from "@effect-view-server/config";
+import { ViewServerRpcs } from "@effect-view-server/protocol";
 import { Context, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";

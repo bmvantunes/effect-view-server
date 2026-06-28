@@ -1,6 +1,6 @@
 import { Cause, Effect, Exit, Queue, Ref, Scope, Stream } from "effect";
 import { constant } from "effect/Function";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@view-server/effect-utils";
+import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type {
   ViewServerLiveEvent,
   ViewServerLiveSubscription,

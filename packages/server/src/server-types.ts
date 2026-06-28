@@ -1,9 +1,9 @@
-import type { ViewServerRuntimeLiveClient } from "@view-server/client";
+import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import type {
   TopicDefinitions,
   ViewServerHealth,
   ViewServerRuntimeClient,
-} from "@view-server/config";
+} from "@effect-view-server/config";
 import type { Effect } from "effect";
 import type { ViewServerAuth } from "./auth";
 

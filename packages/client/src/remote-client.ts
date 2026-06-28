@@ -13,9 +13,12 @@ import type {
   ViewServerHealthTopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
-} from "@view-server/config";
-import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC, VIEW_SERVER_HEALTH_TOPIC } from "@view-server/config";
-import { runAllFinalizers } from "@view-server/effect-utils";
+} from "@effect-view-server/config";
+import {
+  VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
+  VIEW_SERVER_HEALTH_TOPIC,
+} from "@effect-view-server/config";
+import { runAllFinalizers } from "@effect-view-server/effect-utils";
 import {
   ViewServerRpcs,
   viewServerDecodeHealth,
@@ -28,7 +31,7 @@ import {
   type ViewServerTrustedWireEvent,
   type ViewServerWireHealth,
   type ViewServerWireLiveQuery,
-} from "@view-server/protocol";
+} from "@effect-view-server/protocol";
 import { Context, Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";

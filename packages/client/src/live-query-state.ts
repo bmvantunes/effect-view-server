@@ -1,4 +1,4 @@
-import type { DeltaEvent, LiveQueryResult, StatusEvent } from "@view-server/config";
+import type { DeltaEvent, LiveQueryResult, StatusEvent } from "@effect-view-server/config";
 import type { ViewServerLiveEvent } from "./live-client";
 
 export type ClientState<Row> = {

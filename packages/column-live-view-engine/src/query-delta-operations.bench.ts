@@ -6,7 +6,7 @@ import {
   writeBenchmarkArtifact,
 } from "./benchmark-artifact";
 import { deltaOperations, type QueryEvaluation } from "./query-result";
-import type { DeltaOperation } from "@view-server/config";
+import type { DeltaOperation } from "@effect-view-server/config";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;

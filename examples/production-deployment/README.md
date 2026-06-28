@@ -15,7 +15,7 @@ service with:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
-import { runViewServerRuntime } from "@view-server/runtime";
+import { runViewServerRuntime } from "@effect-view-server/runtime";
 import { Config, Effect } from "effect";
 import {
   viewServer,

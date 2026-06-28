@@ -1,4 +1,4 @@
-import type { LiveQueryResult } from "@view-server/config";
+import type { LiveQueryResult } from "@effect-view-server/config";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { liveQueryFailureResult } from "./live-query-error";
 import { initialClientState, liveQueryResult, type ClientState } from "./live-query-state";

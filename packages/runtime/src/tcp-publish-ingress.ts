@@ -3,9 +3,9 @@ import type {
   ViewServerConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
-} from "@view-server/config";
-import type { ViewServerAuth, ViewServerAuthRequest } from "@view-server/server";
-import { validateViewServerAuthRequest, ViewServerAuthError } from "@view-server/server";
+} from "@effect-view-server/config";
+import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/server";
+import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
 import { Cause, Effect, Exit, Fiber, Option, Result, Schema, SchemaAST } from "effect";
 import * as Net from "node:net";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
@@ -567,7 +567,7 @@ const endTcpError = (
   socket.end(jsonLine(tcpErrorPayload(error)), socket.destroy.bind(socket));
 };
 
-/** @internal Package-local test hook; not exported from @view-server/runtime. */
+/** @internal Package-local test hook; not exported from @effect-view-server/runtime. */
 export const writeTcpJsonLine = (
   socket: TcpResponseSocket,
   state: TcpPublishSocketState,
@@ -593,7 +593,7 @@ export const writeTcpJsonLine = (
   });
 };
 
-/** @internal Package-local test hook; not exported from @view-server/runtime. */
+/** @internal Package-local test hook; not exported from @effect-view-server/runtime. */
 export const rejectTcpSocketWhenClosed = (
   closed: boolean,
   socket: TcpDestroyableSocket,
@@ -711,7 +711,7 @@ const executeLine = async <const Topics extends ViewServerRuntimeTopicDefinition
   }
 };
 
-/** @internal Package-local test hook; not exported from @view-server/runtime. */
+/** @internal Package-local test hook; not exported from @effect-view-server/runtime. */
 export const tcpPublishUrl = (address: {
   readonly address: string;
   readonly port: number;
@@ -838,7 +838,7 @@ const closeTcpServer = (server: Net.Server, state: TcpPublishServerState): Effec
     yield* Effect.promise(() => serverClosed);
   });
 
-/** @internal Package-local test hook; not exported from @view-server/runtime. */
+/** @internal Package-local test hook; not exported from @effect-view-server/runtime. */
 export const installTcpServerSteadyStateErrorHandler = (
   server: TcpErrorHandlingServer,
   close: Effect.Effect<void>,
@@ -916,7 +916,7 @@ const validateTcpPublishOptions = (
   return Effect.void;
 };
 
-/** @internal Package-local test hook; not exported from @view-server/runtime. */
+/** @internal Package-local test hook; not exported from @effect-view-server/runtime. */
 export const installTcpPublishAcceptedSocket = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
 >(

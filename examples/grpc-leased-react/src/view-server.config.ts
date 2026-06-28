@@ -1,5 +1,5 @@
-import { defineViewServerConfig, grpc } from "@view-server/config";
-import { createViewServerReact } from "@view-server/react";
+import { defineViewServerConfig, grpc } from "@effect-view-server/config";
+import { createViewServerReact } from "@effect-view-server/react";
 import { Schema } from "effect";
 import { ordersService } from "./grpc-descriptors";
 

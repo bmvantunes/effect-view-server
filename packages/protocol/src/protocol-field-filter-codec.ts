@@ -1,4 +1,7 @@
-import { viewServerSchemaFieldMetadata, type ViewServerRuntimeError } from "@view-server/config";
+import {
+  viewServerSchemaFieldMetadata,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   decodeTopicNamedJsonFieldValue,

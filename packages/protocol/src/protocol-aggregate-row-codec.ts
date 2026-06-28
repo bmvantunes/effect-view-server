@@ -1,5 +1,5 @@
-import type { TopicDefinitions, ViewServerRuntimeError } from "@view-server/config";
-import { viewServerSchemaFieldMetadata } from "@view-server/config";
+import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
+import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {

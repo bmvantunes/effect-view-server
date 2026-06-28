@@ -7,8 +7,8 @@ Schema and a string row key field. The topic schema is the source of truth for
 query typing, runtime validation, protocol encoding, and in-memory tests.
 
 ```ts
-import { defineViewServerConfig } from "@view-server/config";
-import { createViewServerReact } from "@view-server/react";
+import { defineViewServerConfig } from "@effect-view-server/config";
+import { createViewServerReact } from "@effect-view-server/react";
 import { Schema } from "effect";
 
 export const Order = Schema.Struct({

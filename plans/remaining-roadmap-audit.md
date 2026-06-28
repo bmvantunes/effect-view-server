@@ -60,12 +60,13 @@ because it includes explicit future scope.
 | Runtime-core span/observability assertions                    | Implemented | Runtime-core tracing test captures client publish -> engine publish -> topic-store mutation/fanout -> live-subscription spans with real span-id parent links and topic/query attributes.                                                                                       |
 | Minimal example app                                           | Implemented | `apps/example` defines typed config, production provider URL boundary, in-memory testing provider path, browser e2e test, type tests, and workspace build/check.                                                                                                               |
 | Current public API examples in the roadmap                    | Implemented | `plans/v2-column-live-view-engine-plan.md` and `plans/grpc.md` now use `@view-server/config`, `createViewServerReact(viewServer)`, `createInMemoryViewServerReact(viewServerReact)`, `runViewServerRuntime(viewServer, options)`, and explicit `select` in raw query examples. |
+| Production guide set                                          | Implemented | `docs/README.md`, `docs/public-api.md`, `docs/runtime-config.md`, `docs/kafka-mapping.md`, `docs/in-memory-browser-testing.md`, `docs/health-and-metrics.md`, `docs/query-semantics.md`, `docs/benchmarks-and-capacity.md`, and `docs/deployment.md`.                          |
 
 ### Production-Ready Next Items
 
-| Item                 | Status                | Evidence / Required Action                                                                                                                                                                                                                                                                                               |
-| -------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Production guide set | Production-ready next | `plans/v2-column-live-view-engine-plan.md` requires public API, runtime config, Kafka mapping, in-memory browser testing, health/metrics, query semantics, benchmark/capacity, and deployment guides before calling the slice done. Current docs are partial and distributed across root/package READMEs and plan files. |
+No production-ready plan items remain after the production guide set. The next
+step is validation of the documented scope with the readiness and benchmark
+gates.
 
 ### Intentionally Deferred
 
@@ -88,8 +89,7 @@ These are in the plan, but should remain future work unless explicitly promoted.
 
 ## Recommended Implementation Order
 
-1. Add the production guide set listed above and link it from the root README.
-2. Run `pnpm run ready`, `pnpm run pre-grpc:gate`, and `pnpm run grpc:gate` to prove the documented current scope still passes.
-3. Do not reopen completed gRPC materialized/leased scope unless new tests reveal a real correctness gap.
+1. Run `pnpm run ready`, `pnpm run pre-grpc:gate`, and `pnpm run grpc:gate` to prove the documented current scope still passes.
+2. Do not reopen completed gRPC materialized/leased scope unless new tests reveal a real correctness gap.
 
 After that, next work should come from a new explicit product decision or from promoting one intentionally deferred item.

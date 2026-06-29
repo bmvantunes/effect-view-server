@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
+import { readFileSync } from "node:fs";
 import {
+  classifyStagePublishDuplicateOutput,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
   packageTagName,
@@ -7,6 +9,8 @@ import {
   publicPackageName,
   publishDecision,
   sanitizePublicPackageJson,
+  stagedPackageTagName,
+  stagePublishCommandArguments,
   stripSourceMapReference,
 } from "./release-publish-policy.mjs";
 
@@ -188,6 +192,21 @@ describe("release publish policy", () => {
     });
   });
 
+  it("allows manual release workflow dispatch for post-approval release tags", () => {
+    expect(
+      publishDecision({
+        env: {
+          ...trustedEnvironment,
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+        },
+        version: "1.2.3",
+        workspacePackages,
+      }),
+    ).toStrictEqual({
+      _tag: "Publish",
+    });
+  });
+
   it("requires GitHub Actions OIDC variables before trusted npm publishing", () => {
     expect(oidcPublishEnvironmentViolations({})).toStrictEqual([
       "ACTIONS_ID_TOKEN_REQUEST_URL is required for npm trusted publishing.",
@@ -199,6 +218,21 @@ describe("release publish policy", () => {
         ACTIONS_ID_TOKEN_REQUEST_TOKEN: "token",
       }),
     ).toStrictEqual([]);
+  });
+
+  it("does not expose a retry-count based staged marker recovery policy", () => {
+    const policySource = readFileSync(new URL("./release-publish-policy.mjs", import.meta.url), "utf8");
+
+    expect(policySource).not.toContain("canRecoverMissingStagedMarker");
+    expect(policySource).not.toContain("GITHUB_RUN_ATTEMPT");
+  });
+
+  it("passes manual release workflow version input through an environment variable", () => {
+    const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+    expect(releaseWorkflow).toContain("RELEASE_VERSION: ${{ inputs.version }}");
+    expect(releaseWorkflow).toContain('node scripts/release-publish.mjs --finalize-version "$RELEASE_VERSION"');
+    expect(releaseWorkflow).not.toContain('node scripts/release-publish.mjs --finalize-version "${{ inputs.version }}"');
   });
 
   it("sanitizes the public package manifest before staging the npm artifact", () => {
@@ -341,5 +375,77 @@ describe("release publish policy", () => {
 
   it("uses the public package name as the release git tag", () => {
     expect(packageTagName("1.2.3")).toStrictEqual("effect-view-server@1.2.3");
+  });
+
+  it("uses a distinct marker tag for staged packages awaiting approval", () => {
+    expect(stagedPackageTagName("1.2.3")).toStrictEqual("effect-view-server@1.2.3-staged");
+  });
+
+  it("stages npm packages instead of publishing directly", () => {
+    expect(stagePublishCommandArguments("/tmp/effect-view-server")).toStrictEqual([
+      "stage",
+      "publish",
+      "/tmp/effect-view-server",
+      "--provenance",
+      "--access",
+      "public",
+    ]);
+  });
+
+  it("classifies duplicate staged package output for idempotent reruns", () => {
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "",
+        stdout: "version 1.2.3 is already staged",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "AlreadyStaged",
+    });
+  });
+
+  it("classifies duplicate published package output as public release completion", () => {
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error You cannot publish over the previously published versions: 1.2.3.",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "AlreadyPublished",
+    });
+  });
+
+  it("classifies generic duplicate package output as ambiguous", () => {
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error version 1.2.3 already exists",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "DuplicateVersion",
+    });
+  });
+
+  it("ignores unrelated stage publish failures", () => {
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error authentication failed",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "Unknown",
+    });
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error timed out while preparing 1.2.3",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "Unknown",
+    });
   });
 });

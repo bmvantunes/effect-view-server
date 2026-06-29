@@ -11,6 +11,7 @@ export default defineConfig({
         "scripts/benchmark-baseline-runner.mjs",
         "scripts/bench-runtime-kafka-ingest.mjs",
         "scripts/check-internal-seams.ts",
+        "scripts/release-publish-policy.mjs",
       ],
       reporter: ["text"],
       thresholds: {

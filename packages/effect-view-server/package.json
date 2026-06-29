@@ -1,6 +1,26 @@
 {
   "name": "effect-view-server",
   "version": "0.0.0",
+  "description": "Typed Effect View Server for live query snapshots, deltas, React bindings, and runtime ingress adapters.",
+  "keywords": [
+    "effect",
+    "grpc",
+    "kafka",
+    "live-query",
+    "react",
+    "view-server",
+    "websocket"
+  ],
+  "homepage": "https://github.com/bmvantunes/effect-view-server#readme",
+  "bugs": {
+    "url": "https://github.com/bmvantunes/effect-view-server/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/bmvantunes/effect-view-server.git",
+    "directory": "packages/effect-view-server"
+  },
   "files": [
     "dist"
   ],

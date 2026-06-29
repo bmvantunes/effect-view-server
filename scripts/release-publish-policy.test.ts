@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
+import { readFileSync } from "node:fs";
 import {
-  canRecoverMissingStagedMarker,
   classifyStagePublishDuplicateOutput,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
@@ -220,25 +220,19 @@ describe("release publish policy", () => {
     ).toStrictEqual([]);
   });
 
-  it("recovers missing staged markers only on retried GitHub workflow attempts", () => {
-    expect(
-      canRecoverMissingStagedMarker({
-        GITHUB_ACTIONS: "true",
-        GITHUB_RUN_ATTEMPT: "2",
-      }),
-    ).toStrictEqual(true);
-    expect(
-      canRecoverMissingStagedMarker({
-        GITHUB_ACTIONS: "true",
-        GITHUB_RUN_ATTEMPT: "1",
-      }),
-    ).toStrictEqual(false);
-    expect(
-      canRecoverMissingStagedMarker({
-        GITHUB_ACTIONS: "true",
-      }),
-    ).toStrictEqual(false);
-    expect(canRecoverMissingStagedMarker({})).toStrictEqual(false);
+  it("does not expose a retry-count based staged marker recovery policy", () => {
+    const policySource = readFileSync(new URL("./release-publish-policy.mjs", import.meta.url), "utf8");
+
+    expect(policySource).not.toContain("canRecoverMissingStagedMarker");
+    expect(policySource).not.toContain("GITHUB_RUN_ATTEMPT");
+  });
+
+  it("passes manual release workflow version input through an environment variable", () => {
+    const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+    expect(releaseWorkflow).toContain("RELEASE_VERSION: ${{ inputs.version }}");
+    expect(releaseWorkflow).toContain('node scripts/release-publish.mjs --finalize-version "$RELEASE_VERSION"');
+    expect(releaseWorkflow).not.toContain('node scripts/release-publish.mjs --finalize-version "${{ inputs.version }}"');
   });
 
   it("sanitizes the public package manifest before staging the npm artifact", () => {

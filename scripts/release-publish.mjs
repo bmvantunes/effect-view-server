@@ -3,7 +3,6 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
-  canRecoverMissingStagedMarker,
   classifyStagePublishDuplicateOutput,
   packageTagName,
   oidcPublishEnvironmentViolations,
@@ -346,18 +345,9 @@ try {
         });
       } else if (stageResult._tag === "AlreadyStaged" || stageResult._tag === "AlreadyPublished") {
         if (!gitTagExists(stagedTagName)) {
-          if (!canRecoverMissingStagedMarker(process.env)) {
-            throw new Error(
-              `npm reported ${publicPackageName}@${version} as already staged, but ${stagedTagName} is missing. Refusing to recreate it from an unrelated workflow HEAD; rerun the failed staging workflow attempt or reject the npm stage and restage.`,
-            );
-          }
-
-          process.stdout.write(
-            `npm reported ${publicPackageName}@${version} as already staged on a retried workflow; recreating missing ${stagedTagName} marker.\n`,
+          throw new Error(
+            `npm reported ${publicPackageName}@${version} as already staged, but ${stagedTagName} is missing. Refusing to recreate it from an unverified workflow HEAD; rerun the original failed staging workflow attempt or reject the npm stage and restage.`,
           );
-          ensureGitTag(stagedTagName, "HEAD", {
-            allowMove: true,
-          });
         } else {
           process.stdout.write(`${publicPackageName}@${version} is already staged; keeping ${stagedTagName}.\n`);
         }

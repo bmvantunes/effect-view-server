@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
-  isDuplicateStagePublishOutput,
+  classifyStagePublishDuplicateOutput,
   internalPublishViolations,
   oidcPublishEnvironmentViolations,
   packageTagName,
@@ -191,6 +191,21 @@ describe("release publish policy", () => {
     });
   });
 
+  it("allows manual release workflow dispatch for post-approval release tags", () => {
+    expect(
+      publishDecision({
+        env: {
+          ...trustedEnvironment,
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+        },
+        version: "1.2.3",
+        workspacePackages,
+      }),
+    ).toStrictEqual({
+      _tag: "Publish",
+    });
+  });
+
   it("requires GitHub Actions OIDC variables before trusted npm publishing", () => {
     expect(oidcPublishEnvironmentViolations({})).toStrictEqual([
       "ACTIONS_ID_TOKEN_REQUEST_URL is required for npm trusted publishing.",
@@ -361,27 +376,60 @@ describe("release publish policy", () => {
     ]);
   });
 
-  it("detects duplicate staged package publish output for idempotent reruns", () => {
+  it("classifies duplicate staged package output for idempotent reruns", () => {
     expect(
-      isDuplicateStagePublishOutput({
-        stderr: "npm error You cannot publish over the previously published versions: 1.2.3.",
-        stdout: "",
-        version: "1.2.3",
-      }),
-    ).toStrictEqual(true);
-    expect(
-      isDuplicateStagePublishOutput({
+      classifyStagePublishDuplicateOutput({
         stderr: "",
         stdout: "version 1.2.3 is already staged",
         version: "1.2.3",
       }),
-    ).toStrictEqual(true);
+    ).toStrictEqual({
+      _tag: "AlreadyStaged",
+    });
+  });
+
+  it("classifies duplicate published package output as public release completion", () => {
     expect(
-      isDuplicateStagePublishOutput({
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error You cannot publish over the previously published versions: 1.2.3.",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "AlreadyPublished",
+    });
+  });
+
+  it("classifies generic duplicate package output as ambiguous", () => {
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error version 1.2.3 already exists",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "DuplicateVersion",
+    });
+  });
+
+  it("ignores unrelated stage publish failures", () => {
+    expect(
+      classifyStagePublishDuplicateOutput({
         stderr: "npm error authentication failed",
         stdout: "",
         version: "1.2.3",
       }),
-    ).toStrictEqual(false);
+    ).toStrictEqual({
+      _tag: "Unknown",
+    });
+    expect(
+      classifyStagePublishDuplicateOutput({
+        stderr: "npm error timed out while preparing 1.2.3",
+        stdout: "",
+        version: "1.2.3",
+      }),
+    ).toStrictEqual({
+      _tag: "Unknown",
+    });
   });
 });

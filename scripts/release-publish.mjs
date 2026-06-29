@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
-  isDuplicateStagePublishOutput,
+  classifyStagePublishDuplicateOutput,
   packageTagName,
   oidcPublishEnvironmentViolations,
   publishedFileViolations,
@@ -169,16 +169,14 @@ const runStagePublish = (stageDirectory) => {
     };
   }
 
-  if (
-    isDuplicateStagePublishOutput({
-      stderr: result.stderr,
-      stdout: result.stdout,
-      version,
-    })
-  ) {
-    return {
-      _tag: "AlreadyStaged",
-    };
+  const duplicate = classifyStagePublishDuplicateOutput({
+    stderr: result.stderr,
+    stdout: result.stdout,
+    version,
+  });
+
+  if (duplicate._tag !== "Unknown") {
+    return duplicate;
   }
 
   throw Object.assign(new Error(`npm ${stagePublishCommandArguments(stageDirectory).join(" ")} failed.`), {
@@ -235,23 +233,35 @@ try {
     const stagedTagName = stagedPackageTagName(version);
 
     if (gitTagExists(stagedTagName)) {
-      process.stdout.write(`${publicPackageName}@${version} is already staged; skipping npm stage publish.\n`);
+      process.stdout.write(
+        `${stagedTagName} marker exists; verifying npm staging state before skipping.\n`,
+      );
+    }
+
+    const oidcViolations = oidcPublishEnvironmentViolations(process.env);
+    if (oidcViolations.length > 0) {
+      throw new Error(
+        [
+          "Refusing npm stage publish because GitHub Actions OIDC is unavailable.",
+          ...oidcViolations.map((violation) => `- ${violation}`),
+        ].join("\n"),
+      );
+    }
+
+    const stageResult = runStagePublish(stageDirectory);
+
+    if (
+      stageResult._tag === "AlreadyPublished" ||
+      (stageResult._tag === "DuplicateVersion" && isVersionAlreadyPublished())
+    ) {
+      process.stdout.write(
+        `${publicPackageName}@${version} is already published; ensuring public git tag.\n`,
+      );
+      ensureGitTag(packageTagName(version));
     } else {
-      const oidcViolations = oidcPublishEnvironmentViolations(process.env);
-      if (oidcViolations.length > 0) {
-        throw new Error(
-          [
-            "Refusing npm stage publish because GitHub Actions OIDC is unavailable.",
-            ...oidcViolations.map((violation) => `- ${violation}`),
-          ].join("\n"),
-        );
-      }
-
-      const stageResult = runStagePublish(stageDirectory);
-
-      if (stageResult._tag === "AlreadyStaged") {
+      if (stageResult._tag === "AlreadyStaged" || stageResult._tag === "DuplicateVersion") {
         process.stdout.write(
-          `${publicPackageName}@${version} is already staged in npm; repairing staged marker tag.\n`,
+          `${publicPackageName}@${version} is already staged in npm; ensuring staged marker tag.\n`,
         );
       }
 

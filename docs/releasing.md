@@ -64,16 +64,20 @@ If unreleased changesets exist, the action opens or updates a `Version packages`
 PR. When that PR is merged, the same workflow builds `effect-view-server` and
 stages a sanitized npm artifact through trusted publishing. A maintainer must
 then approve the staged package with `npm stage approve <stage-id>` to publish
-it publicly, or reject it with `npm stage reject <stage-id>`. The staged
-artifact intentionally excludes source maps, source-map references, scripts,
-dev dependencies, internal
+it publicly, or reject it with `npm stage reject <stage-id>`. After approval,
+manually run the `Release` workflow on `main`; the release script observes that
+the version is now public and creates the public
+`effect-view-server@<version>` git tag. The staged artifact intentionally
+excludes source maps, source-map references, scripts, dev dependencies, internal
 `@effect-view-server/*` workspace metadata, and internal workspace import
 specifiers. The publish script skips `effect-view-server@0.0.0`, so enabling
 this workflow cannot accidentally publish the placeholder development version.
-The staging job may push an `effect-view-server@<version>-staged` marker tag so
-workflow reruns do not try to stage the same semver version again while approval
-is pending. The public `effect-view-server@<version>` release tag is only
-created after npm reports that the version is actually published.
+The staging job may push an `effect-view-server@<version>-staged` marker tag as
+a best-effort signal that approval is pending. It is not authoritative: reruns
+still ask npm so rejected stages can be restaged and approved stages can be
+converted into public release tags. The public
+`effect-view-server@<version>` release tag is only created after npm reports
+that the version is actually published.
 
 ## Manual checks
 

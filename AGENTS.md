@@ -152,7 +152,8 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 - The npm trusted publisher must allow `npm stage publish` only. Do not enable direct `npm publish` unless explicitly changing the release process.
 - The release workflow may build with `vp`, but must invoke `node scripts/release-publish.mjs` directly for the final stage publish so GitHub's OIDC environment reaches `npm stage publish`.
 - CI stages npm releases with `npm stage publish`; a maintainer approves the staged package later with `npm stage approve <stage-id>` or rejects it with `npm stage reject <stage-id>`.
-- The stage job may push an `effect-view-server@<version>-staged` marker tag to make reruns idempotent while npm approval is pending. Do not create the public `effect-view-server@<version>` release tag until the package is actually published.
+- The stage job may push an `effect-view-server@<version>-staged` marker tag as a best-effort pending-approval signal, but the release script must still ask npm on reruns so rejected stages can be restaged and approved stages can become public release tags.
+- After approving a staged package, manually run the `Release` workflow on `main` so CI observes the public npm version and creates the public `effect-view-server@<version>` git tag. Do not create the public tag before npm reports the version as published.
 
 ## Common Blockers
 

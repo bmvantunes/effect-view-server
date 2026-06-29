@@ -29,15 +29,38 @@ export const stagePublishCommandArguments = (stageDirectory) => [
 
 const escapedRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export const isDuplicateStagePublishOutput = ({ stderr, stdout, version }) => {
+export const classifyStagePublishDuplicateOutput = ({ stderr, stdout, version }) => {
   const output = `${stdout}\n${stderr}`;
   const versionPattern = escapedRegExp(version);
-  const duplicatePattern = "(already exists|already staged|cannot publish over|previously published)";
 
-  return new RegExp(
-    `(?:${duplicatePattern}).*${versionPattern}|${versionPattern}.*(?:${duplicatePattern})`,
-    "i",
-  ).test(output);
+  const hasVersion = new RegExp(versionPattern, "i").test(output);
+  if (!hasVersion) {
+    return {
+      _tag: "Unknown",
+    };
+  }
+
+  if (/previously published|cannot publish over|cannot modify pre-existing version/i.test(output)) {
+    return {
+      _tag: "AlreadyPublished",
+    };
+  }
+
+  if (/already exists|already staged|already pending|staged version/i.test(output)) {
+    if (/already exists/i.test(output) && !/already staged|already pending|staged version/i.test(output)) {
+      return {
+        _tag: "DuplicateVersion",
+      };
+    }
+
+    return {
+      _tag: "AlreadyStaged",
+    };
+  }
+
+  return {
+    _tag: "Unknown",
+  };
 };
 
 export const stripSourceMapReference = (contents) =>
@@ -95,7 +118,7 @@ export const internalPublishViolations = (workspacePackages) =>
 
 export const isTrustedPublishEnvironment = (env) =>
   env.GITHUB_ACTIONS === "true" &&
-  env.GITHUB_EVENT_NAME === "push" &&
+  (env.GITHUB_EVENT_NAME === "push" || env.GITHUB_EVENT_NAME === "workflow_dispatch") &&
   env.GITHUB_REF === "refs/heads/main" &&
   env.GITHUB_REPOSITORY === expectedPublishRepository;
 

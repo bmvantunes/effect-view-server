@@ -165,6 +165,7 @@ try {
     filter: (source) => !source.endsWith(".map"),
   });
   stripPublishedSourceMapReferences(distDirectory);
+  cpSync(new URL("../README.md", import.meta.url), join(stageDirectory, "README.md"));
   writeFileSync(
     join(stageDirectory, "package.json"),
     `${JSON.stringify(sanitizePublicPackageJson(packageJson), null, 2)}\n`,

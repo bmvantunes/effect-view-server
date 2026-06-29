@@ -231,7 +231,7 @@ const ensureGitTag = (tagName, targetRef = "HEAD", options = {}) => {
         throw new Error(`${tagName} already points at ${existingTarget}, expected ${expectedTarget}.`);
       }
 
-      run("git", ["tag", "-f", "-a", tagName, targetRef, "-m", tagName]);
+      run("git", ["tag", "-f", "-a", tagName, expectedTarget, "-m", tagName]);
       pushGitTag(tagName, existingObject);
       return;
     }
@@ -239,7 +239,7 @@ const ensureGitTag = (tagName, targetRef = "HEAD", options = {}) => {
     return;
   }
 
-  run("git", ["tag", "-a", tagName, targetRef, "-m", tagName]);
+  run("git", ["tag", "-a", tagName, expectedTarget, "-m", tagName]);
   pushGitTag(tagName, undefined);
 };
 
@@ -321,12 +321,15 @@ try {
         });
       } else if (stageResult._tag === "AlreadyStaged" || stageResult._tag === "AlreadyPublished") {
         if (!gitTagExists(stagedTagName)) {
-          throw new Error(
-            `npm reported ${publicPackageName}@${version} as already staged, but ${stagedTagName} is missing. Refusing to create an untraceable staged marker.`,
+          process.stdout.write(
+            `npm reported ${publicPackageName}@${version} as already staged; recreating missing ${stagedTagName} marker.\n`,
           );
+          ensureGitTag(stagedTagName, "HEAD", {
+            allowMove: true,
+          });
+        } else {
+          process.stdout.write(`${publicPackageName}@${version} is already staged; keeping ${stagedTagName}.\n`);
         }
-
-        process.stdout.write(`${publicPackageName}@${version} is already staged; keeping ${stagedTagName}.\n`);
       } else if (stageResult._tag === "DuplicateVersion") {
         throw new Error(
           `npm reported a duplicate ${publicPackageName}@${version}, but npm view does not report it as published. Refusing to guess whether a stage exists.`,

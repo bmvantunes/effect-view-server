@@ -38,7 +38,7 @@ export const sanitizePublicPackageJson = (packageJson) =>
     ["repository", cloneJson(packageJson.repository)],
     ["type", packageJson.type],
     ["exports", cloneJson(packageJson.exports)],
-    ["files", ["dist"]],
+    ["files", ["dist", "README.md"]],
     [
       "publishConfig",
       {

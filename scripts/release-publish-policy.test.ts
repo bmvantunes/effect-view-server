@@ -53,7 +53,7 @@ const publicPackageJson = {
       import: "./dist/client.js",
     },
   },
-  files: ["dist"],
+  files: ["dist", "README.md"],
   publishConfig: {
     provenance: true,
   },
@@ -210,7 +210,7 @@ describe("release publish policy", () => {
           import: "./dist/client.js",
         },
       },
-      files: ["dist"],
+      files: ["dist", "README.md"],
       publishConfig: {
         access: "public",
         provenance: true,
@@ -252,7 +252,7 @@ describe("release publish policy", () => {
           import: "./dist/client.js",
         },
       },
-      files: ["dist"],
+      files: ["dist", "README.md"],
       publishConfig: {
         access: "public",
         provenance: true,
@@ -266,6 +266,17 @@ describe("release publish policy", () => {
         {
           relativePath: "dist/client.js",
           contents: 'const id = Symbol("@effect-view-server/config/KafkaCodecValue");',
+        },
+      ]),
+    ).toStrictEqual([]);
+  });
+
+  it("accepts the staged npm README", () => {
+    expect(
+      publishedFileViolations([
+        {
+          relativePath: "README.md",
+          contents: "# Effect View Server\n",
         },
       ]),
     ).toStrictEqual([]);

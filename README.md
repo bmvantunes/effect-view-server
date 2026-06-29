@@ -1,4 +1,4 @@
-# view-server-smart
+# Effect View Server
 
 ## Guides
 

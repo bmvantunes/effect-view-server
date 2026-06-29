@@ -22,7 +22,8 @@
     "directory": "packages/effect-view-server"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "type": "module",
   "exports": {

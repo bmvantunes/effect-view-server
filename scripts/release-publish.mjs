@@ -154,6 +154,28 @@ const isVersionAlreadyPublished = () => {
   return result.status === 0 && JSON.parse(result.stdout) === version;
 };
 
+const hasPendingStageForVersion = () => {
+  const result = commandResult("npm", ["stage", "list", `${publicPackageName}@${version}`, "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (result.status !== 0) {
+    throw Object.assign(
+      new Error(`npm stage list ${publicPackageName}@${version} --json failed.\n${result.stderr}`),
+      {
+        exitCode: result.status ?? 1,
+      },
+    );
+  }
+
+  const stages = JSON.parse(result.stdout);
+
+  return Array.isArray(stages)
+    ? stages.length > 0
+    : stages !== null && typeof stages === "object" && Object.keys(stages).length > 0;
+};
+
 const runStagePublish = (stageDirectory) => {
   const result = commandResult("npm", stagePublishCommandArguments(stageDirectory), {
     encoding: "utf8",
@@ -184,20 +206,63 @@ const runStagePublish = (stageDirectory) => {
   });
 };
 
-const gitTagExists = (tagName) => {
-  const existingTag = commandResult("git", ["rev-parse", "--quiet", "--verify", `refs/tags/${tagName}`], {
-    stdio: "ignore",
+const gitRefTarget = (ref) => {
+  const target = commandResult("git", ["rev-parse", "--quiet", "--verify", `${ref}^{}`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
   });
 
-  return existingTag.status === 0;
+  return target.status === 0 ? target.stdout.trim() : undefined;
 };
 
-const ensureGitTag = (tagName) => {
-  if (gitTagExists(tagName)) {
+const gitTagExists = (tagName) => gitRefTarget(`refs/tags/${tagName}`) !== undefined;
+
+const pushGitTag = (tagName, moved) => {
+  run(
+    "git",
+    moved
+      ? ["push", `--force-with-lease=refs/tags/${tagName}`, "origin", `refs/tags/${tagName}`]
+      : ["push", "origin", `refs/tags/${tagName}`],
+  );
+};
+
+const ensureGitTag = (tagName, targetRef = "HEAD", options = {}) => {
+  const expectedTarget = gitRefTarget(targetRef);
+
+  if (expectedTarget === undefined) {
+    throw new Error(`Cannot create ${tagName} because ${targetRef} does not resolve to a git object.`);
+  }
+
+  const existingTarget = gitRefTarget(`refs/tags/${tagName}`);
+
+  if (existingTarget !== undefined) {
+    if (existingTarget !== expectedTarget) {
+      if (options.allowMove !== true) {
+        throw new Error(`${tagName} already points at ${existingTarget}, expected ${expectedTarget}.`);
+      }
+
+      run("git", ["tag", "-f", "-a", tagName, targetRef, "-m", tagName]);
+      pushGitTag(tagName, true);
+      return;
+    }
+
     return;
   }
 
-  run("git", ["tag", "-a", tagName, "-m", tagName]);
+  run("git", ["tag", "-a", tagName, targetRef, "-m", tagName]);
+  pushGitTag(tagName, false);
+};
+
+const ensurePublishedVersionTag = () => {
+  const stagedTagName = stagedPackageTagName(version);
+
+  if (!gitTagExists(stagedTagName)) {
+    throw new Error(
+      `Cannot create ${packageTagName(version)} because ${stagedTagName} does not exist. Stage the package before approving it.`,
+    );
+  }
+
+  ensureGitTag(packageTagName(version), `refs/tags/${stagedTagName}`);
 };
 
 let exitCode = 0;
@@ -222,7 +287,7 @@ try {
 
   if (isVersionAlreadyPublished()) {
     process.stdout.write(`${publicPackageName}@${version} is already published; ensuring git tag.\n`);
-    ensureGitTag(packageTagName(version));
+    ensurePublishedVersionTag();
   } else {
     if (!isPackageAlreadyCreated()) {
       throw new Error(
@@ -232,40 +297,71 @@ try {
 
     const stagedTagName = stagedPackageTagName(version);
 
-    if (gitTagExists(stagedTagName)) {
-      process.stdout.write(
-        `${stagedTagName} marker exists; verifying npm staging state before skipping.\n`,
-      );
-    }
+    const pendingStageExists = hasPendingStageForVersion();
 
-    const oidcViolations = oidcPublishEnvironmentViolations(process.env);
-    if (oidcViolations.length > 0) {
-      throw new Error(
-        [
-          "Refusing npm stage publish because GitHub Actions OIDC is unavailable.",
-          ...oidcViolations.map((violation) => `- ${violation}`),
-        ].join("\n"),
-      );
-    }
-
-    const stageResult = runStagePublish(stageDirectory);
-
-    if (
-      stageResult._tag === "AlreadyPublished" ||
-      (stageResult._tag === "DuplicateVersion" && isVersionAlreadyPublished())
-    ) {
-      process.stdout.write(
-        `${publicPackageName}@${version} is already published; ensuring public git tag.\n`,
-      );
-      ensureGitTag(packageTagName(version));
-    } else {
-      if (stageResult._tag === "AlreadyStaged" || stageResult._tag === "DuplicateVersion") {
-        process.stdout.write(
-          `${publicPackageName}@${version} is already staged in npm; ensuring staged marker tag.\n`,
+    if (pendingStageExists) {
+      if (!gitTagExists(stagedTagName)) {
+        throw new Error(
+          `${publicPackageName}@${version} is pending npm approval, but ${stagedTagName} is missing. Refusing to create an untraceable staged marker.`,
         );
       }
 
-      ensureGitTag(stagedTagName);
+      process.stdout.write(
+        `${publicPackageName}@${version} is already pending npm approval; keeping ${stagedTagName}.\n`,
+      );
+    } else {
+      const oidcViolations = oidcPublishEnvironmentViolations(process.env);
+      if (oidcViolations.length > 0) {
+        throw new Error(
+          [
+            "Refusing npm stage publish because GitHub Actions OIDC is unavailable.",
+            ...oidcViolations.map((violation) => `- ${violation}`),
+          ].join("\n"),
+        );
+      }
+
+      ensureGitTag(stagedTagName, "HEAD", {
+        allowMove: true,
+      });
+
+      const stageResult = runStagePublish(stageDirectory);
+
+      const duplicateVersionIsPublished =
+        (stageResult._tag === "AlreadyPublished" || stageResult._tag === "DuplicateVersion") &&
+        isVersionAlreadyPublished();
+
+      if (duplicateVersionIsPublished) {
+        process.stdout.write(
+          `${publicPackageName}@${version} is already published; ensuring public git tag.\n`,
+        );
+        ensurePublishedVersionTag();
+      } else {
+        if (stageResult._tag === "DuplicateVersion") {
+          if (!hasPendingStageForVersion()) {
+            throw new Error(
+              `npm reported a duplicate ${publicPackageName}@${version}, but npm stage list does not show a pending stage and npm view does not report it as published.`,
+            );
+          }
+
+          process.stdout.write(
+            `${publicPackageName}@${version} has a pending npm stage after a duplicate response; keeping staged marker tag.\n`,
+          );
+        }
+
+        if (stageResult._tag === "AlreadyStaged" || stageResult._tag === "AlreadyPublished") {
+          if (!hasPendingStageForVersion()) {
+            throw new Error(
+              `npm reported ${publicPackageName}@${version} as staged, but npm stage list does not show a pending stage.`,
+            );
+          }
+
+          process.stdout.write(
+            `${publicPackageName}@${version} is already staged in npm; ensuring staged marker tag.\n`,
+          );
+        }
+
+        ensureGitTag(stagedTagName);
+      }
     }
   }
 } catch (error) {

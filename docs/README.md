@@ -11,6 +11,7 @@ design sketches.
 - [Health And Metrics](./health-and-metrics.md)
 - [Query Semantics](./query-semantics.md)
 - [Benchmarks And Capacity](./benchmarks-and-capacity.md)
+- [Releasing](./releasing.md)
 - [Deployment](./deployment.md)
 - [Operations](./operations.md)
 

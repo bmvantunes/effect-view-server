@@ -144,6 +144,10 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 - Package export checks must cover approved root exports, approved subexports, and rejected deep/internal subpaths. A package seam is not enforced if `@effect-view-server/package/src/...`, `@effect-view-server/package/dist/...`, or unapproved nested subexports can resolve.
 - Consumer docs, examples, and application code must import the publishable package subpaths (`effect-view-server/config`, `effect-view-server/react`, etc.). The `@effect-view-server/*` workspace packages are internal implementation packages and should appear only in workspace package manifests, internal package source, build scripts, and seam tests.
 - The publishable `effect-view-server` package must not emit runtime `.js` or `.d.ts` imports to internal `@effect-view-server/*` packages. Build or export checks must fail if the facade leaks internal workspace package specifiers.
+- Publish only the `effect-view-server` package. Internal `@effect-view-server/*` workspace packages stay private and must not be published separately.
+- The npm publish artifact must be staged and sanitized before publishing. Do not publish the workspace package directory directly. The staged artifact must exclude source maps, source-map references, scripts, dev dependencies, internal `@effect-view-server/*` package metadata, and internal workspace import specifiers.
+- Use Changesets for release intent. If a PR should publish a new npm version, add a changeset with `vp run -w changeset`. Do not add a changeset for private-only CI, docs, examples, benchmark, or internal-only changes that should not publish.
+- npm publishing uses GitHub Actions trusted publishing/OIDC from `.github/workflows/release.yml`. Do not add `NPM_TOKEN`; keep `id-token: write` and `publishConfig.provenance: true`.
 
 ## Common Blockers
 

@@ -75,6 +75,11 @@ export const isTrustedPublishEnvironment = (env) =>
   env.GITHUB_REF === "refs/heads/main" &&
   env.GITHUB_REPOSITORY === expectedPublishRepository;
 
+export const oidcPublishEnvironmentViolations = (env) =>
+  ["ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+    .filter((name) => env[name] === undefined || env[name] === "")
+    .map((name) => `${name} is required for npm trusted publishing.`);
+
 export const publishDecision = ({ env, version, workspacePackages }) => {
   if (version === "0.0.0") {
     return {

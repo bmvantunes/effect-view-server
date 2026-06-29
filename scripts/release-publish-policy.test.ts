@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   internalPublishViolations,
+  oidcPublishEnvironmentViolations,
   packageTagName,
   publishedFileViolations,
   publicPackageName,
@@ -185,6 +186,19 @@ describe("release publish policy", () => {
     ).toStrictEqual({
       _tag: "Publish",
     });
+  });
+
+  it("requires GitHub Actions OIDC variables before trusted npm publishing", () => {
+    expect(oidcPublishEnvironmentViolations({})).toStrictEqual([
+      "ACTIONS_ID_TOKEN_REQUEST_URL is required for npm trusted publishing.",
+      "ACTIONS_ID_TOKEN_REQUEST_TOKEN is required for npm trusted publishing.",
+    ]);
+    expect(
+      oidcPublishEnvironmentViolations({
+        ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.actions.githubusercontent.com",
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: "token",
+      }),
+    ).toStrictEqual([]);
   });
 
   it("sanitizes the public package manifest before staging the npm artifact", () => {

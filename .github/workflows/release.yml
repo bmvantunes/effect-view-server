@@ -101,5 +101,6 @@ jobs:
 
       - name: Publish to npm
         run: |
-          vp run -w release:publish
+          vp run effect-view-server#build
+          node scripts/release-publish.mjs
           git push --follow-tags

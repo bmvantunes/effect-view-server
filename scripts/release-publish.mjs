@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
   packageTagName,
+  oidcPublishEnvironmentViolations,
   publishedFileViolations,
   publicPackageName,
   publishDecision,
@@ -177,6 +178,18 @@ try {
     process.stdout.write(`${publicPackageName}@${version} is already published; ensuring git tag.\n`);
     ensureGitTag();
     process.exit(0);
+  }
+
+  const oidcViolations = oidcPublishEnvironmentViolations(process.env);
+  if (oidcViolations.length > 0) {
+    process.stderr.write(
+      [
+        "Refusing npm publish because GitHub Actions OIDC is unavailable.",
+        ...oidcViolations.map((violation) => `- ${violation}`),
+      ].join("\n"),
+    );
+    process.stderr.write("\n");
+    process.exit(1);
   }
 
   run("npm", ["publish", stageDirectory, "--provenance", "--access", "public"]);

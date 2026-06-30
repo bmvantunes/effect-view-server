@@ -13,6 +13,20 @@
 - [Operations](./docs/operations.md)
 - [Examples](./examples/README.md)
 
+## Install
+
+Core/server-only consumers need only the main package:
+
+```sh
+npm install effect-view-server
+```
+
+React consumers should also install the React subpath peers:
+
+```sh
+npm install effect-view-server react react-dom @effect/atom-react scheduler
+```
+
 ## Remote React provider
 
 Server code starts a runtime through Effect RPC WebSocket plus same-server

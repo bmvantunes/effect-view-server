@@ -293,6 +293,28 @@ describe("release publish policy", () => {
     });
   });
 
+  it("keeps React-only packages out of the public package hard dependencies", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../packages/effect-view-server/package.json", import.meta.url), "utf8"),
+    );
+
+    expect({
+      atomReactDependency: packageJson.dependencies["@effect/atom-react"],
+      atomReactPeerDependency: packageJson.peerDependencies["@effect/atom-react"],
+      atomReactPeerOptional: packageJson.peerDependenciesMeta["@effect/atom-react"].optional,
+      dependency: packageJson.dependencies.scheduler,
+      peerDependency: packageJson.peerDependencies.scheduler,
+      peerOptional: packageJson.peerDependenciesMeta.scheduler.optional,
+    }).toStrictEqual({
+      atomReactDependency: undefined,
+      atomReactPeerDependency: "4.0.0-beta.91",
+      atomReactPeerOptional: true,
+      dependency: undefined,
+      peerDependency: "0.27.0",
+      peerOptional: true,
+    });
+  });
+
   it("omits undefined optional manifest fields from the staged npm artifact", () => {
     expect(
       sanitizePublicPackageJson({

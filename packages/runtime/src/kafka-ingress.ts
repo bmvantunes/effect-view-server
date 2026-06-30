@@ -110,13 +110,15 @@ type KafkaBatchTopic<Topics extends ViewServerRuntimeTopicDefinitions> = Extract
 >;
 type KafkaDecodedTopicTombstone<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly _tag: "Tombstone";
-  readonly sourceKey: string;
+  readonly fallbackRowKey: string | null;
+  readonly keyFingerprint: string;
   readonly viewServerTopic: KafkaBatchTopic<Topics>;
 };
 type KafkaDecodedTopicRow<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly _tag: "Row";
+  readonly fallbackRowKey: string | null;
+  readonly keyFingerprint: string;
   readonly message: KafkaDecodedTopicMessage<Topics, KafkaBatchTopic<Topics>>;
-  readonly sourceKey: string | null;
 };
 type KafkaDecodedTopicMutation<Topics extends ViewServerRuntimeTopicDefinitions> =
   | KafkaDecodedTopicRow<Topics>
@@ -142,6 +144,15 @@ type KafkaTombstoneKeyLedger<Topics extends ViewServerRuntimeTopicDefinitions> =
   KafkaBatchTopic<Topics>,
   Map<string, Map<string, string>>
 >;
+type KafkaResolvedTombstoneRowKey =
+  | {
+      readonly _tag: "Resolved";
+      readonly rowKey: string;
+      readonly evictLedgerEntry: () => void;
+    }
+  | {
+      readonly _tag: "Unresolved";
+    };
 type KafkaConsumerHealthListenerWaiter = {
   readonly expected: number;
   readonly deferred: Deferred.Deferred<void>;
@@ -435,6 +446,9 @@ const kafkaRuntimeTopicHasKeyCodec = (topic: {
   readonly key?: KafkaCodec<unknown, unknown>;
 }): topic is KafkaTopicWithKeyCodec => topic.key !== undefined;
 
+const kafkaKeyFingerprint = (keyBytes: Uint8Array): string =>
+  Buffer.from(keyBytes).toString("base64");
+
 const kafkaDecodedObjectKeyToKeyId = (
   key: object,
   rowKeyField: string,
@@ -475,29 +489,39 @@ const kafkaDecodedKeyToKeyId = (
   );
 };
 
-const decodeKafkaTombstoneRowKey = Effect.fn(
-  "ViewServerRuntime.kafka.message.decodeTombstoneRowKey",
-)(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
-  topic: {
-    readonly key?: KafkaCodec<unknown, unknown>;
-    readonly viewServerTopic: Extract<keyof Topics, string>;
-  },
-  input: {
-    readonly keyBytes: Uint8Array;
-    readonly metadata: KafkaMessageMetadata;
-  },
-) {
-  if (!kafkaRuntimeTopicHasKeyCodec(topic)) {
-    return kafkaKeyTextDecoder.decode(input.keyBytes);
-  }
+const decodeKafkaKeyResolution = Effect.fn("ViewServerRuntime.kafka.message.decodeKeyResolution")(
+  function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+    config: ViewServerConfig<Topics>,
+    topic: {
+      readonly key?: KafkaCodec<unknown, unknown>;
+      readonly viewServerTopic: Extract<keyof Topics, string>;
+    },
+    input: {
+      readonly keyBytes: Uint8Array;
+      readonly metadata: KafkaMessageMetadata;
+    },
+  ) {
+    const keyFingerprint = kafkaKeyFingerprint(input.keyBytes);
+    if (!kafkaRuntimeTopicHasKeyCodec(topic)) {
+      return {
+        keyFingerprint,
+        fallbackRowKey: kafkaKeyTextDecoder.decode(input.keyBytes),
+      };
+    }
 
-  const key = yield* decodeKafkaCodec(topic.key, {
-    bytes: input.keyBytes,
-    metadata: input.metadata,
-  });
-  return yield* kafkaDecodedKeyToKeyId(key, config.topics[topic.viewServerTopic].key);
-});
+    const key = yield* decodeKafkaCodec(topic.key, {
+      bytes: input.keyBytes,
+      metadata: input.metadata,
+    });
+    const fallbackRowKey = yield* Effect.option(
+      kafkaDecodedKeyToKeyId(key, config.topics[topic.viewServerTopic].key),
+    );
+    return {
+      keyFingerprint,
+      fallbackRowKey: Option.isSome(fallbackRowKey) ? fallbackRowKey.value : null,
+    };
+  },
+);
 
 const kafkaPublishedRowKey = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -540,21 +564,45 @@ const recordKafkaSourceKeyRowMapping = <const Topics extends ViewServerRuntimeTo
   ledger: KafkaTombstoneKeyLedger<Topics>,
   viewServerTopic: KafkaBatchTopic<Topics>,
   sourceTopic: string,
-  sourceKey: string | null,
+  keyFingerprint: string,
+  fallbackRowKey: string | null,
   rowKey: string,
 ): void => {
-  if (sourceKey === null) {
+  if (fallbackRowKey === rowKey) {
     return;
   }
-  kafkaTombstoneSourceTopicLedger(ledger, viewServerTopic, sourceTopic).set(sourceKey, rowKey);
+  kafkaTombstoneSourceTopicLedger(ledger, viewServerTopic, sourceTopic).set(keyFingerprint, rowKey);
 };
 
 const resolveKafkaTombstoneRowKey = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   ledger: KafkaTombstoneKeyLedger<Topics>,
   viewServerTopic: KafkaBatchTopic<Topics>,
   sourceTopic: string,
-  sourceKey: string,
-): string => ledger.get(viewServerTopic)?.get(sourceTopic)?.get(sourceKey) ?? sourceKey;
+  keyFingerprint: string,
+  fallbackRowKey: string | null,
+): KafkaResolvedTombstoneRowKey => {
+  const sourceLedger = ledger.get(viewServerTopic)?.get(sourceTopic);
+  const rowKey = sourceLedger?.get(keyFingerprint);
+  if (rowKey !== undefined) {
+    return {
+      _tag: "Resolved",
+      rowKey,
+      evictLedgerEntry: () => {
+        sourceLedger?.delete(keyFingerprint);
+      },
+    };
+  }
+  if (fallbackRowKey !== null) {
+    return {
+      _tag: "Resolved",
+      rowKey: fallbackRowKey,
+      evictLedgerEntry: () => undefined,
+    };
+  }
+  return {
+    _tag: "Unresolved",
+  };
+};
 
 export const recordKafkaAssignments = Effect.fn(
   "ViewServerRuntime.kafka.consumer.recordAssignments",
@@ -847,7 +895,7 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
             ),
           );
       }
-      const sourceKey = yield* decodeKafkaTombstoneRowKey(config, topic, {
+      const keyResolution = yield* decodeKafkaKeyResolution(config, topic, {
         keyBytes: message.key,
         metadata,
       }).pipe(
@@ -907,7 +955,8 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
       );
       const decoded: KafkaDecodedTopicTombstone<Topics> = {
         _tag: "Tombstone",
-        sourceKey,
+        fallbackRowKey: keyResolution.fallbackRowKey,
+        keyFingerprint: keyResolution.keyFingerprint,
         viewServerTopic: topic.viewServerTopic,
       };
       return Option.some({
@@ -1001,13 +1050,15 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
         onSuccess: (decodedMessage) => Effect.succeed(decodedMessage),
       }),
     );
-    const sourceKeyOption = yield* Effect.option(
-      kafkaDecodedKeyToKeyId(decoded.sourceKey, config.topics[decoded.viewServerTopic].key),
-    );
+    const keyResolution = yield* decodeKafkaKeyResolution(config, topic, {
+      keyBytes,
+      metadata,
+    });
     const decodedMutation: KafkaDecodedTopicRow<Topics> = {
       _tag: "Row",
+      fallbackRowKey: keyResolution.fallbackRowKey,
+      keyFingerprint: keyResolution.keyFingerprint,
       message: decoded,
-      sourceKey: Option.isSome(sourceKeyOption) ? sourceKeyOption.value : null,
     };
     return Option.some({
       decoded: decodedMutation,
@@ -1080,7 +1131,8 @@ const publishKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.publis
                 tombstoneKeyLedger,
                 group.viewServerTopic,
                 entry.message.sourceTopic,
-                entry.message.decoded.sourceKey,
+                entry.message.decoded.keyFingerprint,
+                entry.message.decoded.fallbackRowKey,
                 kafkaPublishedRowKey(config, group.viewServerTopic, entry.row),
               );
             });
@@ -1104,9 +1156,13 @@ const publishKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.publis
       tombstoneKeyLedger,
       tombstone.viewServerTopic,
       message.sourceTopic,
-      tombstone.sourceKey,
+      tombstone.keyFingerprint,
+      tombstone.fallbackRowKey,
     );
-    yield* client.delete(tombstone.viewServerTopic, rowKey).pipe(
+    if (rowKey._tag === "Unresolved") {
+      return true;
+    }
+    yield* client.delete(tombstone.viewServerTopic, rowKey.rowKey).pipe(
       Effect.matchCauseEffect({
         onFailure: (cause) => {
           if (Cause.hasInterruptsOnly(cause)) {
@@ -1133,7 +1189,11 @@ const publishKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.publis
               Effect.andThen(Effect.failCause(kafkaIngressFailureCause(processingError, cause))),
             );
         },
-        onSuccess: () => Effect.succeed(true),
+        onSuccess: () =>
+          Effect.sync(() => {
+            rowKey.evictLedgerEntry();
+            return true;
+          }),
       }),
     );
   });
@@ -1250,7 +1310,14 @@ export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messa
               return Effect.failCause(cause);
             }
             const preserveLastErrorForSourceTopic = Option.getOrUndefined(
-              Option.map(Cause.findErrorOption(cause), (error) => error.sourceTopic),
+              Option.map(
+                Option.filter(
+                  Cause.findErrorOption(cause),
+                  (error): error is ViewServerKafkaIngressError =>
+                    error instanceof ViewServerKafkaIngressError,
+                ),
+                (error) => error.sourceTopic,
+              ),
             );
             return Effect.exit(
               publishKafkaDecodedBatch(

@@ -1073,7 +1073,6 @@ export type KafkaDecodedTopicMessage<
   Topics extends KafkaTopicSchemaRegistry,
   ViewTopic extends Extract<keyof Topics, string>,
 > = {
-  readonly sourceKey: unknown;
   readonly viewServerTopic: ViewTopic;
   readonly row: TopicRow<Topics, ViewTopic>;
 };
@@ -1250,7 +1249,6 @@ export type KafkaRuntimeTopicDefinition<
 > = KafkaTopicDefinitionMarker &
   KafkaTopicSchemaMarker<Topics, KafkaWritableViewTopic<Topics>> &
   KafkaTopicDecoder<Topics, KafkaWritableViewTopic<Topics>, TopicRegions[number], unknown> & {
-    readonly key?: KafkaCodec<unknown, unknown>;
     readonly regions: TopicRegions;
     readonly viewServerTopic: KafkaWritableViewTopic<Topics>;
   };
@@ -1588,7 +1586,6 @@ const makeKafkaTopicWithKey = <
         }),
       );
       return {
-        sourceKey: key,
         viewServerTopic: topic.viewServerTopic,
         row,
       };
@@ -1631,7 +1628,6 @@ const makeKafkaTopicWithoutKey = <
         }),
       );
       return {
-        sourceKey: key,
         viewServerTopic: topic.viewServerTopic,
         row,
       };

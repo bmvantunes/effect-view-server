@@ -108,12 +108,10 @@
     "@bufbuild/protobuf": "2.12.0",
     "@connectrpc/connect": "2.1.2",
     "@connectrpc/connect-node": "2.1.2",
-    "@effect/atom-react": "4.0.0-beta.91",
     "@effect/platform-browser": "4.0.0-beta.91",
     "@effect/platform-node": "4.0.0-beta.91",
     "@platformatic/kafka": "2.2.3",
-    "effect": "4.0.0-beta.91",
-    "scheduler": "0.27.0"
+    "effect": "4.0.0-beta.91"
   },
   "devDependencies": {
     "@effect-view-server/client": "workspace:*",
@@ -123,6 +121,7 @@
     "@effect-view-server/react": "workspace:*",
     "@effect-view-server/runtime": "workspace:*",
     "@effect-view-server/server": "workspace:*",
+    "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
@@ -132,14 +131,22 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
+    "@effect/atom-react": "4.0.0-beta.91",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "scheduler": "0.27.0"
   },
   "peerDependenciesMeta": {
+    "@effect/atom-react": {
+      "optional": true
+    },
     "react": {
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "scheduler": {
       "optional": true
     }
   },

@@ -880,9 +880,6 @@ importers:
       '@connectrpc/connect-node':
         specifier: 2.1.2
         version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
-      '@effect/atom-react':
-        specifier: 4.0.0-beta.91
-        version: 4.0.0-beta.91(effect@4.0.0-beta.91)(react@19.2.6)(scheduler@0.27.0)
       '@effect/platform-browser':
         specifier: 4.0.0-beta.91
         version: 4.0.0-beta.91(effect@4.0.0-beta.91)
@@ -926,6 +923,9 @@ importers:
       '@effect-view-server/server':
         specifier: workspace:*
         version: link:../server
+      '@effect/atom-react':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.91(effect@4.0.0-beta.91)(react@19.2.6)(scheduler@0.27.0)
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.91(effect@4.0.0-beta.91)(vitest@4.1.9)

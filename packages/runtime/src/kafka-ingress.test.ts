@@ -271,7 +271,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         const error = yield* Effect.flip(
           processKafkaMessage(
             corruptedViewServer,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             kafkaOptions,
             health,
@@ -347,7 +347,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
 
         yield* processKafkaMessage(
           topicOwnedViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           health,

@@ -4,13 +4,9 @@ import { commands, server } from "vitest/browser";
 import {
   defineViewServerConfig,
   type ViewServerHealth,
-  type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import {
-  createInMemoryViewServer,
-  type ViewServerInMemoryInstance,
-} from "@effect-view-server/in-memory";
+import { createInMemoryViewServer } from "@effect-view-server/in-memory";
 import { Effect, Schema } from "effect";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
@@ -57,7 +53,9 @@ const ViewServerClientProvider = react[ViewServerReactClientProvider];
 type Topics = typeof viewServer.topics;
 type OrderRow = typeof Order.Type;
 type RenderedView = Awaited<ReturnType<typeof render>>;
-type Runtime = ViewServerInMemoryInstance<Topics>;
+const createBenchmarkRuntime = () => createInMemoryViewServer(viewServer);
+type Runtime = ReturnType<typeof createBenchmarkRuntime>;
+type RuntimeClient = Runtime["client"];
 type Health = ViewServerHealth<Topics>;
 
 type BenchmarkProfile = {
@@ -222,11 +220,11 @@ const deltaOrder = (index: number): OrderRow => ({
 });
 
 const publishSeedRows: (
-  client: ViewServerRuntimeClient<Topics>,
+  client: RuntimeClient,
   count: number,
 ) => Effect.Effect<void, ViewServerRuntimeError> = Effect.fn(
   "ViewServerReact.bench.inMemoryLiveQuery.seed",
-)(function* (client: ViewServerRuntimeClient<Topics>, count: number) {
+)(function* (client: RuntimeClient, count: number) {
   let next = 0;
   while (next < count) {
     const batchCount = Math.min(seedBatchSize, count - next);
@@ -266,10 +264,10 @@ const backpressureCountFromHealth = (health: Health): number => {
 };
 
 const waitForCleanupHealth: (
-  client: ViewServerRuntimeClient<Topics>,
+  client: RuntimeClient,
 ) => Effect.Effect<Health, ViewServerRuntimeError> = Effect.fn(
   "ViewServerReact.bench.inMemoryLiveQuery.cleanupHealth",
-)(function* (client: ViewServerRuntimeClient<Topics>) {
+)(function* (client: RuntimeClient) {
   let attempts = 0;
   let health = yield* client.health();
   while (cleanupLeakCountFromHealth(health) > 0 && attempts < 50) {
@@ -328,7 +326,7 @@ function OrdersView() {
 }
 
 beforeAll(async () => {
-  const runtime = createInMemoryViewServer(viewServer);
+  const runtime = createBenchmarkRuntime();
   profile.runtime = runtime;
   await Effect.runPromise(publishSeedRows(runtime.client, profile.rowCount));
   const view = await render(

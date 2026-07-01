@@ -280,7 +280,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       : yield* dependencies
           .makeKafkaIngress(
             config,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             kafkaOptions,
             kafkaHealth,
@@ -302,7 +302,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       : yield* dependencies
           .makeGrpcIngress(
             config,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             grpcOptions,
             grpcHealth,

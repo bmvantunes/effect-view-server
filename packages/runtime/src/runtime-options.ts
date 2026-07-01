@@ -431,9 +431,6 @@ const grpcTopicSourceFromUnknown = (source: unknown): GrpcTopicSourceMetadata =>
   if (typeof source !== "object" || source === null) {
     return { _tag: "invalid", cause: source };
   }
-  if (!hasOnlyOwnStringKeys(source, ["_tag", "kind", "lifecycle", "routeBy"])) {
-    return { _tag: "invalid", cause: source };
-  }
   if (Reflect.get(source, "kind") !== "grpc") {
     return { _tag: "invalid", cause: source };
   }
@@ -443,16 +440,26 @@ const grpcTopicSourceFromUnknown = (source: unknown): GrpcTopicSourceMetadata =>
   }
   const sourceTag = Reflect.get(source, "_tag");
   if (lifecycle === "materialized") {
+    if (!hasOnlyOwnStringKeys(source, ["_tag", "kind", "lifecycle"])) {
+      return { _tag: "invalid", cause: source };
+    }
     if (sourceTag !== "GrpcMaterializedTopicSource") {
       return { _tag: "invalid", cause: source };
     }
     return { _tag: "valid", lifecycle };
   }
+  if (!hasOnlyOwnStringKeys(source, ["_tag", "kind", "lifecycle", "routeBy"])) {
+    return { _tag: "invalid", cause: source };
+  }
   if (sourceTag !== "GrpcLeasedTopicSource") {
     return { _tag: "invalid", cause: source };
   }
   const routeBy = Reflect.get(source, "routeBy");
-  if (!Array.isArray(routeBy) || !routeBy.every((field) => typeof field === "string")) {
+  if (
+    !Array.isArray(routeBy) ||
+    routeBy.length === 0 ||
+    !routeBy.every((field) => typeof field === "string")
+  ) {
     return { _tag: "invalid", cause: source };
   }
   return { _tag: "valid", lifecycle, routeBy };

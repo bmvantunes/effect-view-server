@@ -26,8 +26,10 @@ import {
   engineErrorToRuntimeError,
   invalidRuntimeQueryError,
   leasedRuntimeAccessError,
+  sourceOwnedRuntimeMutationError,
+  sourceOwnedRuntimeResetError,
 } from "./runtime-error";
-import { grpcLeasedSourceTopics } from "./topic-source";
+import { grpcLeasedSourceTopics, sourceOwnedTopics } from "./topic-source";
 
 export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
@@ -59,6 +61,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
   ): Effect.Effect<RuntimeCoreClientInstance<Topics>> =>
     Effect.gen(function* () {
       const leasedTopics = grpcLeasedSourceTopics(config);
+      const ownedTopics = sourceOwnedTopics(config);
       let healthReadEpoch = 0;
       let healthInstallEpoch = 0;
       const bumpHealthReadEpoch = Effect.sync(() => {
@@ -165,25 +168,27 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
             engine.reset().pipe(Effect.tap(() => requestHealthRefresh())),
           ).pipe(Effect.mapError(engineErrorToRuntimeError)),
       };
-      const rejectLeasedMutation = (topic: string): Effect.Effect<never, ViewServerRuntimeError> =>
-        Effect.fail(leasedRuntimeAccessError(topic));
+      const rejectSourceOwnedMutation = (
+        topic: string,
+      ): Effect.Effect<never, ViewServerRuntimeError> =>
+        Effect.fail(sourceOwnedRuntimeMutationError(topic));
       return {
         client: {
           publish: (topic, row) =>
-            leasedTopics.has(topic)
-              ? rejectLeasedMutation(topic)
+            ownedTopics.has(topic)
+              ? rejectSourceOwnedMutation(topic)
               : internalClient.publish(topic, row),
           publishMany: (topic, rows) =>
-            leasedTopics.has(topic)
-              ? rejectLeasedMutation(topic)
+            ownedTopics.has(topic)
+              ? rejectSourceOwnedMutation(topic)
               : internalClient.publishMany(topic, rows),
           patch: (topic, key, patch) =>
-            leasedTopics.has(topic)
-              ? rejectLeasedMutation(topic)
+            ownedTopics.has(topic)
+              ? rejectSourceOwnedMutation(topic)
               : internalClient.patch(topic, key, patch),
           delete: (topic, key) =>
-            leasedTopics.has(topic)
-              ? rejectLeasedMutation(topic)
+            ownedTopics.has(topic)
+              ? rejectSourceOwnedMutation(topic)
               : internalClient.delete(topic, key),
           snapshot: (topic, query) =>
             leasedTopics.has(topic)
@@ -191,14 +196,9 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
               : internalClient.snapshot(topic, query),
           health: internalClient.health,
           reset: () =>
-            leasedTopics.size === 0
+            ownedTopics.size === 0
               ? internalClient.reset()
-              : Effect.fail({
-                  _tag: "ViewServerRuntimeError",
-                  code: "UnsupportedQuery",
-                  message:
-                    "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
-                }),
+              : Effect.fail(sourceOwnedRuntimeResetError),
         },
         internalClient,
         close: healthRefreshScheduler.close,

@@ -5642,6 +5642,50 @@ describe("@effect-view-server/runtime", () => {
       Object.defineProperty(extraGrpcSourceConfig.topics.orders.grpcSource, "extra", {
         value: true,
       });
+      const materializedRouteByGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+        },
+      });
+      Object.defineProperty(
+        materializedRouteByGrpcSourceConfig.topics.orders.grpcSource,
+        "routeBy",
+        {
+          value: ["region"],
+        },
+      );
+      const emptyRouteByGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      Object.defineProperty(emptyRouteByGrpcSourceConfig.topics.orders.grpcSource, "routeBy", {
+        value: [],
+      });
+      const extraLeasedGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      Object.defineProperty(extraLeasedGrpcSourceConfig.topics.orders.grpcSource, "extra", {
+        value: true,
+      });
       const feed = grpcMaterializedFeed(Stream.never);
       const leasedFeed = grpcLeasedFeed({
         streamForRegion: () => Stream.never,
@@ -5688,6 +5732,18 @@ describe("@effect-view-server/runtime", () => {
         extraGrpcSourceConfig,
         undefined,
       ).pipe(Effect.flip);
+      const materializedRouteByGrpcSourceError = yield* validateGrpcSourceFeeds(
+        materializedRouteByGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
+      const emptyRouteByGrpcSourceError = yield* validateGrpcSourceFeeds(
+        emptyRouteByGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
+      const extraLeasedGrpcSourceError = yield* validateGrpcSourceFeeds(
+        extraLeasedGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
 
       expect({
         nullTopicMessage: nullTopicError.message,
@@ -5709,6 +5765,15 @@ describe("@effect-view-server/runtime", () => {
         malformedGrpcSourceFeedName: Reflect.get(malformedGrpcSourceError, "feedName"),
         extraGrpcSourceMessage: extraGrpcSourceError.message,
         extraGrpcSourceFeedName: Reflect.get(extraGrpcSourceError, "feedName"),
+        materializedRouteByGrpcSourceMessage: materializedRouteByGrpcSourceError.message,
+        materializedRouteByGrpcSourceFeedName: Reflect.get(
+          materializedRouteByGrpcSourceError,
+          "feedName",
+        ),
+        emptyRouteByGrpcSourceMessage: emptyRouteByGrpcSourceError.message,
+        emptyRouteByGrpcSourceFeedName: Reflect.get(emptyRouteByGrpcSourceError, "feedName"),
+        extraLeasedGrpcSourceMessage: extraLeasedGrpcSourceError.message,
+        extraLeasedGrpcSourceFeedName: Reflect.get(extraLeasedGrpcSourceError, "feedName"),
       }).toStrictEqual({
         nullTopicMessage:
           "gRPC feed ordersFeed targets View Server topic orders, but that topic does not declare a gRPC source.",
@@ -5730,6 +5795,15 @@ describe("@effect-view-server/runtime", () => {
         malformedGrpcSourceFeedName: "orders",
         extraGrpcSourceMessage: "View Server topic orders declares invalid gRPC source metadata.",
         extraGrpcSourceFeedName: "orders",
+        materializedRouteByGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        materializedRouteByGrpcSourceFeedName: "orders",
+        emptyRouteByGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        emptyRouteByGrpcSourceFeedName: "orders",
+        extraLeasedGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        extraLeasedGrpcSourceFeedName: "orders",
       });
     }),
   );
@@ -10629,7 +10703,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10708,7 +10782,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -10775,7 +10849,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10811,7 +10885,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10858,7 +10932,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10902,7 +10976,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -10956,7 +11030,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11029,7 +11103,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11060,7 +11134,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11129,7 +11203,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11212,7 +11286,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11306,7 +11380,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11371,7 +11445,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11474,7 +11548,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11526,7 +11600,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11576,7 +11650,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11630,7 +11704,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11671,7 +11745,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11735,7 +11809,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11808,7 +11882,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11883,7 +11957,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11949,7 +12023,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11971,7 +12045,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -12024,7 +12098,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -12048,7 +12122,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -12094,7 +12168,7 @@ describe("@effect-view-server/runtime", () => {
 
       const ingress = yield* makeViewServerGrpcIngress(
         leasedGrpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -12145,7 +12219,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -12189,7 +12263,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -12228,7 +12302,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -12250,7 +12324,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -12285,7 +12359,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -12336,7 +12410,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,

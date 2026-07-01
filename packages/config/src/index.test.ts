@@ -5240,6 +5240,49 @@ describe("defineViewServerConfig", () => {
     ).toThrow(
       "View Server topic orders cannot declare more than one source owner: source, kafkaSource, grpcSource.",
     );
+    expect(() =>
+      defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          // @ts-expect-error a View Server topic cannot declare both kafkaSource and grpcSource.
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              map: ({ value, region, rowKey }) => ({
+                id: rowKey,
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+            grpcSource: grpc.materialized(),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders cannot declare more than one source owner: source, kafkaSource, grpcSource.",
+    );
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          // @ts-expect-error a View Server topic cannot declare both legacy source and grpcSource.
+          orders: {
+            schema: Order,
+            key: "id",
+            source: grpc.materialized(),
+            grpcSource: grpc.materialized(),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders cannot declare more than one source owner: source, kafkaSource, grpcSource.",
+    );
   });
 });
 

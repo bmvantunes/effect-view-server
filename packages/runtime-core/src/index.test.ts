@@ -6,6 +6,7 @@ import {
 import {
   defineViewServerConfig,
   grpc,
+  kafka,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { Deferred, Effect, Fiber, Option, Queue, Schema, Stream, Tracer } from "effect";
@@ -50,6 +51,50 @@ const leasedViewServer = defineViewServerConfig({
   },
 });
 
+const leasedGrpcSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      grpcSource: grpc.leased({
+        routeBy: ["region", "status"],
+      }),
+    },
+  },
+});
+
+const materializedGrpcSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      grpcSource: grpc.materialized(),
+    },
+  },
+});
+
+const kafkaOwnedViewServer = defineViewServerConfig({
+  kafka: {
+    usa: "localhost:9092",
+  },
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      kafkaSource: kafka.source({
+        topic: "orders-source",
+        regions: ["usa"],
+        value: kafka.json(Order),
+        key: kafka.stringKey(),
+        map: ({ value, rowKey }) => ({
+          ...value,
+          id: rowKey,
+        }),
+      }),
+    },
+  },
+});
+
 type OrderRow = typeof Order.Type;
 type Topics = typeof viewServer.topics;
 
@@ -83,6 +128,21 @@ const publicLeasedRuntimeAccessError = {
   topic: "orders",
   message:
     "Leased gRPC topics do not support direct runtime mutations, one-shot snapshots, or runtime-core subscriptions; use the runtime gRPC lease manager so it owns lease lifecycle.",
+} satisfies ViewServerRuntimeError;
+
+const publicSourceOwnedRuntimeMutationError = {
+  _tag: "ViewServerRuntimeError",
+  code: "UnsupportedQuery",
+  topic: "orders",
+  message:
+    "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+} satisfies ViewServerRuntimeError;
+
+const publicSourceOwnedRuntimeResetError = {
+  _tag: "ViewServerRuntimeError",
+  code: "UnsupportedQuery",
+  message:
+    "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
 } satisfies ViewServerRuntimeError;
 
 const stableAttributes = (
@@ -564,18 +624,164 @@ describe("@effect-view-server/runtime-core", () => {
         runtimeCore.client,
         [],
       );
-      expect(yield* Effect.flip(publishEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(publishManyEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(patchEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(deleteEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
+      expect(yield* Effect.flip(publishEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(publishManyEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(patchEffect)).toStrictEqual(publicSourceOwnedRuntimeMutationError);
+      expect(yield* Effect.flip(deleteEffect)).toStrictEqual(publicSourceOwnedRuntimeMutationError);
       expect(yield* Effect.flip(snapshotEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
       expect(yield* Effect.flip(subscribeEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(resetEffect)).toStrictEqual({
-        _tag: "ViewServerRuntimeError",
-        code: "UnsupportedQuery",
-        message:
-          "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
+      expect(yield* Effect.flip(resetEffect)).toStrictEqual(publicSourceOwnedRuntimeResetError);
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("keeps source-owned materialized topics readable but blocks public mutations", () =>
+    Effect.gen(function* () {
+      const kafkaRuntimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaOwnedViewServer, {});
+      const grpcRuntimeCore = yield* makeViewServerRuntimeCoreInternal(
+        materializedGrpcSourceViewServer,
+        {},
+      );
+
+      yield* kafkaRuntimeCore.internalClient.publish("orders", order("kafka", 10));
+      yield* grpcRuntimeCore.internalClient.publish("orders", order("grpc", 20));
+
+      const kafkaSnapshot = yield* kafkaRuntimeCore.publicClient.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
       });
+      const grpcSnapshot = yield* grpcRuntimeCore.publicClient.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const kafkaPublishEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaRuntimeCore.publicClient.publish,
+        kafkaRuntimeCore.publicClient,
+        ["orders", order("blocked-kafka", 30)],
+      );
+      const kafkaPublishManyEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaRuntimeCore.publicClient.publishMany,
+        kafkaRuntimeCore.publicClient,
+        ["orders", [order("blocked-kafka-many", 35)]],
+      );
+      const kafkaPatchEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaRuntimeCore.publicClient.patch,
+        kafkaRuntimeCore.publicClient,
+        ["orders", "kafka", { price: 35 }],
+      );
+      const kafkaDeleteEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaRuntimeCore.publicClient.delete,
+        kafkaRuntimeCore.publicClient,
+        ["orders", "kafka"],
+      );
+      const grpcPublishEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcRuntimeCore.publicClient.publish,
+        grpcRuntimeCore.publicClient,
+        ["orders", order("blocked-grpc", 40)],
+      );
+      const grpcPublishManyEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcRuntimeCore.publicClient.publishMany,
+        grpcRuntimeCore.publicClient,
+        ["orders", [order("blocked-grpc-many", 45)]],
+      );
+      const grpcPatchEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcRuntimeCore.publicClient.patch,
+        grpcRuntimeCore.publicClient,
+        ["orders", "grpc", { price: 45 }],
+      );
+      const grpcDeleteEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcRuntimeCore.publicClient.delete,
+        grpcRuntimeCore.publicClient,
+        ["orders", "grpc"],
+      );
+      const kafkaResetEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaRuntimeCore.publicClient.reset,
+        kafkaRuntimeCore.publicClient,
+        [],
+      );
+      const grpcResetEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcRuntimeCore.publicClient.reset,
+        grpcRuntimeCore.publicClient,
+        [],
+      );
+
+      expect(kafkaSnapshot).toStrictEqual({
+        rows: [{ id: "kafka", price: 10 }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(grpcSnapshot).toStrictEqual({
+        rows: [{ id: "grpc", price: 20 }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(yield* Effect.flip(kafkaPublishEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(kafkaPublishManyEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(kafkaPatchEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(kafkaDeleteEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(grpcPublishEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(grpcPublishManyEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(grpcPatchEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(grpcDeleteEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeMutationError,
+      );
+      expect(yield* Effect.flip(kafkaResetEffect)).toStrictEqual(
+        publicSourceOwnedRuntimeResetError,
+      );
+      expect(yield* Effect.flip(grpcResetEffect)).toStrictEqual(publicSourceOwnedRuntimeResetError);
+
+      yield* kafkaRuntimeCore.close;
+      yield* grpcRuntimeCore.close;
+    }),
+  );
+
+  it.effect("rejects public grpcSource leased subscriptions before route validation", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(leasedGrpcSourceViewServer, {});
+      const leasedQuery = {
+        where: {
+          region: { eq: "usa" },
+          status: { eq: "open" },
+        },
+        select: ["id", "region", "status"],
+        limit: 1,
+      } as const;
+      const snapshotEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
+        runtimeCore.client.snapshot,
+        runtimeCore.client,
+        ["orders", leasedQuery],
+      );
+      const subscribeEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
+        runtimeCore.liveClient.subscribe,
+        runtimeCore.liveClient,
+        ["orders", leasedQuery],
+      );
+
+      expect(yield* Effect.flip(snapshotEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
+      expect(yield* Effect.flip(subscribeEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
 
       yield* runtimeCore.close;
     }),

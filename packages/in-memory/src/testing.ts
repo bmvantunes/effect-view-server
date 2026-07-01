@@ -10,15 +10,15 @@ import {
   type ViewServerRuntimeCoreInternalOptionsFor,
 } from "@effect-view-server/runtime-core/internal";
 import { Effect } from "effect";
-import type { DecodableTopicDefinitions, ViewServerInMemoryOptions } from "./index";
+import type { ViewServerInMemoryOptions, ViewServerInMemoryTopicDefinitions } from "./index";
 
-export type ViewServerInMemoryTestingInstance<Topics extends DecodableTopicDefinitions> = {
+export type ViewServerInMemoryTestingInstance<Topics extends ViewServerInMemoryTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
   readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
   readonly close: Effect.Effect<void>;
 };
 
-const toRuntimeCoreInternalOptions = <const Topics extends DecodableTopicDefinitions>(
+const toRuntimeCoreInternalOptions = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   input: ViewServerInMemoryOptions<Topics>,
 ): ViewServerRuntimeCoreInternalOptionsFor<Topics> => ({
   ...(input.groupedIncrementalAdmissionLimits === undefined
@@ -32,7 +32,7 @@ const toRuntimeCoreInternalOptions = <const Topics extends DecodableTopicDefinit
     : { healthRefreshCadence: input.healthRefreshCadence }),
 });
 
-const toInMemoryTestingInstance = <const Topics extends DecodableTopicDefinitions>(
+const toInMemoryTestingInstance = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>,
 ): ViewServerInMemoryTestingInstance<Topics> => ({
   client: runtimeCore.internalClient,
@@ -47,13 +47,15 @@ const toInMemoryTestingInstance = <const Topics extends DecodableTopicDefinition
   },
 });
 
-export const makeInMemoryViewServerTesting: <const Topics extends DecodableTopicDefinitions>(
+export const makeInMemoryViewServerTesting: <
+  const Topics extends ViewServerInMemoryTopicDefinitions,
+>(
   config: ViewServerConfig<Topics>,
   input: ViewServerInMemoryOptions<Topics>,
 ) => Effect.Effect<ViewServerInMemoryTestingInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
   "ViewServerInMemory.testing.make",
 )(
-  <const Topics extends DecodableTopicDefinitions>(
+  <const Topics extends ViewServerInMemoryTopicDefinitions>(
     config: ViewServerConfig<Topics>,
     input: ViewServerInMemoryOptions<Topics>,
   ) =>
@@ -62,7 +64,9 @@ export const makeInMemoryViewServerTesting: <const Topics extends DecodableTopic
     ),
 );
 
-export const createInMemoryViewServerTesting = <const Topics extends DecodableTopicDefinitions>(
+export const createInMemoryViewServerTesting = <
+  const Topics extends ViewServerInMemoryTopicDefinitions,
+>(
   config: ViewServerConfig<Topics>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryTestingInstance<Topics> =>

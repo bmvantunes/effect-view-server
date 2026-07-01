@@ -1,5 +1,4 @@
-import type { ViewServerConfig } from "@effect-view-server/config";
-import type { ViewServerRuntimeError } from "@effect-view-server/config";
+import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
 import {
   createViewServerRuntimeCore,
   makeViewServerRuntimeCore,
@@ -13,17 +12,19 @@ import { Effect } from "effect";
 
 export type { DecodableTopicDefinitions } from "@effect-view-server/runtime-core";
 
-export type ViewServerInMemoryInstance<Topics extends DecodableTopicDefinitions> = {
+export type ViewServerInMemoryTopicDefinitions = DecodableTopicDefinitions;
+
+export type ViewServerInMemoryInstance<Topics extends ViewServerInMemoryTopicDefinitions> = {
   readonly client: ViewServerRuntimeCorePublicClient<Topics>;
   readonly liveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
   readonly close: Effect.Effect<void>;
 };
 
 export type ViewServerInMemoryOptions<
-  Topics extends DecodableTopicDefinitions = DecodableTopicDefinitions,
+  Topics extends ViewServerInMemoryTopicDefinitions = ViewServerInMemoryTopicDefinitions,
 > = Omit<ViewServerRuntimeCoreOptionsFor<Topics>, "transportHealth">;
 
-const toRuntimeCoreOptions = <const Topics extends DecodableTopicDefinitions>(
+const toRuntimeCoreOptions = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   input: ViewServerInMemoryOptions<Topics>,
 ): ViewServerRuntimeCoreOptionsFor<Topics> => ({
   ...(input.groupedIncrementalAdmissionLimits === undefined
@@ -37,7 +38,7 @@ const toRuntimeCoreOptions = <const Topics extends DecodableTopicDefinitions>(
     : { healthRefreshCadence: input.healthRefreshCadence }),
 });
 
-const toInMemoryInstance = <const Topics extends DecodableTopicDefinitions>(
+const toInMemoryInstance = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   runtimeCore: ViewServerRuntimeCoreInstance<Topics>,
 ): ViewServerInMemoryInstance<Topics> => {
   return {
@@ -47,13 +48,13 @@ const toInMemoryInstance = <const Topics extends DecodableTopicDefinitions>(
   };
 };
 
-export const makeInMemoryViewServer: <const Topics extends DecodableTopicDefinitions>(
+export const makeInMemoryViewServer: <const Topics extends ViewServerInMemoryTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   input: ViewServerInMemoryOptions<Topics>,
 ) => Effect.Effect<ViewServerInMemoryInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
   "ViewServerInMemory.make",
 )(
-  <const Topics extends DecodableTopicDefinitions>(
+  <const Topics extends ViewServerInMemoryTopicDefinitions>(
     config: ViewServerConfig<Topics>,
     input: ViewServerInMemoryOptions<Topics>,
   ) =>
@@ -62,7 +63,7 @@ export const makeInMemoryViewServer: <const Topics extends DecodableTopicDefinit
     ),
 );
 
-export const createInMemoryViewServer = <const Topics extends DecodableTopicDefinitions>(
+export const createInMemoryViewServer = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryInstance<Topics> =>

@@ -4750,6 +4750,55 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
+  it.live(
+    "delegates direct manager reset when gRPC is configured without source-owned topics",
+    () =>
+      Effect.gen(function* () {
+        const options = yield* resolveViewServerRuntimeOptions<
+          typeof viewServer.topics,
+          Record<string, string>,
+          typeof grpcClients
+        >({
+          grpc: {
+            clients: grpcClients,
+            feeds: {},
+          },
+        });
+        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+        const health = makeViewServerGrpcHealthLedger<typeof viewServer.topics>({
+          clients: grpcOptions.clientBaseUrls,
+          feeds: {},
+        });
+        const manager = yield* makeViewServerGrpcLeaseManager(
+          viewServer,
+          runtimeCore.internalClient,
+          runtimeCore.liveClient,
+          runtimeCore.internalLiveClient,
+          Effect.void,
+          grpcOptions,
+          health,
+        );
+
+        yield* manager.client.publish("orders", order("order-1", 10));
+        yield* manager.client.reset();
+        const snapshot = yield* manager.client.snapshot("orders", {
+          select: ["id", "price"],
+          limit: 10,
+        });
+
+        expect(snapshot).toStrictEqual({
+          version: 0,
+          rows: [],
+          totalRows: 0,
+          status: "ready",
+          statusCode: "Ready",
+        });
+        yield* manager.close;
+        yield* runtimeCore.close;
+      }),
+  );
+
   it.live("rejects public runtime mutations for topic-owned Kafka topics", () =>
     Effect.gen(function* () {
       const regions = {
@@ -4875,7 +4924,7 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.live("delegates direct runtime reset when no leased gRPC topics exist", () =>
+  it.live("rejects direct manager mutations for materialized gRPC source-owned topics", () =>
     Effect.gen(function* () {
       const feed = grpcMaterializedFeed(Stream.never);
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
@@ -4891,27 +4940,58 @@ describe("@effect-view-server/runtime", () => {
         health,
       );
 
-      yield* manager.client.publish("orders", {
+      const row: typeof GrpcOrder.Type = {
         id: "order-1",
         customerId: "customer-1",
         status: "open",
         price: 10,
         region: "usa",
         updatedAt: 10,
-      });
-      yield* manager.client.reset();
-      const snapshot = yield* manager.client.snapshot("orders", {
-        select: ["id", "price"],
-        limit: 10,
-      });
+      };
+      const publishError = yield* manager.client.publish("orders", row).pipe(Effect.flip);
+      const publishManyError = yield* manager.client.publishMany("orders", [row]).pipe(Effect.flip);
+      const patchError = yield* manager.client
+        .patch("orders", "order-1", { price: 11 })
+        .pipe(Effect.flip);
+      const deleteError = yield* manager.client.delete("orders", "order-1").pipe(Effect.flip);
+      const resetError = yield* manager.client.reset().pipe(Effect.flip);
 
-      expect(snapshot).toStrictEqual({
-        version: 0,
-        rows: [],
-        totalRows: 0,
-        status: "ready",
-        statusCode: "Ready",
-      });
+      expect([publishError, publishManyError, patchError, deleteError, resetError]).toStrictEqual([
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          message:
+            "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+        },
+      ]);
       yield* manager.close;
       yield* runtimeCore.close;
     }),

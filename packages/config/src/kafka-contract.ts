@@ -1426,6 +1426,18 @@ const validateKafkaMappedRow = <
     Effect.as(row),
   );
 
+const validateKafkaMappedRowDoesNotProvideRowKey = (
+  rowKeyField: string,
+  row: unknown,
+): Effect.Effect<void, KafkaMappingError> =>
+  isInspectableObject(row) && Object.hasOwn(row, rowKeyField)
+    ? Effect.fail(
+        kafkaMappingError("Kafka mapped row must not include the configured row key field", {
+          rowKeyField,
+        }),
+      )
+    : Effect.void;
+
 type AnyKafkaResolvedSourceTopic = KafkaTopicSourceDecoder<
   KafkaTopicSchemaRegistry,
   string,
@@ -1914,8 +1926,8 @@ const makeKafkaResolvedSourceTopicWithKey = <
         bytes: input.valueBytes,
         metadata: input.metadata,
       });
-      const mappedRow = yield* mapKafkaPayload(() => ({
-        ...topic.map({
+      const mappedRowWithoutKey = yield* mapKafkaPayload(() =>
+        topic.map({
           key,
           value,
           region: input.region,
@@ -1923,8 +1935,12 @@ const makeKafkaResolvedSourceTopicWithKey = <
           schema: input.schema,
           metadata: input.metadata,
         }),
+      );
+      yield* validateKafkaMappedRowDoesNotProvideRowKey(input.rowKeyField, mappedRowWithoutKey);
+      const mappedRow = {
+        ...mappedRowWithoutKey,
         [input.rowKeyField]: rowKey,
-      }));
+      };
       const row = yield* validateKafkaMappedRow(input.schema, mappedRow);
       const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
@@ -1984,8 +2000,8 @@ const makeKafkaResolvedSourceTopicWithoutKey = <
         bytes: input.valueBytes,
         metadata: input.metadata,
       });
-      const mappedRow = yield* mapKafkaPayload(() => ({
-        ...topic.map({
+      const mappedRowWithoutKey = yield* mapKafkaPayload(() =>
+        topic.map({
           key,
           value,
           region: input.region,
@@ -1993,8 +2009,12 @@ const makeKafkaResolvedSourceTopicWithoutKey = <
           schema: input.schema,
           metadata: input.metadata,
         }),
+      );
+      yield* validateKafkaMappedRowDoesNotProvideRowKey(input.rowKeyField, mappedRowWithoutKey);
+      const mappedRow = {
+        ...mappedRowWithoutKey,
         [input.rowKeyField]: rowKey,
-      }));
+      };
       const row = yield* validateKafkaMappedRow(input.schema, mappedRow);
       const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,

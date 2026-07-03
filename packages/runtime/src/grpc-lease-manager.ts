@@ -1050,6 +1050,20 @@ const leasedRuntimeAccessError = (topic: string): ViewServerRuntimeError =>
       "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
   });
 
+const sourceOwnedRuntimeMutationError = (topic: string): ViewServerRuntimeError =>
+  runtimeError({
+    code: "UnsupportedQuery",
+    topic,
+    message:
+      "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+  });
+
+const sourceOwnedRuntimeResetError: ViewServerRuntimeError = runtimeError({
+  code: "UnsupportedQuery",
+  message:
+    "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+});
+
 const normalizeAcquireLeaseError =
   (topic: string) =>
   (error: ViewServerRuntimeError | ViewServerGrpcIngressError): ViewServerRuntimeError => {
@@ -1513,36 +1527,40 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       return yield* runtimeClient.snapshot(topic, query);
     });
 
-  const rejectLeasedMutation = (topic: string): Effect.Effect<never, ViewServerRuntimeError> =>
-    Effect.fail(leasedRuntimeAccessError(topic));
+  const rejectSourceOwnedMutation = (topic: string): Effect.Effect<never, ViewServerRuntimeError> =>
+    sourceOwnership.isGrpcLeasedTopic(topic)
+      ? Effect.fail(leasedRuntimeAccessError(topic))
+      : Effect.fail(sourceOwnedRuntimeMutationError(topic));
 
   const publish: ViewServerRuntimeClient<Topics>["publish"] = (topic, row) =>
-    sourceOwnership.isGrpcLeasedTopic(topic)
-      ? rejectLeasedMutation(topic)
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
       : runtimeClient.publish(topic, row);
   const publishMany: ViewServerRuntimeClient<Topics>["publishMany"] = (topic, rows) =>
-    sourceOwnership.isGrpcLeasedTopic(topic)
-      ? rejectLeasedMutation(topic)
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
       : runtimeClient.publishMany(topic, rows);
   const patch: ViewServerRuntimeClient<Topics>["patch"] = (topic, key, patchValue) =>
-    sourceOwnership.isGrpcLeasedTopic(topic)
-      ? rejectLeasedMutation(topic)
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
       : runtimeClient.patch(topic, key, patchValue);
   const deleteRow: ViewServerRuntimeClient<Topics>["delete"] = (topic, key) =>
-    sourceOwnership.isGrpcLeasedTopic(topic)
-      ? rejectLeasedMutation(topic)
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
       : runtimeClient.delete(topic, key);
 
   const reset: ViewServerRuntimeClient<Topics>["reset"] = () =>
-    sourceOwnership.grpcLeasedTopics.size === 0
+    !sourceOwnership.hasSourceOwnedTopics
       ? runtimeClient.reset()
-      : Effect.fail(
-          runtimeError({
-            code: "UnsupportedQuery",
-            message:
-              "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
-          }),
-        );
+      : sourceOwnership.grpcLeasedTopics.size === 0
+        ? Effect.fail(sourceOwnedRuntimeResetError)
+        : Effect.fail(
+            runtimeError({
+              code: "UnsupportedQuery",
+              message:
+                "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
+            }),
+          );
 
   const client: ViewServerRuntimeClient<Topics> = {
     publish,

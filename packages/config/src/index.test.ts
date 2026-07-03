@@ -6795,6 +6795,67 @@ describe("public type surface", () => {
       );
       expect(kafkaErrorIsMapping(nonStringRowKeyFailure)).toBe(true);
 
+      const schemaInvalidMappedRowViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-schema-invalid-mapped-row-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      Object.defineProperty(schemaInvalidMappedRowViewServer.topics.orders.kafkaSource, "map", {
+        configurable: true,
+        value: () => ({
+          customerId: "customer-schema-invalid-mapped-row",
+          price: 1,
+          region: "usa",
+          updatedAt: 1,
+        }),
+      });
+      const schemaInvalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
+        schemaInvalidMappedRowViewServer,
+      )[0]!;
+      const schemaInvalidMappedRowFailure = yield* Effect.flip(
+        decodeKafkaTopicMessage(schemaInvalidMappedRowSourceTopic, {
+          keyBytes: textEncoder.encode("order-schema-invalid-mapped-row"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-schema-invalid-mapped-row",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      );
+      expect({
+        isMappingError: kafkaErrorIsMapping(schemaInvalidMappedRowFailure),
+        message: Reflect.get(Object(schemaInvalidMappedRowFailure), "message"),
+      }).toStrictEqual({
+        isMappingError: true,
+        message: "Kafka mapped row failed topic schema",
+      });
+
       const invalidMappedRowViewServer = defineViewServerConfig({
         kafka: kafkaRegions,
         topics: {
@@ -6849,7 +6910,13 @@ describe("public type surface", () => {
           viewServerTopic: "orders",
         }),
       );
-      expect(kafkaErrorIsMapping(invalidMappedRowFailure)).toBe(true);
+      expect({
+        isMappingError: kafkaErrorIsMapping(invalidMappedRowFailure),
+        message: Reflect.get(Object(invalidMappedRowFailure), "message"),
+      }).toStrictEqual({
+        isMappingError: true,
+        message: "Kafka mapped row must not include the configured row key field",
+      });
 
       const KeyTransformId = Schema.String.pipe(
         Schema.decodeTo(Schema.String, {

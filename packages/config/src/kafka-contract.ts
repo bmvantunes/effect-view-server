@@ -29,10 +29,40 @@ type RejectAnyCodecValue<A> =
 type RejectAnyCodecError<E> =
   IsAny<E> extends true ? { readonly __viewServerKafkaCodecErrorCannotBeAny: never } : unknown;
 
-type ExactObject<Candidate, Shape> = Candidate & RejectExtraKeys<Candidate, Shape>;
+type ExactObject<Candidate, Shape> = Candidate & Shape & RejectExtraKeys<Candidate, Shape>;
 
-type ExactMappingReturn<Input, Row, Mapping extends (input: Input) => Row> = Mapping &
-  ((input: Input) => ExactObject<ReturnType<Mapping>, Row>);
+type ExactMappingReturn<
+  Input,
+  Row,
+  Mapping extends (...args: ReadonlyArray<never>) => unknown,
+> = Mapping extends (input: Input) => infer Output
+  ? IsAny<Output> extends true
+    ? never
+    : [Output] extends [never]
+      ? Mapping
+      : Output extends ExactObject<Output, Row>
+        ? Mapping
+        : never
+  : never;
+
+type ExactStringReturn<
+  Input,
+  Mapper extends (...args: ReadonlyArray<never>) => unknown,
+> = Mapper extends (input: Input) => infer Output
+  ? IsAny<Output> extends true
+    ? never
+    : [Output] extends [string]
+      ? Mapper
+      : never
+  : never;
+
+type RejectAnyReturn<Mapper extends (...args: ReadonlyArray<never>) => unknown> = Mapper extends (
+  ...args: ReadonlyArray<never>
+) => infer Output
+  ? IsAny<Output> extends true
+    ? { readonly __viewServerCallbackReturnCannotBeAny: never }
+    : unknown
+  : never;
 
 const KafkaCodecValueTypeId = Symbol("@effect-view-server/config/KafkaCodecValue");
 const KafkaCodecErrorTypeId = Symbol("@effect-view-server/config/KafkaCodecError");
@@ -143,14 +173,18 @@ type KafkaTopicDecodeInput<
   readonly metadata: KafkaMessageMetadata<Region>;
 };
 
-type KafkaTopicSourceDecodeInput<Region extends string> = {
+type KafkaTopicSourceDecodeInput<
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+  Region extends string,
+> = {
   readonly keyBytes: Uint8Array;
-  readonly valueBytes: Uint8Array;
+  readonly valueBytes: Uint8Array | null;
   readonly region: Region;
   readonly metadata: KafkaMessageMetadata<Region>;
-  readonly rowKeyField: string;
-  readonly schema: RowSchema;
-  readonly viewServerTopic: string;
+  readonly rowKeyField: KafkaTopicKeyField<Topics, ViewTopic>;
+  readonly schema: KafkaTopicSchemaValue<Topics, ViewTopic>;
+  readonly viewServerTopic: ViewTopic;
 };
 
 type KafkaTopicDecoder<
@@ -166,6 +200,21 @@ type KafkaTopicDecoder<
   }["bivarianceHack"];
 };
 
+type KafkaDecodedTopicSourceResult<
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+> =
+  | {
+      readonly row: KafkaTopicSchemaValue<Topics, ViewTopic>["Type"];
+      readonly rowKey: string;
+      readonly viewServerTopic: ViewTopic;
+    }
+  | {
+      readonly rowKey: string;
+      readonly tombstone: true;
+      readonly viewServerTopic: ViewTopic;
+    };
+
 type KafkaTopicSourceDecoder<
   Topics extends KafkaTopicSchemaRegistry,
   ViewTopic extends Extract<keyof Topics, string>,
@@ -173,14 +222,9 @@ type KafkaTopicSourceDecoder<
   E,
 > = {
   readonly [KafkaTopicDecodeTypeId]: {
-    bivarianceHack(input: KafkaTopicSourceDecodeInput<Region>): Effect.Effect<
-      {
-        readonly row: TopicRow<Topics, ViewTopic>;
-        readonly rowKey: string;
-        readonly viewServerTopic: string;
-      },
-      E
-    >;
+    bivarianceHack(
+      input: KafkaTopicSourceDecodeInput<Topics, ViewTopic, Region>,
+    ): Effect.Effect<KafkaDecodedTopicSourceResult<Topics, ViewTopic>, E>;
   }["bivarianceHack"];
 };
 
@@ -196,10 +240,29 @@ type KafkaTopicSchemaValue<
   ViewTopic extends Extract<keyof Topics, string>,
 > = Topics[ViewTopic]["schema"];
 
+type KafkaTopicKeyField<
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+> = string extends keyof Topics
+  ? string
+  : Topics[ViewTopic] extends { readonly key: infer Key extends string }
+    ? Extract<Key, keyof TopicRow<Topics, ViewTopic>>
+    : never;
+
+type KafkaTopicMappedSourceRow<
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+  KeyField extends string = KafkaTopicKeyField<Topics, ViewTopic>,
+> = Omit<TopicRow<Topics, ViewTopic>, Extract<KeyField, keyof TopicRow<Topics, ViewTopic>>>;
+
 type KafkaTopicSchemaRegistry = Record<
   string,
   {
+    readonly key: string;
     readonly schema: RowSchema;
+    readonly source?: unknown;
+    readonly kafkaSource?: unknown;
+    readonly grpcSource?: unknown;
   }
 >;
 
@@ -988,18 +1051,30 @@ type KafkaTopicSourceHelperMapWithKey<
   input: KafkaTopicSourceHelperMapInputWithKey<TopicRegions[number], ValueCodec, KeyCodec>,
 ) => object;
 
+type KafkaTopicSourceHelperRowKeyWithoutKey<TopicRegions extends NonEmptyReadonlyArray<string>> = (
+  input: KafkaTopicSourceHelperRowKeyInputWithoutKey<TopicRegions[number]>,
+) => string;
+
+type KafkaTopicSourceHelperRowKeyWithKey<
+  TopicRegions extends NonEmptyReadonlyArray<string>,
+  KeyCodec extends KafkaCodec<unknown, unknown>,
+> = (input: KafkaTopicSourceHelperRowKeyInputWithKey<TopicRegions[number], KeyCodec>) => string;
+
 type KafkaTopicSourceHelperInputWithoutKey<
   SourceTopic extends string,
   TopicRegions extends NonEmptyReadonlyArray<string>,
   ValueCodec extends KafkaCodec<unknown, unknown>,
   Mapping extends KafkaTopicSourceHelperMapWithoutKey<TopicRegions, ValueCodec> =
     KafkaTopicSourceHelperMapWithoutKey<TopicRegions, ValueCodec>,
+  RowKey extends KafkaTopicSourceHelperRowKeyWithoutKey<TopicRegions> =
+    KafkaTopicSourceHelperRowKeyWithoutKey<TopicRegions>,
 > = {
   readonly topic: SourceTopic;
   readonly regions: TopicRegions;
   readonly value: SupportedKafkaCodec<ValueCodec>;
+  readonly rowKey: RowKey;
   readonly map: Mapping;
-};
+} & RejectAnyReturn<RowKey>;
 
 type KafkaTopicSourceHelperInputWithKey<
   SourceTopic extends string,
@@ -1008,20 +1083,24 @@ type KafkaTopicSourceHelperInputWithKey<
   KeyCodec extends KafkaCodec<unknown, unknown>,
   Mapping extends KafkaTopicSourceHelperMapWithKey<TopicRegions, ValueCodec, KeyCodec> =
     KafkaTopicSourceHelperMapWithKey<TopicRegions, ValueCodec, KeyCodec>,
+  RowKey extends KafkaTopicSourceHelperRowKeyWithKey<TopicRegions, KeyCodec> =
+    KafkaTopicSourceHelperRowKeyWithKey<TopicRegions, KeyCodec>,
 > = {
   readonly topic: SourceTopic;
   readonly regions: TopicRegions;
   readonly value: SupportedKafkaCodec<ValueCodec>;
   readonly key: SupportedKafkaCodec<KeyCodec>;
+  readonly rowKey: RowKey;
   readonly map: Mapping;
-};
+} & RejectAnyReturn<RowKey>;
 
 function defineKafkaTopicSource<
   const SourceTopic extends string,
   const TopicRegions extends NonEmptyReadonlyArray<string>,
   ValueCodec extends KafkaCodec<unknown, unknown>,
   KeyCodec extends KafkaCodec<unknown, unknown>,
-  Mapping extends (
+  const RowKey extends KafkaTopicSourceHelperRowKeyWithKey<TopicRegions, KeyCodec>,
+  const Mapping extends (
     input: KafkaTopicSourceHelperMapInputWithKey<TopicRegions[number], ValueCodec, KeyCodec>,
   ) => object,
 >(
@@ -1030,18 +1109,33 @@ function defineKafkaTopicSource<
     TopicRegions,
     ValueCodec,
     KeyCodec,
-    Mapping
+    Mapping,
+    RowKey
   >,
-): KafkaTopicSourceHelperInputWithKey<SourceTopic, TopicRegions, ValueCodec, KeyCodec, Mapping>;
+): KafkaTopicSourceHelperInputWithKey<
+  SourceTopic,
+  TopicRegions,
+  ValueCodec,
+  KeyCodec,
+  Mapping,
+  RowKey
+>;
 function defineKafkaTopicSource<
   const SourceTopic extends string,
   const TopicRegions extends NonEmptyReadonlyArray<string>,
   ValueCodec extends KafkaCodec<unknown, unknown>,
-  Mapping extends KafkaTopicSourceHelperMapWithoutKey<TopicRegions, ValueCodec> =
+  const RowKey extends KafkaTopicSourceHelperRowKeyWithoutKey<TopicRegions>,
+  const Mapping extends KafkaTopicSourceHelperMapWithoutKey<TopicRegions, ValueCodec> =
     KafkaTopicSourceHelperMapWithoutKey<TopicRegions, ValueCodec>,
 >(
-  topic: KafkaTopicSourceHelperInputWithoutKey<SourceTopic, TopicRegions, ValueCodec, Mapping>,
-): KafkaTopicSourceHelperInputWithoutKey<SourceTopic, TopicRegions, ValueCodec, Mapping>;
+  topic: KafkaTopicSourceHelperInputWithoutKey<
+    SourceTopic,
+    TopicRegions,
+    ValueCodec,
+    Mapping,
+    RowKey
+  >,
+): KafkaTopicSourceHelperInputWithoutKey<SourceTopic, TopicRegions, ValueCodec, Mapping, RowKey>;
 function defineKafkaTopicSource(topic: object): object {
   return topic;
 }
@@ -1237,6 +1331,29 @@ type KafkaTopicSourceHelperMapInputWithKey<
   readonly metadata: KafkaMessageMetadata<Region>;
 };
 
+type KafkaTopicSourceRowKeyInputWithoutKey<Region extends string> = {
+  readonly key: string;
+  readonly region: Region;
+  readonly metadata: KafkaMessageMetadata<Region>;
+};
+
+type KafkaTopicSourceRowKeyInputWithKey<
+  Region extends string,
+  KeyCodec extends KafkaCodec<unknown, unknown>,
+> = {
+  readonly key: KafkaCodecType<KeyCodec>;
+  readonly region: Region;
+  readonly metadata: KafkaMessageMetadata<Region>;
+};
+
+type KafkaTopicSourceHelperRowKeyInputWithoutKey<Region extends string> =
+  KafkaTopicSourceRowKeyInputWithoutKey<Region>;
+
+type KafkaTopicSourceHelperRowKeyInputWithKey<
+  Region extends string,
+  KeyCodec extends KafkaCodec<unknown, unknown>,
+> = KafkaTopicSourceRowKeyInputWithKey<Region, KeyCodec>;
+
 type KafkaMappingInputWithoutKey<
   Topics extends KafkaTopicSchemaRegistry,
   ViewTopic extends Extract<keyof Topics, string>,
@@ -1268,21 +1385,29 @@ type KafkaTopicSourceInputWithoutKey<
   Topics extends KafkaTopicSchemaRegistry,
   Regions extends RuntimeRegions,
   ViewTopic extends Extract<keyof Topics, string>,
+  KeyField extends string,
   ValueCodec extends KafkaCodec<unknown, unknown>,
   TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
   Mapping extends (
     input: KafkaTopicSourceMapInputWithoutKey<Topics, ViewTopic, TopicRegions[number], ValueCodec>,
-  ) => TopicRow<Topics, ViewTopic> = (
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField> = (
     input: KafkaTopicSourceMapInputWithoutKey<Topics, ViewTopic, TopicRegions[number], ValueCodec>,
-  ) => TopicRow<Topics, ViewTopic>,
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>,
   SourceTopic extends string = string,
+  RowKey extends (input: KafkaTopicSourceRowKeyInputWithoutKey<TopicRegions[number]>) => unknown = (
+    input: KafkaTopicSourceRowKeyInputWithoutKey<TopicRegions[number]>,
+  ) => string,
 > = {
   readonly topic: SourceTopic;
   readonly regions: TopicRegions;
   readonly value: SupportedKafkaCodec<ValueCodec>;
+  readonly rowKey: ExactStringReturn<
+    KafkaTopicSourceRowKeyInputWithoutKey<TopicRegions[number]>,
+    RowKey
+  >;
   readonly map: ExactMappingReturn<
     KafkaTopicSourceMapInputWithoutKey<Topics, ViewTopic, TopicRegions[number], ValueCodec>,
-    TopicRow<Topics, ViewTopic>,
+    KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>,
     Mapping
   >;
 };
@@ -1291,6 +1416,7 @@ type KafkaTopicSourceInputWithKey<
   Topics extends KafkaTopicSchemaRegistry,
   Regions extends RuntimeRegions,
   ViewTopic extends Extract<keyof Topics, string>,
+  KeyField extends string,
   ValueCodec extends KafkaCodec<unknown, unknown>,
   KeyCodec extends KafkaCodec<unknown, unknown>,
   TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
@@ -1302,7 +1428,7 @@ type KafkaTopicSourceInputWithKey<
       ValueCodec,
       KeyCodec
     >,
-  ) => TopicRow<Topics, ViewTopic> = (
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField> = (
     input: KafkaTopicSourceMapInputWithKey<
       Topics,
       ViewTopic,
@@ -1310,16 +1436,25 @@ type KafkaTopicSourceInputWithKey<
       ValueCodec,
       KeyCodec
     >,
-  ) => TopicRow<Topics, ViewTopic>,
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>,
   SourceTopic extends string = string,
+  RowKey extends (
+    input: KafkaTopicSourceRowKeyInputWithKey<TopicRegions[number], KeyCodec>,
+  ) => unknown = (
+    input: KafkaTopicSourceRowKeyInputWithKey<TopicRegions[number], KeyCodec>,
+  ) => string,
 > = {
   readonly topic: SourceTopic;
   readonly regions: TopicRegions;
   readonly value: SupportedKafkaCodec<ValueCodec>;
   readonly key: SupportedKafkaCodec<KeyCodec>;
+  readonly rowKey: ExactStringReturn<
+    KafkaTopicSourceRowKeyInputWithKey<TopicRegions[number], KeyCodec>,
+    RowKey
+  >;
   readonly map: ExactMappingReturn<
     KafkaTopicSourceMapInputWithKey<Topics, ViewTopic, TopicRegions[number], ValueCodec, KeyCodec>,
-    TopicRow<Topics, ViewTopic>,
+    KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>,
     Mapping
   >;
 };
@@ -1332,12 +1467,10 @@ export type KafkaDecodedTopicMessage<
   readonly row: TopicRow<Topics, ViewTopic>;
 };
 
-export type KafkaDecodedTopicSourceMessage<
+type KafkaDecodedTopicSourceMessage<
   Topics extends KafkaTopicSchemaRegistry,
   ViewTopic extends Extract<keyof Topics, string>,
-> = KafkaDecodedTopicMessage<Topics, ViewTopic> & {
-  readonly rowKey: string;
-};
+> = KafkaDecodedTopicSourceResult<Topics, ViewTopic>;
 
 type KafkaTopicWithoutKeyInput<
   Topics extends KafkaTopicSchemaRegistry,
@@ -1494,15 +1627,16 @@ export type KafkaTopicSourceDefinition<
   Topics extends KafkaTopicSchemaRegistry,
   Regions extends RuntimeRegions,
   ViewTopic extends Extract<keyof Topics, string> = Extract<keyof Topics, string>,
+  KeyField extends string = KafkaTopicKeyField<Topics, ViewTopic>,
   ValueCodec extends KafkaCodec<unknown, unknown> = KafkaCodec<unknown, unknown>,
   KeyCodec = undefined,
   TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>> =
     NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
   MappingWithoutKey extends (
     input: KafkaTopicSourceMapInputWithoutKey<Topics, ViewTopic, TopicRegions[number], ValueCodec>,
-  ) => TopicRow<Topics, ViewTopic> = (
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField> = (
     input: KafkaTopicSourceMapInputWithoutKey<Topics, ViewTopic, TopicRegions[number], ValueCodec>,
-  ) => TopicRow<Topics, ViewTopic>,
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>,
   MappingWithKey extends (
     input: KafkaTopicSourceMapInputWithKey<
       Topics,
@@ -1511,7 +1645,7 @@ export type KafkaTopicSourceDefinition<
       ValueCodec,
       Extract<KeyCodec, KafkaCodec<unknown, unknown>>
     >,
-  ) => TopicRow<Topics, ViewTopic> = (
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField> = (
     input: KafkaTopicSourceMapInputWithKey<
       Topics,
       ViewTopic,
@@ -1519,13 +1653,14 @@ export type KafkaTopicSourceDefinition<
       ValueCodec,
       Extract<KeyCodec, KafkaCodec<unknown, unknown>>
     >,
-  ) => TopicRow<Topics, ViewTopic>,
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>,
   SourceTopic extends string = string,
 > =
   | KafkaTopicSourceInputWithoutKey<
       Topics,
       Regions,
       ViewTopic,
+      KeyField,
       ValueCodec,
       TopicRegions,
       MappingWithoutKey,
@@ -1540,11 +1675,12 @@ export type KafkaTopicSourceDefinition<
             ValueCodec,
             KeyCodec
           >,
-        ) => TopicRow<Topics, ViewTopic>
+        ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>
         ? KafkaTopicSourceInputWithKey<
             Topics,
             Regions,
             ViewTopic,
+            KeyField,
             ValueCodec,
             KeyCodec,
             TopicRegions,
@@ -1597,36 +1733,48 @@ const mapKafkaPayload = <A>(map: () => A): Effect.Effect<A, KafkaMappingError> =
     catch: (cause) => kafkaMappingError("Failed to map Kafka payload", cause),
   });
 
-const rowKeyFromDecodedKafkaKey = (
-  key: unknown,
-  rowKeyField: string,
-): Effect.Effect<string, KafkaMappingError> => {
-  if (typeof key === "string") {
-    return Effect.succeed(key);
-  }
-  if (typeof key === "object" && key !== null) {
-    const hasConfiguredField = Object.hasOwn(key, rowKeyField);
-    const candidate = Reflect.get(key, rowKeyField);
-    if (typeof candidate === "string") {
-      return Effect.succeed(candidate);
-    }
-    if (hasConfiguredField) {
-      return Effect.fail(
-        kafkaMappingError(`Kafka key cannot derive View Server row key field: ${rowKeyField}`, key),
-      );
-    }
-    const stringValues = Object.entries(key)
-      .filter(([field]) => !field.startsWith("$"))
-      .map(([_field, value]) => value)
-      .filter((value) => typeof value === "string");
-    const [onlyStringValue] = stringValues;
-    if (stringValues.length === 1 && onlyStringValue !== undefined) {
-      return Effect.succeed(onlyStringValue);
-    }
-  }
-  return Effect.fail(
-    kafkaMappingError(`Kafka key cannot derive View Server row key field: ${rowKeyField}`, key),
+const mapKafkaRowKey = (map: () => string): Effect.Effect<string, KafkaMappingError> =>
+  Effect.try({
+    try: map,
+    catch: (cause) => kafkaMappingError("Failed to map Kafka row key", cause),
+  }).pipe(
+    Effect.flatMap((rowKey) =>
+      typeof rowKey === "string"
+        ? Effect.succeed(rowKey)
+        : Effect.fail(kafkaMappingError("Kafka rowKey must return a string", rowKey)),
+    ),
   );
+
+const decodeKafkaMappedRow = <
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+>(
+  schema: KafkaTopicSchemaValue<Topics, ViewTopic>,
+  row: object,
+): Effect.Effect<KafkaTopicSchemaValue<Topics, ViewTopic>["Type"], KafkaMappingError> =>
+  Effect.try({
+    try: () => Schema.decodeUnknownSync(schema)(row),
+    catch: (cause) => kafkaMappingError("Kafka mapped row failed topic schema", cause),
+  });
+
+const validateDecodedKafkaMappedRowKey = <
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+>(
+  row: KafkaTopicSchemaValue<Topics, ViewTopic>["Type"],
+  rowKeyField: KafkaTopicKeyField<Topics, ViewTopic>,
+  rowKey: string,
+): Effect.Effect<void, KafkaMappingError> => {
+  const decodedRowKey = Reflect.get(row, rowKeyField);
+  return decodedRowKey === rowKey
+    ? Effect.void
+    : Effect.fail(
+        kafkaMappingError("Kafka mapped row key field must decode to the mapped rowKey", {
+          decodedRowKey,
+          rowKey,
+          rowKeyField,
+        }),
+      );
 };
 
 type AnyKafkaRuntimeTopic = KafkaTopicDefinitionMarker &
@@ -1646,25 +1794,51 @@ type AnyKafkaRuntimeSourceTopic = KafkaTopicSourceDecoder<
   readonly viewServerTopic: string;
 };
 
+type DecodedKafkaRuntimeMessage<ViewTopic extends string = string> =
+  | {
+      readonly row: object;
+      readonly rowKey?: string | undefined;
+      readonly viewServerTopic: ViewTopic;
+    }
+  | {
+      readonly rowKey: string;
+      readonly tombstone: true;
+      readonly viewServerTopic: ViewTopic;
+    };
+
+type DecodedKafkaRuntimeSourceMessage<ViewTopic extends string = string> =
+  | {
+      readonly row: object;
+      readonly rowKey: string;
+      readonly viewServerTopic: ViewTopic;
+    }
+  | {
+      readonly rowKey: string;
+      readonly tombstone: true;
+      readonly viewServerTopic: ViewTopic;
+    };
+
 const decodeKafkaTopicMessageEffect: (
   topic: AnyKafkaRuntimeTopic | AnyKafkaRuntimeSourceTopic,
   input:
     | KafkaTopicDecodeInput<KafkaTopicSchemaRegistry, string, string>
-    | KafkaTopicSourceDecodeInput<string>,
-) => Effect.Effect<
-  {
-    readonly row: object;
-    readonly rowKey?: string;
-    readonly viewServerTopic: string;
-  },
-  unknown
-> = Effect.fn("ViewServerConfig.kafka.topic.decodeMessage")(function* (
+    | KafkaTopicSourceDecodeInput<KafkaTopicSchemaRegistry, string, string>,
+) => Effect.Effect<DecodedKafkaRuntimeMessage, unknown> = Effect.fn(
+  "ViewServerConfig.kafka.topic.decodeMessage",
+)(function* (
   topic: AnyKafkaRuntimeTopic | AnyKafkaRuntimeSourceTopic,
   input:
     | KafkaTopicDecodeInput<KafkaTopicSchemaRegistry, string, string>
-    | KafkaTopicSourceDecodeInput<string>,
+    | KafkaTopicSourceDecodeInput<KafkaTopicSchemaRegistry, string, string>,
 ) {
   if (isKafkaRuntimeTopicDefinition(topic)) {
+    if (input.valueBytes === null) {
+      return yield* Effect.fail(
+        kafkaDecodeError("Kafka topic decode value bytes cannot be null", {
+          viewServerTopic: topic.viewServerTopic,
+        }),
+      );
+    }
     return yield* topic[KafkaTopicDecodeTypeId]({
       keyBytes: input.keyBytes,
       valueBytes: input.valueBytes,
@@ -1703,10 +1877,17 @@ const decodeKafkaTopicMessageEffect: (
     schema: input.schema,
     viewServerTopic: input.viewServerTopic,
   });
+  if ("tombstone" in decoded) {
+    return {
+      rowKey: decoded.rowKey,
+      tombstone: true,
+      viewServerTopic: decoded.viewServerTopic,
+    };
+  }
   return {
-    viewServerTopic: decoded.viewServerTopic,
     row: decoded.row,
     rowKey: decoded.rowKey,
+    viewServerTopic: decoded.viewServerTopic,
   };
 });
 
@@ -1762,9 +1943,41 @@ type DecodedSourceTopicMessage<Topic> =
       >
     : never;
 
+type DecodedSourceTopicInput<Topic> =
+  DecodedSourceTopicViewTopic<Topic> extends Extract<keyof DecodedSourceTopicTopics<Topic>, string>
+    ? KafkaTopicSourceDecodeInput<
+        DecodedSourceTopicTopics<Topic>,
+        DecodedSourceTopicViewTopic<Topic>,
+        DecodedTopicRegion<Topic>
+      >
+    : never;
+
+export function decodeKafkaTopicMessage<
+  Topics extends KafkaTopicSchemaRegistry,
+  ViewTopic extends Extract<keyof Topics, string>,
+  Region extends string,
+>(
+  topic: KafkaTopicSourceDecoder<Topics, ViewTopic, Region, unknown> & {
+    readonly regions: NonEmptyReadonlyArray<Region>;
+    readonly topic: string;
+    readonly viewServerTopic: ViewTopic;
+  },
+  input: KafkaTopicSourceDecodeInput<Topics, ViewTopic, Region>,
+): Effect.Effect<KafkaDecodedTopicSourceMessage<Topics, ViewTopic>, unknown>;
+export function decodeKafkaTopicMessage<
+  Topics extends KafkaTopicSchemaRegistry,
+  Regions extends RuntimeRegions,
+>(
+  topic: KafkaRuntimeTopicSourceDefinition<Topics, Regions, Extract<keyof Topics, string>>,
+  input: KafkaTopicSourceDecodeInput<
+    KafkaTopicSchemaRegistry,
+    string,
+    Extract<keyof Regions, string>
+  >,
+): Effect.Effect<DecodedKafkaRuntimeSourceMessage<Extract<keyof Topics, string>>, unknown>;
 export function decodeKafkaTopicMessage<Topic extends AnyKafkaRuntimeSourceTopic>(
   topic: Topic,
-  input: KafkaTopicSourceDecodeInput<DecodedTopicRegion<Topic>>,
+  input: DecodedSourceTopicInput<Topic>,
 ): Effect.Effect<DecodedSourceTopicMessage<Topic>, unknown>;
 export function decodeKafkaTopicMessage<Topic extends AnyKafkaRuntimeTopic>(
   topic: Topic,
@@ -1774,15 +1987,8 @@ export function decodeKafkaTopicMessage(
   topic: AnyKafkaRuntimeTopic | AnyKafkaRuntimeSourceTopic,
   input:
     | KafkaTopicDecodeInput<KafkaTopicSchemaRegistry, string, string>
-    | KafkaTopicSourceDecodeInput<string>,
-): Effect.Effect<
-  {
-    readonly row: object;
-    readonly rowKey?: string;
-    readonly viewServerTopic: string;
-  },
-  unknown
-> {
+    | KafkaTopicSourceDecodeInput<KafkaTopicSchemaRegistry, string, string>,
+): Effect.Effect<DecodedKafkaRuntimeMessage, unknown> {
   return decodeKafkaTopicMessageEffect(topic, input);
 }
 
@@ -1908,6 +2114,7 @@ export type ValidateKafkaTopicSource<
   Topics extends KafkaTopicSchemaRegistry,
   Regions extends RuntimeRegions,
   ViewTopic extends Extract<keyof Topics, string>,
+  KeyField extends string,
   Candidate,
 > = Candidate extends {
   readonly topic: string;
@@ -1918,6 +2125,9 @@ export type ValidateKafkaTopicSource<
   readonly key: infer KeyCodec extends KafkaCodec<unknown, unknown>;
 }
   ? Candidate extends {
+      readonly rowKey: infer RowKey extends (
+        input: KafkaTopicSourceRowKeyInputWithKey<TopicRegions[number], KeyCodec>,
+      ) => unknown;
       readonly map: infer Mapping extends (
         input: KafkaTopicSourceMapInputWithKey<
           Topics,
@@ -1926,16 +2136,19 @@ export type ValidateKafkaTopicSource<
           ValueCodec,
           KeyCodec
         >,
-      ) => TopicRow<Topics, ViewTopic>;
+      ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>;
     }
     ? Candidate extends KafkaTopicSourceInputWithKey<
         Topics,
         Regions,
         ViewTopic,
+        KeyField,
         ValueCodec,
         KeyCodec,
         TopicRegions,
-        Mapping
+        Mapping,
+        string,
+        RowKey
       >
       ? Candidate &
           RejectExtraKeys<
@@ -1944,10 +2157,13 @@ export type ValidateKafkaTopicSource<
               Topics,
               Regions,
               ViewTopic,
+              KeyField,
               ValueCodec,
               KeyCodec,
               TopicRegions,
-              Mapping
+              Mapping,
+              string,
+              RowKey
             >
           >
       : never
@@ -1962,6 +2178,9 @@ export type ValidateKafkaTopicSource<
           readonly value: infer ValueCodec extends KafkaCodec<unknown, unknown>;
         }
       ? Candidate extends {
+          readonly rowKey: infer RowKey extends (
+            input: KafkaTopicSourceRowKeyInputWithoutKey<TopicRegions[number]>,
+          ) => unknown;
           readonly map: infer Mapping extends (
             input: KafkaTopicSourceMapInputWithoutKey<
               Topics,
@@ -1969,15 +2188,18 @@ export type ValidateKafkaTopicSource<
               TopicRegions[number],
               ValueCodec
             >,
-          ) => TopicRow<Topics, ViewTopic>;
+          ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KeyField>;
         }
         ? Candidate extends KafkaTopicSourceInputWithoutKey<
             Topics,
             Regions,
             ViewTopic,
+            KeyField,
             ValueCodec,
             TopicRegions,
-            Mapping
+            Mapping,
+            string,
+            RowKey
           >
           ? Candidate &
               RejectExtraKeys<
@@ -1986,9 +2208,12 @@ export type ValidateKafkaTopicSource<
                   Topics,
                   Regions,
                   ViewTopic,
+                  KeyField,
                   ValueCodec,
                   TopicRegions,
-                  Mapping
+                  Mapping,
+                  string,
+                  RowKey
                 >
               >
           : never
@@ -2361,13 +2586,14 @@ const makeKafkaRuntimeTopicSourceWithKey = <
       ValueCodec,
       KeyCodec
     >,
-  ) => TopicRow<Topics, ViewTopic>,
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KafkaTopicKeyField<Topics, ViewTopic>>,
 >(
   viewServerTopic: ViewTopic,
   topic: KafkaTopicSourceInputWithKey<
     Topics,
     Regions,
     ViewTopic,
+    KafkaTopicKeyField<Topics, ViewTopic>,
     ValueCodec,
     KeyCodec,
     TopicRegions,
@@ -2379,17 +2605,31 @@ const makeKafkaRuntimeTopicSourceWithKey = <
   viewServerTopic,
   [KafkaTopicDecodeTypeId]: (input) =>
     Effect.gen(function* () {
-      const value = yield* decodeKafkaCodec(topic.value, {
-        bytes: input.valueBytes,
-        metadata: input.metadata,
-      });
       const key = yield* decodeKafkaCodec(topic.key, {
         bytes: input.keyBytes,
         metadata: input.metadata,
       });
-      const rowKey = yield* rowKeyFromDecodedKafkaKey(key, input.rowKeyField);
-      const row = yield* mapKafkaPayload(() =>
-        topic.map({
+      const rowKey = yield* mapKafkaRowKey(() =>
+        topic.rowKey({
+          key,
+          region: input.region,
+          metadata: input.metadata,
+        }),
+      );
+      if (input.valueBytes === null) {
+        const tombstone: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+          rowKey,
+          tombstone: true,
+          viewServerTopic,
+        };
+        return tombstone;
+      }
+      const value = yield* decodeKafkaCodec(topic.value, {
+        bytes: input.valueBytes,
+        metadata: input.metadata,
+      });
+      const mappedRow = yield* mapKafkaPayload(() => ({
+        ...topic.map({
           key,
           value,
           region: input.region,
@@ -2397,12 +2637,16 @@ const makeKafkaRuntimeTopicSourceWithKey = <
           schema: input.schema,
           metadata: input.metadata,
         }),
-      );
-      return {
+        [input.rowKeyField]: rowKey,
+      }));
+      const row = yield* decodeKafkaMappedRow(input.schema, mappedRow);
+      yield* validateDecodedKafkaMappedRowKey(row, input.rowKeyField, rowKey);
+      const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
         rowKey,
         viewServerTopic,
       };
+      return decoded;
     }),
 });
 
@@ -2414,13 +2658,14 @@ const makeKafkaRuntimeTopicSourceWithoutKey = <
   TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
   Mapping extends (
     input: KafkaTopicSourceMapInputWithoutKey<Topics, ViewTopic, TopicRegions[number], ValueCodec>,
-  ) => TopicRow<Topics, ViewTopic>,
+  ) => KafkaTopicMappedSourceRow<Topics, ViewTopic, KafkaTopicKeyField<Topics, ViewTopic>>,
 >(
   viewServerTopic: ViewTopic,
   topic: KafkaTopicSourceInputWithoutKey<
     Topics,
     Regions,
     ViewTopic,
+    KafkaTopicKeyField<Topics, ViewTopic>,
     ValueCodec,
     TopicRegions,
     Mapping
@@ -2431,17 +2676,31 @@ const makeKafkaRuntimeTopicSourceWithoutKey = <
   viewServerTopic,
   [KafkaTopicDecodeTypeId]: (input) =>
     Effect.gen(function* () {
-      const value = yield* decodeKafkaCodec(topic.value, {
-        bytes: input.valueBytes,
-        metadata: input.metadata,
-      });
       const key = decodeKafkaStringKey({
         bytes: input.keyBytes,
         metadata: input.metadata,
       });
-      const rowKey = yield* rowKeyFromDecodedKafkaKey(key, input.rowKeyField);
-      const row = yield* mapKafkaPayload(() =>
-        topic.map({
+      const rowKey = yield* mapKafkaRowKey(() =>
+        topic.rowKey({
+          key,
+          region: input.region,
+          metadata: input.metadata,
+        }),
+      );
+      if (input.valueBytes === null) {
+        const tombstone: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+          rowKey,
+          tombstone: true,
+          viewServerTopic,
+        };
+        return tombstone;
+      }
+      const value = yield* decodeKafkaCodec(topic.value, {
+        bytes: input.valueBytes,
+        metadata: input.metadata,
+      });
+      const mappedRow = yield* mapKafkaPayload(() => ({
+        ...topic.map({
           key,
           value,
           region: input.region,
@@ -2449,12 +2708,16 @@ const makeKafkaRuntimeTopicSourceWithoutKey = <
           schema: input.schema,
           metadata: input.metadata,
         }),
-      );
-      return {
+        [input.rowKeyField]: rowKey,
+      }));
+      const row = yield* decodeKafkaMappedRow(input.schema, mappedRow);
+      yield* validateDecodedKafkaMappedRowKey(row, input.rowKeyField, rowKey);
+      const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
         rowKey,
         viewServerTopic,
       };
+      return decoded;
     }),
 });
 
@@ -2467,7 +2730,15 @@ const makeKafkaRuntimeTopicSource = <
   TopicRegions extends NonEmptyReadonlyArray<Extract<keyof Regions, string>>,
 >(
   viewServerTopic: ViewTopic,
-  topic: KafkaTopicSourceDefinition<Topics, Regions, ViewTopic, ValueCodec, KeyCodec, TopicRegions>,
+  topic: KafkaTopicSourceDefinition<
+    Topics,
+    Regions,
+    ViewTopic,
+    KafkaTopicKeyField<Topics, ViewTopic>,
+    ValueCodec,
+    KeyCodec,
+    TopicRegions
+  >,
 ): KafkaRuntimeTopicSourceDefinition<Topics, Regions, ViewTopic, TopicRegions> => {
   if ("key" in topic) {
     return makeKafkaRuntimeTopicSourceWithKey(viewServerTopic, topic);
@@ -2496,7 +2767,14 @@ export const makeKafkaRuntimeTopicSources = <
     KafkaRuntimeTopicSourceDefinition<Topics, Regions, Extract<keyof Topics, string>>
   > = [];
   for (const viewServerTopic in topics) {
-    const kafkaSource = topics[viewServerTopic].kafkaSource;
+    if (!Object.prototype.hasOwnProperty.call(topics, viewServerTopic)) {
+      continue;
+    }
+    const topicDefinition = Object.getOwnPropertyDescriptor(topics, viewServerTopic)?.value;
+    if (!isInspectableObject(topicDefinition)) {
+      continue;
+    }
+    const kafkaSource = Object.getOwnPropertyDescriptor(topicDefinition, "kafkaSource")?.value;
     if (kafkaSource === undefined) {
       continue;
     }
@@ -2519,19 +2797,27 @@ export const isKafkaTopicSourceDefinition = <
     return false;
   }
   const ownKeys = Object.getOwnPropertyNames(topic);
-  const allowedKeys =
-    "key" in topic
-      ? ["topic", "regions", "value", "key", "map"]
-      : ["topic", "regions", "value", "map"];
+  const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(topic, key);
+  const sourceKeys = ["topic", "regions", "value", "key", "rowKey", "map"];
+  if (sourceKeys.some((key) => key in topic && !hasOwn(key))) {
+    return false;
+  }
+  const hasOwnKey = hasOwn("key");
+  const allowedKeys = hasOwnKey
+    ? ["topic", "regions", "value", "key", "rowKey", "map"]
+    : ["topic", "regions", "value", "rowKey", "map"];
   if (!ownKeys.every((key) => allowedKeys.includes(key))) {
     return false;
   }
-  const sourceTopic = Reflect.get(topic, "topic");
-  const regions = Reflect.get(topic, "regions");
-  const value = Reflect.get(topic, "value");
-  const key = Reflect.get(topic, "key");
-  const hasOwnKey = Object.prototype.hasOwnProperty.call(topic, "key");
-  const map = Reflect.get(topic, "map");
+  if (!allowedKeys.every((key) => hasOwn(key))) {
+    return false;
+  }
+  const sourceTopic = Object.getOwnPropertyDescriptor(topic, "topic")?.value;
+  const regions = Object.getOwnPropertyDescriptor(topic, "regions")?.value;
+  const value = Object.getOwnPropertyDescriptor(topic, "value")?.value;
+  const key = Object.getOwnPropertyDescriptor(topic, "key")?.value;
+  const rowKey = Object.getOwnPropertyDescriptor(topic, "rowKey")?.value;
+  const map = Object.getOwnPropertyDescriptor(topic, "map")?.value;
   return (
     typeof sourceTopic === "string" &&
     Array.isArray(regions) &&
@@ -2539,6 +2825,7 @@ export const isKafkaTopicSourceDefinition = <
     regions.every((region) => typeof region === "string") &&
     isKafkaCodec(value) &&
     ((key === undefined && !hasOwnKey) || isKafkaCodec(key)) &&
+    typeof rowKey === "function" &&
     typeof map === "function"
   );
 };

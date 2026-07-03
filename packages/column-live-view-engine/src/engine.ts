@@ -16,6 +16,7 @@ import { Effect } from "effect";
 import type {
   ColumnLiveViewEngine,
   ColumnLiveViewEngineConfig,
+  ColumnLiveViewEngineInternalConfig,
   ColumnLiveViewEngineInternal,
   ColumnLiveViewSubscription,
   DecodableTopicDefinitions,
@@ -38,6 +39,8 @@ import {
   closeTopicStoreSubscriptions,
   deleteTopicStoreRow,
   patchTopicStoreRow,
+  publishTopicStoreDecodedRows,
+  publishTopicStoreDecodedRowsWithStorageKeys,
   publishTopicStoreRow,
   publishTopicStoreRows,
   publishTopicStoreRowsWithStorageKeys,
@@ -56,14 +59,14 @@ const invalidRow = (topic: string, message: string) =>
 class InMemoryColumnLiveViewEngine<
   Topics extends DecodableTopicDefinitions,
 > implements ColumnLiveViewEngine<Topics> {
-  private readonly stores = new Map<Extract<keyof Topics, string>, TopicStore>();
+  private readonly stores = new Map<string, TopicStore>();
   private readonly groupedIncrementalAdmissionLimits: GroupedIncrementalAdmissionLimits;
   private readonly subscriptionQueueCapacity: number;
   private engineVersion = 0;
   private nextQueryId = 0;
   private closed = false;
 
-  constructor(config: ColumnLiveViewEngineConfig<Topics>) {
+  constructor(config: ColumnLiveViewEngineInternalConfig<Topics>) {
     const configuredCapacity = config.subscriptionQueueCapacity ?? defaultSubscriptionQueueCapacity;
     this.subscriptionQueueCapacity =
       Number.isSafeInteger(configuredCapacity) && configuredCapacity > 0
@@ -72,11 +75,7 @@ class InMemoryColumnLiveViewEngine<
     this.groupedIncrementalAdmissionLimits = groupedIncrementalAdmissionLimitsFromConfig(
       config.groupedIncrementalAdmissionLimits,
     );
-    for (const topic in config.topics) {
-      if (!Object.hasOwn(config.topics, topic)) {
-        continue;
-      }
-      const definition = config.topics[topic];
+    for (const [topic, definition] of Object.entries(config.topics)) {
       this.stores.set(
         topic,
         new TopicStore(topic, definition.schema, definition.key, () => {
@@ -133,6 +132,26 @@ class InMemoryColumnLiveViewEngine<
     const store = yield* this.getStore(topic);
     yield* publishTopicStoreRows(store, rows, invalidRow);
   });
+
+  readonly publishManyDecodedRows: ColumnLiveViewEngineInternal<Topics>["publishManyDecodedRows"] =
+    Effect.fn("ColumnLiveViewEngine.publishManyDecodedRows")(
+      { self: this },
+      function* (this: InMemoryColumnLiveViewEngine<Topics>, topic, rows) {
+        yield* this.ensureOpen();
+        const store = yield* this.getStore(topic);
+        yield* publishTopicStoreDecodedRows(store, rows, invalidRow);
+      },
+    );
+
+  readonly publishManyDecodedRowsWithStorageKeys: ColumnLiveViewEngineInternal<Topics>["publishManyDecodedRowsWithStorageKeys"] =
+    Effect.fn("ColumnLiveViewEngine.publishManyDecodedRowsWithStorageKeys")(
+      { self: this },
+      function* (this: InMemoryColumnLiveViewEngine<Topics>, topic, rows) {
+        yield* this.ensureOpen();
+        const store = yield* this.getStore(topic);
+        yield* publishTopicStoreDecodedRowsWithStorageKeys(store, rows, invalidRow);
+      },
+    );
 
   readonly publishManyWithStorageKeys: ColumnLiveViewEngineInternal<Topics>["publishManyWithStorageKeys"] =
     Effect.fn("ColumnLiveViewEngine.publishManyWithStorageKeys")({ self: this }, function* <
@@ -372,10 +391,18 @@ class InMemoryColumnLiveViewEngine<
 
 const publicColumnLiveViewEngine = <Topics extends DecodableTopicDefinitions>(
   engine: InMemoryColumnLiveViewEngine<Topics>,
-): ColumnLiveViewEngine<Topics> => {
-  Reflect.deleteProperty(engine, "publishManyWithStorageKeys");
-  return engine;
-};
+): ColumnLiveViewEngine<Topics> => ({
+  close: engine.close,
+  delete: engine.delete,
+  health: engine.health,
+  patch: engine.patch,
+  publish: engine.publish,
+  publishMany: engine.publishMany,
+  reset: engine.reset,
+  snapshot: engine.snapshot.bind(engine),
+  subscribe: engine.subscribe.bind(engine),
+  subscribeRuntime: engine.subscribeRuntime,
+});
 
 export const createColumnLiveViewEngine = Effect.fn("ColumnLiveViewEngine.make")(
   <const Topics extends DecodableTopicDefinitions>(
@@ -386,7 +413,7 @@ export const createColumnLiveViewEngine = Effect.fn("ColumnLiveViewEngine.make")
 
 export const createColumnLiveViewEngineInternal = Effect.fn("ColumnLiveViewEngine.internal.make")(
   <const Topics extends DecodableTopicDefinitions>(
-    config: ColumnLiveViewEngineConfig<Topics>,
+    config: ColumnLiveViewEngineInternalConfig<Topics>,
   ): Effect.Effect<ColumnLiveViewEngineInternal<Topics>> =>
     Effect.sync(() => new InMemoryColumnLiveViewEngine(config)),
 );

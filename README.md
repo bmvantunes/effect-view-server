@@ -84,8 +84,8 @@ export const viewServer = defineViewServerConfig({
         regions: ["usa"],
         value: kafka.protobuf(OrdersValueSchema),
         key: kafka.protobuf(OrdersKeySchema),
-        map: ({ key, value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key.orderId,
+        map: ({ key, value, region }) => ({
           customerId: value.customerId,
           status: value.status,
           price: value.price,

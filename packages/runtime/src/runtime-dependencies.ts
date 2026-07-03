@@ -8,6 +8,7 @@ import type {
 import { type ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import {
   makeViewServerRuntimeCoreInternal,
+  type ViewServerRuntimeCoreInternalClient,
   type ViewServerRuntimeCoreInternalInstance,
 } from "@effect-view-server/runtime-core/internal";
 import {
@@ -62,7 +63,7 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   ) => ViewServerGrpcHealthLedger<Topics>;
   readonly makeKafkaIngress: <const Regions extends RuntimeRegions>(
     config: ViewServerConfig<Topics>,
-    client: ViewServerRuntimeClient<Topics>,
+    client: ViewServerRuntimeCoreInternalClient<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
     health: ViewServerKafkaHealthLedger<Topics>,
@@ -74,7 +75,7 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   ) => Effect.Effect<ViewServerTcpPublishIngress, ViewServerTcpPublishIngressError>;
   readonly makeGrpcIngress: <const Clients extends GrpcRuntimeClients>(
     config: ViewServerConfig<Topics>,
-    client: ViewServerRuntimeClient<Topics>,
+    client: ViewServerRuntimeCoreInternalClient<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
     options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
     health: ViewServerGrpcHealthLedger<Topics>,

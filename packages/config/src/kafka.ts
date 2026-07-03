@@ -1,5 +1,6 @@
-export { defineKafkaTopic, kafka, kafkaErrorIsMapping } from "@effect-view-server/config/kafka";
+export { defineKafkaTopic, kafka, kafkaErrorIsMapping } from "./kafka-contract";
 export type {
+  ExactRuntimeOptions,
   KafkaBytesCodec,
   KafkaCodec,
   KafkaCodecDecodeInput,
@@ -21,7 +22,6 @@ export type {
   KafkaTopicSourceDefinition,
   KafkaTopicSourceMapInput,
   NonEmptyReadonlyArray,
-  ExactRuntimeOptions,
   RuntimeOptions,
   RuntimeOptionsCandidate,
   RuntimeOptionsDefinition,
@@ -31,4 +31,4 @@ export type {
   ValidateRuntimeOptions,
   ViewServerKafkaCommittedStartFrom,
   ViewServerKafkaStartFrom,
-} from "@effect-view-server/config/kafka";
+} from "./kafka-contract";

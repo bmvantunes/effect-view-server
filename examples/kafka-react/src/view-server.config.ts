@@ -50,8 +50,8 @@ export const viewServer = defineViewServerConfig({
         regions: ["usa"],
         value: kafka.json(KafkaOrder),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           customerId: value.customerId,
           status: value.status,
           price: value.price,
@@ -68,8 +68,8 @@ export const viewServer = defineViewServerConfig({
         regions: ["london"],
         value: kafka.json(KafkaTrade),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           symbol: value.symbol,
           side: value.side,
           quantity: value.quantity,

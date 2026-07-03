@@ -12,9 +12,9 @@ import {
   type GrpcServerStreamingMethodName,
   type TopicRow,
   type ViewServerConfig,
-  type ViewServerRuntimeClient,
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
+import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import { Cause, Clock, Effect, Exit, Fiber, Option, Schema, Scope, Stream } from "effect";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
@@ -239,6 +239,15 @@ const mapMaterializedValue = Effect.fn("ViewServerRuntime.grpc.materialized.map"
   value: GrpcMethodValue<Clients[ClientName], MethodName>,
 ) {
   const topicDefinition = config.topics[feed.topic];
+  if (topicDefinition === undefined) {
+    return yield* grpcIngressError({
+      message: `gRPC feed ${feedName} references unknown topic ${feed.topic}`,
+      cause: feed.topic,
+      phase: "configuration",
+      feedName,
+      topic: feed.topic,
+    });
+  }
   const row = yield* Effect.try({
     try: (): TopicRow<Topics, Topic> =>
       feed.map({
@@ -255,7 +264,7 @@ const mapMaterializedValue = Effect.fn("ViewServerRuntime.grpc.materialized.map"
         topic: feed.topic,
       }),
   });
-  yield* Schema.decodeUnknownEffect(topicDefinition.schema)(row).pipe(
+  const decodedRow = yield* Schema.decodeUnknownEffect(topicDefinition.schema)(row).pipe(
     Effect.mapError((cause) =>
       grpcIngressError({
         message: `gRPC feed mapping produced an invalid row for ${feedName}`,
@@ -266,7 +275,7 @@ const mapMaterializedValue = Effect.fn("ViewServerRuntime.grpc.materialized.map"
       }),
     ),
   );
-  return row;
+  return decodedRow;
 });
 
 const publishMaterializedBatch = Effect.fn("ViewServerRuntime.grpc.materialized.publishBatch")(
@@ -278,7 +287,7 @@ const publishMaterializedBatch = Effect.fn("ViewServerRuntime.grpc.materialized.
     const MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
   >(
     config: ViewServerConfig<Topics>,
-    client: ViewServerRuntimeClient<Topics>,
+    client: ViewServerRuntimeCoreInternalClient<Topics>,
     requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
     health: ViewServerGrpcHealthLedger<Topics>,
     feed: GrpcMaterializedFeedDefinition<Topics, Clients, Topic, ClientName, MethodName>,
@@ -299,7 +308,7 @@ const publishMaterializedBatch = Effect.fn("ViewServerRuntime.grpc.materialized.
         ),
       ),
     );
-    yield* client.publishMany(feed.topic, rows).pipe(
+    yield* client.publishManyDecodedRows(feed.topic, rows).pipe(
       Effect.tapError((error) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((nowMillis) =>
@@ -357,7 +366,7 @@ const startMaterializedFeed = Effect.fn("ViewServerRuntime.grpc.materialized.sta
 >(
   scope: Scope.Scope,
   config: ViewServerConfig<Topics>,
-  runtimeClient: ViewServerRuntimeClient<Topics>,
+  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
   requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
   options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   health: ViewServerGrpcHealthLedger<Topics>,
@@ -577,7 +586,7 @@ export const makeViewServerGrpcIngress: <
   const Clients extends GrpcRuntimeClients,
 >(
   config: ViewServerConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
   requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
   options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   health: ViewServerGrpcHealthLedger<Topics>,
@@ -589,7 +598,7 @@ export const makeViewServerGrpcIngress: <
   const Clients extends GrpcRuntimeClients,
 >(
   config: ViewServerConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
   requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
   options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   health: ViewServerGrpcHealthLedger<Topics>,

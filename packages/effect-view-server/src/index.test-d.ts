@@ -89,11 +89,11 @@ describe("public effect-view-server facade type contracts", () => {
     // @ts-expect-error string fields do not accept range predicates.
     react.useLiveQuery("orders", stringRangeFilterQuery);
 
+    // @ts-expect-error topic keys must reference fields on the topic schema.
     defineViewServerConfig({
       topics: {
         invalidOrders: {
           schema: Order,
-          // @ts-expect-error topic keys must reference fields on the topic schema.
           key: "missing",
         },
       },

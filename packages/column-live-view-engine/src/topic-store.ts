@@ -4,6 +4,8 @@ export { TopicStore };
 export {
   deleteTopicStoreRow,
   patchTopicStoreRow,
+  publishTopicStoreDecodedRows,
+  publishTopicStoreDecodedRowsWithStorageKeys,
   publishTopicStoreRow,
   publishTopicStoreRows,
   publishTopicStoreRowsWithStorageKeys,

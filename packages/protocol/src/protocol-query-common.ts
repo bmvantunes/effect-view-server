@@ -60,9 +60,15 @@ export const validateWindow = Effect.fn("ViewServerProtocol.query.window.validat
   }
 });
 
-export const viewServerDecodeTopic = Effect.fn("ViewServerProtocol.topic.decode")(function* <
-  const Topics extends TopicDefinitions,
->(config: { readonly topics: Topics }, topic: string) {
+export const viewServerDecodeTopic: <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  topic: string,
+) => Effect.Effect<Extract<keyof Topics, string>, ViewServerRuntimeError> = Effect.fn(
+  "ViewServerProtocol.topic.decode",
+)(function* <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  topic: string,
+) {
   if (hasTopic(config, topic)) {
     return topic;
   }

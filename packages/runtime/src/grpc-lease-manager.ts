@@ -264,7 +264,7 @@ const extractRoute = Effect.fn("ViewServerRuntime.grpc.leased.route.extract")(fu
       }),
     );
   }
-  const topicDefinition = config.topics[topic];
+  const topicDefinition = yield* topicDefinitionFor(config, topic, feed.topic);
   const route: Record<string, CanonicalRouteValue> = Object.create(null);
   for (const field of feed.routeBy) {
     const value = exactEqValue(query["where"][field]);
@@ -814,38 +814,38 @@ const externalizeLeasedEvent = <Row extends object>(
   return event;
 };
 
-const callRuntimePublishMany = Effect.fn("ViewServerRuntime.grpc.leased.runtime.publishMany")(
-  function* <const Topics extends ViewServerRuntimeTopicDefinitions, const Topic extends string>(
-    runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-    topic: Topic,
-    rows: ReadonlyArray<LeasedRowWithStorageKey>,
-    feedName: string,
-  ) {
-    const effect = Reflect.apply(runtimeClient.publishManyWithStorageKeys, runtimeClient, [
+const callRuntimePublishMany = Effect.fn(
+  "ViewServerRuntime.grpc.leased.runtime.publishManyDecoded",
+)(function* <const Topics extends ViewServerRuntimeTopicDefinitions, const Topic extends string>(
+  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
+  topic: Topic,
+  rows: ReadonlyArray<LeasedRowWithStorageKey>,
+  feedName: string,
+) {
+  const effect = Reflect.apply(runtimeClient.publishManyDecodedRowsWithStorageKeys, runtimeClient, [
+    topic,
+    rows,
+  ]);
+  if (!isRuntimeMutationEffect(effect)) {
+    return yield* grpcLeaseError({
+      message: `Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
+      cause: effect,
+      feedName,
       topic,
-      rows,
-    ]);
-    if (!isRuntimeMutationEffect(effect)) {
-      return yield* grpcLeaseError({
-        message: `Runtime publishManyWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
-        cause: effect,
+    });
+  }
+  yield* effect.pipe(
+    Effect.asVoid,
+    Effect.mapError((cause) =>
+      grpcLeaseError({
+        message: `gRPC leased feed publish failed for ${feedName}`,
+        cause,
         feedName,
         topic,
-      });
-    }
-    yield* effect.pipe(
-      Effect.asVoid,
-      Effect.mapError((cause) =>
-        grpcLeaseError({
-          message: `gRPC leased feed publish failed for ${feedName}`,
-          cause,
-          feedName,
-          topic,
-        }),
-      ),
-    );
-  },
-);
+      }),
+    ),
+  );
+});
 
 const callRuntimeDelete = Effect.fn("ViewServerRuntime.grpc.leased.runtime.delete")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -1070,6 +1070,19 @@ const leasedRuntimeAccessError = (topic: string): ViewServerRuntimeError =>
     message:
       "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
   });
+
+const normalizeAcquireLeaseError =
+  (topic: string) =>
+  (error: ViewServerRuntimeError | ViewServerGrpcIngressError): ViewServerRuntimeError => {
+    if (error instanceof ViewServerGrpcIngressError) {
+      return runtimeError({
+        code: "RuntimeUnavailable",
+        topic,
+        message: error.message,
+      });
+    }
+    return error;
+  };
 
 export const makeViewServerGrpcLeaseManager = Effect.fn(
   "ViewServerRuntime.grpc.leased.makeManager",
@@ -1441,7 +1454,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     ViewServerRuntimeError | ViewServerTransportError
   > {
     return Effect.gen(function* () {
-      const lease = yield* lock.withPermit(acquireLease(topic, query));
+      const lease = yield* lock
+        .withPermit(acquireLease(topic, query))
+        .pipe(Effect.mapError(normalizeAcquireLeaseError(topic)));
       if (Option.isNone(lease)) {
         return yield* internalLiveClient.subscribeInternal<Topic, Query>(topic, query);
       }
@@ -1478,7 +1493,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     query,
   ) =>
     Effect.gen(function* () {
-      const lease = yield* lock.withPermit(acquireLease(topic, query));
+      const lease = yield* lock
+        .withPermit(acquireLease(topic, query))
+        .pipe(Effect.mapError(normalizeAcquireLeaseError(topic)));
       if (Option.isNone(lease)) {
         return yield* internalLiveClient.subscribeRuntimeInternal(topic, query);
       }

@@ -4,10 +4,12 @@ import type { Message } from "@platformatic/kafka";
 import {
   defineViewServerConfig,
   kafka,
-  type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
+import {
+  makeViewServerRuntimeCoreInternal as makeViewServerRuntimeCore,
+  type ViewServerRuntimeCoreInternalClient,
+} from "@effect-view-server/runtime-core/internal";
 import { Buffer } from "node:buffer";
 import * as BigDecimal from "effect/BigDecimal";
 import {
@@ -302,12 +304,15 @@ const runtimeUnavailable: ViewServerRuntimeError = {
   message: "publish failed",
 };
 
-const failingClient: ViewServerRuntimeClient<Topics> = {
+const failingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
   delete: () => Effect.fail(runtimeUnavailable),
   health: () => Effect.fail(runtimeUnavailable),
   patch: () => Effect.fail(runtimeUnavailable),
   publish: () => Effect.fail(runtimeUnavailable),
   publishMany: () => Effect.fail(runtimeUnavailable),
+  publishManyDecodedRows: () => Effect.fail(runtimeUnavailable),
+  publishManyDecodedRowsWithStorageKeys: () => Effect.fail(runtimeUnavailable),
+  publishManyWithStorageKeys: () => Effect.fail(runtimeUnavailable),
   reset: () => Effect.fail(runtimeUnavailable),
   snapshot: () => Effect.fail(runtimeUnavailable),
 };
@@ -3136,10 +3141,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      const defectiveClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const defectiveClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("publish defect"),
-        publishMany: () => Effect.die("publish defect"),
+        publishManyDecodedRows: () => Effect.die("publish defect"),
       };
 
       const error = yield* Effect.flip(
@@ -3222,10 +3227,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      const interruptingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const interruptingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.interrupt,
-        publishMany: () => Effect.interrupt,
+        publishManyDecodedRows: () => Effect.interrupt,
       };
 
       const exit = yield* Effect.exit(
@@ -3331,7 +3336,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const streamFiber = yield* runKafkaMessageStream(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
@@ -3365,7 +3370,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -3466,7 +3471,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -3548,7 +3553,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -3625,7 +3630,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -3712,7 +3717,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -3934,7 +3939,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         const error = yield* Effect.flip(
           runKafkaMessageStream(
             viewServer,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             kafkaOptions,
             ledger,
@@ -4009,13 +4014,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         yield* ledger.regionConnected("local", 1_000);
         yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
         const operations: Array<string> = [];
-        const batchingClient: ViewServerRuntimeClient<Topics> = {
-          ...runtimeCore.client,
+        const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+          ...runtimeCore.internalClient,
           publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-          publishMany: (topic, rows) =>
+          publishManyDecodedRows: (topic, rows) =>
             Effect.sync(() => {
               operations.push(`publishMany:${topic}:${rows.length}`);
-            }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+            }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
         };
         let healthRefreshes = 0;
         const requestHealthRefresh = Effect.sync(() => {
@@ -4153,13 +4158,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
 
       yield* runKafkaMessageStream(
@@ -4236,13 +4241,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         sleep: () => Effect.void,
       };
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
 
       yield* runKafkaMessageStream(
@@ -4310,10 +4315,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const publishManyFailingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const publishManyFailingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
@@ -4435,10 +4440,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         Cause.makeFailReason(runtimeUnavailable),
         Cause.makeDieReason(new Error("publish finalizer defect")),
       ]);
-      const publishManyFailingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const publishManyFailingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.failCause(publishFailure))),
@@ -4549,10 +4554,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const publishManyFailingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const publishManyFailingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
@@ -4625,13 +4630,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
 
       const error = yield* Effect.flip(
@@ -4805,13 +4810,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         nowMillis: 0,
       });
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
 
       const error = yield* Effect.flip(
@@ -4976,13 +4981,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
       const firstMessage = kafkaMessage({
         topic: ordersSourceTopic,
@@ -5120,13 +5125,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
 
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
       const commitFailure = new Error("recovery commit failed");
 
@@ -5283,13 +5288,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
 
       const exit = yield* Effect.exit(
@@ -5450,7 +5455,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           mixedCauseKafkaOptions,
           ledger,
@@ -5576,13 +5581,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeClient<Topics> = {
-        ...runtimeCore.client,
+      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishMany: (topic, rows) =>
+        publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.client.publishMany(topic, rows))),
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
       };
 
       const exit = yield* Effect.exit(
@@ -5693,7 +5698,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         const error = yield* Effect.flip(
           runKafkaMessageStream(
             viewServer,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             kafkaOptions,
             ledger,
@@ -5802,7 +5807,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         runKafkaMessageStream(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -5892,7 +5897,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const ingress = yield* makeViewServerKafkaIngress(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         emptyKafkaOptions,
         ledger,
@@ -6116,7 +6121,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         makeViewServerKafkaIngress(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           invalidKafkaOptions,
           ledger,
@@ -6147,7 +6152,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       let committedMessages = 0;
       yield* processKafkaMessage(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
@@ -6160,7 +6165,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       );
       yield* processKafkaMessage(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
@@ -6180,7 +6185,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       );
       yield* processKafkaMessage(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
@@ -6202,7 +6207,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const decodeExit = yield* Effect.exit(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -6340,7 +6345,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       yield* processKafkaMessage(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         preciseKafkaOptions,
         ledger,
@@ -6438,7 +6443,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       yield* processKafkaMessage(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         legacyKafkaOptions,
         ledger,
@@ -6511,7 +6516,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             value: kafka.json(IncomingOrder),
             key: kafka.stringKey(),
             viewServerTopic: "orders",
-            mapping: () => {
+            mapping: (): never => {
               throw new Error("mapping failed");
             },
           }),
@@ -6537,7 +6542,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           requestHealthRefresh,
           throwingKafkaOptions,
           ledger,
@@ -6643,7 +6648,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           untaggedDecodeKafkaOptions,
           ledger,
@@ -6737,7 +6742,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           forgedMappingTagKafkaOptions,
           ledger,
@@ -6837,7 +6842,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           primitiveDecodeKafkaOptions,
           ledger,
@@ -6913,7 +6918,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const exit = yield* Effect.exit(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           requestHealthRefresh,
           kafkaOptions,
           ledger,
@@ -6951,7 +6956,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             consumerLagMessages: null,
             lagSampledAt: null,
             committedOffset: null,
-            lastError: "Failed to parse Kafka JSON payload",
+            lastError: "Kafka message value bytes are required",
           },
         }),
       });
@@ -6994,7 +6999,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       const error = yield* Effect.flip(
         processKafkaMessage(
           viewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           requestHealthRefresh,
           kafkaOptions,
           ledger,

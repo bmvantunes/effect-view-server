@@ -28,8 +28,8 @@
       "import": "./dist/live-protocol.js"
     },
     "./kafka": {
-      "types": "./dist/kafka-contract.d.ts",
-      "import": "./dist/kafka-contract.js"
+      "types": "./dist/kafka.d.ts",
+      "import": "./dist/kafka.js"
     },
     "./grpc": {
       "types": "./dist/grpc-contract.d.ts",

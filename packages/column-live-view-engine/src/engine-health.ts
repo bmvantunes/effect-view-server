@@ -33,7 +33,7 @@ function exactTopicHealth(
 
 export const collectColumnLiveViewEngineHealth = Effect.fn("ColumnLiveViewEngine.health.collect")(
   function* <Topics extends object>(
-    stores: ReadonlyMap<Extract<keyof Topics, string>, TopicStore>,
+    stores: ReadonlyMap<string, TopicStore>,
     engineState: EngineHealthRuntimeState,
   ) {
     const topics: Record<string, ColumnLiveViewTopicHealth> = {};

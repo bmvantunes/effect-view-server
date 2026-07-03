@@ -1,4 +1,5 @@
 import {
+  decodeKafkaTopicMessage,
   isKafkaRuntimeTopicSourceDefinition,
   isKafkaTopicSourceDefinition,
   makeKafkaRuntimeTopicSources,
@@ -25,7 +26,11 @@ export const makeKafkaRuntimeTopicsForConfig = <
   KafkaRuntimeTopicSourceDefinition<Topics, Regions, Extract<keyof Topics, string>>
 > => makeKafkaRuntimeTopicSources<Topics, Regions>(config.topics);
 
-export { isKafkaRuntimeTopicSourceDefinition, isKafkaTopicSourceDefinition };
+export {
+  decodeKafkaTopicMessage,
+  isKafkaRuntimeTopicSourceDefinition,
+  isKafkaTopicSourceDefinition,
+};
 export type {
   KafkaRuntimeTopicSourceDefinition,
   KafkaRuntimeSourceTopicDefinition,

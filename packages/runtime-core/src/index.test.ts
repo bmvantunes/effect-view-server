@@ -86,9 +86,13 @@ const kafkaOwnedViewServer = defineViewServerConfig({
         regions: ["usa"],
         value: kafka.json(Order),
         key: kafka.stringKey(),
-        map: ({ value, rowKey }) => ({
-          ...value,
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: value.region,
+          updatedAt: value.updatedAt,
         }),
       }),
     },
@@ -894,6 +898,51 @@ describe("@effect-view-server/runtime-core", () => {
       });
 
       yield* subscription.close();
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("allows internal decoded row publishing for source-owned runtime internals", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      yield* runtimeCore.internalClient.publishManyDecodedRows("orders", [order("decoded", 30)]);
+      yield* runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys("orders", [
+        {
+          storageKey: "orders/source/row/storage-decoded",
+          row: order("public-decoded", 40),
+        },
+      ]);
+
+      const decodedSnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
+        where: {
+          customerId: { eq: "customer-decoded" },
+        },
+        select: ["id", "price"],
+        limit: 1,
+      });
+      const storageKeySnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
+        where: {
+          customerId: { eq: "customer-public-decoded" },
+        },
+        select: ["id", "price"],
+        limit: 1,
+      });
+
+      expect(decodedSnapshot).toStrictEqual({
+        rows: [{ id: "decoded", price: 30 }],
+        totalRows: 1,
+        version: 2,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(storageKeySnapshot).toStrictEqual({
+        rows: [{ id: "public-decoded", price: 40 }],
+        totalRows: 1,
+        version: 2,
+        status: "ready",
+        statusCode: "Ready",
+      });
+
       yield* runtimeCore.close;
     }),
   );

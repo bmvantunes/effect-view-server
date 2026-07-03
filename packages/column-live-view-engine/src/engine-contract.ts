@@ -49,6 +49,12 @@ export type ColumnLiveViewEngineConfig<Topics extends DecodableTopicDefinitions>
   readonly subscriptionQueueCapacity?: number;
 };
 
+export type ColumnLiveViewEngineInternalConfig<Topics extends DecodableTopicDefinitions> = {
+  readonly topics: Topics;
+  readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
+  readonly subscriptionQueueCapacity?: number;
+};
+
 export type ColumnLiveViewEngineEvent<Row> = SnapshotEvent<Row> | DeltaEvent<Row> | StatusEvent;
 
 export type ColumnLiveViewSubscription<Row> = {
@@ -144,6 +150,11 @@ type TopicRowWithStorageKey<Row extends object> = {
   readonly row: Row;
 };
 
+type DecodedTopicRowWithStorageKey = {
+  readonly storageKey: string;
+  readonly row: object;
+};
+
 export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
   readonly publish: <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
@@ -178,6 +189,14 @@ export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
 
 export type ColumnLiveViewEngineInternal<Topics extends DecodableTopicDefinitions> =
   ColumnLiveViewEngine<Topics> & {
+    readonly publishManyDecodedRows: (
+      topic: Extract<keyof Topics, string>,
+      rows: ReadonlyArray<object>,
+    ) => Effect.Effect<void, ColumnLiveViewEngineError>;
+    readonly publishManyDecodedRowsWithStorageKeys: (
+      topic: Extract<keyof Topics, string>,
+      rows: ReadonlyArray<DecodedTopicRowWithStorageKey>,
+    ) => Effect.Effect<void, ColumnLiveViewEngineError>;
     readonly publishManyWithStorageKeys: <Topic extends Extract<keyof Topics, string>>(
       topic: Topic,
       rows: ReadonlyArray<TopicRowWithStorageKey<TopicRow<Topics, Topic>>>,

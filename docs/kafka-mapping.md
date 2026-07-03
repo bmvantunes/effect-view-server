@@ -1,8 +1,10 @@
 # Kafka Mapping
 
 Kafka source topics are configured from the typed View Server config. The
-mapping function receives typed decoded Kafka key/value data and must return a
-row that matches the target View Server topic schema.
+`rowKey` function receives typed decoded Kafka key metadata and defines the
+View Server row identity. The mapping function receives typed decoded Kafka
+key/value data plus that row key and must return a row that matches the target
+View Server topic schema.
 
 ```ts
 import { Config } from "effect";
@@ -28,8 +30,8 @@ export const viewServer = defineViewServerConfig({
         regions: ["usa"],
         value: kafka.protobuf(OrderValueSchema),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           customerId: value.customerId,
           status: value.status,
           price: value.price,
@@ -46,8 +48,8 @@ export const viewServer = defineViewServerConfig({
         regions: ["london"],
         value: kafka.json(KafkaTrade),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           symbol: value.symbol,
           side: value.side,
           quantity: value.quantity,
@@ -76,6 +78,11 @@ The region names in each `kafkaSource.regions` tuple are checked against
 `config.kafka`. In the example above, `["usa"]` and `["london"]` are valid, but
 `["paris"]` fails at compile time.
 
+`rowKey` is intentionally value-independent: it receives the decoded Kafka key,
+the source region, and Kafka message metadata, but not the decoded value. That
+keeps row identity stable for compacted-topic tombstones and lets the runtime
+delete by key without decoding a null value.
+
 ## Contract
 
 - `regions` is type-checked against the configured Kafka region names.
@@ -88,13 +95,15 @@ The region names in each `kafkaSource.regions` tuple are checked against
 
 The legacy `viewServer.kafkaTopic()` + `runtime.kafka.topics` API is still
 available for admin-owned/manual source wiring, but new Kafka integrations
-should prefer topic-owned `kafkaSource` definitions.
+should prefer topic-owned `kafkaSource` definitions. Do not mix legacy runtime
+topic wiring with topic-owned `kafkaSource` definitions in the same runtime.
 
 ## Delivery
 
-Kafka messages are decoded, mapped, microbatched, and published through Runtime
-Core with `publishMany`. Offsets are committed only after the corresponding
-Runtime Core publish succeeds.
+Kafka messages are decoded, mapped, microbatched, and applied through Runtime
+Core. Topic-owned sources upsert with source-owned storage keys, and compacted
+topic tombstones delete by that same key. Offsets are committed only after the
+corresponding Runtime Core mutation succeeds.
 
 If a message fails decode or mapping, health records a decode or mapping failure
 for the source topic and region. If publishing fails, the corresponding messages

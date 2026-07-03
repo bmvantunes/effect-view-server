@@ -99,8 +99,8 @@ const viewServer = defineViewServerConfig({
         regions: ["usa"],
         value: kafka.protobuf(OrdersValueSchema),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           customerId: value.customerId,
           status: value.status,
           price: value.price,
@@ -117,8 +117,8 @@ const viewServer = defineViewServerConfig({
         regions: ["london"],
         value: kafka.json(KafkaTrade),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           symbol: value.symbol,
           side: value.side,
           quantity: value.quantity,
@@ -152,11 +152,13 @@ available for admin-owned/manual source wiring. Do not mix it with topic-owned
 ## Kafka Delivery Contract
 
 During a live process, Kafka messages are decoded, mapped, grouped into small
-microbatches, and published into Runtime Core with `publishMany`.
+microbatches, and applied into Runtime Core. Legacy runtime topics use
+`publishMany`; topic-owned sources use storage-key upserts; compacted-topic
+tombstones call `delete` for the decoded source key.
 
-Offsets are committed only after the corresponding Runtime Core publish
-succeeds. If a publish fails, the original Kafka messages remain uncommitted so
-Kafka can replay them.
+Offsets are committed only after the corresponding Runtime Core mutation
+succeeds. If publish/delete fails, the original Kafka messages remain
+uncommitted so Kafka can replay them.
 
 If a later message in a batch fails decode or mapping after earlier messages
 were decoded, the decoded prefix is published and committed before the failing

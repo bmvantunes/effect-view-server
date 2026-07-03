@@ -200,6 +200,22 @@ export const publishTopicStoreRows = Effect.fn("ColumnLiveViewEngine.topicStore.
   },
 );
 
+export const publishTopicStoreDecodedRows = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.publishManyDecoded",
+)(function* <Error, Row extends RowObject>(
+  store: TopicStore,
+  rows: ReadonlyArray<Row>,
+  invalidRow: InvalidRowErrorFactory<Error>,
+) {
+  const state = topicStoreState(store);
+  const preparedRows = yield* state.storage.prepareDecodedRows(rows, invalidRow);
+  yield* runTopicStoreMutationTransaction(state, store, (mutation) =>
+    Effect.sync(() => {
+      return mutation.publishPreparedMany(preparedRows);
+    }),
+  );
+});
+
 export const publishTopicStoreRowsWithStorageKeys = Effect.fn(
   "ColumnLiveViewEngine.topicStore.publishManyWithStorageKeys",
 )(function* <Error, Row extends RowObject>(
@@ -210,6 +226,24 @@ export const publishTopicStoreRowsWithStorageKeys = Effect.fn(
   const state = topicStoreState(store);
   const preparedRows = yield* Effect.forEach(rows, (entry) =>
     state.storage.prepareRowWithStorageKey(entry.row, entry.storageKey, invalidRow),
+  );
+  yield* runTopicStoreMutationTransaction(state, store, (mutation) =>
+    Effect.sync(() => {
+      return mutation.publishPreparedMany(preparedRows);
+    }),
+  );
+});
+
+export const publishTopicStoreDecodedRowsWithStorageKeys = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.publishManyDecodedWithStorageKeys",
+)(function* <Error, Row extends RowObject>(
+  store: TopicStore,
+  rows: ReadonlyArray<TopicStoreRowWithStorageKey<Row>>,
+  invalidRow: InvalidRowErrorFactory<Error>,
+) {
+  const state = topicStoreState(store);
+  const preparedRows = yield* Effect.forEach(rows, (entry) =>
+    state.storage.prepareDecodedRowWithStorageKey(entry.row, entry.storageKey, invalidRow),
   );
   yield* runTopicStoreMutationTransaction(state, store, (mutation) =>
     Effect.sync(() => {

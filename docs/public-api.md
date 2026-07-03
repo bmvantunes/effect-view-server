@@ -52,8 +52,8 @@ export const viewServer = defineViewServerConfig({
         regions: ["usa"],
         value: kafka.protobuf(OrdersValueSchema),
         key: kafka.stringKey(),
-        map: ({ value, region, rowKey }) => ({
-          id: rowKey,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
           customerId: value.customerId,
           status: value.status,
           price: value.price,
@@ -76,6 +76,10 @@ export const { ViewServerProvider, useLiveQuery, useViewServerHealthSummary } = 
 Topics without `kafkaSource` or `grpcSource` are externally/manual published
 topics, for example through TCP publish or an in-memory test client. A topic can
 only have one source owner.
+
+Kafka source topics must define `rowKey`. The runtime uses that value as the
+topic row key and forces the configured key field on the mapped row to match it,
+so source-owned rows cannot drift away from their Kafka identity.
 
 ## React Provider
 

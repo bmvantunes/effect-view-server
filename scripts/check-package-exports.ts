@@ -47,8 +47,6 @@ import * as publicConfigHealthPackage from "effect-view-server/config/health";
 import * as publicConfigKafkaPackage from "effect-view-server/config/kafka";
 import type {
   ExactRuntimeOptions as PublicKafkaExactRuntimeOptions,
-  KafkaRuntimeSourceTopicDefinition as PublicKafkaRuntimeSourceTopicDefinition,
-  KafkaRuntimeTopicSourceDefinition as PublicKafkaRuntimeTopicSourceDefinition,
   KafkaTopicSourceDefinition as PublicKafkaTopicSourceDefinition,
   KafkaTopicSourceMapInput as PublicKafkaTopicSourceMapInput,
   ValidateKafkaTopicSource as PublicValidateKafkaTopicSource,
@@ -69,6 +67,7 @@ const packagesRoot = join(repoRoot, "packages");
 
 type PublicKafkaExportTopics = {
   readonly orders: {
+    readonly key: "id";
     readonly schema: never;
   };
 };
@@ -77,11 +76,15 @@ type PublicKafkaExportRegions = {
 };
 type PublicKafkaTypeExports = readonly [
   PublicKafkaExactRuntimeOptions<PublicKafkaExportTopics, PublicKafkaExportRegions, {}>,
-  PublicKafkaRuntimeSourceTopicDefinition<PublicKafkaExportTopics, PublicKafkaExportRegions>,
-  PublicKafkaRuntimeTopicSourceDefinition<PublicKafkaExportTopics, PublicKafkaExportRegions>,
   PublicKafkaTopicSourceDefinition<PublicKafkaExportTopics, PublicKafkaExportRegions, "orders">,
   PublicKafkaTopicSourceMapInput<PublicKafkaExportTopics, "orders", "local", never, undefined>,
-  PublicValidateKafkaTopicSource<PublicKafkaExportTopics, PublicKafkaExportRegions, "orders", unknown>,
+  PublicValidateKafkaTopicSource<
+    PublicKafkaExportTopics,
+    PublicKafkaExportRegions,
+    "orders",
+    "id",
+    unknown
+  >,
 ];
 
 type PackageManifest = {
@@ -361,6 +364,7 @@ requireExport("@effect-view-server/config", configPackage, "defineKafkaTopic");
 requireExport("@effect-view-server/config", configPackage, "defineGrpcFeed");
 requireExport("@effect-view-server/config", configPackage, "grpc");
 requireExport("@effect-view-server/config", configPackage, "kafka");
+rejectExport("@effect-view-server/config", configPackage, "decodeKafkaCodec");
 requireModule("@effect-view-server/config/query", queryPackage);
 requireModule("@effect-view-server/config/grpc", grpcPackage);
 requireModule("@effect-view-server/config/health", healthPackage);
@@ -371,6 +375,10 @@ rejectExport("@effect-view-server/config/query", queryPackage, "GrpcTopicSource"
 rejectExport("@effect-view-server/config/query", queryPackage, "GrpcLeasedTopicSource");
 requireExport("@effect-view-server/config/kafka", kafkaPackage, "defineKafkaTopic");
 requireExport("@effect-view-server/config/kafka", kafkaPackage, "kafka");
+rejectExport("@effect-view-server/config/kafka", kafkaPackage, "decodeKafkaCodec");
+rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "decodeKafkaCodec");
+rejectExport("effect-view-server/config", publicConfigPackage, "decodeKafkaCodec");
+rejectExport("effect-view-server", publicRootPackage, "decodeKafkaCodec");
 requireExport("@effect-view-server/config/grpc", grpcPackage, "grpc");
 requireExport("@effect-view-server/config/grpc", grpcPackage, "defineGrpcFeed");
 requireExport("@effect-view-server/config/runtime", runtimePackage, "runtimeConfig");
@@ -541,7 +549,7 @@ const _healthHttpJsonType: ViewServerHealthHttpJson | undefined = undefined;
 const _wireEventType: ViewServerWireEvent | undefined = undefined;
 const _mappingInputType:
   | KafkaMappingInput<
-      { readonly orders: { readonly schema: never } },
+      { readonly orders: { readonly key: "id"; readonly schema: never } },
       "orders",
       "usa",
       never,

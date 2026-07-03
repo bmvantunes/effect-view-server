@@ -136,6 +136,9 @@ type DecodedKafkaBatchTombstoneMessage<Topics extends ViewServerRuntimeTopicDefi
 type DecodedKafkaBatchMessage<Topics extends ViewServerRuntimeTopicDefinitions> =
   | DecodedKafkaBatchUpsertMessage<Topics>
   | DecodedKafkaBatchTombstoneMessage<Topics>;
+const kafkaBatchMessageIsTombstone = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  message: DecodedKafkaBatchMessage<Topics>,
+): message is DecodedKafkaBatchTombstoneMessage<Topics> => "tombstone" in message.decoded;
 type KafkaIngressRuntimeClient<Topics extends ViewServerRuntimeTopicDefinitions> = Pick<
   ViewServerRuntimeCoreInternalClient<Topics>,
   "delete" | "publishManyDecodedRows" | "publishManyDecodedRowsWithStorageKeys"
@@ -1007,16 +1010,14 @@ const validateKafkaMappedRow = Effect.fn("ViewServerRuntime.kafka.mappedRow.vali
   return row;
 });
 
-const publishKafkaDecodedMessage = Effect.fn("ViewServerRuntime.kafka.message.publish")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  client: KafkaIngressRuntimeClient<Topics>,
-  requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
-  health: ViewServerKafkaHealthLedger<Topics>,
-  region: string,
-  message: DecodedKafkaBatchMessage<Topics>,
-) {
-  if ("tombstone" in message.decoded) {
+const publishKafkaDecodedTombstone = Effect.fn("ViewServerRuntime.kafka.tombstone.publish")(
+  function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+    client: KafkaIngressRuntimeClient<Topics>,
+    requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
+    health: ViewServerKafkaHealthLedger<Topics>,
+    region: string,
+    message: DecodedKafkaBatchTombstoneMessage<Topics>,
+  ) {
     yield* publishKafkaRowsForMessages(
       requestHealthRefresh,
       health,
@@ -1025,35 +1026,8 @@ const publishKafkaDecodedMessage = Effect.fn("ViewServerRuntime.kafka.message.pu
       [message],
       client.delete(message.decoded.viewServerTopic, message.decoded.rowKey),
     );
-    return;
-  }
-
-  if (message.decoded.rowKey === undefined) {
-    yield* publishKafkaRowsForMessages(
-      requestHealthRefresh,
-      health,
-      region,
-      message.sourceTopic,
-      [message],
-      client.publishManyDecodedRows(message.decoded.viewServerTopic, [message.decoded.row]),
-    );
-    return;
-  }
-
-  yield* publishKafkaRowsForMessages(
-    requestHealthRefresh,
-    health,
-    region,
-    message.sourceTopic,
-    [message],
-    client.publishManyDecodedRowsWithStorageKeys(message.decoded.viewServerTopic, [
-      {
-        row: message.decoded.row,
-        storageKey: message.decoded.rowKey,
-      },
-    ]),
-  );
-});
+  },
+);
 
 const publishKafkaDecodedUpsertBatch = Effect.fn("ViewServerRuntime.kafka.batch.publishUpserts")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
@@ -1177,9 +1151,6 @@ const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.batch.commit"
     readonly preserveLastErrorForSourceTopic: string | undefined;
   },
 ) {
-  if (messages.length === 0) {
-    return;
-  }
   yield* Effect.gen(function* () {
     for (const message of messages) {
       yield* Effect.uninterruptible(
@@ -1224,26 +1195,56 @@ const publishAndCommitKafkaDecodedBatch = Effect.fn(
     readonly preserveLastErrorForSourceTopic: string | undefined;
   },
 ) {
-  const hasTombstones = messages.some((message) => "tombstone" in message.decoded);
-  if (!hasTombstones) {
-    const upsertMessages = messages.filter(
-      (message): message is DecodedKafkaBatchUpsertMessage<Topics> =>
-        !("tombstone" in message.decoded),
-    );
-    yield* publishKafkaDecodedUpsertBatch(
-      client,
-      requestHealthRefresh,
-      health,
-      region,
-      upsertMessages,
-    );
-    yield* commitKafkaDecodedBatch(requestHealthRefresh, health, region, messages, options);
-    return;
-  }
+  type KafkaDecodedPublishRun =
+    | {
+        readonly _tag: "Upserts";
+        readonly messages: Array<DecodedKafkaBatchUpsertMessage<Topics>>;
+      }
+    | {
+        readonly _tag: "Tombstone";
+        readonly message: DecodedKafkaBatchTombstoneMessage<Topics>;
+      };
+  const runs: Array<KafkaDecodedPublishRun> = [];
 
   for (const message of messages) {
-    yield* publishKafkaDecodedMessage(client, requestHealthRefresh, health, region, message);
-    yield* commitKafkaDecodedBatch(requestHealthRefresh, health, region, [message], options);
+    if (kafkaBatchMessageIsTombstone(message)) {
+      runs.push({
+        _tag: "Tombstone",
+        message,
+      });
+    } else {
+      const previousRun = runs[runs.length - 1];
+      if (previousRun?._tag === "Upserts") {
+        previousRun.messages.push(message);
+      } else {
+        runs.push({
+          _tag: "Upserts",
+          messages: [message],
+        });
+      }
+    }
+  }
+
+  for (const run of runs) {
+    if (run._tag === "Upserts") {
+      yield* publishKafkaDecodedUpsertBatch(
+        client,
+        requestHealthRefresh,
+        health,
+        region,
+        run.messages,
+      );
+      yield* commitKafkaDecodedBatch(requestHealthRefresh, health, region, run.messages, options);
+    } else {
+      yield* publishKafkaDecodedTombstone(
+        client,
+        requestHealthRefresh,
+        health,
+        region,
+        run.message,
+      );
+      yield* commitKafkaDecodedBatch(requestHealthRefresh, health, region, [run.message], options);
+    }
   }
 });
 

@@ -1048,6 +1048,134 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
+  it.effect("batches contiguous upsert runs around topic-owned tombstones", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: kafkaBootstrapServers,
+      };
+      const topicOwnedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      const resolved = yield* resolveViewServerRuntimeOptions(topicOwnedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-topic-owned-tombstone-contiguous-upsert-runs",
+        },
+      });
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
+        regions: kafkaOptions.regions,
+        startFrom: kafkaOptions.consume,
+        topics: {
+          "orders-source": {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+
+      yield* processKafkaMessageBatch(
+        topicOwnedViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        kafkaOptions,
+        health,
+        "local",
+        [
+          kafkaProcessorMessage({
+            key: "order-1",
+            offset: 1n,
+            topic: "orders-source",
+            value: JSON.stringify({
+              customerId: "customer-1",
+              price: 10,
+            }),
+          }),
+          kafkaProcessorMessage({
+            key: "order-2",
+            offset: 2n,
+            topic: "orders-source",
+            value: JSON.stringify({
+              customerId: "customer-2",
+              price: 20,
+            }),
+          }),
+          kafkaProcessorMessage({
+            key: "order-1",
+            offset: 3n,
+            topic: "orders-source",
+            value: null,
+          }),
+          kafkaProcessorMessage({
+            key: "order-3",
+            offset: 4n,
+            topic: "orders-source",
+            value: JSON.stringify({
+              customerId: "customer-3",
+              price: 30,
+            }),
+          }),
+          kafkaProcessorMessage({
+            key: "order-4",
+            offset: 5n,
+            topic: "orders-source",
+            value: JSON.stringify({
+              customerId: "customer-4",
+              price: 40,
+            }),
+          }),
+        ],
+      );
+      const ordersSnapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      yield* runtimeCore.close;
+
+      expect(ordersSnapshot).toStrictEqual({
+        version: 3,
+        rows: [
+          {
+            customerId: "customer-2",
+            id: "order-2",
+            price: 20,
+          },
+          {
+            customerId: "customer-3",
+            id: "order-3",
+            price: 30,
+          },
+          {
+            customerId: "customer-4",
+            id: "order-4",
+            price: 40,
+          },
+        ],
+        totalRows: 3,
+        status: "ready",
+        statusCode: "Ready",
+      });
+    }),
+  );
+
   it.effect("preserves Kafka order when a topic-owned tombstone is followed by a source row", () =>
     Effect.gen(function* () {
       const regions = {

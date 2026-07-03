@@ -1745,37 +1745,19 @@ const mapKafkaRowKey = (map: () => string): Effect.Effect<string, KafkaMappingEr
     ),
   );
 
-const decodeKafkaMappedRow = <
+const kafkaMappedRowParseOptions = { onExcessProperty: "error" } as const;
+
+const validateKafkaMappedRow = <
   Topics extends KafkaTopicSchemaRegistry,
   ViewTopic extends Extract<keyof Topics, string>,
 >(
   schema: KafkaTopicSchemaValue<Topics, ViewTopic>,
-  row: object,
-): Effect.Effect<KafkaTopicSchemaValue<Topics, ViewTopic>["Type"], KafkaMappingError> =>
-  Effect.try({
-    try: () => Schema.decodeUnknownSync(schema)(row),
-    catch: (cause) => kafkaMappingError("Kafka mapped row failed topic schema", cause),
-  });
-
-const validateDecodedKafkaMappedRowKey = <
-  Topics extends KafkaTopicSchemaRegistry,
-  ViewTopic extends Extract<keyof Topics, string>,
->(
   row: KafkaTopicSchemaValue<Topics, ViewTopic>["Type"],
-  rowKeyField: KafkaTopicKeyField<Topics, ViewTopic>,
-  rowKey: string,
-): Effect.Effect<void, KafkaMappingError> => {
-  const decodedRowKey = Reflect.get(row, rowKeyField);
-  return decodedRowKey === rowKey
-    ? Effect.void
-    : Effect.fail(
-        kafkaMappingError("Kafka mapped row key field must decode to the mapped rowKey", {
-          decodedRowKey,
-          rowKey,
-          rowKeyField,
-        }),
-      );
-};
+): Effect.Effect<KafkaTopicSchemaValue<Topics, ViewTopic>["Type"], KafkaMappingError> =>
+  Schema.encodeUnknownEffect(schema)(row, kafkaMappedRowParseOptions).pipe(
+    Effect.mapError((cause) => kafkaMappingError("Kafka mapped row failed topic schema", cause)),
+    Effect.as(row),
+  );
 
 type AnyKafkaRuntimeTopic = KafkaTopicDefinitionMarker &
   KafkaTopicDecoder<KafkaTopicSchemaRegistry, string, string, unknown> & {
@@ -2639,8 +2621,7 @@ const makeKafkaRuntimeTopicSourceWithKey = <
         }),
         [input.rowKeyField]: rowKey,
       }));
-      const row = yield* decodeKafkaMappedRow(input.schema, mappedRow);
-      yield* validateDecodedKafkaMappedRowKey(row, input.rowKeyField, rowKey);
+      const row = yield* validateKafkaMappedRow(input.schema, mappedRow);
       const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
         rowKey,
@@ -2710,8 +2691,7 @@ const makeKafkaRuntimeTopicSourceWithoutKey = <
         }),
         [input.rowKeyField]: rowKey,
       }));
-      const row = yield* decodeKafkaMappedRow(input.schema, mappedRow);
-      yield* validateDecodedKafkaMappedRowKey(row, input.rowKeyField, rowKey);
+      const row = yield* validateKafkaMappedRow(input.schema, mappedRow);
       const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
         rowKey,

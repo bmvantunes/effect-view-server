@@ -402,6 +402,84 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
+  it.effect("validates topic-owned Kafka mapped rows with decoded transform schema values", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: kafkaBootstrapServers,
+      };
+      const topicOwnedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          transformedOrders: {
+            schema: TransformedOrder,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "transformed-orders-source",
+              regions: ["local"],
+              value: kafka.json(IncomingTransformedOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                quantity: value.quantity,
+              }),
+            }),
+          },
+        },
+      });
+      const resolved = yield* resolveViewServerRuntimeOptions(topicOwnedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-topic-owned-transformed-mapped-row",
+        },
+      });
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
+        regions: kafkaOptions.regions,
+        startFrom: kafkaOptions.consume,
+        topics: {
+          "transformed-orders-source": {
+            regions: ["local"],
+            viewServerTopic: "transformedOrders",
+          },
+        },
+      });
+
+      yield* processKafkaMessage(
+        topicOwnedViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        kafkaOptions,
+        health,
+        "local",
+        kafkaProcessorMessage({
+          key: "transformed-order-1",
+          topic: "transformed-orders-source",
+          value: JSON.stringify({
+            quantity: "9007199254740993",
+          }),
+        }),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("transformedOrders", {
+        select: ["id", "quantity"],
+        limit: 10,
+      });
+      yield* runtimeCore.close;
+
+      expect(snapshot).toStrictEqual({
+        version: 1,
+        rows: [
+          {
+            id: "transformed-order-1",
+            quantity: 9007199254740993n,
+          },
+        ],
+        totalRows: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+    }),
+  );
+
   it.effect("uses Kafka source row keys as source-owned storage keys", () =>
     Effect.gen(function* () {
       const regions = {

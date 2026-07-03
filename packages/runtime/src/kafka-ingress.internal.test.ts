@@ -4539,6 +4539,149 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
+  it.effect("attributes same-target publish failures to the failing Kafka source topic", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const multiSourceKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        ...kafkaOptions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingOrder),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+          [paymentsSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingOrder),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: multiSourceKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+          [paymentsSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      yield* ledger.topicConnected(paymentsSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+      const publishManyFailingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+        ...runtimeCore.internalClient,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishManyDecodedRows: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              rows.some(
+                (row) => Reflect.get(row, "customerId") === "customer-payment-publish-failed",
+              )
+                ? Effect.fail(runtimeUnavailable)
+                : runtimeCore.internalClient.publishManyDecodedRows(topic, rows),
+            ),
+          ),
+      };
+
+      const error = yield* Effect.flip(
+        runKafkaMessageStream(
+          viewServer,
+          publishManyFailingClient,
+          runtimeCore.requestHealthRefresh,
+          multiSourceKafkaOptions,
+          ledger,
+          "local",
+          (async function* () {
+            yield kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "order-publish-succeeds",
+              value: JSON.stringify({
+                customerId: "customer-order-publish-succeeds",
+                price: 10,
+              }),
+              offset: 1n,
+            });
+            yield kafkaMessage({
+              topic: paymentsSourceTopic,
+              key: "payment-publish-fails",
+              value: JSON.stringify({
+                customerId: "customer-payment-publish-failed",
+                price: 20,
+              }),
+              offset: 2n,
+            });
+          })(),
+        ),
+      );
+      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect({
+        error: {
+          message: error.message,
+          sourceTopic: error.sourceTopic,
+        },
+        operations,
+        health: {
+          ordersPublishFailures:
+            health.kafka?.topics[ordersSourceTopic]?.regions["local"]?.publishFailuresPerSecond,
+          paymentsPublishFailures:
+            health.kafka?.topics[paymentsSourceTopic]?.regions["local"]?.publishFailuresPerSecond,
+        },
+        snapshot,
+      }).toStrictEqual({
+        error: {
+          message: `Failed to process Kafka message for source topic ${paymentsSourceTopic}`,
+          sourceTopic: paymentsSourceTopic,
+        },
+        operations: ["publishMany:orders:1", "publishMany:orders:1"],
+        health: {
+          ordersPublishFailures: 0,
+          paymentsPublishFailures: 1,
+        },
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "order-publish-succeeds",
+              customerId: "customer-order-publish-succeeds",
+              price: 10,
+            },
+          ],
+          totalRows: 1,
+          version: 1,
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("combines batch processing and same-batch terminal stream failures", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

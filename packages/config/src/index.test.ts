@@ -7194,8 +7194,8 @@ describe("public type surface", () => {
         },
       });
       const keyTransformRuntimeTopic = makeKafkaRuntimeTopicsForConfig(keyTransformViewServer)[0]!;
-      const keyTransformFailure = yield* Effect.flip(
-        decodeKafkaTopicMessage(keyTransformRuntimeTopic, {
+      expect(
+        yield* decodeKafkaTopicMessage(keyTransformRuntimeTopic, {
           keyBytes: textEncoder.encode("order-key-transform"),
           valueBytes: toBinary(
             ordersValueSchema,
@@ -7212,10 +7212,17 @@ describe("public type surface", () => {
           schema: KeyTransformOrder,
           viewServerTopic: "orders",
         }),
-      );
-      expect(kafkaErrorIsMapping(keyTransformFailure)).toBe(true);
-      expect(keyTransformFailure).toMatchObject({
-        message: "Kafka mapped row key field must decode to the mapped rowKey",
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "order-key-transform",
+        row: {
+          id: "order-key-transform",
+          customerId: "customer-key-transform",
+          status: "open",
+          price: 1,
+          region: "usa",
+          updatedAt: 1,
+        },
       });
 
       const directFieldKeyViewServer = defineViewServerConfig({

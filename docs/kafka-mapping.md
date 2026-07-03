@@ -3,8 +3,10 @@
 Kafka source topics are configured from the typed View Server config. The
 `rowKey` function receives typed decoded Kafka key metadata and defines the
 View Server row identity. The mapping function receives typed decoded Kafka
-key/value data plus that row key and must return a row that matches the target
-View Server topic schema.
+key/value data plus that row key and must return the target View Server topic
+row without the configured key field. The runtime injects the configured key
+field from `rowKey`, so Kafka tombstones can delete the same source-owned row
+without decoding a value.
 
 ```ts
 import { Config } from "effect";

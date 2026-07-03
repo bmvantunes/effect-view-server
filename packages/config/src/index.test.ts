@@ -1526,6 +1526,35 @@ const kafkaTestMetadata = <const Region extends "usa" | "london">(
   headers: {},
 });
 
+type RuntimeGuardKafkaSourceViewServer = {
+  readonly topics: {
+    readonly orders: {
+      readonly kafkaSource: object;
+    };
+  };
+};
+
+// Runtime guard tests deliberately corrupt typed config after construction.
+const forceKafkaSourceRowKeyForRuntimeGuard = (
+  viewServer: RuntimeGuardKafkaSourceViewServer,
+  rowKey: () => unknown,
+) => {
+  Object.defineProperty(viewServer.topics.orders.kafkaSource, "rowKey", {
+    configurable: true,
+    value: rowKey,
+  });
+};
+
+const forceKafkaSourceMapForRuntimeGuard = (
+  viewServer: RuntimeGuardKafkaSourceViewServer,
+  map: () => unknown,
+) => {
+  Object.defineProperty(viewServer.topics.orders.kafkaSource, "map", {
+    configurable: true,
+    value: map,
+  });
+};
+
 const testProtoFile = fileDesc(
   base64FromBytes(
     toBinary(
@@ -6768,10 +6797,7 @@ describe("public type surface", () => {
           },
         },
       });
-      Object.defineProperty(nonStringRowKeyViewServer.topics.orders.kafkaSource, "rowKey", {
-        configurable: true,
-        value: () => 123,
-      });
+      forceKafkaSourceRowKeyForRuntimeGuard(nonStringRowKeyViewServer, () => 123);
       const nonStringRowKeySourceTopic =
         makeKafkaSourceTopicsForConfig(nonStringRowKeyViewServer)[0]!;
       const nonStringRowKeyFailure = yield* Effect.flip(
@@ -6817,15 +6843,12 @@ describe("public type surface", () => {
           },
         },
       });
-      Object.defineProperty(schemaInvalidMappedRowViewServer.topics.orders.kafkaSource, "map", {
-        configurable: true,
-        value: () => ({
-          customerId: "customer-schema-invalid-mapped-row",
-          price: 1,
-          region: "usa",
-          updatedAt: 1,
-        }),
-      });
+      forceKafkaSourceMapForRuntimeGuard(schemaInvalidMappedRowViewServer, () => ({
+        customerId: "customer-schema-invalid-mapped-row",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }));
       const schemaInvalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
         schemaInvalidMappedRowViewServer,
       )[0]!;
@@ -6878,16 +6901,13 @@ describe("public type surface", () => {
           },
         },
       });
-      Object.defineProperty(invalidMappedRowViewServer.topics.orders.kafkaSource, "map", {
-        configurable: true,
-        value: () => ({
-          id: "order-invalid-mapped-row",
-          customerId: "customer-invalid-mapped-row",
-          price: 1,
-          region: "usa",
-          updatedAt: 1,
-        }),
-      });
+      forceKafkaSourceMapForRuntimeGuard(invalidMappedRowViewServer, () => ({
+        id: "order-invalid-mapped-row",
+        customerId: "customer-invalid-mapped-row",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }));
       const invalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
         invalidMappedRowViewServer,
       )[0]!;

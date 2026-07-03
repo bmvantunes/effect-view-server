@@ -4955,42 +4955,26 @@ describe("@effect-view-server/runtime", () => {
         .pipe(Effect.flip);
       const deleteError = yield* manager.client.delete("orders", "order-1").pipe(Effect.flip);
       const resetError = yield* manager.client.reset().pipe(Effect.flip);
+      const sourceOwnedMutationError = {
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      };
+      const sourceOwnedResetError = {
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        message:
+          "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+      };
 
       expect([publishError, publishManyError, patchError, deleteError, resetError]).toStrictEqual([
-        {
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
-        },
-        {
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
-        },
-        {
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
-        },
-        {
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          topic: "orders",
-          message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
-        },
-        {
-          _tag: "ViewServerRuntimeError",
-          code: "UnsupportedQuery",
-          message:
-            "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
-        },
+        sourceOwnedMutationError,
+        sourceOwnedMutationError,
+        sourceOwnedMutationError,
+        sourceOwnedMutationError,
+        sourceOwnedResetError,
       ]);
       yield* manager.close;
       yield* runtimeCore.close;

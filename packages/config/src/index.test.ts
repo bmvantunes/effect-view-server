@@ -51,6 +51,7 @@ import {
   type KafkaTopicRegionHealth,
   type KafkaTopicDefinition,
   type RuntimeRegions,
+  type DefineViewServerConfigInput,
   type ExactGroupedQuery,
   type ExactLiveQueryInputForTopic,
   type ExactRawQuery,
@@ -7956,6 +7957,53 @@ const assertCompileTimeContracts = () => {
     }),
   });
   const topicOwnedKafkaTopic = topicOwnedViewServer.kafkaTopic<typeof localKafkaRegions>();
+  const validConfigInput: DefineViewServerConfigInput<
+    typeof topicOwnedViewServer.topics,
+    typeof localKafkaRegions
+  > = {
+    kafka: localKafkaRegions,
+    topics: topicOwnedViewServer.topics,
+  };
+  type ReservedTopicConfigInput = DefineViewServerConfigInput<
+    {
+      readonly [VIEW_SERVER_HEALTH_TOPIC]: {
+        readonly schema: typeof Order;
+        readonly key: "id";
+      };
+    },
+    typeof localKafkaRegions
+  >;
+  type ConflictingSourceConfigInput = DefineViewServerConfigInput<
+    {
+      readonly orders: {
+        readonly schema: typeof Order;
+        readonly key: "id";
+        readonly kafkaSource: typeof topicOwnedViewServer.topics.orders.kafkaSource;
+        readonly grpcSource: GrpcMaterializedTopicSource;
+      };
+    },
+    typeof localKafkaRegions
+  >;
+  type InvalidKeyConfigInput = DefineViewServerConfigInput<
+    {
+      readonly orders: {
+        readonly schema: typeof Order;
+        readonly key: "missing";
+      };
+    },
+    typeof localKafkaRegions
+  >;
+  type BroadRegionConfigInput = DefineViewServerConfigInput<
+    typeof topicOwnedViewServer.topics,
+    RuntimeRegions
+  >;
+  expectTypeOf(validConfigInput.topics.orders.kafkaSource.rowKey).not.toBeAny();
+  expectTypeOf<BroadRegionConfigInput["topics"]>().toEqualTypeOf<never>();
+  expectTypeOf<
+    ReservedTopicConfigInput["topics"][typeof VIEW_SERVER_HEALTH_TOPIC]
+  >().toEqualTypeOf<never>();
+  expectTypeOf<ConflictingSourceConfigInput["topics"]["orders"]>().toEqualTypeOf<never>();
+  expectTypeOf<InvalidKeyConfigInput["topics"]["orders"]["key"]>().toEqualTypeOf<never>();
   expect(() =>
     topicOwnedKafkaTopic({
       regions: ["usa"],

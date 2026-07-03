@@ -67,6 +67,15 @@ const IncomingPrecisePosition = Schema.Struct({
   price: Schema.BigDecimal,
 });
 
+const TransformedOrder = Schema.Struct({
+  id: Schema.String,
+  quantity: Schema.BigIntFromString,
+});
+
+const IncomingTransformedOrder = Schema.Struct({
+  quantity: Schema.BigIntFromString,
+});
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -84,6 +93,15 @@ const preciseViewServer = defineViewServerConfig({
   topics: {
     positions: {
       schema: PrecisePosition,
+      key: "id",
+    },
+  },
+});
+
+const transformedViewServer = defineViewServerConfig({
+  topics: {
+    transformedOrders: {
+      schema: TransformedOrder,
       key: "id",
     },
   },
@@ -1274,6 +1292,164 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         totalRows: 1,
         status: "ready",
         statusCode: "Ready",
+      });
+    }),
+  );
+
+  it.effect("validates legacy Kafka mapped rows with decoded transform schema values", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: kafkaBootstrapServers,
+      };
+      const localKafkaTopic = transformedViewServer.kafkaTopic<typeof regions>();
+      const resolved = yield* resolveViewServerRuntimeOptions(transformedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-direct-transformed-mapped-row",
+          regions,
+          topics: {
+            "transformed-orders-source": localKafkaTopic({
+              regions: ["local"],
+              value: kafka.json(IncomingTransformedOrder),
+              key: kafka.stringKey(),
+              viewServerTopic: "transformedOrders",
+              mapping: ({ key, value }) => ({
+                id: key,
+                quantity: value.quantity,
+              }),
+            }),
+          },
+        },
+      });
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(transformedViewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof transformedViewServer.topics>({
+        regions: kafkaOptions.regions,
+        startFrom: kafkaOptions.consume,
+        topics: {
+          "transformed-orders-source": {
+            regions: ["local"],
+            viewServerTopic: "transformedOrders",
+          },
+        },
+      });
+
+      yield* processKafkaMessage(
+        transformedViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        kafkaOptions,
+        health,
+        "local",
+        kafkaProcessorMessage({
+          key: "transformed-order-1",
+          offset: 1n,
+          topic: "transformed-orders-source",
+          value: JSON.stringify({
+            quantity: "9007199254740993",
+          }),
+        }),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("transformedOrders", {
+        select: ["id", "quantity"],
+        limit: 10,
+      });
+      yield* runtimeCore.close;
+
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            id: "transformed-order-1",
+            quantity: 9_007_199_254_740_993n,
+          },
+        ],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 1,
+      });
+    }),
+  );
+
+  it.effect("validates legacy Kafka mapped rows before publishing", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: kafkaBootstrapServers,
+      };
+      const invalidOrder: typeof Order.Type = Object.assign(Object.create(null), { price: 10 });
+      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const resolved = yield* resolveViewServerRuntimeOptions(viewServer, {
+        kafka: {
+          consumerGroupId: "view-server-direct-invalid-mapped-row",
+          regions,
+          topics: {
+            "orders-source": localKafkaTopic({
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              viewServerTopic: "orders",
+              mapping: () => invalidOrder,
+            }),
+          },
+        },
+      });
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof viewServer.topics>({
+        regions: kafkaOptions.regions,
+        startFrom: kafkaOptions.consume,
+        topics: {
+          "orders-source": {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(
+        processKafkaMessage(
+          viewServer,
+          runtimeCore.internalClient,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          health,
+          "local",
+          kafkaProcessorMessage({
+            key: "order-invalid",
+            offset: 1n,
+            topic: "orders-source",
+            value: JSON.stringify({
+              customerId: "customer-invalid",
+              price: 10,
+            }),
+          }),
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        limit: 10,
+      });
+      const degradedHealth = health.healthOverlay(yield* runtimeCore.client.health(), 0);
+      yield* runtimeCore.close;
+
+      expect(error).toBeInstanceOf(ViewServerKafkaIngressError);
+      expect(error.message).toContain("Failed to map Kafka message for source topic orders-source");
+      expect({
+        decodeFailures:
+          degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.decodeFailuresPerSecond,
+        lastError: degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.lastError,
+        mappingFailures:
+          degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.mappingFailuresPerSecond,
+      }).toStrictEqual({
+        decodeFailures: 0,
+        lastError: "Kafka mapping produced an invalid row for view server topic orders",
+        mappingFailures: 1,
+      });
+      expect(snapshot).toStrictEqual({
+        rows: [],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 0,
+        version: 0,
       });
     }),
   );

@@ -1,4 +1,9 @@
-export { defineKafkaTopic, kafka, kafkaErrorIsMapping } from "@effect-view-server/config/kafka";
+export {
+  decodeKafkaCodec,
+  defineKafkaTopic,
+  kafka,
+  kafkaErrorIsMapping,
+} from "@effect-view-server/config/kafka";
 export type {
   KafkaBytesCodec,
   KafkaCodec,

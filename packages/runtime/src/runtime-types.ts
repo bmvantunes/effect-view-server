@@ -373,23 +373,25 @@ type RuntimeGrpcFeedTopic<Feeds extends Record<string, object>> = Extract<
   string
 >;
 
-type RuntimeKafkaOptionOwnedTopic<Options> = Options extends {
+type RuntimeKafkaOptionOwnedTopic<Topics extends object, Options> = Options extends {
   readonly kafka: {
     readonly topics: infer KafkaTopics extends Record<string, object>;
   };
 }
-  ? Extract<
-      {
-        readonly [SourceTopic in keyof KafkaTopics]: KafkaTopics[SourceTopic] extends {
-          readonly viewServerTopic: infer Topic extends string;
-        }
-          ? string extends Topic
-            ? never
-            : Topic
-          : never;
-      }[keyof KafkaTopics],
-      string
-    >
+  ? string extends keyof KafkaTopics
+    ? Extract<keyof Topics, string>
+    : Extract<
+        {
+          readonly [SourceTopic in keyof KafkaTopics]: KafkaTopics[SourceTopic] extends {
+            readonly viewServerTopic: infer Topic extends string;
+          }
+            ? string extends Topic
+              ? Extract<keyof Topics, string>
+              : Topic
+            : never;
+        }[keyof KafkaTopics],
+        Extract<keyof Topics, string>
+      >
   : never;
 
 type RuntimeGrpcOptionOwnedTopic<Options> = Options extends {
@@ -402,7 +404,7 @@ type RuntimeGrpcOptionOwnedTopic<Options> = Options extends {
 
 type RuntimeSourceOwnedTopic<Topics extends object, Options> = Extract<
   | TopicOwnedSourceTopic<Topics>
-  | RuntimeKafkaOptionOwnedTopic<Options>
+  | RuntimeKafkaOptionOwnedTopic<Topics, Options>
   | RuntimeGrpcOptionOwnedTopic<Options>,
   Extract<keyof Topics, string>
 >;

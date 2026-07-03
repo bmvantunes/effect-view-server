@@ -128,7 +128,7 @@ export type {
   StatusEvent,
   StatusEventCode,
 } from "./live-protocol";
-export { defineKafkaTopic, kafka, kafkaErrorIsMapping } from "./kafka";
+export { decodeKafkaCodec, defineKafkaTopic, kafka, kafkaErrorIsMapping } from "./kafka";
 export { grpc } from "./grpc-contract";
 export type {
   AnyGrpcLeasedFeedDefinition,
@@ -350,13 +350,22 @@ export type DefineViewServerConfigInput<
   Topics extends ViewServerConfigTopicShape,
   KafkaRegions extends RuntimeRegions = RuntimeRegions,
   GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-> = {
-  readonly kafka?: KafkaRegions;
-  readonly grpc?: {
-    readonly clients: GrpcClients;
-  };
-  readonly topics: Topics;
-};
+> =
+  ConfigKafkaSourceRegionConstraint<Topics, KafkaRegions> extends never
+    ? {
+        readonly kafka?: KafkaRegions;
+        readonly grpc?: {
+          readonly clients: GrpcClients;
+        };
+        readonly topics: never;
+      }
+    : {
+        readonly kafka?: KafkaRegions;
+        readonly grpc?: {
+          readonly clients: GrpcClients;
+        };
+        readonly topics: Topics & ValidateTopicDefinitions<Topics, KafkaRegions, GrpcClients>;
+      };
 
 type DefineViewServerConfigValidationArguments<
   Topics extends ViewServerConfigTopicShape,

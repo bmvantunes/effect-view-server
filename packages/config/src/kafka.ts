@@ -1,4 +1,4 @@
-export { defineKafkaTopic, kafka, kafkaErrorIsMapping } from "./kafka-contract";
+export { decodeKafkaCodec, defineKafkaTopic, kafka, kafkaErrorIsMapping } from "./kafka-contract";
 export type {
   ExactRuntimeOptions,
   KafkaBytesCodec,

@@ -10,6 +10,7 @@ import {
   kafkaErrorIsMapping,
   type RuntimeRegions,
   type KafkaMessageMetadata,
+  type RowSchema,
   type ViewServerConfig,
 } from "@effect-view-server/config";
 import {
@@ -154,6 +155,9 @@ const kafkaMessageBatchSize = 256;
 const kafkaMessageQueueCapacity = kafkaMessageBatchSize * 4;
 const kafkaMessageBatchFlushInterval = Duration.millis(2);
 const kafkaMessageBatchFlushIntervalMillis = Duration.toMillis(kafkaMessageBatchFlushInterval);
+const strictParseOptions = {
+  onExcessProperty: "error",
+} as const;
 const isKafkaBatchTopic = <Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   topic: string,
@@ -719,6 +723,24 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
     }
     const topicDefinition = config.topics[viewServerTopic];
     const requestHealthRefreshAfterLedgerUpdate = requestKafkaHealthRefresh(requestHealthRefresh);
+    const handleMappingFailure = (failure: unknown, cause: Cause.Cause<unknown>) =>
+      health
+        .mappingFailed(sourceTopic, region, {
+          bytes: messageBytes,
+          message: messageFromUnknown(failure),
+          nowMillis,
+        })
+        .pipe(
+          Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
+          Effect.andThen(
+            Effect.failCause(
+              kafkaIngressFailureCause(
+                kafkaMessageMappingError(region, sourceTopic, kafkaFailureCause(failure, cause)),
+                cause,
+              ),
+            ),
+          ),
+        );
     const handleDecodeFailure = (cause: Cause.Cause<unknown>) => {
       const error = Cause.findErrorOption(cause);
       if (Cause.hasInterruptsOnly(cause)) {
@@ -726,27 +748,7 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
       }
       if (Option.isSome(error)) {
         if (kafkaErrorIsMapping(error.value)) {
-          return health
-            .mappingFailed(sourceTopic, region, {
-              bytes: messageBytes,
-              message: messageFromUnknown(error.value),
-              nowMillis,
-            })
-            .pipe(
-              Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
-              Effect.andThen(
-                Effect.failCause(
-                  kafkaIngressFailureCause(
-                    kafkaMessageMappingError(
-                      region,
-                      sourceTopic,
-                      kafkaFailureCause(error.value, cause),
-                    ),
-                    cause,
-                  ),
-                ),
-              ),
-            );
+          return handleMappingFailure(error.value, cause);
         }
         return health
           .decodeFailed(sourceTopic, region, {
@@ -908,9 +910,19 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
         sourceTopic,
       };
     } else if ("row" in decoded) {
+      const row = yield* validateKafkaMappedRow(
+        viewServerTopic,
+        topicDefinition.schema,
+        decoded.row,
+      ).pipe(
+        Effect.matchCauseEffect({
+          onFailure: (cause) => handleMappingFailure(Cause.squash(cause), cause),
+          onSuccess: (validatedRow) => Effect.succeed(validatedRow),
+        }),
+      );
       decodedBatchMessage = {
         decoded: {
-          row: decoded.row,
+          row,
           viewServerTopic,
         },
         message,
@@ -979,6 +991,21 @@ const publishKafkaRowsForMessages = Effect.fn("ViewServerRuntime.kafka.batch.pub
     );
   },
 );
+
+const validateKafkaMappedRow = Effect.fn("ViewServerRuntime.kafka.mappedRow.validate")(function* <
+  const Topic extends string,
+>(topic: Topic, schema: RowSchema, row: object) {
+  yield* Schema.encodeUnknownEffect(schema)(row, strictParseOptions).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ViewServerKafkaIngressError({
+          message: `Kafka mapping produced an invalid row for view server topic ${topic}`,
+          cause,
+        }),
+    ),
+  );
+  return row;
+});
 
 const publishKafkaDecodedMessage = Effect.fn("ViewServerRuntime.kafka.message.publish")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,

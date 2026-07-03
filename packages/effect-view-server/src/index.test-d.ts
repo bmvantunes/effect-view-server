@@ -1,5 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { defineViewServerConfig } from "effect-view-server";
+import { decodeKafkaCodec as decodeKafkaCodecFromConfig } from "effect-view-server/config";
+import { decodeKafkaCodec } from "effect-view-server/config/kafka";
 import type { LiveQueryResult } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
@@ -36,6 +38,8 @@ describe("public effect-view-server facade type contracts", () => {
     expectTypeOf(runViewServerRuntime).not.toBeAny();
     expectTypeOf(createViewServerWebSocketServer).not.toBeAny();
     expectTypeOf(createInMemoryViewServer).not.toBeAny();
+    expectTypeOf(decodeKafkaCodec).not.toBeAny();
+    expectTypeOf(decodeKafkaCodecFromConfig).not.toBeAny();
     expectTypeOf<ViewServerLiveClient<typeof viewServer.topics>>().not.toBeAny();
   });
 

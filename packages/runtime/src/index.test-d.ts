@@ -6,7 +6,6 @@ import {
   type GrpcConnectClientDefinition,
   type GrpcFeedDefinition,
   type GrpcRuntimeClients,
-  type KafkaRuntimeTopicDefinition,
   type RuntimeRegions,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -50,7 +49,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
       }),
     },
@@ -62,7 +61,7 @@ const materializedGrpcViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });
@@ -110,69 +109,7 @@ const kafkaOwnedViewServer = defineViewServerConfig({
   },
 });
 
-const usaKafkaTopic = viewServer.kafkaTopic<typeof usaKafkaRegions>();
-const londonKafkaTopic = viewServer.kafkaTopic<typeof londonKafkaRegions>()({
-  regions: ["london"],
-  value: kafka.json(Order),
-  key: kafka.stringKey(),
-  viewServerTopic: "orders",
-  mapping: ({ key, value }) => ({
-    id: key,
-    price: value.price,
-  }),
-});
-
 const runtimeEffect = makeViewServerRuntime(viewServer);
-const legacyKafkaRuntimeEffect = makeViewServerRuntime(viewServer, {
-  kafka: {
-    consumerGroupId: "view-server-legacy-kafka-owned-type-test",
-    regions: usaKafkaRegions,
-    topics: {
-      orders: usaKafkaTopic({
-        regions: ["usa"],
-        value: kafka.json(Order),
-        key: kafka.stringKey(),
-        viewServerTopic: "orders",
-        mapping: ({ key, value }) => ({
-          id: key,
-          price: value.price,
-        }),
-      }),
-    },
-  },
-});
-type BroadLegacyKafkaRuntimeOptions = {
-  readonly kafka: {
-    readonly consumerGroupId: string;
-    readonly regions: typeof usaKafkaRegions;
-    readonly topics: Record<
-      string,
-      KafkaRuntimeTopicDefinition<typeof viewServer.topics, typeof usaKafkaRegions>
-    >;
-  };
-};
-const broadLegacyKafkaRuntimeOptions: BroadLegacyKafkaRuntimeOptions = {
-  kafka: {
-    consumerGroupId: "view-server-broad-legacy-kafka-owned-type-test",
-    regions: usaKafkaRegions,
-    topics: {
-      orders: usaKafkaTopic({
-        regions: ["usa"],
-        value: kafka.json(Order),
-        key: kafka.stringKey(),
-        viewServerTopic: "orders",
-        mapping: ({ key, value }) => ({
-          id: key,
-          price: value.price,
-        }),
-      }),
-    },
-  },
-};
-const broadLegacyKafkaRuntimeEffect = makeViewServerRuntime(
-  viewServer,
-  broadLegacyKafkaRuntimeOptions,
-);
 const kafkaOwnedRuntimeEffect = makeViewServerRuntime(kafkaOwnedViewServer, {
   kafka: {
     consumerGroupId: "view-server-kafka-owned-type-test",
@@ -202,21 +139,9 @@ const _invalidKafkaOwnedRuntimeWithBroadRegions = makeViewServerRuntime(kafkaOwn
 const invalidKafkaOwnedRuntimeWithoutOptions = makeViewServerRuntime(kafkaOwnedViewServer);
 const invalidKafkaOwnedRuntimeWithExplicitTopics = makeViewServerRuntime(kafkaOwnedViewServer, {
   kafka: {
-    // @ts-expect-error Kafka-owned source configs reject explicit runtime Kafka topics.
     consumerGroupId: "view-server-kafka-owned-explicit-topics",
     // @ts-expect-error Kafka-owned source configs reject explicit runtime Kafka topics.
-    topics: {
-      orders: usaKafkaTopic({
-        regions: ["usa"],
-        value: kafka.json(Order),
-        key: kafka.stringKey(),
-        viewServerTopic: "orders",
-        mapping: ({ key, value }) => ({
-          id: key,
-          price: value.price,
-        }),
-      }),
-    },
+    topics: {},
   },
 });
 const runtimeWithGroupedAdmissionLimits = makeViewServerRuntime(viewServer, {
@@ -236,8 +161,6 @@ const runtimeWithAuth = makeViewServerRuntime(viewServer, {
 });
 const runEffect = runViewServerRuntime(viewServer);
 declare const runtime: Effect.Success<typeof runtimeEffect>;
-declare const legacyKafkaRuntime: Effect.Success<typeof legacyKafkaRuntimeEffect>;
-declare const broadLegacyKafkaRuntime: Effect.Success<typeof broadLegacyKafkaRuntimeEffect>;
 declare const kafkaOwnedRuntime: Effect.Success<typeof kafkaOwnedRuntimeEffect>;
 declare const grpcRuntimeClients: GrpcRuntimeClients;
 declare const exactGrpcRuntimeClients: {
@@ -270,7 +193,7 @@ const materializedGrpcViewServerWithConfigClients = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });
@@ -429,16 +352,12 @@ describe("runtime type contracts", () => {
     const materializedGrpcSnapshot = materializedGrpcRuntime.client.snapshot("orders", {
       select: ["id", "price"],
     });
-    const legacyKafkaSnapshot = legacyKafkaRuntime.client.snapshot("orders", {
-      select: ["id", "price"],
-    });
 
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
     expectTypeOf(subscribe).not.toBeAny();
     expectTypeOf(leasedSubscribe).not.toBeAny();
     expectTypeOf(kafkaOwnedSnapshot).not.toBeAny();
     expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
-    expectTypeOf(legacyKafkaSnapshot).not.toBeAny();
 
     const missingRouteQuery = {
       select: ["id"],
@@ -491,31 +410,6 @@ describe("runtime type contracts", () => {
     const invalidKafkaOwnedDelete = kafkaOwnedRuntime.client.delete("orders", "order-1");
     // @ts-expect-error source-owned runtimes reject direct runtime reset.
     const invalidKafkaOwnedReset = kafkaOwnedRuntime.client.reset();
-    // @ts-expect-error legacy runtime Kafka topics reject direct runtime publishes.
-    const invalidLegacyKafkaPublish = legacyKafkaRuntime.client.publish("orders", {
-      id: "order-1",
-      price: 10,
-    });
-    // @ts-expect-error legacy runtime Kafka topics reject direct runtime batch publishes.
-    const invalidLegacyKafkaPublishMany = legacyKafkaRuntime.client.publishMany("orders", [
-      {
-        id: "order-1",
-        price: 10,
-      },
-    ]);
-    // @ts-expect-error legacy runtime Kafka topics reject direct runtime patches.
-    const invalidLegacyKafkaPatch = legacyKafkaRuntime.client.patch("orders", "order-1", {
-      price: 11,
-    });
-    // @ts-expect-error legacy runtime Kafka topics reject direct runtime deletes.
-    const invalidLegacyKafkaDelete = legacyKafkaRuntime.client.delete("orders", "order-1");
-    // @ts-expect-error legacy runtime Kafka topics reject direct runtime reset.
-    const invalidLegacyKafkaReset = legacyKafkaRuntime.client.reset();
-    // @ts-expect-error broad legacy runtime Kafka topics conservatively reject direct runtime publishes.
-    const invalidBroadLegacyKafkaPublish = broadLegacyKafkaRuntime.client.publish("orders", {
-      id: "order-1",
-      price: 10,
-    });
     // @ts-expect-error materialized gRPC-owned topics reject direct runtime publishes.
     const invalidMaterializedGrpcPublish = materializedGrpcRuntime.client.publish("orders", {
       id: "order-1",
@@ -535,12 +429,6 @@ describe("runtime type contracts", () => {
     expectTypeOf(invalidKafkaOwnedPatch).not.toBeAny();
     expectTypeOf(invalidKafkaOwnedDelete).not.toBeAny();
     expectTypeOf(invalidKafkaOwnedReset).not.toBeAny();
-    expectTypeOf(invalidLegacyKafkaPublish).not.toBeAny();
-    expectTypeOf(invalidLegacyKafkaPublishMany).not.toBeAny();
-    expectTypeOf(invalidLegacyKafkaPatch).not.toBeAny();
-    expectTypeOf(invalidLegacyKafkaDelete).not.toBeAny();
-    expectTypeOf(invalidLegacyKafkaReset).not.toBeAny();
-    expectTypeOf(invalidBroadLegacyKafkaPublish).not.toBeAny();
     expectTypeOf(invalidMaterializedGrpcPublish).not.toBeAny();
     expectTypeOf(invalidLeasedSubscribe).not.toBeAny();
     expectTypeOf(runtime.client.reset).not.toBeAny();
@@ -635,222 +523,61 @@ describe("runtime type contracts", () => {
         maxGroups: "1",
       },
     });
-    const runtimeWithKafka = makeViewServerRuntime(viewServer, {
+    const runtimeWithKafkaStart = makeViewServerRuntime(kafkaOwnedViewServer, {
       kafka: {
         consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
-        startFrom: "latest",
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
-      },
-    });
-    const invalidLegacyKafkaTopicDiscriminant = makeViewServerRuntime(viewServer, {
-      kafka: {
-        consumerGroupId: "view-server-legacy-discriminant-type-test",
-        regions: usaKafkaRegions,
-        topics: {
-          orders: {
-            ...usaKafkaTopic({
-              regions: ["usa"],
-              value: kafka.json(Order),
-              key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
-                price: value.price,
-              }),
-            }),
-            // @ts-expect-error legacy runtime Kafka topics reject source-topic discriminants.
-            topic: "orders-source",
-          },
-        },
-      },
-    });
-    const runtimeWithCommittedKafkaStart = makeViewServerRuntime(viewServer, {
-      kafka: {
-        consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
         startFrom: {
           committedConsumerGroup: "view-server-existing-group",
           fallback: "fail",
         },
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
       },
     });
-    const invalidKafkaStartFrom = makeViewServerRuntime(viewServer, {
+    const invalidKafkaStartFrom = makeViewServerRuntime(kafkaOwnedViewServer, {
       kafka: {
         consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
         // @ts-expect-error runtime Kafka startFrom only accepts earliest, latest, or committed group config.
         startFrom: "middle",
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
       },
     });
-    const invalidCommittedKafkaStartFallback = makeViewServerRuntime(viewServer, {
+    const invalidCommittedKafkaStartFallback = makeViewServerRuntime(kafkaOwnedViewServer, {
       kafka: {
         consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
         // @ts-expect-error committed Kafka start fallback must be earliest, latest, or fail.
         startFrom: {
           committedConsumerGroup: "view-server-existing-group",
           fallback: "middle",
         },
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
       },
     });
-    const invalidCommittedKafkaStartMissingGroup = makeViewServerRuntime(viewServer, {
+    const invalidCommittedKafkaStartMissingGroup = makeViewServerRuntime(kafkaOwnedViewServer, {
       kafka: {
         consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
         // @ts-expect-error committed Kafka start config requires committedConsumerGroup.
         startFrom: {
           fallback: "earliest",
         },
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
       },
     });
-    const invalidCommittedKafkaStartKey = makeViewServerRuntime(viewServer, {
+    const invalidCommittedKafkaStartKey = makeViewServerRuntime(kafkaOwnedViewServer, {
       kafka: {
         consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
         startFrom: {
           committedConsumerGroup: "view-server-existing-group",
           // @ts-expect-error committed Kafka start config rejects unknown keys.
           committedConsumerGroupId: "view-server-typo",
         },
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
       },
     });
-    const invalidKafkaOptionKey = makeViewServerRuntime(viewServer, {
+    const invalidKafkaOptionKey = makeViewServerRuntime(kafkaOwnedViewServer, {
       kafka: {
         consumerGroupId: "view-server-type-test",
         // @ts-expect-error runtime Kafka options reject misspelled consumer group keys.
         consumerGroupID: "view-server-typo",
-        regions: usaKafkaRegions,
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
       },
     });
-    const invalidMissingKafkaConsumerGroup = makeViewServerRuntime(viewServer, {
+    const invalidMissingKafkaConsumerGroup = makeViewServerRuntime(kafkaOwnedViewServer, {
       // @ts-expect-error runtime Kafka options require an explicit per-runtime consumer group id.
-      kafka: {
-        regions: usaKafkaRegions,
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
-      },
-    });
-    const invalidKafkaRegionRuntime = makeViewServerRuntime(viewServer, {
-      kafka: {
-        consumerGroupId: "view-server-type-test",
-        regions: usaKafkaRegions,
-        topics: {
-          // @ts-expect-error direct runtime Kafka topics must match runtime kafka.regions keys.
-          orders: londonKafkaTopic,
-        },
-      },
-    });
-    const invalidKafkaRuntimeWithoutRegions = makeViewServerRuntime(viewServer, {
-      // @ts-expect-error direct runtime Kafka topics require runtime kafka.regions when config.kafka is absent.
-      kafka: {
-        consumerGroupId: "view-server-type-test",
-        topics: {
-          orders: usaKafkaTopic({
-            regions: ["usa"],
-            value: kafka.json(Order),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              price: value.price,
-            }),
-          }),
-        },
-      },
+      kafka: {},
     });
     const runtimeWithGrpc = makeViewServerRuntime(materializedGrpcViewServer, {
       grpc: {
@@ -919,18 +646,13 @@ describe("runtime type contracts", () => {
     expectTypeOf(invalidWildcardMetricsPathOptions).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitKey).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
-    expectTypeOf<Effect.Success<typeof runtimeWithKafka>>().toMatchTypeOf<
-      ViewServerRuntime<typeof viewServer.topics>
-    >();
-    expectTypeOf(invalidLegacyKafkaTopicDiscriminant).not.toBeAny();
-    expectTypeOf<Effect.Success<typeof runtimeWithCommittedKafkaStart>>().toMatchTypeOf<
-      ViewServerRuntime<typeof viewServer.topics>
+    expectTypeOf<Effect.Success<typeof runtimeWithKafkaStart>>().toMatchTypeOf<
+      ViewServerRuntime<typeof kafkaOwnedViewServer.topics>
     >();
     expectTypeOf<Effect.Success<typeof kafkaOwnedRuntimeWithExplicitRegionsEffect>>().toMatchTypeOf<
       ViewServerRuntime<typeof kafkaOwnedViewServer.topics>
     >();
     expectTypeOf(invalidKafkaOwnedRuntimeWithWrongRegions).not.toBeAny();
-    expectTypeOf(invalidKafkaRuntimeWithoutRegions).not.toBeAny();
     expectTypeOf(invalidKafkaStartFrom).not.toBeAny();
     expectTypeOf(invalidCommittedKafkaStartFallback).not.toBeAny();
     expectTypeOf(invalidCommittedKafkaStartMissingGroup).not.toBeAny();
@@ -940,7 +662,6 @@ describe("runtime type contracts", () => {
     expectTypeOf(invalidKafkaOwnedRuntimeWithoutOptions).not.toBeAny();
     expectTypeOf(invalidKafkaOwnedRuntimeWithExplicitTopics).not.toBeAny();
     expectTypeOf(invalidMaterializedGrpcRuntimeWithoutClients).not.toBeAny();
-    expectTypeOf(invalidKafkaRegionRuntime).not.toBeAny();
     expectTypeOf<Effect.Success<typeof runtimeWithGrpc>>().toMatchTypeOf<
       ViewServerRuntime<typeof materializedGrpcViewServer.topics>
     >();

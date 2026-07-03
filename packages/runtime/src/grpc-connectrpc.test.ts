@@ -124,7 +124,7 @@ const materializedViewServer = defineViewServerConfig({
     orders: {
       schema: ConnectOrder,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });
@@ -134,7 +134,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: ConnectOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["region"],
       }),
     },

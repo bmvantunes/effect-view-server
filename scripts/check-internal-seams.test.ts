@@ -1403,8 +1403,7 @@ describe("internal seam checker", () => {
       "decodeKafkaTopicMessage",
       "KafkaDecodedTopicMessage",
       "KafkaDecodedTopicSourceMessage",
-      "KafkaRuntimeSourceTopicDefinition",
-      "KafkaRuntimeTopicSourceDefinition",
+      "KafkaResolvedSourceTopicDefinition",
     ];
     const publicEntrypoints = [
       {

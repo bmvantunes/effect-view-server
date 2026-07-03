@@ -30,7 +30,6 @@ type HasRequiredDefinedObjectProperty<Definition, Key extends string> = Key exte
 type HasSourceOwner<Definition> = true extends
   | HasRequiredDefinedObjectProperty<Definition, "kafkaSource">
   | HasRequiredDefinedObjectProperty<Definition, "grpcSource">
-  | HasRequiredDefinedObjectProperty<Definition, "source">
   ? true
   : false;
 

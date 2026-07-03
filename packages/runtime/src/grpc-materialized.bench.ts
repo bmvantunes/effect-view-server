@@ -89,7 +89,7 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });

@@ -63,11 +63,7 @@ export type GrpcMaterializedTopic<Topics> = Extract<
       readonly grpcSource: GrpcMaterializedTopicSource;
     }
       ? Topic
-      : Topics[Topic] extends {
-            readonly source: GrpcMaterializedTopicSource;
-          }
-        ? Topic
-        : never;
+      : never;
   }[keyof Topics],
   string
 >;

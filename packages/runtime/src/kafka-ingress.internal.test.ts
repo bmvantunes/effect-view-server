@@ -4,8 +4,14 @@ import type { Message } from "@platformatic/kafka";
 import {
   defineViewServerConfig,
   kafka,
+  type RuntimeRegions,
+  type ViewServerConfig,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import {
+  makeKafkaSourceTopicsForConfig,
+  type KafkaResolvedSourceTopicDefinition,
+} from "@effect-view-server/config/internal";
 import {
   makeViewServerRuntimeCoreInternal as makeViewServerRuntimeCore,
   type ViewServerRuntimeCoreInternalClient,
@@ -107,11 +113,31 @@ const IncomingPrecisePosition = Schema.Struct({
   price: Schema.BigDecimal,
 });
 
+const regions = {
+  cold: "localhost:9093",
+  local: " localhost:9092, ,localhost:9094 ",
+};
+const ordersSourceTopic = "orders-source";
+const paymentsSourceTopic = "payments-source";
+const unknownSourceTopic = "unknown-source";
+
 const viewServer = defineViewServerConfig({
+  kafka: regions,
   topics: {
     orders: {
       schema: Order,
       key: "id",
+      kafkaSource: kafka.source({
+        topic: ordersSourceTopic,
+        regions: ["local"],
+        value: kafka.json(IncomingOrder),
+        key: kafka.stringKey(),
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          customerId: value.customerId,
+          price: value.price,
+        }),
+      }),
     },
     precisePositions: {
       schema: PrecisePosition,
@@ -139,14 +165,6 @@ const makeCapturedLogs = () => {
   return { logger, logs };
 };
 
-const regions = {
-  cold: "localhost:9093",
-  local: " localhost:9092, ,localhost:9094 ",
-};
-const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-const ordersSourceTopic = "orders-source";
-const paymentsSourceTopic = "payments-source";
-const unknownSourceTopic = "unknown-source";
 const nonStringTagCodecError: { readonly _tag: 123; readonly message: "non-string tag" } = {
   _tag: 123,
   message: "non-string tag",
@@ -163,36 +181,57 @@ const forgedMappingTagCodecError: {
   message: "forged mapping tag",
 };
 
-const committedKafkaStart = (
-  consumerGroupId: string,
-): Pick<ResolvedViewServerKafkaRuntimeOptions<Topics>, "consume" | "startFrom"> => ({
+const makeCommittedKafkaStart = (consumerGroupId: string) => ({
   consume: {
     consumerGroupId,
-    fallbackMode: "earliest",
-    mode: "committed",
+    fallbackMode: "earliest" as const,
+    mode: "committed" as const,
   },
   startFrom: {
     committedConsumerGroup: consumerGroupId,
   },
 });
 
+const committedKafkaStart = (
+  consumerGroupId: string,
+): Pick<ResolvedViewServerKafkaRuntimeOptions<Topics>, "consume" | "startFrom"> =>
+  makeCommittedKafkaStart(consumerGroupId);
+
+const makeRuntimeTopicRecord = <
+  const CurrentTopics extends ViewServerRuntimeTopicDefinitions,
+  const CurrentRegions extends RuntimeRegions,
+>(
+  config: ViewServerConfig<CurrentTopics, CurrentRegions>,
+): Record<string, KafkaResolvedSourceTopicDefinition<CurrentTopics, CurrentRegions>> => {
+  const topics: Record<
+    string,
+    KafkaResolvedSourceTopicDefinition<CurrentTopics, CurrentRegions>
+  > = Object.create(null);
+  for (const topic of makeKafkaSourceTopicsForConfig<CurrentTopics, CurrentRegions>(config)) {
+    topics[topic.topic] = topic;
+  }
+  return topics;
+};
+
+const kafkaOptionsForConfig = <
+  const CurrentTopics extends ViewServerRuntimeTopicDefinitions,
+  const CurrentRegions extends RuntimeRegions,
+>(
+  config: ViewServerConfig<CurrentTopics, CurrentRegions>,
+  consumerGroupId: string,
+  runtimeRegions: Record<string, string> = regions,
+): ResolvedViewServerKafkaRuntimeOptions<CurrentTopics, CurrentRegions> => ({
+  consumerGroupId,
+  ...makeCommittedKafkaStart(consumerGroupId),
+  regions: runtimeRegions,
+  topics: makeRuntimeTopicRecord(config),
+});
+
 const kafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
   consumerGroupId: "view-server-test",
   ...committedKafkaStart("view-server-test"),
   regions,
-  topics: {
-    [ordersSourceTopic]: localKafkaTopic({
-      regions: ["local"],
-      value: kafka.json(IncomingOrder),
-      key: kafka.stringKey(),
-      viewServerTopic: "orders",
-      mapping: ({ key, value }) => ({
-        id: key,
-        customerId: value.customerId,
-        price: value.price,
-      }),
-    }),
-  },
+  topics: makeRuntimeTopicRecord(viewServer),
 };
 
 type KafkaHealthLedgerInput<LedgerTopics extends ViewServerRuntimeTopicDefinitions> = Parameters<
@@ -3147,6 +3186,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("publish defect"),
         publishManyDecodedRows: () => Effect.die("publish defect"),
+        publishManyDecodedRowsWithStorageKeys: () => Effect.die("publish defect"),
       };
 
       const error = yield* Effect.flip(
@@ -3233,6 +3273,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         ...runtimeCore.internalClient,
         publish: () => Effect.interrupt,
         publishManyDecodedRows: () => Effect.interrupt,
+        publishManyDecodedRowsWithStorageKeys: () => Effect.interrupt,
       };
 
       const exit = yield* Effect.exit(
@@ -4023,6 +4064,14 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             Effect.sync(() => {
               operations.push(`publishMany:${topic}:${rows.length}`);
             }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+          publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+            Effect.sync(() => {
+              operations.push(`publishMany:${topic}:${rows.length}`);
+            }).pipe(
+              Effect.andThen(
+                runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+              ),
+            ),
         };
         let healthRefreshes = 0;
         const requestHealthRefresh = Effect.sync(() => {
@@ -4167,6 +4216,14 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       yield* runKafkaMessageStream(
@@ -4250,6 +4307,14 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       yield* runKafkaMessageStream(
@@ -4321,6 +4386,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
         publishManyDecodedRows: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
@@ -4449,6 +4518,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.failCause(publishFailure))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(Effect.failCause(publishFailure))),
       };
 
       const exit = yield* Effect.exit(
@@ -4541,38 +4614,51 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("preserves source-interleaved upsert order for same-target source topics", () =>
+  it.effect("preserves source-interleaved upsert order for topic-owned source topics", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const multiSourceKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        ...kafkaOptions,
+      const multiSourceViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-          }),
-          [paymentsSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
+          },
+          payments: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: paymentsSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(multiSourceViewServer, {});
+      const multiSourceKafkaOptions = kafkaOptionsForConfig(
+        multiSourceViewServer,
+        "view-server-source-interleaved-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof multiSourceViewServer.topics>({
         regions: multiSourceKafkaOptions.regions,
+        startFrom: multiSourceKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -4580,7 +4666,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           },
           [paymentsSourceTopic]: {
             regions: ["local"],
-            viewServerTopic: "orders",
+            viewServerTopic: "payments",
           },
         },
       });
@@ -4589,7 +4675,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.topicConnected(paymentsSourceTopic, "local", 1, 1_000);
 
       yield* processKafkaMessageBatch(
-        viewServer,
+        multiSourceViewServer,
         runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         multiSourceKafkaOptions,
@@ -4639,19 +4725,42 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
+      const paymentsSnapshot = yield* runtimeCore.client.snapshot("payments", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
 
-      expect(snapshot).toStrictEqual({
-        status: "ready",
-        statusCode: "Ready",
-        rows: [
-          {
-            id: "shared-order",
-            customerId: "customer-from-orders-v4",
-            price: 40,
-          },
-        ],
-        totalRows: 1,
-        version: 3,
+      expect({
+        orders: snapshot,
+        payments: paymentsSnapshot,
+      }).toStrictEqual({
+        orders: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "shared-order",
+              customerId: "customer-from-orders-v4",
+              price: 40,
+            },
+          ],
+          totalRows: 1,
+          version: 2,
+        },
+        payments: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "shared-order",
+              customerId: "customer-from-payments-v2",
+              price: 20,
+            },
+          ],
+          totalRows: 1,
+          version: 1,
+        },
       });
 
       yield* runtimeCore.close;
@@ -4758,38 +4867,51 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("attributes same-target publish failures to the failing Kafka source topic", () =>
+  it.effect("attributes publish failures to the failing topic-owned Kafka source topic", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const multiSourceKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        ...kafkaOptions,
+      const multiSourceViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-          }),
-          [paymentsSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
+          },
+          payments: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: paymentsSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(multiSourceViewServer, {});
+      const multiSourceKafkaOptions = kafkaOptionsForConfig(
+        multiSourceViewServer,
+        "view-server-source-publish-failure-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof multiSourceViewServer.topics>({
         regions: multiSourceKafkaOptions.regions,
+        startFrom: multiSourceKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -4797,7 +4919,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           },
           [paymentsSourceTopic]: {
             regions: ["local"],
-            viewServerTopic: "orders",
+            viewServerTopic: "payments",
           },
         },
       });
@@ -4805,7 +4927,9 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       yield* ledger.topicConnected(paymentsSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const publishManyFailingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+      const publishManyFailingClient: ViewServerRuntimeCoreInternalClient<
+        typeof multiSourceViewServer.topics
+      > = {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
         publishManyDecodedRows: (topic, rows) =>
@@ -4820,11 +4944,23 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
                 : runtimeCore.internalClient.publishManyDecodedRows(topic, rows),
             ),
           ),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              rows.some(
+                (row) => Reflect.get(row.row, "customerId") === "customer-payment-publish-failed",
+              )
+                ? Effect.fail(runtimeUnavailable)
+                : runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       const error = yield* Effect.flip(
         runKafkaMessageStream(
-          viewServer,
+          multiSourceViewServer,
           publishManyFailingClient,
           runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
@@ -4877,7 +5013,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           message: `Failed to process Kafka message for source topic ${paymentsSourceTopic}`,
           sourceTopic: paymentsSourceTopic,
         },
-        operations: ["publishMany:orders:1", "publishMany:orders:1"],
+        operations: ["publishMany:orders:1", "publishMany:payments:1"],
         health: {
           ordersPublishFailures: 0,
           paymentsPublishFailures: 1,
@@ -4920,6 +5056,10 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
         publishManyDecodedRows: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
@@ -4999,6 +5139,14 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       const error = yield* Effect.flip(
@@ -5120,38 +5268,49 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("clears unaffected source topic errors during poison-message recovery flush", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const multiSourceKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-unaffected-source-recovery-test",
-        ...committedKafkaStart("view-server-unaffected-source-recovery-test"),
-        regions,
+      const multiSourceViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-          }),
-          [paymentsSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
+          },
+          payments: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: paymentsSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(multiSourceViewServer, {});
+      const multiSourceKafkaOptions = kafkaOptionsForConfig(
+        multiSourceViewServer,
+        "view-server-unaffected-source-recovery-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof multiSourceViewServer.topics>({
         regions: multiSourceKafkaOptions.regions,
+        startFrom: multiSourceKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -5159,7 +5318,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           },
           [paymentsSourceTopic]: {
             regions: ["local"],
-            viewServerTopic: "orders",
+            viewServerTopic: "payments",
           },
         },
       });
@@ -5172,18 +5331,28 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
         nowMillis: 0,
       });
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+      const batchingClient: ViewServerRuntimeCoreInternalClient<
+        typeof multiSourceViewServer.topics
+      > = {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
         publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       const error = yield* Effect.flip(
         runKafkaMessageStream(
-          viewServer,
+          multiSourceViewServer,
           batchingClient,
           runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
@@ -5299,40 +5468,47 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("flushes decoded Kafka microbatch messages before a later codec defect", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const defectingKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-codec-defect-microbatch-test",
-        ...committedKafkaStart("view-server-codec-defect-microbatch-test"),
-        regions,
+      const defectingViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "defecting-value-codec",
-              decode: (input) => {
-                const raw = Buffer.from(input.bytes).toString("utf8");
-                const defect = Effect.die(new Error("decode defect"));
-                const [customerId = "", price = "0"] = raw.split(":");
-                return raw === "defect"
-                  ? defect
-                  : Effect.succeed({
-                      customerId,
-                      price: Number(price),
-                    });
-              },
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "defecting-value-codec",
+                decode: (input) => {
+                  const raw = Buffer.from(input.bytes).toString("utf8");
+                  const defect = Effect.die(new Error("decode defect"));
+                  const [customerId = "", price = "0"] = raw.split(":");
+                  return raw === "defect"
+                    ? defect
+                    : Effect.succeed({
+                        customerId,
+                        price: Number(price),
+                      });
+                },
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(defectingViewServer, {});
+      const defectingKafkaOptions = kafkaOptionsForConfig(
+        defectingViewServer,
+        "view-server-codec-defect-microbatch-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof defectingViewServer.topics>({
         regions: defectingKafkaOptions.regions,
+        startFrom: defectingKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -5343,14 +5519,23 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
-        ...runtimeCore.internalClient,
-        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishManyDecodedRows: (topic, rows) =>
-          Effect.sync(() => {
-            operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
-      };
+      const batchingClient: ViewServerRuntimeCoreInternalClient<typeof defectingViewServer.topics> =
+        {
+          ...runtimeCore.internalClient,
+          publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+          publishManyDecodedRows: (topic, rows) =>
+            Effect.sync(() => {
+              operations.push(`publishMany:${topic}:${rows.length}`);
+            }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+          publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+            Effect.sync(() => {
+              operations.push(`publishMany:${topic}:${rows.length}`);
+            }).pipe(
+              Effect.andThen(
+                runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+              ),
+            ),
+        };
       const firstMessage = kafkaMessage({
         topic: ordersSourceTopic,
         key: "defect-batch-1",
@@ -5386,7 +5571,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const error = yield* Effect.flip(
         runKafkaMessageStream(
-          viewServer,
+          defectingViewServer,
           batchingClient,
           runtimeCore.requestHealthRefresh,
           defectingKafkaOptions,
@@ -5494,6 +5679,14 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
       const commitFailure = new Error("recovery commit failed");
 
@@ -5602,45 +5795,52 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("preserves mixed codec typed failures and interrupts", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
       const operations: Array<string> = [];
-      const mixedInterruptKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-codec-mixed-interrupt-test",
-        ...committedKafkaStart("view-server-codec-mixed-interrupt-test"),
-        regions,
+      const mixedInterruptViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "mixed-interrupt-value-codec",
-              decode: (input) => {
-                const raw = Buffer.from(input.bytes).toString("utf8");
-                const [customerId = "", price = "0"] = raw.split(":");
-                return raw === "typed-failure-with-interrupt"
-                  ? Effect.failCause(
-                      Cause.fromReasons([
-                        Cause.makeFailReason("typed decode interrupted"),
-                        Cause.makeInterruptReason(),
-                      ]),
-                    )
-                  : Effect.succeed({
-                      customerId,
-                      price: Number(price),
-                    });
-              },
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "mixed-interrupt-value-codec",
+                decode: (input) => {
+                  const raw = Buffer.from(input.bytes).toString("utf8");
+                  const [customerId = "", price = "0"] = raw.split(":");
+                  return raw === "typed-failure-with-interrupt"
+                    ? Effect.failCause(
+                        Cause.fromReasons([
+                          Cause.makeFailReason("typed decode interrupted"),
+                          Cause.makeInterruptReason(),
+                        ]),
+                      )
+                    : Effect.succeed({
+                        customerId,
+                        price: Number(price),
+                      });
+                },
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(mixedInterruptViewServer, {});
+      const mixedInterruptKafkaOptions = kafkaOptionsForConfig(
+        mixedInterruptViewServer,
+        "view-server-codec-mixed-interrupt-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof mixedInterruptViewServer.topics>({
         regions: mixedInterruptKafkaOptions.regions,
+        startFrom: mixedInterruptKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -5650,18 +5850,28 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+      const batchingClient: ViewServerRuntimeCoreInternalClient<
+        typeof mixedInterruptViewServer.topics
+      > = {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
         publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       const exit = yield* Effect.exit(
         runKafkaMessageStream(
-          viewServer,
+          mixedInterruptViewServer,
           batchingClient,
           runtimeCore.requestHealthRefresh,
           mixedInterruptKafkaOptions,
@@ -5774,36 +5984,43 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("preserves mixed codec typed failures and finalizer defects", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const mixedCauseKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-codec-mixed-cause-test",
-        ...committedKafkaStart("view-server-codec-mixed-cause-test"),
-        regions,
+      const mixedCauseViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "mixed-cause-value-codec",
-              decode: () =>
-                Effect.failCause(
-                  Cause.fromReasons([
-                    Cause.makeFailReason("typed decode failed"),
-                    Cause.makeDieReason(new Error("decode finalizer defect")),
-                  ]),
-                ),
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "mixed-cause-value-codec",
+                decode: () =>
+                  Effect.failCause(
+                    Cause.fromReasons([
+                      Cause.makeFailReason("typed decode failed"),
+                      Cause.makeDieReason(new Error("decode finalizer defect")),
+                    ]),
+                  ),
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: () => ({
+                customerId: "unreachable",
+                price: 0,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key }) => ({
-              id: key,
-              customerId: "unreachable",
-              price: 0,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(mixedCauseViewServer, {});
+      const mixedCauseKafkaOptions = kafkaOptionsForConfig(
+        mixedCauseViewServer,
+        "view-server-codec-mixed-cause-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof mixedCauseViewServer.topics>({
         regions: mixedCauseKafkaOptions.regions,
+        startFrom: mixedCauseKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -5816,7 +6033,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const exit = yield* Effect.exit(
         runKafkaMessageStream(
-          viewServer,
+          mixedCauseViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           mixedCauseKafkaOptions,
@@ -5900,39 +6117,46 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("does not record Kafka stream failures when microbatch decoding is interrupted", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const interruptingKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-codec-interrupt-microbatch-test",
-        ...committedKafkaStart("view-server-codec-interrupt-microbatch-test"),
-        regions,
+      const interruptingViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "interrupting-value-codec",
-              decode: (input) => {
-                const raw = Buffer.from(input.bytes).toString("utf8");
-                const [customerId = "", price = "0"] = raw.split(":");
-                return raw === "interrupt"
-                  ? Effect.interrupt
-                  : Effect.succeed({
-                      customerId,
-                      price: Number(price),
-                    });
-              },
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "interrupting-value-codec",
+                decode: (input) => {
+                  const raw = Buffer.from(input.bytes).toString("utf8");
+                  const [customerId = "", price = "0"] = raw.split(":");
+                  return raw === "interrupt"
+                    ? Effect.interrupt
+                    : Effect.succeed({
+                        customerId,
+                        price: Number(price),
+                      });
+                },
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(interruptingViewServer, {});
+      const interruptingKafkaOptions = kafkaOptionsForConfig(
+        interruptingViewServer,
+        "view-server-codec-interrupt-microbatch-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof interruptingViewServer.topics>({
         regions: interruptingKafkaOptions.regions,
+        startFrom: interruptingKafkaOptions.consume,
         topics: {
           [ordersSourceTopic]: {
             regions: ["local"],
@@ -5943,18 +6167,28 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
       const operations: Array<string> = [];
-      const batchingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
+      const batchingClient: ViewServerRuntimeCoreInternalClient<
+        typeof interruptingViewServer.topics
+      > = {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
         publishManyDecodedRows: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
       };
 
       const exit = yield* Effect.exit(
         runKafkaMessageStream(
-          viewServer,
+          interruptingViewServer,
           batchingClient,
           runtimeCore.requestHealthRefresh,
           interruptingKafkaOptions,
@@ -6449,26 +6683,13 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
   it.effect("fails Kafka ingress startup when Kafka consumer cannot start", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const invalidKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-invalid-broker-test",
-        ...committedKafkaStart("view-server-invalid-broker-test"),
-        regions: {
+      const invalidKafkaOptions = kafkaOptionsForConfig(
+        viewServer,
+        "view-server-invalid-broker-test",
+        {
           local: "",
         },
-        topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
-            }),
-          }),
-        },
-      };
+      );
       const ledger = makeViewServerKafkaHealthLedger<Topics>({
         startFrom: invalidKafkaOptions.consume,
         regions: invalidKafkaOptions.regions,
@@ -6670,29 +6891,34 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("preserves high-precision Kafka JSON values through runtime snapshots", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const preciseKafkaTopic = viewServer.kafkaTopic<typeof regions>();
       const preciseSourceTopic = "precise-position-source";
-      const preciseKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-precise-json-test",
-        ...committedKafkaStart("view-server-precise-json-test"),
-        regions,
+      const preciseViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [preciseSourceTopic]: preciseKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingPrecisePosition),
-            key: kafka.stringKey(),
-            viewServerTopic: "precisePositions",
-            mapping: ({ key, value }) => ({
-              id: key,
-              accountId: value.accountId,
-              quantity: value.quantity,
-              price: value.price,
+          precisePositions: {
+            schema: PrecisePosition,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: preciseSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingPrecisePosition),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                accountId: value.accountId,
+                quantity: value.quantity,
+                price: value.price,
+              }),
             }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(preciseViewServer, {});
+      const preciseKafkaOptions = kafkaOptionsForConfig(
+        preciseViewServer,
+        "view-server-precise-json-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof preciseViewServer.topics>({
         startFrom: preciseKafkaOptions.consume,
         regions: preciseKafkaOptions.regions,
         topics: {
@@ -6706,7 +6932,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       yield* ledger.topicConnected(preciseSourceTopic, "local", 1, 1_000);
 
       yield* processKafkaMessage(
-        viewServer,
+        preciseViewServer,
         runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         preciseKafkaOptions,
@@ -6754,137 +6980,33 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("decodes legacy runtime Kafka topics with erased source-topic discriminants", () =>
+  it.effect("records mapping failures separately from decode failures", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const legacyTopicWithExtraSourceField = Object.assign(
-        localKafkaTopic({
-          regions: ["local"],
-          value: kafka.json(IncomingOrder),
-          key: kafka.stringKey(),
-          viewServerTopic: "orders",
-          mapping: ({ key, value }) => ({
-            id: key,
-            customerId: value.customerId,
-            price: value.price,
-          }),
-        }),
-        { topic: ordersSourceTopic },
-      );
-      const legacyKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-legacy-extra-topic-field-test",
-        ...committedKafkaStart("view-server-legacy-extra-topic-field-test"),
-        regions,
+      const throwingViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: legacyTopicWithExtraSourceField,
-        },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
-        startFrom: legacyKafkaOptions.consume,
-        regions: legacyKafkaOptions.regions,
-        topics: {
-          [ordersSourceTopic]: {
-            regions: ["local"],
-            viewServerTopic: "orders",
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: (): never => {
+                throw new Error("mapping failed");
+              },
+            }),
           },
         },
       });
-      yield* ledger.regionConnected("local", 1_000);
-      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      const legacyMessage = kafkaMessage({
-        topic: ordersSourceTopic,
-        key: "order-legacy-extra-topic-field",
-        value: JSON.stringify({
-          customerId: "customer-legacy-extra-topic-field",
-          price: 80,
-        }),
-        offset: 8n,
-      });
-      const expectedMessageBytes =
-        (legacyMessage.key?.byteLength ?? 0) + (legacyMessage.value?.byteLength ?? 0);
-
-      yield* processKafkaMessage(
-        viewServer,
-        runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
-        legacyKafkaOptions,
-        ledger,
-        "local",
-        legacyMessage,
+      const runtimeCore = yield* makeViewServerRuntimeCore(throwingViewServer, {});
+      const throwingKafkaOptions = kafkaOptionsForConfig(
+        throwingViewServer,
+        "view-server-mapping-failure-test",
       );
-      const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
-      const snapshot = yield* runtimeCore.client.snapshot("orders", {
-        select: ["id", "customerId", "price"],
-      });
-
-      expect({
-        kafkaTopic: health.kafka?.topics[ordersSourceTopic],
-        snapshot,
-      }).toStrictEqual({
-        kafkaTopic: {
-          status: "ready",
-          sourceTopic: ordersSourceTopic,
-          viewServerTopic: "orders",
-          regions: nullRecord({
-            local: {
-              connected: true,
-              assignedPartitions: 1,
-              messagesPerSecond: 1,
-              bytesPerSecond: expectedMessageBytes,
-              decodedMessagesPerSecond: 1,
-              decodeFailuresPerSecond: 0,
-              mappingFailuresPerSecond: 0,
-              publishFailuresPerSecond: 0,
-              commitFailuresPerSecond: 0,
-              processingFailuresPerSecond: 0,
-              lastMessageAt: 0,
-              lastCommitAt: 0,
-              consumerLagMessages: null,
-              lagSampledAt: null,
-              committedOffset: "9",
-              lastError: null,
-            },
-          }),
-        },
-        snapshot: {
-          status: "ready",
-          statusCode: "Ready",
-          rows: [
-            {
-              id: "order-legacy-extra-topic-field",
-              customerId: "customer-legacy-extra-topic-field",
-              price: 80,
-            },
-          ],
-          totalRows: 1,
-          version: 1,
-        },
-      });
-
-      yield* runtimeCore.close;
-    }),
-  );
-
-  it.effect("records mapping failures separately from decode failures", () =>
-    Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const throwingKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-mapping-failure-test",
-        ...committedKafkaStart("view-server-mapping-failure-test"),
-        regions,
-        topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: (): never => {
-              throw new Error("mapping failed");
-            },
-          }),
-        },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      const ledger = makeViewServerKafkaHealthLedger<typeof throwingViewServer.topics>({
         startFrom: throwingKafkaOptions.consume,
         regions: throwingKafkaOptions.regions,
         topics: {
@@ -6903,7 +7025,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const error = yield* Effect.flip(
         processKafkaMessage(
-          viewServer,
+          throwingViewServer,
           runtimeCore.internalClient,
           requestHealthRefresh,
           throwingKafkaOptions,
@@ -6972,29 +7094,35 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("records untagged codec failures as decode failures", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const untaggedDecodeKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-untagged-decode-failure-test",
-        ...committedKafkaStart("view-server-untagged-decode-failure-test"),
-        regions,
+      const untaggedDecodeViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "untagged-error",
-              decode: () => Effect.fail(nonStringTagCodecError),
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "untagged-error",
+                decode: () => Effect.fail(nonStringTagCodecError),
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: () => ({
+                customerId: "unused",
+                price: 0,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key }) => ({
-              id: key,
-              customerId: "unused",
-              price: 0,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(untaggedDecodeViewServer, {});
+      const untaggedDecodeKafkaOptions = kafkaOptionsForConfig(
+        untaggedDecodeViewServer,
+        "view-server-untagged-decode-failure-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof untaggedDecodeViewServer.topics>({
         startFrom: untaggedDecodeKafkaOptions.consume,
         regions: untaggedDecodeKafkaOptions.regions,
         topics: {
@@ -7009,7 +7137,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const exit = yield* Effect.exit(
         processKafkaMessage(
-          viewServer,
+          untaggedDecodeViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           untaggedDecodeKafkaOptions,
@@ -7066,29 +7194,35 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("does not classify custom codec errors as mapping failures by public tag alone", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const forgedMappingTagKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-forged-mapping-tag-test",
-        ...committedKafkaStart("view-server-forged-mapping-tag-test"),
-        regions,
+      const forgedMappingTagViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "forged-mapping-tag-error",
-              decode: () => Effect.fail(forgedMappingTagCodecError),
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "forged-mapping-tag-error",
+                decode: () => Effect.fail(forgedMappingTagCodecError),
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: () => ({
+                customerId: "unused",
+                price: 0,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key }) => ({
-              id: key,
-              customerId: "unused",
-              price: 0,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(forgedMappingTagViewServer, {});
+      const forgedMappingTagKafkaOptions = kafkaOptionsForConfig(
+        forgedMappingTagViewServer,
+        "view-server-forged-mapping-tag-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof forgedMappingTagViewServer.topics>({
         startFrom: forgedMappingTagKafkaOptions.consume,
         regions: forgedMappingTagKafkaOptions.regions,
         topics: {
@@ -7103,7 +7237,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const error = yield* Effect.flip(
         processKafkaMessage(
-          viewServer,
+          forgedMappingTagViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           forgedMappingTagKafkaOptions,
@@ -7166,29 +7300,35 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
   it.effect("records primitive codec failures as decode failures", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
-      const primitiveDecodeKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
-        consumerGroupId: "view-server-primitive-decode-failure-test",
-        ...committedKafkaStart("view-server-primitive-decode-failure-test"),
-        regions,
+      const primitiveDecodeViewServer = defineViewServerConfig({
+        kafka: regions,
         topics: {
-          [ordersSourceTopic]: localKafkaTopic({
-            regions: ["local"],
-            value: kafka.codec({
-              name: "primitive-error",
-              decode: () => Effect.fail("raw codec failed"),
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.codec({
+                name: "primitive-error",
+                decode: () => Effect.fail("raw codec failed"),
+              }),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: () => ({
+                customerId: "unused",
+                price: 0,
+              }),
             }),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key }) => ({
-              id: key,
-              customerId: "unused",
-              price: 0,
-            }),
-          }),
+          },
         },
-      };
-      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(primitiveDecodeViewServer, {});
+      const primitiveDecodeKafkaOptions = kafkaOptionsForConfig(
+        primitiveDecodeViewServer,
+        "view-server-primitive-decode-failure-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof primitiveDecodeViewServer.topics>({
         startFrom: primitiveDecodeKafkaOptions.consume,
         regions: primitiveDecodeKafkaOptions.regions,
         topics: {
@@ -7203,7 +7343,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
 
       const exit = yield* Effect.exit(
         processKafkaMessage(
-          viewServer,
+          primitiveDecodeViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           primitiveDecodeKafkaOptions,
@@ -7258,7 +7398,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
     }),
   );
 
-  it.effect("records nullable Kafka key and value bytes as decode failures", () =>
+  it.effect("records nullable Kafka key bytes as mapping failures", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
       const ledger = makeViewServerKafkaHealthLedger<Topics>({
@@ -7308,8 +7448,8 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             messagesPerSecond: 1,
             bytesPerSecond: 0,
             decodedMessagesPerSecond: 0,
-            decodeFailuresPerSecond: 1,
-            mappingFailuresPerSecond: 0,
+            decodeFailuresPerSecond: 0,
+            mappingFailuresPerSecond: 1,
             publishFailuresPerSecond: 0,
             commitFailuresPerSecond: 0,
             processingFailuresPerSecond: 0,
@@ -7318,7 +7458,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             consumerLagMessages: null,
             lagSampledAt: null,
             committedOffset: null,
-            lastError: "Kafka message value bytes are required",
+            lastError: "Kafka source key bytes are required",
           },
         }),
       });

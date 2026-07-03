@@ -44,7 +44,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["region", "status"],
       }),
     },

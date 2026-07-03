@@ -95,11 +95,6 @@ delete by key without decoding a null value.
 - `value` is typed from the configured value codec.
 - `map` output is validated against the target topic schema before publish.
 
-The legacy `viewServer.kafkaTopic()` + `runtime.kafka.topics` API is still
-available for admin-owned/manual source wiring, but new Kafka integrations
-should prefer topic-owned `kafkaSource` definitions. Do not mix legacy runtime
-topic wiring with topic-owned `kafkaSource` definitions in the same runtime.
-
 ## Delivery
 
 Kafka messages are decoded, mapped, microbatched, and applied through Runtime

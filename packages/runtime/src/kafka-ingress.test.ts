@@ -76,37 +76,6 @@ const IncomingTransformedOrder = Schema.Struct({
   quantity: Schema.BigIntFromString,
 });
 
-const viewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-    },
-    trades: {
-      schema: Trade,
-      key: "id",
-    },
-  },
-});
-
-const preciseViewServer = defineViewServerConfig({
-  topics: {
-    positions: {
-      schema: PrecisePosition,
-      key: "id",
-    },
-  },
-});
-
-const transformedViewServer = defineViewServerConfig({
-  topics: {
-    transformedOrders: {
-      schema: TransformedOrder,
-      key: "id",
-    },
-  },
-});
-
 type ProducerMessage = {
   readonly topic: string;
   readonly key: string;
@@ -1266,7 +1235,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
-  it.effect("publishes direct Kafka upserts when a batch also has topic-owned tombstones", () =>
+  it.effect("publishes topic-owned Kafka upserts when a batch also has tombstones", () =>
     Effect.gen(function* () {
       const regions = {
         local: kafkaBootstrapServers,
@@ -1277,6 +1246,17 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
           orders: {
             schema: Order,
             key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
+            }),
           },
           trades: {
             schema: Trade,
@@ -1300,28 +1280,10 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
           consumerGroupId: "view-server-mixed-direct-upsert-topic-owned-tombstone",
         },
       });
-      const localKafkaTopic = mixedSourceViewServer.kafkaTopic<typeof regions>();
       const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
-      const mixedKafkaOptions = {
-        ...kafkaOptions,
-        topics: {
-          ...kafkaOptions.topics,
-          "orders-source": localKafkaTopic({
-            regions: ["local"],
-            value: kafka.json(IncomingOrder),
-            key: kafka.stringKey(),
-            viewServerTopic: "orders",
-            mapping: ({ key, value }) => ({
-              id: key,
-              customerId: value.customerId,
-              price: value.price,
-            }),
-          }),
-        },
-      };
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(mixedSourceViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof mixedSourceViewServer.topics>({
-        regions: mixedKafkaOptions.regions,
+        regions: kafkaOptions.regions,
         startFrom: kafkaOptions.consume,
         topics: {
           "orders-source": {
@@ -1339,7 +1301,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         mixedSourceViewServer,
         runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
-        mixedKafkaOptions,
+        kafkaOptions,
         health,
         "local",
         kafkaProcessorMessage({
@@ -1356,7 +1318,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         mixedSourceViewServer,
         runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
-        mixedKafkaOptions,
+        kafkaOptions,
         health,
         "local",
         [
@@ -1425,24 +1387,24 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
-  it.effect("publishes direct Kafka source rows when Kafka key bytes are missing", () =>
+  it.effect("rejects topic-owned Kafka source rows when Kafka key bytes are missing", () =>
     Effect.gen(function* () {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const resolved = yield* resolveViewServerRuntimeOptions(viewServer, {
-        kafka: {
-          consumerGroupId: "view-server-direct-null-key-upsert",
-          regions,
-          topics: {
-            "orders-source": localKafkaTopic({
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
               regions: ["local"],
               value: kafka.json(IncomingOrder),
               key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
                 customerId: value.customerId,
                 price: value.price,
               }),
@@ -1450,9 +1412,14 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
           },
         },
       });
+      const resolved = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-direct-null-key-upsert",
+        },
+      });
       const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-      const health = makeViewServerKafkaHealthLedger<typeof viewServer.topics>({
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
         regions: kafkaOptions.regions,
         startFrom: kafkaOptions.consume,
         topics: {
@@ -1463,8 +1430,8 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         },
       });
 
-      yield* processKafkaMessage(
-        viewServer,
+      const error = yield* processKafkaMessage(
+        kafkaBackedViewServer,
         runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         kafkaOptions,
@@ -1479,56 +1446,63 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             price: 10,
           }),
         }),
-      );
+      ).pipe(Effect.flip);
       const snapshot = yield* runtimeCore.client.snapshot("orders", {
         select: ["id", "customerId", "price"],
         limit: 10,
       });
       yield* runtimeCore.close;
 
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message: "Failed to map Kafka message for source topic orders-source",
+          cause: "missing-kafka-key",
+          region: "local",
+          sourceTopic: "orders-source",
+        }),
+      );
       expect(snapshot).toStrictEqual({
-        version: 1,
-        rows: [
-          {
-            customerId: "customer-1",
-            id: "",
-            price: 10,
-          },
-        ],
-        totalRows: 1,
+        version: 0,
+        rows: [],
+        totalRows: 0,
         status: "ready",
         statusCode: "Ready",
       });
     }),
   );
 
-  it.effect("validates legacy Kafka mapped rows with decoded transform schema values", () =>
+  it.effect("validates topic-owned Kafka mapped rows with decoded transform schema values", () =>
     Effect.gen(function* () {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = transformedViewServer.kafkaTopic<typeof regions>();
-      const resolved = yield* resolveViewServerRuntimeOptions(transformedViewServer, {
-        kafka: {
-          consumerGroupId: "view-server-direct-transformed-mapped-row",
-          regions,
-          topics: {
-            "transformed-orders-source": localKafkaTopic({
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          transformedOrders: {
+            schema: TransformedOrder,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "transformed-orders-source",
               regions: ["local"],
               value: kafka.json(IncomingTransformedOrder),
               key: kafka.stringKey(),
-              viewServerTopic: "transformedOrders",
-              mapping: ({ key, value }) => ({
-                id: key,
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
                 quantity: value.quantity,
               }),
             }),
           },
         },
       });
+      const resolved = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-direct-transformed-mapped-row",
+        },
+      });
       const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(transformedViewServer, {});
-      const health = makeViewServerKafkaHealthLedger<typeof transformedViewServer.topics>({
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
         regions: kafkaOptions.regions,
         startFrom: kafkaOptions.consume,
         topics: {
@@ -1540,7 +1514,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       });
 
       yield* processKafkaMessage(
-        transformedViewServer,
+        kafkaBackedViewServer,
         runtimeCore.internalClient,
         runtimeCore.requestHealthRefresh,
         kafkaOptions,
@@ -1576,31 +1550,43 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
-  it.effect("validates legacy Kafka mapped rows before publishing", () =>
+  it.effect("validates topic-owned Kafka mapped rows before publishing", () =>
     Effect.gen(function* () {
       const regions = {
         local: kafkaBootstrapServers,
       };
       const invalidOrder: typeof Order.Type = Object.assign(Object.create(null), { price: 10 });
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const resolved = yield* resolveViewServerRuntimeOptions(viewServer, {
-        kafka: {
-          consumerGroupId: "view-server-direct-invalid-mapped-row",
-          regions,
-          topics: {
-            "orders-source": localKafkaTopic({
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
               regions: ["local"],
               value: kafka.json(IncomingOrder),
               key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: () => invalidOrder,
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
             }),
           },
         },
       });
+      Object.defineProperty(kafkaBackedViewServer.topics.orders.kafkaSource, "map", {
+        value: () => invalidOrder,
+      });
+      const resolved = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-direct-invalid-mapped-row",
+        },
+      });
       const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-      const health = makeViewServerKafkaHealthLedger<typeof viewServer.topics>({
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
+      const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
         regions: kafkaOptions.regions,
         startFrom: kafkaOptions.consume,
         topics: {
@@ -1613,7 +1599,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
 
       const error = yield* Effect.flip(
         processKafkaMessage(
-          viewServer,
+          kafkaBackedViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
@@ -1647,7 +1633,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
           degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.mappingFailuresPerSecond,
       }).toStrictEqual({
         decodeFailures: 0,
-        lastError: "Kafka mapping produced an invalid row for view server topic orders",
+        lastError: "Kafka mapped row failed topic schema",
         mappingFailures: 1,
       });
       expect(snapshot).toStrictEqual({
@@ -1672,39 +1658,48 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         const regions = {
           local: kafkaBootstrapServers,
         };
-        const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+        const kafkaBackedViewServer = defineViewServerConfig({
+          kafka: regions,
+          topics: {
+            orders: {
+              schema: Order,
+              key: "id",
+              kafkaSource: kafka.source({
+                topic: ordersSourceTopic,
+                regions: ["local"],
+                value: kafka.json(IncomingOrder),
+                key: kafka.stringKey(),
+                rowKey: ({ key }) => key,
+                map: ({ value }) => ({
+                  customerId: value.customerId,
+                  price: value.price,
+                }),
+              }),
+            },
+            trades: {
+              schema: Trade,
+              key: "id",
+              kafkaSource: kafka.source({
+                topic: tradesSourceTopic,
+                regions: ["local"],
+                value: kafka.json(IncomingTrade),
+                key: kafka.stringKey(),
+                rowKey: ({ key }) => key,
+                map: ({ value }) => ({
+                  symbol: value.symbol,
+                  quantity: value.quantity,
+                }),
+              }),
+            },
+          },
+        });
 
         yield* Effect.acquireUseRelease(
-          makeViewServerRuntime(viewServer, {
+          makeViewServerRuntime(kafkaBackedViewServer, {
             host: "127.0.0.1",
             websocketPort: 0,
             kafka: {
               consumerGroupId,
-              regions,
-              topics: {
-                [ordersSourceTopic]: localKafkaTopic({
-                  regions: ["local"],
-                  value: kafka.json(IncomingOrder),
-                  key: kafka.stringKey(),
-                  viewServerTopic: "orders",
-                  mapping: ({ key, value }) => ({
-                    id: key,
-                    customerId: value.customerId,
-                    price: value.price,
-                  }),
-                }),
-                [tradesSourceTopic]: localKafkaTopic({
-                  regions: ["local"],
-                  value: kafka.json(IncomingTrade),
-                  key: kafka.stringKey(),
-                  viewServerTopic: "trades",
-                  mapping: ({ key, value }) => ({
-                    id: key,
-                    symbol: value.symbol,
-                    quantity: value.quantity,
-                  }),
-                }),
-              },
             },
           }),
           (runtime) =>
@@ -1918,45 +1913,57 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         usa: kafkaBootstrapServers,
         london: londonKafkaBootstrapServers,
       };
-      const regionalKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const regionalKafkaViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: regionalOrdersSourceTopic,
+              regions: ["usa", "london"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key, region }) => {
+                expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
+                return `${region}:${key}`;
+              },
+              map: ({ value, region }) => {
+                expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
+                return {
+                  customerId: `${region}:${value.customerId}`,
+                  price: value.price,
+                };
+              },
+            }),
+          },
+          trades: {
+            schema: Trade,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: usaTradesSourceTopic,
+              regions: ["usa"],
+              value: kafka.json(IncomingTrade),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => {
+                expectTypeOf(region).toEqualTypeOf<"usa">();
+                return {
+                  symbol: value.symbol,
+                  quantity: value.quantity,
+                };
+              },
+            }),
+          },
+        },
+      });
 
       yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, {
+        makeViewServerRuntime(regionalKafkaViewServer, {
           host: "127.0.0.1",
           websocketPort: 0,
           kafka: {
             consumerGroupId,
-            regions,
-            topics: {
-              [regionalOrdersSourceTopic]: regionalKafkaTopic({
-                regions: ["usa", "london"],
-                value: kafka.json(IncomingOrder),
-                key: kafka.stringKey(),
-                viewServerTopic: "orders",
-                mapping: ({ key, value, region }) => {
-                  expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
-                  return {
-                    id: `${region}:${key}`,
-                    customerId: `${region}:${value.customerId}`,
-                    price: value.price,
-                  };
-                },
-              }),
-              [usaTradesSourceTopic]: regionalKafkaTopic({
-                regions: ["usa"],
-                value: kafka.json(IncomingTrade),
-                key: kafka.stringKey(),
-                viewServerTopic: "trades",
-                mapping: ({ key, value, region }) => {
-                  expectTypeOf(region).toEqualTypeOf<"usa">();
-                  return {
-                    id: key,
-                    symbol: value.symbol,
-                    quantity: value.quantity,
-                  };
-                },
-              }),
-            },
           },
         }),
         (runtime) =>
@@ -2215,38 +2222,46 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = preciseViewServer.kafkaTopic<typeof regions>();
+      const preciseKafkaViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          positions: {
+            schema: PrecisePosition,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: positionsSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingPrecisePosition),
+              key: kafka.stringKey(),
+              rowKey: ({ key, region }) => {
+                expectTypeOf(key).toEqualTypeOf<string>();
+                expectTypeOf(region).toEqualTypeOf<"local">();
+                return key;
+              },
+              map: ({ value, region }) => {
+                expectTypeOf(value).toEqualTypeOf<typeof IncomingPrecisePosition.Type>();
+                expectTypeOf(region).toEqualTypeOf<"local">();
+                expect(typeof value.quantity).toBe("bigint");
+                expect(value.quantity).toBe(9007199254740993n);
+                expect(BigDecimal.isBigDecimal(value.price)).toBe(true);
+                expect(BigDecimal.format(value.price)).toBe("1234567890.123456789");
+                return {
+                  accountId: value.accountId,
+                  quantity: value.quantity,
+                  price: value.price,
+                };
+              },
+            }),
+          },
+        },
+      });
 
       yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(preciseViewServer, {
+        makeViewServerRuntime(preciseKafkaViewServer, {
           host: "127.0.0.1",
           websocketPort: 0,
           kafka: {
             consumerGroupId,
-            regions,
-            topics: {
-              [positionsSourceTopic]: localKafkaTopic({
-                regions: ["local"],
-                value: kafka.json(IncomingPrecisePosition),
-                key: kafka.stringKey(),
-                viewServerTopic: "positions",
-                mapping: ({ key, value, region }) => {
-                  expectTypeOf(key).toEqualTypeOf<string>();
-                  expectTypeOf(value).toEqualTypeOf<typeof IncomingPrecisePosition.Type>();
-                  expectTypeOf(region).toEqualTypeOf<"local">();
-                  expect(typeof value.quantity).toBe("bigint");
-                  expect(value.quantity).toBe(9007199254740993n);
-                  expect(BigDecimal.isBigDecimal(value.price)).toBe(true);
-                  expect(BigDecimal.format(value.price)).toBe("1234567890.123456789");
-                  return {
-                    id: key,
-                    accountId: value.accountId,
-                    quantity: value.quantity,
-                    price: value.price,
-                  };
-                },
-              }),
-            },
           },
         }),
         (runtime) =>
@@ -2382,33 +2397,41 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const protobufKafkaViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.protobuf(OrderValueSchema),
+              key: kafka.protobuf(OrderKeySchema),
+              rowKey: ({ key, region }) => {
+                expectTypeOf(key).toEqualTypeOf<OrderKey>();
+                expectTypeOf(region).toEqualTypeOf<"local">();
+                return key.orderId;
+              },
+              map: ({ value, region }) => {
+                expectTypeOf(value).toEqualTypeOf<OrderValue>();
+                expectTypeOf(region).toEqualTypeOf<"local">();
+                return {
+                  customerId: value.customerId,
+                  price: value.price,
+                };
+              },
+            }),
+          },
+        },
+      });
 
       yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, {
+        makeViewServerRuntime(protobufKafkaViewServer, {
           host: "127.0.0.1",
           websocketPort: 0,
           kafka: {
             consumerGroupId,
-            regions,
-            topics: {
-              [ordersSourceTopic]: localKafkaTopic({
-                regions: ["local"],
-                value: kafka.protobuf(OrderValueSchema),
-                key: kafka.protobuf(OrderKeySchema),
-                viewServerTopic: "orders",
-                mapping: ({ key, value, region }) => {
-                  expectTypeOf(key).toEqualTypeOf<OrderKey>();
-                  expectTypeOf(value).toEqualTypeOf<OrderValue>();
-                  expectTypeOf(region).toEqualTypeOf<"local">();
-                  return {
-                    id: key.orderId,
-                    customerId: value.customerId,
-                    price: value.price,
-                  };
-                },
-              }),
-            },
           },
         }),
         (runtime) =>
@@ -2470,7 +2493,6 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
               ordersSnapshot,
               engineRows: {
                 orders: health.engine.topics.orders.rowCount,
-                trades: health.engine.topics.trades.rowCount,
               },
               kafka: health.kafka,
             }).toStrictEqual({
@@ -2490,7 +2512,6 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
               },
               engineRows: {
                 orders: 1,
-                trades: 0,
               },
               kafka: {
                 startFrom: {
@@ -2550,27 +2571,32 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const restartKafkaViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
       const runtimeOptions = (consumerGroupId: string) => ({
         host: "127.0.0.1",
         websocketPort: 0,
         kafka: {
           consumerGroupId,
           startFrom: "earliest" as const,
-          regions,
-          topics: {
-            [ordersSourceTopic]: localKafkaTopic({
-              regions: ["local"],
-              value: kafka.json(IncomingOrder),
-              key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
-                customerId: value.customerId,
-                price: value.price,
-              }),
-            }),
-          },
         },
       });
 
@@ -2610,7 +2636,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       ]);
 
       const firstResult = yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, runtimeOptions(consumerGroupId)),
+        makeViewServerRuntime(restartKafkaViewServer, runtimeOptions(consumerGroupId)),
         (runtime) =>
           Effect.gen(function* () {
             const firstSnapshot = yield* runtime.client
@@ -2648,7 +2674,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       );
 
       const replayResult = yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, runtimeOptions(consumerGroupId)),
+        makeViewServerRuntime(restartKafkaViewServer, runtimeOptions(consumerGroupId)),
         (runtime) =>
           Effect.gen(function* () {
             const replaySnapshot = yield* runtime.client
@@ -2810,27 +2836,32 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const runtimeOptions = {
-        host: "127.0.0.1",
-        websocketPort: 0,
-        kafka: {
-          consumerGroupId,
-          regions,
-          startFrom: "latest" as const,
-          topics: {
-            [ordersSourceTopic]: localKafkaTopic({
+      const latestKafkaViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
               regions: ["local"],
               value: kafka.json(IncomingOrder),
               key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
                 customerId: value.customerId,
                 price: value.price,
               }),
             }),
           },
+        },
+      });
+      const runtimeOptions = {
+        host: "127.0.0.1",
+        websocketPort: 0,
+        kafka: {
+          consumerGroupId,
+          startFrom: "latest" as const,
         },
       };
 
@@ -2854,7 +2885,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       ]);
 
       const result = yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, runtimeOptions),
+        makeViewServerRuntime(latestKafkaViewServer, runtimeOptions),
         (runtime) =>
           Effect.gen(function* () {
             const startHealth = yield* runtime.client.health().pipe(
@@ -3003,28 +3034,33 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       const regions = {
         local: kafkaBootstrapServers,
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
+      const committedKafkaViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
       const runtimeOptions = {
         host: "127.0.0.1",
         websocketPort: 0,
         kafka: {
           consumerGroupId: configuredConsumerGroupId,
-          regions,
           startFrom: {
             committedConsumerGroup: committedConsumerGroupId,
-          },
-          topics: {
-            [ordersSourceTopic]: localKafkaTopic({
-              regions: ["local"],
-              value: kafka.json(IncomingOrder),
-              key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
-                customerId: value.customerId,
-                price: value.price,
-              }),
-            }),
           },
         },
       };
@@ -3049,7 +3085,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       ]);
 
       const firstResult = yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, {
+        makeViewServerRuntime(committedKafkaViewServer, {
           ...runtimeOptions,
           kafka: {
             ...runtimeOptions.kafka,
@@ -3101,7 +3137,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
       ]);
 
       const resumedResult = yield* Effect.acquireUseRelease(
-        makeViewServerRuntime(viewServer, runtimeOptions),
+        makeViewServerRuntime(committedKafkaViewServer, runtimeOptions),
         (runtime) =>
           Effect.gen(function* () {
             const resumedSnapshot = yield* runtime.client

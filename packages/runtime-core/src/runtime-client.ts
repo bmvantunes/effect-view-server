@@ -29,7 +29,7 @@ import {
   sourceOwnedRuntimeMutationError,
   sourceOwnedRuntimeResetError,
 } from "./runtime-error";
-import { grpcLeasedSourceTopics, sourceOwnedTopics } from "./topic-source";
+import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
@@ -71,8 +71,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
     healthRefreshCadence?: Duration.Input,
   ): Effect.Effect<RuntimeCoreClientInstance<Topics>> =>
     Effect.gen(function* () {
-      const leasedTopics = grpcLeasedSourceTopics(config);
-      const ownedTopics = sourceOwnedTopics(config);
+      const sourceOwnership = makeSourceOwnershipPolicy(config);
       let healthReadEpoch = 0;
       let healthInstallEpoch = 0;
       const bumpHealthReadEpoch = Effect.sync(() => {
@@ -198,28 +197,28 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
       return {
         client: {
           publish: (topic, row) =>
-            ownedTopics.has(topic)
+            sourceOwnership.isSourceOwnedTopic(topic)
               ? rejectSourceOwnedMutation(topic)
               : internalClient.publish(topic, row),
           publishMany: (topic, rows) =>
-            ownedTopics.has(topic)
+            sourceOwnership.isSourceOwnedTopic(topic)
               ? rejectSourceOwnedMutation(topic)
               : internalClient.publishMany(topic, rows),
           patch: (topic, key, patch) =>
-            ownedTopics.has(topic)
+            sourceOwnership.isSourceOwnedTopic(topic)
               ? rejectSourceOwnedMutation(topic)
               : internalClient.patch(topic, key, patch),
           delete: (topic, key) =>
-            ownedTopics.has(topic)
+            sourceOwnership.isSourceOwnedTopic(topic)
               ? rejectSourceOwnedMutation(topic)
               : internalClient.delete(topic, key),
           snapshot: (topic, query) =>
-            leasedTopics.has(topic)
+            sourceOwnership.isGrpcLeasedTopic(topic)
               ? Effect.fail(leasedRuntimeAccessError(topic))
               : internalClient.snapshot(topic, query),
           health: internalClient.health,
           reset: () =>
-            ownedTopics.size === 0
+            !sourceOwnership.hasSourceOwnedTopics
               ? internalClient.reset()
               : Effect.fail(sourceOwnedRuntimeResetError),
         },

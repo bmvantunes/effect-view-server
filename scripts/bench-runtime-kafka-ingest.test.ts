@@ -229,7 +229,7 @@ describe("Kafka ingest benchmark wrapper", () => {
     const runner = createRunner(fakeSpawn, {
       env: {
         COMPOSE_PROJECT_NAME: "developer-project",
-        VIEW_SERVER_RUNTIME_BENCH_COMPOSE_PROJECT_NAME: "legacy-benchmark-project",
+        VIEW_SERVER_RUNTIME_BENCH_COMPOSE_PROJECT_NAME: "benchmark-project",
       },
       processId: 98765,
     });

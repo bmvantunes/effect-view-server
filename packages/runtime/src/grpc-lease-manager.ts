@@ -44,9 +44,10 @@ import {
 } from "./grpc-ingress";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
-import type {
-  ViewServerRuntimeCoreInternalClient,
-  ViewServerRuntimeCoreInternalLiveClient,
+import {
+  makeSourceOwnershipPolicy,
+  type ViewServerRuntimeCoreInternalClient,
+  type ViewServerRuntimeCoreInternalLiveClient,
 } from "@effect-view-server/runtime-core/internal";
 
 type ViewServerGrpcHealthRefreshRequest = Effect.Effect<void>;
@@ -1041,28 +1042,6 @@ const leasedFeedsByTopic = <
   return feeds;
 };
 
-const grpcLeasedSourceTopics = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
-): Set<string> => {
-  const topics = new Set<string>();
-  for (const [topic, definition] of Object.entries(config.topics)) {
-    const grpcSource = Reflect.get(definition, "grpcSource");
-    const source =
-      typeof grpcSource === "object" && grpcSource !== null
-        ? grpcSource
-        : Reflect.get(definition, "source");
-    if (
-      typeof source === "object" &&
-      source !== null &&
-      Reflect.get(source, "kind") === "grpc" &&
-      Reflect.get(source, "lifecycle") === "leased"
-    ) {
-      topics.add(topic);
-    }
-  }
-  return topics;
-};
-
 const leasedRuntimeAccessError = (topic: string): ViewServerRuntimeError =>
   runtimeError({
     code: "UnsupportedQuery",
@@ -1101,7 +1080,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
 ) {
   const leases = new Map<string, ActiveLease>();
   const feedsByTopic = leasedFeedsByTopic(options);
-  const leasedTopics = grpcLeasedSourceTopics(config);
+  const sourceOwnership = makeSourceOwnershipPolicy(config);
   const lock = yield* Semaphore.make(1);
   let closed = false;
 
@@ -1110,7 +1089,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
   >(topic: Topic, query: unknown) {
     const configuredFeed = feedsByTopic.get(topic);
     if (configuredFeed === undefined) {
-      if (leasedTopics.has(topic)) {
+      if (sourceOwnership.isGrpcLeasedTopic(topic)) {
         return yield* Effect.fail(
           runtimeError({
             code: "RuntimeUnavailable",
@@ -1528,7 +1507,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
 
   const snapshot: ViewServerRuntimeClient<Topics>["snapshot"] = (topic, query) =>
     Effect.gen(function* () {
-      if (leasedTopics.has(topic)) {
+      if (sourceOwnership.isGrpcLeasedTopic(topic)) {
         return yield* Effect.fail(leasedRuntimeAccessError(topic));
       }
       return yield* runtimeClient.snapshot(topic, query);
@@ -1538,18 +1517,24 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     Effect.fail(leasedRuntimeAccessError(topic));
 
   const publish: ViewServerRuntimeClient<Topics>["publish"] = (topic, row) =>
-    leasedTopics.has(topic) ? rejectLeasedMutation(topic) : runtimeClient.publish(topic, row);
+    sourceOwnership.isGrpcLeasedTopic(topic)
+      ? rejectLeasedMutation(topic)
+      : runtimeClient.publish(topic, row);
   const publishMany: ViewServerRuntimeClient<Topics>["publishMany"] = (topic, rows) =>
-    leasedTopics.has(topic) ? rejectLeasedMutation(topic) : runtimeClient.publishMany(topic, rows);
+    sourceOwnership.isGrpcLeasedTopic(topic)
+      ? rejectLeasedMutation(topic)
+      : runtimeClient.publishMany(topic, rows);
   const patch: ViewServerRuntimeClient<Topics>["patch"] = (topic, key, patchValue) =>
-    leasedTopics.has(topic)
+    sourceOwnership.isGrpcLeasedTopic(topic)
       ? rejectLeasedMutation(topic)
       : runtimeClient.patch(topic, key, patchValue);
   const deleteRow: ViewServerRuntimeClient<Topics>["delete"] = (topic, key) =>
-    leasedTopics.has(topic) ? rejectLeasedMutation(topic) : runtimeClient.delete(topic, key);
+    sourceOwnership.isGrpcLeasedTopic(topic)
+      ? rejectLeasedMutation(topic)
+      : runtimeClient.delete(topic, key);
 
   const reset: ViewServerRuntimeClient<Topics>["reset"] = () =>
-    leasedTopics.size === 0
+    sourceOwnership.grpcLeasedTopics.size === 0
       ? runtimeClient.reset()
       : Effect.fail(
           runtimeError({

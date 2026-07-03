@@ -10,17 +10,9 @@ import {
   kafkaErrorIsMapping,
   type RuntimeRegions,
   type KafkaMessageMetadata,
-  type RowSchema,
   type ViewServerConfig,
 } from "@effect-view-server/config";
-import {
-  decodeKafkaTopicMessage,
-  isKafkaRuntimeTopicSourceDefinition,
-} from "@effect-view-server/config/internal";
-import type {
-  KafkaRuntimeSourceTopicDefinition,
-  KafkaRuntimeTopicSourceDefinition,
-} from "@effect-view-server/config/internal";
+import { decodeKafkaTopicMessage } from "@effect-view-server/config/internal";
 import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
@@ -115,7 +107,7 @@ type DecodedKafkaBatchUpsertMessage<Topics extends ViewServerRuntimeTopicDefinit
   readonly decoded: {
     readonly viewServerTopic: KafkaBatchTopic<Topics>;
     readonly row: object;
-    readonly rowKey?: string;
+    readonly rowKey: string;
   };
   readonly message: KafkaConsumerMessage;
   readonly messageBytes: number;
@@ -153,25 +145,21 @@ type KafkaConsumerHealthListenerProcessedState = {
 };
 type ViewServerKafkaHealthRefreshRequest = Effect.Effect<void>;
 
-const emptyMessageBytes = Buffer.alloc(0);
 const kafkaMessageBatchSize = 256;
 const kafkaMessageQueueCapacity = kafkaMessageBatchSize * 4;
 const kafkaMessageBatchFlushInterval = Duration.millis(2);
 const kafkaMessageBatchFlushIntervalMillis = Duration.toMillis(kafkaMessageBatchFlushInterval);
-const strictParseOptions = {
-  onExcessProperty: "error",
-} as const;
 const isKafkaBatchTopic = <Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerConfig<Topics>,
   topic: string,
 ): topic is KafkaBatchTopic<Topics> => Object.hasOwn(config.topics, topic);
-const isTopicOwnedKafkaRuntimeSourceDefinition = <
-  Topics extends ViewServerRuntimeTopicDefinitions,
-  Regions extends RuntimeRegions,
+const kafkaBatchTopicDefinition = <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Topic extends KafkaBatchTopic<Topics>,
 >(
-  topic: KafkaRuntimeSourceTopicDefinition<Topics, Regions>,
-): topic is KafkaRuntimeTopicSourceDefinition<Topics, Regions, Extract<keyof Topics, string>> =>
-  isKafkaRuntimeTopicSourceDefinition(topic);
+  config: ViewServerConfig<Topics>,
+  topic: Topic,
+): Topics[Topic] => config.topics[topic];
 const ignoreKafkaConsumerCloseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
   "Ignoring Kafka consumer close failure.",
 );
@@ -724,7 +712,7 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
         sourceTopic,
       });
     }
-    const topicDefinition = config.topics[viewServerTopic];
+    const topicDefinition = kafkaBatchTopicDefinition(config, viewServerTopic);
     const requestHealthRefreshAfterLedgerUpdate = requestKafkaHealthRefresh(requestHealthRefresh);
     const handleMappingFailure = (failure: unknown, cause: Cause.Cause<unknown>) =>
       health
@@ -797,135 +785,68 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
           ),
         );
     };
-    let decoded:
-      | {
-          readonly row: object;
-          readonly rowKey?: string;
-          readonly viewServerTopic: KafkaBatchTopic<Topics>;
-        }
-      | {
-          readonly rowKey: string;
-          readonly tombstone: true;
-          readonly viewServerTopic: KafkaBatchTopic<Topics>;
-        };
-    if (isTopicOwnedKafkaRuntimeSourceDefinition<Topics, Regions>(topic)) {
-      if (keyBytes === null || keyBytes === undefined) {
-        return yield* health
-          .mappingFailed(sourceTopic, region, {
-            bytes: messageBytes,
-            message: "Kafka source key bytes are required",
-            nowMillis,
-          })
-          .pipe(
-            Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
-            Effect.andThen(
-              Effect.fail(
-                new ViewServerKafkaIngressError({
-                  message: `Failed to map Kafka message for source topic ${sourceTopic}`,
-                  cause: "missing-kafka-key",
-                  region,
-                  sourceTopic,
-                }),
-              ),
+    if (keyBytes === null || keyBytes === undefined) {
+      return yield* health
+        .mappingFailed(sourceTopic, region, {
+          bytes: messageBytes,
+          message: "Kafka source key bytes are required",
+          nowMillis,
+        })
+        .pipe(
+          Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
+          Effect.andThen(
+            Effect.fail(
+              new ViewServerKafkaIngressError({
+                message: `Failed to map Kafka message for source topic ${sourceTopic}`,
+                cause: "missing-kafka-key",
+                region,
+                sourceTopic,
+              }),
             ),
-          );
-      }
-      if (valueBytes === undefined) {
-        return yield* health
-          .decodeFailed(sourceTopic, region, {
-            bytes: messageBytes,
-            message: "Kafka message value bytes are required",
-            nowMillis,
-          })
-          .pipe(
-            Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
-            Effect.andThen(
-              Effect.fail(
-                new ViewServerKafkaIngressError({
-                  message: `Failed to decode Kafka message for source topic ${sourceTopic}`,
-                  cause: "missing-kafka-value",
-                  region,
-                  sourceTopic,
-                }),
-              ),
-            ),
-          );
-      }
-      decoded = yield* decodeKafkaTopicMessage(topic, {
-        keyBytes,
-        valueBytes,
-        region: topicRegion,
-        metadata,
-        rowKeyField: topicDefinition.key,
-        schema: topicDefinition.schema,
-        viewServerTopic,
-      }).pipe(
-        Effect.matchCauseEffect({
-          onFailure: handleDecodeFailure,
-          onSuccess: (decodedMessage) => Effect.succeed(decodedMessage),
-        }),
-      );
-    } else {
-      if (valueBytes === null || valueBytes === undefined) {
-        return yield* health
-          .decodeFailed(sourceTopic, region, {
-            bytes: messageBytes,
-            message: "Kafka message value bytes are required",
-            nowMillis,
-          })
-          .pipe(
-            Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
-            Effect.andThen(
-              Effect.fail(
-                new ViewServerKafkaIngressError({
-                  message: `Failed to decode Kafka message for source topic ${sourceTopic}`,
-                  cause: "missing-kafka-value",
-                  region,
-                  sourceTopic,
-                }),
-              ),
-            ),
-          );
-      }
-      decoded = yield* decodeKafkaTopicMessage(topic, {
-        keyBytes: keyBytes ?? emptyMessageBytes,
-        valueBytes,
-        region: topicRegion,
-        metadata,
-      }).pipe(
-        Effect.matchCauseEffect({
-          onFailure: handleDecodeFailure,
-          onSuccess: (decodedMessage) => Effect.succeed(decodedMessage),
-        }),
-      );
+          ),
+        );
     }
+    if (valueBytes === undefined) {
+      return yield* health
+        .decodeFailed(sourceTopic, region, {
+          bytes: messageBytes,
+          message: "Kafka message value bytes are required",
+          nowMillis,
+        })
+        .pipe(
+          Effect.andThen(requestHealthRefreshAfterLedgerUpdate),
+          Effect.andThen(
+            Effect.fail(
+              new ViewServerKafkaIngressError({
+                message: `Failed to decode Kafka message for source topic ${sourceTopic}`,
+                cause: "missing-kafka-value",
+                region,
+                sourceTopic,
+              }),
+            ),
+          ),
+        );
+    }
+    const decoded = yield* decodeKafkaTopicMessage(topic, {
+      keyBytes,
+      valueBytes,
+      region: topicRegion,
+      metadata,
+      rowKeyField: topicDefinition.key,
+      schema: topicDefinition.schema,
+      viewServerTopic,
+    }).pipe(
+      Effect.matchCauseEffect({
+        onFailure: handleDecodeFailure,
+        onSuccess: (decodedMessage) => Effect.succeed(decodedMessage),
+      }),
+    );
     let decodedBatchMessage: DecodedKafkaBatchMessage<Topics>;
-    if ("row" in decoded && "rowKey" in decoded && typeof decoded.rowKey === "string") {
+    if ("row" in decoded) {
       decodedBatchMessage = {
         decoded: {
           row: decoded.row,
           rowKey: decoded.rowKey,
-          viewServerTopic,
-        },
-        message,
-        messageBytes,
-        nowMillis,
-        sourceTopic,
-      };
-    } else if ("row" in decoded) {
-      const row = yield* validateKafkaMappedRow(
-        viewServerTopic,
-        topicDefinition.schema,
-        decoded.row,
-      ).pipe(
-        Effect.matchCauseEffect({
-          onFailure: (cause) => handleMappingFailure(Cause.squash(cause), cause),
-          onSuccess: (validatedRow) => Effect.succeed(validatedRow),
-        }),
-      );
-      decodedBatchMessage = {
-        decoded: {
-          row,
           viewServerTopic,
         },
         message,
@@ -995,21 +916,6 @@ const publishKafkaRowsForMessages = Effect.fn("ViewServerRuntime.kafka.batch.pub
   },
 );
 
-const validateKafkaMappedRow = Effect.fn("ViewServerRuntime.kafka.mappedRow.validate")(function* <
-  const Topic extends string,
->(topic: Topic, schema: RowSchema, row: object) {
-  yield* Schema.encodeUnknownEffect(schema)(row, strictParseOptions).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ViewServerKafkaIngressError({
-          message: `Kafka mapping produced an invalid row for view server topic ${topic}`,
-          cause,
-        }),
-    ),
-  );
-  return row;
-});
-
 const publishKafkaDecodedTombstone = Effect.fn("ViewServerRuntime.kafka.tombstone.publish")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     client: KafkaIngressRuntimeClient<Topics>,
@@ -1037,105 +943,52 @@ const publishKafkaDecodedUpsertBatch = Effect.fn("ViewServerRuntime.kafka.batch.
     region: string,
     messages: ReadonlyArray<DecodedKafkaBatchUpsertMessage<Topics>>,
   ) {
-    type KafkaPlainUpsertBatchRow = {
-      readonly message: DecodedKafkaBatchMessage<Topics>;
-      readonly row: object;
-      readonly storageKind: "plain";
-    };
     type KafkaStorageUpsertBatchRow = {
       readonly message: DecodedKafkaBatchMessage<Topics>;
       readonly row: object;
       readonly storageKey: string;
-      readonly storageKind: "storage";
     };
-    type KafkaUpsertPublishRun =
-      | {
-          readonly rows: Array<KafkaPlainUpsertBatchRow>;
-          readonly sourceTopic: string;
-          readonly storageKind: "plain";
-          readonly topic: KafkaBatchTopic<Topics>;
-        }
-      | {
-          readonly rows: Array<KafkaStorageUpsertBatchRow>;
-          readonly sourceTopic: string;
-          readonly storageKind: "storage";
-          readonly topic: KafkaBatchTopic<Topics>;
-        };
+    type KafkaUpsertPublishRun = {
+      readonly rows: Array<KafkaStorageUpsertBatchRow>;
+      readonly sourceTopic: string;
+      readonly topic: KafkaBatchTopic<Topics>;
+    };
     const runs: Array<KafkaUpsertPublishRun> = [];
     for (const message of messages) {
       const previousRun = runs[runs.length - 1];
-      if (message.decoded.rowKey === undefined) {
-        const row: KafkaPlainUpsertBatchRow = {
-          message,
-          row: message.decoded.row,
-          storageKind: "plain",
-        };
-        if (
-          previousRun?.topic === message.decoded.viewServerTopic &&
-          previousRun.sourceTopic === message.sourceTopic &&
-          previousRun.storageKind === "plain"
-        ) {
-          previousRun.rows.push(row);
-        } else {
-          runs.push({
-            rows: [row],
-            sourceTopic: message.sourceTopic,
-            storageKind: "plain",
-            topic: message.decoded.viewServerTopic,
-          });
-        }
+      const row: KafkaStorageUpsertBatchRow = {
+        message,
+        row: message.decoded.row,
+        storageKey: message.decoded.rowKey,
+      };
+      if (
+        previousRun?.topic === message.decoded.viewServerTopic &&
+        previousRun.sourceTopic === message.sourceTopic
+      ) {
+        previousRun.rows.push(row);
       } else {
-        const row: KafkaStorageUpsertBatchRow = {
-          message,
-          row: message.decoded.row,
-          storageKey: message.decoded.rowKey,
-          storageKind: "storage",
-        };
-        if (
-          previousRun?.topic === message.decoded.viewServerTopic &&
-          previousRun.sourceTopic === message.sourceTopic &&
-          previousRun.storageKind === "storage"
-        ) {
-          previousRun.rows.push(row);
-        } else {
-          runs.push({
-            rows: [row],
-            sourceTopic: message.sourceTopic,
-            storageKind: "storage",
-            topic: message.decoded.viewServerTopic,
-          });
-        }
+        runs.push({
+          rows: [row],
+          sourceTopic: message.sourceTopic,
+          topic: message.decoded.viewServerTopic,
+        });
       }
     }
     for (const run of runs) {
-      if (run.storageKind === "plain") {
-        yield* publishKafkaRowsForMessages(
-          requestHealthRefresh,
-          health,
-          region,
-          run.sourceTopic,
-          run.rows.map((row) => row.message),
-          client.publishManyDecodedRows(
-            run.topic,
-            run.rows.map((row) => row.row),
-          ),
-        );
-      } else {
-        yield* publishKafkaRowsForMessages(
-          requestHealthRefresh,
-          health,
-          region,
-          run.sourceTopic,
-          run.rows.map((row) => row.message),
-          client.publishManyDecodedRowsWithStorageKeys(
-            run.topic,
-            run.rows.map((row) => ({
-              row: row.row,
-              storageKey: row.storageKey,
-            })),
-          ),
-        );
-      }
+      yield* publishKafkaRowsForMessages(
+        requestHealthRefresh,
+        health,
+        region,
+        run.sourceTopic,
+        run.rows.map((row) => row.message),
+        client.publishManyDecodedRowsWithStorageKeys(
+          run.topic,
+          run.rows.map((row) => ({
+            row: row.row,
+            storageKey: row.storageKey,
+          })),
+        ),
+      );
     }
   },
 );

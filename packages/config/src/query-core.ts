@@ -38,27 +38,22 @@ export type NumericFieldKey<Row> = Extract<
 
 export type FieldKey<Row> = Extract<keyof Row, string>;
 
-export type TopicDefinition<
-  S extends RowSchema,
-  Key extends string,
-  Source extends TopicSourceDefinition | undefined = undefined,
-> = {
+export type TopicDefinition<S extends RowSchema, Key extends string> = {
   readonly schema: S;
   readonly key: Key;
   readonly kafkaSource?: object | undefined;
   readonly grpcSource?: TopicSourceDefinition | undefined;
-} & (Source extends TopicSourceDefinition
-  ? { readonly source: Source }
-  : { readonly source?: undefined });
+  readonly source?: never;
+};
 
 export type TopicDefinitions = Record<
   string,
   {
     readonly schema: RowSchema;
     readonly key: string;
-    readonly source?: TopicSourceDefinition | undefined;
     readonly kafkaSource?: object | undefined;
     readonly grpcSource?: TopicSourceDefinition | undefined;
+    readonly source?: never;
   }
 >;
 

@@ -4,11 +4,11 @@ import type {
   RuntimeRegions,
   ViewServerConfig,
   ViewServerHealth,
-  ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import { makeSourceOwnershipPolicy } from "@effect-view-server/runtime-core/internal";
 import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
@@ -59,46 +59,6 @@ const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitio
 const ignoreRuntimeHealthRefreshFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
   "Ignoring runtime health refresh failure.",
 );
-
-const sourceOwnedRuntimeMutationError = (topic: string): ViewServerRuntimeError => ({
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  topic,
-  message: `Source-owned View Server topic ${topic} cannot be mutated through the public runtime client.`,
-});
-
-const sourceOwnedRuntimeResetError = (): ViewServerRuntimeError => ({
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  message:
-    "Source-owned View Server topics cannot be reset through the public runtime client; close/restart the runtime so ingress adapters own cleanup.",
-});
-
-const rejectSourceOwnedMutations = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  client: ViewServerRuntimeClient<Topics>,
-  sourceOwnedTopics: ReadonlySet<string>,
-): ViewServerRuntimeClient<Topics> => ({
-  delete: (topic, key) =>
-    sourceOwnedTopics.has(topic)
-      ? Effect.fail(sourceOwnedRuntimeMutationError(topic))
-      : client.delete(topic, key),
-  health: client.health,
-  patch: (topic, key, patch) =>
-    sourceOwnedTopics.has(topic)
-      ? Effect.fail(sourceOwnedRuntimeMutationError(topic))
-      : client.patch(topic, key, patch),
-  publish: (topic, row) =>
-    sourceOwnedTopics.has(topic)
-      ? Effect.fail(sourceOwnedRuntimeMutationError(topic))
-      : client.publish(topic, row),
-  publishMany: (topic, rows) =>
-    sourceOwnedTopics.has(topic)
-      ? Effect.fail(sourceOwnedRuntimeMutationError(topic))
-      : client.publishMany(topic, rows),
-  reset: () =>
-    sourceOwnedTopics.size === 0 ? client.reset() : Effect.fail(sourceOwnedRuntimeResetError()),
-  snapshot: client.snapshot,
-});
 
 type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
   groupedIncrementalAdmissionLimits?: NonNullable<
@@ -218,18 +178,9 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           grpcOptions,
           grpcHealth,
         );
-  const sourceOwnedTopics = new Set<string>();
-  for (const kafkaTopic of Object.values(kafkaOptions?.topics ?? {})) {
-    sourceOwnedTopics.add(kafkaTopic.viewServerTopic);
-  }
-  for (const grpcFeed of Object.values(grpcOptions?.feeds ?? {})) {
-    sourceOwnedTopics.add(grpcFeed.topic);
-  }
+  const sourceOwnership = makeSourceOwnershipPolicy(config);
   const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
-  const runtimeClient = rejectSourceOwnedMutations(
-    grpcLeaseManager?.client ?? runtimeCore.client,
-    sourceOwnedTopics,
-  );
+  const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
   const closeGrpcLeaseManager =
     grpcLeaseManager === undefined ? Effect.void : grpcLeaseManager.close;
   const tcpPublishIngress =
@@ -239,7 +190,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           .makeTcpPublishIngress(config, runtimeClient, {
             ...resolvedOptions.tcpPublishOptions,
             ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-            rejectedTopics: sourceOwnedTopics,
+            rejectedTopics: sourceOwnership.sourceOwnedTopics,
           })
           .pipe(
             Effect.onExit((exit) =>

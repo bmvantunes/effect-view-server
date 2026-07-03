@@ -30,6 +30,8 @@ import type {
 import { makeRuntimeCoreClient } from "./runtime-client";
 import type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
 import type { ViewServerRuntimeCoreInstance } from "./index";
+export { makeSourceOwnershipPolicy } from "./source-ownership-policy";
+export type { SourceOwnershipPolicy } from "./source-ownership-policy";
 
 export type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client";
 export type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";

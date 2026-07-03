@@ -34,11 +34,7 @@ export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] ext
   readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
 }
   ? Extract<RouteBy[number], string>
-  : Topics[Topic] extends {
-        readonly source: TopicLeasedSourceDefinition<infer RouteBy>;
-      }
-    ? Extract<RouteBy[number], string>
-    : never;
+  : never;
 
 export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
   readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
@@ -46,13 +42,7 @@ export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic
   ? RouteBy extends NonEmptyRouteBy
     ? RouteBy
     : never
-  : Topics[Topic] extends {
-        readonly source: TopicLeasedSourceDefinition<infer RouteBy>;
-      }
-    ? RouteBy extends NonEmptyRouteBy
-      ? RouteBy
-      : never
-    : never;
+  : never;
 
 type NoLeasedRouteRequirement = Readonly<Record<never, never>>;
 
@@ -115,10 +105,9 @@ export const validateLiveQuerySourceRoute = <Topics extends TopicDefinitions>(
     return undefined;
   }
   const sourceAwareTopic: {
-    readonly source?: TopicSourceDefinition | undefined;
     readonly grpcSource?: TopicSourceDefinition | undefined;
   } = topicDefinition;
-  const routeBy = sourceLeasedRouteBy(sourceAwareTopic.grpcSource ?? sourceAwareTopic.source);
+  const routeBy = sourceLeasedRouteBy(sourceAwareTopic.grpcSource);
   if (routeBy === undefined) {
     return undefined;
   }

@@ -166,6 +166,14 @@ _Avoid_: Seed provider, mock provider
 An external Kafka topic or future server-side source that provides messages to be mapped into a View Server Topic.
 _Avoid_: View Server Topic
 
+**Source-Owned Topic**:
+A View Server Topic whose mutations are owned by a configured source declaration such as `kafkaSource` or `grpcSource`. Direct Runtime Client mutation, TCP publish mutation, and direct reset are rejected for Source-Owned Topics.
+_Avoid_: Runtime-owned topic, external mutation topic
+
+**Source Ownership Policy**:
+The Runtime Core Module that derives ownership facts from View Server Topic declarations: which topics are source-owned, which topics allow direct mutation, and which topics require leased gRPC lifecycle. It is the single Seam for source ownership decisions.
+_Avoid_: Source helper, source registry, runtime topic helper
+
 **Kafka Source Codec**:
 A typed decoder contract for Kafka message keys and values before Mapping, such as protobuf, JSON, string, bytes, or a custom Effectful decoder. It is the source-format Seam; the View Server Topic schema remains the target truth.
 _Avoid_: Topic schema, row schema, serializer

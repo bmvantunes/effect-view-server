@@ -1,4 +1,4 @@
-export { decodeKafkaCodec, defineKafkaTopic, kafka, kafkaErrorIsMapping } from "./kafka-contract";
+export { decodeKafkaCodec, kafka, kafkaErrorIsMapping } from "./kafka-contract";
 export type {
   ExactRuntimeOptions,
   KafkaBytesCodec,
@@ -10,15 +10,11 @@ export type {
   KafkaDecodeError,
   KafkaJsonCodec,
   KafkaMappingError,
-  KafkaMappingInput,
   KafkaMessageMetadata,
   KafkaProtobufCodec,
   KafkaProtobufType,
-  KafkaRuntimeTopicDefinition,
   KafkaSourceCodec,
   KafkaStringCodec,
-  KafkaTopicDefinition,
-  KafkaTopicHelper,
   KafkaTopicSourceDefinition,
   KafkaTopicSourceMapInput,
   NonEmptyReadonlyArray,

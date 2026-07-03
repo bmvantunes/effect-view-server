@@ -9,7 +9,6 @@ import * as enginePackage from "@effect-view-server/column-live-view-engine";
 import * as engineInternalPackage from "@effect-view-server/column-live-view-engine/internal";
 import * as effectUtilsPackage from "@effect-view-server/effect-utils";
 import type { ViewServerHealth } from "@effect-view-server/config/health";
-import type { KafkaMappingInput } from "@effect-view-server/config/kafka";
 import type { LiveSubscription } from "@effect-view-server/config/live-protocol";
 import type { RawQuery } from "@effect-view-server/config/query";
 import type { RuntimeEnvironmentConfig } from "@effect-view-server/config/runtime";
@@ -360,11 +359,11 @@ if (internalImportViolations.length > 0) {
 }
 
 requireExport("@effect-view-server/config", configPackage, "defineViewServerConfig");
-requireExport("@effect-view-server/config", configPackage, "defineKafkaTopic");
 requireExport("@effect-view-server/config", configPackage, "defineGrpcFeed");
 requireExport("@effect-view-server/config", configPackage, "grpc");
 requireExport("@effect-view-server/config", configPackage, "kafka");
 requireExport("@effect-view-server/config", configPackage, "decodeKafkaCodec");
+rejectExport("@effect-view-server/config", configPackage, "defineKafkaTopic");
 requireModule("@effect-view-server/config/query", queryPackage);
 requireModule("@effect-view-server/config/grpc", grpcPackage);
 requireModule("@effect-view-server/config/health", healthPackage);
@@ -373,9 +372,12 @@ rejectExport("@effect-view-server/config/query", queryPackage, "grpc");
 rejectExport("@effect-view-server/config/query", queryPackage, "defineGrpcFeed");
 rejectExport("@effect-view-server/config/query", queryPackage, "GrpcTopicSource");
 rejectExport("@effect-view-server/config/query", queryPackage, "GrpcLeasedTopicSource");
-requireExport("@effect-view-server/config/kafka", kafkaPackage, "defineKafkaTopic");
 requireExport("@effect-view-server/config/kafka", kafkaPackage, "kafka");
 requireExport("@effect-view-server/config/kafka", kafkaPackage, "decodeKafkaCodec");
+rejectExport("@effect-view-server/config/kafka", kafkaPackage, "defineKafkaTopic");
+rejectExport("@effect-view-server/config/kafka", kafkaPackage, "KafkaMappingInput");
+rejectExport("@effect-view-server/config/kafka", kafkaPackage, "KafkaTopicDefinition");
+rejectExport("@effect-view-server/config/kafka", kafkaPackage, "KafkaRuntimeTopicDefinition");
 requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "decodeKafkaCodec");
 requireExport("effect-view-server/config", publicConfigPackage, "decodeKafkaCodec");
 requireExport("effect-view-server", publicRootPackage, "decodeKafkaCodec");
@@ -438,7 +440,13 @@ requireExport(
   runtimeCoreInternalPackage,
   "makeViewServerRuntimeCoreInternal",
 );
+requireExport(
+  "@effect-view-server/runtime-core/internal",
+  runtimeCoreInternalPackage,
+  "makeSourceOwnershipPolicy",
+);
 rejectExport("@effect-view-server/runtime-core", runtimeCorePackage, "makeViewServerRuntimeCoreInternal");
+rejectExport("@effect-view-server/runtime-core", runtimeCorePackage, "makeSourceOwnershipPolicy");
 rejectExport(
   "@effect-view-server/runtime-core",
   runtimeCorePackage,
@@ -459,16 +467,16 @@ requireExport("@effect-view-server/server", serverPackage, "makeViewServerWebSoc
 requireExport("@effect-view-server/server", serverPackage, "createViewServerWebSocketServer");
 
 requireExport("effect-view-server", publicRootPackage, "defineViewServerConfig");
-requireExport("effect-view-server", publicRootPackage, "defineKafkaTopic");
 requireExport("effect-view-server", publicRootPackage, "defineGrpcFeed");
 requireExport("effect-view-server", publicRootPackage, "grpc");
 requireExport("effect-view-server", publicRootPackage, "kafka");
+rejectExport("effect-view-server", publicRootPackage, "defineKafkaTopic");
 requireExport("effect-view-server/config", publicConfigPackage, "defineViewServerConfig");
-requireExport("effect-view-server/config", publicConfigPackage, "defineKafkaTopic");
 requireExport("effect-view-server/config", publicConfigPackage, "defineGrpcFeed");
 requireExport("effect-view-server/config", publicConfigPackage, "grpc");
 requireExport("effect-view-server/config", publicConfigPackage, "kafka");
 requireExport("effect-view-server/config", publicConfigPackage, "decodeKafkaCodec");
+rejectExport("effect-view-server/config", publicConfigPackage, "defineKafkaTopic");
 requireModule("effect-view-server/config/query", publicConfigQueryPackage);
 requireModule("effect-view-server/config/grpc", publicConfigGrpcPackage);
 requireModule("effect-view-server/config/health", publicConfigHealthPackage);
@@ -477,10 +485,13 @@ rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "grpc"
 rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "defineGrpcFeed");
 rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "GrpcTopicSource");
 rejectExport("effect-view-server/config/query", publicConfigQueryPackage, "GrpcLeasedTopicSource");
-requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "defineKafkaTopic");
 requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "kafka");
 requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "decodeKafkaCodec");
-rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "makeKafkaRuntimeTopicSources");
+rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "defineKafkaTopic");
+rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "KafkaMappingInput");
+rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "KafkaTopicDefinition");
+rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "KafkaRuntimeTopicDefinition");
+rejectExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "makeKafkaResolvedSourceTopics");
 requireExport("effect-view-server/config/grpc", publicConfigGrpcPackage, "grpc");
 requireExport("effect-view-server/config/grpc", publicConfigGrpcPackage, "defineGrpcFeed");
 requireExport("effect-view-server/config/runtime", publicConfigRuntimePackage, "runtimeConfig");
@@ -549,15 +560,6 @@ const _serverType: ViewServerWebSocketServer | undefined = undefined;
 const _runtimeType: ViewServerRuntime<never> | undefined = undefined;
 const _healthHttpJsonType: ViewServerHealthHttpJson | undefined = undefined;
 const _wireEventType: ViewServerWireEvent | undefined = undefined;
-const _mappingInputType:
-  | KafkaMappingInput<
-      { readonly orders: { readonly key: "id"; readonly schema: never } },
-      "orders",
-      "usa",
-      never,
-      undefined
-    >
-  | undefined = undefined;
 
 void _engineType;
 void _clientType;
@@ -569,7 +571,6 @@ void _serverType;
 void _runtimeType;
 void _healthHttpJsonType;
 void _wireEventType;
-void _mappingInputType;
 void createInMemoryViewServer;
 void createViewServerRuntimeCore;
 void createViewServerReact;

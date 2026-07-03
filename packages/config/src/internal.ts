@@ -1,9 +1,8 @@
 import {
   decodeKafkaTopicMessage,
-  isKafkaRuntimeTopicSourceDefinition,
   isKafkaTopicSourceDefinition,
-  makeKafkaRuntimeTopicSources,
-  type KafkaRuntimeTopicSourceDefinition,
+  makeKafkaResolvedSourceTopics,
+  type KafkaResolvedSourceTopicDefinition,
   type RuntimeRegions,
 } from "./kafka-contract";
 import type { RowSchema } from "./topic-contract";
@@ -17,21 +16,14 @@ type KafkaSourceTopicRegistry = Record<
   }
 >;
 
-export const makeKafkaRuntimeTopicsForConfig = <
+export const makeKafkaSourceTopicsForConfig = <
   const Topics extends KafkaSourceTopicRegistry,
   const Regions extends RuntimeRegions,
 >(config: {
   readonly topics: Topics;
 }): ReadonlyArray<
-  KafkaRuntimeTopicSourceDefinition<Topics, Regions, Extract<keyof Topics, string>>
-> => makeKafkaRuntimeTopicSources<Topics, Regions>(config.topics);
+  KafkaResolvedSourceTopicDefinition<Topics, Regions, Extract<keyof Topics, string>>
+> => makeKafkaResolvedSourceTopics<Topics, Regions>(config.topics);
 
-export {
-  decodeKafkaTopicMessage,
-  isKafkaRuntimeTopicSourceDefinition,
-  isKafkaTopicSourceDefinition,
-};
-export type {
-  KafkaRuntimeTopicSourceDefinition,
-  KafkaRuntimeSourceTopicDefinition,
-} from "./kafka-contract";
+export { decodeKafkaTopicMessage, isKafkaTopicSourceDefinition };
+export type { KafkaResolvedSourceTopicDefinition } from "./kafka-contract";

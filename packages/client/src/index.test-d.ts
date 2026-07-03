@@ -36,7 +36,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
       }),
     },
@@ -48,7 +48,7 @@ const mixedSourceViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
       }),
     },

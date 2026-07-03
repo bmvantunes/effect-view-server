@@ -145,16 +145,11 @@ Startup fails through Effect `Config` if required environment-backed Kafka
 broker values are missing. Do not silently default brokers or production
 secrets.
 
-The older `viewServer.kafkaTopic()` + `runtime.kafka.topics` shape remains
-available for admin-owned/manual source wiring. Do not mix it with topic-owned
-`kafkaSource` definitions in the same runtime.
-
 ## Kafka Delivery Contract
 
 During a live process, Kafka messages are decoded, mapped, grouped into small
-microbatches, and applied into Runtime Core. Legacy runtime topics use
-`publishMany`; topic-owned sources use storage-key upserts; compacted-topic
-tombstones call `delete` for the decoded source key.
+microbatches, and applied into Runtime Core. Topic-owned sources use storage-key
+upserts; compacted-topic tombstones call `delete` for the decoded source key.
 
 Offsets are committed only after the corresponding Runtime Core mutation
 succeeds. If publish/delete fails, the original Kafka messages remain

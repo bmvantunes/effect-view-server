@@ -9,8 +9,8 @@ import type {
   ViewServerKafkaStartFrom,
 } from "@effect-view-server/config";
 import {
-  makeKafkaRuntimeTopicsForConfig,
-  type KafkaRuntimeSourceTopicDefinition,
+  makeKafkaSourceTopicsForConfig,
+  type KafkaResolvedSourceTopicDefinition,
 } from "@effect-view-server/config/internal";
 import type { Duration } from "effect";
 import { Config, Duration as EffectDuration, Effect, Option } from "effect";
@@ -48,7 +48,7 @@ export type ResolvedViewServerKafkaRuntimeOptions<
   readonly startFrom: ViewServerKafkaStartFrom;
   readonly consume: KafkaStartFromHealth;
   readonly regions: Record<string, string>;
-  readonly topics: Record<string, KafkaRuntimeSourceTopicDefinition<Topics, Regions>>;
+  readonly topics: Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>>;
 };
 
 export type ResolvedViewServerGrpcRuntimeOptions<
@@ -141,12 +141,12 @@ const kafkaSourcesFromConfig = <
 >(
   config: ViewServerConfig<Topics, Regions>,
 ): Effect.Effect<
-  Record<string, KafkaRuntimeSourceTopicDefinition<Topics, Regions>>,
+  Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>>,
   ViewServerKafkaIngressError
 > =>
   Effect.gen(function* () {
-    const runtimeTopics = yield* Effect.try({
-      try: () => makeKafkaRuntimeTopicsForConfig<Topics, Regions>(config),
+    const sourceTopics = yield* Effect.try({
+      try: () => makeKafkaSourceTopicsForConfig<Topics, Regions>(config),
       catch: (cause) =>
         new ViewServerKafkaIngressError({
           message: `Invalid topic-owned Kafka source configuration: ${messageFromUnknown(cause)}`,
@@ -155,25 +155,25 @@ const kafkaSourcesFromConfig = <
     });
     const topics: Record<
       string,
-      KafkaRuntimeSourceTopicDefinition<Topics, Regions>
+      KafkaResolvedSourceTopicDefinition<Topics, Regions>
     > = Object.create(null);
-    for (const runtimeTopic of runtimeTopics) {
-      if (topics[runtimeTopic.topic] !== undefined) {
+    for (const sourceTopic of sourceTopics) {
+      if (topics[sourceTopic.topic] !== undefined) {
         return yield* new ViewServerKafkaIngressError({
-          message: `Kafka source topic is configured more than once: ${runtimeTopic.topic}`,
-          cause: runtimeTopic.topic,
-          sourceTopic: runtimeTopic.topic,
+          message: `Kafka source topic is configured more than once: ${sourceTopic.topic}`,
+          cause: sourceTopic.topic,
+          sourceTopic: sourceTopic.topic,
         });
       }
-      topics[runtimeTopic.topic] = runtimeTopic;
+      topics[sourceTopic.topic] = sourceTopic;
     }
     return topics;
   });
 
-const emptyKafkaRuntimeTopics = <
+const emptyKafkaSourceTopics = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
->(): Record<string, KafkaRuntimeSourceTopicDefinition<Topics, Regions>> => Object.create(null);
+>(): Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>> => Object.create(null);
 
 const requireKafkaRuntimeOptionsForConfigSources = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -184,7 +184,7 @@ const requireKafkaRuntimeOptionsForConfigSources = <
   Effect.gen(function* () {
     const configuredTopics =
       config === undefined
-        ? emptyKafkaRuntimeTopics<Topics, Regions>()
+        ? emptyKafkaSourceTopics<Topics, Regions>()
         : yield* kafkaSourcesFromConfig(config);
     if (Object.keys(configuredTopics).length > 0) {
       return yield* new ViewServerKafkaIngressError({
@@ -199,7 +199,7 @@ const validateKafkaTopicRegions = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
 >(
-  topics: Record<string, KafkaRuntimeSourceTopicDefinition<Topics, Regions>>,
+  topics: Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>>,
   regions: Record<string, string>,
 ): Effect.Effect<void, ViewServerKafkaIngressError> =>
   Effect.gen(function* () {
@@ -250,6 +250,13 @@ const resolveKafkaOptions: <
   config: ViewServerConfig<Topics, Regions> | undefined,
   options: ViewServerKafkaRuntimeOptions<Topics, Regions>,
 ) {
+  if (Object.prototype.hasOwnProperty.call(options, "topics")) {
+    return yield* new ViewServerKafkaIngressError({
+      message:
+        "runtime options.kafka.topics is not supported; declare Kafka sources on View Server topics with kafkaSource.",
+      cause: "unsupported-runtime-kafka-topics",
+    });
+  }
   const consumerGroupId = yield* validateKafkaConsumerGroupId(options.consumerGroupId);
   const configuredRegions = options.regions ?? config?.kafka;
   const entries = yield* Effect.forEach(
@@ -263,16 +270,9 @@ const resolveKafkaOptions: <
   }
   const configuredTopics =
     config === undefined
-      ? emptyKafkaRuntimeTopics<Topics, Regions>()
+      ? emptyKafkaSourceTopics<Topics, Regions>()
       : yield* kafkaSourcesFromConfig(config);
-  if (options.topics !== undefined && Object.keys(configuredTopics).length > 0) {
-    return yield* new ViewServerKafkaIngressError({
-      message:
-        "Kafka runtime topics cannot be provided when config topics declare kafkaSource; use topic-owned kafkaSource definitions or legacy runtime kafka.topics, not both.",
-      cause: "mixed-kafka-source-configuration",
-    });
-  }
-  const topics = options.topics ?? configuredTopics;
+  const topics = configuredTopics;
   if (Object.keys(topics).length > 0 && Object.keys(regions).length === 0) {
     return yield* new ViewServerKafkaIngressError({
       message:
@@ -471,9 +471,6 @@ const grpcTopicSourceMetadata = (topicDefinition: unknown): GrpcTopicSourceMetad
   }
   if (hasDefinedOwnProperty(topicDefinition, "grpcSource")) {
     return grpcTopicSourceFromUnknown(Reflect.get(topicDefinition, "grpcSource"));
-  }
-  if (hasDefinedOwnProperty(topicDefinition, "source")) {
-    return grpcTopicSourceFromUnknown(Reflect.get(topicDefinition, "source"));
   }
   return { _tag: "absent" };
 };

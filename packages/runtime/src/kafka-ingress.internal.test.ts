@@ -55,6 +55,7 @@ import {
   mapKafkaStreamError,
   messageFromUnknown,
   offerKafkaStreamProducerFailure,
+  processKafkaMessageBatch,
   processKafkaMessage,
   recordKafkaAssignments,
   recordKafkaLag,
@@ -72,6 +73,7 @@ import type {
   KafkaStreamQueueEvent,
 } from "./kafka-ingress";
 import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
+import { resolveViewServerRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 class KafkaIngressTestError extends Schema.TaggedErrorClass<KafkaIngressTestError>()(
@@ -4533,6 +4535,223 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           publishFailuresPerSecond: 1,
           status: "degraded",
         },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("preserves source-interleaved upsert order for same-target source topics", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      const multiSourceKafkaOptions: ResolvedViewServerKafkaRuntimeOptions<Topics> = {
+        ...kafkaOptions,
+        topics: {
+          [ordersSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingOrder),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+          [paymentsSourceTopic]: localKafkaTopic({
+            regions: ["local"],
+            value: kafka.json(IncomingOrder),
+            key: kafka.stringKey(),
+            viewServerTopic: "orders",
+            mapping: ({ key, value }) => ({
+              id: key,
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      };
+      const ledger = makeViewServerKafkaHealthLedger<Topics>({
+        regions: multiSourceKafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+          [paymentsSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      yield* ledger.topicConnected(paymentsSourceTopic, "local", 1, 1_000);
+
+      yield* processKafkaMessageBatch(
+        viewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        multiSourceKafkaOptions,
+        ledger,
+        "local",
+        [
+          kafkaMessage({
+            topic: ordersSourceTopic,
+            key: "shared-order",
+            value: JSON.stringify({
+              customerId: "customer-from-orders-v1",
+              price: 10,
+            }),
+            offset: 1n,
+          }),
+          kafkaMessage({
+            topic: paymentsSourceTopic,
+            key: "shared-order",
+            value: JSON.stringify({
+              customerId: "customer-from-payments-v2",
+              price: 20,
+            }),
+            offset: 2n,
+          }),
+          kafkaMessage({
+            topic: ordersSourceTopic,
+            key: "shared-order",
+            value: JSON.stringify({
+              customerId: "customer-from-orders-v3",
+              price: 30,
+            }),
+            offset: 3n,
+          }),
+          kafkaMessage({
+            topic: ordersSourceTopic,
+            key: "shared-order",
+            value: JSON.stringify({
+              customerId: "customer-from-orders-v4",
+              price: 40,
+            }),
+            offset: 4n,
+          }),
+        ],
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(snapshot).toStrictEqual({
+        status: "ready",
+        statusCode: "Ready",
+        rows: [
+          {
+            id: "shared-order",
+            customerId: "customer-from-orders-v4",
+            price: 40,
+          },
+        ],
+        totalRows: 1,
+        version: 3,
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("batches contiguous topic-owned Kafka source rowKey upserts", () =>
+    Effect.gen(function* () {
+      const topicOwnedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(IncomingOrder),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                customerId: value.customerId,
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      const resolved = yield* resolveViewServerRuntimeOptions(topicOwnedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-topic-owned-storage-run",
+        },
+      });
+      const topicOwnedKafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const runtimeCore = yield* makeViewServerRuntimeCore(topicOwnedViewServer, {});
+      const ledger = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
+        regions: topicOwnedKafkaOptions.regions,
+        startFrom: topicOwnedKafkaOptions.consume,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+
+      yield* processKafkaMessageBatch(
+        topicOwnedViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        topicOwnedKafkaOptions,
+        ledger,
+        "local",
+        [
+          kafkaMessage({
+            topic: ordersSourceTopic,
+            key: "order-1",
+            value: JSON.stringify({
+              customerId: "customer-1",
+              price: 10,
+            }),
+            offset: 1n,
+          }),
+          kafkaMessage({
+            topic: ordersSourceTopic,
+            key: "order-2",
+            value: JSON.stringify({
+              customerId: "customer-2",
+              price: 20,
+            }),
+            offset: 2n,
+          }),
+        ],
+      );
+
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(snapshot).toStrictEqual({
+        status: "ready",
+        statusCode: "Ready",
+        rows: [
+          {
+            id: "order-1",
+            customerId: "customer-1",
+            price: 10,
+          },
+          {
+            id: "order-2",
+            customerId: "customer-2",
+            price: 20,
+          },
+        ],
+        totalRows: 2,
+        version: 1,
       });
 
       yield* runtimeCore.close;

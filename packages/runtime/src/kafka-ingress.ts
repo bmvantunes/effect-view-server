@@ -1063,83 +1063,104 @@ const publishKafkaDecodedUpsertBatch = Effect.fn("ViewServerRuntime.kafka.batch.
     region: string,
     messages: ReadonlyArray<DecodedKafkaBatchUpsertMessage<Topics>>,
   ) {
-    type KafkaUpsertBatchRow = {
+    type KafkaPlainUpsertBatchRow = {
       readonly message: DecodedKafkaBatchMessage<Topics>;
       readonly row: object;
-      readonly storageKey?: string;
+      readonly storageKind: "plain";
     };
-    const rowsByTopic = new Map<
-      KafkaBatchTopic<Topics>,
-      Map<
-        string,
-        {
+    type KafkaStorageUpsertBatchRow = {
+      readonly message: DecodedKafkaBatchMessage<Topics>;
+      readonly row: object;
+      readonly storageKey: string;
+      readonly storageKind: "storage";
+    };
+    type KafkaUpsertPublishRun =
+      | {
+          readonly rows: Array<KafkaPlainUpsertBatchRow>;
           readonly sourceTopic: string;
-          readonly rows: Array<KafkaUpsertBatchRow>;
+          readonly storageKind: "plain";
+          readonly topic: KafkaBatchTopic<Topics>;
         }
-      >
-    >();
+      | {
+          readonly rows: Array<KafkaStorageUpsertBatchRow>;
+          readonly sourceTopic: string;
+          readonly storageKind: "storage";
+          readonly topic: KafkaBatchTopic<Topics>;
+        };
+    const runs: Array<KafkaUpsertPublishRun> = [];
     for (const message of messages) {
-      const row = {
-        message,
-        row: message.decoded.row,
-        ...(message.decoded.rowKey === undefined ? {} : { storageKey: message.decoded.rowKey }),
-      };
-      let sourceGroups = rowsByTopic.get(message.decoded.viewServerTopic);
-      if (sourceGroups === undefined) {
-        sourceGroups = new Map();
-        rowsByTopic.set(message.decoded.viewServerTopic, sourceGroups);
-      }
-      const sourceGroup = sourceGroups.get(message.sourceTopic);
-      if (sourceGroup === undefined) {
-        sourceGroups.set(message.sourceTopic, {
-          rows: [row],
-          sourceTopic: message.sourceTopic,
-        });
+      const previousRun = runs[runs.length - 1];
+      if (message.decoded.rowKey === undefined) {
+        const row: KafkaPlainUpsertBatchRow = {
+          message,
+          row: message.decoded.row,
+          storageKind: "plain",
+        };
+        if (
+          previousRun?.topic === message.decoded.viewServerTopic &&
+          previousRun.sourceTopic === message.sourceTopic &&
+          previousRun.storageKind === "plain"
+        ) {
+          previousRun.rows.push(row);
+        } else {
+          runs.push({
+            rows: [row],
+            sourceTopic: message.sourceTopic,
+            storageKind: "plain",
+            topic: message.decoded.viewServerTopic,
+          });
+        }
       } else {
-        sourceGroup.rows.push(row);
+        const row: KafkaStorageUpsertBatchRow = {
+          message,
+          row: message.decoded.row,
+          storageKey: message.decoded.rowKey,
+          storageKind: "storage",
+        };
+        if (
+          previousRun?.topic === message.decoded.viewServerTopic &&
+          previousRun.sourceTopic === message.sourceTopic &&
+          previousRun.storageKind === "storage"
+        ) {
+          previousRun.rows.push(row);
+        } else {
+          runs.push({
+            rows: [row],
+            sourceTopic: message.sourceTopic,
+            storageKind: "storage",
+            topic: message.decoded.viewServerTopic,
+          });
+        }
       }
     }
-    for (const [topic, sourceGroups] of rowsByTopic) {
-      for (const group of sourceGroups.values()) {
-        const plainRows: Array<object> = [];
-        const plainMessages: Array<DecodedKafkaBatchMessage<Topics>> = [];
-        const storageRows: Array<{
-          readonly storageKey: string;
-          readonly row: object;
-        }> = [];
-        const storageMessages: Array<DecodedKafkaBatchMessage<Topics>> = [];
-        for (const row of group.rows) {
-          if (row.storageKey === undefined) {
-            plainRows.push(row.row);
-            plainMessages.push(row.message);
-          } else {
-            storageRows.push({
+    for (const run of runs) {
+      if (run.storageKind === "plain") {
+        yield* publishKafkaRowsForMessages(
+          requestHealthRefresh,
+          health,
+          region,
+          run.sourceTopic,
+          run.rows.map((row) => row.message),
+          client.publishManyDecodedRows(
+            run.topic,
+            run.rows.map((row) => row.row),
+          ),
+        );
+      } else {
+        yield* publishKafkaRowsForMessages(
+          requestHealthRefresh,
+          health,
+          region,
+          run.sourceTopic,
+          run.rows.map((row) => row.message),
+          client.publishManyDecodedRowsWithStorageKeys(
+            run.topic,
+            run.rows.map((row) => ({
               row: row.row,
               storageKey: row.storageKey,
-            });
-            storageMessages.push(row.message);
-          }
-        }
-        if (plainRows.length > 0) {
-          yield* publishKafkaRowsForMessages(
-            requestHealthRefresh,
-            health,
-            region,
-            group.sourceTopic,
-            plainMessages,
-            client.publishManyDecodedRows(topic, plainRows),
-          );
-        }
-        if (storageRows.length > 0) {
-          yield* publishKafkaRowsForMessages(
-            requestHealthRefresh,
-            health,
-            region,
-            group.sourceTopic,
-            storageMessages,
-            client.publishManyDecodedRowsWithStorageKeys(topic, storageRows),
-          );
-        }
+            })),
+          ),
+        );
       }
     }
   },

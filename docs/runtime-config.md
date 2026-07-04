@@ -86,7 +86,14 @@ runViewServerRuntime(liveTailViewServer, {
 ```
 
 gRPC clients can also live on `defineViewServerConfig`, while runtime options
-provide the feed implementations:
+provide the feed implementations. The config-level `grpcSource` on a topic does
+not select a service by itself; it only declares that the topic is gRPC-owned and
+whether it is materialized or leased. A runtime feed provides the concrete
+binding:
+
+- `topic`: the View Server topic to populate.
+- `client`: the key from `grpc.clients`.
+- `method`: the server-streaming method on that generated client.
 
 ```ts
 runViewServerRuntime(viewServer, {
@@ -99,6 +106,11 @@ runViewServerRuntime(viewServer, {
   },
 });
 ```
+
+For leased feeds, the feed `routeBy` tuple must match the topic's
+`grpcSource: grpc.leased({ routeBy: [...] })` tuple. The route fields are
+required in public live queries, passed to the feed `request` callback, and used
+to share one upstream gRPC stream for subscribers requesting the same route.
 
 ## Source Ownership
 

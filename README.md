@@ -113,6 +113,12 @@ The region tuple `["usa"]`, gRPC client names, source topics, route fields, and
 mapping inputs/outputs are all type checked. A topic can have only one owner:
 Kafka, gRPC, or external/manual publishing.
 
+`grpcSource` is only the topic ownership/lifecycle marker. It says whether a
+View Server topic is startup-materialized or leased by route, and which route
+fields are required for leased subscriptions. It does not point at a concrete
+gRPC service. The concrete service binding is declared in the runtime feed with
+`topic`, `client`, and `method`.
+
 ## Remote React provider
 
 Server code starts a runtime through Effect RPC WebSocket plus same-server
@@ -180,6 +186,17 @@ NodeRuntime.runMain(
   }),
 );
 ```
+
+The runtime feed list must cover every gRPC-owned topic. A topic with
+`grpcSource: grpc.materialized()` needs one matching `materializedFeed`; a topic
+with `grpcSource: grpc.leased(...)` needs one matching `leasedFeed`. Runtime
+startup rejects missing feeds, lifecycle mismatches, route tuple mismatches, and
+unknown client names.
+
+For example, `ordersByStrategyFeed` binds `viewServer.topics.ordersByStrategy`
+to `viewServer.grpc.clients.orders.streamOrders`, while `strategiesFeed` binds
+`viewServer.topics.strategies` to
+`viewServer.grpc.clients.strategies.streamStrategies`.
 
 The same-server `GET /health` endpoint serves the cached runtime health snapshot
 for deployment readiness checks. Internal `bigint` health fields, such as Kafka

@@ -1,18 +1,19 @@
 import { type ViewServerSystemTopicName, viewServerTopicNameIsReserved } from "./health-contract";
 import {
-  defineKafkaTopic,
   type ExactRuntimeOptions,
-  type KafkaTopicHelper,
+  type RuntimeRegions,
+  type ValidateKafkaTopicSource,
   type RuntimeOptionsCandidate,
   type RuntimeOptionsDefinition,
 } from "./kafka-contract";
 import type {
   GrpcFeedHelper,
+  GrpcMaterializedTopicSource,
   GrpcLeasedTopicSource,
   GrpcRuntimeClients,
-  GrpcTopicSource,
 } from "./grpc-contract";
 import { defineGrpcFeed } from "./grpc-contract";
+import type { RejectExtraKeys } from "./query-exact";
 import type { TopicSourceDefinition } from "./source-contract";
 import type {
   FieldKey,
@@ -125,13 +126,7 @@ export type {
   StatusEvent,
   StatusEventCode,
 } from "./live-protocol";
-export {
-  decodeKafkaCodec,
-  decodeKafkaTopicMessage,
-  defineKafkaTopic,
-  kafka,
-  kafkaErrorIsMapping,
-} from "./kafka-contract";
+export { decodeKafkaCodec, kafka, kafkaErrorIsMapping } from "./kafka";
 export { grpc } from "./grpc-contract";
 export type {
   AnyGrpcLeasedFeedDefinition,
@@ -170,7 +165,6 @@ export { validateLiveQuerySourceRoute } from "./source-query-contract";
 export type { TopicSourceDefinition } from "./source-contract";
 export type {
   KafkaBytesCodec,
-  KafkaDecodedTopicMessage,
   ExactRuntimeOptions,
   KafkaCodec,
   KafkaCodecDecodeInput,
@@ -180,63 +174,141 @@ export type {
   KafkaDecodeError,
   KafkaJsonCodec,
   KafkaMappingError,
-  KafkaMappingInput,
   KafkaMessageMetadata,
   KafkaProtobufCodec,
   KafkaSourceCodec,
   KafkaStringCodec,
-  KafkaRuntimeTopicDefinition,
   KafkaProtobufType,
-  KafkaTopicDefinition,
-  KafkaTopicHelper,
+  KafkaTopicSourceDefinition,
+  KafkaTopicSourceMapInput,
   NonEmptyReadonlyArray,
   RuntimeOptions,
   RuntimeOptionsCandidate,
   RuntimeOptionsDefinition,
   RuntimeRegions,
   RuntimeValue,
+  ValidateKafkaTopicSource,
   ValidateRuntimeOptions,
   ViewServerKafkaCommittedStartFrom,
   ViewServerKafkaStartFrom,
-} from "./kafka-contract";
+} from "./kafka";
 
 type ViewServerConfigTopicShape = Record<
   string,
   {
     readonly schema: RowSchema;
     readonly key: string;
-    readonly source?: TopicSourceDefinition;
+    readonly kafkaSource?: object | undefined;
+    readonly grpcSource?: TopicSourceDefinition | undefined;
+    readonly source?: never;
   }
 >;
 
-export type ViewServerConfig<Topics extends TopicDefinitions> = {
-  readonly topics: Topics & ValidateTopicDefinitions<Topics>;
+type ViewServerConfigBody<
+  Topics extends ViewServerConfigTopicShape,
+  KafkaRegions extends RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients,
+> = {
+  readonly kafka?: KafkaRegions;
+  readonly grpc?: {
+    readonly clients: GrpcClients;
+  };
+  readonly topics: Topics;
   readonly defineRuntimeOptions: <const Options extends RuntimeOptionsCandidate>(
-    options: ExactRuntimeOptions<Topics, Options>,
-  ) => RuntimeOptionsDefinition<Topics, Options>;
-  readonly kafkaTopic: KafkaTopicHelper<Topics>;
-  readonly grpcFeed: <const Clients extends GrpcRuntimeClients>() => GrpcFeedHelper<
+    options: ExactRuntimeOptions<Topics, KafkaRegions, Options>,
+  ) => RuntimeOptionsDefinition<Topics, KafkaRegions, Options>;
+  readonly grpcFeed: <const Clients extends GrpcRuntimeClients = GrpcClients>() => GrpcFeedHelper<
     Topics,
     Clients
   >;
 };
 
-type ValidateTopicDefinitions<Topics extends TopicDefinitions> = {
+export type ViewServerConfig<
+  Topics extends ViewServerConfigTopicShape,
+  KafkaRegions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> =
+  ViewServerConfigTopicsAreValid<Topics, KafkaRegions, GrpcClients> extends true
+    ? ViewServerConfigBody<Topics, KafkaRegions, GrpcClients>
+    : never;
+
+type ViewServerConfigTopicsAreValid<
+  Topics extends ViewServerConfigTopicShape,
+  KafkaRegions extends RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients,
+> = string extends keyof Topics
+  ? true
+  : [Topics] extends [ValidateTopicDefinitions<Topics, KafkaRegions, GrpcClients>]
+    ? true
+    : false;
+
+type TopicHasSource<Topic, Key extends "kafkaSource" | "grpcSource"> = Key extends keyof Topic
+  ? undefined extends Topic[Key]
+    ? false
+    : true
+  : false;
+
+type TopicSourceConflict<Topic> =
+  TopicHasSource<Topic, "kafkaSource"> extends true
+    ? TopicHasSource<Topic, "grpcSource"> extends true
+      ? never
+      : unknown
+    : unknown;
+
+type ValidateTopicDefinitions<
+  Topics extends TopicDefinitions,
+  KafkaRegions extends RuntimeRegions = RuntimeRegions,
+  _GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> = {
   readonly [Topic in keyof Topics]: Topic extends ViewServerSystemTopicName
     ? never
     : Topics[Topic] extends {
           readonly schema: infer S extends RowSchema;
           readonly key: infer Key extends string;
         }
-      ? Topics[Topic] extends { readonly source: infer Source }
-        ? TopicDefinition<
-            S,
-            Key & StringFieldKey<RowFromSchema<S>>,
-            ValidateTopicSource<RowFromSchema<S>, Source>
-          >
-        : TopicDefinition<S, Key & StringFieldKey<RowFromSchema<S>>>
+      ? TopicSourceConflict<Topics[Topic]> extends never
+        ? never
+        : Topics[Topic] extends { readonly kafkaSource: infer KafkaSource }
+          ? TopicDefinition<S, Key & StringFieldKey<RowFromSchema<S>>> & {
+              readonly kafkaSource: ValidateKafkaTopicSource<
+                Topics,
+                KafkaRegions,
+                Extract<Topic, string>,
+                Key,
+                KafkaSource
+              >;
+            }
+          : Topics[Topic] extends { readonly grpcSource: infer GrpcSource }
+            ? TopicDefinition<S, Key & StringFieldKey<RowFromSchema<S>>> & {
+                readonly grpcSource: ValidateTopicSource<RowFromSchema<S>, GrpcSource>;
+              }
+            : TopicDefinition<S, Key & StringFieldKey<RowFromSchema<S>>>
       : never;
 };
+
+type TopicOwnedKafkaSourceTopic<Topics extends object> = Extract<
+  {
+    readonly [Topic in keyof Topics]: Topics[Topic] extends {
+      readonly kafkaSource: object;
+    }
+      ? Topic
+      : never;
+  }[keyof Topics],
+  string
+>;
+
+type RuntimeRegionsAreBroad<Regions extends RuntimeRegions> = string extends keyof Regions
+  ? true
+  : false;
+
+type ConfigKafkaSourceRegionConstraint<
+  Topics extends object,
+  KafkaRegions extends RuntimeRegions,
+> = [TopicOwnedKafkaSourceTopic<Topics>] extends [never]
+  ? unknown
+  : RuntimeRegionsAreBroad<KafkaRegions> extends true
+    ? never
+    : unknown;
 
 type ValidateGrpcLeasedRouteBy<Row, Source> =
   Source extends GrpcLeasedTopicSource<infer RouteBy>
@@ -247,28 +319,88 @@ type ValidateGrpcLeasedRouteBy<Row, Source> =
       }>
     : Source;
 
-type ValidateTopicSource<Row, Source> = Source extends GrpcTopicSource
-  ? ValidateGrpcLeasedRouteBy<Row, Source>
-  : Source extends undefined
-    ? undefined
-    : never;
+type ValidateTopicSource<Row, Source> = Source extends GrpcMaterializedTopicSource
+  ? Source & RejectExtraKeys<Source, GrpcMaterializedTopicSource>
+  : Source extends GrpcLeasedTopicSource<infer RouteBy>
+    ? ValidateGrpcLeasedRouteBy<Row, Source> &
+        RejectExtraKeys<Source, GrpcLeasedTopicSource<RouteBy>>
+    : Source extends undefined
+      ? undefined
+      : never;
 
-export type DefineViewServerConfigInput<Topics extends ViewServerConfigTopicShape> = {
-  readonly topics: Topics & ValidateTopicDefinitions<Topics>;
-};
+export type DefineViewServerConfigInput<
+  Topics extends ViewServerConfigTopicShape,
+  KafkaRegions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> =
+  ConfigKafkaSourceRegionConstraint<Topics, KafkaRegions> extends never
+    ? {
+        readonly kafka?: KafkaRegions;
+        readonly grpc?: {
+          readonly clients: GrpcClients;
+        };
+        readonly topics: never;
+      }
+    : {
+        readonly kafka?: KafkaRegions;
+        readonly grpc?: {
+          readonly clients: GrpcClients;
+        };
+        readonly topics: Topics & ValidateTopicDefinitions<Topics, KafkaRegions, GrpcClients>;
+      };
 
-export const defineViewServerConfig = <
+type DefineViewServerConfigValidationArguments<
+  Topics extends ViewServerConfigTopicShape,
+  KafkaRegions extends RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients,
+> =
+  ViewServerConfigTopicsAreValid<Topics, KafkaRegions, GrpcClients> extends true
+    ? ConfigKafkaSourceRegionConstraint<Topics, KafkaRegions> extends never
+      ? readonly [
+          invalid: {
+            readonly __viewServerKafkaSourceRegionsInvalid: never;
+          },
+        ]
+      : readonly []
+    : readonly [
+        invalid: {
+          readonly __viewServerTopicDefinitionsInvalid: never;
+        },
+      ];
+
+export function defineViewServerConfig<
   const Topics extends Record<
     string,
     {
       readonly schema: RowSchema;
       readonly key: string;
-      readonly source?: TopicSourceDefinition;
+      readonly kafkaSource?: object | undefined;
+      readonly grpcSource?: TopicSourceDefinition | undefined;
+      readonly source?: never;
     }
   >,
+  const KafkaRegions extends RuntimeRegions = RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
 >(
-  input: DefineViewServerConfigInput<Topics>,
-): ViewServerConfig<Topics> => {
+  input: {
+    readonly kafka?: KafkaRegions;
+    readonly grpc?: {
+      readonly clients: GrpcClients;
+    };
+    readonly topics: Topics;
+  },
+  ..._validation: DefineViewServerConfigValidationArguments<Topics, KafkaRegions, GrpcClients>
+): ViewServerConfig<Topics, KafkaRegions, GrpcClients>;
+export function defineViewServerConfig(
+  input: {
+    readonly kafka?: RuntimeRegions;
+    readonly grpc?: {
+      readonly clients: GrpcRuntimeClients;
+    };
+    readonly topics: ViewServerConfigTopicShape;
+  },
+  ..._validation: ReadonlyArray<unknown>
+) {
   for (const topic of Object.keys(input.topics)) {
     if (viewServerTopicNameIsReserved(topic)) {
       throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
@@ -287,11 +419,32 @@ export const defineViewServerConfig = <
         );
       }
     }
+    const topicDefinition = input.topics[topic]!;
+    if (Object.prototype.hasOwnProperty.call(topicDefinition, "source")) {
+      throw new Error(
+        `View Server topic ${topic} cannot declare source; use kafkaSource or grpcSource.`,
+      );
+    }
+    let sourceCount = 0;
+    if (topicDefinition.kafkaSource !== undefined) {
+      sourceCount += 1;
+    }
+    if (topicDefinition.grpcSource !== undefined) {
+      sourceCount += 1;
+    }
+    if (sourceCount > 1) {
+      throw new Error(
+        `View Server topic ${topic} cannot declare more than one source owner: kafkaSource, grpcSource.`,
+      );
+    }
   }
-  return {
+  const config = {
+    ...(input.kafka === undefined ? {} : { kafka: input.kafka }),
+    ...(input.grpc === undefined ? {} : { grpc: input.grpc }),
     topics: input.topics,
-    defineRuntimeOptions: (options) => options,
-    kafkaTopic: defineKafkaTopic<Topics>(input.topics),
-    grpcFeed: <const Clients extends GrpcRuntimeClients>() => defineGrpcFeed<Topics, Clients>(),
+    defineRuntimeOptions: <const Options extends RuntimeOptionsCandidate>(options: Options) =>
+      options,
+    grpcFeed: () => defineGrpcFeed(),
   };
-};
+  return config;
+}

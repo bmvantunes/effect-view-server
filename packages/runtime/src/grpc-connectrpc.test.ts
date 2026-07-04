@@ -124,7 +124,7 @@ const materializedViewServer = defineViewServerConfig({
     orders: {
       schema: ConnectOrder,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });
@@ -134,7 +134,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: ConnectOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["region"],
       }),
     },
@@ -314,7 +314,7 @@ const readDirectConnectRows = Effect.fn("ViewServerRuntime.grpc.connectRpc.direc
 const waitForMaterializedSnapshot = Effect.fn(
   "ViewServerRuntime.grpc.connectRpc.materialized.snapshot.wait",
 )(function* (
-  client: ViewServerRuntimeClient<typeof materializedViewServer.topics>,
+  client: Pick<ViewServerRuntimeClient<typeof materializedViewServer.topics>, "snapshot">,
   expectedTotalRows: number,
 ) {
   const poll = (

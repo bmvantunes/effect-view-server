@@ -20,9 +20,6 @@ import {
   Stream,
 } from "effect";
 import {
-  decodeKafkaCodec,
-  decodeKafkaTopicMessage,
-  defineKafkaTopic,
   defineGrpcFeed,
   defineViewServerConfig,
   grpc,
@@ -40,9 +37,8 @@ import {
   validateLiveQuerySourceRoute,
   type GrpcClientValue,
   type GrpcFeedDefinition,
+  type GrpcMaterializedTopicSource,
   type GrpcTopicFeedsHealth,
-  type KafkaCodec,
-  type KafkaMappingInput,
   type KafkaMessageMetadata,
   type KafkaStartFromHealth,
   type KafkaCodecError,
@@ -50,7 +46,9 @@ import {
   type KafkaDecodeError,
   type KafkaTopicHealth,
   type KafkaTopicRegionHealth,
-  type KafkaTopicDefinition,
+  type KafkaTopicSourceMapInput,
+  type RuntimeRegions,
+  type DefineViewServerConfigInput,
   type ExactGroupedQuery,
   type ExactLiveQueryInputForTopic,
   type ExactRawQuery,
@@ -68,6 +66,7 @@ import {
   type TopicRow,
   type ValidateLiveQuery,
   type ViewServerBackpressureError,
+  type ViewServerConfig,
   type ViewServerHealth,
   type ViewServerHealthDetails,
   type ViewServerHealthSummary,
@@ -77,6 +76,12 @@ import {
   type ViewServerRuntimeError,
   type ViewServerTransportError,
 } from "./index";
+import {
+  decodeKafkaCodec,
+  decodeKafkaTopicMessage,
+  isKafkaResolvedSourceTopicDefinition,
+} from "./kafka-contract";
+import { isKafkaTopicSourceDefinition, makeKafkaSourceTopicsForConfig } from "./internal";
 import { runtimeConfig, runtimeEnvironmentConfig } from "./runtime";
 
 const Order = Schema.Struct({
@@ -1473,17 +1478,8 @@ const InvalidAmbiguousJsonScalarOneOfPosition = Schema.Struct({
   scalarOneOf: Schema.Union([Schema.String, Schema.BigInt], { mode: "oneOf" }),
 });
 
-const OrderWithExtraSourceField = Schema.Struct({
-  id: Schema.String,
-  customerId: Schema.String,
-  status: Schema.Literals(["open", "closed", "cancelled"]),
-  price: Schema.Number,
-  region: Schema.String,
-  updatedAt: Schema.Number,
-  ze: Schema.Boolean,
-});
-
 declare const decimal: (value: string) => BigDecimal.BigDecimal;
+declare const unsafeKafkaAnyValue: any;
 
 type OrdersValueMessage = Message<"viewserver.test.OrderValue"> & {
   readonly customerId: string;
@@ -1529,6 +1525,35 @@ const kafkaTestMetadata = <const Region extends "usa" | "london">(
   timestamp: null,
   headers: {},
 });
+
+type RuntimeGuardKafkaSourceViewServer = {
+  readonly topics: {
+    readonly orders: {
+      readonly kafkaSource: object;
+    };
+  };
+};
+
+// Runtime guard tests deliberately corrupt typed config after construction.
+const forceKafkaSourceRowKeyForRuntimeGuard = (
+  viewServer: RuntimeGuardKafkaSourceViewServer,
+  rowKey: () => unknown,
+) => {
+  Object.defineProperty(viewServer.topics.orders.kafkaSource, "rowKey", {
+    configurable: true,
+    value: rowKey,
+  });
+};
+
+const forceKafkaSourceMapForRuntimeGuard = (
+  viewServer: RuntimeGuardKafkaSourceViewServer,
+  map: () => unknown,
+) => {
+  Object.defineProperty(viewServer.topics.orders.kafkaSource, "map", {
+    configurable: true,
+    value: map,
+  });
+};
 
 const testProtoFile = fileDesc(
   base64FromBytes(
@@ -1649,7 +1674,7 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const runtimeTopicHealth = (
+const sourceTopicHealth = (
   status: TopicRuntimeHealth["status"],
   rowCount: number,
 ): TopicRuntimeHealth => ({
@@ -1747,7 +1772,6 @@ const kafkaRegions = {
   london: runtimeConfig.kafkaBootstrapServers("VIEW_SERVER_KAFKA_LONDON_BOOTSTRAP_SERVERS"),
 };
 
-const kafkaTopic = viewServer.kafkaTopic<typeof kafkaRegions>();
 const ordersValueKafkaCodec = kafka.protobuf(ordersValueSchema);
 const ordersKeyKafkaCodec = kafka.protobuf(ordersKeySchema);
 const tradesValueKafkaCodec = kafka.protobuf(tradesValueSchema);
@@ -1759,14 +1783,14 @@ describe("defineViewServerConfig", () => {
         orders: {
           schema: Order,
           key: "id",
-          source: grpc.leased({
+          grpcSource: grpc.leased({
             routeBy: ["region", "status"],
           }),
         },
         trades: {
           schema: Trade,
           key: "id",
-          source: grpc.materialized(),
+          grpcSource: grpc.materialized(),
         },
         positions: {
           schema: Position,
@@ -1779,18 +1803,163 @@ describe("defineViewServerConfig", () => {
     >();
     expectTypeOf<TopicRouteBy<typeof grpcViewServer.topics, "trades">>().toEqualTypeOf<never>();
 
+    const grpcSourceViewServer = defineViewServerConfig({
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          grpcSource: grpc.leased({
+            routeBy: ["region", "status"],
+          }),
+        },
+        trades: {
+          schema: Trade,
+          key: "id",
+          grpcSource: grpc.materialized(),
+        },
+      },
+    });
+    expectTypeOf<TopicRouteBy<typeof grpcSourceViewServer.topics, "orders">>().toEqualTypeOf<
+      "region" | "status"
+    >();
+    expectTypeOf<
+      TopicRouteBy<typeof grpcSourceViewServer.topics, "trades">
+    >().toEqualTypeOf<never>();
+
+    // @ts-expect-error routeBy fields must exist on the target topic row.
     defineViewServerConfig({
       topics: {
         orders: {
           schema: Order,
           key: "id",
-          // @ts-expect-error routeBy fields must exist on the target topic row.
-          source: grpc.leased({
+          grpcSource: grpc.leased({
             routeBy: ["strategyId"],
           }),
         },
       },
     });
+  });
+
+  it("types topic-owned sources across two Kafka regions and two gRPC clients", () => {
+    type DirectInvalidKeyConfig = ViewServerConfig<{
+      readonly orders: {
+        readonly schema: typeof Order;
+        readonly key: "missing";
+      };
+    }>;
+    type DirectInvalidConflictConfig = ViewServerConfig<{
+      readonly orders: {
+        readonly schema: typeof Order;
+        readonly key: "id";
+        readonly kafkaSource: object;
+        readonly grpcSource: GrpcMaterializedTopicSource;
+      };
+    }>;
+    expectTypeOf<DirectInvalidKeyConfig>().toEqualTypeOf<never>();
+    expectTypeOf<DirectInvalidConflictConfig>().toEqualTypeOf<never>();
+
+    const clients = {
+      orders: grpc.connectClient({
+        service: ordersService,
+        baseUrl: "https://orders-grpc.example.test",
+      }),
+      trades: grpc.connectClient({
+        service: tradesOnlyService,
+        baseUrl: "https://trades-grpc.example.test",
+      }),
+    };
+    const multiSourceViewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      grpc: {
+        clients,
+      },
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "orders-usa-source",
+            regions: ["usa"],
+            value: ordersValueKafkaCodec,
+            key: ordersKeyKafkaCodec,
+            rowKey: ({ key, region, metadata }) => {
+              expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+              expectTypeOf(region).toEqualTypeOf<"usa">();
+              expectTypeOf(metadata).toEqualTypeOf<KafkaMessageMetadata<"usa">>();
+              return key.orderId;
+            },
+            map: ({ key, value, region, rowKey }) => {
+              expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+              expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+              expectTypeOf(region).toEqualTypeOf<"usa">();
+              expectTypeOf(rowKey).toEqualTypeOf<string>();
+              return {
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              };
+            },
+          }),
+        },
+        trades: {
+          schema: Trade,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "trades-london-source",
+            regions: ["london"],
+            value: tradesValueKafkaCodec,
+            key: kafka.stringKey(),
+            rowKey: ({ key, region, metadata }) => {
+              expectTypeOf(key).toEqualTypeOf<string>();
+              expectTypeOf(region).toEqualTypeOf<"london">();
+              expectTypeOf(metadata).toEqualTypeOf<KafkaMessageMetadata<"london">>();
+              return key;
+            },
+            map: ({ key, value, region, rowKey }) => {
+              expectTypeOf(key).toEqualTypeOf<string>();
+              expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
+              expectTypeOf(region).toEqualTypeOf<"london">();
+              expectTypeOf(rowKey).toEqualTypeOf<string>();
+              return {
+                symbol: value.symbol,
+                quantity: value.quantity,
+                price: value.price,
+                region,
+              };
+            },
+          }),
+        },
+        positions: {
+          schema: Position,
+          key: "id",
+          grpcSource: grpc.leased({ routeBy: ["accountId", "symbol"] }),
+        },
+      },
+    });
+
+    expectTypeOf(multiSourceViewServer.topics.orders.kafkaSource.regions).toEqualTypeOf<
+      readonly ["usa"]
+    >();
+    type OrdersRowKeyInput = Parameters<
+      typeof multiSourceViewServer.topics.orders.kafkaSource.rowKey
+    >[0];
+    expectTypeOf<OrdersRowKeyInput>().toEqualTypeOf<{
+      readonly key: OrdersKeyMessage;
+      readonly region: "usa";
+      readonly metadata: KafkaMessageMetadata<"usa">;
+    }>();
+    // @ts-expect-error rowKey is value-independent so Kafka tombstones can delete by key.
+    type _OrdersRowKeyValue = OrdersRowKeyInput["value"];
+    expectTypeOf(multiSourceViewServer.topics.trades.kafkaSource.regions).toEqualTypeOf<
+      readonly ["london"]
+    >();
+    type MultiSourceGrpc = NonNullable<(typeof multiSourceViewServer)["grpc"]>;
+    expectTypeOf<keyof MultiSourceGrpc["clients"]>().toEqualTypeOf<"orders" | "trades">();
+    expectTypeOf<TopicRouteBy<typeof multiSourceViewServer.topics, "positions">>().toEqualTypeOf<
+      "accountId" | "symbol"
+    >();
   });
 
   it("requires exact equality predicates for leased gRPC route fields", () => {
@@ -1799,7 +1968,7 @@ describe("defineViewServerConfig", () => {
         orders: {
           schema: Order,
           key: "id",
-          source: grpc.leased({
+          grpcSource: grpc.leased({
             routeBy: ["region", "status"],
           }),
         },
@@ -1810,14 +1979,14 @@ describe("defineViewServerConfig", () => {
         orders: {
           schema: Order,
           key: "id",
-          source: grpc.leased({
+          grpcSource: grpc.leased({
             routeBy: ["region", "status"],
           }),
         },
         trades: {
           schema: Trade,
           key: "id",
-          source: grpc.materialized(),
+          grpcSource: grpc.materialized(),
         },
         positions: {
           schema: Position,
@@ -1976,7 +2145,7 @@ describe("defineViewServerConfig", () => {
           malformed: {
             schema: Order,
             key: "id",
-            source: { kind: "grpc", lifecycle: "leased", routeBy: [] },
+            grpcSource: { kind: "grpc", lifecycle: "leased", routeBy: [] },
           },
         },
         "malformed",
@@ -1989,7 +2158,7 @@ describe("defineViewServerConfig", () => {
           malformed: {
             schema: Order,
             key: "id",
-            source: { kind: "grpc", lifecycle: "leased", routeBy: ["region", 1] },
+            grpcSource: { kind: "grpc", lifecycle: "leased", routeBy: ["region", 1] },
           },
         },
         "malformed",
@@ -2004,14 +2173,14 @@ describe("defineViewServerConfig", () => {
         orders: {
           schema: Order,
           key: "id",
-          source: grpc.leased({
+          grpcSource: grpc.leased({
             routeBy: ["region", "status"],
           }),
         },
         trades: {
           schema: Trade,
           key: "id",
-          source: grpc.materialized(),
+          grpcSource: grpc.materialized(),
         },
         positions: {
           schema: Position,
@@ -2029,8 +2198,34 @@ describe("defineViewServerConfig", () => {
         baseUrl: "https://trades.example.test",
       }),
     };
+    const grpcInfraViewServer = defineViewServerConfig({
+      grpc: {
+        clients,
+      },
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          grpcSource: grpc.materialized(),
+        },
+      },
+    });
     const standaloneFeed = defineGrpcFeed<typeof grpcViewServer.topics, typeof clients>();
     const feed = grpcViewServer.grpcFeed<typeof clients>();
+    const configBoundFeed = grpcInfraViewServer.grpcFeed();
+    const grpcSourceMaterializedViewServer = defineViewServerConfig({
+      topics: {
+        trades: {
+          schema: Trade,
+          key: "id",
+          grpcSource: grpc.materialized(),
+        },
+      },
+    });
+    const grpcSourceFeed = grpcSourceMaterializedViewServer.grpcFeed<typeof clients>();
+    expect(grpcInfraViewServer.grpc).toStrictEqual({
+      clients,
+    });
     expectTypeOf(standaloneFeed.leasedFeed).toBeFunction();
     const leasedOrders = feed.leasedFeed({
       topic: "orders",
@@ -2111,9 +2306,81 @@ describe("defineViewServerConfig", () => {
         region: "usa",
       }),
     });
+    const configBoundOrders = configBoundFeed.materializedFeed({
+      topic: "orders",
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({ orderId: "all-config-bound-orders" }),
+      acquire: ({ client }) => {
+        expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
+        return Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-config-bound-1",
+          status: "open",
+          price: 20,
+          updatedAt: 1,
+        });
+      },
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    const invalidConfigBoundClient = configBoundFeed.materializedFeed({
+      topic: "orders",
+      // @ts-expect-error config-bound grpcFeed rejects clients outside config.grpc.clients.
+      client: "missing",
+      method: "streamOrders",
+      request: () => ({ orderId: "all-config-bound-orders" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-config-bound-1",
+          status: "open",
+          price: 20,
+          updatedAt: 1,
+        }),
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    const grpcSourceMaterializedTrades = grpcSourceFeed.materializedFeed({
+      topic: "trades",
+      client: "trades",
+      method: "streamTrades",
+      request: () => ({ orderId: "all-grpc-source-trades" }),
+      acquire: ({ route }) => {
+        expectTypeOf(route).toEqualTypeOf<undefined>();
+        return Stream.make({
+          $typeName: "viewserver.test.TradeValue",
+          symbol: "MSFT",
+          quantity: 2,
+          price: 20,
+        });
+      },
+      map: ({ value }) => ({
+        id: value.symbol,
+        symbol: value.symbol,
+        quantity: value.quantity,
+        price: value.price,
+        region: "usa",
+      }),
+    });
 
     expect(leasedOrders.lifecycle).toBe("leased");
     expect(materializedTrades.lifecycle).toBe("materialized");
+    expect(configBoundOrders.lifecycle).toBe("materialized");
+    expect(grpcSourceMaterializedTrades.lifecycle).toBe("materialized");
+    expectTypeOf(invalidConfigBoundClient).not.toBeAny();
     expectTypeOf(ordersService).toEqualTypeOf<
       GenService<{
         readonly streamOrders: {
@@ -2427,109 +2694,12 @@ describe("defineViewServerConfig", () => {
       }),
     });
 
-    const grpcOwnedKafkaTopic = grpcViewServer.kafkaTopic<typeof kafkaRegions>();
-    expect(() =>
-      grpcOwnedKafkaTopic({
-        regions: ["usa"],
-        value: tradesValueKafkaCodec,
-        key: kafka.stringKey(),
-        // @ts-expect-error Kafka runtime topics cannot publish into gRPC-owned leased topics.
-        viewServerTopic: "orders",
-        mapping: ({ key, value }) => ({
-          id: key,
-          accountId: "account-1",
-          symbol: value.symbol,
-          active: true,
-          quantity: BigInt(value.quantity),
-          optionalQuantity: undefined,
-          price: BigDecimal.fromStringUnsafe(String(value.price)),
-          notional: value.price * value.quantity,
-          optionalNotional: undefined,
-        }),
+    expect(grpcViewServer.topics.orders.grpcSource).toStrictEqual(
+      grpc.leased({
+        routeBy: ["region", "status"],
       }),
-    ).toThrow("Kafka source cannot publish into gRPC-owned View Server topic: orders");
-    expect(() =>
-      grpcOwnedKafkaTopic({
-        regions: ["usa"],
-        value: tradesValueKafkaCodec,
-        key: kafka.stringKey(),
-        // @ts-expect-error Kafka runtime topics cannot publish into gRPC-owned materialized topics.
-        viewServerTopic: "trades",
-        mapping: ({ key, value }) => ({
-          id: key,
-          accountId: "account-1",
-          symbol: value.symbol,
-          active: true,
-          quantity: BigInt(value.quantity),
-          optionalQuantity: undefined,
-          price: BigDecimal.fromStringUnsafe(String(value.price)),
-          notional: value.price * value.quantity,
-          optionalNotional: undefined,
-        }),
-      }),
-    ).toThrow("Kafka source cannot publish into gRPC-owned View Server topic: trades");
-    expect(() =>
-      grpcOwnedKafkaTopic({
-        regions: ["usa"],
-        value: tradesValueKafkaCodec,
-        key: kafka.stringKey(),
-        // @ts-expect-error hostile JS callers can still target missing View Server topics.
-        viewServerTopic: "missing",
-        mapping: ({ key, value }) => ({
-          id: key,
-          accountId: "account-1",
-          symbol: value.symbol,
-          active: true,
-          quantity: BigInt(value.quantity),
-          optionalQuantity: undefined,
-          price: BigDecimal.fromStringUnsafe(String(value.price)),
-          notional: value.price * value.quantity,
-          optionalNotional: undefined,
-        }),
-      }),
-    ).toThrow();
-    const malformedSourceKafkaTopic = defineKafkaTopic({
-      malformed: {
-        schema: Position,
-        source: { kind: 1 },
-      },
-    })<typeof kafkaRegions>();
-    const malformedSourceTopic = malformedSourceKafkaTopic({
-      regions: ["usa"],
-      value: tradesValueKafkaCodec,
-      key: kafka.stringKey(),
-      viewServerTopic: "malformed",
-      mapping: ({ key, value }) => ({
-        id: key,
-        accountId: "account-1",
-        symbol: value.symbol,
-        active: true,
-        quantity: BigInt(value.quantity),
-        optionalQuantity: undefined,
-        price: BigDecimal.fromStringUnsafe(String(value.price)),
-        notional: value.price * value.quantity,
-        optionalNotional: undefined,
-      }),
-    });
-    expect(malformedSourceTopic.viewServerTopic).toBe("malformed");
-    const kafkaPositionTopic = grpcOwnedKafkaTopic({
-      regions: ["usa"],
-      value: tradesValueKafkaCodec,
-      key: kafka.stringKey(),
-      viewServerTopic: "positions",
-      mapping: ({ key, value }) => ({
-        id: key,
-        accountId: "account-1",
-        symbol: value.symbol,
-        active: true,
-        quantity: BigInt(value.quantity),
-        optionalQuantity: undefined,
-        price: BigDecimal.fromStringUnsafe(String(value.price)),
-        notional: value.price * value.quantity,
-        optionalNotional: undefined,
-      }),
-    });
-    expect(kafkaPositionTopic.viewServerTopic).toBe("positions");
+    );
+    expect(grpcViewServer.topics.trades.grpcSource).toStrictEqual(grpc.materialized());
   });
 
   it("derives schema field metadata for query validation", () => {
@@ -3066,23 +3236,23 @@ describe("defineViewServerConfig", () => {
   });
 
   it("defines topics and pure runtime option contracts without starting a runtime", () => {
-    const runtimeOptions = viewServer.defineRuntimeOptions({
-      websocketPort: runtimeEnvironmentConfig.websocketPort,
-      kafka: {
-        consumerGroupId: "view-server-config-test",
-        regions: kafkaRegions,
-        topics: {
-          orders: kafkaTopic({
+    const kafkaViewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "orders-source",
             regions: ["usa", "london"],
             value: kafka.protobuf(ordersValueSchema),
             key: kafka.protobuf(ordersKeySchema),
-            viewServerTopic: "orders",
-            mapping: ({ key, value, region }) => {
+            rowKey: ({ key }) => key.orderId,
+            map: ({ key, value, region }) => {
               expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
               expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
               expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
               return {
-                id: key.orderId,
                 customerId: value.customerId,
                 status: value.status,
                 price: value.price,
@@ -3091,16 +3261,20 @@ describe("defineViewServerConfig", () => {
               };
             },
           }),
-          trades: kafkaTopic({
+        },
+        trades: {
+          schema: Trade,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "trades-source",
             regions: ["usa"],
             value: kafka.protobuf(tradesValueSchema),
-            viewServerTopic: "trades",
-            mapping: ({ key, value, region }) => {
+            rowKey: ({ key }) => key,
+            map: ({ key, value, region }) => {
               expectTypeOf(key).toEqualTypeOf<string>();
               expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
               expectTypeOf(region).toEqualTypeOf<"usa">();
               return {
-                id: key,
                 symbol: value.symbol,
                 quantity: value.quantity,
                 price: value.price,
@@ -3111,9 +3285,16 @@ describe("defineViewServerConfig", () => {
         },
       },
     });
+    const runtimeOptions = kafkaViewServer.defineRuntimeOptions({
+      websocketPort: runtimeEnvironmentConfig.websocketPort,
+      kafka: {
+        consumerGroupId: "view-server-config-test",
+        regions: kafkaRegions,
+      },
+    });
 
     expect(runtimeOptions.kafka.regions["usa"]).toBe(kafkaRegions.usa);
-    expect(viewServer.topics.orders.key).toBe("id");
+    expect(kafkaViewServer.topics.orders.key).toBe("id");
     expect(runtimeOptions.websocketPort).toBe(runtimeEnvironmentConfig.websocketPort);
     expect(runtimeOptions.kafka.consumerGroupId).toBe("view-server-config-test");
     expect(Config.isConfig(runtimeConfig.port("VIEW_SERVER_WEBSOCKET_PORT"))).toBe(true);
@@ -4905,12 +5086,266 @@ describe("defineViewServerConfig", () => {
   );
 
   it("does not expose executable React or runtime placeholders from config", () => {
-    expect(Object.keys(viewServer)).toStrictEqual([
-      "topics",
-      "defineRuntimeOptions",
-      "kafkaTopic",
-      "grpcFeed",
-    ]);
+    expect(Object.keys(viewServer)).toStrictEqual(["topics", "defineRuntimeOptions", "grpcFeed"]);
+    expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
+    expect(isKafkaTopicSourceDefinition({})).toBe(false);
+    expect(
+      isKafkaTopicSourceDefinition({
+        topic: "orders",
+        regions: [],
+        value: kafka.json(Order),
+        rowKey: () => "order-1",
+        map: () => ({
+          id: "order-1",
+          customerId: "customer-1",
+          status: "open",
+          price: 1,
+          region: "usa",
+          updatedAt: 1,
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      isKafkaTopicSourceDefinition({
+        topic: "orders",
+        regions: ["usa"],
+        value: kafka.json(Order),
+        map: () => ({
+          id: "order-1",
+          customerId: "customer-1",
+          status: "open",
+          price: 1,
+          region: "usa",
+          updatedAt: 1,
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      isKafkaTopicSourceDefinition({
+        topic: "orders",
+        regions: ["usa"],
+        value: kafka.json(Order),
+        key: undefined,
+        rowKey: () => "order-1",
+        map: () => ({
+          id: "order-1",
+          customerId: "customer-1",
+          status: "open",
+          price: 1,
+          region: "usa",
+          updatedAt: 1,
+        }),
+      }),
+    ).toBe(false);
+    const extraKeySource = kafka.source({
+      topic: "orders",
+      regions: ["usa"],
+      value: kafka.json(Order),
+      rowKey: ({ key }) => key,
+      map: () => ({
+        id: "order-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }),
+    });
+    Object.defineProperty(extraKeySource, "extra", {
+      value: true,
+    });
+    expect(isKafkaTopicSourceDefinition(extraKeySource)).toBe(false);
+
+    const inheritedKeySource = Object.create({
+      key: kafka.bytes(),
+    });
+    Object.assign(inheritedKeySource, {
+      topic: "orders",
+      regions: ["usa"],
+      value: kafka.json(Order),
+      rowKey: () => "order-1",
+      map: () => ({
+        id: "order-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }),
+    });
+    expect(isKafkaTopicSourceDefinition(inheritedKeySource)).toBe(false);
+  });
+
+  it("rejects malformed topic-owned Kafka sources at config derivation time", () => {
+    // @ts-expect-error malformed Kafka sources are rejected for typed callers and still guarded at runtime.
+    const malformedViewServer = defineViewServerConfig({
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          kafkaSource: {},
+        },
+      },
+    });
+
+    expect(() => makeKafkaSourceTopicsForConfig(malformedViewServer)).toThrow(
+      "View Server topic orders has an invalid Kafka source.",
+    );
+  });
+
+  it("ignores inherited Kafka source topic entries during config derivation", () => {
+    const viewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+        },
+      },
+    });
+    Object.setPrototypeOf(viewServer.topics, {
+      ghost: {
+        schema: Order,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: "ghost-source",
+          regions: ["usa"],
+          value: ordersValueKafkaCodec,
+          key: ordersKeyKafkaCodec,
+          rowKey: ({ key }) => key.orderId,
+          map: ({ value, region }) => ({
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region,
+            updatedAt: value.updatedAt,
+          }),
+        }),
+      },
+    });
+
+    expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
+  });
+
+  it("ignores non-object topic entries during config derivation", () => {
+    const viewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+        },
+      },
+    });
+    Object.defineProperty(viewServer.topics, "ghost", {
+      configurable: true,
+      enumerable: true,
+      value: undefined,
+    });
+
+    expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
+  });
+
+  it("ignores inherited Kafka source properties during config derivation", () => {
+    const viewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+        },
+      },
+    });
+    Object.setPrototypeOf(viewServer.topics.orders, {
+      kafkaSource: kafka.source({
+        topic: "orders-source",
+        regions: ["usa"],
+        value: ordersValueKafkaCodec,
+        key: ordersKeyKafkaCodec,
+        rowKey: ({ key }) => key.orderId,
+        map: ({ value, region }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region,
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    });
+
+    expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
+  });
+
+  it("rejects topics with multiple source owners at config definition time", () => {
+    expect(() =>
+      // @ts-expect-error a View Server topic cannot declare more than one source owner.
+      defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: grpc.materialized(),
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders cannot declare more than one source owner: kafkaSource, grpcSource.",
+    );
+    expect(() =>
+      // @ts-expect-error a View Server topic cannot declare both kafkaSource and grpcSource.
+      defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+            grpcSource: grpc.materialized(),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders cannot declare more than one source owner: kafkaSource, grpcSource.",
+    );
+    const oldSourceAliasConfig = {
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          source: grpc.materialized(),
+        },
+      },
+    };
+    expect(() =>
+      // @ts-expect-error generic source ownership is not part of the public topic API.
+      defineViewServerConfig(oldSourceAliasConfig),
+    ).toThrow("View Server topic orders cannot declare source; use kafkaSource or grpcSource.");
   });
 });
 
@@ -5023,9 +5458,9 @@ describe("public type surface", () => {
       uptimeMs: 100,
       engine: {
         topics: {
-          orders: runtimeTopicHealth("ready", 10),
-          trades: runtimeTopicHealth("degraded", 20),
-          positions: runtimeTopicHealth("starting", 30),
+          orders: sourceTopicHealth("ready", 10),
+          trades: sourceTopicHealth("degraded", 20),
+          positions: sourceTopicHealth("starting", 30),
         },
       },
       kafka: {
@@ -5165,9 +5600,9 @@ describe("public type surface", () => {
       uptimeMs: 300,
       engine: {
         topics: {
-          orders: runtimeTopicHealth("ready", 10),
-          trades: runtimeTopicHealth("ready", 20),
-          positions: runtimeTopicHealth("ready", 30),
+          orders: sourceTopicHealth("ready", 10),
+          trades: sourceTopicHealth("ready", 20),
+          positions: sourceTopicHealth("ready", 30),
         },
       },
       grpc: {
@@ -5257,9 +5692,9 @@ describe("public type surface", () => {
       uptimeMs: 200,
       engine: {
         topics: {
-          orders: runtimeTopicHealth("ready", 10),
-          trades: runtimeTopicHealth("ready", 20),
-          positions: runtimeTopicHealth("ready", 30),
+          orders: sourceTopicHealth("ready", 10),
+          trades: sourceTopicHealth("ready", 20),
+          positions: sourceTopicHealth("ready", 30),
         },
       },
       kafka: {
@@ -5568,9 +6003,9 @@ describe("public type surface", () => {
       uptimeMs: 100,
       engine: {
         topics: {
-          orders: runtimeTopicHealth("ready", 10),
-          trades: runtimeTopicHealth("ready", 20),
-          positions: runtimeTopicHealth("ready", 30),
+          orders: sourceTopicHealth("ready", 10),
+          trades: sourceTopicHealth("ready", 20),
+          positions: sourceTopicHealth("ready", 30),
         },
       },
       transport: {
@@ -5967,201 +6402,319 @@ describe("public type surface", () => {
     expect(assertQueryTypes).toBeTypeOf("function");
   });
 
-  it.effect("infers and decodes Kafka mapping callback parameters through the topic helper", () =>
+  it.effect("infers and decodes topic-owned Kafka sources", () =>
     Effect.gen(function* () {
-      const topic = kafkaTopic({
-        regions: ["usa", "london"],
-        value: kafka.protobuf(ordersValueSchema),
-        viewServerTopic: "orders",
-        mapping: ({ key, value, region }) => {
-          expectTypeOf(key).toEqualTypeOf<string>();
-          expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-          expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
-          return {
-            id: key,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region,
-            updatedAt: value.updatedAt,
-          };
-        },
-      });
-
-      expect(topic.viewServerTopic).toBe("orders");
-      expect(
-        yield* decodeKafkaTopicMessage(topic, {
-          keyBytes: textEncoder.encode("order-1"),
-          valueBytes: toBinary(
-            ordersValueSchema,
-            create(ordersValueSchema, {
-              customerId: "customer-1",
-              status: "open",
-              price: 42,
-              updatedAt: 1,
+      const topicOwnedViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa", "london"],
+              value: ordersValueKafkaCodec,
+              key: ordersKeyKafkaCodec,
+              rowKey: ({ key, region, metadata }) => {
+                expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+                expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
+                expectTypeOf(metadata).toEqualTypeOf<KafkaMessageMetadata<"usa" | "london">>();
+                return key.orderId;
+              },
+              map: (input) => {
+                const { key, value, region, rowKey, metadata } = input;
+                expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+                expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+                expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
+                expectTypeOf(rowKey).toEqualTypeOf<string>();
+                expectTypeOf(metadata).toEqualTypeOf<KafkaMessageMetadata<"usa" | "london">>();
+                // @ts-expect-error standalone kafka.source helper inputs do not expose the enclosing topic schema.
+                expectTypeOf(input.schema).not.toBeAny();
+                return {
+                  customerId: value.customerId,
+                  status: value.status,
+                  price: value.price,
+                  region,
+                  updatedAt: value.updatedAt,
+                };
+              },
             }),
-          ),
-          region: "london",
-          metadata: kafkaTestMetadata("london"),
-        }),
-      ).toStrictEqual({
-        viewServerTopic: "orders",
-        row: {
-          id: "order-1",
-          customerId: "customer-1",
-          status: "open",
-          price: 42,
-          region: "london",
-          updatedAt: 1,
+          },
         },
       });
-
-      const keyedTopic = kafkaTopic({
-        regions: ["usa"],
-        value: kafka.protobuf(ordersValueSchema),
-        key: kafka.protobuf(ordersKeySchema),
-        viewServerTopic: "orders",
-        mapping: ({ key, value, region }) => {
-          expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
-          expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-          expectTypeOf(region).toEqualTypeOf<"usa">();
-          return {
-            id: key.orderId,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region,
-            updatedAt: value.updatedAt,
-          };
+      type TopicOwnedOrdersRowKeyInput = Parameters<
+        typeof topicOwnedViewServer.topics.orders.kafkaSource.rowKey
+      >[0];
+      expectTypeOf<TopicOwnedOrdersRowKeyInput>().toEqualTypeOf<{
+        readonly key: OrdersKeyMessage;
+        readonly region: "usa" | "london";
+        readonly metadata: KafkaMessageMetadata<"usa" | "london">;
+      }>();
+      // @ts-expect-error rowKey is value-independent so Kafka tombstones can delete by key.
+      type _TopicOwnedOrdersRowKeyValue = TopicOwnedOrdersRowKeyInput["value"];
+      // @ts-expect-error rowKey must return a concrete string, not any.
+      defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            // @ts-expect-error rowKey must return a concrete string, not any.
+            kafkaSource: kafka.source({
+              topic: "orders-any-row-key-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: () => unsafeKafkaAnyValue,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
         },
       });
-
-      expect(keyedTopic.key.descriptor).toBe(ordersKeySchema);
-      const invalidKeyedTopicRegion = decodeKafkaTopicMessage(keyedTopic, {
-        keyBytes: toBinary(
-          ordersKeySchema,
-          create(ordersKeySchema, {
-            orderId: "order-keyed-london",
-          }),
-        ),
-        valueBytes: toBinary(
-          ordersValueSchema,
-          create(ordersValueSchema, {
-            customerId: "customer-keyed-london",
-            status: "closed",
-            price: 84,
-            updatedAt: 2,
-          }),
-        ),
-        // @ts-expect-error keyed topic is configured only for usa.
-        region: "london",
-        metadata: kafkaTestMetadata("usa"),
+      // @ts-expect-error map must return a concrete exact mapped row, not any.
+      defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-any-map-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: () => unsafeKafkaAnyValue,
+            }),
+          },
+        },
       });
+      const configSourceTopics = makeKafkaSourceTopicsForConfig(topicOwnedViewServer);
+      const sourceTopic = configSourceTopics[0]!;
       expect(
-        yield* decodeKafkaTopicMessage(keyedTopic, {
+        configSourceTopics.map((configSourceTopic) => ({
+          regions: configSourceTopic.regions,
+          topic: configSourceTopic.topic,
+          viewServerTopic: configSourceTopic.viewServerTopic,
+        })),
+      ).toStrictEqual([
+        {
+          regions: ["usa", "london"],
+          topic: "orders-source",
+          viewServerTopic: "orders",
+        },
+      ]);
+      expect(sourceTopic.topic).toBe("orders-source");
+      expect(sourceTopic.viewServerTopic).toBe("orders");
+      expect(
+        yield* decodeKafkaTopicMessage(sourceTopic, {
           keyBytes: toBinary(
             ordersKeySchema,
             create(ordersKeySchema, {
-              orderId: "order-keyed-1",
+              orderId: "order-owned-1",
             }),
           ),
           valueBytes: toBinary(
             ordersValueSchema,
             create(ordersValueSchema, {
-              customerId: "customer-keyed-1",
-              status: "closed",
-              price: 84,
-              updatedAt: 2,
+              customerId: "customer-owned-1",
+              status: "open",
+              price: 42,
+              updatedAt: 100,
             }),
           ),
           region: "usa",
           metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
         }),
       ).toStrictEqual({
         viewServerTopic: "orders",
+        rowKey: "order-owned-1",
         row: {
-          id: "order-keyed-1",
-          customerId: "customer-keyed-1",
-          status: "closed",
-          price: 84,
+          id: "order-owned-1",
+          customerId: "customer-owned-1",
+          status: "open",
+          price: 42,
           region: "usa",
-          updatedAt: 2,
+          updatedAt: 100,
         },
       });
-      expectTypeOf(invalidKeyedTopicRegion).not.toBeAny();
-
-      const jsonPositionTopic = kafkaTopic({
-        regions: ["usa"],
-        value: kafka.json(Position),
-        viewServerTopic: "positions",
-        mapping: ({ key, value, region }) => {
-          expectTypeOf(key).toEqualTypeOf<string>();
-          expectTypeOf(value).toEqualTypeOf<typeof Position.Type>();
-          expectTypeOf(region).toEqualTypeOf<"usa">();
-          return {
-            ...value,
-            id: key,
-          };
-        },
+      expect(
+        yield* decodeKafkaTopicMessage(sourceTopic, {
+          keyBytes: toBinary(
+            ordersKeySchema,
+            create(ordersKeySchema, {
+              orderId: "order-owned-tombstone-1",
+            }),
+          ),
+          valueBytes: null,
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "order-owned-tombstone-1",
+        tombstone: true,
       });
-      const decodedJsonPosition = yield* decodeKafkaTopicMessage(jsonPositionTopic, {
-        keyBytes: textEncoder.encode("position-json-1"),
-        valueBytes: textEncoder.encode(
-          JSON.stringify({
-            id: "ignored-source-id",
-            accountId: "account-json-1",
-            symbol: "AAPL",
-            active: true,
-            quantity: "9007199254740993",
-            optionalQuantity: "9007199254740995",
-            price: "1234567890.123456789",
-            notional: 10,
-            optionalNotional: 20,
+      // @ts-expect-error topic-owned runtime topics require rowKeyField/schema/viewServerTopic metadata.
+      const invalidTopicOwnedDecode = decodeKafkaTopicMessage(sourceTopic, {
+        keyBytes: textEncoder.encode("order-owned-missing-metadata"),
+        valueBytes: toBinary(
+          ordersValueSchema,
+          create(ordersValueSchema, {
+            customerId: "customer-owned-missing-metadata",
+            status: "open",
+            price: 1,
+            updatedAt: 1,
           }),
         ),
         region: "usa",
         metadata: kafkaTestMetadata("usa"),
       });
-      expect(BigDecimal.isBigDecimal(decodedJsonPosition.row.price)).toBe(true);
-      const decodedJsonPositionPrice = yield* Schema.decodeUnknownEffect(Schema.BigDecimal)(
-        decodedJsonPosition.row.price,
-      );
-      expect({
-        ...decodedJsonPosition,
-        row: {
-          ...decodedJsonPosition.row,
-          price: BigDecimal.format(decodedJsonPositionPrice),
+      expectTypeOf(invalidTopicOwnedDecode).not.toBeAny();
+      const missingTopicMetadataFailure = yield* Effect.flip(invalidTopicOwnedDecode);
+      expect(kafkaErrorIsMapping(missingTopicMetadataFailure)).toBe(true);
+      // @ts-expect-error topic-owned runtime topics require a concrete schema.
+      const invalidPartialTopicOwnedDecode = decodeKafkaTopicMessage(sourceTopic, {
+        keyBytes: textEncoder.encode("order-owned-partial-metadata"),
+        valueBytes: toBinary(
+          ordersValueSchema,
+          create(ordersValueSchema, {
+            customerId: "customer-owned-partial-metadata",
+            status: "open",
+            price: 1,
+            updatedAt: 1,
+          }),
+        ),
+        region: "usa",
+        metadata: kafkaTestMetadata("usa"),
+        rowKeyField: "id",
+        schema: undefined,
+        viewServerTopic: "orders",
+      });
+      expectTypeOf(invalidPartialTopicOwnedDecode).not.toBeAny();
+      const partialTopicMetadataFailure = yield* Effect.flip(invalidPartialTopicOwnedDecode);
+      expect(kafkaErrorIsMapping(partialTopicMetadataFailure)).toBe(true);
+
+      const stringKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          trades: {
+            schema: Trade,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "trades-source",
+              regions: ["london"],
+              value: tradesValueKafkaCodec,
+              rowKey: ({ key, region, metadata }) => {
+                expectTypeOf(key).toEqualTypeOf<string>();
+                expectTypeOf(region).toEqualTypeOf<"london">();
+                expectTypeOf(metadata).toEqualTypeOf<KafkaMessageMetadata<"london">>();
+                return key;
+              },
+              map: ({ key, value, region, rowKey }) => {
+                expectTypeOf(key).toEqualTypeOf<string>();
+                expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
+                expectTypeOf(region).toEqualTypeOf<"london">();
+                expectTypeOf(rowKey).toEqualTypeOf<string>();
+                return {
+                  symbol: value.symbol,
+                  quantity: value.quantity,
+                  price: value.price,
+                  region,
+                };
+              },
+            }),
+          },
         },
-      }).toStrictEqual({
-        viewServerTopic: "positions",
+      });
+      const stringKeySourceTopic = makeKafkaSourceTopicsForConfig(stringKeyViewServer)[0]!;
+      expect(
+        yield* decodeKafkaTopicMessage(stringKeySourceTopic, {
+          keyBytes: textEncoder.encode("trade-owned-1"),
+          valueBytes: toBinary(
+            tradesValueSchema,
+            create(tradesValueSchema, {
+              symbol: "AAPL",
+              quantity: 10,
+              price: 123,
+            }),
+          ),
+          region: "london",
+          metadata: kafkaTestMetadata("london"),
+          rowKeyField: "id",
+          schema: Trade,
+          viewServerTopic: "trades",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "trades",
+        rowKey: "trade-owned-1",
         row: {
-          id: "position-json-1",
-          accountId: "account-json-1",
+          id: "trade-owned-1",
           symbol: "AAPL",
-          active: true,
-          quantity: 9007199254740993n,
-          optionalQuantity: 9007199254740995n,
-          price: "1234567890.123456789",
-          notional: 10,
-          optionalNotional: 20,
+          quantity: 10,
+          price: 123,
+          region: "london",
         },
+      });
+      expect(
+        yield* decodeKafkaTopicMessage(stringKeySourceTopic, {
+          keyBytes: textEncoder.encode("trade-owned-tombstone-1"),
+          valueBytes: null,
+          region: "london",
+          metadata: kafkaTestMetadata("london"),
+          rowKeyField: "id",
+          schema: Trade,
+          viewServerTopic: "trades",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "trades",
+        rowKey: "trade-owned-tombstone-1",
+        tombstone: true,
       });
 
-      const throwingTopic = kafkaTopic({
-        regions: ["usa"],
-        value: kafka.protobuf(ordersValueSchema),
-        viewServerTopic: "orders",
-        mapping: () => {
-          throw new Error("mapper failed");
+      const throwingRowKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-row-key-throws-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: () => {
+                throw new Error("row key failed");
+              },
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
         },
       });
-      const mappingFailure = yield* Effect.flip(
-        decodeKafkaTopicMessage(throwingTopic, {
-          keyBytes: textEncoder.encode("order-throws"),
+      const throwingRowKeySourceTopic =
+        makeKafkaSourceTopicsForConfig(throwingRowKeyViewServer)[0]!;
+      const rowKeyFailure = yield* Effect.flip(
+        decodeKafkaTopicMessage(throwingRowKeySourceTopic, {
+          keyBytes: textEncoder.encode("order-row-key-throws"),
           valueBytes: toBinary(
             ordersValueSchema,
             create(ordersValueSchema, {
-              customerId: "customer-throws",
+              customerId: "customer-row-key-throws",
               status: "open",
               price: 1,
               updatedAt: 1,
@@ -6169,27 +6722,813 @@ describe("public type surface", () => {
           ),
           region: "usa",
           metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      );
+      expect(kafkaErrorIsMapping(rowKeyFailure)).toBe(true);
+
+      const throwingMapViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-map-throws-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: () => {
+                throw new Error("map failed");
+              },
+            }),
+          },
+        },
+      });
+      const throwingMapSourceTopic = makeKafkaSourceTopicsForConfig(throwingMapViewServer)[0]!;
+      const mapFailure = yield* Effect.flip(
+        decodeKafkaTopicMessage(throwingMapSourceTopic, {
+          keyBytes: textEncoder.encode("order-map-throws"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-map-throws",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
         }),
       );
       expect({
-        mappingFailure: kafkaErrorIsMapping(mappingFailure),
-        forgedMappingFailure: kafkaErrorIsMapping({
-          _tag: "KafkaMappingError",
-          message: "forged",
-        }),
+        isMappingError: kafkaErrorIsMapping(mapFailure),
+        message: Reflect.get(Object(mapFailure), "message"),
       }).toStrictEqual({
-        mappingFailure: true,
-        forgedMappingFailure: false,
+        isMappingError: true,
+        message: "Failed to map Kafka payload",
       });
+
+      const nonStringRowKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-non-string-row-key-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      forceKafkaSourceRowKeyForRuntimeGuard(nonStringRowKeyViewServer, () => 123);
+      const nonStringRowKeySourceTopic =
+        makeKafkaSourceTopicsForConfig(nonStringRowKeyViewServer)[0]!;
+      const nonStringRowKeyFailure = yield* Effect.flip(
+        decodeKafkaTopicMessage(nonStringRowKeySourceTopic, {
+          keyBytes: textEncoder.encode("order-non-string-row-key"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-non-string-row-key",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      );
+      expect(kafkaErrorIsMapping(nonStringRowKeyFailure)).toBe(true);
+
+      const schemaInvalidMappedRowViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-schema-invalid-mapped-row-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      forceKafkaSourceMapForRuntimeGuard(schemaInvalidMappedRowViewServer, () => ({
+        customerId: "customer-schema-invalid-mapped-row",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }));
+      const schemaInvalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
+        schemaInvalidMappedRowViewServer,
+      )[0]!;
+      const schemaInvalidMappedRowFailure = yield* Effect.flip(
+        decodeKafkaTopicMessage(schemaInvalidMappedRowSourceTopic, {
+          keyBytes: textEncoder.encode("order-schema-invalid-mapped-row"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-schema-invalid-mapped-row",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      );
+      expect({
+        isMappingError: kafkaErrorIsMapping(schemaInvalidMappedRowFailure),
+        message: Reflect.get(Object(schemaInvalidMappedRowFailure), "message"),
+      }).toStrictEqual({
+        isMappingError: true,
+        message: "Kafka mapped row failed topic schema",
+      });
+
+      const invalidMappedRowViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-invalid-mapped-row-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      forceKafkaSourceMapForRuntimeGuard(invalidMappedRowViewServer, () => ({
+        id: "order-invalid-mapped-row",
+        customerId: "customer-invalid-mapped-row",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }));
+      const invalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
+        invalidMappedRowViewServer,
+      )[0]!;
+      const invalidMappedRowFailure = yield* Effect.flip(
+        decodeKafkaTopicMessage(invalidMappedRowSourceTopic, {
+          keyBytes: textEncoder.encode("order-invalid-mapped-row"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-invalid-mapped-row",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      );
+      expect({
+        isMappingError: kafkaErrorIsMapping(invalidMappedRowFailure),
+        message: Reflect.get(Object(invalidMappedRowFailure), "message"),
+      }).toStrictEqual({
+        isMappingError: true,
+        message: "Kafka mapped row must not include the configured row key field",
+      });
+
+      const KeyTransformId = Schema.String.pipe(
+        Schema.decodeTo(Schema.String, {
+          decode: SchemaGetter.transform((value) => `decoded-${value}`),
+          encode: SchemaGetter.transform((value) =>
+            value.startsWith("decoded-") ? value.slice("decoded-".length) : value,
+          ),
+        }),
+      );
+      const KeyTransformOrder = Schema.Struct({
+        id: KeyTransformId,
+        customerId: Schema.String,
+        status: Schema.Literals(["open", "closed", "cancelled"]),
+        price: Schema.Number,
+        region: Schema.String,
+        updatedAt: Schema.Number,
+      });
+      const keyTransformViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: KeyTransformOrder,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-key-transform-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              rowKey: ({ key }) => key,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      const keyTransformSourceTopic = makeKafkaSourceTopicsForConfig(keyTransformViewServer)[0]!;
+      expect(
+        yield* decodeKafkaTopicMessage(keyTransformSourceTopic, {
+          keyBytes: textEncoder.encode("order-key-transform"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-key-transform",
+              status: "open",
+              price: 1,
+              updatedAt: 1,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: KeyTransformOrder,
+          viewServerTopic: "orders",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "order-key-transform",
+        row: {
+          id: "order-key-transform",
+          customerId: "customer-key-transform",
+          status: "open",
+          price: 1,
+          region: "usa",
+          updatedAt: 1,
+        },
+      });
+
+      const directFieldKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-direct-key-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: kafka.codec({
+                name: "direct-id-key",
+                decode: (): Effect.Effect<{ readonly id: string; readonly other: string }, never> =>
+                  Effect.succeed({
+                    id: "order-direct-key-1",
+                    other: "ignored",
+                  }),
+              }),
+              rowKey: ({ key }) => key.id,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      const directFieldSourceTopic = makeKafkaSourceTopicsForConfig(directFieldKeyViewServer)[0]!;
+      expect(
+        yield* decodeKafkaTopicMessage(directFieldSourceTopic, {
+          keyBytes: textEncoder.encode("ignored"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-direct-key-1",
+              status: "closed",
+              price: 11,
+              updatedAt: 12,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "order-direct-key-1",
+        row: {
+          id: "order-direct-key-1",
+          customerId: "customer-direct-key-1",
+          status: "closed",
+          price: 11,
+          region: "usa",
+          updatedAt: 12,
+        },
+      });
+
+      const nonStringConfiguredFieldKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-non-string-field-key-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: kafka.codec({
+                name: "non-string-field-key",
+                decode: (): Effect.Effect<
+                  { readonly id: number; readonly fallback: string },
+                  never
+                > =>
+                  Effect.succeed({
+                    id: 123,
+                    fallback: "must-not-be-used",
+                  }),
+              }),
+              rowKey: ({ key }) => key.fallback,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      const nonStringConfiguredFieldSourceTopic = makeKafkaSourceTopicsForConfig(
+        nonStringConfiguredFieldKeyViewServer,
+      )[0]!;
+      expect(
+        yield* decodeKafkaTopicMessage(nonStringConfiguredFieldSourceTopic, {
+          keyBytes: textEncoder.encode("ignored"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-non-string-configured-field",
+              status: "closed",
+              price: 11,
+              updatedAt: 12,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "must-not-be-used",
+        row: {
+          id: "must-not-be-used",
+          customerId: "customer-non-string-configured-field",
+          status: "closed",
+          price: 11,
+          region: "usa",
+          updatedAt: 12,
+        },
+      });
+
+      const ambiguousKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-ambiguous-key-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: kafka.codec({
+                name: "ambiguous-key",
+                decode: (): Effect.Effect<
+                  { readonly left: string; readonly right: string },
+                  never
+                > =>
+                  Effect.succeed({
+                    left: "left-key",
+                    right: "right-key",
+                  }),
+              }),
+              rowKey: ({ key }) => `${key.left}:${key.right}`,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      const ambiguousSourceTopic = makeKafkaSourceTopicsForConfig(ambiguousKeyViewServer)[0]!;
+      expect(
+        yield* decodeKafkaTopicMessage(ambiguousSourceTopic, {
+          keyBytes: textEncoder.encode("ignored"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-ambiguous-key",
+              status: "closed",
+              price: 11,
+              updatedAt: 12,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "left-key:right-key",
+        row: {
+          id: "left-key:right-key",
+          customerId: "customer-ambiguous-key",
+          status: "closed",
+          price: 11,
+          region: "usa",
+          updatedAt: 12,
+        },
+      });
+
+      const numericKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-numeric-key-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: kafka.codec({
+                name: "numeric-key",
+                decode: (): Effect.Effect<number, never> => Effect.succeed(123),
+              }),
+              rowKey: ({ key }) => `order-${key}`,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      const numericKeySourceTopic = makeKafkaSourceTopicsForConfig(numericKeyViewServer)[0]!;
+      expect(
+        yield* decodeKafkaTopicMessage(numericKeySourceTopic, {
+          keyBytes: textEncoder.encode("ignored"),
+          valueBytes: toBinary(
+            ordersValueSchema,
+            create(ordersValueSchema, {
+              customerId: "customer-numeric-key",
+              status: "closed",
+              price: 11,
+              updatedAt: 12,
+            }),
+          ),
+          region: "usa",
+          metadata: kafkaTestMetadata("usa"),
+          rowKeyField: "id",
+          schema: Order,
+          viewServerTopic: "orders",
+        }),
+      ).toStrictEqual({
+        viewServerTopic: "orders",
+        rowKey: "order-123",
+        row: {
+          id: "order-123",
+          customerId: "customer-numeric-key",
+          status: "closed",
+          price: 11,
+          region: "usa",
+          updatedAt: 12,
+        },
+      });
+
+      // @ts-expect-error topic-owned Kafka source regions must exist in config.kafka.
+      const invalidRegionViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["paris"],
+              value: ordersValueKafkaCodec,
+              key: ordersKeyKafkaCodec,
+              rowKey: ({ key }) => key.orderId,
+              map: ({ key, value, region, rowKey }) => {
+                expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+                expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+                expectTypeOf(region).toEqualTypeOf<"paris">();
+                expectTypeOf(rowKey).toEqualTypeOf<string>();
+                return {
+                  customerId: value.customerId,
+                  status: value.status,
+                  price: value.price,
+                  region,
+                  updatedAt: value.updatedAt,
+                };
+              },
+            }),
+          },
+        },
+      });
+
+      // @ts-expect-error topic-owned Kafka source map return must exactly match topic schema.
+      const extraMapperPropertyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: ordersKeyKafkaCodec,
+              rowKey: ({ key }) => key.orderId,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+                extra: true,
+              }),
+            }),
+          },
+        },
+      });
+
+      const broadKafkaRegions: RuntimeRegions = kafkaRegions;
+      // @ts-expect-error topic-owned Kafka sources require concrete config.kafka region keys.
+      const invalidBroadKafkaRegionsViewServer = defineViewServerConfig({
+        kafka: broadKafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: ordersKeyKafkaCodec,
+              rowKey: ({ key }) => key.orderId,
+              map: ({ value, region }) => ({
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+
+      const validKafkaSource = kafka.source({
+        topic: "orders-source",
+        regions: ["usa"],
+        value: ordersValueKafkaCodec,
+        key: ordersKeyKafkaCodec,
+        rowKey: ({ key }) => key.orderId,
+        map: ({ value, region }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      // @ts-expect-error topic-owned Kafka source maps must not return the configured row key field.
+      const sourceMapperReturningTopicKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["usa"],
+              value: ordersValueKafkaCodec,
+              key: ordersKeyKafkaCodec,
+              rowKey: ({ key }) => key.orderId,
+              map: ({ value, region }) => ({
+                id: "value-derived-id",
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region,
+                updatedAt: value.updatedAt,
+              }),
+            }),
+          },
+        },
+      });
+      // @ts-expect-error topic-owned Kafka source objects must not contain extra keys.
+      const extraKafkaSourceKeyViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: {
+              ...validKafkaSource,
+              extra: true,
+            },
+          },
+        },
+      });
+
+      // @ts-expect-error topic-owned leased gRPC source objects must not contain extra keys.
+      const extraGrpcLeasedSourceKeyViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: {
+              ...grpc.leased({ routeBy: ["region"] }),
+              extra: true,
+            },
+          },
+        },
+      });
+      // @ts-expect-error topic-owned materialized gRPC source objects must not contain extra keys.
+      const extraGrpcMaterializedSourceKeyViewServer = defineViewServerConfig({
+        topics: {
+          trades: {
+            schema: Trade,
+            key: "id",
+            grpcSource: {
+              ...grpc.materialized(),
+              extra: true,
+            },
+          },
+        },
+      });
+
+      expectTypeOf(invalidRegionViewServer).not.toBeAny();
+      expectTypeOf(extraMapperPropertyViewServer).not.toBeAny();
+      expectTypeOf(invalidBroadKafkaRegionsViewServer).not.toBeAny();
+      expectTypeOf(sourceMapperReturningTopicKeyViewServer).not.toBeAny();
+      expectTypeOf(extraKafkaSourceKeyViewServer).not.toBeAny();
+      expectTypeOf(extraGrpcLeasedSourceKeyViewServer).not.toBeAny();
+      expectTypeOf(extraGrpcMaterializedSourceKeyViewServer).not.toBeAny();
     }),
   );
 
+  it("rejects malformed topic-owned Kafka sources during runtime topic derivation", () => {
+    // @ts-expect-error Kafka source must use kafka.source.
+    const invalidSourceViewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          kafkaSource: {},
+        },
+      },
+    });
+
+    expect(() => makeKafkaSourceTopicsForConfig(invalidSourceViewServer)).toThrow(
+      "View Server topic orders has an invalid Kafka source.",
+    );
+
+    const erasedPrimitiveSourceViewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "orders-source",
+            regions: ["usa"],
+            value: ordersValueKafkaCodec,
+            key: ordersKeyKafkaCodec,
+            rowKey: ({ key }) => key.orderId,
+            map: ({ value, region }) => ({
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region,
+              updatedAt: value.updatedAt,
+            }),
+          }),
+        },
+      },
+    });
+    Object.defineProperty(erasedPrimitiveSourceViewServer.topics.orders, "kafkaSource", {
+      value: "not-a-source",
+    });
+
+    expect(() => makeKafkaSourceTopicsForConfig(erasedPrimitiveSourceViewServer)).toThrow(
+      "View Server topic orders has an invalid Kafka source.",
+    );
+  });
+
+  it("keeps the topic-owned Kafka runtime marker internal and exact", () => {
+    const runtimeMarkerViewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: {
+        orders: {
+          schema: Order,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "orders-runtime-marker-source",
+            regions: ["usa"],
+            value: ordersValueKafkaCodec,
+            rowKey: ({ key }) => key,
+            map: ({ value, region }) => ({
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region,
+              updatedAt: value.updatedAt,
+            }),
+          }),
+        },
+      },
+    });
+    const sourceTopic = makeKafkaSourceTopicsForConfig(runtimeMarkerViewServer)[0]!;
+    expect({
+      nullValue: isKafkaTopicSourceDefinition(null),
+      primitiveValue: isKafkaTopicSourceDefinition("orders-source"),
+      runtimeNullValue: isKafkaResolvedSourceTopicDefinition(null),
+      runtimePrimitiveValue: isKafkaResolvedSourceTopicDefinition("orders-source"),
+      sourceTopic: isKafkaResolvedSourceTopicDefinition(sourceTopic),
+    }).toStrictEqual({
+      nullValue: false,
+      primitiveValue: false,
+      runtimeNullValue: false,
+      runtimePrimitiveValue: false,
+      sourceTopic: true,
+    });
+  });
+
   it("supports json and custom Kafka source codecs without weakening mapping exactness", () => {
-    const jsonTopic = kafkaTopic({
+    const jsonTopic = kafka.source({
+      topic: "orders-source",
       regions: ["usa"],
       value: kafka.json(Order),
-      viewServerTopic: "orders",
-      mapping: ({ key, value, region }) => {
+      rowKey: ({ key }) => key,
+      map: ({ key, value, region }) => {
         expectTypeOf(key).toEqualTypeOf<string>();
         expectTypeOf(value).toEqualTypeOf<typeof Order.Type>();
         expectTypeOf(region).toEqualTypeOf<"usa">();
@@ -6197,7 +7536,8 @@ describe("public type surface", () => {
       },
     });
 
-    const customTopic = kafkaTopic({
+    const customTopic = kafka.source({
+      topic: "trades-source",
       regions: ["london"],
       value: kafka.codec({
         name: "trade-json-lines",
@@ -6217,8 +7557,8 @@ describe("public type surface", () => {
             price: 42,
           }),
       }),
-      viewServerTopic: "trades",
-      mapping: ({ key, value, region }) => {
+      rowKey: ({ key }) => key,
+      map: ({ key, value, region }) => {
         expectTypeOf(key).toEqualTypeOf<string>();
         expectTypeOf(value).toEqualTypeOf<{
           readonly tradeId: string;
@@ -6247,12 +7587,13 @@ describe("public type surface", () => {
 });
 
 const assertGeneratedSchemaContracts = () => {
-  const keyedTopic = kafkaTopic({
+  const keyedTopic = kafka.source({
+    topic: "orders-source",
     regions: ["usa", "london"],
     value: kafka.protobuf(generatedOrdersValueSchema),
     key: kafka.protobuf(generatedOrdersKeySchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value, region }) => {
+    rowKey: ({ key }) => key.orderId,
+    map: ({ key, value, region }) => {
       expectTypeOf(key).toEqualTypeOf<
         Message<"viewserver.test.OrderKey"> & { readonly orderId: string }
       >();
@@ -6282,11 +7623,12 @@ const assertGeneratedSchemaContracts = () => {
     }
   >();
 
-  kafkaTopic({
+  kafka.source({
+    topic: "orders-source",
     regions: ["usa", "london"],
     value: kafka.protobuf(generatedOrdersValueSchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value, region }) => {
+    rowKey: ({ key }) => key,
+    map: ({ key, value, region }) => {
       expectTypeOf(key).toEqualTypeOf<string>();
       expectTypeOf(value).toEqualTypeOf<
         Message<"viewserver.test.OrderValue"> & {
@@ -6313,77 +7655,150 @@ const assertCompileTimeContracts = () => {
   const localKafkaRegions = {
     usa: "broker-a:9092",
   };
-  const localKafkaTopic = viewServer.kafkaTopic<typeof localKafkaRegions>();
   const londonKafkaRegions = {
     london: "broker-b:9092",
   };
-  const londonKafkaTopic = viewServer.kafkaTopic<typeof londonKafkaRegions>()({
-    regions: ["london"],
-    value: kafka.protobuf(ordersValueSchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value, region }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-    }),
+  const broadKafkaRegions: RuntimeRegions = localKafkaRegions;
+  const topicOwnedViewServer = defineViewServerConfig({
+    kafka: localKafkaRegions,
+    topics: {
+      orders: {
+        schema: Order,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: "orders-source",
+          regions: ["usa"],
+          value: kafka.protobuf(ordersValueSchema),
+          key: kafka.protobuf(ordersKeySchema),
+          rowKey: ({ key, region, metadata }) => {
+            expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+            expectTypeOf(region).toEqualTypeOf<"usa">();
+            expectTypeOf(metadata).toEqualTypeOf<KafkaMessageMetadata<"usa">>();
+            return key.orderId;
+          },
+          map: ({ key, value, region, rowKey }) => {
+            expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+            expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+            expectTypeOf(region).toEqualTypeOf<"usa">();
+            expectTypeOf(rowKey).toEqualTypeOf<string>();
+            return {
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region,
+              updatedAt: value.updatedAt,
+            };
+          },
+        }),
+      },
+    },
   });
-  const validLocalOrdersTopic = localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value, region }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-    }),
-  });
-  const validKeyedLocalOrdersTopic = localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    key: kafka.protobuf(ordersKeySchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value, region }) => ({
-      id: key.orderId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-    }),
-  });
-  const spreadValueMismatchTopic = {
-    ...validLocalOrdersTopic,
-    value: kafka.string(),
+  const validConfigInput: DefineViewServerConfigInput<
+    typeof topicOwnedViewServer.topics,
+    typeof localKafkaRegions
+  > = {
+    kafka: localKafkaRegions,
+    topics: topicOwnedViewServer.topics,
   };
-  const spreadKeyMismatchTopic = {
-    ...validKeyedLocalOrdersTopic,
-    key: kafka.stringKey(),
-  };
-  const spreadMappingMismatchTopic = {
-    ...validLocalOrdersTopic,
-    mapping: (): typeof Trade.Type => ({
-      id: "trade-1",
-      symbol: "AAPL",
-      quantity: 1,
-      price: 42,
-      region: "usa",
-    }),
-  };
-  const spreadTargetMismatchTopic = {
-    ...validLocalOrdersTopic,
-    viewServerTopic: "trades",
-  };
-  type UnsafeJsonParseResult = ReturnType<typeof JSON.parse>;
-  const unsafeValueCodec: KafkaCodec<UnsafeJsonParseResult> = kafka.bytes();
-  const unsafeErrorCodec: KafkaCodec<string, UnsafeJsonParseResult> = kafka.string();
-  const unknownErrorCodec: KafkaCodec<string, unknown> = kafka.string();
+  type ReservedTopicConfigInput = DefineViewServerConfigInput<
+    {
+      readonly [VIEW_SERVER_HEALTH_TOPIC]: {
+        readonly schema: typeof Order;
+        readonly key: "id";
+      };
+    },
+    typeof localKafkaRegions
+  >;
+  type ConflictingSourceConfigInput = DefineViewServerConfigInput<
+    {
+      readonly orders: {
+        readonly schema: typeof Order;
+        readonly key: "id";
+        readonly kafkaSource: typeof topicOwnedViewServer.topics.orders.kafkaSource;
+        readonly grpcSource: GrpcMaterializedTopicSource;
+      };
+    },
+    typeof localKafkaRegions
+  >;
+  type InvalidKeyConfigInput = DefineViewServerConfigInput<
+    {
+      readonly orders: {
+        readonly schema: typeof Order;
+        readonly key: "missing";
+      };
+    },
+    typeof localKafkaRegions
+  >;
+  type BroadRegionConfigInput = DefineViewServerConfigInput<
+    typeof topicOwnedViewServer.topics,
+    RuntimeRegions
+  >;
+  expectTypeOf(validConfigInput.topics.orders.kafkaSource.rowKey).not.toBeAny();
+  expectTypeOf<BroadRegionConfigInput["topics"]>().toEqualTypeOf<never>();
+  expectTypeOf<
+    ReservedTopicConfigInput["topics"][typeof VIEW_SERVER_HEALTH_TOPIC]
+  >().toEqualTypeOf<never>();
+  expectTypeOf<ConflictingSourceConfigInput["topics"]["orders"]>().toEqualTypeOf<never>();
+  expectTypeOf<InvalidKeyConfigInput["topics"]["orders"]["key"]>().toEqualTypeOf<never>();
 
+  // @ts-expect-error Kafka source keys must either be omitted or be a real Kafka codec.
+  const invalidUndefinedKeyKafkaSourceViewServer = defineViewServerConfig({
+    kafka: localKafkaRegions,
+    topics: {
+      orders: {
+        schema: Order,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: "orders-source",
+          regions: ["usa"],
+          value: kafka.protobuf(ordersValueSchema),
+          // @ts-expect-error Kafka source helper keys must either be omitted or be a real Kafka codec.
+          key: undefined,
+          rowKey: ({ key }) => key,
+          map: ({ value, region }) => ({
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region,
+            updatedAt: value.updatedAt,
+          }),
+        }),
+      },
+    },
+  });
+  // @ts-expect-error topic-owned Kafka sources require runtime Kafka options with a consumer group.
+  topicOwnedViewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+  });
+  topicOwnedViewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    kafka: {
+      consumerGroupId: "view-server-topic-owned-type-test",
+    },
+  });
+  topicOwnedViewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    kafka: {
+      consumerGroupId: "view-server-topic-owned-explicit-regions-type-test",
+      regions: localKafkaRegions,
+    },
+  });
+  topicOwnedViewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    kafka: {
+      consumerGroupId: "view-server-topic-owned-broad-regions-type-test",
+      // @ts-expect-error topic-owned Kafka source runtime regions must be exact enough to prove source coverage.
+      regions: broadKafkaRegions,
+    },
+  });
+  topicOwnedViewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    kafka: {
+      consumerGroupId: "view-server-topic-owned-wrong-regions-type-test",
+      // @ts-expect-error topic-owned Kafka source runtime regions must include the source regions.
+      regions: londonKafkaRegions,
+    },
+  });
   // @ts-expect-error protobuf descriptors cannot be inferred from any
   kafka.protobuf(JSON.parse("{}"));
 
@@ -6402,84 +7817,10 @@ const assertCompileTimeContracts = () => {
     decode: () => Effect.fail(JSON.parse("{}")),
   });
 
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error Kafka value codecs cannot be inferred from any
-    value: JSON.parse("{}"),
-    viewServerTopic: "orders",
-    mapping: (): typeof Order.Type => ({
-      id: "order-1",
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    // @ts-expect-error Kafka key codecs cannot be inferred from any
-    key: JSON.parse("{}"),
-    viewServerTopic: "orders",
-    mapping: (): typeof Order.Type => ({
-      id: "order-1",
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error Kafka value codecs cannot be widened to KafkaCodec<any>
-    value: unsafeValueCodec,
-    viewServerTopic: "orders",
-    mapping: (): typeof Order.Type => ({
-      id: "order-1",
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error Kafka codec error channels cannot be widened to any
-    value: unsafeErrorCodec,
-    viewServerTopic: "orders",
-    mapping: (): typeof Order.Type => ({
-      id: "order-1",
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    // @ts-expect-error Kafka codec error channels cannot be widened to unknown
-    value: unknownErrorCodec,
-    viewServerTopic: "orders",
-    mapping: (): typeof Order.Type => ({
-      id: "order-1",
-      customerId: "customer-1",
-      status: "open",
-      price: 42,
-      region: "usa",
-      updatedAt: 1,
-    }),
-  });
+  expectTypeOf(invalidUndefinedKeyKafkaSourceViewServer).not.toBeAny();
 
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "orders",
       "usa" | "london",
@@ -6488,7 +7829,7 @@ const assertCompileTimeContracts = () => {
     >["key"]
   >().toEqualTypeOf<OrdersKeyMessage>();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "orders",
       "usa" | "london",
@@ -6497,7 +7838,7 @@ const assertCompileTimeContracts = () => {
     >["value"]
   >().toEqualTypeOf<OrdersValueMessage>();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "orders",
       "usa" | "london",
@@ -6506,7 +7847,7 @@ const assertCompileTimeContracts = () => {
     >["region"]
   >().toEqualTypeOf<"usa" | "london">();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "orders",
       "usa" | "london",
@@ -6515,7 +7856,7 @@ const assertCompileTimeContracts = () => {
     >["schema"]
   >().toEqualTypeOf<typeof Order>();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "orders",
       "usa" | "london",
@@ -6524,7 +7865,7 @@ const assertCompileTimeContracts = () => {
     >["metadata"]["sourceRegion"]
   >().toEqualTypeOf<"usa" | "london">();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "trades",
       "usa",
@@ -6533,7 +7874,7 @@ const assertCompileTimeContracts = () => {
     >["key"]
   >().toEqualTypeOf<string>();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "trades",
       "usa",
@@ -6542,7 +7883,7 @@ const assertCompileTimeContracts = () => {
     >["value"]
   >().toEqualTypeOf<TradesValueMessage>();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "trades",
       "usa",
@@ -6551,7 +7892,7 @@ const assertCompileTimeContracts = () => {
     >["region"]
   >().toEqualTypeOf<"usa">();
   expectTypeOf<
-    KafkaMappingInput<
+    KafkaTopicSourceMapInput<
       typeof viewServer.topics,
       "trades",
       "usa",
@@ -6657,11 +7998,11 @@ const assertCompileTimeContracts = () => {
   expectTypeOf(assertRuntimeContracts).toBeFunction();
   expectTypeOf<ViewServerBackpressureError>().toMatchTypeOf<ViewServerRuntimeError>();
 
+  // @ts-expect-error topic keys must be string fields from the Effect Schema row type
   defineViewServerConfig({
     topics: {
       invalid: {
         schema: Order,
-        // @ts-expect-error topic keys must be string fields from the Effect Schema row type
         key: "missing",
       },
     },
@@ -6672,20 +8013,105 @@ const assertCompileTimeContracts = () => {
       loose: {
         // @ts-expect-error topic schemas must expose concrete fields for query typing and wire validation
         schema: Schema.Record(Schema.String, Schema.String),
-        // @ts-expect-error non-field schemas cannot provide a valid string row key
+        key: "id",
+      },
+    },
+  });
+
+  // @ts-expect-error system health topic names are reserved
+  defineViewServerConfig({
+    topics: {
+      __view_server_health: {
+        schema: Order,
         key: "id",
       },
     },
   });
 
   defineViewServerConfig({
+    kafka: localKafkaRegions,
     topics: {
-      // @ts-expect-error system health topic names are reserved
-      __view_server_health: {
+      orders: {
         schema: Order,
         key: "id",
+        kafkaSource: kafka.source({
+          topic: "orders-source",
+          regions: ["usa"],
+          value: kafka.protobuf(ordersValueSchema),
+          key: kafka.protobuf(ordersKeySchema),
+          rowKey: ({ key }) => key.orderId,
+          map: ({ key, value, region }) => {
+            expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+            expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+            expectTypeOf(region).toEqualTypeOf<"usa">();
+            return {
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region,
+              updatedAt: value.updatedAt,
+            };
+          },
+        }),
+      },
+      trades: {
+        schema: Trade,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: "trades-source",
+          regions: ["usa"],
+          value: kafka.protobuf(tradesValueSchema),
+          rowKey: ({ key }) => key,
+          map: ({ key, value, region }) => {
+            expectTypeOf(key).toEqualTypeOf<string>();
+            expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
+            expectTypeOf(region).toEqualTypeOf<"usa">();
+            return {
+              symbol: value.symbol,
+              quantity: value.quantity,
+              price: value.price,
+              region,
+            };
+          },
+        }),
       },
     },
+  });
+
+  kafka.source({
+    topic: "orders-source",
+    regions: ["usa"],
+    // @ts-expect-error unsupported Kafka value codecs must fail instead of inferring unknown
+    value: {},
+    rowKey: () => "order-1",
+    map: () => ({}),
+  });
+
+  kafka.source({
+    topic: "orders-source",
+    regions: ["usa"],
+    // @ts-expect-error $typeName-only objects are message instances, not generated schemas/codecs
+    value: { $typeName: "viewserver.test.OrderValue" },
+    rowKey: () => "order-1",
+    map: () => ({}),
+  });
+
+  kafka.source({
+    topic: "orders-source",
+    regions: ["usa"],
+    // @ts-expect-error arbitrary decoder shapes are not accepted as Kafka codecs
+    value: { fromBinary: (_bytes: Uint8Array) => ({}) },
+    rowKey: () => "order-1",
+    map: () => ({}),
+  });
+
+  kafka.source({
+    topic: "orders-source",
+    regions: ["usa"],
+    // @ts-expect-error row Effect schemas are not Kafka codecs unless wrapped with kafka.json
+    value: Order,
+    rowKey: () => "order-1",
+    map: () => ({}),
   });
 
   viewServer.defineRuntimeOptions({
@@ -6697,13 +8123,11 @@ const assertCompileTimeContracts = () => {
       regions: {
         usa: "broker-a:9092",
       },
-      topics: {},
     },
   });
 
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,
-    // @ts-expect-error runtime options must include Kafka topic definitions
     kafka: {
       consumerGroupId: "view-server-type-test",
       regions: {
@@ -6720,7 +8144,6 @@ const assertCompileTimeContracts = () => {
       regions: {
         usa: "broker-a:9092",
       },
-      topics: {},
       // @ts-expect-error runtime kafka options reject unknown fields
       extraKafkaField: true,
     },
@@ -6731,196 +8154,41 @@ const assertCompileTimeContracts = () => {
     kafka: {
       consumerGroupId: "view-server-type-test",
       regions: localKafkaRegions,
-      topics: {
-        // @ts-expect-error Kafka source topics must be created with viewServer.kafkaTopic
-        orders: {
+      // @ts-expect-error runtime Kafka options do not accept topic definitions.
+      topics: {},
+    },
+  });
+
+  defineViewServerConfig({
+    kafka: localKafkaRegions,
+    topics: {
+      orders: {
+        schema: Order,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: "orders-source",
           regions: ["usa"],
           value: kafka.protobuf(ordersValueSchema),
-          viewServerTopic: "orders",
-          mapping: () => ({
-            id: "order-1",
-            customerId: "customer-1",
-            status: "open",
-            price: 42,
-            region: "usa",
-            updatedAt: 1,
-          }),
-        },
+          key: kafka.protobuf(ordersKeySchema),
+          rowKey: ({ key }) => key.orderId,
+          map: ({ key, value, metadata, rowKey }) => {
+            expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
+            expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+            expectTypeOf(rowKey).toEqualTypeOf<string>();
+            expectTypeOf(metadata.sourceRegion).toEqualTypeOf<"usa">();
+            expectTypeOf(metadata.headers).toEqualTypeOf<
+              Readonly<Record<string, string | Uint8Array | ReadonlyArray<string | Uint8Array>>>
+            >();
+            return {
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region: metadata.sourceRegion,
+              updatedAt: value.updatedAt,
+            };
+          },
+        }),
       },
-    },
-  });
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: localKafkaRegions,
-      topics: {
-        // @ts-expect-error spread-mutated Kafka topic values must still match mapping input types
-        orders: spreadValueMismatchTopic,
-      },
-    },
-  });
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: localKafkaRegions,
-      topics: {
-        // @ts-expect-error spread-mutated Kafka topic keys must still match mapping input types
-        orders: spreadKeyMismatchTopic,
-      },
-    },
-  });
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: localKafkaRegions,
-      topics: {
-        // @ts-expect-error spread-mutated Kafka mappings must still return the target topic row
-        orders: spreadMappingMismatchTopic,
-      },
-    },
-  });
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: localKafkaRegions,
-      topics: {
-        // @ts-expect-error spread-mutated Kafka target topics must still match the mapping row
-        orders: spreadTargetMismatchTopic,
-      },
-    },
-  });
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: localKafkaRegions,
-      topics: {
-        // @ts-expect-error Kafka topic helper regions must match runtime kafka.regions
-        orders: londonKafkaTopic,
-      },
-    },
-  });
-
-  // @ts-expect-error Kafka topic regions are constrained to kafka.regions keys
-  localKafkaTopic({ regions: ["USA"] });
-
-  // @ts-expect-error Kafka topic regions must be non-empty
-  localKafkaTopic({ regions: [] });
-
-  // @ts-expect-error Kafka mappings must target a configured View Server topic
-  localKafkaTopic({ viewServerTopic: "customers" });
-
-  const invalidExtraKafkaTopicField: KafkaTopicDefinition<
-    typeof viewServer.topics,
-    typeof localKafkaRegions,
-    "orders",
-    typeof ordersValueKafkaCodec,
-    undefined,
-    readonly ["usa"]
-  > = {
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    viewServerTopic: "orders",
-    // @ts-expect-error Kafka topic definitions reject unknown topic contract fields
-    extraTopicField: true,
-    mapping: ({ key, value, region }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-    }),
-  };
-
-  expectTypeOf(invalidExtraKafkaTopicField.viewServerTopic).toEqualTypeOf<"orders">();
-
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    // @ts-expect-error unsupported Kafka key codecs must fail instead of inferring unknown
-    key: {},
-    viewServerTopic: "orders",
-    mapping: ({ key, value, region }) => ({
-      id: key,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.json(OrderWithExtraSourceField),
-    viewServerTopic: "orders",
-    // @ts-expect-error returning source JSON value directly rejects fields outside the target row
-    mapping: ({ value }) => value,
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    key: kafka.protobuf(ordersKeySchema),
-    viewServerTopic: "orders",
-    // @ts-expect-error unannotated mapping returns must match the target View Server topic row
-    mapping: ({ key, value, region }) => ({
-      id: key.orderId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    key: kafka.protobuf(ordersKeySchema),
-    viewServerTopic: "orders",
-    // @ts-expect-error unannotated mapping returns reject extra fields outside the target row
-    mapping: ({ key, value, region }) => ({
-      id: key.orderId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region,
-      updatedAt: value.updatedAt,
-      ze: true,
-    }),
-  });
-
-  localKafkaTopic({
-    regions: ["usa"],
-    value: kafka.protobuf(ordersValueSchema),
-    key: kafka.protobuf(ordersKeySchema),
-    viewServerTopic: "orders",
-    mapping: ({ key, value, schema, metadata }) => {
-      expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
-      expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-      expectTypeOf(schema).toEqualTypeOf<typeof Order>();
-      expectTypeOf(metadata.sourceRegion).toEqualTypeOf<"usa">();
-      expectTypeOf(metadata.headers).toEqualTypeOf<
-        Readonly<Record<string, string | Uint8Array | ReadonlyArray<string | Uint8Array>>>
-      >();
-      return {
-        id: key.orderId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: metadata.sourceRegion,
-        updatedAt: value.updatedAt,
-      };
     },
   });
 
@@ -6935,51 +8203,47 @@ const assertCompileTimeContracts = () => {
       regions: {
         usa: "broker-a:9092",
       },
-      topics: {},
     },
   });
 
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,
+    // @ts-expect-error committed Kafka start config requires committedConsumerGroup.
     kafka: {
       consumerGroupId: "view-server-type-test",
-      // @ts-expect-error committed Kafka start config requires committedConsumerGroup.
       startFrom: {
         fallback: "earliest",
       },
       regions: {
         usa: "broker-a:9092",
       },
-      topics: {},
     },
   });
 
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,
+    // @ts-expect-error runtime Kafka startFrom only accepts earliest, latest, or committed group config.
     kafka: {
       consumerGroupId: "view-server-type-test",
-      // @ts-expect-error runtime Kafka startFrom only accepts earliest, latest, or committed group config.
       startFrom: "middle",
       regions: {
         usa: "broker-a:9092",
       },
-      topics: {},
     },
   });
 
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,
+    // @ts-expect-error committed Kafka start fallback must be earliest, latest, or fail.
     kafka: {
       consumerGroupId: "view-server-type-test",
       startFrom: {
         committedConsumerGroup: "view-server-existing-group",
-        // @ts-expect-error committed Kafka start fallback must be earliest, latest, or fail.
         fallback: "middle",
       },
       regions: {
         usa: "broker-a:9092",
       },
-      topics: {},
     },
   });
 
@@ -6994,48 +8258,6 @@ const assertCompileTimeContracts = () => {
       },
       regions: {
         usa: "broker-a:9092",
-      },
-      topics: {
-        orders: localKafkaTopic({
-          regions: ["usa"],
-          value: kafka.protobuf(ordersValueSchema),
-          key: kafka.protobuf(ordersKeySchema),
-          viewServerTopic: "orders",
-          // @ts-expect-error mapping return must match the target View Server topic row type
-          mapping: ({ key, value, region }) => ({
-            id: key.orderId,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region,
-          }),
-        }),
-      },
-    },
-  });
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: {
-        usa: "broker-a:9092",
-      },
-      topics: {
-        orders: localKafkaTopic({
-          regions: ["usa"],
-          value: kafka.protobuf(ordersValueSchema),
-          key: kafka.protobuf(ordersKeySchema),
-          viewServerTopic: "orders",
-          // @ts-expect-error raw runtime topic mappings must return the target topic row
-          mapping: ({ key, value, region }) => ({
-            id: key.orderId,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region,
-          }),
-        }),
       },
     },
   });
@@ -7682,66 +8904,6 @@ const assertCompileTimeContracts = () => {
   };
 
   expectTypeOf(assertLiveQueryContracts).toBeFunction();
-
-  viewServer.defineRuntimeOptions({
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: {
-        usa: "broker-a:9092",
-      },
-      topics: {
-        orders: localKafkaTopic({
-          regions: ["usa"],
-          value: kafka.protobuf(ordersValueSchema),
-          key: kafka.protobuf(ordersKeySchema),
-          viewServerTopic: "orders",
-          mapping: ({ key, value, region }) => {
-            expectTypeOf(key).toEqualTypeOf<OrdersKeyMessage>();
-            expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-            expectTypeOf(region).toEqualTypeOf<"usa">();
-            return {
-              id: key.orderId,
-              customerId: value.customerId,
-              status: value.status,
-              price: value.price,
-              region,
-              updatedAt: value.updatedAt,
-            };
-          },
-        }),
-        trades: localKafkaTopic({
-          regions: ["usa"],
-          value: kafka.protobuf(tradesValueSchema),
-          viewServerTopic: "trades",
-          mapping: ({ key, value, region }) => {
-            expectTypeOf(key).toEqualTypeOf<string>();
-            expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
-            expectTypeOf(region).toEqualTypeOf<"usa">();
-            return {
-              id: key,
-              symbol: value.symbol,
-              quantity: value.quantity,
-              price: value.price,
-              region,
-            };
-          },
-        }),
-      },
-    },
-  });
-
-  // @ts-expect-error unsupported Kafka value codecs must fail instead of inferring unknown
-  localKafkaTopic({ value: {} });
-
-  // @ts-expect-error $typeName-only objects are message instances, not generated schemas/codecs
-  localKafkaTopic({ value: { $typeName: "viewserver.test.OrderValue" } });
-
-  // @ts-expect-error arbitrary decoder shapes are not accepted as Kafka codecs
-  localKafkaTopic({ value: { fromBinary: (_bytes: Uint8Array) => ({}) } });
-
-  // @ts-expect-error row Effect schemas are not Kafka codecs unless wrapped with kafka.json
-  localKafkaTopic({ value: Order });
 };
 
 describe("compile-time contract assertions", () => {

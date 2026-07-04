@@ -34,7 +34,7 @@ import {
 import { Cause, Clock, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import { engineErrorToRuntimeError, leasedRuntimeAccessError } from "./runtime-error";
-import { grpcLeasedSourceTopics } from "./topic-source";
+import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 const runtimeClosedError: ViewServerRuntimeError = {
   _tag: "ViewServerRuntimeError",
@@ -106,7 +106,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
     Effect.sync<
       ViewServerRuntimeLiveClient<Topics> & ViewServerRuntimeCoreInternalLiveClient<Topics>
     >(() => {
-      const leasedTopics = grpcLeasedSourceTopics(config);
+      const sourceOwnership = makeSourceOwnershipPolicy(config);
       function subscribeInternal<
         Topic extends Extract<keyof Topics, string>,
         const Query extends
@@ -191,7 +191,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         ViewServerRuntimeError | ViewServerTransportError
       > {
         return Effect.suspend(() => {
-          if (leasedTopics.has(topic)) {
+          if (sourceOwnership.isGrpcLeasedTopic(topic)) {
             return Effect.fail(leasedRuntimeAccessError(topic));
           }
           return subscribeInternal<Topic, Query>(topic, query);
@@ -202,7 +202,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         query,
       ) => {
         return Effect.suspend(() => {
-          if (leasedTopics.has(topic)) {
+          if (sourceOwnership.isGrpcLeasedTopic(topic)) {
             return Effect.fail(leasedRuntimeAccessError(topic));
           }
           return subscribeRuntimeInternal(topic, query);

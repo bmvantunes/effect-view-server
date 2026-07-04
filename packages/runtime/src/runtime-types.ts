@@ -2,7 +2,6 @@ import type { ViewServerLiveClient } from "@effect-view-server/client";
 import type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/runtime-core";
 import type { ViewServerAuth } from "@effect-view-server/server";
 import type {
-  KafkaRuntimeTopicDefinition,
   LiveQueryRow,
   LiveQueryResult,
   RawQuery,
@@ -35,20 +34,19 @@ export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &
 type RuntimeHttpPath = `/${string}`;
 
 export type ViewServerKafkaRuntimeOptions<
-  Topics extends ViewServerRuntimeTopicDefinitions,
+  _Topics extends ViewServerRuntimeTopicDefinitions,
   Regions extends RuntimeRegions = RuntimeRegions,
 > = {
   readonly consumerGroupId: string;
   readonly startFrom?: ViewServerKafkaStartFrom;
-  readonly regions: Regions;
-  readonly topics: Record<string, KafkaRuntimeTopicDefinition<Topics, Regions>>;
+  readonly regions?: Regions;
 };
 
 export type ViewServerGrpcRuntimeOptions<
   Topics extends ViewServerRuntimeTopicDefinitions,
   Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
 > = {
-  readonly clients: Clients;
+  readonly clients?: Clients;
   readonly feeds: Record<string, GrpcFeedDefinition<Topics, Clients>>;
   readonly materializedReconnect?: {
     readonly maxReconnects?: number;
@@ -80,6 +78,12 @@ type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
 
+type IsUnion<Value, Candidate = Value> = Value extends unknown
+  ? [Candidate] extends [Value]
+    ? false
+    : true
+  : false;
+
 type RuntimeKafkaExactKeysConstraint<Options> = Options extends {
   readonly kafka: infer CandidateKafka;
 }
@@ -89,29 +93,6 @@ type RuntimeKafkaExactKeysConstraint<Options> = Options extends {
           CandidateKafka,
           ViewServerKafkaRuntimeOptions<ViewServerRuntimeTopicDefinitions>
         >;
-    }
-  : unknown;
-
-type RuntimeKafkaRegionConstraint<
-  Topics extends ViewServerRuntimeTopicDefinitions,
-  Options,
-> = Options extends {
-  readonly kafka: {
-    readonly regions: infer Regions extends RuntimeRegions;
-    readonly topics: infer KafkaTopics extends Record<string, object>;
-  };
-}
-  ? {
-      readonly kafka: {
-        readonly topics: {
-          readonly [SourceTopic in keyof KafkaTopics]: KafkaTopics[SourceTopic] extends KafkaRuntimeTopicDefinition<
-            Topics,
-            Regions
-          >
-            ? KafkaTopics[SourceTopic]
-            : never;
-        };
-      };
     }
   : unknown;
 
@@ -144,10 +125,10 @@ type RuntimeGrpcExactKeysConstraint<Options> = Options extends {
 
 type RuntimeGrpcFeedConstraint<
   Topics extends ViewServerRuntimeTopicDefinitions,
+  ConfigClients extends GrpcRuntimeClients,
   Options,
 > = Options extends {
   readonly grpc: {
-    readonly clients: infer Clients extends GrpcRuntimeClients;
     readonly feeds: infer Feeds extends Record<string, object>;
   };
 }
@@ -156,13 +137,32 @@ type RuntimeGrpcFeedConstraint<
         readonly feeds: {
           readonly [FeedName in keyof Feeds]: Feeds[FeedName] extends GrpcFeedDefinition<
             Topics,
-            Clients
+            RuntimeGrpcClientsFor<ConfigClients, Options>
           >
             ? Feeds[FeedName]
             : never;
         };
       };
     }
+  : unknown;
+
+type RuntimeGrpcClientsConstraint<
+  ConfigClients extends GrpcRuntimeClients,
+  Options,
+> = string extends keyof ConfigClients
+  ? Options extends {
+      readonly grpc: infer CandidateGrpc;
+    }
+    ? CandidateGrpc extends {
+        readonly clients: GrpcRuntimeClients;
+      }
+      ? unknown
+      : {
+          readonly grpc: CandidateGrpc & {
+            readonly clients: GrpcRuntimeClients;
+          };
+        }
+    : unknown
   : unknown;
 
 type RuntimeGrpcMaterializedReconnectExactKeysConstraint<Options> = Options extends {
@@ -192,40 +192,236 @@ type RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> = Opti
     }
   : unknown;
 
-type RuntimeRegionsOf<Options> = Options extends {
+type TopicOwnedKafkaSourceTopic<Topics extends object> = Extract<
+  {
+    readonly [Topic in keyof Topics]: Topics[Topic] extends {
+      readonly kafkaSource: object;
+    }
+      ? Topic
+      : never;
+  }[keyof Topics],
+  string
+>;
+
+type TopicOwnedGrpcSourceTopic<Topics extends object> = Extract<
+  {
+    readonly [Topic in keyof Topics]: Topics[Topic] extends {
+      readonly grpcSource: object;
+    }
+      ? Topic
+      : never;
+  }[keyof Topics],
+  string
+>;
+
+type TopicOwnedSourceTopic<Topics extends object> =
+  | TopicOwnedKafkaSourceTopic<Topics>
+  | TopicOwnedGrpcSourceTopic<Topics>;
+
+type TopicOwnedKafkaSourceRegion<Topics extends object> = Extract<
+  {
+    readonly [Topic in keyof Topics]: Topics[Topic] extends {
+      readonly kafkaSource: {
+        readonly regions: infer Regions extends ReadonlyArray<string>;
+      };
+    }
+      ? Regions[number]
+      : never;
+  }[keyof Topics],
+  string
+>;
+
+type RuntimeRegionsAreBroad<Regions extends RuntimeRegions> = string extends keyof Regions
+  ? true
+  : false;
+
+type RuntimeKafkaSourceRegionConstraint<
+  Topics extends object,
+  ConfigRegions extends RuntimeRegions,
+  Options,
+> = [TopicOwnedKafkaSourceRegion<Topics>] extends [never]
+  ? unknown
+  : Options extends {
+        readonly kafka: {
+          readonly regions: infer Regions extends RuntimeRegions;
+        };
+      }
+    ? RuntimeRegionsAreBroad<Regions> extends true
+      ? {
+          readonly kafka: {
+            readonly regions: never;
+          };
+        }
+      : Exclude<TopicOwnedKafkaSourceRegion<Topics>, keyof Regions> extends never
+        ? unknown
+        : {
+            readonly kafka: {
+              readonly regions: never;
+            };
+          }
+    : RuntimeRegionsAreBroad<ConfigRegions> extends true
+      ? {
+          readonly kafka: {
+            readonly regions: never;
+          };
+        }
+      : unknown;
+
+type RuntimeKafkaSourceOwnershipConstraint<Topics extends object, Options> = [
+  TopicOwnedKafkaSourceTopic<Topics>,
+] extends [never]
+  ? unknown
+  : Options extends {
+        readonly kafka: infer CandidateKafka;
+      }
+    ? {
+        readonly kafka: CandidateKafka & {
+          readonly consumerGroupId: string;
+        };
+      }
+    : {
+        readonly kafka: never;
+      };
+
+type RuntimeGrpcSingleFeedTopic<Feed> = [Feed] extends [
+  {
+    readonly topic: infer Topic extends string;
+  },
+]
+  ? string extends Topic
+    ? never
+    : IsUnion<Topic> extends true
+      ? never
+      : Topic
+  : never;
+
+type RuntimeGrpcFeedTopic<Feeds extends Record<string, object>> = Extract<
+  {
+    readonly [FeedName in keyof Feeds]: RuntimeGrpcSingleFeedTopic<Feeds[FeedName]>;
+  }[keyof Feeds],
+  string
+>;
+
+type RuntimeGrpcOptionOwnedTopic<Options> = Options extends {
+  readonly grpc: {
+    readonly feeds: infer Feeds extends Record<string, object>;
+  };
+}
+  ? RuntimeGrpcFeedTopic<Feeds>
+  : never;
+
+type RuntimeSourceOwnedTopic<Topics extends object, Options> = Extract<
+  TopicOwnedSourceTopic<Topics> | RuntimeGrpcOptionOwnedTopic<Options>,
+  Extract<keyof Topics, string>
+>;
+
+type RuntimeGrpcSourceOwnershipConstraint<Topics extends object, Options> = [
+  TopicOwnedGrpcSourceTopic<Topics>,
+] extends [never]
+  ? unknown
+  : Options extends {
+        readonly grpc: {
+          readonly feeds: infer Feeds extends Record<string, object>;
+        };
+      }
+    ? string extends keyof Feeds
+      ? {
+          readonly grpc: {
+            readonly feeds: never;
+          };
+        }
+      : Exclude<TopicOwnedGrpcSourceTopic<Topics>, RuntimeGrpcFeedTopic<Feeds>> extends never
+        ? unknown
+        : {
+            readonly grpc: {
+              readonly feeds: never;
+            };
+          }
+    : {
+        readonly grpc: never;
+      };
+
+type RuntimeRegionsOf<Options, ConfigRegions extends RuntimeRegions> = Options extends {
   readonly kafka: {
     readonly regions: infer Regions extends RuntimeRegions;
   };
 }
   ? Regions
-  : RuntimeRegions;
+  : ConfigRegions;
 
-type RuntimeGrpcClientsOf<Options> = Options extends {
+type RuntimeGrpcClientsOf<Options, ConfigClients extends GrpcRuntimeClients> = Options extends {
   readonly grpc: {
     readonly clients: infer Clients extends GrpcRuntimeClients;
   };
 }
   ? Clients
-  : GrpcRuntimeClients;
+  : ConfigClients;
+
+type RuntimeGrpcClientsFor<ConfigClients extends GrpcRuntimeClients, Options> = Options extends {
+  readonly grpc: {
+    readonly clients: infer Clients extends GrpcRuntimeClients;
+  };
+}
+  ? Clients
+  : ConfigClients;
 
 export type ViewServerRuntimeOptionsInput<
   Topics extends ViewServerRuntimeTopicDefinitions,
-  Options extends object = ViewServerRuntimeOptions<Topics>,
+  ConfigRegions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+  Options extends object = ViewServerRuntimeOptions<Topics, ConfigRegions, GrpcClients>,
 > = Options &
-  ViewServerRuntimeOptions<Topics, RuntimeRegionsOf<Options>, RuntimeGrpcClientsOf<Options>> &
+  ViewServerRuntimeOptions<
+    Topics,
+    RuntimeRegionsOf<Options, ConfigRegions>,
+    RuntimeGrpcClientsOf<Options, GrpcClients>
+  > &
   RejectExtraKeys<
     Options,
-    ViewServerRuntimeOptions<Topics, RuntimeRegionsOf<Options>, RuntimeGrpcClientsOf<Options>>
+    ViewServerRuntimeOptions<
+      Topics,
+      RuntimeRegionsOf<Options, ConfigRegions>,
+      RuntimeGrpcClientsOf<Options, GrpcClients>
+    >
   > &
   RuntimeKafkaExactKeysConstraint<Options> &
-  RuntimeKafkaRegionConstraint<Topics, Options> &
   RuntimeKafkaStartFromExactKeysConstraint<Options> &
   RuntimeGrpcExactKeysConstraint<Options> &
-  RuntimeGrpcFeedConstraint<Topics, Options> &
+  RuntimeGrpcClientsConstraint<GrpcClients, Options> &
+  RuntimeGrpcFeedConstraint<Topics, GrpcClients, Options> &
   RuntimeGrpcMaterializedReconnectExactKeysConstraint<Options> &
-  RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options>;
+  RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> &
+  RuntimeKafkaSourceOwnershipConstraint<Topics, Options> &
+  RuntimeKafkaSourceRegionConstraint<Topics, ConfigRegions, Options> &
+  RuntimeGrpcSourceOwnershipConstraint<Topics, Options>;
 
-type RuntimePublicMutationTopic<Topics extends object> = Extract<
+export type ViewServerRuntimeOptionsArgs<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  ConfigRegions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+  Options extends object = ViewServerRuntimeOptions<Topics, ConfigRegions, GrpcClients>,
+> = [TopicOwnedKafkaSourceTopic<Topics>] extends [never]
+  ? [TopicOwnedSourceTopic<Topics>] extends [never]
+    ? [options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
+    : [options: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
+  : [options: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>];
+
+type RuntimePublicMutationTopic<Topics extends object, SourceOwnedTopics extends string> = Extract<
+  {
+    readonly [Topic in keyof Topics]: Topic extends SourceOwnedTopics
+      ? never
+      : Topics[Topic] extends { readonly kafkaSource: object }
+        ? never
+        : Topics[Topic] extends { readonly grpcSource: object }
+          ? never
+          : [TopicRouteBy<Topics, Topic>] extends [never]
+            ? Topic
+            : never;
+  }[keyof Topics],
+  string
+>;
+
+type RuntimePublicSnapshotTopic<Topics extends object> = Extract<
   {
     readonly [Topic in keyof Topics]: [TopicRouteBy<Topics, Topic>] extends [never] ? Topic : never;
   }[keyof Topics],
@@ -239,16 +435,26 @@ type RuntimeLeasedTopic<Topics extends object> = Extract<
   string
 >;
 
-type RuntimePublicReset<Topics extends object> = [RuntimeLeasedTopic<Topics>] extends [never]
-  ? {
-      readonly reset: ViewServerRuntimeClient<Topics>["reset"];
-    }
+type RuntimeSourceOwnedOrLeasedTopic<Topics extends object, SourceOwnedTopics extends string> =
+  | SourceOwnedTopics
+  | RuntimeLeasedTopic<Topics>;
+
+type RuntimePublicReset<Topics extends object, SourceOwnedTopics extends string> = [
+  RuntimeSourceOwnedOrLeasedTopic<Topics, SourceOwnedTopics>,
+] extends [never]
+  ? [Extract<keyof Topics, string>] extends [RuntimePublicMutationTopic<Topics, SourceOwnedTopics>]
+    ? {
+        readonly reset: ViewServerRuntimeClient<Topics>["reset"];
+      }
+    : {
+        readonly reset: (...args: never) => ReturnType<ViewServerRuntimeClient<Topics>["reset"]>;
+      }
   : {
       readonly reset: (...args: never) => ReturnType<ViewServerRuntimeClient<Topics>["reset"]>;
     };
 
 type RuntimePublicSnapshot<Topics extends object> = <
-  Topic extends RuntimePublicMutationTopic<Topics>,
+  Topic extends RuntimePublicSnapshotTopic<Topics>,
   const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
 >(
   topic: Topic,
@@ -258,36 +464,42 @@ type RuntimePublicSnapshot<Topics extends object> = <
   ViewServerRuntimeError
 >;
 
-type ViewServerPublicRuntimeClient<Topics extends object> = Omit<
+type ViewServerPublicRuntimeClient<Topics extends object, SourceOwnedTopics extends string> = Omit<
   ViewServerRuntimeClient<Topics>,
   "delete" | "patch" | "publish" | "publishMany" | "reset" | "snapshot"
 > & {
-  readonly publish: <Topic extends RuntimePublicMutationTopic<Topics>>(
+  readonly publish: <Topic extends RuntimePublicMutationTopic<Topics, SourceOwnedTopics>>(
     topic: Topic,
     row: TopicRow<Topics, Topic>,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly publishMany: <Topic extends RuntimePublicMutationTopic<Topics>>(
+  readonly publishMany: <Topic extends RuntimePublicMutationTopic<Topics, SourceOwnedTopics>>(
     topic: Topic,
     rows: ReadonlyArray<TopicRow<Topics, Topic>>,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly patch: <Topic extends RuntimePublicMutationTopic<Topics>, const Patch>(
+  readonly patch: <
+    Topic extends RuntimePublicMutationTopic<Topics, SourceOwnedTopics>,
+    const Patch,
+  >(
     topic: Topic,
     key: string,
     patch: Patch & Partial<TopicRow<Topics, Topic>> & ExactPatch<TopicRow<Topics, Topic>, Patch>,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
-  readonly delete: <Topic extends RuntimePublicMutationTopic<Topics>>(
+  readonly delete: <Topic extends RuntimePublicMutationTopic<Topics, SourceOwnedTopics>>(
     topic: Topic,
     key: string,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly snapshot: RuntimePublicSnapshot<Topics>;
-} & RuntimePublicReset<Topics>;
+} & RuntimePublicReset<Topics, SourceOwnedTopics>;
 
-export type ViewServerRuntime<Topics extends ViewServerRuntimeTopicDefinitions> = {
+export type ViewServerRuntime<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  Options extends object = object,
+> = {
   readonly url: string;
   readonly healthUrl: string;
   readonly metricsUrl: string;
   readonly tcpPublishUrl?: string;
-  readonly client: ViewServerPublicRuntimeClient<Topics>;
+  readonly client: ViewServerPublicRuntimeClient<Topics, RuntimeSourceOwnedTopic<Topics, Options>>;
   readonly liveClient: ViewServerLiveClient<Topics>;
   readonly health: () => Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>;
   readonly close: Effect.Effect<void>;

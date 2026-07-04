@@ -60,7 +60,7 @@ type ExactGrpcLeasedTopicSourceInput<Input> = Input &
 export type GrpcMaterializedTopic<Topics> = Extract<
   {
     readonly [Topic in keyof Topics]: Topics[Topic] extends {
-      readonly source: GrpcMaterializedTopicSource;
+      readonly grpcSource: GrpcMaterializedTopicSource;
     }
       ? Topic
       : never;

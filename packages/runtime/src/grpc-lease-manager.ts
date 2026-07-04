@@ -44,9 +44,10 @@ import {
 } from "./grpc-ingress";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
-import type {
-  ViewServerRuntimeCoreInternalClient,
-  ViewServerRuntimeCoreInternalLiveClient,
+import {
+  makeSourceOwnershipPolicy,
+  type ViewServerRuntimeCoreInternalClient,
+  type ViewServerRuntimeCoreInternalLiveClient,
 } from "@effect-view-server/runtime-core/internal";
 
 type ViewServerGrpcHealthRefreshRequest = Effect.Effect<void>;
@@ -264,7 +265,7 @@ const extractRoute = Effect.fn("ViewServerRuntime.grpc.leased.route.extract")(fu
       }),
     );
   }
-  const topicDefinition = config.topics[topic];
+  const topicDefinition = yield* topicDefinitionFor(config, topic, feed.topic);
   const route: Record<string, CanonicalRouteValue> = Object.create(null);
   for (const field of feed.routeBy) {
     const value = exactEqValue(query["where"][field]);
@@ -814,38 +815,38 @@ const externalizeLeasedEvent = <Row extends object>(
   return event;
 };
 
-const callRuntimePublishMany = Effect.fn("ViewServerRuntime.grpc.leased.runtime.publishMany")(
-  function* <const Topics extends ViewServerRuntimeTopicDefinitions, const Topic extends string>(
-    runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-    topic: Topic,
-    rows: ReadonlyArray<LeasedRowWithStorageKey>,
-    feedName: string,
-  ) {
-    const effect = Reflect.apply(runtimeClient.publishManyWithStorageKeys, runtimeClient, [
+const callRuntimePublishMany = Effect.fn(
+  "ViewServerRuntime.grpc.leased.runtime.publishManyDecoded",
+)(function* <const Topics extends ViewServerRuntimeTopicDefinitions, const Topic extends string>(
+  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
+  topic: Topic,
+  rows: ReadonlyArray<LeasedRowWithStorageKey>,
+  feedName: string,
+) {
+  const effect = Reflect.apply(runtimeClient.publishManyDecodedRowsWithStorageKeys, runtimeClient, [
+    topic,
+    rows,
+  ]);
+  if (!isRuntimeMutationEffect(effect)) {
+    return yield* grpcLeaseError({
+      message: `Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
+      cause: effect,
+      feedName,
       topic,
-      rows,
-    ]);
-    if (!isRuntimeMutationEffect(effect)) {
-      return yield* grpcLeaseError({
-        message: `Runtime publishManyWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
-        cause: effect,
+    });
+  }
+  yield* effect.pipe(
+    Effect.asVoid,
+    Effect.mapError((cause) =>
+      grpcLeaseError({
+        message: `gRPC leased feed publish failed for ${feedName}`,
+        cause,
         feedName,
         topic,
-      });
-    }
-    yield* effect.pipe(
-      Effect.asVoid,
-      Effect.mapError((cause) =>
-        grpcLeaseError({
-          message: `gRPC leased feed publish failed for ${feedName}`,
-          cause,
-          feedName,
-          topic,
-        }),
-      ),
-    );
-  },
-);
+      }),
+    ),
+  );
+});
 
 const callRuntimeDelete = Effect.fn("ViewServerRuntime.grpc.leased.runtime.delete")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -1041,24 +1042,6 @@ const leasedFeedsByTopic = <
   return feeds;
 };
 
-const grpcLeasedSourceTopics = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
-): Set<string> => {
-  const topics = new Set<string>();
-  for (const [topic, definition] of Object.entries(config.topics)) {
-    const source = Reflect.get(definition, "source");
-    if (
-      typeof source === "object" &&
-      source !== null &&
-      Reflect.get(source, "kind") === "grpc" &&
-      Reflect.get(source, "lifecycle") === "leased"
-    ) {
-      topics.add(topic);
-    }
-  }
-  return topics;
-};
-
 const leasedRuntimeAccessError = (topic: string): ViewServerRuntimeError =>
   runtimeError({
     code: "UnsupportedQuery",
@@ -1066,6 +1049,33 @@ const leasedRuntimeAccessError = (topic: string): ViewServerRuntimeError =>
     message:
       "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
   });
+
+const sourceOwnedRuntimeMutationError = (topic: string): ViewServerRuntimeError =>
+  runtimeError({
+    code: "UnsupportedQuery",
+    topic,
+    message:
+      "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+  });
+
+const sourceOwnedRuntimeResetError: ViewServerRuntimeError = runtimeError({
+  code: "UnsupportedQuery",
+  message:
+    "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+});
+
+const normalizeAcquireLeaseError =
+  (topic: string) =>
+  (error: ViewServerRuntimeError | ViewServerGrpcIngressError): ViewServerRuntimeError => {
+    if (error instanceof ViewServerGrpcIngressError) {
+      return runtimeError({
+        code: "RuntimeUnavailable",
+        topic,
+        message: error.message,
+      });
+    }
+    return error;
+  };
 
 export const makeViewServerGrpcLeaseManager = Effect.fn(
   "ViewServerRuntime.grpc.leased.makeManager",
@@ -1084,7 +1094,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
 ) {
   const leases = new Map<string, ActiveLease>();
   const feedsByTopic = leasedFeedsByTopic(options);
-  const leasedTopics = grpcLeasedSourceTopics(config);
+  const sourceOwnership = makeSourceOwnershipPolicy(config);
   const lock = yield* Semaphore.make(1);
   let closed = false;
 
@@ -1093,7 +1103,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
   >(topic: Topic, query: unknown) {
     const configuredFeed = feedsByTopic.get(topic);
     if (configuredFeed === undefined) {
-      if (leasedTopics.has(topic)) {
+      if (sourceOwnership.isGrpcLeasedTopic(topic)) {
         return yield* Effect.fail(
           runtimeError({
             code: "RuntimeUnavailable",
@@ -1437,7 +1447,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     ViewServerRuntimeError | ViewServerTransportError
   > {
     return Effect.gen(function* () {
-      const lease = yield* lock.withPermit(acquireLease(topic, query));
+      const lease = yield* lock
+        .withPermit(acquireLease(topic, query))
+        .pipe(Effect.mapError(normalizeAcquireLeaseError(topic)));
       if (Option.isNone(lease)) {
         return yield* internalLiveClient.subscribeInternal<Topic, Query>(topic, query);
       }
@@ -1474,7 +1486,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     query,
   ) =>
     Effect.gen(function* () {
-      const lease = yield* lock.withPermit(acquireLease(topic, query));
+      const lease = yield* lock
+        .withPermit(acquireLease(topic, query))
+        .pipe(Effect.mapError(normalizeAcquireLeaseError(topic)));
       if (Option.isNone(lease)) {
         return yield* internalLiveClient.subscribeRuntimeInternal(topic, query);
       }
@@ -1507,36 +1521,46 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
 
   const snapshot: ViewServerRuntimeClient<Topics>["snapshot"] = (topic, query) =>
     Effect.gen(function* () {
-      if (leasedTopics.has(topic)) {
+      if (sourceOwnership.isGrpcLeasedTopic(topic)) {
         return yield* Effect.fail(leasedRuntimeAccessError(topic));
       }
       return yield* runtimeClient.snapshot(topic, query);
     });
 
-  const rejectLeasedMutation = (topic: string): Effect.Effect<never, ViewServerRuntimeError> =>
-    Effect.fail(leasedRuntimeAccessError(topic));
+  const rejectSourceOwnedMutation = (topic: string): Effect.Effect<never, ViewServerRuntimeError> =>
+    sourceOwnership.isGrpcLeasedTopic(topic)
+      ? Effect.fail(leasedRuntimeAccessError(topic))
+      : Effect.fail(sourceOwnedRuntimeMutationError(topic));
 
   const publish: ViewServerRuntimeClient<Topics>["publish"] = (topic, row) =>
-    leasedTopics.has(topic) ? rejectLeasedMutation(topic) : runtimeClient.publish(topic, row);
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
+      : runtimeClient.publish(topic, row);
   const publishMany: ViewServerRuntimeClient<Topics>["publishMany"] = (topic, rows) =>
-    leasedTopics.has(topic) ? rejectLeasedMutation(topic) : runtimeClient.publishMany(topic, rows);
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
+      : runtimeClient.publishMany(topic, rows);
   const patch: ViewServerRuntimeClient<Topics>["patch"] = (topic, key, patchValue) =>
-    leasedTopics.has(topic)
-      ? rejectLeasedMutation(topic)
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
       : runtimeClient.patch(topic, key, patchValue);
   const deleteRow: ViewServerRuntimeClient<Topics>["delete"] = (topic, key) =>
-    leasedTopics.has(topic) ? rejectLeasedMutation(topic) : runtimeClient.delete(topic, key);
+    sourceOwnership.isSourceOwnedTopic(topic)
+      ? rejectSourceOwnedMutation(topic)
+      : runtimeClient.delete(topic, key);
 
   const reset: ViewServerRuntimeClient<Topics>["reset"] = () =>
-    leasedTopics.size === 0
+    !sourceOwnership.hasSourceOwnedTopics
       ? runtimeClient.reset()
-      : Effect.fail(
-          runtimeError({
-            code: "UnsupportedQuery",
-            message:
-              "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
-          }),
-        );
+      : sourceOwnership.grpcLeasedTopics.size === 0
+        ? Effect.fail(sourceOwnedRuntimeResetError)
+        : Effect.fail(
+            runtimeError({
+              code: "UnsupportedQuery",
+              message:
+                "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
+            }),
+          );
 
   const client: ViewServerRuntimeClient<Topics> = {
     publish,

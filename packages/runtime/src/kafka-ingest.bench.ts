@@ -335,37 +335,46 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.kafka.bench.setup")(function
   const regions = {
     local: kafkaBootstrapServers,
   };
-  const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-  const runtime = yield* makeViewServerRuntime(viewServer, {
-    host: "127.0.0.1",
-    websocketPort: 0,
-    kafka: {
-      consumerGroupId,
-      regions,
-      topics: {
-        [jsonOrdersSourceTopic]: localKafkaTopic({
+  const kafkaBackedViewServer = defineViewServerConfig({
+    kafka: regions,
+    topics: {
+      jsonOrders: {
+        schema: JsonOrder,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: jsonOrdersSourceTopic,
           regions: ["local"],
           value: kafka.json(IncomingJsonOrder),
           key: kafka.stringKey(),
-          viewServerTopic: "jsonOrders",
-          mapping: ({ key, value }) => ({
-            id: key,
-            customerId: value.customerId,
-            price: value.price,
-          }),
-        }),
-        [protobufOrdersSourceTopic]: localKafkaTopic({
-          regions: ["local"],
-          value: kafka.protobuf(OrderValueSchema),
-          key: kafka.protobuf(OrderKeySchema),
-          viewServerTopic: "protobufOrders",
-          mapping: ({ key, value }) => ({
-            id: key.orderId,
+          rowKey: ({ key }) => key,
+          map: ({ value }) => ({
             customerId: value.customerId,
             price: value.price,
           }),
         }),
       },
+      protobufOrders: {
+        schema: ProtobufOrder,
+        key: "id",
+        kafkaSource: kafka.source({
+          topic: protobufOrdersSourceTopic,
+          regions: ["local"],
+          value: kafka.protobuf(OrderValueSchema),
+          key: kafka.protobuf(OrderKeySchema),
+          rowKey: ({ key }) => key.orderId,
+          map: ({ value }) => ({
+            customerId: value.customerId,
+            price: value.price,
+          }),
+        }),
+      },
+    },
+  });
+  const runtime = yield* makeViewServerRuntime(kafkaBackedViewServer, {
+    host: "127.0.0.1",
+    websocketPort: 0,
+    kafka: {
+      consumerGroupId,
     },
   });
   const stringProducer = new Producer<string, string, string, string>({

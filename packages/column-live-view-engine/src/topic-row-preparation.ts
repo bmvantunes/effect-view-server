@@ -28,22 +28,42 @@ const decodeTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decode")(functio
   return yield* Effect.try({
     try: () => {
       const decoded = Schema.decodeUnknownSync(context.schema)(row);
-      const cloned = cloneRow(decoded);
-      for (const field of context.fieldNames) {
-        if (!Object.hasOwn(cloned, field)) {
-          Object.defineProperty(cloned, field, {
-            configurable: true,
-            enumerable: false,
-            value: undefined,
-            writable: true,
-          });
-        }
-      }
-      return cloned;
+      return normalizedDecodedTopicRow(context, decoded);
     },
     catch: (cause) => invalidRow(context.topic, String(cause)),
   });
 });
+
+const normalizedDecodedTopicRow = (
+  context: TopicRowPreparationContext,
+  decoded: RowObject,
+): RowObject => {
+  const cloned = cloneRow(decoded);
+  for (const field of context.fieldNames) {
+    if (!Object.hasOwn(cloned, field)) {
+      Object.defineProperty(cloned, field, {
+        configurable: true,
+        enumerable: false,
+        value: undefined,
+        writable: true,
+      });
+    }
+  }
+  return cloned;
+};
+
+const normalizeDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.normalize")(
+  function* <Error>(
+    context: TopicRowPreparationContext,
+    row: RowObject,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) {
+    return yield* Effect.try({
+      try: () => normalizedDecodedTopicRow(context, row),
+      catch: (cause) => invalidRow(context.topic, String(cause)),
+    });
+  },
+);
 
 const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function* <Error>(
   context: TopicRowPreparationContext,
@@ -100,6 +120,39 @@ export const prepareTopicRowWithStorageKey = Effect.fn(
   invalidRow: InvalidRowErrorFactory<Error>,
 ) {
   const decoded = yield* decodeTopicRow(context, row, invalidRow);
+  yield* topicRowKey(context, decoded, invalidRow);
+  return {
+    key: storageKey,
+    row: decoded,
+    source: "row",
+  } satisfies PreparedTopicRow;
+});
+
+export const prepareDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.prepare")(
+  function* <Error, Row extends RowObject>(
+    context: TopicRowPreparationContext,
+    row: Row,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) {
+    const decoded = yield* normalizeDecodedTopicRow(context, row, invalidRow);
+    const key = yield* topicRowKey(context, decoded, invalidRow);
+    return {
+      key,
+      row: decoded,
+      source: "row",
+    } satisfies PreparedTopicRow;
+  },
+);
+
+export const prepareDecodedTopicRowWithStorageKey = Effect.fn(
+  "ColumnLiveViewEngine.topicRow.decoded.prepareWithStorageKey",
+)(function* <Error, Row extends RowObject>(
+  context: TopicRowPreparationContext,
+  row: Row,
+  storageKey: string,
+  invalidRow: InvalidRowErrorFactory<Error>,
+) {
+  const decoded = yield* normalizeDecodedTopicRow(context, row, invalidRow);
   yield* topicRowKey(context, decoded, invalidRow);
   return {
     key: storageKey,

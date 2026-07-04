@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, grpc } from "@effect-view-server/config";
+import {
+  defineViewServerConfig,
+  grpc,
+  kafka,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Effect, Schema, Stream } from "effect";
 import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
 import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
@@ -23,8 +28,39 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
+      }),
+    },
+  },
+});
+
+const materializedGrpcSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      grpcSource: grpc.materialized(),
+    },
+  },
+});
+
+const kafkaOwnedViewServer = defineViewServerConfig({
+  kafka: {
+    usa: "localhost:9092",
+  },
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      kafkaSource: kafka.source({
+        topic: "orders-source",
+        regions: ["usa"],
+        value: kafka.json(Order),
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          price: value.price,
+        }),
       }),
     },
   },
@@ -230,6 +266,199 @@ describe("@effect-view-server/in-memory", () => {
 
       yield* subscription.close();
       yield* inMemory.close;
+    }),
+  );
+
+  it.effect("blocks public mutations for source-owned in-memory topics", () =>
+    Effect.gen(function* () {
+      const kafkaInMemory = yield* makeInMemoryViewServer(kafkaOwnedViewServer, {});
+      const grpcInMemory = yield* makeInMemoryViewServer(materializedGrpcSourceViewServer, {});
+      const kafkaTesting = yield* makeInMemoryViewServerTesting(kafkaOwnedViewServer, {});
+      const grpcTesting = yield* makeInMemoryViewServerTesting(
+        materializedGrpcSourceViewServer,
+        {},
+      );
+
+      const publicKafkaSnapshot = yield* kafkaInMemory.client.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const publicGrpcSnapshot = yield* grpcInMemory.client.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      yield* kafkaTesting.client.publish("orders", { id: "kafka", price: 10 });
+      yield* grpcTesting.client.publish("orders", { id: "grpc", price: 20 });
+      const kafkaSnapshot = yield* kafkaTesting.client.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const grpcSnapshot = yield* grpcTesting.client.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+      const kafkaPublishEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaInMemory.client.publish,
+        kafkaInMemory.client,
+        ["orders", { id: "blocked", price: 30 }],
+      );
+      const kafkaPublishManyEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaInMemory.client.publishMany,
+        kafkaInMemory.client,
+        ["orders", [{ id: "blocked-many", price: 35 }]],
+      );
+      const kafkaPatchEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaInMemory.client.patch,
+        kafkaInMemory.client,
+        ["orders", "kafka", { price: 35 }],
+      );
+      const kafkaDeleteEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaInMemory.client.delete,
+        kafkaInMemory.client,
+        ["orders", "kafka"],
+      );
+      const grpcPublishEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcInMemory.client.publish,
+        grpcInMemory.client,
+        ["orders", { id: "blocked", price: 40 }],
+      );
+      const grpcPublishManyEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcInMemory.client.publishMany,
+        grpcInMemory.client,
+        ["orders", [{ id: "blocked-many", price: 45 }]],
+      );
+      const grpcPatchEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcInMemory.client.patch,
+        grpcInMemory.client,
+        ["orders", "grpc", { price: 45 }],
+      );
+      const grpcDeleteEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcInMemory.client.delete,
+        grpcInMemory.client,
+        ["orders", "grpc"],
+      );
+      const kafkaResetEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        kafkaInMemory.client.reset,
+        kafkaInMemory.client,
+        [],
+      );
+      const grpcResetEffect: Effect.Effect<void, ViewServerRuntimeError> = Reflect.apply(
+        grpcInMemory.client.reset,
+        grpcInMemory.client,
+        [],
+      );
+      const kafkaPublish = yield* Effect.flip(kafkaPublishEffect);
+      const kafkaPublishMany = yield* Effect.flip(kafkaPublishManyEffect);
+      const kafkaPatch = yield* Effect.flip(kafkaPatchEffect);
+      const kafkaDelete = yield* Effect.flip(kafkaDeleteEffect);
+      const grpcPublish = yield* Effect.flip(grpcPublishEffect);
+      const grpcPublishMany = yield* Effect.flip(grpcPublishManyEffect);
+      const grpcPatch = yield* Effect.flip(grpcPatchEffect);
+      const grpcDelete = yield* Effect.flip(grpcDeleteEffect);
+      const kafkaReset = yield* Effect.flip(kafkaResetEffect);
+      const grpcReset = yield* Effect.flip(grpcResetEffect);
+
+      expect(publicKafkaSnapshot).toStrictEqual({
+        rows: [],
+        totalRows: 0,
+        version: 0,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(publicGrpcSnapshot).toStrictEqual({
+        rows: [],
+        totalRows: 0,
+        version: 0,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(kafkaSnapshot).toStrictEqual({
+        rows: [{ id: "kafka", price: 10 }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(grpcSnapshot).toStrictEqual({
+        rows: [{ id: "grpc", price: 20 }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      expect(kafkaPublish).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(kafkaPublishMany).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(kafkaPatch).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(kafkaDelete).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(grpcPublish).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(grpcPublishMany).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(grpcPatch).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(grpcDelete).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      });
+      expect(kafkaReset).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        message:
+          "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+      });
+      expect(grpcReset).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        message:
+          "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+      });
+
+      yield* kafkaInMemory.close;
+      yield* grpcInMemory.close;
+      yield* kafkaTesting.close;
+      yield* grpcTesting.close;
     }),
   );
 

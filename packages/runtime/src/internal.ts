@@ -8,6 +8,7 @@ import type {
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import { makeSourceOwnershipPolicy } from "@effect-view-server/runtime-core/internal";
 import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
@@ -27,6 +28,7 @@ import type {
   ViewServerRuntime,
   ViewServerRuntimeOptionsInput,
   ViewServerRuntimeOptions,
+  ViewServerRuntimeOptionsArgs,
   ViewServerGrpcRuntimeOptions,
   ViewServerRuntimeTopicDefinitions,
 } from "./runtime-types";
@@ -38,6 +40,7 @@ export type {
   ViewServerRuntimeDependencies,
   ViewServerRuntimeOptionsInput,
   ViewServerRuntimeOptions,
+  ViewServerRuntimeOptionsArgs,
   ViewServerGrpcRuntimeOptions,
   ViewServerRuntimeTopicDefinitions,
 };
@@ -77,35 +80,43 @@ type ViewServerRuntimeFactoryError =
   | ViewServerTcpPublishIngressError;
 
 type MakeViewServerRuntimeWithDependencies = {
-  <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions = RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+  >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
   ): Effect.Effect<ViewServerRuntime<Topics>, ViewServerRuntimeFactoryError>;
-  <const Topics extends ViewServerRuntimeTopicDefinitions, const Options extends object>(
+  <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions = RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+    const Options extends object = ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
-    options: Options & ViewServerRuntimeOptionsInput<Topics, Options>,
-  ): Effect.Effect<ViewServerRuntime<Topics>, ViewServerRuntimeFactoryError>;
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+    options: Options & ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
+  ): Effect.Effect<ViewServerRuntime<Topics, Options>, ViewServerRuntimeFactoryError>;
 };
 
 export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDependencies =
   Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
     const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Options extends object,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
     config: ViewServerConfig<Topics>,
-    options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+    options?: ViewServerRuntimeOptions<Topics>,
   ) {
     if (options === undefined) {
       const resolvedOptions = yield* resolveViewServerRuntimeOptions<
         Topics,
         RuntimeRegions,
         GrpcRuntimeClients
-      >({});
+      >(config, {});
       return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
     }
-    const resolvedOptions = yield* resolveViewServerRuntimeOptions(options);
+    const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, options);
     return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
   });
 
@@ -167,17 +178,11 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           grpcOptions,
           grpcHealth,
         );
+  const sourceOwnership = makeSourceOwnershipPolicy(config);
   const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
   const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
   const closeGrpcLeaseManager =
     grpcLeaseManager === undefined ? Effect.void : grpcLeaseManager.close;
-  const sourceOwnedTopics = new Set<string>();
-  for (const kafkaTopic of Object.values(kafkaOptions?.topics ?? {})) {
-    sourceOwnedTopics.add(kafkaTopic.viewServerTopic);
-  }
-  for (const grpcFeed of Object.values(grpcOptions?.feeds ?? {})) {
-    sourceOwnedTopics.add(grpcFeed.topic);
-  }
   const tcpPublishIngress =
     resolvedOptions.tcpPublishOptions === undefined
       ? undefined
@@ -185,7 +190,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           .makeTcpPublishIngress(config, runtimeClient, {
             ...resolvedOptions.tcpPublishOptions,
             ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-            rejectedTopics: sourceOwnedTopics,
+            rejectedTopics: sourceOwnership.sourceOwnedTopics,
           })
           .pipe(
             Effect.onExit((exit) =>
@@ -226,7 +231,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       : yield* dependencies
           .makeKafkaIngress(
             config,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             kafkaOptions,
             kafkaHealth,
@@ -248,7 +253,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       : yield* dependencies
           .makeGrpcIngress(
             config,
-            runtimeCore.client,
+            runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             grpcOptions,
             grpcHealth,
@@ -304,11 +309,13 @@ const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <
 
 const makeViewServerRuntimeLaunchLayer = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
   const Options extends object,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
 ) =>
   Layer.effectDiscard(
     Effect.acquireRelease(
@@ -322,17 +329,24 @@ const makeViewServerRuntimeLaunchLayer = <
 
 export const runViewServerRuntimeWithDependencies: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Options extends object = ViewServerRuntimeOptions<Topics>,
+  const Regions extends RuntimeRegions = RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+  const Options extends object = ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
 ) => Effect.Effect<never, ViewServerRuntimeFactoryError> = Effect.fn(
   "ViewServerRuntime.runWithDependencies",
-)(function* <const Topics extends ViewServerRuntimeTopicDefinitions, const Options extends object>(
+)(function* <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+  const Options extends object,
+>(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
 ) {
   return yield* makeViewServerRuntimeLaunchLayer(dependencies, config, options).pipe(Layer.launch);
 });

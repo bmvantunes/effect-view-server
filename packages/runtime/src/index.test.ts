@@ -11,11 +11,14 @@ import {
   kafka,
   type TransportHealth,
   type ViewServerHealth,
-  type ViewServerRuntimeError,
   type ViewServerRuntimeClient,
+  type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
+import type {
+  ViewServerRuntimeCoreInternalClient,
+  ViewServerRuntimeCoreInternalLiveClient,
+} from "@effect-view-server/runtime-core/internal";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import {
   Cause,
@@ -42,7 +45,7 @@ import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcIngress, ViewServerGrpcIngressError } from "./grpc-ingress";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import { makeViewServerRuntime, runViewServerRuntime } from "./index";
-import { ViewServerKafkaIngressError } from "./kafka-ingress";
+import { messageFromUnknown, ViewServerKafkaIngressError } from "./kafka-ingress";
 import {
   installTcpPublishAcceptedSocket,
   installTcpServerSteadyStateErrorHandler,
@@ -330,7 +333,7 @@ const grpcViewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });
@@ -342,7 +345,7 @@ const grpcAndKafkaViewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
     audit: {
       schema: Order,
@@ -356,7 +359,7 @@ const leasedGrpcViewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["region"],
       }),
     },
@@ -377,7 +380,7 @@ const publicKeyLeasedGrpcViewServer = defineViewServerConfig({
     orders: {
       schema: PublicKeyGrpcOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["region"],
       }),
     },
@@ -389,7 +392,7 @@ const keyLeasedGrpcViewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
       }),
     },
@@ -418,7 +421,7 @@ const routeEncodingLeasedGrpcViewServer = defineViewServerConfig({
     orders: {
       schema: RouteEncodingOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: [
           "amount",
           "count",
@@ -442,7 +445,7 @@ const groupedKeyEncodingLeasedGrpcViewServer = defineViewServerConfig({
     orders: {
       schema: RouteEncodingOrder,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["text"],
       }),
     },
@@ -464,7 +467,21 @@ const grpcClientsWithOrphan = {
   }),
 };
 
+const grpcViewServerWithConfigClients = defineViewServerConfig({
+  grpc: {
+    clients: grpcClients,
+  },
+  topics: {
+    orders: {
+      schema: GrpcOrder,
+      key: "id",
+      grpcSource: grpc.materialized(),
+    },
+  },
+});
+
 const grpcFeed = grpcViewServer.grpcFeed<typeof grpcClients>();
+const grpcFeedWithConfigClients = grpcViewServerWithConfigClients.grpcFeed<typeof grpcClients>();
 const grpcFeedWithOrphan = grpcViewServer.grpcFeed<typeof grpcClientsWithOrphan>();
 const mixedGrpcFeed = grpcAndKafkaViewServer.grpcFeed<typeof grpcClients>();
 const leasedGrpcFeed = leasedGrpcViewServer.grpcFeed<typeof grpcClients>();
@@ -2821,13 +2838,37 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("passes source-owned topics into TCP publish ingress rejection policy", () =>
     Effect.gen(function* () {
-      type MixedTopics = typeof grpcAndKafkaViewServer.topics;
-      type RuntimeDependencies = ViewServerRuntimeDependencies<MixedTopics>;
       const regions = {
         local: "localhost:9092",
       };
-      const localKafkaTopic = grpcAndKafkaViewServer.kafkaTopic<typeof regions>();
-      const feed = mixedGrpcFeed.materializedFeed({
+      const mixedSourceViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+          audit: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "audit-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      type MixedTopics = typeof mixedSourceViewServer.topics;
+      type RuntimeDependencies = ViewServerRuntimeDependencies<MixedTopics>;
+      const mixedSourceGrpcFeed = mixedSourceViewServer.grpcFeed<typeof grpcClients>();
+      const feed = mixedSourceGrpcFeed.materializedFeed({
         topic: "orders",
         client: "orders",
         method: "streamOrders",
@@ -2865,25 +2906,12 @@ describe("@effect-view-server/runtime", () => {
 
       const runtime = yield* makeViewServerRuntimeWithDependencies(
         dependencies,
-        grpcAndKafkaViewServer,
+        mixedSourceViewServer,
         {
           host: "127.0.0.1",
           tcpPublishPort: 1235,
           kafka: {
             consumerGroupId: "view-server-tcp-source-owned",
-            regions,
-            topics: {
-              "audit-source": localKafkaTopic({
-                regions: ["local"],
-                value: kafka.json(Order),
-                key: kafka.stringKey(),
-                viewServerTopic: "audit",
-                mapping: ({ key, value }) => ({
-                  id: key,
-                  price: value.price,
-                }),
-              }),
-            },
           },
           grpc: {
             clients: grpcClients,
@@ -3927,19 +3955,38 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("resolves Kafka runtime options and starts configured ingress", () =>
     Effect.gen(function* () {
-      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof viewServer.topics>;
       const regions = {
         local: Config.succeed("localhost:9092"),
       };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics>;
       let kafkaOptionsSummary:
         | {
             readonly consume: ResolvedViewServerKafkaRuntimeOptions<
-              typeof viewServer.topics
+              typeof kafkaBackedViewServer.topics
             >["consume"];
             readonly consumerGroupId: string;
             readonly regions: Readonly<Record<string, string>>;
             readonly startFrom: ResolvedViewServerKafkaRuntimeOptions<
-              typeof viewServer.topics
+              typeof kafkaBackedViewServer.topics
             >["startFrom"];
             readonly topics: Readonly<
               Record<
@@ -3949,9 +3996,8 @@ describe("@effect-view-server/runtime", () => {
             >;
           }
         | undefined;
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
       const dependencies: RuntimeDependencies = {
-        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
         makeServer: () =>
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
@@ -3981,24 +4027,15 @@ describe("@effect-view-server/runtime", () => {
         },
       };
 
-      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
-        kafka: {
-          consumerGroupId: "view-server-test-runtime",
-          regions,
-          topics: {
-            "orders-source": localKafkaTopic({
-              regions: ["local"],
-              value: kafka.json(Order),
-              key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
-                price: value.price,
-              }),
-            }),
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        kafkaBackedViewServer,
+        {
+          kafka: {
+            consumerGroupId: "view-server-test-runtime",
           },
         },
-      });
+      );
 
       expect({
         consume: kafkaOptionsSummary?.consume,
@@ -4132,6 +4169,105 @@ describe("@effect-view-server/runtime", () => {
       });
 
       yield* runtime.close;
+    }),
+  );
+
+  it.live("resolves gRPC runtime clients from topic config", () =>
+    Effect.gen(function* () {
+      type RuntimeDependencies = ViewServerRuntimeDependencies<
+        typeof grpcViewServerWithConfigClients.topics
+      >;
+      const feed = grpcFeedWithConfigClients.materializedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => Stream.never,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      });
+      let grpcOptionsSummary:
+        | {
+            readonly clientBaseUrls: Readonly<Record<string, string>>;
+            readonly clientNames: ReadonlyArray<string>;
+          }
+        | undefined;
+      const dependencies: RuntimeDependencies = {
+        ...makeDefaultRuntimeDependencies<typeof grpcViewServerWithConfigClients.topics>(),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
+            close: Effect.void,
+          }),
+        makeGrpcIngress: (_config, _client, _requestHealthRefresh, options) => {
+          grpcOptionsSummary = {
+            clientBaseUrls: options.clientBaseUrls,
+            clientNames: Object.keys(options.clients),
+          };
+          return Effect.succeed({
+            close: Effect.void,
+          });
+        },
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        grpcViewServerWithConfigClients,
+        {
+          grpc: {
+            feeds: {
+              ordersFeed: feed,
+            },
+          },
+        },
+      );
+
+      expect(grpcOptionsSummary).toStrictEqual({
+        clientBaseUrls: nullRecord([["orders", "https://orders.example.test"]]),
+        clientNames: ["orders"],
+      });
+
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("rejects gRPC feeds when neither config nor runtime provides clients", () =>
+    Effect.gen(function* () {
+      const feed = grpcMaterializedFeed(Stream.never);
+
+      const error = yield* resolveViewServerRuntimeOptions<
+        typeof grpcViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          feeds: {
+            ordersFeed: feed,
+          },
+        },
+      }).pipe(Effect.flip);
+      const grpcError = yield* Schema.decodeUnknownEffect(ViewServerGrpcIngressError)(error);
+
+      expect({
+        _tag: grpcError._tag,
+        cause: grpcError.cause,
+        message: grpcError.message,
+        phase: grpcError.phase,
+      }).toStrictEqual({
+        _tag: "ViewServerGrpcIngressError",
+        cause: "missing-grpc-clients",
+        message:
+          "gRPC feeds are configured, but no gRPC clients were provided on config.grpc.clients or runtime options.grpc.clients.",
+        phase: "configuration",
+      });
     }),
   );
 
@@ -4590,7 +4726,205 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.live("delegates direct runtime reset when no leased gRPC topics exist", () =>
+  it.live("delegates public runtime reset when no topic is source-owned", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(viewServer, {
+        websocketPort: 0,
+      });
+
+      yield* runtime.client.publish("orders", order("order-1", 10));
+      yield* runtime.client.reset();
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+
+      expect(snapshot).toStrictEqual({
+        version: 0,
+        rows: [],
+        totalRows: 0,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live(
+    "delegates direct manager reset when gRPC is configured without source-owned topics",
+    () =>
+      Effect.gen(function* () {
+        const options = yield* resolveViewServerRuntimeOptions<
+          typeof viewServer.topics,
+          Record<string, string>,
+          typeof grpcClients
+        >({
+          grpc: {
+            clients: grpcClients,
+            feeds: {},
+          },
+        });
+        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+        const health = makeViewServerGrpcHealthLedger<typeof viewServer.topics>({
+          clients: grpcOptions.clientBaseUrls,
+          feeds: {},
+        });
+        const manager = yield* makeViewServerGrpcLeaseManager(
+          viewServer,
+          runtimeCore.internalClient,
+          runtimeCore.liveClient,
+          runtimeCore.internalLiveClient,
+          Effect.void,
+          grpcOptions,
+          health,
+        );
+
+        yield* manager.client.publish("orders", order("order-1", 10));
+        yield* manager.client.reset();
+        const snapshot = yield* manager.client.snapshot("orders", {
+          select: ["id", "price"],
+          limit: 10,
+        });
+
+        expect(snapshot).toStrictEqual({
+          version: 0,
+          rows: [],
+          totalRows: 0,
+          status: "ready",
+          statusCode: "Ready",
+        });
+        yield* manager.close;
+        yield* runtimeCore.close;
+      }),
+  );
+
+  it.live("rejects public runtime mutations for topic-owned Kafka topics", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics>;
+      const dependencies: RuntimeDependencies = {
+        ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
+        makeKafkaIngress: () =>
+          Effect.succeed({
+            close: Effect.void,
+          }),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
+            close: Effect.void,
+          }),
+      };
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        kafkaBackedViewServer,
+        {
+          kafka: {
+            consumerGroupId: "view-server-source-owned-public-client",
+          },
+        },
+      );
+      const row = {
+        id: "order-1",
+        price: 10,
+      };
+      const publish: (topic: string, row: unknown) => Effect.Effect<void, ViewServerRuntimeError> =
+        Object.getOwnPropertyDescriptor(runtime.client, "publish")?.value;
+      const publishMany: (
+        topic: string,
+        rows: ReadonlyArray<unknown>,
+      ) => Effect.Effect<void, ViewServerRuntimeError> = Object.getOwnPropertyDescriptor(
+        runtime.client,
+        "publishMany",
+      )?.value;
+      const patch: (
+        topic: string,
+        key: string,
+        patchValue: unknown,
+      ) => Effect.Effect<void, ViewServerRuntimeError> = Object.getOwnPropertyDescriptor(
+        runtime.client,
+        "patch",
+      )?.value;
+      const deleteRow: (topic: string, key: string) => Effect.Effect<void, ViewServerRuntimeError> =
+        Object.getOwnPropertyDescriptor(runtime.client, "delete")?.value;
+      const reset: () => Effect.Effect<void, ViewServerRuntimeError> =
+        Object.getOwnPropertyDescriptor(runtime.client, "reset")?.value;
+      expect(typeof publish).toBe("function");
+      expect(typeof publishMany).toBe("function");
+      expect(typeof patch).toBe("function");
+      expect(typeof deleteRow).toBe("function");
+      expect(typeof reset).toBe("function");
+
+      const publishError = yield* publish("orders", row).pipe(Effect.flip);
+      const publishManyError = yield* publishMany("orders", [row]).pipe(Effect.flip);
+      const patchError = yield* patch("orders", "order-1", { price: 11 }).pipe(Effect.flip);
+      const deleteError = yield* deleteRow("orders", "order-1").pipe(Effect.flip);
+      const resetError = yield* reset().pipe(Effect.flip);
+
+      expect([publishError, publishManyError, patchError, deleteError, resetError]).toStrictEqual([
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          message:
+            "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+        },
+      ]);
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("rejects direct manager mutations for materialized gRPC source-owned topics", () =>
     Effect.gen(function* () {
       const feed = grpcMaterializedFeed(Stream.never);
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
@@ -4606,27 +4940,42 @@ describe("@effect-view-server/runtime", () => {
         health,
       );
 
-      yield* manager.client.publish("orders", {
+      const row: typeof GrpcOrder.Type = {
         id: "order-1",
         customerId: "customer-1",
         status: "open",
         price: 10,
         region: "usa",
         updatedAt: 10,
-      });
-      yield* manager.client.reset();
-      const snapshot = yield* manager.client.snapshot("orders", {
-        select: ["id", "price"],
-        limit: 10,
-      });
+      };
+      const publishError = yield* manager.client.publish("orders", row).pipe(Effect.flip);
+      const publishManyError = yield* manager.client.publishMany("orders", [row]).pipe(Effect.flip);
+      const patchError = yield* manager.client
+        .patch("orders", "order-1", { price: 11 })
+        .pipe(Effect.flip);
+      const deleteError = yield* manager.client.delete("orders", "order-1").pipe(Effect.flip);
+      const resetError = yield* manager.client.reset().pipe(Effect.flip);
+      const sourceOwnedMutationError = {
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        topic: "orders",
+        message:
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+      };
+      const sourceOwnedResetError = {
+        _tag: "ViewServerRuntimeError",
+        code: "UnsupportedQuery",
+        message:
+          "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
+      };
 
-      expect(snapshot).toStrictEqual({
-        version: 0,
-        rows: [],
-        totalRows: 0,
-        status: "ready",
-        statusCode: "Ready",
-      });
+      expect([publishError, publishManyError, patchError, deleteError, resetError]).toStrictEqual([
+        sourceOwnedMutationError,
+        sourceOwnedMutationError,
+        sourceOwnedMutationError,
+        sourceOwnedMutationError,
+        sourceOwnedResetError,
+      ]);
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -4650,9 +4999,55 @@ describe("@effect-view-server/runtime", () => {
         health,
       );
 
-      const error = yield* manager.client.reset().pipe(Effect.flip);
+      const leasedRow: typeof GrpcOrder.Type = {
+        id: "order-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 10,
+        region: "usa",
+        updatedAt: 10,
+      };
+      const publishError = yield* manager.client.publish("orders", leasedRow).pipe(Effect.flip);
+      const publishManyError = yield* manager.client
+        .publishMany("orders", [leasedRow])
+        .pipe(Effect.flip);
+      const patchError = yield* manager.client
+        .patch("orders", "order-1", { price: 11 })
+        .pipe(Effect.flip);
+      const deleteError = yield* manager.client.delete("orders", "order-1").pipe(Effect.flip);
+      const resetError = yield* manager.client.reset().pipe(Effect.flip);
 
-      expect(error).toStrictEqual({
+      expect([publishError, publishManyError, patchError, deleteError]).toStrictEqual([
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          topic: "orders",
+          message:
+            "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
+        },
+      ]);
+      expect(resetError).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         message:
@@ -4686,6 +5081,176 @@ describe("@effect-view-server/runtime", () => {
       expect(error.message).toBe(
         "View Server topic orders declares gRPC leased source but no matching gRPC feed was configured.",
       );
+    }),
+  );
+
+  it.live("validates topic-owned grpcSource feeds", () =>
+    Effect.gen(function* () {
+      const grpcSourceViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      const grpcSourceFeed = grpcSourceViewServer.grpcFeed<typeof grpcClients>();
+      const feed = grpcSourceFeed.leasedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: () => Stream.never,
+        map: ({ value, route }) => ({
+          id: `${route.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+
+      const options = yield* resolveViewServerRuntimeOptions<
+        typeof grpcSourceViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          clients: grpcClients,
+          feeds: {
+            ordersLease: feed,
+          },
+        },
+      });
+      yield* validateGrpcSourceFeeds(
+        grpcSourceViewServer,
+        yield* Effect.fromNullishOr(options.grpcOptions),
+      );
+
+      expect({
+        feedTopic: options.grpcOptions?.feeds["ordersLease"]?.topic,
+        routeBy: options.grpcOptions?.feeds["ordersLease"]?.routeBy,
+      }).toStrictEqual({
+        feedTopic: "orders",
+        routeBy: ["region"],
+      });
+    }),
+  );
+
+  it.live("subscribes topic-owned grpcSource leased feeds", () =>
+    Effect.gen(function* () {
+      let acquired = 0;
+      const grpcSourceViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      const grpcSourceFeed = grpcSourceViewServer.grpcFeed<typeof grpcClients>();
+      const feed = grpcSourceFeed.leasedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: ({ route }) => {
+          acquired += 1;
+          return longRunningGrpcStream([grpcOrderValue(`${route.region}-order-1`, 10)]);
+        },
+        map: ({ value, route }) => ({
+          id: `${route.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
+        typeof grpcSourceViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          clients: grpcClients,
+          feeds: {
+            ordersLease: feed,
+          },
+          materializedReconnect: fastGrpcMaterializedReconnect,
+        },
+      });
+      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcSourceViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcSourceViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        grpcSourceViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+
+      const subscription = yield* manager.liveClient.subscribe("orders", {
+        select: ["id", "customerId", "region"],
+        where: {
+          region: { eq: "usa" },
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+      const events = yield* subscription.events.pipe(Stream.take(2), Stream.runCollect);
+
+      expect(acquired).toBe(1);
+      expect(events).toStrictEqual([
+        {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 0,
+          keys: [],
+          rows: [],
+          totalRows: 0,
+        },
+        {
+          type: "delta",
+          topic: "orders",
+          queryId: "query-0",
+          fromVersion: 0,
+          toVersion: 1,
+          operations: [
+            {
+              type: "insert",
+              key: "usa:usa-order-1",
+              row: {
+                id: "usa:usa-order-1",
+                customerId: "usa-order-1",
+                region: "usa",
+              },
+              index: 0,
+            },
+          ],
+          totalRows: 1,
+        },
+      ]);
+      yield* subscription.close();
+      yield* manager.close;
+      yield* runtimeCore.close;
     }),
   );
 
@@ -4840,7 +5405,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["region", "status"],
             }),
           },
@@ -4890,13 +5455,13 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["region", "status"],
             }),
           },
         },
       });
-      Object.defineProperty(invalidSourceRouteByViewServer.topics.orders.source, "routeBy", {
+      Object.defineProperty(invalidSourceRouteByViewServer.topics.orders.grpcSource, "routeBy", {
         value: ["region", 1],
       });
       const resolvedOptions = yield* resolveViewServerRuntimeOptions<
@@ -4942,7 +5507,7 @@ describe("@effect-view-server/runtime", () => {
         invalidFeedRouteByMessage:
           "gRPC leased feed ordersLease routeBy  does not match View Server topic orders source routeBy region, status.",
         invalidSourceRouteByMessage:
-          "gRPC leased feed ordersLease routeBy status, region does not match View Server topic orders source routeBy .",
+          "View Server topic orders declares invalid gRPC source metadata.",
       });
     }),
   );
@@ -4954,7 +5519,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.materialized(),
+            grpcSource: grpc.materialized(),
           },
         },
       });
@@ -4964,11 +5529,11 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.materialized(),
+            grpcSource: grpc.materialized(),
           },
         },
       });
-      Object.defineProperty(nonGrpcKindConfig.topics.orders.source, "kind", {
+      Object.defineProperty(nonGrpcKindConfig.topics.orders.grpcSource, "kind", {
         value: "not-grpc",
       });
       const invalidLifecycleConfig = defineViewServerConfig({
@@ -4976,14 +5541,127 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.materialized(),
+            grpcSource: grpc.materialized(),
           },
         },
       });
-      Object.defineProperty(invalidLifecycleConfig.topics.orders.source, "lifecycle", {
+      Object.defineProperty(invalidLifecycleConfig.topics.orders.grpcSource, "lifecycle", {
         value: "invalid-lifecycle",
       });
+      const rawGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+        },
+      });
+      Object.defineProperty(rawGrpcSourceConfig.topics.orders, "grpcSource", {
+        value: {
+          kind: "grpc",
+          lifecycle: "materialized",
+        },
+      });
+      const mismatchedGrpcSourceTagConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+        },
+      });
+      Object.defineProperty(mismatchedGrpcSourceTagConfig.topics.orders.grpcSource, "_tag", {
+        value: "GrpcLeasedTopicSource",
+      });
+      const mismatchedGrpcLeasedSourceTagConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      Object.defineProperty(mismatchedGrpcLeasedSourceTagConfig.topics.orders.grpcSource, "_tag", {
+        value: "GrpcMaterializedTopicSource",
+      });
+      const malformedGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+        },
+      });
+      Object.defineProperty(malformedGrpcSourceConfig.topics.orders, "grpcSource", {
+        value: "not-grpc",
+      });
+      const extraGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+        },
+      });
+      Object.defineProperty(extraGrpcSourceConfig.topics.orders.grpcSource, "extra", {
+        value: true,
+      });
+      const materializedRouteByGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+        },
+      });
+      Object.defineProperty(
+        materializedRouteByGrpcSourceConfig.topics.orders.grpcSource,
+        "routeBy",
+        {
+          value: ["region"],
+        },
+      );
+      const emptyRouteByGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      Object.defineProperty(emptyRouteByGrpcSourceConfig.topics.orders.grpcSource, "routeBy", {
+        value: [],
+      });
+      const extraLeasedGrpcSourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      Object.defineProperty(extraLeasedGrpcSourceConfig.topics.orders.grpcSource, "extra", {
+        value: true,
+      });
       const feed = grpcMaterializedFeed(Stream.never);
+      const leasedFeed = grpcLeasedFeed({
+        streamForRegion: () => Stream.never,
+      });
+      const leasedGrpcOptions = yield* resolveLeasedGrpcRuntimeOptions(leasedFeed);
       const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<
         typeof grpcViewServer.topics,
         typeof grpcClients
@@ -5005,6 +5683,38 @@ describe("@effect-view-server/runtime", () => {
         invalidLifecycleConfig,
         grpcOptions,
       ).pipe(Effect.flip);
+      const rawGrpcSourceError = yield* validateGrpcSourceFeeds(
+        rawGrpcSourceConfig,
+        grpcOptions,
+      ).pipe(Effect.flip);
+      const mismatchedGrpcSourceTagError = yield* validateGrpcSourceFeeds(
+        mismatchedGrpcSourceTagConfig,
+        grpcOptions,
+      ).pipe(Effect.flip);
+      const mismatchedGrpcLeasedSourceTagError = yield* validateGrpcSourceFeeds(
+        mismatchedGrpcLeasedSourceTagConfig,
+        leasedGrpcOptions,
+      ).pipe(Effect.flip);
+      const malformedGrpcSourceError = yield* validateGrpcSourceFeeds(
+        malformedGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
+      const extraGrpcSourceError = yield* validateGrpcSourceFeeds(
+        extraGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
+      const materializedRouteByGrpcSourceError = yield* validateGrpcSourceFeeds(
+        materializedRouteByGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
+      const emptyRouteByGrpcSourceError = yield* validateGrpcSourceFeeds(
+        emptyRouteByGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
+      const extraLeasedGrpcSourceError = yield* validateGrpcSourceFeeds(
+        extraLeasedGrpcSourceConfig,
+        undefined,
+      ).pipe(Effect.flip);
 
       expect({
         nullTopicMessage: nullTopicError.message,
@@ -5013,16 +5723,58 @@ describe("@effect-view-server/runtime", () => {
         nonGrpcKindFeedName: Reflect.get(nonGrpcKindError, "feedName"),
         invalidLifecycleMessage: invalidLifecycleError.message,
         invalidLifecycleFeedName: Reflect.get(invalidLifecycleError, "feedName"),
+        rawGrpcSourceMessage: rawGrpcSourceError.message,
+        rawGrpcSourceFeedName: Reflect.get(rawGrpcSourceError, "feedName"),
+        mismatchedGrpcSourceTagMessage: mismatchedGrpcSourceTagError.message,
+        mismatchedGrpcSourceTagFeedName: Reflect.get(mismatchedGrpcSourceTagError, "feedName"),
+        mismatchedGrpcLeasedSourceTagMessage: mismatchedGrpcLeasedSourceTagError.message,
+        mismatchedGrpcLeasedSourceTagFeedName: Reflect.get(
+          mismatchedGrpcLeasedSourceTagError,
+          "feedName",
+        ),
+        malformedGrpcSourceMessage: malformedGrpcSourceError.message,
+        malformedGrpcSourceFeedName: Reflect.get(malformedGrpcSourceError, "feedName"),
+        extraGrpcSourceMessage: extraGrpcSourceError.message,
+        extraGrpcSourceFeedName: Reflect.get(extraGrpcSourceError, "feedName"),
+        materializedRouteByGrpcSourceMessage: materializedRouteByGrpcSourceError.message,
+        materializedRouteByGrpcSourceFeedName: Reflect.get(
+          materializedRouteByGrpcSourceError,
+          "feedName",
+        ),
+        emptyRouteByGrpcSourceMessage: emptyRouteByGrpcSourceError.message,
+        emptyRouteByGrpcSourceFeedName: Reflect.get(emptyRouteByGrpcSourceError, "feedName"),
+        extraLeasedGrpcSourceMessage: extraLeasedGrpcSourceError.message,
+        extraLeasedGrpcSourceFeedName: Reflect.get(extraLeasedGrpcSourceError, "feedName"),
       }).toStrictEqual({
         nullTopicMessage:
           "gRPC feed ordersFeed targets View Server topic orders, but that topic does not declare a gRPC source.",
         nullTopicFeedName: "ordersFeed",
-        nonGrpcKindMessage:
-          "gRPC feed ordersFeed targets View Server topic orders, but that topic does not declare a gRPC source.",
-        nonGrpcKindFeedName: "ordersFeed",
-        invalidLifecycleMessage:
-          "gRPC feed ordersFeed targets View Server topic orders, but that topic does not declare a gRPC source.",
-        invalidLifecycleFeedName: "ordersFeed",
+        nonGrpcKindMessage: "View Server topic orders declares invalid gRPC source metadata.",
+        nonGrpcKindFeedName: "orders",
+        invalidLifecycleMessage: "View Server topic orders declares invalid gRPC source metadata.",
+        invalidLifecycleFeedName: "orders",
+        rawGrpcSourceMessage: "View Server topic orders declares invalid gRPC source metadata.",
+        rawGrpcSourceFeedName: "orders",
+        mismatchedGrpcSourceTagMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        mismatchedGrpcSourceTagFeedName: "orders",
+        mismatchedGrpcLeasedSourceTagMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        mismatchedGrpcLeasedSourceTagFeedName: "orders",
+        malformedGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        malformedGrpcSourceFeedName: "orders",
+        extraGrpcSourceMessage: "View Server topic orders declares invalid gRPC source metadata.",
+        extraGrpcSourceFeedName: "orders",
+        materializedRouteByGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        materializedRouteByGrpcSourceFeedName: "orders",
+        emptyRouteByGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        emptyRouteByGrpcSourceFeedName: "orders",
+        extraLeasedGrpcSourceMessage:
+          "View Server topic orders declares invalid gRPC source metadata.",
+        extraLeasedGrpcSourceFeedName: "orders",
       });
     }),
   );
@@ -5086,9 +5838,37 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("closes started resources when gRPC ingress startup fails", () =>
     Effect.gen(function* () {
-      type MixedTopics = typeof grpcAndKafkaViewServer.topics;
+      const regions = {
+        local: "localhost:9092",
+      };
+      const mixedSourceViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.materialized(),
+          },
+          audit: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      type MixedTopics = typeof mixedSourceViewServer.topics;
       type RuntimeDependencies = ViewServerRuntimeDependencies<MixedTopics>;
-      const feed = mixedGrpcFeed.materializedFeed({
+      const mixedSourceGrpcFeed = mixedSourceViewServer.grpcFeed<typeof grpcClients>();
+      const feed = mixedSourceGrpcFeed.materializedFeed({
         topic: "orders",
         client: "orders",
         method: "streamOrders",
@@ -5103,10 +5883,6 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      const regions = {
-        local: "localhost:9092",
-      };
-      const localKafkaTopic = grpcAndKafkaViewServer.kafkaTopic<typeof regions>();
       let serverClosed = 0;
       let kafkaClosed = 0;
       let runtimeCoreClosed = 0;
@@ -5152,22 +5928,9 @@ describe("@effect-view-server/runtime", () => {
       };
 
       const exit = yield* Effect.exit(
-        makeViewServerRuntimeWithDependencies(dependencies, grpcAndKafkaViewServer, {
+        makeViewServerRuntimeWithDependencies(dependencies, mixedSourceViewServer, {
           kafka: {
             consumerGroupId: "view-server-grpc-startup-failure",
-            regions,
-            topics: {
-              "orders-source": localKafkaTopic({
-                regions: ["local"],
-                value: kafka.json(Order),
-                key: kafka.stringKey(),
-                viewServerTopic: "audit",
-                mapping: ({ key, value }) => ({
-                  id: key,
-                  price: value.price,
-                }),
-              }),
-            },
           },
           grpc: {
             clients: grpcClients,
@@ -7783,6 +8546,79 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
+  it.live("maps leased gRPC acquisition topic metadata failures to runtime unavailable", () =>
+    Effect.gen(function* () {
+      const localViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      const localGrpcFeed = localViewServer.grpcFeed<typeof grpcClients>();
+      const feed = localGrpcFeed.leasedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: () => Stream.never,
+        map: ({ value, route }) => ({
+          id: `${route.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      const grpcOptions = yield* resolveViewServerRuntimeOptions<
+        typeof localViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          clients: grpcClients,
+          feeds: {
+            ordersLease: feed,
+          },
+        },
+      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      Reflect.deleteProperty(localViewServer.topics, "orders");
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+
+      const error = yield* manager.liveClient
+        .subscribeRuntime("orders", leasedOrdersQuery("usa"))
+        .pipe(Effect.flip);
+
+      expect(error).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "orders",
+        message: "gRPC leased feed orders references unknown topic orders",
+      });
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.live("accepts decoded transform schema values for leased gRPC routes", () =>
     Effect.gen(function* () {
       const BigIntRouteOrder = Schema.Struct({
@@ -7796,7 +8632,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: BigIntRouteOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["accountId"],
             }),
           },
@@ -7927,7 +8763,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["region"],
             }),
           },
@@ -7950,7 +8786,7 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      Object.defineProperty(localViewServer.topics.orders.source, "routeBy", {
+      Object.defineProperty(localViewServer.topics.orders.grpcSource, "routeBy", {
         value: ["missing"],
       });
       Object.defineProperty(missingRouteFieldFeed, "routeBy", {
@@ -8026,7 +8862,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["region"],
             }),
           },
@@ -8090,6 +8926,104 @@ describe("@effect-view-server/runtime", () => {
           select: ["id"],
           where: {
             region: { startsWith: "u" },
+          },
+          limit: 10,
+        })
+        .pipe(Effect.flip);
+
+      expect({
+        missingWhereError,
+        nonExactRouteError,
+      }).toStrictEqual({
+        missingWhereError: {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Leased topic orders requires exact equality filters for route fields: region.",
+        },
+        nonExactRouteError: {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Leased topic orders route field region must use an exact eq filter.",
+        },
+      });
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.live("rejects leased gRPC route extraction when route validation metadata disappears", () =>
+    Effect.gen(function* () {
+      const localViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpc.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      const localGrpcFeed = localViewServer.grpcFeed<typeof grpcClients>();
+      const feed = localGrpcFeed.leasedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: () => Stream.never,
+        map: ({ value, route }) => ({
+          id: `${route.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      const grpcOptions = yield* resolveViewServerRuntimeOptions<
+        typeof localViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          clients: grpcClients,
+          feeds: {
+            ordersLease: feed,
+          },
+        },
+      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+      Object.defineProperty(localViewServer.topics.orders, "grpcSource", {
+        value: undefined,
+      });
+
+      const missingWhereError = yield* manager.liveClient
+        .subscribeRuntime("orders", {
+          select: ["id"],
+          limit: 10,
+        })
+        .pipe(Effect.flip);
+      const nonExactRouteError = yield* manager.liveClient
+        .subscribeRuntime("orders", {
+          select: ["id"],
+          where: {
+            region: "usa",
           },
           limit: 10,
         })
@@ -8303,7 +9237,7 @@ describe("@effect-view-server/runtime", () => {
             orders: {
               schema: GrpcOrder,
               key: "id",
-              source: grpc.leased({
+              grpcSource: grpc.leased({
                 routeBy: ["region"],
               }),
             },
@@ -8397,7 +9331,7 @@ describe("@effect-view-server/runtime", () => {
             orders: {
               schema: GrpcOrder,
               key: "id",
-              source: grpc.leased({
+              grpcSource: grpc.leased({
                 routeBy: ["region"],
               }),
             },
@@ -8537,7 +9471,7 @@ describe("@effect-view-server/runtime", () => {
         });
         const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
-        Object.defineProperty(runtimeCore.internalClient, "publishManyWithStorageKeys", {
+        Object.defineProperty(runtimeCore.internalClient, "publishManyDecodedRowsWithStorageKeys", {
           value: () => "not-an-effect",
         });
         const health = makeLeasedGrpcHealth(grpcOptions);
@@ -8572,7 +9506,7 @@ describe("@effect-view-server/runtime", () => {
             "orders/ordersLease/leased/region=string%3A3%3Ausa"
           ]?.lastError,
         ).toContain(
-          "Runtime publishManyWithStorageKeys did not return an Effect for leased gRPC feed ordersLease",
+          "Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ordersLease",
         );
         yield* subscription.close();
         yield* manager.close;
@@ -8587,11 +9521,11 @@ describe("@effect-view-server/runtime", () => {
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
-      Object.defineProperty(runtimeCore.internalClient, "publishManyWithStorageKeys", {
+      Object.defineProperty(runtimeCore.internalClient, "publishManyDecodedRowsWithStorageKeys", {
         value: () =>
           Effect.fail(
             new RuntimeTestFailure({
-              message: "runtime publishManyWithStorageKeys failed",
+              message: "runtime publishManyDecodedRowsWithStorageKeys failed",
             }),
           ),
       });
@@ -8856,7 +9790,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["region"],
             }),
           },
@@ -9607,7 +10541,7 @@ describe("@effect-view-server/runtime", () => {
           orders: {
             schema: GrpcOrder,
             key: "id",
-            source: grpc.leased({
+            grpcSource: grpc.leased({
               routeBy: ["region"],
             }),
           },
@@ -9922,7 +10856,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10001,7 +10935,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -10068,7 +11002,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10104,7 +11038,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10151,7 +11085,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10195,7 +11129,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -10249,7 +11183,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10322,7 +11256,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -10353,7 +11287,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10422,7 +11356,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10505,7 +11439,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10599,7 +11533,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -10664,7 +11598,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10767,7 +11701,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10819,7 +11753,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10869,7 +11803,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10923,7 +11857,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -10964,7 +11898,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11028,7 +11962,7 @@ describe("@effect-view-server/runtime", () => {
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11101,7 +12035,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11176,7 +12110,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11242,7 +12176,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11264,7 +12198,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11317,7 +12251,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11341,7 +12275,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11387,7 +12321,7 @@ describe("@effect-view-server/runtime", () => {
 
       const ingress = yield* makeViewServerGrpcIngress(
         leasedGrpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11438,7 +12372,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11482,7 +12416,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11521,7 +12455,7 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
           grpcViewServer,
-          runtimeCore.client,
+          runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
           health,
@@ -11543,7 +12477,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11578,7 +12512,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11629,7 +12563,7 @@ describe("@effect-view-server/runtime", () => {
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
         grpcViewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
         health,
@@ -11654,6 +12588,96 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
+  it.live(
+    "marks materialized gRPC feed degraded when topic metadata disappears before mapping",
+    () =>
+      Effect.gen(function* () {
+        const localViewServer = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpc.materialized(),
+            },
+          },
+        });
+        const localGrpcFeed = localViewServer.grpcFeed<typeof grpcClients>();
+        const feed = localGrpcFeed.materializedFeed({
+          topic: "orders",
+          client: "orders",
+          method: "streamOrders",
+          request: () => ({ orderId: "all" }),
+          acquire: () => longRunningGrpcStream([grpcOrderValue("order-without-topic", 10)]),
+          map: ({ value }) => ({
+            id: value.customerId,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: "usa",
+            updatedAt: value.updatedAt,
+          }),
+        });
+        const grpcOptions = yield* resolveViewServerRuntimeOptions<
+          typeof localViewServer.topics,
+          Record<string, string>,
+          typeof grpcClients
+        >({
+          grpc: {
+            clients: grpcClients,
+            feeds: {
+              ordersFeed: feed,
+            },
+            materializedReconnect: fastGrpcMaterializedReconnect,
+          },
+        }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+        const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+          clients: grpcOptions.clientBaseUrls,
+          feeds: {
+            ordersFeed: {
+              client: "orders",
+              lifecycle: "materialized",
+              topic: "orders",
+            },
+          },
+        });
+        Reflect.deleteProperty(localViewServer.topics, "orders");
+        const ingress = yield* makeViewServerGrpcIngress(
+          localViewServer,
+          runtimeCore.internalClient,
+          Effect.void,
+          grpcOptions,
+          health,
+        );
+
+        const degradedHealth = yield* readGrpcHealthOverlayNow(runtimeCore.client, health).pipe(
+          Effect.repeat({
+            schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
+            until: (currentHealth) =>
+              currentHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status ===
+              "degraded",
+          }),
+        );
+
+        expect({
+          runtimeStatus: degradedHealth.status,
+          feedStatus: degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status,
+          mappingFailures:
+            degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]
+              ?.mappingFailuresPerSecond,
+          lastError: degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.lastError,
+        }).toStrictEqual({
+          runtimeStatus: "degraded",
+          feedStatus: "degraded",
+          mappingFailures: 1,
+          lastError:
+            "gRPC feed ordersFeed failed: gRPC feed ordersFeed references unknown topic orders: orders",
+        });
+        yield* ingress.close;
+        yield* runtimeCore.close;
+      }),
+  );
+
   it.live("records materialized gRPC publish failures in health", () =>
     Effect.gen(function* () {
       const feed = grpcMaterializedFeed(longRunningGrpcStream([grpcOrderValue("order-1", 10)]));
@@ -11665,9 +12689,9 @@ describe("@effect-view-server/runtime", () => {
         message: "publish unavailable",
         topic: "orders",
       };
-      const failingRuntimeClient: ViewServerRuntimeClient<GrpcTopics> = {
-        ...runtimeCore.client,
-        publishMany: () => Effect.fail(publishFailure),
+      const failingRuntimeClient: ViewServerRuntimeCoreInternalClient<GrpcTopics> = {
+        ...runtimeCore.internalClient,
+        publishManyDecodedRows: () => Effect.fail(publishFailure),
       };
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
@@ -11702,57 +12726,58 @@ describe("@effect-view-server/runtime", () => {
       const regions = {
         local: "localhost:9092",
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const topics = {
-        "orders-source": localKafkaTopic({
-          regions: ["local"],
-          value: kafka.json(Order),
-          key: kafka.stringKey(),
-          viewServerTopic: "orders",
-          mapping: ({ key, value }) => ({
-            id: key,
-            price: value.price,
-          }),
-        }),
-      };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
 
-      const earliest = yield* resolveViewServerRuntimeOptions({
+      const earliest = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
         kafka: {
           consumerGroupId: "view-server-earliest",
-          regions,
           startFrom: "earliest",
-          topics,
         },
       });
-      const latest = yield* resolveViewServerRuntimeOptions({
+      const latest = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
         kafka: {
           consumerGroupId: "view-server-latest",
-          regions,
           startFrom: "latest",
-          topics,
         },
       });
-      const committed = yield* resolveViewServerRuntimeOptions({
+      const committed = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
         kafka: {
           consumerGroupId: "view-server-default",
-          regions,
           startFrom: {
             committedConsumerGroup: "view-server-existing-group",
             fallback: "fail",
           },
-          topics,
         },
       });
-      const committedWithDefaultFallback = yield* resolveViewServerRuntimeOptions({
-        kafka: {
-          consumerGroupId: "view-server-default-fallback",
-          regions,
-          startFrom: {
-            committedConsumerGroup: "view-server-existing-default-fallback-group",
+      const committedWithDefaultFallback = yield* resolveViewServerRuntimeOptions(
+        kafkaBackedViewServer,
+        {
+          kafka: {
+            consumerGroupId: "view-server-default-fallback",
+            startFrom: {
+              committedConsumerGroup: "view-server-existing-default-fallback-group",
+            },
           },
-          topics,
         },
-      });
+      );
 
       expect({
         committed: committed.kafkaOptions?.consume,
@@ -11784,10 +12809,486 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
+  it.effect("derives Kafka source topics from topic-owned config", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+
+      const options = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+        kafka: {
+          consumerGroupId: "view-server-derived-kafka-source",
+        },
+      });
+      const clonedOptions = yield* resolveViewServerRuntimeOptions(
+        { ...kafkaBackedViewServer },
+        {
+          kafka: {
+            consumerGroupId: "view-server-derived-kafka-source-cloned",
+          },
+        },
+      );
+
+      expect({
+        consumerGroupId: options.kafkaOptions?.consumerGroupId,
+        regions: options.kafkaOptions?.regions,
+        sourceTopics: Object.keys(options.kafkaOptions?.topics ?? {}),
+        topicRegions: options.kafkaOptions?.topics["orders-source"]?.regions,
+        viewServerTopic: options.kafkaOptions?.topics["orders-source"]?.viewServerTopic,
+        clonedConsumerGroupId: clonedOptions.kafkaOptions?.consumerGroupId,
+        clonedSourceTopics: Object.keys(clonedOptions.kafkaOptions?.topics ?? {}),
+      }).toStrictEqual({
+        consumerGroupId: "view-server-derived-kafka-source",
+        regions: nullRecord([["local", "localhost:9092"]]),
+        sourceTopics: ["orders-source"],
+        topicRegions: ["local"],
+        viewServerTopic: "orders",
+        clonedConsumerGroupId: "view-server-derived-kafka-source-cloned",
+        clonedSourceTopics: ["orders-source"],
+      });
+    }),
+  );
+
+  it.effect("reports malformed config-owned Kafka sources as typed runtime errors", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      // @ts-expect-error malformed topic-owned Kafka sources are also guarded at runtime.
+      const malformedKafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: {},
+          },
+        },
+      });
+      const extraKeyKafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      Object.defineProperty(extraKeyKafkaBackedViewServer.topics.orders.kafkaSource, "extra", {
+        value: true,
+      });
+
+      const error = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(malformedKafkaBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-malformed-config-kafka-source",
+          },
+        }),
+      );
+      const extraKeyError = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(extraKeyKafkaBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-extra-key-config-kafka-source",
+          },
+        }),
+      );
+
+      expect({
+        errorIsTyped: error instanceof ViewServerKafkaIngressError,
+        message: error.message,
+        causeMessage: messageFromUnknown(error.cause),
+        extraKeyErrorIsTyped: extraKeyError instanceof ViewServerKafkaIngressError,
+        extraKeyMessage: extraKeyError.message,
+        extraKeyCauseMessage: messageFromUnknown(extraKeyError.cause),
+      }).toStrictEqual({
+        errorIsTyped: true,
+        message:
+          "Invalid topic-owned Kafka source configuration: View Server topic orders has an invalid Kafka source.",
+        causeMessage: "View Server topic orders has an invalid Kafka source.",
+        extraKeyErrorIsTyped: true,
+        extraKeyMessage:
+          "Invalid topic-owned Kafka source configuration: View Server topic orders has an invalid Kafka source.",
+        extraKeyCauseMessage: "View Server topic orders has an invalid Kafka source.",
+      });
+    }),
+  );
+
+  it.effect("requires Kafka runtime options when topic-owned Kafka sources exist", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(resolveViewServerRuntimeOptions(kafkaBackedViewServer));
+
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message:
+            "Kafka sources are configured, but runtime options.kafka.consumerGroupId was not provided.",
+          cause: "missing-kafka-consumer-group",
+        }),
+      );
+      expect(error.cause).toBe("missing-kafka-consumer-group");
+    }),
+  );
+
+  it.effect(
+    "rejects Kafka runtime options without consumer group when config owns Kafka sources",
+    () =>
+      Effect.gen(function* () {
+        const regions = {
+          local: "localhost:9092",
+        };
+        const kafkaBackedViewServer = defineViewServerConfig({
+          kafka: regions,
+          topics: {
+            orders: {
+              schema: Order,
+              key: "id",
+              kafkaSource: kafka.source({
+                topic: "orders-source",
+                regions: ["local"],
+                value: kafka.json(Order),
+                key: kafka.stringKey(),
+                rowKey: ({ key }) => key,
+                map: ({ value }) => ({
+                  price: value.price,
+                }),
+              }),
+            },
+          },
+        });
+
+        const error = yield* Effect.flip(
+          resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+            // @ts-expect-error typed callers must provide consumerGroupId when Kafka options are present.
+            kafka: {
+              regions,
+            },
+          }),
+        );
+
+        expect(error).toStrictEqual(
+          new ViewServerKafkaIngressError({
+            message:
+              "Kafka sources are configured, but runtime options.kafka.consumerGroupId was not provided.",
+            cause: "missing-kafka-consumer-group",
+          }),
+        );
+        expect(error.cause).toBe("missing-kafka-consumer-group");
+      }),
+  );
+
+  it.effect("rejects explicit runtime Kafka topics", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-mixed-kafka-sources",
+            // @ts-expect-error runtime-owned Kafka topics are not supported.
+            topics: {},
+          },
+        }),
+      );
+
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message:
+            "runtime options.kafka.topics is not supported; declare Kafka sources on View Server topics with kafkaSource.",
+          cause: "unsupported-runtime-kafka-topics",
+        }),
+      );
+      expect(error.cause).toBe("unsupported-runtime-kafka-topics");
+    }),
+  );
+
+  it.effect("resolves default runtime options from config-only overload", () =>
+    Effect.gen(function* () {
+      const options = yield* resolveViewServerRuntimeOptions(viewServer);
+
+      expect({
+        hasKafkaOptions: "kafkaOptions" in options,
+        serverHost: options.serverOptions.host,
+      }).toStrictEqual({
+        hasKafkaOptions: false,
+        serverHost: undefined,
+      });
+    }),
+  );
+
+  it.effect("resolves runtime Kafka regions without configured source topics", () =>
+    Effect.gen(function* () {
+      const options = yield* resolveViewServerRuntimeOptions({
+        kafka: {
+          consumerGroupId: "view-server-no-kafka-topics",
+          regions: {
+            local: "localhost:9092",
+          },
+        },
+      });
+
+      expect({
+        consumerGroupId: options.kafkaOptions?.consumerGroupId,
+        regions: options.kafkaOptions?.regions,
+        topics: options.kafkaOptions?.topics,
+      }).toStrictEqual({
+        consumerGroupId: "view-server-no-kafka-topics",
+        regions: nullRecord([["local", "localhost:9092"]]),
+        topics: nullRecord([]),
+      });
+    }),
+  );
+
+  it.effect("rejects duplicate topic-owned Kafka source topic names", () =>
+    Effect.gen(function* () {
+      const regions = {
+        local: "localhost:9092",
+      };
+      const duplicateKafkaSourceViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "shared-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+          trades: {
+            schema: Trade,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "shared-source",
+              regions: ["local"],
+              value: kafka.json(Trade),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                symbol: value.symbol,
+              }),
+            }),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(duplicateKafkaSourceViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-duplicate-kafka-source",
+          },
+        }),
+      );
+
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message: "Kafka source topic is configured more than once: shared-source",
+          cause: "shared-source",
+          sourceTopic: "shared-source",
+        }),
+      );
+      expect(error.cause).toBe("shared-source");
+    }),
+  );
+
+  it.effect("requires Kafka regions for topic-owned Kafka sources", () =>
+    Effect.gen(function* () {
+      // @ts-expect-error runtime still guards JavaScript callers that omit concrete Kafka regions.
+      const kafkaBackedViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-missing-kafka-regions",
+          },
+        }),
+      );
+
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message:
+            "Kafka sources are configured, but no Kafka regions were provided on config.kafka or runtime options.kafka.regions.",
+          cause: "missing-kafka-regions",
+        }),
+      );
+      expect(error.cause).toBe("missing-kafka-regions");
+    }),
+  );
+
+  it.effect("rejects topic-owned Kafka sources that reference unresolved regions", () =>
+    Effect.gen(function* () {
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: {
+          local: "localhost:9092",
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-unresolved-kafka-region",
+            regions: {
+              // @ts-expect-error runtime still guards JavaScript callers with unknown region keys.
+              remote: "localhost:9092",
+            },
+          },
+        }),
+      );
+
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message: "Kafka source topic orders-source references unknown Kafka region: local",
+          cause: {
+            region: "local",
+            sourceTopic: "orders-source",
+          },
+          region: "local",
+          sourceTopic: "orders-source",
+        }),
+      );
+      expect(error.cause).toStrictEqual({
+        region: "local",
+        sourceTopic: "orders-source",
+      });
+    }),
+  );
+
   it.live("preserves dangerous Kafka runtime option keys", () =>
     Effect.gen(function* () {
-      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof viewServer.topics>;
-      const regions = nullRecord([["__proto__", Config.succeed("localhost:9092")]]);
+      const protoRegion = "__proto__";
+      const regions = {
+        [protoRegion]: Config.succeed("localhost:9092"),
+      };
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "__proto__",
+              regions: ["__proto__"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      type RuntimeDependencies = ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics>;
       let kafkaOptionsSummary:
         | {
             readonly consumerGroupId: string;
@@ -11800,20 +13301,8 @@ describe("@effect-view-server/runtime", () => {
             >;
           }
         | undefined;
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const dangerousTopic = localKafkaTopic({
-        regions: ["__proto__"],
-        value: kafka.json(Order),
-        key: kafka.stringKey(),
-        viewServerTopic: "orders",
-        mapping: ({ key, value }) => ({
-          id: key,
-          price: value.price,
-        }),
-      });
-      const topics = nullRecord([["__proto__", dangerousTopic]]);
       const dependencies: RuntimeDependencies = {
-        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
         makeServer: () =>
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
@@ -11841,13 +13330,15 @@ describe("@effect-view-server/runtime", () => {
         },
       };
 
-      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
-        kafka: {
-          consumerGroupId: "view-server-dangerous-key-test-runtime",
-          regions,
-          topics,
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        kafkaBackedViewServer,
+        {
+          kafka: {
+            consumerGroupId: "view-server-dangerous-key-test-runtime",
+          },
         },
-      });
+      );
 
       expect(Object.hasOwn(kafkaOptionsSummary?.regions ?? {}, "__proto__")).toBe(true);
       expect(Object.hasOwn(kafkaOptionsSummary?.topics ?? {}, "__proto__")).toBe(true);
@@ -11872,9 +13363,27 @@ describe("@effect-view-server/runtime", () => {
       const regions = {
         local: "localhost:9092",
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
-        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      const dependencies: ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
         makeKafkaIngress: (_config, _client, _requestHealthRefresh, _options, health) =>
           health.regionDisconnected("local", "lost").pipe(
             Effect.as({
@@ -11884,22 +13393,9 @@ describe("@effect-view-server/runtime", () => {
       };
 
       yield* Effect.acquireUseRelease(
-        makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        makeViewServerRuntimeWithDependencies(dependencies, kafkaBackedViewServer, {
           kafka: {
             consumerGroupId: "view-server-test-degraded",
-            regions,
-            topics: {
-              "orders-source": localKafkaTopic({
-                regions: ["local"],
-                value: kafka.json(Order),
-                key: kafka.stringKey(),
-                viewServerTopic: "orders",
-                mapping: ({ key, value }) => ({
-                  id: key,
-                  price: value.price,
-                }),
-              }),
-            },
           },
         }),
         (runtime) =>
@@ -11983,9 +13479,27 @@ describe("@effect-view-server/runtime", () => {
       const regions = {
         local: "localhost:9092",
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
-        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      const dependencies: ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
         makeRuntimeCore: (config, options) =>
           makeViewServerRuntimeCoreInternal(config, options).pipe(
             Effect.map((runtimeCore) => ({
@@ -12020,24 +13534,15 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
 
-      const fiber = yield* runViewServerRuntimeWithDependencies(dependencies, viewServer, {
-        kafka: {
-          consumerGroupId: "view-server-test-runtime-interrupt",
-          regions,
-          topics: {
-            "orders-source": localKafkaTopic({
-              regions: ["local"],
-              value: kafka.json(Order),
-              key: kafka.stringKey(),
-              viewServerTopic: "orders",
-              mapping: ({ key, value }) => ({
-                id: key,
-                price: value.price,
-              }),
-            }),
+      const fiber = yield* runViewServerRuntimeWithDependencies(
+        dependencies,
+        kafkaBackedViewServer,
+        {
+          kafka: {
+            consumerGroupId: "view-server-test-runtime-interrupt",
           },
         },
-      }).pipe(Effect.forkChild({ startImmediately: true }));
+      ).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(serverStarted);
       yield* Deferred.await(kafkaStarted);
       yield* Effect.sleep("10 millis");
@@ -12127,9 +13632,27 @@ describe("@effect-view-server/runtime", () => {
       const regions = {
         local: "localhost:9092",
       };
-      const localKafkaTopic = viewServer.kafkaTopic<typeof regions>();
-      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
-        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+      const kafkaBackedViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
+      });
+      const dependencies: ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
         makeRuntimeCore: (config, options) =>
           makeViewServerRuntimeCoreInternal(config, options).pipe(
             Effect.map((runtimeCore) => ({
@@ -12162,22 +13685,9 @@ describe("@effect-view-server/runtime", () => {
       };
 
       const startupExit = yield* Effect.exit(
-        makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+        makeViewServerRuntimeWithDependencies(dependencies, kafkaBackedViewServer, {
           kafka: {
             consumerGroupId: "view-server-test-startup-failure",
-            regions,
-            topics: {
-              "orders-source": localKafkaTopic({
-                regions: ["local"],
-                value: kafka.json(Order),
-                key: kafka.stringKey(),
-                viewServerTopic: "orders",
-                mapping: ({ key, value }) => ({
-                  id: key,
-                  price: value.price,
-                }),
-              }),
-            },
           },
         }),
       );

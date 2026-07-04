@@ -19,7 +19,28 @@ import type {
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
 
+type HasRequiredDefinedObjectProperty<Definition, Key extends string> = Key extends keyof Definition
+  ? undefined extends Definition[Key]
+    ? false
+    : Exclude<Definition[Key], undefined> extends object
+      ? true
+      : false
+  : false;
+
+type HasSourceOwner<Definition> = true extends
+  | HasRequiredDefinedObjectProperty<Definition, "kafkaSource">
+  | HasRequiredDefinedObjectProperty<Definition, "grpcSource">
+  ? true
+  : false;
+
 type RuntimeCorePublicTopic<Topics extends TopicDefinitions> = Extract<
+  {
+    readonly [Topic in keyof Topics]: HasSourceOwner<Topics[Topic]> extends true ? never : Topic;
+  }[keyof Topics],
+  string
+>;
+
+type RuntimeCoreReadableTopic<Topics extends TopicDefinitions> = Extract<
   {
     readonly [Topic in keyof Topics]: [TopicRouteBy<Topics, Topic>] extends [never] ? Topic : never;
   }[keyof Topics],
@@ -33,8 +54,15 @@ type RuntimeCoreLeasedTopic<Topics extends TopicDefinitions> = Extract<
   string
 >;
 
+type RuntimeCoreSourceOwnedTopic<Topics extends TopicDefinitions> = Extract<
+  {
+    readonly [Topic in keyof Topics]: HasSourceOwner<Topics[Topic]> extends true ? Topic : never;
+  }[keyof Topics],
+  string
+>;
+
 type RuntimeCorePublicReset<Topics extends TopicDefinitions> = [
-  RuntimeCoreLeasedTopic<Topics>,
+  RuntimeCoreSourceOwnedTopic<Topics>,
 ] extends [never]
   ? {
       readonly reset: ViewServerRuntimeClient<Topics>["reset"];
@@ -44,7 +72,7 @@ type RuntimeCorePublicReset<Topics extends TopicDefinitions> = [
     };
 
 type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
-  Topic extends RuntimeCorePublicTopic<Topics>,
+  Topic extends RuntimeCoreReadableTopic<Topics>,
   const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
 >(
   topic: Topic,
@@ -55,7 +83,7 @@ type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
 >;
 
 type RuntimeCorePublicSubscribe<Topics extends TopicDefinitions> = <
-  Topic extends RuntimeCorePublicTopic<Topics>,
+  Topic extends RuntimeCoreReadableTopic<Topics>,
   const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
 >(
   topic: Topic,
@@ -66,7 +94,7 @@ type RuntimeCorePublicSubscribe<Topics extends TopicDefinitions> = <
 >;
 
 type RuntimeCorePublicSubscribeRuntime<Topics extends TopicDefinitions> = <
-  Topic extends RuntimeCorePublicTopic<Topics>,
+  Topic extends RuntimeCoreReadableTopic<Topics>,
 >(
   topic: Topic,
   query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,

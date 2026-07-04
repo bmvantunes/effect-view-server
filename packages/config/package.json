@@ -28,12 +28,16 @@
       "import": "./dist/live-protocol.js"
     },
     "./kafka": {
-      "types": "./dist/kafka-contract.d.ts",
-      "import": "./dist/kafka-contract.js"
+      "types": "./dist/kafka.d.ts",
+      "import": "./dist/kafka.js"
     },
     "./grpc": {
       "types": "./dist/grpc-contract.d.ts",
       "import": "./dist/grpc-contract.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
     }
   },
   "scripts": {

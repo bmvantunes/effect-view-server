@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -1395,6 +1395,43 @@ describe("internal seam checker", () => {
       "packages/effect-view-server/package.json exports effect-view-server/react/internal: add intentional public specifier approval or remove the export.",
       "packages/effect-view-server/package.json export ./react/internal points at ./dist/react-internal.js without a matching packed src entrypoint.",
       "packages/effect-view-server/package.json export ./react/internal points at ./dist/react-internal.d.ts without a matching packed src entrypoint.",
+    ]);
+  });
+
+  it("keeps runtime-only Kafka decoder symbols out of public config facades", () => {
+    const forbiddenSymbols = [
+      "decodeKafkaTopicMessage",
+      "KafkaDecodedTopicMessage",
+      "KafkaDecodedTopicSourceMessage",
+      "KafkaResolvedSourceTopicDefinition",
+    ];
+    const publicEntrypoints = [
+      {
+        path: join(process.cwd(), "packages", "config", "src", "index.ts"),
+        relativePath: "packages/config/src/index.ts",
+      },
+      {
+        path: join(process.cwd(), "packages", "effect-view-server", "src", "config-kafka.ts"),
+        relativePath: "packages/effect-view-server/src/config-kafka.ts",
+      },
+    ];
+
+    expect(
+      publicEntrypoints.map((entrypoint) => ({
+        path: entrypoint.relativePath,
+        leakedSymbols: forbiddenSymbols.filter((symbol) =>
+          readFileSync(entrypoint.path, "utf8").includes(symbol),
+        ),
+      })),
+    ).toStrictEqual([
+      {
+        path: "packages/config/src/index.ts",
+        leakedSymbols: [],
+      },
+      {
+        path: "packages/effect-view-server/src/config-kafka.ts",
+        leakedSymbols: [],
+      },
     ]);
   });
 

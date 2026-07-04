@@ -3,6 +3,7 @@ import type { ViewServerLiveSubscription } from "@effect-view-server/client";
 import {
   defineViewServerConfig,
   grpc,
+  kafka,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
@@ -35,7 +36,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
       }),
     },
@@ -43,6 +44,41 @@ const leasedViewServer = defineViewServerConfig({
 });
 const leasedInMemory = createInMemoryViewServer(leasedViewServer);
 const leasedTestingInMemory = createInMemoryViewServerTesting(leasedViewServer);
+const materializedGrpcSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      grpcSource: grpc.materialized(),
+    },
+  },
+});
+const materializedGrpcSourceInMemory = createInMemoryViewServer(materializedGrpcSourceViewServer);
+const materializedGrpcSourceTestingInMemory = createInMemoryViewServerTesting(
+  materializedGrpcSourceViewServer,
+);
+const kafkaOwnedViewServer = defineViewServerConfig({
+  kafka: {
+    usa: "localhost:9092",
+  },
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      kafkaSource: kafka.source({
+        topic: "orders-source",
+        regions: ["usa"],
+        value: kafka.json(Order),
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          price: value.price,
+        }),
+      }),
+    },
+  },
+});
+const kafkaOwnedInMemory = createInMemoryViewServer(kafkaOwnedViewServer);
+const kafkaOwnedTestingInMemory = createInMemoryViewServerTesting(kafkaOwnedViewServer);
 const invalidTransportHealthOption = createInMemoryViewServer(viewServer, {
   // @ts-expect-error in-memory does not expose Runtime Core transport adapter hooks.
   transportHealth: () => ({
@@ -81,6 +117,12 @@ describe("in-memory type contracts", () => {
     const subscription = inMemory.liveClient.subscribe("orders", {
       select: ["id"],
     });
+    const kafkaSnapshot = kafkaOwnedInMemory.client.snapshot("orders", {
+      select: ["id"],
+    });
+    const materializedGrpcSnapshot = materializedGrpcSourceInMemory.client.snapshot("orders", {
+      select: ["id"],
+    });
     const invalidPatch = inMemory.client.patch("orders", "order-1", {
       price: 10,
       // @ts-expect-error patches cannot contain fields outside the topic schema.
@@ -93,6 +135,8 @@ describe("in-memory type contracts", () => {
         readonly id: string;
       }>
     >();
+    expectTypeOf(kafkaSnapshot).not.toBeAny();
+    expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
     expectTypeOf(inMemory.liveClient).not.toHaveProperty("subscribeRuntime");
     expectTypeOf(inMemoryWithGroupedAdmissionLimits.client).toEqualTypeOf<typeof inMemory.client>();
     expectTypeOf(invalidPatch).not.toBeAny();
@@ -139,6 +183,56 @@ describe("in-memory type contracts", () => {
     const invalidLeasedReset = leasedInMemory.client.reset();
     // @ts-expect-error public in-memory live clients reject direct leased gRPC subscriptions.
     const _invalidLeasedSubscribe = leasedInMemory.liveClient.subscribe("orders", leasedQuery);
+    // @ts-expect-error source-owned Kafka topics reject direct in-memory publishes.
+    const invalidKafkaOwnedPublish = kafkaOwnedInMemory.client.publish("orders", {
+      id: "order-1",
+      price: 42,
+    });
+    // @ts-expect-error source-owned Kafka topics reject direct in-memory publishMany.
+    const invalidKafkaOwnedPublishMany = kafkaOwnedInMemory.client.publishMany("orders", [
+      {
+        id: "order-1",
+        price: 42,
+      },
+    ]);
+    // @ts-expect-error source-owned Kafka topics reject direct in-memory patches.
+    const invalidKafkaOwnedPatch = kafkaOwnedInMemory.client.patch("orders", "order-1", {
+      price: 10,
+    });
+    // @ts-expect-error source-owned Kafka topics reject direct in-memory deletes.
+    const invalidKafkaOwnedDelete = kafkaOwnedInMemory.client.delete("orders", "order-1");
+    // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory publishes.
+    const invalidMaterializedGrpcPublish = materializedGrpcSourceInMemory.client.publish("orders", {
+      id: "order-1",
+      price: 42,
+    });
+    const invalidMaterializedGrpcPublishMany = materializedGrpcSourceInMemory.client.publishMany(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory publishMany.
+      "orders",
+      [
+        {
+          id: "order-1",
+          price: 42,
+        },
+      ],
+    );
+    const invalidMaterializedGrpcPatch = materializedGrpcSourceInMemory.client.patch(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory patches.
+      "orders",
+      "order-1",
+      {
+        price: 10,
+      },
+    );
+    const invalidMaterializedGrpcDelete = materializedGrpcSourceInMemory.client.delete(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory deletes.
+      "orders",
+      "order-1",
+    );
+    // @ts-expect-error source-owned in-memory clients reject direct reset.
+    const invalidKafkaOwnedReset = kafkaOwnedInMemory.client.reset();
+    // @ts-expect-error source-owned in-memory clients reject direct reset.
+    const invalidMaterializedGrpcReset = materializedGrpcSourceInMemory.client.reset();
 
     expectTypeOf(invalidLeasedSnapshot).not.toBeAny();
     expectTypeOf(invalidLeasedPublish).not.toBeAny();
@@ -146,6 +240,16 @@ describe("in-memory type contracts", () => {
     expectTypeOf(invalidLeasedPatch).not.toBeAny();
     expectTypeOf(invalidLeasedDelete).not.toBeAny();
     expectTypeOf(invalidLeasedReset).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedPublish).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedPublishMany).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedPatch).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedDelete).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcPublish).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcPublishMany).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcPatch).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcDelete).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedReset).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcReset).not.toBeAny();
   });
 
   it("allows leased gRPC topics from testing in-memory clients", () => {
@@ -170,6 +274,17 @@ describe("in-memory type contracts", () => {
       id: "order-1",
       price: 42,
     });
+    const testingKafkaOwnedPublish = kafkaOwnedTestingInMemory.client.publish("orders", {
+      id: "order-1",
+      price: 42,
+    });
+    const testingMaterializedGrpcPublish = materializedGrpcSourceTestingInMemory.client.publish(
+      "orders",
+      {
+        id: "order-1",
+        price: 42,
+      },
+    );
 
     expectTypeOf<Effect.Success<typeof testingLeasedSubscribe>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
@@ -177,5 +292,7 @@ describe("in-memory type contracts", () => {
       }>
     >();
     expectTypeOf<Effect.Success<typeof testingLeasedPublish>>().toEqualTypeOf<void>();
+    expectTypeOf<Effect.Success<typeof testingKafkaOwnedPublish>>().toEqualTypeOf<void>();
+    expectTypeOf<Effect.Success<typeof testingMaterializedGrpcPublish>>().toEqualTypeOf<void>();
   });
 });

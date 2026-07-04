@@ -3,6 +3,7 @@ import type { ViewServerLiveSubscription } from "@effect-view-server/client";
 import {
   defineViewServerConfig,
   grpc,
+  kafka,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
@@ -35,13 +36,58 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      source: grpc.leased({
+      grpcSource: grpc.leased({
         routeBy: ["id"],
       }),
     },
   },
 });
 const leasedRuntimeCore = createViewServerRuntimeCore(leasedViewServer);
+const leasedGrpcSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      grpcSource: grpc.leased({
+        routeBy: ["id"],
+      }),
+    },
+  },
+});
+const leasedGrpcSourceRuntimeCore = createViewServerRuntimeCore(leasedGrpcSourceViewServer);
+const materializedGrpcSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      grpcSource: grpc.materialized(),
+    },
+  },
+});
+const materializedGrpcSourceRuntimeCore = createViewServerRuntimeCore(
+  materializedGrpcSourceViewServer,
+);
+const kafkaOwnedViewServer = defineViewServerConfig({
+  kafka: {
+    usa: "localhost:9092",
+  },
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+      kafkaSource: kafka.source({
+        topic: "orders-source",
+        regions: ["usa"],
+        value: kafka.json(Order),
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          price: value.price,
+        }),
+      }),
+    },
+  },
+});
+const kafkaOwnedRuntimeCore = createViewServerRuntimeCore(kafkaOwnedViewServer);
 
 describe("runtime-core type contracts", () => {
   it("preserves runtime and live client topic types", () => {
@@ -52,6 +98,18 @@ describe("runtime-core type contracts", () => {
     const subscription = runtimeCore.liveClient.subscribe("orders", {
       select: ["id"],
     });
+    const kafkaSnapshot = kafkaOwnedRuntimeCore.client.snapshot("orders", {
+      select: ["id"],
+    });
+    const materializedGrpcSnapshot = materializedGrpcSourceRuntimeCore.client.snapshot("orders", {
+      select: ["id"],
+    });
+    const materializedGrpcSubscribe = materializedGrpcSourceRuntimeCore.liveClient.subscribe(
+      "orders",
+      {
+        select: ["id"],
+      },
+    );
     const invalidPatch = runtimeCore.client.patch("orders", "order-1", {
       price: 10,
       // @ts-expect-error patches cannot contain fields outside the topic schema.
@@ -101,6 +159,11 @@ describe("runtime-core type contracts", () => {
         readonly id: string;
       }>
     >();
+    expectTypeOf(kafkaSnapshot).not.toBeAny();
+    expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
+    expectTypeOf<Effect.Success<typeof materializedGrpcSubscribe>>().toEqualTypeOf<
+      Effect.Success<typeof subscription>
+    >();
     expectTypeOf(invalidPatch).not.toBeAny();
     expectTypeOf(runtimeCoreWithTransportHealth.client).toEqualTypeOf<typeof runtimeCore.client>();
     expectTypeOf(runtimeCoreWithGroupedAdmissionLimits.client).toEqualTypeOf<
@@ -148,6 +211,69 @@ describe("runtime-core type contracts", () => {
     const invalidLeasedReset = leasedRuntimeCore.client.reset();
     // @ts-expect-error public runtime-core live clients reject direct leased gRPC subscriptions.
     const _invalidLeasedSubscribe = leasedRuntimeCore.liveClient.subscribe("orders", leasedQuery);
+    const invalidGrpcSourceLeasedSnapshot = leasedGrpcSourceRuntimeCore.client.snapshot(
+      // @ts-expect-error public runtime-core clients reject direct grpcSource leased gRPC snapshots.
+      "orders",
+      leasedQuery,
+    );
+    const invalidGrpcSourceLeasedSubscribe = leasedGrpcSourceRuntimeCore.liveClient.subscribe(
+      // @ts-expect-error public runtime-core live clients reject direct grpcSource leased gRPC subscriptions.
+      "orders",
+      leasedQuery,
+    );
+    // @ts-expect-error source-owned Kafka topics reject direct runtime-core publishes.
+    const invalidKafkaOwnedPublish = kafkaOwnedRuntimeCore.client.publish("orders", {
+      id: "order-1",
+      price: 42,
+    });
+    // @ts-expect-error source-owned Kafka topics reject direct runtime-core publishMany.
+    const invalidKafkaOwnedPublishMany = kafkaOwnedRuntimeCore.client.publishMany("orders", [
+      {
+        id: "order-1",
+        price: 42,
+      },
+    ]);
+    // @ts-expect-error source-owned Kafka topics reject direct runtime-core patches.
+    const invalidKafkaOwnedPatch = kafkaOwnedRuntimeCore.client.patch("orders", "order-1", {
+      price: 10,
+    });
+    // @ts-expect-error source-owned Kafka topics reject direct runtime-core deletes.
+    const invalidKafkaOwnedDelete = kafkaOwnedRuntimeCore.client.delete("orders", "order-1");
+    const invalidMaterializedGrpcPublish = materializedGrpcSourceRuntimeCore.client.publish(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct runtime-core publishes.
+      "orders",
+      {
+        id: "order-1",
+        price: 42,
+      },
+    );
+    const invalidMaterializedGrpcPublishMany = materializedGrpcSourceRuntimeCore.client.publishMany(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct runtime-core publishMany.
+      "orders",
+      [
+        {
+          id: "order-1",
+          price: 42,
+        },
+      ],
+    );
+    const invalidMaterializedGrpcPatch = materializedGrpcSourceRuntimeCore.client.patch(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct runtime-core patches.
+      "orders",
+      "order-1",
+      {
+        price: 10,
+      },
+    );
+    const invalidMaterializedGrpcDelete = materializedGrpcSourceRuntimeCore.client.delete(
+      // @ts-expect-error source-owned materialized gRPC topics reject direct runtime-core deletes.
+      "orders",
+      "order-1",
+    );
+    // @ts-expect-error source-owned runtime-core clients reject direct reset.
+    const invalidKafkaOwnedReset = kafkaOwnedRuntimeCore.client.reset();
+    // @ts-expect-error source-owned runtime-core clients reject direct reset.
+    const invalidMaterializedGrpcReset = materializedGrpcSourceRuntimeCore.client.reset();
     const _invalidLeasedServerSubscribe = leasedRuntimeCore.serverLiveClient.subscribe(
       // @ts-expect-error public runtime-core server live clients reject direct leased gRPC subscriptions.
       "orders",
@@ -166,5 +292,17 @@ describe("runtime-core type contracts", () => {
     expectTypeOf(invalidLeasedPatch).not.toBeAny();
     expectTypeOf(invalidLeasedDelete).not.toBeAny();
     expectTypeOf(invalidLeasedReset).not.toBeAny();
+    expectTypeOf(invalidGrpcSourceLeasedSnapshot).not.toBeAny();
+    expectTypeOf(invalidGrpcSourceLeasedSubscribe).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedPublish).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedPublishMany).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedPatch).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedDelete).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcPublish).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcPublishMany).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcPatch).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcDelete).not.toBeAny();
+    expectTypeOf(invalidKafkaOwnedReset).not.toBeAny();
+    expectTypeOf(invalidMaterializedGrpcReset).not.toBeAny();
   });
 });

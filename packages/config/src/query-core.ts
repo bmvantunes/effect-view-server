@@ -11,7 +11,7 @@ export type RowSchema = Schema.Codec<object, unknown, never, never> & {
     Record<string, Schema.Codec<unknown, unknown, never, never> | undefined>
   >;
 };
-export type RowFromSchema<S extends RowSchema> = SchemaType<S>;
+export type RowFromSchema<S extends RowSchema> = S["Type"];
 
 export type StringFieldKey<Row> = Extract<
   {
@@ -38,20 +38,23 @@ export type NumericFieldKey<Row> = Extract<
 
 export type FieldKey<Row> = Extract<keyof Row, string>;
 
-export type TopicDefinition<
-  S extends RowSchema,
-  Key extends string,
-  Source extends TopicSourceDefinition | undefined = undefined,
-> = {
+export type TopicDefinition<S extends RowSchema, Key extends string> = {
   readonly schema: S;
   readonly key: Key;
-} & (Source extends TopicSourceDefinition
-  ? { readonly source: Source }
-  : { readonly source?: undefined });
+  readonly kafkaSource?: object | undefined;
+  readonly grpcSource?: TopicSourceDefinition | undefined;
+  readonly source?: never;
+};
 
 export type TopicDefinitions = Record<
   string,
-  TopicDefinition<RowSchema, string, TopicSourceDefinition | undefined>
+  {
+    readonly schema: RowSchema;
+    readonly key: string;
+    readonly kafkaSource?: object | undefined;
+    readonly grpcSource?: TopicSourceDefinition | undefined;
+    readonly source?: never;
+  }
 >;
 
 export type TopicSchema<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
@@ -60,8 +63,10 @@ export type TopicSchema<Topics, Topic extends keyof Topics> = Topics[Topic] exte
   ? S
   : never;
 
-export type TopicRow<Topics, Topic extends keyof Topics> = RowFromSchema<
-  TopicSchema<Topics, Topic>
->;
+export type TopicRow<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
+  readonly schema: infer S extends RowSchema;
+}
+  ? RowFromSchema<S>
+  : never;
 
 export type Simplify<T> = { readonly [Key in keyof T]: T[Key] };

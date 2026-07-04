@@ -9,9 +9,9 @@ import { dirname, join } from "node:path";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Clock, Config, Effect, Queue, Schedule, Schema, Stream } from "effect";
 import {
-  makeViewServerRuntimeCore,
-  type ViewServerRuntimeCoreInstance,
-} from "@effect-view-server/runtime-core";
+  makeViewServerRuntimeCoreInternal,
+  type ViewServerRuntimeCoreInternalInstance,
+} from "@effect-view-server/runtime-core/internal";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcIngress, type ViewServerGrpcIngress } from "./grpc-ingress";
 
@@ -50,7 +50,7 @@ type BenchmarkProfile = {
   readonly ingress: ViewServerGrpcIngress;
   readonly memoryAfterSetup: BenchmarkMemorySnapshot;
   readonly queue: Queue.Queue<GrpcOrderValueMessage>;
-  readonly runtimeCore: ViewServerRuntimeCoreInstance<Topics>;
+  readonly runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>;
 };
 
 type BenchmarkCase = {
@@ -89,7 +89,7 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      source: grpc.materialized(),
+      grpcSource: grpc.materialized(),
     },
   },
 });
@@ -276,7 +276,7 @@ const grpcMaterializedFeed = (stream: Stream.Stream<GrpcOrderValueMessage, never
 
 const createRuntimeCoreForBenchmark = Effect.fn("ViewServerRuntime.grpc.bench.core.make")(
   function* () {
-    return yield* makeViewServerRuntimeCore(viewServer, {});
+    return yield* makeViewServerRuntimeCoreInternal(viewServer, {});
   },
 );
 
@@ -370,7 +370,7 @@ const offerRows = Effect.fn("ViewServerRuntime.grpc.bench.rows.offer")(function*
 });
 
 const waitForTotalRows = Effect.fn("ViewServerRuntime.grpc.bench.totalRows.wait")(function* (
-  runtimeCore: ViewServerRuntimeCoreInstance<Topics>,
+  runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>,
   expectedTotalRows: number,
 ) {
   return yield* runtimeCore.client
@@ -398,7 +398,7 @@ const waitForTotalRows = Effect.fn("ViewServerRuntime.grpc.bench.totalRows.wait"
 });
 
 const readHealthOverlay = Effect.fn("ViewServerRuntime.grpc.bench.healthOverlay.read")(function* (
-  runtimeCore: ViewServerRuntimeCoreInstance<Topics>,
+  runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>,
   health: ReturnType<typeof makeViewServerGrpcHealthLedger<Topics>>,
 ) {
   const nowMillis = yield* Clock.currentTimeMillis;
@@ -570,7 +570,7 @@ beforeAll(async () => {
       });
       const ingress = yield* makeViewServerGrpcIngress(
         viewServer,
-        runtimeCore.client,
+        runtimeCore.internalClient,
         Effect.void,
         {
           clientBaseUrls: grpcHealthClientBaseUrls,

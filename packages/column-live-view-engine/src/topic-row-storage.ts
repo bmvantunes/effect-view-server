@@ -32,6 +32,8 @@ import {
   type TopicRowChangeJournalLimits,
 } from "./topic-row-change-journal";
 import {
+  prepareDecodedTopicRow,
+  prepareDecodedTopicRowWithStorageKey,
   prepareTopicPatch,
   prepareTopicRow,
   prepareTopicRowWithStorageKey,
@@ -328,6 +330,26 @@ export class TopicRowStorage {
     return yield* Effect.forEach(rows, (row) => this.prepareRow(row, invalidRow));
   });
 
+  prepareDecodedRow = Effect.fn("ColumnLiveViewEngine.topicRowStorage.decodedRow.prepare")(
+    function* <Error, Row extends RowObject>(
+      this: TopicRowStorage,
+      row: Row,
+      invalidRow: InvalidRowErrorFactory<Error>,
+    ) {
+      return yield* prepareDecodedTopicRow(this.rowPreparation, row, invalidRow);
+    },
+  );
+
+  prepareDecodedRows = Effect.fn("ColumnLiveViewEngine.topicRowStorage.decodedRows.prepare")(
+    function* <Error, Row extends RowObject>(
+      this: TopicRowStorage,
+      rows: ReadonlyArray<Row>,
+      invalidRow: InvalidRowErrorFactory<Error>,
+    ) {
+      return yield* Effect.forEach(rows, (row) => this.prepareDecodedRow(row, invalidRow));
+    },
+  );
+
   prepareRowWithStorageKey = Effect.fn(
     "ColumnLiveViewEngine.topicRowStorage.row.prepareWithStorageKey",
   )(function* <Error, Row extends RowObject>(
@@ -337,6 +359,22 @@ export class TopicRowStorage {
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     return yield* prepareTopicRowWithStorageKey(this.rowPreparation, row, storageKey, invalidRow);
+  });
+
+  prepareDecodedRowWithStorageKey = Effect.fn(
+    "ColumnLiveViewEngine.topicRowStorage.decodedRow.prepareWithStorageKey",
+  )(function* <Error, Row extends RowObject>(
+    this: TopicRowStorage,
+    row: Row,
+    storageKey: string,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) {
+    return yield* prepareDecodedTopicRowWithStorageKey(
+      this.rowPreparation,
+      row,
+      storageKey,
+      invalidRow,
+    );
   });
 
   preparePatch = Effect.fn("ColumnLiveViewEngine.topicRowStorage.patch.prepare")(function* <

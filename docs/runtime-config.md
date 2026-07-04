@@ -111,6 +111,10 @@ For leased feeds, the feed `routeBy` tuple must match the topic's
 `grpcSource: grpc.leased({ routeBy: [...] })` tuple. The route fields are
 required in public live queries, passed to the feed `request` callback, and used
 to share one upstream gRPC stream for subscribers requesting the same route.
+Missing feeds, lifecycle mismatches, and route tuple mismatches fail runtime
+startup. Materialized feed client names are also validated at startup; leased
+feed client names are validated when the first matching subscription opens the
+lazy upstream stream.
 
 ## Source Ownership
 

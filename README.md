@@ -190,13 +190,18 @@ NodeRuntime.runMain(
 The runtime feed list must cover every gRPC-owned topic. A topic with
 `grpcSource: grpc.materialized()` needs one matching `materializedFeed`; a topic
 with `grpcSource: grpc.leased(...)` needs one matching `leasedFeed`. Runtime
-startup rejects missing feeds, lifecycle mismatches, route tuple mismatches, and
-unknown client names.
+startup rejects missing feeds, lifecycle mismatches, and route tuple
+mismatches. Materialized feeds also validate unknown client names at startup;
+leased feeds validate unknown client names when a subscription opens the lazy
+upstream stream.
 
 For example, `ordersByStrategyFeed` binds `viewServer.topics.ordersByStrategy`
-to `viewServer.grpc.clients.orders.streamOrders`, while `strategiesFeed` binds
-`viewServer.topics.strategies` to
-`viewServer.grpc.clients.strategies.streamStrategies`.
+to the `orders` gRPC client definition and its `streamOrders` server-streaming
+method. `strategiesFeed` does the same for `viewServer.topics.strategies`, the
+`strategies` client definition, and its `streamStrategies` method. At runtime,
+the feed `acquire` callback receives the generated client value, so
+`client.streamOrders(request)` or `client.streamStrategies(request)` opens the
+actual upstream stream.
 
 The same-server `GET /health` endpoint serves the cached runtime health snapshot
 for deployment readiness checks. Internal `bigint` health fields, such as Kafka

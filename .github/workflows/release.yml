@@ -6,9 +6,17 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      action:
+        description: "Release action to run"
+        required: true
+        default: "stage"
+        type: choice
+        options:
+          - stage
+          - finalize
       version:
         description: "Published effect-view-server version to tag after npm stage approve"
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -19,16 +27,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  version:
-    name: Ready and version PR
+  ready:
+    name: Ready
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: write
-      pull-requests: write
-    outputs:
-      hasChangesets: ${{ steps.changesets.outputs.hasChangesets }}
 
     steps:
       - name: Checkout
@@ -55,22 +58,11 @@ jobs:
       - name: Ready gate
         run: vp run -w ready
 
-      - name: Create version PR
-        id: changesets
-        uses: changesets/action@v1
-        with:
-          title: "Version packages"
-          commit: "Version packages"
-          version: vp run -w release:version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish:
-    name: Publish
+  stage:
+    name: Stage npm package
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: version
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.version.outputs.hasChangesets == 'false'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.action == 'stage'
     permissions:
       contents: write
       id-token: write
@@ -92,6 +84,13 @@ jobs:
 
       - name: Install dependencies
         run: vp install --frozen-lockfile
+
+      - name: Install browser test dependencies
+        working-directory: packages/react
+        run: vp exec playwright install --with-deps chromium firefox webkit
+
+      - name: Ready gate
+        run: vp run -w ready
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11.17.0
@@ -115,7 +114,7 @@ jobs:
     name: Finalize approved npm stage
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.action == 'finalize'
     permissions:
       contents: write
 
@@ -138,6 +137,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Validate version input
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node -e "if (!process.env.RELEASE_VERSION) throw new Error('version input is required when action=finalize')"
 
       - name: Tag approved npm version
         env:

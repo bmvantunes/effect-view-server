@@ -243,6 +243,15 @@ describe("release publish policy", () => {
     expect(releaseWorkflow).not.toContain('node scripts/release-publish.mjs --finalize-version "${{ inputs.version }}"');
   });
 
+  it("does not create version pull requests from the main-branch release workflow", () => {
+    const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+
+    expect(releaseWorkflow).not.toContain("changesets/action");
+    expect(releaseWorkflow).not.toContain("pull-requests: write");
+    expect(releaseWorkflow).not.toContain("hasChangesets");
+    expect(releaseWorkflow).not.toContain("Create version PR");
+  });
+
   it("sanitizes the public package manifest before staging the npm artifact", () => {
     expect(sanitizePublicPackageJson(publicPackageJson)).toStrictEqual({
       name: "effect-view-server",

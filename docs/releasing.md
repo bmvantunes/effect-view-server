@@ -53,32 +53,46 @@ when a validation step asks for explicit no-release intent.
 
 ## Main branch flow
 
-On every push to `main`, `.github/workflows/release.yml` runs:
+On every push to `main`, `.github/workflows/release.yml` runs readiness only:
 
 1. `vp install --frozen-lockfile`
 2. browser dependency installation
 3. `vp run -w ready`
-4. Changesets action
 
-If unreleased changesets exist, the action opens or updates a `Version packages`
-PR. When that PR is merged, the same workflow builds `effect-view-server` and
-stages a sanitized npm artifact through trusted publishing. A maintainer must
-then approve the staged package with `npm stage approve <stage-id>` to publish
-it publicly, or reject it with `npm stage reject <stage-id>`. After approval,
-manually run the `Release` workflow on `main` with the approved version as the
-workflow input; the release script observes that the exact version is now public
-and creates the public
-`effect-view-server@<version>` git tag. The staged artifact intentionally
-excludes source maps, source-map references, scripts, dev dependencies, internal
-`@effect-view-server/*` workspace metadata, and internal workspace import
-specifiers. The publish script skips `effect-view-server@0.0.0`, so enabling
-this workflow cannot accidentally publish the placeholder development version.
-The staging job may push an `effect-view-server@<version>-staged` marker tag as
-a best-effort signal that approval is pending. It is not authoritative: reruns
-still ask npm so rejected stages can be restaged and approved stages can be
-converted into public release tags. The public
-`effect-view-server@<version>` release tag is only created after npm reports
-that the version is actually published.
+The workflow must not create pull requests from `main`. When unreleased
+changesets are ready to publish, create the version PR explicitly from a normal
+branch:
+
+```sh
+git switch -c release/version-packages
+vp run -w release:version
+git add .
+git commit -m "Version packages"
+git push --set-upstream origin release/version-packages
+gh pr create --title "Version packages" --body "Version packages"
+```
+
+After the version PR is reviewed and merged, manually run the `Release` workflow
+on `main` with `action=stage`. The workflow rebuilds, reruns `vp run -w ready`,
+and stages a sanitized npm artifact through trusted publishing. A maintainer
+must then approve the staged package with `npm stage approve <stage-id>` to
+publish it publicly, or reject it with `npm stage reject <stage-id>`.
+
+After approval, manually run the `Release` workflow on `main` with
+`action=finalize` and the approved version as the `version` input. The release
+script observes that the exact version is now public and creates the public
+`effect-view-server@<version>` git tag.
+
+The staged artifact intentionally excludes source maps, source-map references,
+scripts, dev dependencies, internal `@effect-view-server/*` workspace metadata,
+and internal workspace import specifiers. The publish script skips
+`effect-view-server@0.0.0`, so enabling this workflow cannot accidentally
+publish the placeholder development version. The staging job may push an
+`effect-view-server@<version>-staged` marker tag as a best-effort signal that
+approval is pending. It is not authoritative: reruns still ask npm so rejected
+stages can be restaged and approved stages can be converted into public release
+tags. The public `effect-view-server@<version>` release tag is only created
+after npm reports that the version is actually published.
 
 ## Manual checks
 

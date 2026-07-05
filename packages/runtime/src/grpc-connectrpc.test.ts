@@ -14,6 +14,7 @@ import {
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema, Stream } from "effect";
 import * as Http2 from "node:http2";
@@ -124,19 +125,7 @@ const materializedViewServer = defineViewServerConfig({
     orders: {
       schema: ConnectOrder,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
-  },
-});
-
-const leasedViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: ConnectOrder,
-      key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["region"],
-      }),
+      grpcSource: grpcSourceMarkers.materialized(),
     },
   },
 });
@@ -427,36 +416,39 @@ describe("@effect-view-server/runtime ConnectRPC gRPC integration", () => {
             baseUrl: connectServer.baseUrl,
           }),
         };
-        const grpcFeed = materializedViewServer.grpcFeed<typeof grpcClients>();
+        const grpcTopics = grpc.topicSources(grpcClients);
         const upstreamAbort = new AbortController();
         let releaseCount = 0;
-        const runtime = yield* Effect.acquireRelease(
-          makeViewServerRuntime(materializedViewServer, {
-            websocketPort: 0,
-            grpc: {
-              clients: grpcClients,
-              feeds: {
-                ordersFeed: grpcFeed.materializedFeed({
-                  topic: "orders",
-                  client: "orders",
-                  method: "streamOrders",
-                  request: () => ({ region: "all" }),
-                  acquire: ({ client, request }) =>
-                    Stream.fromAsyncIterable(
-                      client.streamOrders(request, {
-                        signal: upstreamAbort.signal,
-                      }),
-                      (cause) => cause,
-                    ),
-                  release: () =>
-                    Effect.sync(() => {
-                      releaseCount += 1;
-                      upstreamAbort.abort();
-                    }),
-                  map: ({ value }) => mapOrderEvent(value),
+        const runtimeViewServer = defineViewServerConfig({
+          grpc: {
+            clients: grpcClients,
+          },
+          topics: {
+            orders: grpcTopics.materialized({
+              schema: ConnectOrder,
+              key: "id",
+              client: "orders",
+              method: "streamOrders",
+              request: () => ({ region: "all" }),
+              acquire: ({ client, request }) =>
+                Stream.fromAsyncIterable(
+                  client.streamOrders(request, {
+                    signal: upstreamAbort.signal,
+                  }),
+                  (cause) => cause,
+                ),
+              release: () =>
+                Effect.sync(() => {
+                  releaseCount += 1;
+                  upstreamAbort.abort();
                 }),
-              },
-            },
+              map: ({ value }) => mapOrderEvent(value),
+            }),
+          },
+        });
+        const runtime = yield* Effect.acquireRelease(
+          makeViewServerRuntime(runtimeViewServer, {
+            websocketPort: 0,
           }),
           (runtime) => runtime.close,
         );
@@ -495,37 +487,40 @@ describe("@effect-view-server/runtime ConnectRPC gRPC integration", () => {
             baseUrl: connectServer.baseUrl,
           }),
         };
-        const grpcFeed = leasedViewServer.grpcFeed<typeof grpcClients>();
+        const grpcTopics = grpc.topicSources(grpcClients);
         const upstreamAbort = new AbortController();
         let releaseCount = 0;
-        const runtime = yield* Effect.acquireRelease(
-          makeViewServerRuntime(leasedViewServer, {
-            websocketPort: 0,
-            grpc: {
-              clients: grpcClients,
-              feeds: {
-                ordersByRegion: grpcFeed.leasedFeed({
-                  topic: "orders",
-                  client: "orders",
-                  method: "streamOrders",
-                  routeBy: ["region"],
-                  request: ({ region }) => ({ region }),
-                  acquire: ({ client, request }) =>
-                    Stream.fromAsyncIterable(
-                      client.streamOrders(request, {
-                        signal: upstreamAbort.signal,
-                      }),
-                      (cause) => cause,
-                    ),
-                  release: () =>
-                    Effect.sync(() => {
-                      releaseCount += 1;
-                      upstreamAbort.abort();
-                    }),
-                  map: ({ value }) => mapOrderEvent(value),
+        const runtimeViewServer = defineViewServerConfig({
+          grpc: {
+            clients: grpcClients,
+          },
+          topics: {
+            orders: grpcTopics.leased({
+              schema: ConnectOrder,
+              key: "id",
+              client: "orders",
+              method: "streamOrders",
+              routeBy: ["region"],
+              request: ({ region }) => ({ region }),
+              acquire: ({ client, request }) =>
+                Stream.fromAsyncIterable(
+                  client.streamOrders(request, {
+                    signal: upstreamAbort.signal,
+                  }),
+                  (cause) => cause,
+                ),
+              release: () =>
+                Effect.sync(() => {
+                  releaseCount += 1;
+                  upstreamAbort.abort();
                 }),
-              },
-            },
+              map: ({ value }) => mapOrderEvent(value),
+            }),
+          },
+        });
+        const runtime = yield* Effect.acquireRelease(
+          makeViewServerRuntime(runtimeViewServer, {
+            websocketPort: 0,
           }),
           (runtime) => runtime.close,
         );

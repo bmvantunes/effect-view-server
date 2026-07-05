@@ -3,6 +3,7 @@ import type { ViewServerLiveClient } from "@effect-view-server/client";
 import {
   defineViewServerConfig,
   grpc,
+  type GrpcRuntimeClients,
   type LiveQueryResult,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -12,6 +13,7 @@ import {
   type ViewServerInMemoryOptions as ViewServerInMemoryOptionsFromPackageTesting,
 } from "@effect-view-server/react/testing";
 import type { Effect } from "effect";
+import type { Stream } from "effect";
 import { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
 import type { ReactNode } from "react";
@@ -28,6 +30,11 @@ const Order = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
+declare const grpcRuntimeClients: GrpcRuntimeClients;
+declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
+
+const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -38,14 +45,27 @@ const viewServer = defineViewServerConfig({
 });
 
 const leasedViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["region", "status"],
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["region", "status"],
+      request: (route) => route,
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({
+        id: "order-1",
+        customerId: "customer-1",
+        status: route.status,
+        price: 0,
+        region: route.region,
+        updatedAt: 0,
       }),
-    },
+    }),
   },
 });
 

@@ -17,7 +17,7 @@ service with:
 import { NodeRuntime } from "@effect/platform-node";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import { Config, Effect } from "effect";
-import { viewServer, grpcClients, grpcFeeds } from "./view-server.config";
+import { viewServer } from "./view-server.config";
 
 const program = Effect.gen(function* () {
   const websocketPort = yield* Config.number("VIEW_SERVER_WEBSOCKET_PORT");
@@ -32,10 +32,6 @@ const program = Effect.gen(function* () {
       consumerGroupId: kafkaConsumerGroupId,
       startFrom: "latest",
     },
-    grpc: {
-      clients: grpcClients,
-      feeds: grpcFeeds,
-    },
   });
 });
 
@@ -45,6 +41,10 @@ NodeRuntime.runMain(program);
 Kafka regions and source mappings should be declared on `viewServer` with
 topic-owned `kafkaSource` definitions; runtime options only provide the
 deployment consumer group and start policy.
+
+gRPC clients and source mappings should also be declared on `viewServer` with
+topic-owned `grpcSource` definitions created through `grpc.topicSources(...)`.
+Runtime options do not redeclare gRPC feeds.
 
 Use a deployment-unique `VIEW_SERVER_KAFKA_GROUP_ID`. The current supported
 deployment model is one active View Server runtime for a logical deployment.

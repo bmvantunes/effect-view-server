@@ -5,6 +5,8 @@ import { makeViewServerClient } from "@effect-view-server/client/remote";
 import {
   defineViewServerConfig,
   VIEW_SERVER_HEALTH_TOPIC,
+  type GrpcRuntimeClients,
+  type RuntimeRegions,
   type TopicDefinitions,
   type ViewServerConfig,
   type ViewServerHealth,
@@ -140,8 +142,12 @@ const edgeViewServer = defineViewServerConfig({
   },
 });
 
-const createServerTestRuntime = <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+const createServerTestRuntime = <
+  const Topics extends TopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: Parameters<typeof makeViewServerRuntimeCoreInternal<Topics>>[1] = {},
 ) => Effect.runSync(makeViewServerRuntimeCoreInternal(config, options));
 

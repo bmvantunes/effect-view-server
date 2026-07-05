@@ -1,7 +1,6 @@
 import type {
   GrpcRuntimeClients,
   RuntimeRegions,
-  ViewServerConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -45,41 +44,45 @@ import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly makeRuntimeCore: (
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ViewServerRuntimeCoreOptionsFor<Topics>,
   ) => Effect.Effect<ViewServerRuntimeCoreInternalInstance<Topics>, ViewServerRuntimeError>;
   readonly makeServer: (
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     input: ViewServerWebSocketServerInput<Topics>,
     options: ViewServerWebSocketServerOptions,
   ) => Effect.Effect<ViewServerWebSocketServer, HttpServerError.ServeError>;
   readonly makeKafkaHealthLedger: <const Regions extends RuntimeRegions>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
   ) => ViewServerKafkaHealthLedger<Topics>;
   readonly makeGrpcHealthLedger: <const Clients extends GrpcRuntimeClients>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   ) => ViewServerGrpcHealthLedger<Topics>;
   readonly makeKafkaIngress: <const Regions extends RuntimeRegions>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     client: ViewServerRuntimeCoreInternalClient<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
     health: ViewServerKafkaHealthLedger<Topics>,
   ) => Effect.Effect<ViewServerKafkaIngress, ViewServerKafkaIngressError>;
   readonly makeTcpPublishIngress: (
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     client: ViewServerRuntimeClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) => Effect.Effect<ViewServerTcpPublishIngress, ViewServerTcpPublishIngressError>;
   readonly makeGrpcIngress: <const Clients extends GrpcRuntimeClients>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerRuntimeDependencyConfig<Topics>,
     client: ViewServerRuntimeCoreInternalClient<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
     options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
     health: ViewServerGrpcHealthLedger<Topics>,
   ) => Effect.Effect<ViewServerGrpcIngress, ViewServerGrpcIngressError>;
+};
+
+export type ViewServerRuntimeDependencyConfig<Topics extends ViewServerRuntimeTopicDefinitions> = {
+  readonly topics: Topics;
 };
 
 export const makeDefaultRuntimeDependencies = <
@@ -101,22 +104,31 @@ export const makeDefaultRuntimeDependencies = <
         ]),
       ),
     }),
-  makeGrpcHealthLedger: (_config, options) =>
-    makeViewServerGrpcHealthLedger({
+  makeGrpcHealthLedger: (config, options) => {
+    const hasConfiguredTopic = (topic: string): topic is Extract<keyof Topics, string> =>
+      Object.hasOwn(config.topics, topic);
+    const feeds: Record<
+      string,
+      {
+        readonly client: string;
+        readonly lifecycle: "materialized" | "leased";
+        readonly topic: Extract<keyof Topics, string>;
+      }
+    > = Object.create(null);
+    for (const [feedName, feed] of Object.entries(options.feeds)) {
+      if (hasConfiguredTopic(feed.topic)) {
+        feeds[feedName] = {
+          client: feed.client,
+          lifecycle: feed.lifecycle,
+          topic: feed.topic,
+        };
+      }
+    }
+    return makeViewServerGrpcHealthLedger({
       clients: options.clientBaseUrls,
-      feeds: Object.fromEntries(
-        Object.entries(options.feeds)
-          .filter(([, feed]) => feed.lifecycle === "materialized")
-          .map(([feedName, feed]) => [
-            feedName,
-            {
-              client: feed.client,
-              lifecycle: feed.lifecycle,
-              topic: feed.topic,
-            },
-          ]),
-      ),
-    }),
+      feeds,
+    });
+  },
   makeKafkaIngress: makeViewServerKafkaIngress,
   makeTcpPublishIngress: makeViewServerTcpPublishIngress,
   makeGrpcIngress: makeViewServerGrpcIngress,

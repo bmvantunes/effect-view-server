@@ -18,10 +18,10 @@ import type {
   LiveQueryRow,
   RawQuery,
   TopicRow,
-  ViewServerConfig,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
+  ViewServerTopicConfig,
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "@effect-view-server/config";
@@ -96,7 +96,7 @@ const runtimeHealthBackpressureStatus = <Topic extends string>(
 
 export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveClient.make")(
   <const Topics extends DecodableTopicDefinitions>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngine<Topics>,
     health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
     refreshHealth: Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>,

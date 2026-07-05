@@ -13,6 +13,7 @@ import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
+  type ViewServerRuntimeDependencyConfig,
   type ViewServerRuntimeDependencies,
 } from "./runtime-dependencies";
 import type { ViewServerKafkaIngressError } from "./kafka-ingress";
@@ -21,8 +22,10 @@ import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import {
   resolveViewServerRuntimeOptions,
+  resolveViewServerRuntimeOptionsWithRuntimeFeeds,
   validateGrpcSourceFeeds,
   type ResolvedViewServerRuntimeOptions,
+  type ViewServerRuntimeOptionsWithRuntimeFeeds,
 } from "./runtime-options";
 import type {
   ViewServerRuntime,
@@ -96,27 +99,64 @@ type MakeViewServerRuntimeWithDependencies = {
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
     config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    options: Options & ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
+    options: Options,
+  ): Effect.Effect<ViewServerRuntime<Topics, Options>, ViewServerRuntimeFactoryError>;
+};
+
+type MakeViewServerRuntimeWithRuntimeFeedsAndDependencies = {
+  <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions = RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+    const Options extends object = ViewServerRuntimeOptionsWithRuntimeFeeds<
+      Topics,
+      Regions,
+      GrpcClients
+    >,
+  >(
+    dependencies: ViewServerRuntimeDependencies<Topics>,
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+    options: Options,
   ): Effect.Effect<ViewServerRuntime<Topics, Options>, ViewServerRuntimeFactoryError>;
 };
 
 export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDependencies =
   Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
     const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions = RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+    const Options extends object = ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics>,
-    options?: ViewServerRuntimeOptions<Topics>,
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+    options?: Options,
   ) {
     if (options === undefined) {
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        Topics,
-        RuntimeRegions,
-        GrpcRuntimeClients
-      >(config, {});
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, {});
       return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
     }
     const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, options);
+    return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
+  });
+
+export const makeViewServerRuntimeWithRuntimeFeedsAndDependencies: MakeViewServerRuntimeWithRuntimeFeedsAndDependencies =
+  Effect.fn("ViewServerRuntime.makeWithRuntimeFeedsAndDependencies")(function* <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions = RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+    const Options extends object = ViewServerRuntimeOptionsWithRuntimeFeeds<
+      Topics,
+      Regions,
+      GrpcClients
+    >,
+  >(
+    dependencies: ViewServerRuntimeDependencies<Topics>,
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+    options: Options,
+  ) {
+    // Private dependency-injection seam for tests/benchmarks that need already-resolved
+    // gRPC feeds. Public runtime options must use topic-owned `grpcSource` bindings.
+    const resolvedOptions = yield* resolveViewServerRuntimeOptionsWithRuntimeFeeds(config, options);
     return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
   });
 
@@ -128,19 +168,24 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
   const GrpcClients extends GrpcRuntimeClients,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   resolvedOptions: ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
 ) {
+  const dependencyConfig: ViewServerRuntimeDependencyConfig<Topics> = {
+    topics: config.topics,
+  };
   const kafkaOptions = resolvedOptions.kafkaOptions;
   const grpcOptions = resolvedOptions.grpcOptions;
-  yield* validateGrpcSourceFeeds(config, grpcOptions);
+  yield* validateGrpcSourceFeeds(dependencyConfig, grpcOptions);
   const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
   const kafkaHealth =
     kafkaOptions === undefined
       ? undefined
-      : dependencies.makeKafkaHealthLedger(config, kafkaOptions);
+      : dependencies.makeKafkaHealthLedger(dependencyConfig, kafkaOptions);
   const grpcHealth =
-    grpcOptions === undefined ? undefined : dependencies.makeGrpcHealthLedger(config, grpcOptions);
+    grpcOptions === undefined
+      ? undefined
+      : dependencies.makeGrpcHealthLedger(dependencyConfig, grpcOptions);
   const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
     transportHealth: transportHealth.transportHealth,
   };
@@ -164,13 +209,13 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         : grpcHealth.healthOverlay(kafkaOverlayed, nowMillis);
     };
   }
-  const runtimeCore = yield* dependencies.makeRuntimeCore(config, runtimeCoreInput);
+  const runtimeCore = yield* dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput);
   const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
   const grpcLeaseManager =
     grpcOptions === undefined || grpcHealth === undefined
       ? undefined
       : yield* makeViewServerGrpcLeaseManager(
-          config,
+          dependencyConfig,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           runtimeCore.internalLiveClient,
@@ -178,7 +223,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           grpcOptions,
           grpcHealth,
         );
-  const sourceOwnership = makeSourceOwnershipPolicy(config);
+  const sourceOwnership = makeSourceOwnershipPolicy(dependencyConfig);
   const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
   const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
   const closeGrpcLeaseManager =
@@ -187,7 +232,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     resolvedOptions.tcpPublishOptions === undefined
       ? undefined
       : yield* dependencies
-          .makeTcpPublishIngress(config, runtimeClient, {
+          .makeTcpPublishIngress(dependencyConfig, runtimeClient, {
             ...resolvedOptions.tcpPublishOptions,
             ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
             rejectedTopics: sourceOwnership.sourceOwnedTopics,
@@ -201,7 +246,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           );
   const server = yield* dependencies
     .makeServer(
-      config,
+      dependencyConfig,
       {
         ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
         liveClient: runtimeLiveClient,
@@ -230,7 +275,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       ? undefined
       : yield* dependencies
           .makeKafkaIngress(
-            config,
+            dependencyConfig,
             runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             kafkaOptions,
@@ -252,7 +297,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       ? undefined
       : yield* dependencies
           .makeGrpcIngress(
-            config,
+            dependencyConfig,
             runtimeCore.internalClient,
             runtimeCore.requestHealthRefresh,
             grpcOptions,

@@ -5,10 +5,10 @@ import {
 } from "@effect-view-server/column-live-view-engine";
 import {
   defineViewServerConfig,
-  grpc,
   kafka,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { Deferred, Effect, Fiber, Option, Queue, Schema, Stream, Tracer } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
@@ -44,7 +44,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
+      grpcSource: grpcSourceMarkers.leased({
         routeBy: ["region", "status"],
       }),
     },
@@ -56,7 +56,7 @@ const leasedGrpcSourceViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
+      grpcSource: grpcSourceMarkers.leased({
         routeBy: ["region", "status"],
       }),
     },
@@ -68,7 +68,7 @@ const materializedGrpcSourceViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      grpcSource: grpc.materialized(),
+      grpcSource: grpcSourceMarkers.materialized(),
     },
   },
 });

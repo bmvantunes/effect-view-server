@@ -1,10 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   defineViewServerConfig,
-  grpc,
   kafka,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { Effect, Schema, Stream } from "effect";
 import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
 import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
@@ -28,7 +28,7 @@ const leasedViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
+      grpcSource: grpcSourceMarkers.leased({
         routeBy: ["id"],
       }),
     },
@@ -40,7 +40,7 @@ const materializedGrpcSourceViewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
-      grpcSource: grpc.materialized(),
+      grpcSource: grpcSourceMarkers.materialized(),
     },
   },
 });

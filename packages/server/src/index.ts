@@ -1,5 +1,5 @@
 import { NodeHttpServer } from "@effect/platform-node";
-import type { TopicDefinitions, ViewServerConfig } from "@effect-view-server/config";
+import type { TopicDefinitions, ViewServerTopicConfig } from "@effect-view-server/config";
 import { ViewServerRpcs } from "@effect-view-server/protocol";
 import { Context, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest } from "effect/unstable/http";
@@ -83,13 +83,13 @@ export {
 } from "./auth";
 
 export const makeViewServerWebSocketServer: <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   input: ViewServerWebSocketServerInput<Topics>,
   options?: ViewServerWebSocketServerOptions,
 ) => Effect.Effect<ViewServerWebSocketServer, HttpServerError.ServeError> = Effect.fn(
   "ViewServerServer.websocket.make",
 )(function* <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   input: ViewServerWebSocketServerInput<Topics>,
   options: ViewServerWebSocketServerOptions = {},
 ) {

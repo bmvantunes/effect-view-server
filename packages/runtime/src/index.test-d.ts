@@ -4,7 +4,6 @@ import {
   grpc,
   kafka,
   type GrpcConnectClientDefinition,
-  type GrpcFeedDefinition,
   type GrpcRuntimeClients,
   type RuntimeRegions,
   type ViewServerRuntimeError,
@@ -12,6 +11,7 @@ import {
 import type { ViewServerAuth } from "@effect-view-server/server";
 import type { Config } from "effect";
 import { Effect, Schema } from "effect";
+import type { Stream } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeViewServerRuntime,
@@ -21,7 +21,6 @@ import {
   type ViewServerGrpcIngressError,
   type ViewServerKafkaIngressError,
   type ViewServerTcpPublishIngressError,
-  type ViewServerRuntimeOptionsInput,
   type ViewServerRuntimeOptions,
 } from "./index";
 
@@ -35,6 +34,15 @@ const Trade = Schema.Struct({
   symbol: Schema.String,
 });
 
+declare const grpcRuntimeClients: GrpcRuntimeClients;
+declare const exactGrpcRuntimeClients: {
+  readonly ordersClient: GrpcConnectClientDefinition;
+};
+declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
+
+const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
+const exactGrpcTopicSources = grpc.topicSources(exactGrpcRuntimeClients);
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -45,39 +53,75 @@ const viewServer = defineViewServerConfig({
 });
 
 const leasedViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["id"],
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({
+        id: route.id,
+        price: 0,
       }),
-    },
+    }),
   },
 });
 
 const materializedGrpcViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.materialized({
       schema: Order,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({}),
+      acquire: () => grpcRuntimeStream,
+      map: () => ({
+        id: "order-1",
+        price: 0,
+      }),
+    }),
   },
 });
 
 const multiMaterializedGrpcViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.materialized({
       schema: Order,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
-    trades: {
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({}),
+      acquire: () => grpcRuntimeStream,
+      map: () => ({
+        id: "order-1",
+        price: 0,
+      }),
+    }),
+    trades: grpcTopicSources.materialized({
       schema: Trade,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({}),
+      acquire: () => grpcRuntimeStream,
+      map: () => ({
+        id: "trade-1",
+        symbol: "AAPL",
+      }),
+    }),
   },
 });
 
@@ -162,139 +206,39 @@ const runtimeWithAuth = makeViewServerRuntime(viewServer, {
 const runEffect = runViewServerRuntime(viewServer);
 declare const runtime: Effect.Success<typeof runtimeEffect>;
 declare const kafkaOwnedRuntime: Effect.Success<typeof kafkaOwnedRuntimeEffect>;
-declare const grpcRuntimeClients: GrpcRuntimeClients;
-declare const exactGrpcRuntimeClients: {
-  readonly ordersClient: GrpcConnectClientDefinition;
-};
-declare const grpcOrdersFeed: GrpcFeedDefinition<
-  typeof materializedGrpcViewServer.topics,
-  typeof grpcRuntimeClients
->;
-declare const broadMaterializedGrpcFeed: GrpcFeedDefinition<
-  typeof multiMaterializedGrpcViewServer.topics,
-  typeof grpcRuntimeClients
->;
 type MultiGrpcSourceVisible = typeof multiMaterializedGrpcViewServer.topics.orders extends {
   readonly grpcSource: object;
 }
   ? true
   : false;
 expectTypeOf<MultiGrpcSourceVisible>().toEqualTypeOf<true>();
-expectTypeOf(broadMaterializedGrpcFeed.topic).toEqualTypeOf<"orders" | "trades">();
-declare const leasedGrpcOrdersFeed: GrpcFeedDefinition<
-  typeof leasedViewServer.topics,
-  typeof grpcRuntimeClients
->;
 const materializedGrpcViewServerWithConfigClients = defineViewServerConfig({
   grpc: {
     clients: exactGrpcRuntimeClients,
   },
   topics: {
-    orders: {
+    orders: exactGrpcTopicSources.materialized({
       schema: Order,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
+      client: "ordersClient",
+      method: "streamOrders",
+      request: () => ({}),
+      acquire: () => grpcRuntimeStream,
+      map: () => ({
+        id: "order-1",
+        price: 0,
+      }),
+    }),
   },
 });
-declare const grpcOrdersFeedForConfigClients: GrpcFeedDefinition<
-  typeof materializedGrpcViewServerWithConfigClients.topics,
-  typeof exactGrpcRuntimeClients
->;
-const materializedGrpcRuntimeEffect = makeViewServerRuntime(materializedGrpcViewServer, {
-  grpc: {
-    clients: grpcRuntimeClients,
-    feeds: {
-      ordersFeed: grpcOrdersFeed,
-    },
-  },
-});
-const leasedRuntimeEffect = makeViewServerRuntime(leasedViewServer, {
-  grpc: {
-    clients: grpcRuntimeClients,
-    feeds: {
-      ordersFeed: leasedGrpcOrdersFeed,
-    },
-  },
-});
+const leasedRuntimeEffect = makeViewServerRuntime(leasedViewServer);
 declare const leasedRuntime: Effect.Success<typeof leasedRuntimeEffect>;
-const invalidMaterializedGrpcRuntimeWithoutClients = makeViewServerRuntime(
-  materializedGrpcViewServer,
-  {
-    // @ts-expect-error runtime gRPC feeds require clients when config.grpc.clients is absent.
-    grpc: {
-      feeds: {
-        ordersFeed: grpcOrdersFeed,
-      },
-    },
-  },
-);
 const materializedGrpcRuntimeWithConfigClientsEffect = makeViewServerRuntime(
   materializedGrpcViewServerWithConfigClients,
-  {
-    grpc: {
-      feeds: {
-        ordersFeed: grpcOrdersFeedForConfigClients,
-      },
-    },
-  },
 );
-// @ts-expect-error gRPC-owned source configs require runtime gRPC feed options.
-const _invalidMaterializedGrpcRuntimeWithoutOptions = makeViewServerRuntime(
-  materializedGrpcViewServer,
-);
-const _invalidMaterializedGrpcRuntimeWithoutGrpc = makeViewServerRuntime(
-  materializedGrpcViewServer,
-  // @ts-expect-error gRPC-owned source configs require runtime gRPC feeds.
-  {
-    websocketPort: 8080,
-  },
-);
-const _invalidMaterializedGrpcRuntimeWithoutMatchingFeed = makeViewServerRuntime(
-  materializedGrpcViewServer,
-  {
-    grpc: {
-      clients: grpcRuntimeClients,
-      // @ts-expect-error gRPC-owned source configs require a feed for each source-owned topic.
-      feeds: {},
-    },
-  },
-);
-const _invalidMultiMaterializedGrpcRuntimeWithBroadFeed = makeViewServerRuntime(
-  multiMaterializedGrpcViewServer,
-  {
-    grpc: {
-      clients: grpcRuntimeClients,
-      // @ts-expect-error source-owned gRPC feed coverage requires single-topic feed definitions.
-      feeds: {
-        ordersFeed: broadMaterializedGrpcFeed,
-      },
-    },
-  },
-);
-declare const materializedGrpcRuntime: Effect.Success<typeof materializedGrpcRuntimeEffect>;
-type BroadMultiMaterializedGrpcRuntimeOptions = {
-  readonly grpc: {
-    readonly clients: typeof grpcRuntimeClients;
-    readonly feeds: {
-      readonly ordersFeed: typeof broadMaterializedGrpcFeed;
-    };
-  };
-};
-const _invalidBroadFeedRuntimeOptions: ViewServerRuntimeOptionsInput<
-  typeof multiMaterializedGrpcViewServer.topics,
-  RuntimeRegions,
-  typeof grpcRuntimeClients,
-  BroadMultiMaterializedGrpcRuntimeOptions
-> = {
-  grpc: {
-    clients: grpcRuntimeClients,
-    // @ts-expect-error source-owned gRPC feed coverage requires exact single-topic feed definitions.
-    feeds: {
-      ordersFeed: broadMaterializedGrpcFeed,
-    },
-  },
-};
+declare const materializedGrpcRuntime: Effect.Success<
+  typeof materializedGrpcRuntimeWithConfigClientsEffect
+>;
 
 describe("runtime type contracts", () => {
   it("preserves configured topic types through runtime clients", () => {
@@ -581,10 +525,6 @@ describe("runtime type contracts", () => {
     });
     const runtimeWithGrpc = makeViewServerRuntime(materializedGrpcViewServer, {
       grpc: {
-        clients: grpcRuntimeClients,
-        feeds: {
-          ordersFeed: grpcOrdersFeed,
-        },
         materializedReconnect: {
           delay: "100 millis",
           maxReconnects: 5,
@@ -593,10 +533,6 @@ describe("runtime type contracts", () => {
     });
     const invalidGrpcReconnectKey = makeViewServerRuntime(materializedGrpcViewServer, {
       grpc: {
-        clients: grpcRuntimeClients,
-        feeds: {
-          ordersFeed: grpcOrdersFeed,
-        },
         materializedReconnect: {
           delay: "100 millis",
           maxReconnects: 5,
@@ -625,12 +561,20 @@ describe("runtime type contracts", () => {
     >;
     const invalidGrpcOptionKey = makeViewServerRuntime(materializedGrpcViewServer, {
       grpc: {
-        clients: grpcRuntimeClients,
-        feeds: {
-          ordersFeed: grpcOrdersFeed,
-        },
         // @ts-expect-error runtime gRPC options reject unknown fields.
         feedz: {},
+      },
+    });
+    const invalidGrpcClientsOption = makeViewServerRuntime(materializedGrpcViewServer, {
+      grpc: {
+        // @ts-expect-error runtime gRPC options do not accept clients; bind clients in defineViewServerConfig.
+        clients: grpcRuntimeClients,
+      },
+    });
+    const invalidGrpcFeedsOption = makeViewServerRuntime(materializedGrpcViewServer, {
+      grpc: {
+        // @ts-expect-error runtime gRPC options do not accept feed declarations; bind feeds in topic-owned grpcSource.
+        feeds: {},
       },
     });
     expectTypeOf(invalidPublish).not.toBeAny();
@@ -661,7 +605,6 @@ describe("runtime type contracts", () => {
     expectTypeOf(invalidMissingKafkaConsumerGroup).not.toBeAny();
     expectTypeOf(invalidKafkaOwnedRuntimeWithoutOptions).not.toBeAny();
     expectTypeOf(invalidKafkaOwnedRuntimeWithExplicitTopics).not.toBeAny();
-    expectTypeOf(invalidMaterializedGrpcRuntimeWithoutClients).not.toBeAny();
     expectTypeOf<Effect.Success<typeof runtimeWithGrpc>>().toMatchTypeOf<
       ViewServerRuntime<typeof materializedGrpcViewServer.topics>
     >();
@@ -674,6 +617,8 @@ describe("runtime type contracts", () => {
     expectTypeOf(invalidGrpcReconnectMax).not.toBeAny();
     expectTypeOf(invalidGrpcReconnectDelay).not.toBeAny();
     expectTypeOf(invalidGrpcOptionKey).not.toBeAny();
+    expectTypeOf(invalidGrpcClientsOption).not.toBeAny();
+    expectTypeOf(invalidGrpcFeedsOption).not.toBeAny();
     expectTypeOf(invalidTcpPublishPortOptions).not.toBeAny();
     expectTypeOf(invalidTcpPublishMaxConnectionsOptions).not.toBeAny();
     expectTypeOf<ViewServerRuntimeOptions>().not.toHaveProperty("port");

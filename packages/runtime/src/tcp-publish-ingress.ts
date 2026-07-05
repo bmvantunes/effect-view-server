@@ -1,6 +1,6 @@
 import type {
   RowSchema,
-  ViewServerConfig,
+  ViewServerTopicConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -238,7 +238,7 @@ const runRuntimeMutation = Effect.fn("ViewServerRuntime.tcpPublish.runtime.mutat
 });
 
 const topicSchema = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   topic: string,
 ): Effect.Effect<RowSchema, ViewServerTcpPublishIngressError> => {
   const topicDefinition = Reflect.get(config.topics, topic);
@@ -409,7 +409,7 @@ const decodeTcpFieldForRuntime = Effect.fn("ViewServerRuntime.tcpPublish.field.d
 
 const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(config: ViewServerConfig<Topics>, topic: string, row: Record<string, unknown>) {
+>(config: ViewServerTopicConfig<Topics>, topic: string, row: Record<string, unknown>) {
   const schema = yield* topicSchema(config, topic);
   const decodedRow: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(row)) {
@@ -434,13 +434,17 @@ const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(functi
 
 const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(config: ViewServerConfig<Topics>, topic: string, rows: ReadonlyArray<Record<string, unknown>>) {
+>(
+  config: ViewServerTopicConfig<Topics>,
+  topic: string,
+  rows: ReadonlyArray<Record<string, unknown>>,
+) {
   return yield* Effect.forEach(rows, (row) => decodeTcpRow(config, topic, row));
 });
 
 const decodeTcpPatch = Effect.fn("ViewServerRuntime.tcpPublish.patch.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(config: ViewServerConfig<Topics>, topic: string, patch: Record<string, unknown>) {
+>(config: ViewServerTopicConfig<Topics>, topic: string, patch: Record<string, unknown>) {
   const schema = yield* topicSchema(config, topic);
   const decodedPatch: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(patch)) {
@@ -464,7 +468,7 @@ const handleCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.handle")(f
 >(
   socket: Net.Socket,
   state: TcpPublishSocketState,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   line: string,
@@ -669,7 +673,7 @@ const executeLine = async <const Topics extends ViewServerRuntimeTopicDefinition
   socket: Net.Socket,
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   line: string,
@@ -724,7 +728,7 @@ const enqueueLine = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   socket: Net.Socket,
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   line: string,
@@ -788,7 +792,7 @@ const installSocketHandler = <const Topics extends ViewServerRuntimeTopicDefinit
   socket: Net.Socket,
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
 ): void => {
@@ -922,7 +926,7 @@ export const installTcpPublishAcceptedSocket = <
 >(
   socket: Net.Socket,
   state: TcpPublishServerState,
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
 ): void => {
@@ -962,7 +966,7 @@ export const installTcpPublishAcceptedSocket = <
 
 export const makeViewServerTcpPublishIngress = Effect.fn("ViewServerRuntime.tcpPublish.make")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     client: ViewServerRuntimeClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) {

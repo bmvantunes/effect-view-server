@@ -211,8 +211,9 @@ dedicated rebuild consumer group, until durable checkpoints are added.
 
 ## gRPC Ingestion
 
-gRPC sources are also declared on the topic that owns the rows. Runtime options
-then provide the concrete ConnectRPC clients and feed implementations:
+gRPC sources are declared on the topic that owns the rows. Top-level
+`grpc.clients` defines infrastructure; `grpc.topicSources(grpcClients)` binds
+each topic to a concrete generated client method:
 
 ```ts
 import { defineViewServerConfig, grpc } from "effect-view-server/config";
@@ -222,77 +223,66 @@ import { Stream } from "effect";
 import { Order, Strategy } from "./schemas";
 import { ordersService, strategiesService } from "./generated/grpc";
 
+const grpcClients = {
+  orders: grpc.connectClient({
+    service: ordersService,
+    baseUrl: "https://orders-grpc.example.com",
+  }),
+  strategies: grpc.connectClient({
+    service: strategiesService,
+    baseUrl: "https://strategies-grpc.example.com",
+  }),
+};
+
+const grpcTopics = grpc.topicSources(grpcClients);
+
 const viewServer = defineViewServerConfig({
   grpc: {
-    clients: {
-      orders: grpc.connectClient({
-        service: ordersService,
-        baseUrl: "https://orders-grpc.example.com",
-      }),
-      strategies: grpc.connectClient({
-        service: strategiesService,
-        baseUrl: "https://strategies-grpc.example.com",
-      }),
-    },
+    clients: grpcClients,
   },
   topics: {
-    orders: {
+    orders: grpcTopics.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({ routeBy: ["strategyId", "region"] }),
-    },
-    strategies: {
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["strategyId", "region"],
+      request: ({ strategyId, region }) => ({ strategyId, region }),
+      acquire: ({ client, request }) =>
+        Stream.fromAsyncIterable(client.streamOrders(request), (cause) => cause),
+      map: ({ value, route }) => ({
+        id: `${route.strategyId}:${route.region}:${value.orderId}`,
+        strategyId: route.strategyId,
+        region: route.region,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        updatedAt: value.updatedAt,
+      }),
+    }),
+    strategies: grpcTopics.materialized({
       schema: Strategy,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
+      client: "strategies",
+      method: "streamStrategies",
+      request: () => ({ universe: "global" }),
+      acquire: ({ client, request }) =>
+        Stream.fromAsyncIterable(client.streamStrategies(request), (cause) => cause),
+      map: ({ value }) => ({
+        id: `${value.strategyId}:${value.region}`,
+        strategyId: value.strategyId,
+        region: value.region,
+        status: value.status,
+        notional: value.notional,
+        updatedAt: value.updatedAt,
+      }),
+    }),
   },
-});
-
-const grpcFeed = viewServer.grpcFeed();
-
-const ordersByStrategy = grpcFeed.leasedFeed({
-  topic: "orders",
-  client: "orders",
-  method: "streamOrders",
-  routeBy: ["strategyId", "region"],
-  request: ({ strategyId, region }) => ({ strategyId, region }),
-  acquire: ({ client, request }) =>
-    Stream.fromAsyncIterable(client.streamOrders(request), (cause) => cause),
-  map: ({ value, route }) => ({
-    id: `${route.strategyId}:${route.region}:${value.orderId}`,
-    strategyId: route.strategyId,
-    region: route.region,
-    customerId: value.customerId,
-    status: value.status,
-    price: value.price,
-    updatedAt: value.updatedAt,
-  }),
-});
-
-const strategies = grpcFeed.materializedFeed({
-  topic: "strategies",
-  client: "strategies",
-  method: "streamStrategies",
-  request: () => ({ universe: "global" }),
-  acquire: ({ client, request }) =>
-    Stream.fromAsyncIterable(client.streamStrategies(request), (cause) => cause),
-  map: ({ value }) => ({
-    id: `${value.strategyId}:${value.region}`,
-    strategyId: value.strategyId,
-    region: value.region,
-    status: value.status,
-    notional: value.notional,
-    updatedAt: value.updatedAt,
-  }),
 });
 
 NodeRuntime.runMain(
   runViewServerRuntime(viewServer, {
     websocketPort: 8080,
-    grpc: {
-      feeds: { ordersByStrategy, strategies },
-    },
   }),
 );
 ```

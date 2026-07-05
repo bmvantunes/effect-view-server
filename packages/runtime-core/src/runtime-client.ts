@@ -7,8 +7,8 @@ import type {
   LiveQueryResult,
   RawQuery,
   TopicRow,
-  ViewServerConfig,
   ViewServerHealth,
+  ViewServerTopicConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -63,7 +63,7 @@ export type ViewServerRuntimeCoreInternalClient<Topics extends DecodableTopicDef
 
 export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.make")(
   <const Topics extends DecodableTopicDefinitions>(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
     health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
     transportHealth: RuntimeCoreTransportHealth<Topics>,

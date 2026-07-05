@@ -81,6 +81,19 @@ Kafka source topics must define `rowKey`. The runtime uses that value as the
 topic row key and forces the configured key field on the mapped row to match it,
 so source-owned rows cannot drift away from their Kafka identity.
 
+gRPC source topics bind their runtime stream beside the topic schema:
+
+- `grpc.topicSources(grpcClients).materialized({ schema, key, client, method, ... })`
+  creates a topic definition backed by a startup-materialized gRPC stream.
+- `grpc.topicSources(grpcClients).leased({ schema, key, routeBy, client, method, ... })`
+  creates a topic definition backed by a lazy shared gRPC stream per route key.
+- `client` is a key from `grpc.clients`, and `method` is a server-streaming
+  method on that generated client.
+
+For leased topics, the `routeBy` tuple fields become required exact-equality
+filters in `useLiveQuery`; the source `request` callback receives them and
+builds the upstream gRPC request.
+
 ## React Provider
 
 Production React code passes a runtime URL to the provider. The provider owns

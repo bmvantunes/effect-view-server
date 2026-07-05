@@ -5,8 +5,8 @@ import {
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type {
   TopicDefinitions,
-  ViewServerConfig,
   ViewServerHealth,
+  ViewServerTopicConfig,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import {
@@ -145,7 +145,7 @@ const makeCoalescedHealthRead = <const Topics extends TopicDefinitions>(
 };
 
 export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   input: ViewServerWebSocketServerInput<Topics>,
   scope: Scope.Scope,
 ) => {

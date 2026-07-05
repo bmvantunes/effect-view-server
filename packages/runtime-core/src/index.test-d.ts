@@ -4,9 +4,11 @@ import {
   defineViewServerConfig,
   grpc,
   kafka,
+  type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
+import type { Stream } from "effect";
 import { Schema } from "effect";
 import { createViewServerRuntimeCore, makeViewServerRuntimeCore } from "./index";
 
@@ -14,6 +16,11 @@ const Order = Schema.Struct({
   id: Schema.String,
   price: Schema.Number,
 });
+
+declare const grpcRuntimeClients: GrpcRuntimeClients;
+declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
+
+const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
 
 const viewServer = defineViewServerConfig({
   topics: {
@@ -32,36 +39,64 @@ const runtimeCoreWithGroupedAdmissionLimits = createViewServerRuntimeCore(viewSe
   },
 });
 const leasedViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["id"],
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({
+        id: route.id,
+        price: 0,
       }),
-    },
+    }),
   },
 });
 const leasedRuntimeCore = createViewServerRuntimeCore(leasedViewServer);
 const leasedGrpcSourceViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["id"],
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({
+        id: route.id,
+        price: 0,
       }),
-    },
+    }),
   },
 });
 const leasedGrpcSourceRuntimeCore = createViewServerRuntimeCore(leasedGrpcSourceViewServer);
 const materializedGrpcSourceViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.materialized({
       schema: Order,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({}),
+      acquire: () => grpcRuntimeStream,
+      map: () => ({
+        id: "order-1",
+        price: 0,
+      }),
+    }),
   },
 });
 const materializedGrpcSourceRuntimeCore = createViewServerRuntimeCore(

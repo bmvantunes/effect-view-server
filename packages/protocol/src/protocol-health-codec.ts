@@ -1,8 +1,8 @@
 import type {
   GrpcFeedHealth,
   TopicDefinitions,
-  ViewServerConfig,
   ViewServerHealth,
+  ViewServerTopicConfig,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
@@ -63,7 +63,7 @@ const validateGrpcFeedHealth = Effect.fn("ViewServerProtocol.health.grpcFeed.val
 
 export const viewServerDecodeHealth = Effect.fn("ViewServerProtocol.health.decode")(function* <
   const Topics extends TopicDefinitions,
->(config: ViewServerConfig<Topics>, health: ViewServerWireHealth) {
+>(config: ViewServerTopicConfig<Topics>, health: ViewServerWireHealth) {
   const encodedHealth = yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(health).pipe(
     Effect.mapError(invalidHealthPayload),
   );

@@ -17,4 +17,6 @@ This example demonstrates:
 - Kafka-owned `trades`.
 - Leased gRPC-owned `orders`.
 - Materialized gRPC-owned `strategies`.
+- Topic-owned gRPC bindings that connect those topics to concrete generated
+  client methods.
 - Summary and detailed health in the same UI.

@@ -10,7 +10,7 @@ import {
   kafkaErrorIsMapping,
   type RuntimeRegions,
   type KafkaMessageMetadata,
-  type ViewServerConfig,
+  type ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import { decodeKafkaTopicMessage } from "@effect-view-server/config/internal";
 import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
@@ -150,14 +150,14 @@ const kafkaMessageQueueCapacity = kafkaMessageBatchSize * 4;
 const kafkaMessageBatchFlushInterval = Duration.millis(2);
 const kafkaMessageBatchFlushIntervalMillis = Duration.toMillis(kafkaMessageBatchFlushInterval);
 const isKafkaBatchTopic = <Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   topic: string,
 ): topic is KafkaBatchTopic<Topics> => Object.hasOwn(config.topics, topic);
 const kafkaBatchTopicDefinition = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Topic extends KafkaBatchTopic<Topics>,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   topic: Topic,
 ): Topics[Topic] => config.topics[topic];
 const ignoreKafkaConsumerCloseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
@@ -672,7 +672,7 @@ const decodeKafkaMessageForBatch = Effect.fn("ViewServerRuntime.kafka.message.de
     const Topics extends ViewServerRuntimeTopicDefinitions,
     const Regions extends RuntimeRegions,
   >(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
     health: ViewServerKafkaHealthLedger<Topics>,
@@ -1106,7 +1106,7 @@ export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messa
     const Topics extends ViewServerRuntimeTopicDefinitions,
     const Regions extends RuntimeRegions,
   >(
-    config: ViewServerConfig<Topics>,
+    config: ViewServerTopicConfig<Topics>,
     client: KafkaIngressRuntimeClient<Topics>,
     requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -1169,7 +1169,7 @@ export const processKafkaMessage = Effect.fn("ViewServerRuntime.kafka.message.pr
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: KafkaIngressRuntimeClient<Topics>,
   requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
   options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -1308,7 +1308,7 @@ export const runKafkaMessageStream = Effect.fn("ViewServerRuntime.kafka.stream.r
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: KafkaIngressRuntimeClient<Topics>,
   requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
   options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -1562,7 +1562,7 @@ const startRegionConsumer = Effect.fn("ViewServerRuntime.kafka.region.start")(fu
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: KafkaIngressRuntimeClient<Topics>,
   requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
   options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -1696,7 +1696,7 @@ export const makeViewServerKafkaIngress: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: KafkaIngressRuntimeClient<Topics>,
   requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
   options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -1707,7 +1707,7 @@ export const makeViewServerKafkaIngress: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   client: KafkaIngressRuntimeClient<Topics>,
   requestHealthRefresh: ViewServerKafkaHealthRefreshRequest,
   options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,

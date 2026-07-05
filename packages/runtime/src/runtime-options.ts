@@ -6,6 +6,7 @@ import type {
   RuntimeRegions,
   RuntimeValue,
   ViewServerConfig,
+  ViewServerTopicConfig,
   ViewServerKafkaStartFrom,
 } from "@effect-view-server/config";
 import {
@@ -51,17 +52,47 @@ export type ResolvedViewServerKafkaRuntimeOptions<
   readonly topics: Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>>;
 };
 
+type RuntimeGrpcFeedCallable = (...args: ReadonlyArray<never>) => unknown;
+
+export type ResolvedViewServerGrpcFeedDefinition = {
+  readonly lifecycle: "materialized" | "leased";
+  readonly topic: string;
+  readonly client: string;
+  readonly method: string;
+  readonly routeBy?: ReadonlyArray<string>;
+  readonly request: RuntimeGrpcFeedCallable;
+  readonly acquire: RuntimeGrpcFeedCallable;
+  readonly release?: RuntimeGrpcFeedCallable;
+  readonly map: RuntimeGrpcFeedCallable;
+};
+
 export type ResolvedViewServerGrpcRuntimeOptions<
-  Topics extends ViewServerRuntimeTopicDefinitions,
+  _Topics extends ViewServerRuntimeTopicDefinitions,
   Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
 > = {
   readonly clients: Clients;
   readonly clientBaseUrls: Record<string, string>;
-  readonly feeds: ViewServerGrpcRuntimeOptions<Topics, Clients>["feeds"];
+  readonly feeds: Record<string, ResolvedViewServerGrpcFeedDefinition>;
   readonly materializedReconnect: {
     readonly maxReconnects: number;
     readonly delay: Duration.Input;
   };
+};
+
+type ViewServerGrpcRuntimeOptionsWithRuntimeFeeds<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> = ViewServerGrpcRuntimeOptions<Topics, Clients> & {
+  readonly clients?: Clients;
+  readonly feeds?: Record<string, ResolvedViewServerGrpcFeedDefinition>;
+};
+
+export type ViewServerRuntimeOptionsWithRuntimeFeeds<
+  Topics extends ViewServerRuntimeTopicDefinitions = ViewServerRuntimeTopicDefinitions,
+  Regions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> = Omit<ViewServerRuntimeOptions<Topics, Regions, GrpcClients>, "grpc"> & {
+  readonly grpc?: ViewServerGrpcRuntimeOptionsWithRuntimeFeeds<Topics, GrpcClients>;
 };
 
 const resolveRuntimeValue = <A>(value: RuntimeValue<A>): Effect.Effect<A, Config.ConfigError> =>
@@ -110,6 +141,139 @@ const validateGrpcMaterializedReconnectDelay = (
   );
 };
 
+type BoundGrpcSource = {
+  readonly lifecycle: "materialized" | "leased";
+  readonly client: string;
+  readonly method: string;
+  readonly routeBy?: ReadonlyArray<string>;
+  readonly request: RuntimeGrpcFeedCallable;
+  readonly acquire: RuntimeGrpcFeedCallable;
+  readonly release?: RuntimeGrpcFeedCallable;
+  readonly map: RuntimeGrpcFeedCallable;
+};
+
+type ValidGrpcTopicSourceMetadata = Extract<GrpcTopicSourceMetadata, { readonly _tag: "valid" }>;
+
+const runtimeGrpcFeedCallable = (value: unknown): value is RuntimeGrpcFeedCallable =>
+  typeof value === "function";
+
+const grpcMethodIsServerStreaming = (method: unknown): boolean =>
+  typeof method === "object" &&
+  method !== null &&
+  Reflect.get(method, "methodKind") === "server_streaming";
+
+const boundGrpcSourceFromUnknown = (
+  source: unknown,
+  sourceMetadata: ValidGrpcTopicSourceMetadata,
+): BoundGrpcSource | undefined => {
+  const sourceObject = Object(source);
+  const lifecycle = sourceMetadata.lifecycle;
+  const client = Reflect.get(sourceObject, "client");
+  const method = Reflect.get(sourceObject, "method");
+  const request = Reflect.get(sourceObject, "request");
+  const acquire = Reflect.get(sourceObject, "acquire");
+  const release = Reflect.get(sourceObject, "release");
+  const map = Reflect.get(sourceObject, "map");
+  if (
+    typeof client !== "string" ||
+    typeof method !== "string" ||
+    !runtimeGrpcFeedCallable(request) ||
+    !runtimeGrpcFeedCallable(acquire) ||
+    !runtimeGrpcFeedCallable(map) ||
+    (release !== undefined && !runtimeGrpcFeedCallable(release))
+  ) {
+    return undefined;
+  }
+  if (lifecycle === "materialized") {
+    return {
+      lifecycle,
+      client,
+      method,
+      request,
+      acquire,
+      ...(release === undefined ? {} : { release }),
+      map,
+    };
+  }
+  return {
+    lifecycle,
+    client,
+    method,
+    routeBy: sourceMetadata.routeBy,
+    request,
+    acquire,
+    ...(release === undefined ? {} : { release }),
+    map,
+  };
+};
+
+const grpcFeedsFromConfig = <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const Clients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, Clients> | undefined,
+): Record<string, ResolvedViewServerGrpcFeedDefinition> => {
+  const feeds: Record<string, ResolvedViewServerGrpcFeedDefinition> = Object.create(null);
+  if (config === undefined) {
+    return feeds;
+  }
+  for (const [topic, topicDefinition] of Object.entries(config.topics)) {
+    const source =
+      typeof topicDefinition === "object" &&
+      topicDefinition !== null &&
+      Object.prototype.hasOwnProperty.call(topicDefinition, "grpcSource")
+        ? Reflect.get(topicDefinition, "grpcSource")
+        : undefined;
+    const sourceMetadata = grpcTopicSourceMetadata(topicDefinition);
+    if (sourceMetadata._tag !== "valid") {
+      continue;
+    }
+    const bound = boundGrpcSourceFromUnknown(source, sourceMetadata);
+    if (bound === undefined) {
+      continue;
+    }
+    feeds[topic] = {
+      lifecycle: bound.lifecycle,
+      topic,
+      client: bound.client,
+      method: bound.method,
+      ...(bound.routeBy === undefined ? {} : { routeBy: bound.routeBy }),
+      request: bound.request,
+      acquire: bound.acquire,
+      ...(bound.release === undefined ? {} : { release: bound.release }),
+      map: bound.map,
+    };
+  }
+  return feeds;
+};
+
+const validateConfigGrpcSourceMetadata = <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const Clients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, Clients> | undefined,
+): Effect.Effect<void, ViewServerGrpcIngressError> =>
+  Effect.gen(function* () {
+    if (config === undefined) {
+      return;
+    }
+    for (const [topic, topicDefinition] of Object.entries(config.topics)) {
+      const sourceMetadata = grpcTopicSourceMetadata(topicDefinition);
+      if (sourceMetadata._tag !== "invalid") {
+        continue;
+      }
+      return yield* new ViewServerGrpcIngressError({
+        message: `View Server topic ${topic} declares invalid gRPC source metadata.`,
+        cause: sourceMetadata.cause,
+        feedName: topic,
+        topic,
+        phase: "configuration",
+      });
+    }
+  });
+
 const normalizeKafkaConsumePolicy = (
   consumerGroupId: string,
   startFrom: ViewServerKafkaStartFrom,
@@ -138,8 +302,9 @@ const normalizeKafkaConsumePolicy = (
 const kafkaSourcesFromConfig = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions>,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
 ): Effect.Effect<
   Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>>,
   ViewServerKafkaIngressError
@@ -178,8 +343,9 @@ const emptyKafkaSourceTopics = <
 const requireKafkaRuntimeOptionsForConfigSources = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions> | undefined,
+  config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
 ): Effect.Effect<void, ViewServerKafkaIngressError> =>
   Effect.gen(function* () {
     const configuredTopics =
@@ -237,8 +403,9 @@ const validateKafkaConsumerGroupId = (
 const resolveKafkaOptions: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions> | undefined,
+  config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
   options: ViewServerKafkaRuntimeOptions<Topics, Regions>,
 ) => Effect.Effect<
   ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -246,8 +413,9 @@ const resolveKafkaOptions: <
 > = Effect.fn("ViewServerRuntime.options.kafka.resolve")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions> | undefined,
+  config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
   options: ViewServerKafkaRuntimeOptions<Topics, Regions>,
 ) {
   if (Object.prototype.hasOwnProperty.call(options, "topics")) {
@@ -297,6 +465,8 @@ const resolveGrpcOptions: <
 >(
   config: ViewServerConfig<Topics, RuntimeRegions, Clients> | undefined,
   options: ViewServerGrpcRuntimeOptions<Topics, Clients>,
+  runtimeFeeds: Record<string, ResolvedViewServerGrpcFeedDefinition>,
+  runtimeClients?: Clients,
 ) => Effect.Effect<
   ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   Config.ConfigError | ViewServerGrpcIngressError
@@ -306,12 +476,31 @@ const resolveGrpcOptions: <
 >(
   config: ViewServerConfig<Topics, RuntimeRegions, Clients> | undefined,
   options: ViewServerGrpcRuntimeOptions<Topics, Clients>,
+  runtimeFeeds: Record<string, ResolvedViewServerGrpcFeedDefinition>,
+  runtimeClients?: Clients,
 ) {
-  const clients = options.clients ?? config?.grpc?.clients;
+  yield* validateConfigGrpcSourceMetadata(config);
+  const clients = runtimeClients ?? config?.grpc?.clients;
+  const configFeeds = grpcFeedsFromConfig(config);
+  const feeds: Record<string, ResolvedViewServerGrpcFeedDefinition> = Object.create(null);
+  for (const [feedName, feed] of Object.entries(configFeeds)) {
+    feeds[feedName] = feed;
+  }
+  for (const [feedName, feed] of Object.entries(runtimeFeeds)) {
+    feeds[feedName] = feed;
+  }
   if (clients === undefined) {
+    if (Object.keys(feeds).length > 0) {
+      return yield* new ViewServerGrpcIngressError({
+        message:
+          "gRPC feeds are configured, but no gRPC clients were provided on config.grpc.clients.",
+        cause: "missing-grpc-clients",
+        phase: "configuration",
+      });
+    }
     return yield* new ViewServerGrpcIngressError({
       message:
-        "gRPC feeds are configured, but no gRPC clients were provided on config.grpc.clients or runtime options.grpc.clients.",
+        "runtime options.grpc was provided, but no gRPC clients were provided on config.grpc.clients.",
       cause: "missing-grpc-clients",
       phase: "configuration",
     });
@@ -343,7 +532,36 @@ const resolveGrpcOptions: <
     options.materializedReconnect?.maxReconnects ?? defaultGrpcMaterializedReconnect.maxReconnects,
   );
   const feedTopics = new Map<string, string>();
-  for (const [feedName, feed] of Object.entries(options.feeds)) {
+  for (const [feedName, feed] of Object.entries(feeds)) {
+    const client = clients[feed.client];
+    if (client === undefined) {
+      return yield* new ViewServerGrpcIngressError({
+        message: `gRPC feed ${feedName} references missing client: ${feed.client}`,
+        cause: feed.client,
+        feedName,
+        topic: feed.topic,
+        phase: "configuration",
+      });
+    }
+    const method = Reflect.get(client.service.method, feed.method);
+    if (!Object.prototype.hasOwnProperty.call(client.service.method, feed.method)) {
+      return yield* new ViewServerGrpcIngressError({
+        message: `gRPC feed ${feedName} references missing method ${feed.method} on client ${feed.client}`,
+        cause: feed.method,
+        feedName,
+        topic: feed.topic,
+        phase: "configuration",
+      });
+    }
+    if (!grpcMethodIsServerStreaming(method)) {
+      return yield* new ViewServerGrpcIngressError({
+        message: `gRPC feed ${feedName} references non-server-streaming method ${feed.method} on client ${feed.client}`,
+        cause: feed.method,
+        feedName,
+        topic: feed.topic,
+        phase: "configuration",
+      });
+    }
     const previousFeedName = feedTopics.get(feed.topic);
     if (previousFeedName !== undefined) {
       return yield* new ViewServerGrpcIngressError({
@@ -358,13 +576,78 @@ const resolveGrpcOptions: <
   return {
     clients,
     clientBaseUrls,
-    feeds: options.feeds,
+    feeds,
     materializedReconnect: {
       delay: materializedReconnectDelay,
       maxReconnects: materializedReconnectMaxReconnects,
     },
   };
 });
+
+const validatePublicGrpcRuntimeOptions = (
+  options: ViewServerGrpcRuntimeOptions<ViewServerRuntimeTopicDefinitions> | undefined,
+): Effect.Effect<void, ViewServerGrpcIngressError> => {
+  if (options === undefined) {
+    return Effect.void;
+  }
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    return Effect.fail(
+      new ViewServerGrpcIngressError({
+        message: "runtime options.grpc must be an object when provided.",
+        cause: options,
+        phase: "configuration",
+      }),
+    );
+  }
+  for (const key of Object.getOwnPropertyNames(options)) {
+    if (key === "materializedReconnect") {
+      continue;
+    }
+    if (key === "clients") {
+      return Effect.fail(
+        new ViewServerGrpcIngressError({
+          message:
+            "runtime options.grpc.clients is not supported; bind gRPC clients in defineViewServerConfig.grpc.clients.",
+          cause: key,
+          phase: "configuration",
+        }),
+      );
+    }
+    if (key === "feeds") {
+      return Effect.fail(
+        new ViewServerGrpcIngressError({
+          message:
+            "runtime options.grpc.feeds is not supported; bind gRPC feeds on topic-owned grpcSource definitions.",
+          cause: key,
+          phase: "configuration",
+        }),
+      );
+    }
+    return Effect.fail(
+      new ViewServerGrpcIngressError({
+        message: `runtime options.grpc has unsupported key: ${key}`,
+        cause: key,
+        phase: "configuration",
+      }),
+    );
+  }
+  const materializedReconnect = options.materializedReconnect;
+  if (typeof materializedReconnect === "object" && materializedReconnect !== null) {
+    for (const key of Object.getOwnPropertyNames(materializedReconnect)) {
+      if (key === "delay" || key === "maxReconnects") {
+        continue;
+      }
+      return Effect.fail(
+        new ViewServerGrpcIngressError({
+          message: `runtime options.grpc.materializedReconnect has unsupported key: ${key}`,
+          cause: key,
+          phase: "configuration",
+        }),
+      );
+    }
+  }
+  return Effect.void;
+};
 
 type SourceOwnershipKafkaOptions = {
   readonly topics: Readonly<Record<string, { readonly viewServerTopic: string }>>;
@@ -427,6 +710,26 @@ const hasDefinedOwnProperty = (value: object, key: string): boolean =>
 const hasOnlyOwnStringKeys = (value: object, allowedKeys: ReadonlyArray<string>): boolean =>
   Object.getOwnPropertyNames(value).every((key) => allowedKeys.includes(key));
 
+const hasConcreteGrpcBinding = (source: object): boolean =>
+  ["client", "method", "request", "acquire", "release", "map"].some((key) =>
+    hasDefinedOwnProperty(source, key),
+  );
+
+const hasCompleteConcreteGrpcBinding = (source: object): boolean => {
+  const request = Reflect.get(source, "request");
+  const acquire = Reflect.get(source, "acquire");
+  const release = Reflect.get(source, "release");
+  const map = Reflect.get(source, "map");
+  return (
+    hasDefinedOwnProperty(source, "client") &&
+    hasDefinedOwnProperty(source, "method") &&
+    runtimeGrpcFeedCallable(request) &&
+    runtimeGrpcFeedCallable(acquire) &&
+    runtimeGrpcFeedCallable(map) &&
+    (release === undefined || runtimeGrpcFeedCallable(release))
+  );
+};
+
 const grpcTopicSourceFromUnknown = (source: unknown): GrpcTopicSourceMetadata => {
   if (typeof source !== "object" || source === null) {
     return { _tag: "invalid", cause: source };
@@ -440,18 +743,49 @@ const grpcTopicSourceFromUnknown = (source: unknown): GrpcTopicSourceMetadata =>
   }
   const sourceTag = Reflect.get(source, "_tag");
   if (lifecycle === "materialized") {
-    if (!hasOnlyOwnStringKeys(source, ["_tag", "kind", "lifecycle"])) {
+    if (
+      !hasOnlyOwnStringKeys(source, [
+        "_tag",
+        "kind",
+        "lifecycle",
+        "client",
+        "method",
+        "request",
+        "acquire",
+        "release",
+        "map",
+      ])
+    ) {
       return { _tag: "invalid", cause: source };
     }
     if (sourceTag !== "GrpcMaterializedTopicSource") {
       return { _tag: "invalid", cause: source };
     }
+    if (hasConcreteGrpcBinding(source) && !hasCompleteConcreteGrpcBinding(source)) {
+      return { _tag: "invalid", cause: source };
+    }
     return { _tag: "valid", lifecycle };
   }
-  if (!hasOnlyOwnStringKeys(source, ["_tag", "kind", "lifecycle", "routeBy"])) {
+  if (
+    !hasOnlyOwnStringKeys(source, [
+      "_tag",
+      "kind",
+      "lifecycle",
+      "routeBy",
+      "client",
+      "method",
+      "request",
+      "acquire",
+      "release",
+      "map",
+    ])
+  ) {
     return { _tag: "invalid", cause: source };
   }
   if (sourceTag !== "GrpcLeasedTopicSource") {
+    return { _tag: "invalid", cause: source };
+  }
+  if (hasConcreteGrpcBinding(source) && !hasCompleteConcreteGrpcBinding(source)) {
     return { _tag: "invalid", cause: source };
   }
   const routeBy = Reflect.get(source, "routeBy");
@@ -489,7 +823,7 @@ export const validateGrpcSourceFeeds: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   grpcOptions: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients> | undefined,
 ) => Effect.Effect<void, ViewServerGrpcIngressError> = Effect.fn(
   "ViewServerRuntime.options.grpcSourceFeeds.validate",
@@ -497,7 +831,7 @@ export const validateGrpcSourceFeeds: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   grpcOptions: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients> | undefined,
 ) {
   const feedEntries = Object.entries(grpcOptions?.feeds ?? {});
@@ -582,6 +916,8 @@ const resolveViewServerRuntimeOptionsWithConfig: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
   options: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  runtimeFeeds?: Record<string, ResolvedViewServerGrpcFeedDefinition>,
+  runtimeClients?: GrpcClients,
 ) => Effect.Effect<
   ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
   Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
@@ -592,6 +928,8 @@ const resolveViewServerRuntimeOptionsWithConfig: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
   options: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  runtimeFeeds: Record<string, ResolvedViewServerGrpcFeedDefinition> = {},
+  runtimeClients?: GrpcClients,
 ) {
   const runtimeCoreOptions = {
     ...(options.groupedIncrementalAdmissionLimits === undefined
@@ -622,8 +960,14 @@ const resolveViewServerRuntimeOptionsWithConfig: <
     options.kafka === undefined
       ? (yield* requireKafkaRuntimeOptionsForConfigSources(config), undefined)
       : yield* resolveKafkaOptions(config, options.kafka);
+  yield* validateConfigGrpcSourceMetadata(config);
+  const configGrpcFeeds = grpcFeedsFromConfig(config);
   const grpcOptions =
-    options.grpc === undefined ? undefined : yield* resolveGrpcOptions(config, options.grpc);
+    options.grpc === undefined
+      ? Object.keys(configGrpcFeeds).length === 0
+        ? undefined
+        : yield* resolveGrpcOptions(config, {}, runtimeFeeds, runtimeClients)
+      : yield* resolveGrpcOptions(config, options.grpc, runtimeFeeds, runtimeClients);
   yield* validateSourceOwnership(kafkaOptions, grpcOptions);
   return {
     ...(options.auth === undefined ? {} : { auth: options.auth }),
@@ -680,7 +1024,75 @@ export function resolveViewServerRuntimeOptions<
   Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
 > {
   if ("defineRuntimeOptions" in configOrOptions) {
-    return resolveViewServerRuntimeOptionsWithConfig(configOrOptions, maybeOptions ?? {});
+    return validatePublicGrpcRuntimeOptions(maybeOptions?.grpc).pipe(
+      Effect.andThen(
+        resolveViewServerRuntimeOptionsWithConfig(configOrOptions, maybeOptions ?? {}),
+      ),
+    );
   }
-  return resolveViewServerRuntimeOptionsWithConfig(undefined, configOrOptions);
+  return validatePublicGrpcRuntimeOptions(configOrOptions.grpc).pipe(
+    Effect.andThen(resolveViewServerRuntimeOptionsWithConfig(undefined, configOrOptions)),
+  );
+}
+
+export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+>(
+  options: ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
+): Effect.Effect<
+  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
+>;
+export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+): Effect.Effect<
+  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
+>;
+export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  options: ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
+): Effect.Effect<
+  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
+>;
+export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+>(
+  configOrOptions:
+    | ViewServerConfig<Topics, Regions, GrpcClients>
+    | ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
+  maybeOptions?: ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
+): Effect.Effect<
+  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
+> {
+  // Private dependency-injection seam for tests/benchmarks. Public runtime options
+  // are validated by `resolveViewServerRuntimeOptions` and reject `grpc.feeds`.
+  if ("defineRuntimeOptions" in configOrOptions) {
+    return resolveViewServerRuntimeOptionsWithConfig(
+      configOrOptions,
+      maybeOptions ?? {},
+      maybeOptions?.grpc?.feeds ?? {},
+      maybeOptions?.grpc?.clients,
+    );
+  }
+  return resolveViewServerRuntimeOptionsWithConfig(
+    undefined,
+    configOrOptions,
+    configOrOptions.grpc?.feeds ?? {},
+    configOrOptions.grpc?.clients,
+  );
 }

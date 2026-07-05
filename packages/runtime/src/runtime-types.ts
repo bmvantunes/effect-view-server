@@ -17,7 +17,6 @@ import type {
   ViewServerKafkaStartFrom,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
-  GrpcFeedDefinition,
   GrpcRuntimeClients,
 } from "@effect-view-server/config";
 import type { Duration, Effect, Schema } from "effect";
@@ -43,11 +42,9 @@ export type ViewServerKafkaRuntimeOptions<
 };
 
 export type ViewServerGrpcRuntimeOptions<
-  Topics extends ViewServerRuntimeTopicDefinitions,
-  Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
+  _Topics extends ViewServerRuntimeTopicDefinitions,
+  _Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
 > = {
-  readonly clients?: Clients;
-  readonly feeds: Record<string, GrpcFeedDefinition<Topics, Clients>>;
   readonly materializedReconnect?: {
     readonly maxReconnects?: number;
     readonly delay?: Duration.Input;
@@ -77,12 +74,6 @@ export type ViewServerRuntimeOptions<
 type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
-
-type IsUnion<Value, Candidate = Value> = Value extends unknown
-  ? [Candidate] extends [Value]
-    ? false
-    : true
-  : false;
 
 type RuntimeKafkaExactKeysConstraint<Options> = Options extends {
   readonly kafka: infer CandidateKafka;
@@ -121,48 +112,6 @@ type RuntimeGrpcExactKeysConstraint<Options> = Options extends {
           ViewServerGrpcRuntimeOptions<ViewServerRuntimeTopicDefinitions>
         >;
     }
-  : unknown;
-
-type RuntimeGrpcFeedConstraint<
-  Topics extends ViewServerRuntimeTopicDefinitions,
-  ConfigClients extends GrpcRuntimeClients,
-  Options,
-> = Options extends {
-  readonly grpc: {
-    readonly feeds: infer Feeds extends Record<string, object>;
-  };
-}
-  ? {
-      readonly grpc: {
-        readonly feeds: {
-          readonly [FeedName in keyof Feeds]: Feeds[FeedName] extends GrpcFeedDefinition<
-            Topics,
-            RuntimeGrpcClientsFor<ConfigClients, Options>
-          >
-            ? Feeds[FeedName]
-            : never;
-        };
-      };
-    }
-  : unknown;
-
-type RuntimeGrpcClientsConstraint<
-  ConfigClients extends GrpcRuntimeClients,
-  Options,
-> = string extends keyof ConfigClients
-  ? Options extends {
-      readonly grpc: infer CandidateGrpc;
-    }
-    ? CandidateGrpc extends {
-        readonly clients: GrpcRuntimeClients;
-      }
-      ? unknown
-      : {
-          readonly grpc: CandidateGrpc & {
-            readonly clients: GrpcRuntimeClients;
-          };
-        }
-    : unknown
   : unknown;
 
 type RuntimeGrpcMaterializedReconnectExactKeysConstraint<Options> = Options extends {
@@ -283,63 +232,16 @@ type RuntimeKafkaSourceOwnershipConstraint<Topics extends object, Options> = [
         readonly kafka: never;
       };
 
-type RuntimeGrpcSingleFeedTopic<Feed> = [Feed] extends [
-  {
-    readonly topic: infer Topic extends string;
-  },
-]
-  ? string extends Topic
-    ? never
-    : IsUnion<Topic> extends true
-      ? never
-      : Topic
-  : never;
-
-type RuntimeGrpcFeedTopic<Feeds extends Record<string, object>> = Extract<
-  {
-    readonly [FeedName in keyof Feeds]: RuntimeGrpcSingleFeedTopic<Feeds[FeedName]>;
-  }[keyof Feeds],
-  string
->;
-
-type RuntimeGrpcOptionOwnedTopic<Options> = Options extends {
-  readonly grpc: {
-    readonly feeds: infer Feeds extends Record<string, object>;
-  };
-}
-  ? RuntimeGrpcFeedTopic<Feeds>
-  : never;
-
-type RuntimeSourceOwnedTopic<Topics extends object, Options> = Extract<
-  TopicOwnedSourceTopic<Topics> | RuntimeGrpcOptionOwnedTopic<Options>,
+type RuntimeSourceOwnedTopic<Topics extends object, _Options> = Extract<
+  TopicOwnedSourceTopic<Topics>,
   Extract<keyof Topics, string>
 >;
 
-type RuntimeGrpcSourceOwnershipConstraint<Topics extends object, Options> = [
+type RuntimeGrpcSourceOwnershipConstraint<Topics extends object, _Options> = [
   TopicOwnedGrpcSourceTopic<Topics>,
 ] extends [never]
   ? unknown
-  : Options extends {
-        readonly grpc: {
-          readonly feeds: infer Feeds extends Record<string, object>;
-        };
-      }
-    ? string extends keyof Feeds
-      ? {
-          readonly grpc: {
-            readonly feeds: never;
-          };
-        }
-      : Exclude<TopicOwnedGrpcSourceTopic<Topics>, RuntimeGrpcFeedTopic<Feeds>> extends never
-        ? unknown
-        : {
-            readonly grpc: {
-              readonly feeds: never;
-            };
-          }
-    : {
-        readonly grpc: never;
-      };
+  : unknown;
 
 type RuntimeRegionsOf<Options, ConfigRegions extends RuntimeRegions> = Options extends {
   readonly kafka: {
@@ -349,46 +251,20 @@ type RuntimeRegionsOf<Options, ConfigRegions extends RuntimeRegions> = Options e
   ? Regions
   : ConfigRegions;
 
-type RuntimeGrpcClientsOf<Options, ConfigClients extends GrpcRuntimeClients> = Options extends {
-  readonly grpc: {
-    readonly clients: infer Clients extends GrpcRuntimeClients;
-  };
-}
-  ? Clients
-  : ConfigClients;
-
-type RuntimeGrpcClientsFor<ConfigClients extends GrpcRuntimeClients, Options> = Options extends {
-  readonly grpc: {
-    readonly clients: infer Clients extends GrpcRuntimeClients;
-  };
-}
-  ? Clients
-  : ConfigClients;
-
 export type ViewServerRuntimeOptionsInput<
   Topics extends ViewServerRuntimeTopicDefinitions,
   ConfigRegions extends RuntimeRegions = RuntimeRegions,
   GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
   Options extends object = ViewServerRuntimeOptions<Topics, ConfigRegions, GrpcClients>,
 > = Options &
-  ViewServerRuntimeOptions<
-    Topics,
-    RuntimeRegionsOf<Options, ConfigRegions>,
-    RuntimeGrpcClientsOf<Options, GrpcClients>
-  > &
+  ViewServerRuntimeOptions<Topics, RuntimeRegionsOf<Options, ConfigRegions>, GrpcClients> &
   RejectExtraKeys<
     Options,
-    ViewServerRuntimeOptions<
-      Topics,
-      RuntimeRegionsOf<Options, ConfigRegions>,
-      RuntimeGrpcClientsOf<Options, GrpcClients>
-    >
+    ViewServerRuntimeOptions<Topics, RuntimeRegionsOf<Options, ConfigRegions>, GrpcClients>
   > &
   RuntimeKafkaExactKeysConstraint<Options> &
   RuntimeKafkaStartFromExactKeysConstraint<Options> &
   RuntimeGrpcExactKeysConstraint<Options> &
-  RuntimeGrpcClientsConstraint<GrpcClients, Options> &
-  RuntimeGrpcFeedConstraint<Topics, GrpcClients, Options> &
   RuntimeGrpcMaterializedReconnectExactKeysConstraint<Options> &
   RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> &
   RuntimeKafkaSourceOwnershipConstraint<Topics, Options> &
@@ -401,9 +277,7 @@ export type ViewServerRuntimeOptionsArgs<
   GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
   Options extends object = ViewServerRuntimeOptions<Topics, ConfigRegions, GrpcClients>,
 > = [TopicOwnedKafkaSourceTopic<Topics>] extends [never]
-  ? [TopicOwnedSourceTopic<Topics>] extends [never]
-    ? [options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
-    : [options: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
+  ? [options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
   : [options: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>];
 
 type RuntimePublicMutationTopic<Topics extends object, SourceOwnedTopics extends string> = Extract<

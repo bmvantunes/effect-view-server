@@ -5,8 +5,8 @@ TanStack Start app using `createInMemoryViewServerReact(viewServerReact)`.
 Run:
 
 ```bash
-vp run -view-server/example-in-memory-react#test
-vp run -view-server/example-in-memory-react#dev
+vp run @effect-view-server/example-in-memory-react#test
+vp run @effect-view-server/example-in-memory-react#dev
 ```
 
 This example demonstrates:

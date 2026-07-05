@@ -35,7 +35,8 @@ publish URLs and keeps the runtime alive until interrupted.
 - `tcpPublishPort`: enables optional TCP publish ingress.
 - `tcpPublishMaxConnections`: bounds TCP publisher connections.
 - `kafka`: optional Kafka source configuration.
-- `grpc`: optional gRPC source configuration.
+- `grpc`: optional gRPC operational configuration, currently materialized
+  reconnect policy.
 
 Environment-backed values should use Effect `Config`. Missing required brokers,
 URLs, or secrets should fail startup rather than silently defaulting.
@@ -85,36 +86,26 @@ runViewServerRuntime(liveTailViewServer, {
 });
 ```
 
-gRPC clients can also live on `defineViewServerConfig`, while runtime options
-provide the feed implementations. The config-level `grpcSource` on a topic does
-not select a service by itself; it only declares that the topic is gRPC-owned and
-whether it is materialized or leased. A runtime feed provides the concrete
-binding:
+gRPC clients live on `defineViewServerConfig`, and concrete source bindings live
+inside topic-owned `grpcSource` definitions created by
+`grpc.topicSources(grpcClients)`. Runtime options stay operational-only; they do
+not redeclare feed ownership.
 
-- `topic`: the View Server topic to populate.
+The topic-owned source binding provides:
+
 - `client`: the key from `grpc.clients`.
 - `method`: the server-streaming method on that generated client.
+- `request`: the request builder for that stream.
+- `acquire`: the stream acquisition callback.
+- `release`: optional cleanup after the acquired stream closes.
+- `map`: the decoded gRPC value to topic row mapping.
 
-```ts
-runViewServerRuntime(viewServer, {
-  websocketPort: 8080,
-  grpc: {
-    feeds: {
-      ordersByStrategy,
-      strategies,
-    },
-  },
-});
-```
-
-For leased feeds, the feed `routeBy` tuple must match the topic's
-`grpcSource: grpc.leased({ routeBy: [...] })` tuple. The route fields are
-required in public live queries, passed to the feed `request` callback, and used
-to share one upstream gRPC stream for subscribers requesting the same route.
-Missing feeds, lifecycle mismatches, and route tuple mismatches fail runtime
-startup. Materialized feed client names are also validated at startup; leased
-feed client names are validated when the first matching subscription opens the
-lazy upstream stream.
+For leased sources, the `routeBy` fields are required in public live queries,
+passed to the source `request` callback, and used to share one upstream gRPC
+stream for subscribers requesting the same route. Concrete `client` and
+`method` bindings are validated when the View Server config is defined. Leased
+streams still stay lazy: the upstream stream is opened only when the first
+matching subscription arrives.
 
 ## Source Ownership
 

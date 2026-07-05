@@ -4,6 +4,7 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
+import { defineGrpcFeed, grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
@@ -89,7 +90,7 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      grpcSource: grpc.materialized(),
+      grpcSource: grpcSourceMarkers.materialized(),
     },
   },
 });
@@ -234,7 +235,7 @@ const grpcClients = {
   }),
 };
 
-const grpcFeed = viewServer.grpcFeed<typeof grpcClients>();
+const grpcFeed = defineGrpcFeed<Topics, typeof grpcClients>();
 const grpcHealthClientBaseUrls = {
   orders: "https://orders.example.test",
 };

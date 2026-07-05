@@ -20,7 +20,6 @@ import {
   Stream,
 } from "effect";
 import {
-  defineGrpcFeed,
   defineViewServerConfig,
   grpc,
   kafka,
@@ -36,7 +35,6 @@ import {
   viewServerHealthTopicRowsFromHealth,
   validateLiveQuerySourceRoute,
   type GrpcClientValue,
-  type GrpcFeedDefinition,
   type GrpcMaterializedTopicSource,
   type GrpcTopicFeedsHealth,
   type KafkaMessageMetadata,
@@ -76,6 +74,7 @@ import {
   type ViewServerRuntimeError,
   type ViewServerTransportError,
 } from "./index";
+import { defineGrpcFeed, grpcSourceMarkers, type GrpcFeedDefinition } from "./internal";
 import {
   decodeKafkaCodec,
   decodeKafkaTopicMessage,
@@ -1492,6 +1491,10 @@ type OrdersKeyMessage = Message<"viewserver.test.OrderKey"> & {
   readonly orderId: string;
 };
 
+type WrappedOrdersKeyMessage = Message<"viewserver.test.WrappedOrdersKey"> & {
+  readonly order?: OrdersKeyMessage;
+};
+
 type TradesValueMessage = Message<"viewserver.test.TradeValue"> & {
   readonly symbol: string;
   readonly quantity: number;
@@ -1578,6 +1581,17 @@ const testProtoFile = fileDesc(
             field: [{ name: "order_id", number: 1, type: FieldDescriptorProto_Type.STRING }],
           },
           {
+            name: "WrappedOrdersKey",
+            field: [
+              {
+                name: "order",
+                number: 1,
+                type: FieldDescriptorProto_Type.MESSAGE,
+                typeName: ".viewserver.test.OrderKey",
+              },
+            ],
+          },
+          {
             name: "TradeValue",
             field: [
               { name: "symbol", number: 1, type: FieldDescriptorProto_Type.STRING },
@@ -1603,6 +1617,12 @@ const testProtoFile = fileDesc(
                 serverStreaming: true,
               },
               {
+                name: "StreamWrappedOrders",
+                inputType: ".viewserver.test.WrappedOrdersKey",
+                outputType: ".viewserver.test.OrderValue",
+                serverStreaming: true,
+              },
+              {
                 name: "GetOrder",
                 inputType: ".viewserver.test.OrderKey",
                 outputType: ".viewserver.test.OrderValue",
@@ -1617,7 +1637,8 @@ const testProtoFile = fileDesc(
 
 const ordersValueSchema = messageDesc<OrdersValueMessage>(testProtoFile, 0);
 const ordersKeySchema = messageDesc<OrdersKeyMessage>(testProtoFile, 1);
-const tradesValueSchema = messageDesc<TradesValueMessage>(testProtoFile, 2);
+const wrappedOrdersKeySchema = messageDesc<WrappedOrdersKeyMessage>(testProtoFile, 2);
+const tradesValueSchema = messageDesc<TradesValueMessage>(testProtoFile, 3);
 const ordersService = serviceDesc<{
   readonly streamOrders: {
     readonly input: typeof ordersKeySchema;
@@ -1627,6 +1648,11 @@ const ordersService = serviceDesc<{
   readonly streamTrades: {
     readonly input: typeof ordersKeySchema;
     readonly output: typeof tradesValueSchema;
+    readonly methodKind: "server_streaming";
+  };
+  readonly streamWrappedOrders: {
+    readonly input: typeof wrappedOrdersKeySchema;
+    readonly output: typeof ordersValueSchema;
     readonly methodKind: "server_streaming";
   };
   readonly getOrder: {
@@ -1642,6 +1668,91 @@ const tradesOnlyService = serviceDesc<{
     readonly methodKind: "server_streaming";
   };
 }>(testProtoFile, 0);
+
+const grpcTestClients = {
+  orders: grpc.connectClient({
+    service: ordersService,
+    baseUrl: "https://orders-grpc.example.test",
+  }),
+  trades: grpc.connectClient({
+    service: tradesOnlyService,
+    baseUrl: "https://trades-grpc.example.test",
+  }),
+};
+
+const grpcTestTopicSources = grpc.topicSources(grpcTestClients);
+
+const grpcOrdersByRegionStatusTopic = grpcTestTopicSources.leased({
+  schema: Order,
+  key: "id",
+  client: "orders",
+  method: "streamOrders",
+  routeBy: ["region", "status"],
+  request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
+  acquire: () => Stream.never,
+  map: ({ value, route }) => ({
+    id: value.customerId,
+    customerId: value.customerId,
+    status: route.status,
+    price: value.price,
+    region: route.region,
+    updatedAt: value.updatedAt,
+  }),
+});
+
+const grpcOrdersMaterializedTopic = grpcTestTopicSources.materialized({
+  schema: Order,
+  key: "id",
+  client: "orders",
+  method: "streamOrders",
+  request: () => ({ orderId: "all-orders" }),
+  acquire: () => Stream.never,
+  map: ({ value }) => ({
+    id: value.customerId,
+    customerId: value.customerId,
+    status: value.status,
+    price: value.price,
+    region: "usa",
+    updatedAt: value.updatedAt,
+  }),
+});
+
+const grpcTradesMaterializedTopic = grpcTestTopicSources.materialized({
+  schema: Trade,
+  key: "id",
+  client: "trades",
+  method: "streamTrades",
+  request: () => ({ orderId: "all-trades" }),
+  acquire: () => Stream.never,
+  map: ({ value }) => ({
+    id: value.symbol,
+    symbol: value.symbol,
+    quantity: value.quantity,
+    price: value.price,
+    region: "usa",
+  }),
+});
+
+const grpcPositionsByAccountSymbolTopic = grpcTestTopicSources.leased({
+  schema: Position,
+  key: "id",
+  client: "orders",
+  method: "streamOrders",
+  routeBy: ["accountId", "symbol"],
+  request: ({ accountId, symbol }) => ({ orderId: `${accountId}:${symbol}` }),
+  acquire: () => Stream.never,
+  map: ({ route }) => ({
+    id: `${route.accountId}:${route.symbol}`,
+    accountId: route.accountId,
+    symbol: route.symbol,
+    active: true,
+    quantity: 0n,
+    optionalQuantity: undefined,
+    price: BigDecimal.fromStringUnsafe("0"),
+    notional: 0,
+    optionalNotional: undefined,
+  }),
+});
 
 declare const generatedOrdersValueSchema: GenMessage<
   Message<"viewserver.test.OrderValue"> & {
@@ -1778,20 +1889,15 @@ const tradesValueKafkaCodec = kafka.protobuf(tradesValueSchema);
 
 describe("defineViewServerConfig", () => {
   it("types gRPC leased topic route metadata", () => {
+    expect(grpcSourceMarkers.leased({ routeBy: ["region"] }).routeBy).toStrictEqual(["region"]);
+
     const grpcViewServer = defineViewServerConfig({
+      grpc: {
+        clients: grpcTestClients,
+      },
       topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-          grpcSource: grpc.leased({
-            routeBy: ["region", "status"],
-          }),
-        },
-        trades: {
-          schema: Trade,
-          key: "id",
-          grpcSource: grpc.materialized(),
-        },
+        orders: grpcOrdersByRegionStatusTopic,
+        trades: grpcTradesMaterializedTopic,
         positions: {
           schema: Position,
           key: "id",
@@ -1804,19 +1910,12 @@ describe("defineViewServerConfig", () => {
     expectTypeOf<TopicRouteBy<typeof grpcViewServer.topics, "trades">>().toEqualTypeOf<never>();
 
     const grpcSourceViewServer = defineViewServerConfig({
+      grpc: {
+        clients: grpcTestClients,
+      },
       topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-          grpcSource: grpc.leased({
-            routeBy: ["region", "status"],
-          }),
-        },
-        trades: {
-          schema: Trade,
-          key: "id",
-          grpcSource: grpc.materialized(),
-        },
+        orders: grpcOrdersByRegionStatusTopic,
+        trades: grpcTradesMaterializedTopic,
       },
     });
     expectTypeOf<TopicRouteBy<typeof grpcSourceViewServer.topics, "orders">>().toEqualTypeOf<
@@ -1826,16 +1925,29 @@ describe("defineViewServerConfig", () => {
       TopicRouteBy<typeof grpcSourceViewServer.topics, "trades">
     >().toEqualTypeOf<never>();
 
-    // @ts-expect-error routeBy fields must exist on the target topic row.
     defineViewServerConfig({
+      grpc: {
+        clients: grpcTestClients,
+      },
       topics: {
-        orders: {
+        orders: grpcTestTopicSources.leased({
           schema: Order,
           key: "id",
-          grpcSource: grpc.leased({
-            routeBy: ["strategyId"],
+          client: "orders",
+          method: "streamOrders",
+          // @ts-expect-error routeBy fields must exist on the target topic row.
+          routeBy: ["strategyId"],
+          request: () => ({ orderId: "invalid" }),
+          acquire: () => Stream.never,
+          map: ({ value }) => ({
+            id: value.customerId,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: "usa",
+            updatedAt: value.updatedAt,
           }),
-        },
+        }),
       },
     });
   });
@@ -1858,20 +1970,10 @@ describe("defineViewServerConfig", () => {
     expectTypeOf<DirectInvalidKeyConfig>().toEqualTypeOf<never>();
     expectTypeOf<DirectInvalidConflictConfig>().toEqualTypeOf<never>();
 
-    const clients = {
-      orders: grpc.connectClient({
-        service: ordersService,
-        baseUrl: "https://orders-grpc.example.test",
-      }),
-      trades: grpc.connectClient({
-        service: tradesOnlyService,
-        baseUrl: "https://trades-grpc.example.test",
-      }),
-    };
     const multiSourceViewServer = defineViewServerConfig({
       kafka: kafkaRegions,
       grpc: {
-        clients,
+        clients: grpcTestClients,
       },
       topics: {
         orders: {
@@ -1931,11 +2033,7 @@ describe("defineViewServerConfig", () => {
             },
           }),
         },
-        positions: {
-          schema: Position,
-          key: "id",
-          grpcSource: grpc.leased({ routeBy: ["accountId", "symbol"] }),
-        },
+        positions: grpcPositionsByAccountSymbolTopic,
       },
     });
 
@@ -1964,30 +2062,20 @@ describe("defineViewServerConfig", () => {
 
   it("requires exact equality predicates for leased gRPC route fields", () => {
     const grpcViewServer = defineViewServerConfig({
+      grpc: {
+        clients: grpcTestClients,
+      },
       topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-          grpcSource: grpc.leased({
-            routeBy: ["region", "status"],
-          }),
-        },
+        orders: grpcOrdersByRegionStatusTopic,
       },
     });
     const grpcRouteValidationViewServer = defineViewServerConfig({
+      grpc: {
+        clients: grpcTestClients,
+      },
       topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-          grpcSource: grpc.leased({
-            routeBy: ["region", "status"],
-          }),
-        },
-        trades: {
-          schema: Trade,
-          key: "id",
-          grpcSource: grpc.materialized(),
-        },
+        orders: grpcOrdersByRegionStatusTopic,
+        trades: grpcTradesMaterializedTopic,
         positions: {
           schema: Position,
           key: "id",
@@ -2169,19 +2257,12 @@ describe("defineViewServerConfig", () => {
 
   it("types gRPC clients and feed mapping contracts", () => {
     const grpcViewServer = defineViewServerConfig({
+      grpc: {
+        clients: grpcTestClients,
+      },
       topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-          grpcSource: grpc.leased({
-            routeBy: ["region", "status"],
-          }),
-        },
-        trades: {
-          schema: Trade,
-          key: "id",
-          grpcSource: grpc.materialized(),
-        },
+        orders: grpcOrdersByRegionStatusTopic,
+        trades: grpcTradesMaterializedTopic,
         positions: {
           schema: Position,
           key: "id",
@@ -2198,34 +2279,733 @@ describe("defineViewServerConfig", () => {
         baseUrl: "https://trades.example.test",
       }),
     };
+    const topicSources = grpc.topicSources(clients);
+    const otherClients = {
+      otherOrders: grpc.connectClient({
+        service: ordersService,
+        baseUrl: "https://other-orders.example.test",
+      }),
+    };
+    const otherTopicSources = grpc.topicSources(otherClients);
+    const topicOwnedGrpcViewServer = defineViewServerConfig({
+      grpc: {
+        clients,
+      },
+      topics: {
+        orders: topicSources.leased({
+          schema: Order,
+          key: "id",
+          client: "orders",
+          method: "streamOrders",
+          routeBy: ["region", "status"],
+          request: ({ region, status }) => {
+            expectTypeOf(region).toEqualTypeOf<string>();
+            expectTypeOf(status).toEqualTypeOf<"open" | "closed" | "cancelled">();
+            return { orderId: `${region}:${status}` };
+          },
+          acquire: ({ client, request, route, session }) => {
+            expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
+            expectTypeOf(client.streamOrders).toBeFunction();
+            expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
+            expectTypeOf(route).toEqualTypeOf<{
+              readonly region: string;
+              readonly status: "open" | "closed" | "cancelled";
+            }>();
+            expectTypeOf(session.forwardedHeaders).toEqualTypeOf<
+              Readonly<Record<string, string>>
+            >();
+            return Stream.make({
+              $typeName: "viewserver.test.OrderValue",
+              customerId: "customer-topic-source-1",
+              status: "open",
+              price: 10,
+              updatedAt: 1,
+            });
+          },
+          release: ({ client, request, route, session }) => {
+            expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
+            expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
+            expectTypeOf(route.status).toEqualTypeOf<"open" | "closed" | "cancelled">();
+            expectTypeOf(session.systemHeaders).toEqualTypeOf<Readonly<Record<string, string>>>();
+            return Effect.void;
+          },
+          map: ({ value, route, schema }) => {
+            expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+            expectTypeOf(route.region).toEqualTypeOf<string>();
+            expectTypeOf(schema).toEqualTypeOf<typeof Order>();
+            return {
+              id: `${route.region}:${value.customerId}`,
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region: route.region,
+              updatedAt: value.updatedAt,
+            };
+          },
+        }),
+        trades: topicSources.materialized({
+          schema: Trade,
+          key: "id",
+          client: "orders",
+          method: "streamTrades",
+          request: () => ({ orderId: "all-topic-source-trades" }),
+          acquire: ({ client, request, route, session }) => {
+            expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
+            expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
+            expectTypeOf(route).toEqualTypeOf<undefined>();
+            expectTypeOf(session.forwardedHeaders).toEqualTypeOf<
+              Readonly<Record<string, string>>
+            >();
+            return Stream.make({
+              $typeName: "viewserver.test.TradeValue",
+              symbol: "AAPL",
+              quantity: 1,
+              price: 10,
+            });
+          },
+          release: ({ client, request, route, session }) => {
+            expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
+            expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
+            expectTypeOf(route).toEqualTypeOf<undefined>();
+            expectTypeOf(session.systemHeaders).toEqualTypeOf<Readonly<Record<string, string>>>();
+            return Effect.void;
+          },
+          map: ({ value, route, schema }) => {
+            expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
+            expectTypeOf(route).toEqualTypeOf<undefined>();
+            expectTypeOf(schema).toEqualTypeOf<typeof Trade>();
+            return {
+              id: value.symbol,
+              symbol: value.symbol,
+              quantity: value.quantity,
+              price: value.price,
+              region: "usa",
+            };
+          },
+        }),
+      },
+    });
+    expect(() =>
+      // @ts-expect-error topic-owned gRPC sources must be bound to this config's grpc.clients.
+      defineViewServerConfig({
+        grpc: {
+          clients,
+        },
+        topics: {
+          orders: otherTopicSources.materialized({
+            schema: Order,
+            key: "id",
+            client: "otherOrders",
+            method: "streamOrders",
+            request: () => ({ orderId: "wrong-client-set" }),
+            acquire: () =>
+              Stream.make({
+                $typeName: "viewserver.test.OrderValue",
+                customerId: "customer-wrong-client-set",
+                status: "open",
+                price: 10,
+                updatedAt: 1,
+              }),
+            map: ({ value }) => ({
+              id: value.customerId,
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region: "usa",
+              updatedAt: value.updatedAt,
+            }),
+          }),
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource client otherOrders, but defineViewServerConfig.grpc.clients does not define it.",
+    );
+    expect(() =>
+      // @ts-expect-error topic-owned gRPC sources must use the same row key as the topic.
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "customerId",
+            grpcSource: grpcOrdersMaterializedTopic.grpcSource,
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource for row key id, but topic key is customerId.",
+    );
+    expect(() =>
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: Object.assign({}, grpcOrdersMaterializedTopic.grpcSource, {
+              method: 1,
+            }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource method 1, but grpc client orders does not define it.",
+    );
+    expect(() =>
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: Object.assign({}, grpcOrdersMaterializedTopic.grpcSource, {
+              method: "missingMethod",
+            }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource method missingMethod, but grpc client orders does not define it.",
+    );
+    expect(() =>
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: Object.assign({}, grpcOrdersMaterializedTopic.grpcSource, {
+              method: "getOrder",
+            }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource method getOrder, but grpc client orders method is not server-streaming.",
+    );
+    expect(() =>
+      // @ts-expect-error topic-owned gRPC sources must use the same schema as the topic.
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Trade,
+            key: "id",
+            grpcSource: grpcOrdersMaterializedTopic.grpcSource,
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource for a different schema than the topic schema.",
+    );
+    expect(() =>
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: grpcSourceMarkers.materialized(),
+          },
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      // @ts-expect-error unbranded gRPC source objects are not valid public TypeScript config.
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: Object.assign(grpcSourceMarkers.materialized(), {
+              client: "orders",
+              method: "streamOrders",
+              request: () => ({ orderId: "unbranded-source" }),
+              acquire: () =>
+                Stream.make({
+                  $typeName: "viewserver.test.OrderValue",
+                  customerId: "customer-unbranded-source",
+                  status: "open",
+                  price: 10,
+                  updatedAt: 1,
+                }),
+              map: () => ({
+                id: "customer-unbranded-source",
+                customerId: "customer-unbranded-source",
+                status: "open",
+                price: 10,
+                region: "usa",
+                updatedAt: 1,
+              }),
+            }),
+          },
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      // @ts-expect-error unbranded gRPC source objects are not valid public TypeScript config.
+      defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            grpcSource: Object.assign(grpcSourceMarkers.materialized(), {
+              client: "orders",
+              method: "streamOrders",
+            }),
+          },
+        },
+      }),
+    ).toThrow("View Server topic orders declares invalid gRPC source metadata.");
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      // @ts-expect-error topic-owned gRPC sources reject clients outside grpc.clients.
+      client: "missing",
+      method: "streamOrders",
+      request: () => ({ orderId: "order-1" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: () => ({
+        id: "customer-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 10,
+        region: "usa",
+        updatedAt: 1,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamWrappedOrders",
+      request: () => ({ order: { orderId: "nested-order" } }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamWrappedOrders",
+      // @ts-expect-error nested gRPC request messages reject fields outside the nested method input schema.
+      request: () => ({ order: { orderId: "nested-order", extra: true } }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamWrappedOrders",
+      // @ts-expect-error nested gRPC request messages reject any-typed nested values.
+      request: () => ({ order: JSON.parse("{}") }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      // @ts-expect-error topic-owned gRPC sources must use server-streaming methods.
+      method: "getOrder",
+      // @ts-expect-error non-server-streaming methods do not expose a streaming request shape.
+      request: () => ({ orderId: "order-1" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: () => ({
+        id: "customer-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 10,
+        region: "usa",
+        updatedAt: 1,
+      }),
+    });
+    topicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      // @ts-expect-error leased route fields must exist on the topic row schema.
+      routeBy: ["unknown"],
+      request: () => ({ orderId: "bad-route" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamWrappedOrders",
+      routeBy: ["region"],
+      request: ({ region }) => ({ order: { orderId: region } }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value, route }) => ({
+        id: `${route.region}:${value.customerId}`,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: route.region,
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamWrappedOrders",
+      routeBy: ["region"],
+      // @ts-expect-error leased nested gRPC request messages reject fields outside the nested method input schema.
+      request: ({ region }) => ({ order: { orderId: region, extra: true } }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value, route }) => ({
+        id: `${route.region}:${value.customerId}`,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: route.region,
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamWrappedOrders",
+      routeBy: ["region"],
+      // @ts-expect-error leased nested gRPC request messages reject any-typed nested values.
+      request: () => ({ order: JSON.parse("{}") }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value, route }) => ({
+        id: `${route.region}:${value.customerId}`,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: route.region,
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({ orderId: "order-1" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      // @ts-expect-error topic-owned gRPC maps must not return fields outside the topic schema.
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+        ze: true,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({ orderId: "order-1" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      // @ts-expect-error topic-owned gRPC maps must return every topic schema field.
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      // @ts-expect-error topic-owned gRPC requests reject fields outside the method input schema.
+      request: () => ({ orderId: "order-1", extra: true }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["region"],
+      // @ts-expect-error leased gRPC requests reject fields outside the method input schema.
+      request: ({ region }) => ({ orderId: region, extra: true }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      map: ({ value, route }) => ({
+        id: `${route.region}:${value.customerId}`,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: route.region,
+        updatedAt: value.updatedAt,
+      }),
+    });
+    topicSources.materialized({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      request: () => ({ orderId: "order-1" }),
+      acquire: () =>
+        Stream.make({
+          $typeName: "viewserver.test.OrderValue",
+          customerId: "customer-1",
+          status: "open",
+          price: 10,
+          updatedAt: 1,
+        }),
+      // @ts-expect-error topic-owned gRPC maps cannot return any.
+      map: () => JSON.parse("{}"),
+    });
+    expect(() =>
+      // @ts-expect-error topic-owned gRPC sources require defineViewServerConfig.grpc.clients.
+      defineViewServerConfig({
+        topics: {
+          orders: topicSources.materialized({
+            schema: Order,
+            key: "id",
+            client: "orders",
+            method: "streamOrders",
+            request: () => ({ orderId: "missing-clients" }),
+            acquire: () => Stream.never,
+            map: ({ value }) => ({
+              id: value.customerId,
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region: "usa",
+              updatedAt: value.updatedAt,
+            }),
+          }),
+        },
+      }),
+    ).toThrow(
+      "View Server topic orders declares grpcSource, but defineViewServerConfig.grpc.clients was not provided.",
+    );
     const grpcInfraViewServer = defineViewServerConfig({
       grpc: {
         clients,
       },
       topics: {
-        orders: {
+        orders: topicSources.materialized({
           schema: Order,
           key: "id",
-          grpcSource: grpc.materialized(),
-        },
+          client: "orders",
+          method: "streamOrders",
+          request: () => ({ orderId: "all-infra-orders" }),
+          acquire: () => Stream.never,
+          map: ({ value }) => ({
+            id: value.customerId,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: "usa",
+            updatedAt: value.updatedAt,
+          }),
+        }),
       },
     });
     const standaloneFeed = defineGrpcFeed<typeof grpcViewServer.topics, typeof clients>();
-    const feed = grpcViewServer.grpcFeed<typeof clients>();
-    const configBoundFeed = grpcInfraViewServer.grpcFeed();
+    const feed = defineGrpcFeed<typeof grpcViewServer.topics, typeof clients>();
+    const configBoundFeed = defineGrpcFeed<typeof grpcInfraViewServer.topics, typeof clients>();
     const grpcSourceMaterializedViewServer = defineViewServerConfig({
+      grpc: {
+        clients,
+      },
       topics: {
-        trades: {
+        trades: topicSources.materialized({
           schema: Trade,
           key: "id",
-          grpcSource: grpc.materialized(),
-        },
+          client: "trades",
+          method: "streamTrades",
+          request: () => ({ orderId: "all-source-trades" }),
+          acquire: () => Stream.never,
+          map: ({ value }) => ({
+            id: value.symbol,
+            symbol: value.symbol,
+            quantity: value.quantity,
+            price: value.price,
+            region: "usa",
+          }),
+        }),
       },
     });
-    const grpcSourceFeed = grpcSourceMaterializedViewServer.grpcFeed<typeof clients>();
+    const grpcSourceFeed = defineGrpcFeed<
+      typeof grpcSourceMaterializedViewServer.topics,
+      typeof clients
+    >();
     expect(grpcInfraViewServer.grpc).toStrictEqual({
       clients,
     });
+    expect(topicOwnedGrpcViewServer.topics.orders.grpcSource.lifecycle).toBe("leased");
+    expect(topicOwnedGrpcViewServer.topics.orders.grpcSource.client).toBe("orders");
+    expect(topicOwnedGrpcViewServer.topics.orders.grpcSource.method).toBe("streamOrders");
+    expect(topicOwnedGrpcViewServer.topics.trades.grpcSource.lifecycle).toBe("materialized");
+    expect(topicOwnedGrpcViewServer.topics.trades.grpcSource.client).toBe("orders");
+    expect(topicOwnedGrpcViewServer.topics.trades.grpcSource.method).toBe("streamTrades");
+    expect(
+      Object.getOwnPropertySymbols(topicOwnedGrpcViewServer.topics.orders.grpcSource).some(
+        (symbol) =>
+          Reflect.get(topicOwnedGrpcViewServer.topics.orders.grpcSource, symbol) === clients,
+      ),
+    ).toBe(false);
+    expect(
+      Object.getOwnPropertySymbols(topicOwnedGrpcViewServer.topics.trades.grpcSource).some(
+        (symbol) =>
+          Reflect.get(topicOwnedGrpcViewServer.topics.trades.grpcSource, symbol) === clients,
+      ),
+    ).toBe(false);
     expectTypeOf(standaloneFeed.leasedFeed).toBeFunction();
     const leasedOrders = feed.leasedFeed({
       topic: "orders",
@@ -2393,6 +3173,11 @@ describe("defineViewServerConfig", () => {
           readonly output: typeof tradesValueSchema;
           readonly methodKind: "server_streaming";
         };
+        readonly streamWrappedOrders: {
+          readonly input: typeof wrappedOrdersKeySchema;
+          readonly output: typeof ordersValueSchema;
+          readonly methodKind: "server_streaming";
+        };
         readonly getOrder: {
           readonly input: typeof ordersKeySchema;
           readonly output: typeof ordersValueSchema;
@@ -2402,6 +3187,24 @@ describe("defineViewServerConfig", () => {
     >();
 
     const openOrderStatus = "open" as const;
+
+    const invalidSpreadTopicOwnedMaterializedRequest: typeof topicOwnedGrpcViewServer.topics.trades.grpcSource =
+      {
+        ...topicOwnedGrpcViewServer.topics.trades.grpcSource,
+        // @ts-expect-error spread-mutated topic-owned materialized gRPC sources cannot replace helper-branded requests.
+        request: () => ({ orderId: "bad-materialized-request", extra: true }),
+      };
+    const invalidSpreadTopicOwnedLeasedRequest: typeof topicOwnedGrpcViewServer.topics.orders.grpcSource =
+      {
+        ...topicOwnedGrpcViewServer.topics.orders.grpcSource,
+        // @ts-expect-error spread-mutated topic-owned leased gRPC sources cannot replace helper-branded requests.
+        request: ({ region, status }) => ({
+          orderId: `${region}:${status}`,
+          extra: true,
+        }),
+      };
+    expectTypeOf(invalidSpreadTopicOwnedMaterializedRequest).not.toBeNever();
+    expectTypeOf(invalidSpreadTopicOwnedLeasedRequest).not.toBeNever();
 
     const invalidManualRuntimeFeedDefinition: typeof leasedOrders = {
       _tag: "GrpcLeasedFeedDefinition",
@@ -2490,7 +3293,7 @@ describe("defineViewServerConfig", () => {
     });
 
     feed.materializedFeed({
-      // @ts-expect-error materialized feeds can only target topics declared with grpc.materialized().
+      // @ts-expect-error materialized feeds can only target topics declared with a materialized gRPC source.
       topic: "orders",
       client: "orders",
       method: "streamTrades",
@@ -2694,12 +3497,9 @@ describe("defineViewServerConfig", () => {
       }),
     });
 
-    expect(grpcViewServer.topics.orders.grpcSource).toStrictEqual(
-      grpc.leased({
-        routeBy: ["region", "status"],
-      }),
-    );
-    expect(grpcViewServer.topics.trades.grpcSource).toStrictEqual(grpc.materialized());
+    expect(grpcViewServer.topics.orders.grpcSource.lifecycle).toBe("leased");
+    expect(grpcViewServer.topics.orders.grpcSource.routeBy).toStrictEqual(["region", "status"]);
+    expect(grpcViewServer.topics.trades.grpcSource.lifecycle).toBe("materialized");
   });
 
   it("derives schema field metadata for query validation", () => {
@@ -5086,7 +5886,7 @@ describe("defineViewServerConfig", () => {
   );
 
   it("does not expose executable React or runtime placeholders from config", () => {
-    expect(Object.keys(viewServer)).toStrictEqual(["topics", "defineRuntimeOptions", "grpcFeed"]);
+    expect(Object.keys(viewServer)).toStrictEqual(["topics", "defineRuntimeOptions"]);
     expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
     expect(isKafkaTopicSourceDefinition({})).toBe(false);
     expect(
@@ -5277,6 +6077,42 @@ describe("defineViewServerConfig", () => {
   });
 
   it("rejects topics with multiple source owners at config definition time", () => {
+    const inheritedKafkaSource = kafka.source({
+      topic: "orders-source",
+      regions: ["usa"],
+      value: ordersValueKafkaCodec,
+      rowKey: ({ key }) => key,
+      map: ({ value, region }) => ({
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region,
+        updatedAt: value.updatedAt,
+      }),
+    });
+    const topicWithInheritedGrpcSource: {
+      readonly schema: typeof Order;
+      readonly key: "id";
+      readonly kafkaSource: typeof inheritedKafkaSource;
+    } = Object.assign(
+      Object.create({
+        grpcSource: grpcOrdersMaterializedTopic.grpcSource,
+      }),
+      {
+        schema: Order,
+        key: "id",
+        kafkaSource: inheritedKafkaSource,
+      },
+    );
+
+    expect(() =>
+      defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: topicWithInheritedGrpcSource,
+        },
+      }),
+    ).not.toThrow();
     expect(() =>
       // @ts-expect-error a View Server topic cannot declare more than one source owner.
       defineViewServerConfig({
@@ -5285,7 +6121,7 @@ describe("defineViewServerConfig", () => {
           orders: {
             schema: Order,
             key: "id",
-            grpcSource: grpc.materialized(),
+            grpcSource: grpcOrdersMaterializedTopic.grpcSource,
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["usa"],
@@ -5326,7 +6162,7 @@ describe("defineViewServerConfig", () => {
                 updatedAt: value.updatedAt,
               }),
             }),
-            grpcSource: grpc.materialized(),
+            grpcSource: grpcOrdersMaterializedTopic.grpcSource,
           },
         },
       }),
@@ -5338,7 +6174,7 @@ describe("defineViewServerConfig", () => {
         orders: {
           schema: Order,
           key: "id",
-          source: grpc.materialized(),
+          source: grpcSourceMarkers.materialized(),
         },
       },
     };
@@ -7399,12 +8235,15 @@ describe("public type surface", () => {
 
       // @ts-expect-error topic-owned leased gRPC source objects must not contain extra keys.
       const extraGrpcLeasedSourceKeyViewServer = defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
         topics: {
           orders: {
             schema: Order,
             key: "id",
             grpcSource: {
-              ...grpc.leased({ routeBy: ["region"] }),
+              ...grpcOrdersByRegionStatusTopic.grpcSource,
               extra: true,
             },
           },
@@ -7412,12 +8251,15 @@ describe("public type surface", () => {
       });
       // @ts-expect-error topic-owned materialized gRPC source objects must not contain extra keys.
       const extraGrpcMaterializedSourceKeyViewServer = defineViewServerConfig({
+        grpc: {
+          clients: grpcTestClients,
+        },
         topics: {
           trades: {
             schema: Trade,
             key: "id",
             grpcSource: {
-              ...grpc.materialized(),
+              ...grpcTradesMaterializedTopic.grpcSource,
               extra: true,
             },
           },

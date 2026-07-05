@@ -4,8 +4,8 @@ import {
 } from "@effect-view-server/column-live-view-engine";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
-  ViewServerConfig,
   ViewServerHealth,
+  ViewServerTopicConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -57,12 +57,12 @@ export type ViewServerRuntimeCoreInternalOptionsFor<Topics extends DecodableTopi
 };
 
 export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   input: ViewServerRuntimeCoreInternalOptionsFor<Topics>,
 ) => Effect.Effect<ViewServerRuntimeCoreInternalInstance<Topics>, ViewServerRuntimeError> =
   Effect.fn("ViewServerRuntimeCore.internal.make")(function* <
     const Topics extends DecodableTopicDefinitions,
-  >(config: ViewServerConfig<Topics>, input: ViewServerRuntimeCoreInternalOptionsFor<Topics>) {
+  >(config: ViewServerTopicConfig<Topics>, input: ViewServerRuntimeCoreInternalOptionsFor<Topics>) {
     const transportHealth = input.transportHealth ?? defaultRuntimeCoreTransportHealth;
     const healthOverlay = input.healthOverlay;
     const engineConfig = {

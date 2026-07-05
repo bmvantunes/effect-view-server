@@ -2,6 +2,7 @@ import {
   type DecodableTopicDefinitions,
   type ViewServerInMemoryOptions,
 } from "@effect-view-server/in-memory";
+import type { GrpcRuntimeClients, RuntimeRegions } from "@effect-view-server/config";
 import {
   createInMemoryViewServerTesting,
   type ViewServerInMemoryTestingInstance,
@@ -34,8 +35,12 @@ const InMemoryLifetimeAtom = AtomReact.make((close: Effect.Effect<void>) =>
   }),
 );
 
-export const createInMemoryViewServerReact = <const Topics extends DecodableTopicDefinitions>(
-  react: ViewServerReactBindings<Topics>,
+export const createInMemoryViewServerReact = <
+  const Topics extends DecodableTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  react: ViewServerReactBindings<Topics, Regions, GrpcClients>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryReactInstance<Topics> => {
   const ViewServerClientProvider = react[ViewServerReactClientProvider];

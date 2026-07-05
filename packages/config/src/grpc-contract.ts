@@ -7,7 +7,14 @@ import type {
 } from "@bufbuild/protobuf";
 import type { Client } from "@connectrpc/connect";
 import type { Config, Effect, Stream } from "effect";
-import type { FieldKey, RowSchema, TopicRow } from "./query-core";
+import type {
+  FieldKey,
+  RowFromSchema,
+  RowSchema,
+  StringFieldKey,
+  TopicDefinition,
+  TopicRow,
+} from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
 import type { TopicRouteByTuple } from "./source-query-contract";
 import type {
@@ -17,15 +24,35 @@ import type {
 } from "./source-contract";
 
 const GrpcTopicSourceTypeId: unique symbol = Symbol("@effect-view-server/config/GrpcTopicSource");
+const GrpcTopicSourceClientsTypeId: unique symbol = Symbol(
+  "@effect-view-server/config/GrpcTopicSourceClients",
+);
+const GrpcTopicSourceKeyTypeId: unique symbol = Symbol(
+  "@effect-view-server/config/GrpcTopicSourceKey",
+);
+const GrpcTopicSourceSchemaTypeId: unique symbol = Symbol(
+  "@effect-view-server/config/GrpcTopicSourceSchema",
+);
 const GrpcFeedDefinitionTypeId: unique symbol = Symbol(
   "@effect-view-server/config/GrpcFeedDefinition",
 );
 const GrpcFeedMapTypeId: unique symbol = Symbol("@effect-view-server/config/GrpcFeedMap");
+const GrpcFeedRequestTypeId: unique symbol = Symbol("@effect-view-server/config/GrpcFeedRequest");
+
+class GrpcTopicSourceClientsBrand<Clients extends GrpcRuntimeClients> {
+  declare readonly [GrpcTopicSourceClientsTypeId]: Clients;
+}
+
 const grpcFeedMapBrand = { [GrpcFeedMapTypeId]: true } as const;
+const grpcFeedRequestBrand = { [GrpcFeedRequestTypeId]: true } as const;
 
 const brandGrpcFeedMap = <Mapping extends (...args: ReadonlyArray<never>) => unknown>(
   mapping: Mapping,
 ) => Object.assign(mapping, grpcFeedMapBrand);
+
+const brandGrpcFeedRequest = <Request extends (...args: ReadonlyArray<never>) => unknown>(
+  request: Request,
+) => Object.assign(request, grpcFeedRequestBrand);
 
 export type GrpcTopicSourceLifecycle = "materialized" | "leased";
 
@@ -47,7 +74,46 @@ export type GrpcLeasedTopicSource<RouteBy extends ReadonlyArray<string> = Readon
 
 export type GrpcTopicSource = GrpcMaterializedTopicSource | GrpcLeasedTopicSource;
 
-type ExactObject<Candidate, Shape> = Candidate & RejectExtraKeys<Candidate, Shape>;
+type ExactObject<Candidate, Shape> = Candidate & Shape & RejectExtraKeys<Candidate, Shape>;
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
+type NonUndefined<Value> = Exclude<Value, undefined>;
+type PublicGrpcMessageInitShape<Value> =
+  NonUndefined<Value> extends ReadonlyArray<infer Item>
+    ? ReadonlyArray<PublicGrpcMessageInitShape<Item>>
+    : NonUndefined<Value> extends object
+      ? {
+          readonly [Key in keyof NonUndefined<Value> as Key extends "$typeName" | "$unknown"
+            ? never
+            : Key]?: PublicGrpcMessageInitShape<NonUndefined<Value>[Key]>;
+        }
+      : Value;
+type DeepGrpcRequestMismatch<Candidate, Shape> =
+  IsAny<Candidate> extends true
+    ? true
+    : NonUndefined<Candidate> extends ReadonlyArray<infer CandidateItem>
+      ? NonUndefined<Shape> extends ReadonlyArray<infer ShapeItem>
+        ? DeepGrpcRequestMismatch<CandidateItem, ShapeItem>
+        : false
+      : NonUndefined<Candidate> extends object
+        ? NonUndefined<Shape> extends object
+          ? Exclude<keyof NonUndefined<Candidate>, keyof NonUndefined<Shape>> extends never
+            ? true extends {
+                readonly [Key in Extract<
+                  keyof NonUndefined<Candidate>,
+                  keyof NonUndefined<Shape>
+                >]: DeepGrpcRequestMismatch<NonUndefined<Candidate>[Key], NonUndefined<Shape>[Key]>;
+              }[Extract<keyof NonUndefined<Candidate>, keyof NonUndefined<Shape>>]
+              ? true
+              : false
+            : true
+          : false
+        : false;
+type TypeEquals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? (<T>() => T extends B ? 1 : 2) extends <T>() => T extends A ? 1 : 2
+      ? true
+      : false
+    : false;
 
 type ExactGrpcLeasedTopicSourceInput<Input> = Input &
   RejectExtraKeys<
@@ -90,22 +156,62 @@ type RouteShape<
   RouteBy extends ReadonlyArray<string>,
 > = Pick<TopicRow<Topics, Topic>, Extract<RouteBy[number], FieldKey<TopicRow<Topics, Topic>>>>;
 
-type ExactGrpcFeedMap<Input, Row, Mapping extends (input: Input) => Row> = Mapping &
-  ((input: Input) => ExactObject<ReturnType<Mapping>, Row>);
+type RouteShapeForRow<Row, RouteBy extends ReadonlyArray<string>> = Pick<
+  Row,
+  Extract<RouteBy[number], FieldKey<Row>>
+>;
+type NonEmptyRouteByForRow<Row> = readonly [FieldKey<Row>, ...ReadonlyArray<FieldKey<Row>>];
 
-type GrpcFeedMapDefinition<Input, Row, Mapping extends (input: Input) => Row> = ExactGrpcFeedMap<
+type ExactGrpcFeedMap<
   Input,
   Row,
-  Mapping
-> & {
+  Mapping extends (...args: ReadonlyArray<never>) => unknown,
+> = Mapping extends (input: Input) => infer Output
+  ? IsAny<Output> extends true
+    ? never
+    : [Output] extends [never]
+      ? Mapping
+      : Output extends ExactObject<Output, Row>
+        ? Mapping
+        : never
+  : never;
+
+type ExactGrpcRequest<
+  Args extends Array<unknown>,
+  RequestShape,
+  Request extends (...args: Args) => unknown,
+> = Request extends (...args: Args) => infer Output
+  ? IsAny<Output> extends true
+    ? never
+    : [Output] extends [never]
+      ? Request
+      : Output extends ExactObject<Output, RequestShape>
+        ? DeepGrpcRequestMismatch<Output, RequestShape> extends true
+          ? never
+          : Request
+        : never
+  : never;
+
+type GrpcFeedRequestDefinition<
+  Args extends Array<unknown>,
+  RequestShape,
+  Request extends (...args: Args) => unknown,
+> = ExactGrpcRequest<Args, RequestShape, Request> & {
+  readonly [GrpcFeedRequestTypeId]: true;
+};
+
+type GrpcFeedMapDefinition<
+  Input,
+  Row,
+  Mapping extends (input: Input) => unknown,
+> = ExactGrpcFeedMap<Input, Row, Mapping> & {
   readonly [GrpcFeedMapTypeId]: true;
 };
 
 export type GrpcHelper = {
-  readonly materialized: () => GrpcMaterializedTopicSource;
-  readonly leased: <const Input extends { readonly routeBy: NonEmptyRouteBy }>(
-    input: ExactGrpcLeasedTopicSourceInput<Input>,
-  ) => GrpcLeasedTopicSource<Input["routeBy"]>;
+  readonly topicSources: <const Clients extends GrpcRuntimeClients>(
+    clients: Clients,
+  ) => GrpcTopicSourceHelper<Clients>;
   readonly connectClient: <
     const Input extends {
       readonly service: DescService;
@@ -114,6 +220,13 @@ export type GrpcHelper = {
   >(
     input: ExactGrpcConnectClientInput<Input>,
   ) => GrpcConnectClientDefinition<Input["service"]>;
+};
+
+export type GrpcTopicSourceMarkerHelper = {
+  readonly materialized: () => GrpcMaterializedTopicSource;
+  readonly leased: <const Input extends { readonly routeBy: NonEmptyRouteBy }>(
+    input: ExactGrpcLeasedTopicSourceInput<Input>,
+  ) => GrpcLeasedTopicSource<Input["routeBy"]>;
 };
 
 export type GrpcRuntimeValue<A> = A | Config.Config<A>;
@@ -179,6 +292,21 @@ export type GrpcMethodValue<
         : never
     : never;
 
+type GrpcMethodRequestExactShape<
+  ClientDefinition,
+  MethodName extends GrpcServerStreamingMethodName<ClientDefinition>,
+> =
+  ClientDefinition extends GrpcConnectClientDefinition<infer Service>
+    ? DescService extends Service
+      ? Record<string, unknown>
+      : Service["method"][MethodName] extends DescMethodServerStreaming<
+            infer Input extends DescMessage,
+            infer _Output extends DescMessage
+          >
+        ? PublicGrpcMessageInitShape<MessageInitShape<Input>>
+        : never
+    : never;
+
 export type GrpcFeedSession = {
   readonly id: string | null;
   readonly forwardedHeaders: Readonly<Record<string, string>>;
@@ -202,6 +330,304 @@ export type GrpcFeedMapInput<Value, Route, SchemaValue extends RowSchema> = {
   readonly value: Value;
   readonly route: Route;
   readonly schema: SchemaValue;
+};
+
+type ExactGrpcMaterializedTopicInput<
+  Clients extends GrpcRuntimeClients,
+  SchemaValue extends RowSchema,
+  Key extends StringFieldKey<RowFromSchema<SchemaValue>>,
+  ClientName extends Extract<keyof Clients, string>,
+  MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+  Request extends () => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+  Mapping extends (
+    input: GrpcFeedMapInput<
+      GrpcMethodValue<Clients[ClientName], MethodName>,
+      undefined,
+      SchemaValue
+    >,
+  ) => RowFromSchema<SchemaValue>,
+> = {
+  readonly schema: SchemaValue;
+  readonly key: Key;
+  readonly client: ClientName;
+  readonly method: MethodName;
+  readonly request: ExactGrpcRequest<
+    [],
+    GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    Request
+  >;
+  readonly acquire: (
+    input: GrpcFeedAcquireInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      undefined
+    >,
+  ) => Stream.Stream<GrpcMethodValue<Clients[ClientName], MethodName>, unknown, never>;
+  readonly release?: (
+    input: GrpcFeedReleaseInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      undefined
+    >,
+  ) => Effect.Effect<void, unknown, never>;
+  readonly map: ExactGrpcFeedMap<
+    GrpcFeedMapInput<GrpcMethodValue<Clients[ClientName], MethodName>, undefined, SchemaValue>,
+    RowFromSchema<SchemaValue>,
+    Mapping
+  >;
+};
+
+type ExactGrpcLeasedTopicInput<
+  Clients extends GrpcRuntimeClients,
+  SchemaValue extends RowSchema,
+  Key extends StringFieldKey<RowFromSchema<SchemaValue>>,
+  RouteBy extends NonEmptyRouteByForRow<RowFromSchema<SchemaValue>>,
+  ClientName extends Extract<keyof Clients, string>,
+  MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+  Request extends (
+    route: RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+  ) => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+  Mapping extends (
+    input: GrpcFeedMapInput<
+      GrpcMethodValue<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+      SchemaValue
+    >,
+  ) => RowFromSchema<SchemaValue>,
+> = {
+  readonly schema: SchemaValue;
+  readonly key: Key;
+  readonly client: ClientName;
+  readonly method: MethodName;
+  readonly routeBy: RouteBy;
+  readonly request: ExactGrpcRequest<
+    [route: RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>],
+    GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    Request
+  >;
+  readonly acquire: (
+    input: GrpcFeedAcquireInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>
+    >,
+  ) => Stream.Stream<GrpcMethodValue<Clients[ClientName], MethodName>, unknown, never>;
+  readonly release?: (
+    input: GrpcFeedReleaseInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>
+    >,
+  ) => Effect.Effect<void, unknown, never>;
+  readonly map: ExactGrpcFeedMap<
+    GrpcFeedMapInput<
+      GrpcMethodValue<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+      SchemaValue
+    >,
+    RowFromSchema<SchemaValue>,
+    Mapping
+  >;
+};
+
+export type GrpcMaterializedTopicSourceDefinition<
+  Clients extends GrpcRuntimeClients,
+  SchemaValue extends RowSchema,
+  Key extends StringFieldKey<RowFromSchema<SchemaValue>>,
+  ClientName extends Extract<keyof Clients, string>,
+  MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+  Request extends () => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+  Mapping extends (
+    input: GrpcFeedMapInput<
+      GrpcMethodValue<Clients[ClientName], MethodName>,
+      undefined,
+      SchemaValue
+    >,
+  ) => RowFromSchema<SchemaValue>,
+> = GrpcMaterializedTopicSource & {
+  readonly [GrpcTopicSourceClientsTypeId]: Clients;
+  readonly [GrpcTopicSourceKeyTypeId]: Key;
+  readonly [GrpcTopicSourceSchemaTypeId]: SchemaValue;
+  readonly client: ClientName;
+  readonly method: MethodName;
+  readonly request: GrpcFeedRequestDefinition<
+    [],
+    GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    Request
+  >;
+  readonly acquire: (
+    input: GrpcFeedAcquireInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      undefined
+    >,
+  ) => Stream.Stream<GrpcMethodValue<Clients[ClientName], MethodName>, unknown, never>;
+  readonly release?: (
+    input: GrpcFeedReleaseInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      undefined
+    >,
+  ) => Effect.Effect<void, unknown, never>;
+  readonly map: GrpcFeedMapDefinition<
+    GrpcFeedMapInput<GrpcMethodValue<Clients[ClientName], MethodName>, undefined, SchemaValue>,
+    RowFromSchema<SchemaValue>,
+    Mapping
+  >;
+};
+
+export type GrpcLeasedTopicSourceDefinition<
+  Clients extends GrpcRuntimeClients,
+  SchemaValue extends RowSchema,
+  Key extends StringFieldKey<RowFromSchema<SchemaValue>>,
+  RouteBy extends NonEmptyRouteBy,
+  ClientName extends Extract<keyof Clients, string>,
+  MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+  Request extends (
+    route: RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+  ) => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+  Mapping extends (
+    input: GrpcFeedMapInput<
+      GrpcMethodValue<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+      SchemaValue
+    >,
+  ) => RowFromSchema<SchemaValue>,
+> = GrpcLeasedTopicSource<RouteBy> & {
+  readonly [GrpcTopicSourceClientsTypeId]: Clients;
+  readonly [GrpcTopicSourceKeyTypeId]: Key;
+  readonly [GrpcTopicSourceSchemaTypeId]: SchemaValue;
+  readonly client: ClientName;
+  readonly method: MethodName;
+  readonly request: GrpcFeedRequestDefinition<
+    [route: RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>],
+    GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    Request
+  >;
+  readonly acquire: (
+    input: GrpcFeedAcquireInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>
+    >,
+  ) => Stream.Stream<GrpcMethodValue<Clients[ClientName], MethodName>, unknown, never>;
+  readonly release?: (
+    input: GrpcFeedReleaseInput<
+      GrpcClientValue<Clients[ClientName]>,
+      GrpcMethodRequest<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>
+    >,
+  ) => Effect.Effect<void, unknown, never>;
+  readonly map: GrpcFeedMapDefinition<
+    GrpcFeedMapInput<
+      GrpcMethodValue<Clients[ClientName], MethodName>,
+      RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+      SchemaValue
+    >,
+    RowFromSchema<SchemaValue>,
+    Mapping
+  >;
+};
+
+export type GrpcTopicSourceIsBoundToClients<
+  Source,
+  Clients extends GrpcRuntimeClients,
+> = Source extends { readonly [GrpcTopicSourceClientsTypeId]: infer SourceClients }
+  ? string extends keyof Clients
+    ? true
+    : TypeEquals<SourceClients, Clients>
+  : false;
+
+export type GrpcTopicSourceHasKey<Source, Key extends string> = Source extends {
+  readonly [GrpcTopicSourceKeyTypeId]: infer SourceKey;
+}
+  ? TypeEquals<SourceKey, Key>
+  : false;
+
+export const grpcTopicSourceDefinitionKey = (source: object): string | undefined => {
+  const key = Reflect.get(source, GrpcTopicSourceKeyTypeId);
+  return typeof key === "string" ? key : undefined;
+};
+
+export const grpcTopicSourceDefinitionSchema = (source: object): object | undefined => {
+  const schema = Reflect.get(source, GrpcTopicSourceSchemaTypeId);
+  return typeof schema === "object" && schema !== null ? schema : undefined;
+};
+
+export type GrpcTopicSourceHelper<Clients extends GrpcRuntimeClients> = {
+  readonly materialized: <
+    const SchemaValue extends RowSchema,
+    const Key extends StringFieldKey<RowFromSchema<SchemaValue>>,
+    const ClientName extends Extract<keyof Clients, string>,
+    const MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+    const Request extends () => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    const Mapping extends (
+      input: GrpcFeedMapInput<
+        GrpcMethodValue<Clients[ClientName], MethodName>,
+        undefined,
+        SchemaValue
+      >,
+    ) => RowFromSchema<SchemaValue>,
+  >(
+    input: ExactGrpcMaterializedTopicInput<
+      Clients,
+      SchemaValue,
+      Key,
+      ClientName,
+      MethodName,
+      Request,
+      Mapping
+    >,
+  ) => TopicDefinition<SchemaValue, Key> & {
+    readonly grpcSource: GrpcMaterializedTopicSourceDefinition<
+      Clients,
+      SchemaValue,
+      Key,
+      ClientName,
+      MethodName,
+      Request,
+      Mapping
+    >;
+  };
+  readonly leased: <
+    const SchemaValue extends RowSchema,
+    const Key extends StringFieldKey<RowFromSchema<SchemaValue>>,
+    const RouteBy extends NonEmptyRouteByForRow<RowFromSchema<SchemaValue>>,
+    const ClientName extends Extract<keyof Clients, string>,
+    const MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+    const Request extends (
+      route: RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+    ) => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    const Mapping extends (
+      input: GrpcFeedMapInput<
+        GrpcMethodValue<Clients[ClientName], MethodName>,
+        RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>,
+        SchemaValue
+      >,
+    ) => RowFromSchema<SchemaValue>,
+  >(
+    input: ExactGrpcLeasedTopicInput<
+      Clients,
+      SchemaValue,
+      Key,
+      RouteBy,
+      ClientName,
+      MethodName,
+      Request,
+      Mapping
+    >,
+  ) => TopicDefinition<SchemaValue, Key> & {
+    readonly grpcSource: GrpcLeasedTopicSourceDefinition<
+      Clients,
+      SchemaValue,
+      Key,
+      RouteBy,
+      ClientName,
+      MethodName,
+      Request,
+      Mapping
+    >;
+  };
 };
 
 export type GrpcLeasedFeedDefinition<
@@ -236,9 +662,7 @@ export type GrpcLeasedFeedDefinition<
   readonly client: ClientName;
   readonly method: MethodName;
   readonly routeBy: RouteBy;
-  readonly request: (
-    route: RouteShape<Topics, Topic, RouteBy>,
-  ) => GrpcMethodRequest<Clients[ClientName], MethodName>;
+  readonly request: (route: RouteShape<Topics, Topic, RouteBy>) => unknown;
   readonly acquire: (
     input: GrpcFeedAcquireInput<
       GrpcClientValue<Clients[ClientName]>,
@@ -294,7 +718,7 @@ export type GrpcMaterializedFeedDefinition<
   readonly topic: Topic;
   readonly client: ClientName;
   readonly method: MethodName;
-  readonly request: () => GrpcMethodRequest<Clients[ClientName], MethodName>;
+  readonly request: () => unknown;
   readonly acquire: (
     input: GrpcFeedAcquireInput<
       GrpcClientValue<Clients[ClientName]>,
@@ -336,6 +760,9 @@ type ExactGrpcLeasedFeedInput<
   ClientName extends Extract<keyof Clients, string>,
   RouteBy extends TopicRouteByTuple<Topics, Topic>,
   MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+  Request extends (
+    route: RouteShape<Topics, Topic, RouteBy>,
+  ) => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
   Mapping extends (
     input: GrpcFeedMapInput<
       GrpcMethodValue<Clients[ClientName], MethodName>,
@@ -348,9 +775,11 @@ type ExactGrpcLeasedFeedInput<
   readonly client: ClientName;
   readonly method: MethodName;
   readonly routeBy: RouteBy;
-  readonly request: (
-    route: RouteShape<Topics, Topic, RouteBy>,
-  ) => GrpcMethodRequest<Clients[ClientName], MethodName>;
+  readonly request: ExactGrpcRequest<
+    [route: RouteShape<Topics, Topic, RouteBy>],
+    GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    Request
+  >;
   readonly acquire: (
     input: GrpcFeedAcquireInput<
       GrpcClientValue<Clients[ClientName]>,
@@ -382,6 +811,7 @@ type ExactGrpcMaterializedFeedInput<
   Topic extends GrpcMaterializedTopic<Topics>,
   ClientName extends Extract<keyof Clients, string>,
   MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+  Request extends () => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
   Mapping extends (
     input: GrpcFeedMapInput<
       GrpcMethodValue<Clients[ClientName], MethodName>,
@@ -393,7 +823,11 @@ type ExactGrpcMaterializedFeedInput<
   readonly topic: Topic;
   readonly client: ClientName;
   readonly method: MethodName;
-  readonly request: () => GrpcMethodRequest<Clients[ClientName], MethodName>;
+  readonly request: ExactGrpcRequest<
+    [],
+    GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
+    Request
+  >;
   readonly acquire: (
     input: GrpcFeedAcquireInput<
       GrpcClientValue<Clients[ClientName]>,
@@ -428,6 +862,9 @@ export type GrpcFeedHelper<
     const ClientName extends Extract<keyof Clients, string>,
     const RouteBy extends GrpcLeasedRouteBy<Topics, Topic>,
     const MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+    const Request extends (
+      route: RouteShape<Topics, Topic, RouteBy>,
+    ) => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
     const Mapping extends (
       input: GrpcFeedMapInput<
         GrpcMethodValue<Clients[ClientName], MethodName>,
@@ -443,6 +880,7 @@ export type GrpcFeedHelper<
       ClientName,
       RouteBy,
       MethodName,
+      Request,
       Mapping
     >,
   ) => GrpcLeasedFeedDefinition<Topics, Clients, Topic, ClientName, RouteBy, MethodName, Mapping>;
@@ -450,6 +888,7 @@ export type GrpcFeedHelper<
     const Topic extends GrpcMaterializedTopic<Topics>,
     const ClientName extends Extract<keyof Clients, string>,
     const MethodName extends GrpcServerStreamingMethodName<Clients[ClientName]>,
+    const Request extends () => GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,
     const Mapping extends (
       input: GrpcFeedMapInput<
         GrpcMethodValue<Clients[ClientName], MethodName>,
@@ -458,7 +897,15 @@ export type GrpcFeedHelper<
       >,
     ) => TopicRow<Topics, Topic>,
   >(
-    input: ExactGrpcMaterializedFeedInput<Topics, Clients, Topic, ClientName, MethodName, Mapping>,
+    input: ExactGrpcMaterializedFeedInput<
+      Topics,
+      Clients,
+      Topic,
+      ClientName,
+      MethodName,
+      Request,
+      Mapping
+    >,
   ) => GrpcMaterializedFeedDefinition<Topics, Clients, Topic, ClientName, MethodName, Mapping>;
 };
 
@@ -502,7 +949,7 @@ export type GrpcFeedDefinition<
   | AnyGrpcMaterializedFeedDefinition<Topics, Clients>
   | AnyGrpcLeasedFeedDefinition<Topics, Clients>;
 
-export const grpc: GrpcHelper = {
+export const grpcSourceMarkers: GrpcTopicSourceMarkerHelper = {
   materialized: () => ({
     _tag: "GrpcMaterializedTopicSource",
     [GrpcTopicSourceTypeId]: true,
@@ -515,6 +962,48 @@ export const grpc: GrpcHelper = {
     kind: "grpc",
     lifecycle: "leased",
     routeBy: input.routeBy,
+  }),
+};
+
+export const grpc: GrpcHelper = {
+  topicSources: (_clients) => ({
+    materialized: (input) => ({
+      schema: input.schema,
+      key: input.key,
+      grpcSource: Object.assign(new GrpcTopicSourceClientsBrand<typeof _clients>(), {
+        _tag: "GrpcMaterializedTopicSource" as const,
+        [GrpcTopicSourceTypeId]: true as const,
+        [GrpcTopicSourceKeyTypeId]: input.key,
+        [GrpcTopicSourceSchemaTypeId]: input.schema,
+        kind: "grpc" as const,
+        lifecycle: "materialized" as const,
+        client: input.client,
+        method: input.method,
+        request: brandGrpcFeedRequest(input.request),
+        acquire: input.acquire,
+        map: brandGrpcFeedMap(input.map),
+        ...(input.release === undefined ? {} : { release: input.release }),
+      }),
+    }),
+    leased: (input) => ({
+      schema: input.schema,
+      key: input.key,
+      grpcSource: Object.assign(new GrpcTopicSourceClientsBrand<typeof _clients>(), {
+        _tag: "GrpcLeasedTopicSource" as const,
+        [GrpcTopicSourceTypeId]: true as const,
+        [GrpcTopicSourceKeyTypeId]: input.key,
+        [GrpcTopicSourceSchemaTypeId]: input.schema,
+        kind: "grpc" as const,
+        lifecycle: "leased" as const,
+        routeBy: input.routeBy,
+        client: input.client,
+        method: input.method,
+        request: brandGrpcFeedRequest(input.request),
+        acquire: input.acquire,
+        map: brandGrpcFeedMap(input.map),
+        ...(input.release === undefined ? {} : { release: input.release }),
+      }),
+    }),
   }),
   connectClient: (input) => ({
     _tag: "GrpcConnectClientDefinition",

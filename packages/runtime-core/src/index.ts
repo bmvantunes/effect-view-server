@@ -4,6 +4,8 @@ import type {
 } from "@effect-view-server/column-live-view-engine";
 import type {
   ViewServerConfig,
+  GrpcRuntimeClients,
+  RuntimeRegions,
   ViewServerHealth,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -51,13 +53,21 @@ export type ViewServerRuntimeCoreOptionsFor<Topics extends DecodableTopicDefinit
   readonly healthRefreshCadence?: Duration.Input;
 };
 
-export const makeViewServerRuntimeCore: <const Topics extends DecodableTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+export const makeViewServerRuntimeCore: <
+  const Topics extends DecodableTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerRuntimeCoreOptionsFor<Topics>,
 ) => Effect.Effect<ViewServerRuntimeCoreInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
   "ViewServerRuntimeCore.make",
-)(function* <const Topics extends DecodableTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+)(function* <
+  const Topics extends DecodableTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerRuntimeCoreOptionsFor<Topics>,
 ) {
   const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, input);
@@ -71,8 +81,12 @@ export const makeViewServerRuntimeCore: <const Topics extends DecodableTopicDefi
   };
 });
 
-export const createViewServerRuntimeCore = <const Topics extends DecodableTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+export const createViewServerRuntimeCore = <
+  const Topics extends DecodableTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: ViewServerRuntimeCoreOptionsFor<Topics> = {},
 ): ViewServerRuntimeCoreInstance<Topics> =>
   Effect.runSync(makeViewServerRuntimeCore(config, options));

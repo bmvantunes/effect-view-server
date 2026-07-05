@@ -1,7 +1,7 @@
 import type {
   TopicDefinitions,
-  ViewServerConfig,
   ViewServerHealth,
+  ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import { viewServerDecodeHealth } from "@effect-view-server/protocol";
 import { Effect } from "effect";
@@ -407,7 +407,7 @@ const metricsResponse = (status: number, body: string): HttpServerResponse.HttpS
   });
 
 export const makeViewServerMetricsRoute = <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   input: ViewServerWebSocketServerInput<Topics>,
   path: `/${string}`,
 ) =>

@@ -1,4 +1,4 @@
-import type { TopicDefinitions, ViewServerConfig } from "@effect-view-server/config";
+import type { TopicDefinitions, ViewServerTopicConfig } from "@effect-view-server/config";
 import { viewServerDecodeHealth } from "@effect-view-server/protocol";
 import { Cause, Effect, Option } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -20,7 +20,7 @@ const failureJsonResponse = (cause: Cause.Cause<unknown>): HttpServerResponse.Ht
   jsonResponse(500, Cause.findErrorOption(cause).pipe(Option.getOrElse(() => Cause.pretty(cause))));
 
 export const makeViewServerHealthRoute = <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   input: ViewServerWebSocketServerInput<Topics>,
   path: `/${string}`,
 ) =>

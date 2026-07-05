@@ -1,4 +1,9 @@
-import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
+import type {
+  GrpcRuntimeClients,
+  RuntimeRegions,
+  ViewServerConfig,
+  ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import {
   createViewServerRuntimeCore,
   makeViewServerRuntimeCore,
@@ -48,14 +53,22 @@ const toInMemoryInstance = <const Topics extends ViewServerInMemoryTopicDefiniti
   };
 };
 
-export const makeInMemoryViewServer: <const Topics extends ViewServerInMemoryTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+export const makeInMemoryViewServer: <
+  const Topics extends ViewServerInMemoryTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerInMemoryOptions<Topics>,
 ) => Effect.Effect<ViewServerInMemoryInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
   "ViewServerInMemory.make",
 )(
-  <const Topics extends ViewServerInMemoryTopicDefinitions>(
-    config: ViewServerConfig<Topics>,
+  <
+    const Topics extends ViewServerInMemoryTopicDefinitions,
+    const Regions extends RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients,
+  >(
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
     input: ViewServerInMemoryOptions<Topics>,
   ) =>
     makeViewServerRuntimeCore(config, toRuntimeCoreOptions(input)).pipe(
@@ -63,8 +76,12 @@ export const makeInMemoryViewServer: <const Topics extends ViewServerInMemoryTop
     ),
 );
 
-export const createInMemoryViewServer = <const Topics extends ViewServerInMemoryTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+export const createInMemoryViewServer = <
+  const Topics extends ViewServerInMemoryTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryInstance<Topics> =>
   toInMemoryInstance(createViewServerRuntimeCore(config, toRuntimeCoreOptions(options)));

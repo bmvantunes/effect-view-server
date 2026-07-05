@@ -27,3 +27,6 @@ export const makeKafkaSourceTopicsForConfig = <
 
 export { decodeKafkaTopicMessage, isKafkaTopicSourceDefinition };
 export type { KafkaResolvedSourceTopicDefinition } from "./kafka-contract";
+
+export { defineGrpcFeed, grpcSourceMarkers } from "./grpc-contract";
+export type { GrpcFeedDefinition } from "./grpc-contract";

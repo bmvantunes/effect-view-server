@@ -34,7 +34,7 @@ configured once, then each topic chooses `kafkaSource`, `grpcSource`, or no
 source for TCP/manual publishing:
 
 ```ts
-import { Config, Schema } from "effect";
+import { Config, Schema, Stream } from "effect";
 import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
 import { ordersService, strategiesService } from "./generated/grpc";
 import { OrdersKeySchema, OrdersValueSchema } from "./generated/orders";
@@ -58,22 +58,26 @@ const Strategy = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
+export const grpcClients = {
+  orders: grpc.connectClient({
+    service: ordersService,
+    baseUrl: "https://orders-grpc.example.com",
+  }),
+  strategies: grpc.connectClient({
+    service: strategiesService,
+    baseUrl: "https://strategies-grpc.example.com",
+  }),
+};
+
+const grpcTopics = grpc.topicSources(grpcClients);
+
 export const viewServer = defineViewServerConfig({
   kafka: {
     usa: Config.string("KAFKA_USA_BOOTSTRAP"),
     london: Config.string("KAFKA_LONDON_BOOTSTRAP"),
   },
   grpc: {
-    clients: {
-      orders: grpc.connectClient({
-        service: ordersService,
-        baseUrl: "https://orders-grpc.example.com",
-      }),
-      strategies: grpc.connectClient({
-        service: strategiesService,
-        baseUrl: "https://strategies-grpc.example.com",
-      }),
-    },
+    clients: grpcClients,
   },
   topics: {
     orders: {
@@ -95,16 +99,42 @@ export const viewServer = defineViewServerConfig({
         }),
       }),
     },
-    strategies: {
+    strategies: grpcTopics.materialized({
       schema: Strategy,
       key: "id",
-      grpcSource: grpc.materialized(),
-    },
-    ordersByStrategy: {
+      client: "strategies",
+      method: "streamStrategies",
+      request: () => ({ universe: "global" }),
+      acquire: ({ client, request }) =>
+        Stream.fromAsyncIterable(client.streamStrategies(request), (cause) => cause),
+      map: ({ value }) => ({
+        id: `${value.strategyId}:${value.region}`,
+        strategyId: value.strategyId,
+        region: value.region,
+        status: value.status,
+        notional: value.notional,
+        updatedAt: value.updatedAt,
+      }),
+    }),
+    ordersByStrategy: grpcTopics.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({ routeBy: ["strategyId", "region"] }),
-    },
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["strategyId", "region"],
+      request: ({ strategyId, region }) => ({ strategyId, region }),
+      acquire: ({ client, request }) =>
+        Stream.fromAsyncIterable(client.streamOrders(request), (cause) => cause),
+      map: ({ value, route }) => ({
+        id: `${route.strategyId}:${route.region}:${value.orderId}`,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: route.region,
+        strategyId: route.strategyId,
+        updatedAt: value.updatedAt,
+      }),
+    }),
   },
 });
 ```
@@ -113,11 +143,9 @@ The region tuple `["usa"]`, gRPC client names, source topics, route fields, and
 mapping inputs/outputs are all type checked. A topic can have only one owner:
 Kafka, gRPC, or external/manual publishing.
 
-`grpcSource` is only the topic ownership/lifecycle marker. It says whether a
-View Server topic is startup-materialized or leased by route, and which route
-fields are required for leased subscriptions. It does not point at a concrete
-gRPC service. The concrete service binding is declared in the runtime feed with
-`topic`, `client`, and `method`.
+`grpc.topicSources(grpcClients)` binds concrete gRPC service methods directly to
+topic-owned `grpcSource` declarations. Top-level `grpc.clients` stays
+infrastructure; runtime options keep operational knobs only.
 
 ## Remote React provider
 
@@ -130,46 +158,7 @@ Node entrypoints should use `@effect/platform-node`'s `NodeRuntime.runMain` so
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
 import { runViewServerRuntime } from "effect-view-server/runtime";
-import { Stream } from "effect";
 import { viewServer } from "./view-server-config";
-
-const grpcFeed = viewServer.grpcFeed();
-
-const ordersByStrategyFeed = grpcFeed.leasedFeed({
-  topic: "ordersByStrategy",
-  client: "orders",
-  method: "streamOrders",
-  routeBy: ["strategyId", "region"],
-  request: ({ strategyId, region }) => ({ strategyId, region }),
-  acquire: ({ client, request }) =>
-    Stream.fromAsyncIterable(client.streamOrders(request), (cause) => cause),
-  map: ({ value, route }) => ({
-    id: `${route.strategyId}:${route.region}:${value.orderId}`,
-    customerId: value.customerId,
-    status: value.status,
-    price: value.price,
-    region: route.region,
-    strategyId: route.strategyId,
-    updatedAt: value.updatedAt,
-  }),
-});
-
-const strategiesFeed = grpcFeed.materializedFeed({
-  topic: "strategies",
-  client: "strategies",
-  method: "streamStrategies",
-  request: () => ({ universe: "global" }),
-  acquire: ({ client, request }) =>
-    Stream.fromAsyncIterable(client.streamStrategies(request), (cause) => cause),
-  map: ({ value }) => ({
-    id: `${value.strategyId}:${value.region}`,
-    strategyId: value.strategyId,
-    region: value.region,
-    status: value.status,
-    notional: value.notional,
-    updatedAt: value.updatedAt,
-  }),
-});
 
 NodeRuntime.runMain(
   runViewServerRuntime(viewServer, {
@@ -180,28 +169,13 @@ NodeRuntime.runMain(
       consumerGroupId: "orders-view-server",
       startFrom: "latest",
     },
-    grpc: {
-      feeds: { ordersByStrategyFeed, strategiesFeed },
-    },
   }),
 );
 ```
 
-The runtime feed list must cover every gRPC-owned topic. A topic with
-`grpcSource: grpc.materialized()` needs one matching `materializedFeed`; a topic
-with `grpcSource: grpc.leased(...)` needs one matching `leasedFeed`. Runtime
-startup rejects missing feeds, lifecycle mismatches, and route tuple
-mismatches. Materialized feeds also validate unknown client names at startup;
-leased feeds validate unknown client names when a subscription opens the lazy
-upstream stream.
-
-For example, `ordersByStrategyFeed` binds `viewServer.topics.ordersByStrategy`
-to the `orders` gRPC client definition and its `streamOrders` server-streaming
-method. `strategiesFeed` does the same for `viewServer.topics.strategies`, the
-`strategies` client definition, and its `streamStrategies` method. At runtime,
-the feed `acquire` callback receives the generated client value, so
-`client.streamOrders(request)` or `client.streamStrategies(request)` opens the
-actual upstream stream.
+The runtime derives gRPC feeds from topic-owned source bindings. A materialized
+gRPC topic starts at runtime startup. A leased gRPC topic opens one shared
+upstream stream per route key when the first matching subscription arrives.
 
 The same-server `GET /health` endpoint serves the cached runtime health snapshot
 for deployment readiness checks. Internal `bigint` health fields, such as Kafka

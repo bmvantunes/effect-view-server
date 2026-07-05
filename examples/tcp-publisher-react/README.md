@@ -5,10 +5,10 @@ TanStack Start app showing an external TCP publisher feeding View Server.
 Run:
 
 ```bash
-vp run -view-server/example-tcp-publisher-react#runtime
-vp run -view-server/example-tcp-publisher-react#publisher
-vp run -view-server/example-tcp-publisher-react#publisher:invalid
-vp run -view-server/example-tcp-publisher-react#dev
+vp run @effect-view-server/example-tcp-publisher-react#runtime
+vp run @effect-view-server/example-tcp-publisher-react#publisher
+vp run @effect-view-server/example-tcp-publisher-react#publisher:invalid
+vp run @effect-view-server/example-tcp-publisher-react#dev
 ```
 
 This example demonstrates:

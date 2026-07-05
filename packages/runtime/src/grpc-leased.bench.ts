@@ -5,6 +5,7 @@ import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
+import { defineGrpcFeed, grpcSourceMarkers } from "@effect-view-server/config/internal";
 import type { ViewServerLiveSubscription } from "@effect-view-server/client";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import {
@@ -112,7 +113,7 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: GrpcOrder,
       key: "id",
-      grpcSource: grpc.leased({
+      grpcSource: grpcSourceMarkers.leased({
         routeBy: ["region"],
       }),
     },
@@ -242,7 +243,7 @@ const grpcClients = {
   }),
 };
 
-const grpcFeed = viewServer.grpcFeed<typeof grpcClients>();
+const grpcFeed = defineGrpcFeed<Topics, typeof grpcClients>();
 const grpcHealthClientBaseUrls = {
   orders: "https://orders.example.test",
 };

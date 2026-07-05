@@ -1,11 +1,13 @@
 import { BrowserSocket } from "@effect/platform-browser";
 import type {
   ExactLiveQueryInputForTopic,
+  GrpcRuntimeClients,
   GroupedQuery,
   GroupedResult,
   LiveQueryRow,
   PickRawFields,
   RawQuery,
+  RuntimeRegions,
   TopicDefinitions,
   TopicRow,
   ViewServerConfig,
@@ -136,15 +138,20 @@ const subscriptionOverflowStatus = <Topic extends string>(
   message: `Remote subscription buffer exceeded capacity with ${queuedEvents} queued event(s).`,
 });
 
-export const makeViewServerClient: <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+export const makeViewServerClient: <
+  const Topics extends TopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: ViewServerClientOptions,
 ) => Effect.Effect<ViewServerRemoteClient<Topics>, ViewServerRemoteClientError> = Effect.fn(
   "ViewServerClient.remote.make",
-)(function* <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
-  options: ViewServerClientOptions,
-) {
+)(function* <
+  const Topics extends TopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(config: ViewServerConfig<Topics, Regions, GrpcClients>, options: ViewServerClientOptions) {
   const managedRuntime = ManagedRuntime.make(rpcClientLayer(options.url));
   const cleanupOnConstructionFailure = <Value, Error, Services>(
     effect: Effect.Effect<Value, Error, Services>,

@@ -14,12 +14,14 @@ import {
 } from "@effect-view-server/client/remote";
 import type {
   ExactLiveQueryInputForTopic,
+  GrpcRuntimeClients,
   GroupedQuery,
   GroupedResult,
   LiveQueryResult,
   LiveQueryRow,
   PickRawFields,
   RawQuery,
+  RuntimeRegions,
   TopicDefinitions,
   TopicRow,
   ViewServerConfig,
@@ -35,8 +37,12 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { ViewServerReactClientProvider, ViewServerReactConfig } from "./internal";
 
-export type ViewServerReactBindings<Topics extends TopicDefinitions> = {
-  readonly [ViewServerReactConfig]: ViewServerConfig<Topics>;
+export type ViewServerReactBindings<
+  Topics extends TopicDefinitions,
+  Regions extends RuntimeRegions = RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
+> = {
+  readonly [ViewServerReactConfig]: ViewServerConfig<Topics, Regions, GrpcClients>;
   readonly [ViewServerReactClientProvider]: (
     props: ViewServerClientProviderProps<Topics>,
   ) => ReactNode;
@@ -76,9 +82,13 @@ export type UseLiveQueryHook<Topics extends TopicDefinitions> = {
   ): LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>;
 };
 
-export const createViewServerReact = <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
-): ViewServerReactBindings<Topics> => {
+export const createViewServerReact = <
+  const Topics extends TopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+): ViewServerReactBindings<Topics, Regions, GrpcClients> => {
   const ClientContext = createContext<ViewServerLiveClient<Topics> | null>(null);
   const RemoteClientAtom = AtomReact.make((options: ViewServerClientOptions) =>
     Atom.make((get) =>

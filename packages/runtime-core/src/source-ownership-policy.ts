@@ -1,5 +1,5 @@
 import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
-import type { ViewServerConfig } from "@effect-view-server/config";
+import type { ViewServerTopicConfig } from "@effect-view-server/config";
 
 const hasDefinedOwnProperty = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
@@ -26,7 +26,7 @@ export type SourceOwnershipPolicy = {
 };
 
 export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
 ): SourceOwnershipPolicy => {
   const grpcLeasedTopics = new Set<string>();
   const sourceOwnedTopics = new Set<string>();

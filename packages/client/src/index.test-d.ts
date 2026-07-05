@@ -6,6 +6,7 @@ import {
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
 import type {
+  GrpcRuntimeClients,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
@@ -22,6 +23,11 @@ const Order = Schema.Struct({
   price: Schema.Number,
 });
 
+declare const grpcRuntimeClients: GrpcRuntimeClients;
+declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
+
+const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -32,26 +38,44 @@ const viewServer = defineViewServerConfig({
 });
 
 const leasedViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["id"],
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({
+        id: route.id,
+        price: 0,
       }),
-    },
+    }),
   },
 });
 
 const mixedSourceViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
   topics: {
-    orders: {
+    orders: grpcTopicSources.leased({
       schema: Order,
       key: "id",
-      grpcSource: grpc.leased({
-        routeBy: ["id"],
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({
+        id: route.id,
+        price: 0,
       }),
-    },
+    }),
     positions: {
       schema: Order,
       key: "id",

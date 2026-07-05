@@ -1,7 +1,7 @@
 import type {
   TopicDefinitions,
-  ViewServerConfig,
   ViewServerHealthSummaryRow,
+  ViewServerTopicConfig,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { VIEW_SERVER_HEALTH_SUMMARY_TOPIC } from "@effect-view-server/config";
@@ -232,7 +232,7 @@ function typedHealthSummaryEvent(
 export const viewServerEncodeHealthSummaryEvent = Effect.fn(
   "ViewServerProtocol.healthSummary.event.encode",
 )(function* <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   event: ViewServerHealthSummaryEvent<Topics>,
 ) {
   const encoded = yield* encodeSystemLiveEvent(
@@ -253,7 +253,7 @@ export const viewServerEncodeHealthSummaryEvent = Effect.fn(
 export const viewServerDecodeHealthSummaryEvent = Effect.fn(
   "ViewServerProtocol.healthSummary.event.decode",
 )(function* <const Topics extends TopicDefinitions>(
-  config: ViewServerConfig<Topics>,
+  config: ViewServerTopicConfig<Topics>,
   event: ViewServerWireEvent,
 ) {
   const wireEvent = yield* Schema.decodeUnknownEffect(ViewServerWireEventSchema)(event).pipe(

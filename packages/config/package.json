@@ -32,8 +32,8 @@
       "import": "./dist/kafka.js"
     },
     "./grpc": {
-      "types": "./dist/grpc-contract.d.ts",
-      "import": "./dist/grpc-contract.js"
+      "types": "./dist/grpc.d.ts",
+      "import": "./dist/grpc.js"
     },
     "./internal": {
       "types": "./dist/internal.d.ts",

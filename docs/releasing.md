@@ -78,11 +78,6 @@ and stages a sanitized npm artifact through trusted publishing. A maintainer
 must then approve the staged package with `npm stage approve <stage-id>` to
 publish it publicly, or reject it with `npm stage reject <stage-id>`.
 
-After approval, manually run the `Release` workflow on `main` with
-`action=finalize` and the approved version as the `version` input. The release
-script observes that the exact version is now public and creates the public
-`effect-view-server@<version>` git tag.
-
 The staged artifact intentionally excludes source maps, source-map references,
 scripts, dev dependencies, internal `@effect-view-server/*` workspace metadata,
 and internal workspace import specifiers. The publish script skips
@@ -90,9 +85,8 @@ and internal workspace import specifiers. The publish script skips
 publish the placeholder development version. The staging job may push an
 `effect-view-server@<version>-staged` marker tag as a best-effort signal that
 approval is pending. It is not authoritative: reruns still ask npm so rejected
-stages can be restaged and approved stages can be converted into public release
-tags. The public `effect-view-server@<version>` release tag is only created
-after npm reports that the version is actually published.
+stages can be restaged. No follow-up GitHub workflow is required after approval:
+`npm stage approve <stage-id>` is the step that makes the package public.
 
 ## Manual checks
 

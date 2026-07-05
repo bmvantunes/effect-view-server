@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   classifyStagePublishDuplicateOutput,
@@ -235,12 +236,23 @@ describe("release publish policy", () => {
     expect(policySource).not.toContain("GITHUB_RUN_ATTEMPT");
   });
 
-  it("passes manual release workflow version input through an environment variable", () => {
+  it("exposes only the manual stage action in the release workflow", () => {
     const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 
-    expect(releaseWorkflow).toContain("RELEASE_VERSION: ${{ inputs.version }}");
-    expect(releaseWorkflow).toContain('node scripts/release-publish.mjs --finalize-version "$RELEASE_VERSION"');
-    expect(releaseWorkflow).not.toContain('node scripts/release-publish.mjs --finalize-version "${{ inputs.version }}"');
+    expect(releaseWorkflow).toContain("- stage");
+    expect(releaseWorkflow).not.toContain("- finalize");
+    expect(releaseWorkflow).not.toContain("inputs.version");
+    expect(releaseWorkflow).not.toContain("--finalize-version");
+  });
+
+  it("rejects removed release publish script arguments before staging", () => {
+    const result = spawnSync("node", ["scripts/release-publish.mjs", "--finalize-version", "1.2.3"], {
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("release-publish.mjs does not accept arguments");
+    expect(result.stdout).toBe("");
   });
 
   it("does not create version pull requests from the main-branch release workflow", () => {

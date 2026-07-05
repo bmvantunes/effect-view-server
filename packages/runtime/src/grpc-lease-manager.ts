@@ -966,8 +966,8 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
       yield* ignoreGrpcFeedReleaseFailure(callFeedRelease(lease.feedName, lease.feed, input));
     },
   );
-  const stream = yield* callFeedAcquire(lease.feedName, lease.feed, input);
   yield* Scope.addFinalizer(lease.scope, releaseResources());
+  const stream = yield* callFeedAcquire(lease.feedName, lease.feed, input);
   const degradeInactiveLease = (input: {
     readonly publicMessage: string;
     readonly healthMessage: string;

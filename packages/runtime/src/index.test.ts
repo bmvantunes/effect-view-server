@@ -9783,14 +9783,20 @@ describe("@effect-view-server/runtime", () => {
       );
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
-      expect(error).toStrictEqual({
-        _tag: "ViewServerRuntimeError",
-        code: "RuntimeUnavailable",
-        topic: "orders",
-        message: "gRPC leased feed acquire failed for ordersLease",
+      expect({
+        error,
+        released,
+        leasedFeeds: Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}),
+      }).toStrictEqual({
+        error: {
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          topic: "orders",
+          message: "gRPC leased feed acquire failed for ordersLease",
+        },
+        released: 1,
+        leasedFeeds: [],
       });
-      expect(Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([]);
-      expect(released).toBe(0);
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -10070,6 +10076,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails leased gRPC subscription when acquire does not return a Stream", () =>
     Effect.gen(function* () {
+      let released = 0;
       const feed = leasedGrpcFeed.leasedFeed({
         topic: "orders",
         client: "orders",
@@ -10078,6 +10085,10 @@ describe("@effect-view-server/runtime", () => {
         request: ({ region }) => ({ orderId: region }),
         // @ts-expect-error defensive runtime-boundary test intentionally returns a non-stream.
         acquire: () => "not-a-stream",
+        release: () =>
+          Effect.sync(() => {
+            released += 1;
+          }),
         map: ({ value, route }) => ({
           id: `${route.region}:${value.customerId}`,
           customerId: value.customerId,
@@ -10103,12 +10114,21 @@ describe("@effect-view-server/runtime", () => {
       const error = yield* Effect.flip(
         manager.liveClient.subscribe("orders", leasedOrdersQuery("usa")),
       );
+      const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
-      expect(error).toStrictEqual({
-        _tag: "ViewServerRuntimeError",
-        code: "RuntimeUnavailable",
-        topic: "orders",
-        message: "gRPC leased feed acquire did not return a Stream for ordersLease",
+      expect({
+        error,
+        released,
+        leasedFeeds: Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}),
+      }).toStrictEqual({
+        error: {
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          topic: "orders",
+          message: "gRPC leased feed acquire did not return a Stream for ordersLease",
+        },
+        released: 1,
+        leasedFeeds: [],
       });
       yield* manager.close;
       yield* runtimeCore.close;

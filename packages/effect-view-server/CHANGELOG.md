@@ -1,5 +1,11 @@
 # effect-view-server
 
+## 0.0.5
+
+### Patch Changes
+
+- c915f73: Add topic-owned Kafka and gRPC source declarations with derived Kafka runtime topics.
+
 ## 0.0.4
 
 ### Patch Changes

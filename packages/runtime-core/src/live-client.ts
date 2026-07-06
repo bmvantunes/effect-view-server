@@ -33,7 +33,7 @@ import {
 } from "@effect-view-server/config";
 import { Cause, Clock, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
-import { engineErrorToRuntimeError, leasedRuntimeAccessError } from "./runtime-error";
+import { engineErrorToRuntimeError } from "./runtime-error";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 const runtimeClosedError: ViewServerRuntimeError = {
@@ -190,24 +190,17 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError | ViewServerTransportError
       > {
-        return Effect.suspend(() => {
-          if (sourceOwnership.isGrpcLeasedTopic(topic)) {
-            return Effect.fail(leasedRuntimeAccessError(topic));
-          }
-          return subscribeInternal<Topic, Query>(topic, query);
-        });
+        return sourceOwnership
+          .requirePublicReadAllowed(topic, "runtimeCore")
+          .pipe(Effect.flatMap(() => subscribeInternal<Topic, Query>(topic, query)));
       }
       const subscribeRuntime: ViewServerRuntimeLiveClient<Topics>["subscribeRuntime"] = (
         topic,
         query,
-      ) => {
-        return Effect.suspend(() => {
-          if (sourceOwnership.isGrpcLeasedTopic(topic)) {
-            return Effect.fail(leasedRuntimeAccessError(topic));
-          }
-          return subscribeRuntimeInternal(topic, query);
-        });
-      };
+      ) =>
+        sourceOwnership
+          .requirePublicReadAllowed(topic, "runtimeCore")
+          .pipe(Effect.flatMap(() => subscribeRuntimeInternal(topic, query)));
       type ActiveHealthSubscription = {
         close: Effect.Effect<void>;
         claimClosed: () => boolean;

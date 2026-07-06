@@ -8,7 +8,6 @@ import type {
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
-import { makeSourceOwnershipPolicy } from "@effect-view-server/runtime-core/internal";
 import { Config, Effect, Exit, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
@@ -223,7 +222,6 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           grpcOptions,
           grpcHealth,
         );
-  const sourceOwnership = makeSourceOwnershipPolicy(dependencyConfig);
   const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
   const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
   const closeGrpcLeaseManager =
@@ -235,7 +233,6 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           .makeTcpPublishIngress(dependencyConfig, runtimeClient, {
             ...resolvedOptions.tcpPublishOptions,
             ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-            rejectedTopics: sourceOwnership.sourceOwnedTopics,
           })
           .pipe(
             Effect.onExit((exit) =>

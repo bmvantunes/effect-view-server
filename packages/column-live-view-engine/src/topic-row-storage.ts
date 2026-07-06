@@ -31,6 +31,7 @@ import {
   TopicRowChangeJournal,
   type TopicRowChangeJournalLimits,
 } from "./topic-row-change-journal";
+import { deleteCompactingTopicRowSlot } from "./topic-row-storage-lifecycle";
 import {
   prepareDecodedTopicRow,
   prepareDecodedTopicRowWithStorageKey,
@@ -233,35 +234,25 @@ export class TopicRowStorage {
   }
 
   delete(key: string): number {
-    const slot = this.keyToSlot.get(key);
-    if (slot === undefined) {
+    const deletion = deleteCompactingTopicRowSlot(
+      {
+        addSlotToScalarIndexes: (slot) => this.addSlotToScalarIndexes(slot),
+        columns: () => this.columns.values(),
+        insertSlotIntoOrderedIndexes: (slot) => this.insertSlotIntoOrderedIndexes(slot),
+        keyToSlot: this.keyToSlot,
+        removeSlotFromOrderedIndexes: (slot) => this.removeSlotFromOrderedIndexes(slot),
+        removeSlotFromScalarIndexes: (slot) => this.removeSlotFromScalarIndexes(slot),
+        slots: this.slots,
+      },
+      key,
+    );
+    if (deletion === undefined) {
       return 0;
     }
 
-    const lastSlot = this.slots.length - 1;
-    const lastEntry = this.slots[lastSlot]!;
-    const previous = this.slots[slot]!.row;
-    this.removeSlotFromScalarIndexes(slot);
-    this.removeSlotFromOrderedIndexes(slot);
-    this.keyToSlot.delete(key);
-    if (slot !== lastSlot) {
-      this.removeSlotFromScalarIndexes(lastSlot);
-      this.removeSlotFromOrderedIndexes(lastSlot);
-      this.slots[slot] = lastEntry;
-      this.keyToSlot.set(lastEntry.key, slot);
-      for (const column of this.columns.values()) {
-        column.copySlot(slot, lastSlot);
-      }
-      this.addSlotToScalarIndexes(slot);
-      this.insertSlotIntoOrderedIndexes(slot);
-    }
-    this.slots.pop();
-    for (const column of this.columns.values()) {
-      column.pop();
-    }
     this.recordRowChange({
       key,
-      previous,
+      previous: deletion.previous,
       next: undefined,
     });
     return 1;

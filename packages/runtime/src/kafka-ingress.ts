@@ -1,10 +1,5 @@
 import { Consumer } from "@platformatic/kafka";
-import type {
-  ConsumerGroupJoinPayload,
-  GroupAssignment,
-  Message,
-  Offsets,
-} from "@platformatic/kafka";
+import type { ConsumerGroupJoinPayload, GroupAssignment, Offsets } from "@platformatic/kafka";
 import { Buffer } from "node:buffer";
 import {
   kafkaErrorIsMapping,
@@ -35,6 +30,15 @@ import {
   Scope,
 } from "effect";
 import type { ViewServerKafkaHealthLedger } from "./kafka-health";
+import {
+  planKafkaDecodedPublishRuns,
+  planKafkaUpsertPublishRuns,
+  type DecodedKafkaBatchMessage,
+  type DecodedKafkaBatchTombstoneMessage,
+  type DecodedKafkaBatchUpsertMessage,
+  type KafkaBatchTopic,
+  type KafkaConsumerMessage,
+} from "./kafka-delivery-contract";
 import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
@@ -73,8 +77,6 @@ export type StartedKafkaConsumerResources = {
   readonly stream: CloseableKafkaStream;
   readonly healthListeners: () => KafkaConsumerHealthListenerRegistration | null;
 };
-type KafkaMessageBytes = Buffer | null | undefined;
-type KafkaConsumerMessage = Message<KafkaMessageBytes, KafkaMessageBytes, Buffer, Buffer>;
 export type KafkaStreamQueueEvent =
   | {
       readonly _tag: "Message";
@@ -99,38 +101,6 @@ type KafkaMessageBatchTakeResult =
       readonly batch: ReadonlyArray<KafkaConsumerMessage>;
       readonly terminal: KafkaStreamTerminalEvent | null;
     };
-type KafkaBatchTopic<Topics extends ViewServerRuntimeTopicDefinitions> = Extract<
-  keyof Topics,
-  string
->;
-type DecodedKafkaBatchUpsertMessage<Topics extends ViewServerRuntimeTopicDefinitions> = {
-  readonly decoded: {
-    readonly viewServerTopic: KafkaBatchTopic<Topics>;
-    readonly row: object;
-    readonly rowKey: string;
-  };
-  readonly message: KafkaConsumerMessage;
-  readonly messageBytes: number;
-  readonly nowMillis: number;
-  readonly sourceTopic: string;
-};
-type DecodedKafkaBatchTombstoneMessage<Topics extends ViewServerRuntimeTopicDefinitions> = {
-  readonly decoded: {
-    readonly rowKey: string;
-    readonly tombstone: true;
-    readonly viewServerTopic: KafkaBatchTopic<Topics>;
-  };
-  readonly message: KafkaConsumerMessage;
-  readonly messageBytes: number;
-  readonly nowMillis: number;
-  readonly sourceTopic: string;
-};
-type DecodedKafkaBatchMessage<Topics extends ViewServerRuntimeTopicDefinitions> =
-  | DecodedKafkaBatchUpsertMessage<Topics>
-  | DecodedKafkaBatchTombstoneMessage<Topics>;
-const kafkaBatchMessageIsTombstone = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  message: DecodedKafkaBatchMessage<Topics>,
-): message is DecodedKafkaBatchTombstoneMessage<Topics> => "tombstone" in message.decoded;
 type KafkaIngressRuntimeClient<Topics extends ViewServerRuntimeTopicDefinitions> = Pick<
   ViewServerRuntimeCoreInternalClient<Topics>,
   "delete" | "publishManyDecodedRows" | "publishManyDecodedRowsWithStorageKeys"
@@ -943,37 +913,7 @@ const publishKafkaDecodedUpsertBatch = Effect.fn("ViewServerRuntime.kafka.batch.
     region: string,
     messages: ReadonlyArray<DecodedKafkaBatchUpsertMessage<Topics>>,
   ) {
-    type KafkaStorageUpsertBatchRow = {
-      readonly message: DecodedKafkaBatchMessage<Topics>;
-      readonly row: object;
-      readonly storageKey: string;
-    };
-    type KafkaUpsertPublishRun = {
-      readonly rows: Array<KafkaStorageUpsertBatchRow>;
-      readonly sourceTopic: string;
-      readonly topic: KafkaBatchTopic<Topics>;
-    };
-    const runs: Array<KafkaUpsertPublishRun> = [];
-    for (const message of messages) {
-      const previousRun = runs[runs.length - 1];
-      const row: KafkaStorageUpsertBatchRow = {
-        message,
-        row: message.decoded.row,
-        storageKey: message.decoded.rowKey,
-      };
-      if (
-        previousRun?.topic === message.decoded.viewServerTopic &&
-        previousRun.sourceTopic === message.sourceTopic
-      ) {
-        previousRun.rows.push(row);
-      } else {
-        runs.push({
-          rows: [row],
-          sourceTopic: message.sourceTopic,
-          topic: message.decoded.viewServerTopic,
-        });
-      }
-    }
+    const runs = planKafkaUpsertPublishRuns(messages);
     for (const run of runs) {
       yield* publishKafkaRowsForMessages(
         requestHealthRefresh,
@@ -1048,35 +988,7 @@ const publishAndCommitKafkaDecodedBatch = Effect.fn(
     readonly preserveLastErrorForSourceTopic: string | undefined;
   },
 ) {
-  type KafkaDecodedPublishRun =
-    | {
-        readonly _tag: "Upserts";
-        readonly messages: Array<DecodedKafkaBatchUpsertMessage<Topics>>;
-      }
-    | {
-        readonly _tag: "Tombstone";
-        readonly message: DecodedKafkaBatchTombstoneMessage<Topics>;
-      };
-  const runs: Array<KafkaDecodedPublishRun> = [];
-
-  for (const message of messages) {
-    if (kafkaBatchMessageIsTombstone(message)) {
-      runs.push({
-        _tag: "Tombstone",
-        message,
-      });
-    } else {
-      const previousRun = runs[runs.length - 1];
-      if (previousRun?._tag === "Upserts") {
-        previousRun.messages.push(message);
-      } else {
-        runs.push({
-          _tag: "Upserts",
-          messages: [message],
-        });
-      }
-    }
-  }
+  const runs = planKafkaDecodedPublishRuns(messages);
 
   for (const run of runs) {
     if (run._tag === "Upserts") {

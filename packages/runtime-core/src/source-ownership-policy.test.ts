@@ -6,7 +6,10 @@ import {
 } from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { Effect, Schema } from "effect";
-import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
+import {
+  collectSourceOwnershipConflicts,
+  makeSourceOwnershipPolicy,
+} from "./source-ownership-policy";
 
 const Row = Schema.Struct({
   id: Schema.String,
@@ -106,18 +109,56 @@ describe("SourceOwnershipPolicy", () => {
   it("classifies source-owned and leased topics behind one Interface", () => {
     const policy = makeSourceOwnershipPolicy(sourceOwnedViewServer);
 
+    expect([...policy.topics]).toStrictEqual([
+      [
+        "externalOrders",
+        {
+          grpcLeased: false,
+          owners: [],
+          sourceOwned: false,
+          topic: "externalOrders",
+        },
+      ],
+      [
+        "kafkaOrders",
+        {
+          grpcLeased: false,
+          owners: [{ _tag: "kafka" }],
+          sourceOwned: true,
+          topic: "kafkaOrders",
+        },
+      ],
+      [
+        "leasedOrders",
+        {
+          grpcLeased: true,
+          owners: [{ _tag: "grpc", lifecycle: "leased" }],
+          sourceOwned: true,
+          topic: "leasedOrders",
+        },
+      ],
+      [
+        "materializedOrders",
+        {
+          grpcLeased: false,
+          owners: [{ _tag: "grpc", lifecycle: "materialized" }],
+          sourceOwned: true,
+          topic: "materializedOrders",
+        },
+      ],
+    ]);
     expect([...policy.sourceOwnedTopics]).toStrictEqual([
       "kafkaOrders",
       "leasedOrders",
       "materializedOrders",
     ]);
     expect([...policy.grpcLeasedTopics]).toStrictEqual(["leasedOrders"]);
-    expect(policy.hasSourceOwnedTopics).toBe(true);
-    expect(policy.isSourceOwnedTopic("externalOrders")).toBe(false);
-    expect(policy.isSourceOwnedTopic("kafkaOrders")).toBe(true);
-    expect(policy.isSourceOwnedTopic("materializedOrders")).toBe(true);
-    expect(policy.isGrpcLeasedTopic("leasedOrders")).toBe(true);
-    expect(policy.isGrpcLeasedTopic("kafkaOrders")).toBe(false);
+    expect(policy.hasSourceOwnedTopics).toStrictEqual(true);
+    expect(policy.isSourceOwnedTopic("externalOrders")).toStrictEqual(false);
+    expect(policy.isSourceOwnedTopic("kafkaOrders")).toStrictEqual(true);
+    expect(policy.isSourceOwnedTopic("materializedOrders")).toStrictEqual(true);
+    expect(policy.isGrpcLeasedTopic("leasedOrders")).toStrictEqual(true);
+    expect(policy.isGrpcLeasedTopic("kafkaOrders")).toStrictEqual(false);
   });
 
   it.effect("allows direct public mutations, reads, and reset for source-free topics", () =>
@@ -130,7 +171,7 @@ describe("SourceOwnershipPolicy", () => {
 
       expect([...policy.sourceOwnedTopics]).toStrictEqual([]);
       expect([...policy.grpcLeasedTopics]).toStrictEqual([]);
-      expect(policy.hasSourceOwnedTopics).toBe(false);
+      expect(policy.hasSourceOwnedTopics).toStrictEqual(false);
     }),
   );
 
@@ -160,6 +201,17 @@ describe("SourceOwnershipPolicy", () => {
         );
         expect(leasedMutationError).toStrictEqual(sourceOwnedMutationError("leasedOrders"));
         expect(resetError).toStrictEqual(sourceOwnedResetError);
+        expect(policy.publicMutationDecision("kafkaOrders", "runtimeCore")).toStrictEqual({
+          _tag: "rejected",
+          error: sourceOwnedMutationError("kafkaOrders"),
+        });
+        expect(policy.publicReadDecision("kafkaOrders", "runtimeCore")).toStrictEqual({
+          _tag: "allowed",
+        });
+        expect(policy.publicResetDecision("runtimeCore")).toStrictEqual({
+          _tag: "rejected",
+          error: sourceOwnedResetError,
+        });
       }),
   );
 
@@ -184,6 +236,134 @@ describe("SourceOwnershipPolicy", () => {
       expect(managedReadError).toStrictEqual(managedRuntimeLeasedAccessError("leasedOrders"));
       expect(managedMutationError).toStrictEqual(managedRuntimeLeasedAccessError("leasedOrders"));
       expect(managedResetError).toStrictEqual(managedRuntimeLeasedResetError);
+      expect(policy.publicReadDecision("leasedOrders", "managedRuntime")).toStrictEqual({
+        _tag: "rejected",
+        error: managedRuntimeLeasedAccessError("leasedOrders"),
+      });
+      expect(policy.publicMutationDecision("leasedOrders", "managedRuntime")).toStrictEqual({
+        _tag: "rejected",
+        error: managedRuntimeLeasedAccessError("leasedOrders"),
+      });
+      expect(policy.publicResetDecision("managedRuntime")).toStrictEqual({
+        _tag: "rejected",
+        error: managedRuntimeLeasedResetError,
+      });
     }),
   );
+
+  it("classifies malformed and conflicting source declarations without caller reflection", () => {
+    const malformedViewServer = defineViewServerConfig({
+      kafka: {
+        usa: "localhost:9092",
+      },
+      topics: {
+        malformedGrpcOrders: {
+          schema: Row,
+          key: "id",
+        },
+        primitiveGrpcOrders: {
+          schema: Row,
+          key: "id",
+        },
+        multiOwnedOrders: {
+          schema: Row,
+          key: "id",
+          kafkaSource: kafka.source({
+            topic: "multi-owned-orders-source",
+            regions: ["usa"],
+            value: kafka.json(Row),
+            key: kafka.stringKey(),
+            rowKey: ({ key }) => key,
+            map: ({ value }) => ({
+              price: value.price,
+              region: value.region,
+              status: value.status,
+            }),
+          }),
+        },
+      },
+    });
+    Object.defineProperty(malformedViewServer.topics.malformedGrpcOrders, "grpcSource", {
+      value: { kind: "grpc", lifecycle: "wat" },
+    });
+    Object.defineProperty(malformedViewServer.topics.primitiveGrpcOrders, "grpcSource", {
+      value: "not-a-grpc-source",
+    });
+    Object.defineProperty(malformedViewServer.topics.multiOwnedOrders, "grpcSource", {
+      value: grpcSourceMarkers.materialized(),
+    });
+
+    expect([...makeSourceOwnershipPolicy(malformedViewServer).topics]).toStrictEqual([
+      [
+        "malformedGrpcOrders",
+        {
+          grpcLeased: false,
+          owners: [{ _tag: "grpc", lifecycle: "unknown" }],
+          sourceOwned: true,
+          topic: "malformedGrpcOrders",
+        },
+      ],
+      [
+        "multiOwnedOrders",
+        {
+          grpcLeased: false,
+          owners: [{ _tag: "kafka" }, { _tag: "grpc", lifecycle: "materialized" }],
+          sourceOwned: true,
+          topic: "multiOwnedOrders",
+        },
+      ],
+      [
+        "primitiveGrpcOrders",
+        {
+          grpcLeased: false,
+          owners: [{ _tag: "grpc", lifecycle: "unknown" }],
+          sourceOwned: true,
+          topic: "primitiveGrpcOrders",
+        },
+      ],
+    ]);
+  });
+
+  it("collects resolved source owner conflicts without runtime-specific errors", () => {
+    expect(
+      collectSourceOwnershipConflicts(
+        {
+          topics: {
+            "orders-source": {
+              viewServerTopic: "orders",
+            },
+            "positions-source": {
+              viewServerTopic: "positions",
+            },
+            "trades-source": {
+              viewServerTopic: "trades",
+            },
+          },
+        },
+        {
+          feeds: {
+            ordersFeed: {
+              topic: "orders",
+            },
+            positionsFeed: {
+              topic: "positions",
+            },
+          },
+        },
+      ),
+    ).toStrictEqual([
+      {
+        grpcFeed: "ordersFeed",
+        kafkaSource: "orders-source",
+        topic: "orders",
+      },
+      {
+        grpcFeed: "positionsFeed",
+        kafkaSource: "positions-source",
+        topic: "positions",
+      },
+    ]);
+    expect(collectSourceOwnershipConflicts(undefined, { feeds: {} })).toStrictEqual([]);
+    expect(collectSourceOwnershipConflicts({ topics: {} }, undefined)).toStrictEqual([]);
+  });
 });

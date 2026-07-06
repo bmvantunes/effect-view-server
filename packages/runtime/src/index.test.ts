@@ -2774,32 +2774,57 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects TCP publish commands for source-owned topics", () =>
     Effect.gen(function* () {
-      const runtime = yield* makeViewServerRuntime(viewServer, {
-        host: "127.0.0.1",
-        websocketPort: 0,
+      const sourceOwnedViewServer = defineViewServerConfig({
+        kafka: {
+          local: "localhost:9092",
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: "orders-source",
+              regions: ["local"],
+              value: kafka.json(Order),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                price: value.price,
+              }),
+            }),
+          },
+        },
       });
-      const ingress = yield* makeViewServerTcpPublishIngress(viewServer, runtime.client, {
-        port: 0,
-        rejectedTopics: new Set(["orders"]),
-      });
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(sourceOwnedViewServer, {});
+      const ingress = yield* makeViewServerTcpPublishIngress(
+        sourceOwnedViewServer,
+        runtimeCore.client,
+        {
+          port: 0,
+        },
+      );
 
       const response = yield* sendTcpPublishCommand(ingress.url, {
         op: "publish",
         topic: "orders",
-        row: order("a", 10),
+        row: {
+          id: "a",
+          price: "not-a-number",
+        },
       });
 
       expect(response).toStrictEqual({
         ok: false,
         error: {
-          _tag: "ViewServerTcpPublishIngressError",
-          message: "TCP publish cannot mutate source-owned View Server topic orders.",
-          phase: "runtime",
+          _tag: "ViewServerRuntimeError",
+          code: "UnsupportedQuery",
+          message:
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
           topic: "orders",
         },
       });
       yield* ingress.close;
-      yield* runtime.close;
+      yield* runtimeCore.close;
     }),
   );
 
@@ -2895,7 +2920,7 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.live("passes source-owned topics into TCP publish ingress rejection policy", () =>
+  it.live("passes matching config into TCP publish ingress", () =>
     Effect.gen(function* () {
       const regions = {
         local: "localhost:9092",
@@ -2940,7 +2965,8 @@ describe("@effect-view-server/runtime", () => {
       });
       type MixedTopics = typeof mixedSourceViewServer.topics;
       type RuntimeDependencies = ViewServerRuntimeDependencies<MixedTopics>;
-      let rejectedTopics: ReadonlyArray<string> = [];
+      let tcpPublishTopics: ReadonlyArray<string> = [];
+      let tcpPublishOptionKeys: ReadonlyArray<string> = [];
       const dependencies: RuntimeDependencies = {
         ...makeDefaultRuntimeDependencies<MixedTopics>(),
         makeServer: () =>
@@ -2952,8 +2978,9 @@ describe("@effect-view-server/runtime", () => {
           }),
         makeKafkaIngress: () => Effect.succeed({ close: Effect.void }),
         makeGrpcIngress: () => Effect.succeed({ close: Effect.void }),
-        makeTcpPublishIngress: (_config, _client, options) => {
-          rejectedTopics = Array.from(options.rejectedTopics ?? []);
+        makeTcpPublishIngress: (tcpConfig, _client, options) => {
+          tcpPublishTopics = Object.keys(tcpConfig.topics);
+          tcpPublishOptionKeys = Object.keys(options).sort();
           return Effect.succeed({
             url: "tcp://127.0.0.1:1235",
             close: Effect.void,
@@ -2974,10 +3001,12 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect({
-        rejectedTopics,
+        tcpPublishOptionKeys,
+        tcpPublishTopics,
         tcpPublishUrl: runtime.tcpPublishUrl,
       }).toStrictEqual({
-        rejectedTopics: ["audit", "orders"],
+        tcpPublishOptionKeys: ["port"],
+        tcpPublishTopics: ["orders", "audit"],
         tcpPublishUrl: "tcp://127.0.0.1:1235",
       });
       yield* runtime.close;
@@ -3942,7 +3971,12 @@ describe("@effect-view-server/runtime", () => {
         serverAuthType: typeof serverInput?.auth?.validateRequest,
         serverOptions,
         tcpPublishAuthType: typeof tcpPublishOptions?.auth?.validateRequest,
-        tcpPublishOptions,
+        tcpPublishOptions: {
+          authType: typeof tcpPublishOptions?.auth?.validateRequest,
+          host: tcpPublishOptions?.host,
+          maxConnections: tcpPublishOptions?.maxConnections,
+          port: tcpPublishOptions?.port,
+        },
         tcpPublishUrl: runtime.tcpPublishUrl,
       }).toStrictEqual({
         runtimeCoreOptions: {
@@ -3968,11 +4002,10 @@ describe("@effect-view-server/runtime", () => {
         },
         tcpPublishAuthType: "function",
         tcpPublishOptions: {
-          auth: bearerAuth,
+          authType: "function",
           host: "127.0.0.1",
           maxConnections: 9,
           port: 1235,
-          rejectedTopics: new Set(),
         },
         tcpPublishUrl: "tcp://127.0.0.1:1235",
       });

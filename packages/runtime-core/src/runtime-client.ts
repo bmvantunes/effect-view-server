@@ -22,13 +22,7 @@ import {
   type RuntimeCoreHealthOverlay,
   type RuntimeCoreTransportHealth,
 } from "./health";
-import {
-  engineErrorToRuntimeError,
-  invalidRuntimeQueryError,
-  leasedRuntimeAccessError,
-  sourceOwnedRuntimeMutationError,
-  sourceOwnedRuntimeResetError,
-} from "./runtime-error";
+import { engineErrorToRuntimeError, invalidRuntimeQueryError } from "./runtime-error";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
@@ -190,37 +184,33 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
             engine.reset().pipe(Effect.tap(() => requestHealthRefresh())),
           ).pipe(Effect.mapError(engineErrorToRuntimeError)),
       };
-      const rejectSourceOwnedMutation = (
-        topic: string,
-      ): Effect.Effect<never, ViewServerRuntimeError> =>
-        Effect.fail(sourceOwnedRuntimeMutationError(topic));
       return {
         client: {
           publish: (topic, row) =>
-            sourceOwnership.isSourceOwnedTopic(topic)
-              ? rejectSourceOwnedMutation(topic)
-              : internalClient.publish(topic, row),
+            sourceOwnership
+              .requirePublicMutationAllowed(topic, "runtimeCore")
+              .pipe(Effect.flatMap(() => internalClient.publish(topic, row))),
           publishMany: (topic, rows) =>
-            sourceOwnership.isSourceOwnedTopic(topic)
-              ? rejectSourceOwnedMutation(topic)
-              : internalClient.publishMany(topic, rows),
+            sourceOwnership
+              .requirePublicMutationAllowed(topic, "runtimeCore")
+              .pipe(Effect.flatMap(() => internalClient.publishMany(topic, rows))),
           patch: (topic, key, patch) =>
-            sourceOwnership.isSourceOwnedTopic(topic)
-              ? rejectSourceOwnedMutation(topic)
-              : internalClient.patch(topic, key, patch),
+            sourceOwnership
+              .requirePublicMutationAllowed(topic, "runtimeCore")
+              .pipe(Effect.flatMap(() => internalClient.patch(topic, key, patch))),
           delete: (topic, key) =>
-            sourceOwnership.isSourceOwnedTopic(topic)
-              ? rejectSourceOwnedMutation(topic)
-              : internalClient.delete(topic, key),
+            sourceOwnership
+              .requirePublicMutationAllowed(topic, "runtimeCore")
+              .pipe(Effect.flatMap(() => internalClient.delete(topic, key))),
           snapshot: (topic, query) =>
-            sourceOwnership.isGrpcLeasedTopic(topic)
-              ? Effect.fail(leasedRuntimeAccessError(topic))
-              : internalClient.snapshot(topic, query),
+            sourceOwnership
+              .requirePublicReadAllowed(topic, "runtimeCore")
+              .pipe(Effect.flatMap(() => internalClient.snapshot(topic, query))),
           health: internalClient.health,
           reset: () =>
-            !sourceOwnership.hasSourceOwnedTopics
-              ? internalClient.reset()
-              : Effect.fail(sourceOwnedRuntimeResetError),
+            sourceOwnership
+              .requirePublicResetAllowed("runtimeCore")
+              .pipe(Effect.flatMap(() => internalClient.reset())),
         },
         internalClient,
         close: healthRefreshScheduler.close,

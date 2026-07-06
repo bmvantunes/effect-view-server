@@ -6,6 +6,10 @@ import type {
 } from "@effect-view-server/config";
 import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/server";
 import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
+import {
+  makeSourceOwnershipPolicy,
+  type SourceOwnershipPolicy,
+} from "@effect-view-server/runtime-core/internal";
 import { Cause, Effect, Exit, Fiber, Option, Result, Schema, SchemaAST } from "effect";
 import * as Net from "node:net";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
@@ -27,7 +31,6 @@ export type ViewServerTcpPublishIngressOptions = {
   readonly maxLineBytes?: number;
   readonly maxQueuedCommands?: number;
   readonly port: number;
-  readonly rejectedTopics?: ReadonlySet<string>;
   readonly auth?: ViewServerAuth;
 };
 
@@ -471,12 +474,13 @@ const handleCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.handle")(f
   config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
+  sourceOwnership: SourceOwnershipPolicy,
   line: string,
 ) {
   const command = yield* parseCommand(line);
   yield* validateViewServerAuthRequest(options.auth, tcpAuthRequest(command, socket));
   clearTcpPreCommandDeadline(state);
-  yield* ensureTopicCanBeMutated(command.topic, options);
+  yield* ensureTopicCanBeMutated(command.topic, sourceOwnership);
   if (command.op === "publish") {
     const row = yield* decodeTcpRow(config, command.topic, command.row);
     yield* runRuntimeMutation(client, "publish", command.topic, [command.topic, row]);
@@ -498,18 +502,9 @@ const handleCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.handle")(f
 
 const ensureTopicCanBeMutated = (
   topic: string,
-  options: ViewServerTcpPublishIngressOptions,
-): Effect.Effect<void, ViewServerTcpPublishIngressError> =>
-  options.rejectedTopics?.has(topic) === true
-    ? Effect.fail(
-        new ViewServerTcpPublishIngressError({
-          message: `TCP publish cannot mutate source-owned View Server topic ${topic}.`,
-          cause: topic,
-          phase: "runtime",
-          topic,
-        }),
-      )
-    : Effect.void;
+  sourceOwnership: SourceOwnershipPolicy,
+): Effect.Effect<void, ViewServerRuntimeError> =>
+  sourceOwnership.requirePublicMutationAllowed(topic, "runtimeCore");
 
 const wireError = (cause: Cause.Cause<TcpPublishCommandError>): object => {
   const failure = Cause.findErrorOption(cause);
@@ -676,13 +671,16 @@ const executeLine = async <const Topics extends ViewServerRuntimeTopicDefinition
   config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
+  sourceOwnership: SourceOwnershipPolicy,
   line: string,
 ): Promise<void> => {
   try {
     if (state.closed || serverState.closed) {
       return;
     }
-    const fiber = Effect.runFork(handleCommand(socket, state, config, client, options, line));
+    const fiber = Effect.runFork(
+      handleCommand(socket, state, config, client, options, sourceOwnership, line),
+    );
     serverState.activeFibers.add(fiber);
     state.activeFibers.add(fiber);
     const exit = await Effect.runPromise(Fiber.await(fiber));
@@ -731,6 +729,7 @@ const enqueueLine = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
+  sourceOwnership: SourceOwnershipPolicy,
   line: string,
 ): void => {
   const maxQueuedCommands = options.maxQueuedCommands ?? defaultMaxQueuedCommands;
@@ -752,7 +751,7 @@ const enqueueLine = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   const chain = (async () => {
     await Promise.allSettled([previousChain]);
     await Promise.allSettled([
-      executeLine(socket, state, serverState, config, client, options, line),
+      executeLine(socket, state, serverState, config, client, options, sourceOwnership, line),
     ]);
   })();
   state.chain = chain;
@@ -795,6 +794,7 @@ const installSocketHandler = <const Topics extends ViewServerRuntimeTopicDefinit
   config: ViewServerTopicConfig<Topics>,
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
+  sourceOwnership: SourceOwnershipPolicy,
 ): void => {
   socket.setEncoding("utf8");
   socket.on("data", (chunk: string) => {
@@ -812,7 +812,7 @@ const installSocketHandler = <const Topics extends ViewServerRuntimeTopicDefinit
       }
       const trimmed = line.trim();
       if (trimmed.length > 0) {
-        enqueueLine(socket, state, serverState, config, client, options, trimmed);
+        enqueueLine(socket, state, serverState, config, client, options, sourceOwnership, trimmed);
       }
     }
     state.buffer = partialLine;
@@ -930,6 +930,7 @@ export const installTcpPublishAcceptedSocket = <
   client: ViewServerRuntimeClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
 ): void => {
+  const sourceOwnership = makeSourceOwnershipPolicy(config);
   if (rejectTcpSocketWhenClosed(state.closed, socket)) {
     return;
   }
@@ -961,7 +962,7 @@ export const installTcpPublishAcceptedSocket = <
     interruptSocketFibers(socketState);
     void socketState.chain.then(() => state.socketStates.delete(socket));
   });
-  installSocketHandler(socket, socketState, state, config, client, options);
+  installSocketHandler(socket, socketState, state, config, client, options, sourceOwnership);
 };
 
 export const makeViewServerTcpPublishIngress = Effect.fn("ViewServerRuntime.tcpPublish.make")(

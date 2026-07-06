@@ -1,4 +1,9 @@
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import {
+  collectSourceOwnershipConflicts,
+  type SourceOwnershipGrpcOptions,
+  type SourceOwnershipKafkaOptions,
+} from "@effect-view-server/runtime-core/internal";
 import type { ViewServerWebSocketServerOptions } from "@effect-view-server/server";
 import type {
   GrpcRuntimeClients,
@@ -649,14 +654,6 @@ const validatePublicGrpcRuntimeOptions = (
   return Effect.void;
 };
 
-type SourceOwnershipKafkaOptions = {
-  readonly topics: Readonly<Record<string, { readonly viewServerTopic: string }>>;
-};
-
-type SourceOwnershipGrpcOptions = {
-  readonly feeds: Readonly<Record<string, { readonly topic: string }>>;
-};
-
 export const validateSourceOwnership: (
   kafkaOptions: SourceOwnershipKafkaOptions | undefined,
   grpcOptions: SourceOwnershipGrpcOptions | undefined,
@@ -666,23 +663,14 @@ export const validateSourceOwnership: (
   kafkaOptions: SourceOwnershipKafkaOptions | undefined,
   grpcOptions: SourceOwnershipGrpcOptions | undefined,
 ) {
-  if (kafkaOptions === undefined || grpcOptions === undefined) {
-    return;
-  }
-  const grpcFeedByTopic = new Map<string, string>();
-  for (const [feedName, feed] of Object.entries(grpcOptions.feeds)) {
-    grpcFeedByTopic.set(feed.topic, feedName);
-  }
-  for (const [sourceTopic, kafkaTopic] of Object.entries(kafkaOptions.topics)) {
-    const grpcFeedName = grpcFeedByTopic.get(kafkaTopic.viewServerTopic);
-    if (grpcFeedName !== undefined) {
-      return yield* new ViewServerGrpcIngressError({
-        message: `View Server topic ${kafkaTopic.viewServerTopic} cannot be owned by both Kafka source ${sourceTopic} and gRPC feed ${grpcFeedName}.`,
-        cause: kafkaTopic.viewServerTopic,
-        feedName: grpcFeedName,
-        topic: kafkaTopic.viewServerTopic,
-      });
-    }
+  const conflict = collectSourceOwnershipConflicts(kafkaOptions, grpcOptions)[0];
+  if (conflict !== undefined) {
+    return yield* new ViewServerGrpcIngressError({
+      message: `View Server topic ${conflict.topic} cannot be owned by both Kafka source ${conflict.kafkaSource} and gRPC feed ${conflict.grpcFeed}.`,
+      cause: conflict.topic,
+      feedName: conflict.grpcFeed,
+      topic: conflict.topic,
+    });
   }
 });
 

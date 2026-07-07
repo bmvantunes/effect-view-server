@@ -101,6 +101,14 @@ export type ViewServerKafkaHealthLedger<Topics extends ViewServerRuntimeTopicDef
       readonly preserveLastError?: boolean;
     },
   ) => Effect.Effect<void>;
+  readonly messageSkippedCommitted: (
+    sourceTopic: string,
+    region: string,
+    input: {
+      readonly committedOffset: string;
+      readonly nowMillis: number;
+    },
+  ) => Effect.Effect<void>;
   readonly decodeFailed: (
     sourceTopic: string,
     region: string,
@@ -135,6 +143,7 @@ export type ViewServerKafkaHealthLedger<Topics extends ViewServerRuntimeTopicDef
       readonly bytes: number;
       readonly message: string;
       readonly nowMillis: number;
+      readonly recountMessage?: boolean;
     },
   ) => Effect.Effect<void>;
 };
@@ -511,6 +520,16 @@ export const makeViewServerKafkaHealthLedger = <
           refreshTopicStatus(topic);
         }
       }),
+    messageSkippedCommitted: (sourceTopic, region, input) =>
+      Effect.sync(() => {
+        const ledger = getTopicRegion(topics, sourceTopic, region);
+        const topic = topics.get(sourceTopic);
+        if (ledger !== undefined && topic !== undefined) {
+          ledger.lastCommitAt = input.nowMillis;
+          ledger.committedOffset = input.committedOffset;
+          refreshTopicStatus(topic);
+        }
+      }),
     decodeFailed: (sourceTopic, region, input) =>
       Effect.sync(() => {
         const ledger = getTopicRegion(topics, sourceTopic, region);
@@ -576,14 +595,15 @@ export const makeViewServerKafkaHealthLedger = <
         const ledger = getTopicRegion(topics, sourceTopic, region);
         const topic = topics.get(sourceTopic);
         if (ledger !== undefined && topic !== undefined) {
+          const recountMessage = input.recountMessage ?? true;
           incrementWindow(ledger, input.nowMillis, {
-            bytes: input.bytes,
+            bytes: recountMessage ? input.bytes : 0,
             decoded: 0,
             failed: 0,
             mappingFailed: 0,
             publishFailed: 0,
             commitFailed: 1,
-            messages: 1,
+            messages: recountMessage ? 1 : 0,
             processingFailed: 1,
           });
           ledger.lastMessageAt = input.nowMillis;

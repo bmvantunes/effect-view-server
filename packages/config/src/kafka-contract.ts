@@ -1781,7 +1781,7 @@ type RejectExtraRuntimeKafkaStartFromKeys<Options> = Options extends {
     : unknown
   : unknown;
 
-type TopicOwnedKafkaSourceTopic<Topics extends object> = Extract<
+export type TopicOwnedKafkaSourceTopic<Topics extends object> = Extract<
   {
     readonly [Topic in keyof Topics]: Topics[Topic] extends {
       readonly kafkaSource: object;
@@ -1792,7 +1792,7 @@ type TopicOwnedKafkaSourceTopic<Topics extends object> = Extract<
   string
 >;
 
-type TopicOwnedKafkaSourceRegion<Topics extends object> = Extract<
+export type TopicOwnedKafkaSourceRegion<Topics extends object> = Extract<
   {
     readonly [Topic in keyof Topics]: Topics[Topic] extends {
       readonly kafkaSource: {
@@ -1805,11 +1805,11 @@ type TopicOwnedKafkaSourceRegion<Topics extends object> = Extract<
   string
 >;
 
-type RuntimeRegionsAreBroad<Regions extends RuntimeRegions> = string extends keyof Regions
+export type RuntimeRegionsAreBroad<Regions extends RuntimeRegions> = string extends keyof Regions
   ? true
   : false;
 
-type RuntimeKafkaSourceRegionConstraint<
+export type RuntimeKafkaSourceRegionConstraint<
   Topics extends object,
   ConfigRegions extends RuntimeRegions,
   Options,
@@ -1841,10 +1841,16 @@ type RuntimeKafkaSourceRegionConstraint<
         }
       : unknown;
 
-type RuntimeKafkaSourceOwnershipConstraint<Topics extends object, Options> = [
+export type RuntimeKafkaSourceOwnershipConstraint<Topics extends object, Options> = [
   TopicOwnedKafkaSourceTopic<Topics>,
 ] extends [never]
-  ? unknown
+  ? Options extends {
+      readonly kafka: unknown;
+    }
+    ? {
+        readonly kafka: never;
+      }
+    : unknown
   : Options extends {
         readonly kafka: infer CandidateKafka;
       }

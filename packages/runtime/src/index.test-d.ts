@@ -21,6 +21,7 @@ import {
   type ViewServerGrpcIngressError,
   type ViewServerKafkaIngressError,
   type ViewServerTcpPublishIngressError,
+  type ViewServerRuntimeOptionsInput,
   type ViewServerRuntimeOptions,
 } from "./index";
 
@@ -154,6 +155,13 @@ const kafkaOwnedViewServer = defineViewServerConfig({
 });
 
 const runtimeEffect = makeViewServerRuntime(viewServer);
+const _invalidSourceFreeRuntimeWithKafka = makeViewServerRuntime(viewServer, {
+  // @ts-expect-error source-free runtimes reject Kafka options.
+  kafka: {
+    consumerGroupId: "view-server-source-free-type-test",
+    regions: usaKafkaRegions,
+  },
+});
 const kafkaOwnedRuntimeEffect = makeViewServerRuntime(kafkaOwnedViewServer, {
   kafka: {
     consumerGroupId: "view-server-kafka-owned-type-test",
@@ -204,6 +212,24 @@ const runtimeWithAuth = makeViewServerRuntime(viewServer, {
   } satisfies ViewServerAuth,
 });
 const runEffect = runViewServerRuntime(viewServer);
+const _invalidSourceFreeRunRuntimeWithKafka = runViewServerRuntime(viewServer, {
+  // @ts-expect-error source-free runtimes reject Kafka options.
+  kafka: {
+    consumerGroupId: "view-server-source-free-run-type-test",
+    regions: usaKafkaRegions,
+  },
+});
+type SourceFreeRuntimeOptionsInput = ViewServerRuntimeOptionsInput<typeof viewServer.topics>;
+const _validSourceFreeRuntimeOptionsInput: SourceFreeRuntimeOptionsInput = {
+  websocketPort: 3_800,
+};
+const _invalidSourceFreeRuntimeOptionsInput: SourceFreeRuntimeOptionsInput = {
+  // @ts-expect-error exported source-free runtime options reject Kafka options.
+  kafka: {
+    consumerGroupId: "view-server-source-free-exported-input-type-test",
+    regions: usaKafkaRegions,
+  },
+};
 declare const runtime: Effect.Success<typeof runtimeEffect>;
 declare const kafkaOwnedRuntime: Effect.Success<typeof kafkaOwnedRuntimeEffect>;
 type MultiGrpcSourceVisible = typeof multiMaterializedGrpcViewServer.topics.orders extends {

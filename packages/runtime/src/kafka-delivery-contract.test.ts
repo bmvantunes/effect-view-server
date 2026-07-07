@@ -227,4 +227,64 @@ describe("Kafka delivery contract", () => {
       ],
     );
   });
+
+  it("keeps interleaved upsert topics in separate contiguous publish runs", () => {
+    const firstOrder = upsertMessage({
+      offset: 1n,
+      row: { id: "a", price: 10 },
+      rowKey: "a",
+      sourceTopic: "orders-source",
+      viewServerTopic: "orders",
+    });
+    const trade = upsertMessage({
+      offset: 2n,
+      row: { id: "t", quantity: 5 },
+      rowKey: "t",
+      sourceTopic: "trades-source",
+      viewServerTopic: "trades",
+    });
+    const secondOrder = upsertMessage({
+      offset: 3n,
+      row: { id: "b", price: 20 },
+      rowKey: "b",
+      sourceTopic: "orders-source",
+      viewServerTopic: "orders",
+    });
+
+    expect(planKafkaUpsertPublishRuns([firstOrder, trade, secondOrder])).toStrictEqual([
+      {
+        rows: [
+          {
+            message: firstOrder,
+            row: { id: "a", price: 10 },
+            storageKey: "a",
+          },
+        ],
+        sourceTopic: "orders-source",
+        topic: "orders",
+      },
+      {
+        rows: [
+          {
+            message: trade,
+            row: { id: "t", quantity: 5 },
+            storageKey: "t",
+          },
+        ],
+        sourceTopic: "trades-source",
+        topic: "trades",
+      },
+      {
+        rows: [
+          {
+            message: secondOrder,
+            row: { id: "b", price: 20 },
+            storageKey: "b",
+          },
+        ],
+        sourceTopic: "orders-source",
+        topic: "orders",
+      },
+    ]);
+  });
 });

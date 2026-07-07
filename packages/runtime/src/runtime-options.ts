@@ -431,6 +431,19 @@ const resolveKafkaOptions: <
     });
   }
   const consumerGroupId = yield* validateKafkaConsumerGroupId(options.consumerGroupId);
+  const configuredTopics =
+    config === undefined
+      ? emptyKafkaSourceTopics<Topics, Regions>()
+      : yield* kafkaSourcesFromConfig(config);
+  const topics = configuredTopics;
+  const sourceTopicCount = Object.keys(topics).length;
+  if (sourceTopicCount === 0) {
+    return yield* new ViewServerKafkaIngressError({
+      message:
+        "runtime options.kafka was provided, but no topic-owned Kafka sources were declared; remove options.kafka or add kafkaSource to a View Server topic.",
+      cause: "missing-kafka-source-topics",
+    });
+  }
   const configuredRegions = options.regions ?? config?.kafka;
   const entries = yield* Effect.forEach(
     Object.entries(configuredRegions ?? {}),
@@ -441,12 +454,7 @@ const resolveKafkaOptions: <
   for (const [region, bootstrap] of entries) {
     regions[region] = bootstrap;
   }
-  const configuredTopics =
-    config === undefined
-      ? emptyKafkaSourceTopics<Topics, Regions>()
-      : yield* kafkaSourcesFromConfig(config);
-  const topics = configuredTopics;
-  if (Object.keys(topics).length > 0 && Object.keys(regions).length === 0) {
+  if (Object.keys(regions).length === 0) {
     return yield* new ViewServerKafkaIngressError({
       message:
         "Kafka sources are configured, but no Kafka regions were provided on config.kafka or runtime options.kafka.regions.",

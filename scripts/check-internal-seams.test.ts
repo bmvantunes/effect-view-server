@@ -1377,6 +1377,27 @@ describe("internal seam checker", () => {
     ).toStrictEqual([]);
   });
 
+  it("rejects public effect-view-server root package export", () => {
+    expect(
+      packageExportViolationsForManifest({
+        manifestContents: JSON.stringify({
+          name: "effect-view-server",
+          exports: {
+            ".": {
+              import: "./dist/index.js",
+              types: "./dist/index.d.ts",
+            },
+          },
+        }),
+        packageDirectoryName: "effect-view-server",
+      }),
+    ).toStrictEqual([
+      "packages/effect-view-server/package.json exports effect-view-server: add intentional public specifier approval or remove the export.",
+      "packages/effect-view-server/package.json export . points at ./dist/index.js without a matching packed src entrypoint.",
+      "packages/effect-view-server/package.json export . points at ./dist/index.d.ts without a matching packed src entrypoint.",
+    ]);
+  });
+
   it("rejects unapproved public effect-view-server facade deep exports", () => {
     expect(
       packageExportViolationsForManifest({

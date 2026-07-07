@@ -13674,6 +13674,39 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
+  it.effect("rejects source-free Kafka options before resolving Kafka region config", () =>
+    Effect.gen(function* () {
+      const sourceFreeConfigBackedViewServer = defineViewServerConfig({
+        kafka: {
+          local: Config.string("VIEW_SERVER_RUNTIME_TEST_UNSET_KAFKA_BOOTSTRAP"),
+        },
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+          },
+        },
+      });
+
+      const error = yield* Effect.flip(
+        resolveViewServerRuntimeOptions(sourceFreeConfigBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-no-kafka-topics-config-first",
+          },
+        }),
+      );
+
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message:
+            "runtime options.kafka was provided, but no topic-owned Kafka sources were declared; remove options.kafka or add kafkaSource to a View Server topic.",
+          cause: "missing-kafka-source-topics",
+        }),
+      );
+      expect(error.cause).toBe("missing-kafka-source-topics");
+    }),
+  );
+
   it.effect("rejects duplicate topic-owned Kafka source topic names", () =>
     Effect.gen(function* () {
       const regions = {

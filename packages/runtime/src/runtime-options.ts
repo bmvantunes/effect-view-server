@@ -431,16 +431,6 @@ const resolveKafkaOptions: <
     });
   }
   const consumerGroupId = yield* validateKafkaConsumerGroupId(options.consumerGroupId);
-  const configuredRegions = options.regions ?? config?.kafka;
-  const entries = yield* Effect.forEach(
-    Object.entries(configuredRegions ?? {}),
-    ([region, value]) =>
-      resolveRuntimeValue(value).pipe(Effect.map((bootstrap) => [region, bootstrap] as const)),
-  );
-  const regions: Record<string, string> = Object.create(null);
-  for (const [region, bootstrap] of entries) {
-    regions[region] = bootstrap;
-  }
   const configuredTopics =
     config === undefined
       ? emptyKafkaSourceTopics<Topics, Regions>()
@@ -453,6 +443,16 @@ const resolveKafkaOptions: <
         "runtime options.kafka was provided, but no topic-owned Kafka sources were declared; remove options.kafka or add kafkaSource to a View Server topic.",
       cause: "missing-kafka-source-topics",
     });
+  }
+  const configuredRegions = options.regions ?? config?.kafka;
+  const entries = yield* Effect.forEach(
+    Object.entries(configuredRegions ?? {}),
+    ([region, value]) =>
+      resolveRuntimeValue(value).pipe(Effect.map((bootstrap) => [region, bootstrap] as const)),
+  );
+  const regions: Record<string, string> = Object.create(null);
+  for (const [region, bootstrap] of entries) {
+    regions[region] = bootstrap;
   }
   if (Object.keys(regions).length === 0) {
     return yield* new ViewServerKafkaIngressError({

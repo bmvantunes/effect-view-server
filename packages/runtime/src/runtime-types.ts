@@ -180,6 +180,14 @@ type RuntimeRegionsOf<Options, ConfigRegions extends RuntimeRegions> = Options e
   ? Regions
   : ConfigRegions;
 
+type RuntimeKafkaSourceFreeInputConstraint<Topics extends object> = [
+  TopicOwnedKafkaSourceTopic<Topics>,
+] extends [never]
+  ? {
+      readonly kafka?: never;
+    }
+  : unknown;
+
 export type ViewServerRuntimeOptionsInput<
   Topics extends ViewServerRuntimeTopicDefinitions,
   ConfigRegions extends RuntimeRegions = RuntimeRegions,
@@ -196,6 +204,7 @@ export type ViewServerRuntimeOptionsInput<
   RuntimeGrpcExactKeysConstraint<Options> &
   RuntimeGrpcMaterializedReconnectExactKeysConstraint<Options> &
   RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> &
+  RuntimeKafkaSourceFreeInputConstraint<Topics> &
   RuntimeKafkaSourceOwnershipConstraint<Topics, Options> &
   RuntimeKafkaSourceRegionConstraint<Topics, ConfigRegions, Options> &
   RuntimeGrpcSourceOwnershipConstraint<Topics, Options>;
@@ -206,11 +215,7 @@ export type ViewServerRuntimeOptionsArgs<
   GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
   Options extends object = ViewServerRuntimeOptions<Topics, ConfigRegions, GrpcClients>,
 > = [TopicOwnedKafkaSourceTopic<Topics>] extends [never]
-  ? [
-      options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options> & {
-        readonly kafka?: never;
-      },
-    ]
+  ? [options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
   : [options: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>];
 
 type RuntimePublicMutationTopic<Topics extends object, SourceOwnedTopics extends string> = Extract<

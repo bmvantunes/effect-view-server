@@ -1065,23 +1065,30 @@ export const processKafkaMessageBatch = Effect.fn("ViewServerRuntime.kafka.messa
       }
       if (!isKafkaBatchTopic(config, topic.viewServerTopic)) {
         const viewServerTopicMessage = String(topic.viewServerTopic);
-        yield* publishAndCommitKafkaDecodedBatch(
-          client,
-          requestHealthRefresh,
-          health,
-          region,
-          decodedMessages,
-          {
-            preserveLastErrorForSourceTopic: sourceTopic,
-          },
-        );
-        decodedMessages.length = 0;
-        return yield* new ViewServerKafkaIngressError({
+        const missingTopicError = new ViewServerKafkaIngressError({
           message: `Kafka source references unknown View Server topic: ${viewServerTopicMessage}`,
           cause: "missing-view-server-topic",
           region,
           sourceTopic,
         });
+        const flushExit = yield* Effect.exit(
+          publishAndCommitKafkaDecodedBatch(
+            client,
+            requestHealthRefresh,
+            health,
+            region,
+            decodedMessages,
+            {
+              preserveLastErrorForSourceTopic: sourceTopic,
+            },
+          ),
+        );
+        decodedMessages.length = 0;
+        return yield* Effect.failCause(
+          Exit.isFailure(flushExit)
+            ? Cause.combine(Cause.fail(missingTopicError), flushExit.cause)
+            : Cause.fail(missingTopicError),
+        );
       }
       if (!kafkaConsumerMessageHasKey(message)) {
         yield* publishAndCommitKafkaDecodedBatch(

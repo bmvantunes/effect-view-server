@@ -255,6 +255,13 @@ describe("release publish policy", () => {
     expect(result.stdout).toBe("");
   });
 
+  it("stages the package README instead of the repository README", () => {
+    const releaseScript = readFileSync(new URL("./release-publish.mjs", import.meta.url), "utf8");
+
+    expect(releaseScript).toContain("../packages/effect-view-server/README.md");
+    expect(releaseScript).not.toContain("../README.md");
+  });
+
   it("does not create version pull requests from the main-branch release workflow", () => {
     const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 

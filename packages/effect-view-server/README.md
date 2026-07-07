@@ -10,10 +10,10 @@ import { createViewServerReact } from "effect-view-server/react";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 ```
 
-React applications should install compatible peer dependencies:
+React applications should install the package and compatible peer dependencies:
 
 ```sh
-vp add effect react react-dom @effect/atom-react
+npm install effect-view-server effect react react-dom @effect/atom-react
 ```
 
 See the repository README and examples for Kafka, gRPC, TCP publishing, in-memory testing, and React usage.

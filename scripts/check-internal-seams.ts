@@ -1544,7 +1544,6 @@ const approvedPublicViewServerSpecifiers = new Set([
   "@effect-view-server/runtime-core",
   "@effect-view-server/runtime-core/internal",
   "@effect-view-server/server",
-  "effect-view-server",
   "effect-view-server/client",
   "effect-view-server/client/remote",
   "effect-view-server/column-live-view-engine",

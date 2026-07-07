@@ -889,9 +889,6 @@ importers:
       '@platformatic/kafka':
         specifier: 2.2.3
         version: 2.2.3
-      effect:
-        specifier: 4.0.0-beta.91
-        version: 4.0.0-beta.91
       react:
         specifier: 19.2.6
         version: 19.2.6
@@ -938,6 +935,9 @@ importers:
       '@vitest/runner':
         specifier: 'catalog:'
         version: 4.1.9
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.91
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

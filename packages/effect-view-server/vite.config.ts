@@ -11,7 +11,6 @@ export default defineConfig({
     },
   },
   pack: libraryPack([
-    "src/index.ts",
     "src/client.ts",
     "src/client-remote.ts",
     "src/column-live-view-engine.ts",

@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig } from "effect-view-server";
+import { defineViewServerConfig } from "effect-view-server/config";
 import { decodeKafkaCodec as decodeKafkaCodecFromConfig } from "effect-view-server/config";
 import { decodeKafkaCodec } from "effect-view-server/config/kafka";
 import type { LiveQueryResult } from "effect-view-server/config";
@@ -30,7 +30,12 @@ const viewServer = defineViewServerConfig({
 
 const react = createViewServerReact(viewServer);
 
-describe("public effect-view-server facade type contracts", () => {
+describe("public effect-view-server subpath type contracts", () => {
+  it("rejects bare root package imports", () => {
+    // @ts-expect-error effect-view-server intentionally has no root export.
+    expectTypeOf<typeof import("effect-view-server")>().not.toBeAny();
+  });
+
   it("exposes public package subpaths", () => {
     expectTypeOf(defineViewServerConfig).not.toBeAny();
     expectTypeOf(createViewServerReact).not.toBeAny();

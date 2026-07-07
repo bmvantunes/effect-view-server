@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile
 
+      - name: Prepare Playwright apt sources
+        run: bash .github/scripts/prepare-playwright-apt.sh
+
       - name: Install browser test dependencies
         working-directory: packages/react
         run: vp exec playwright install --with-deps chromium firefox webkit
@@ -73,6 +76,9 @@ jobs:
 
       - name: Build packages
         run: vp run -r build
+
+      - name: Prepare Playwright apt sources
+        run: bash .github/scripts/prepare-playwright-apt.sh
 
       - name: Install Chromium benchmark dependencies
         working-directory: packages/react

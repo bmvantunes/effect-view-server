@@ -39,6 +39,7 @@ Runtime-owned Kafka helpers are deleted rather than treated as a compatibility p
 Source Ownership Policy is the focused Module for ownership decisions: given a View Server config, it can answer which topics are source-owned, which topics allow direct runtime/TCP mutation, and which topics require leased gRPC lifecycle.
 
 Kafka Delivery Contract stays local to Kafka source ingestion. Kafka tombstones can be interpreted using the topic-owned source declaration, decoded key, Region, metadata, configured Row Key, and target schema.
+Microbatch publishing groups only contiguous compatible messages. It must not globally regroup interleaved topics or source topics, because that would trade a small publish-count win for weaker Kafka-order semantics.
 
 gRPC Source Lifecycle stays local to gRPC source ingestion. Materialized and leased gRPC feeds can use the same topic-owned policy without a second source registry.
 

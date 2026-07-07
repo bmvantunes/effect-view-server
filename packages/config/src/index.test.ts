@@ -8960,16 +8960,15 @@ const assertCompileTimeContracts = () => {
     websocketPort: 8080,
     // @ts-expect-error runtime options reject unknown top-level fields
     extraRuntimeField: true,
-    kafka: {
-      consumerGroupId: "view-server-type-test",
-      regions: {
-        usa: "broker-a:9092",
-      },
-    },
   });
 
   viewServer.defineRuntimeOptions({
     websocketPort: 8080,
+  });
+
+  viewServer.defineRuntimeOptions({
+    websocketPort: 8080,
+    // @ts-expect-error source-free runtime options reject Kafka settings.
     kafka: {
       consumerGroupId: "view-server-type-test",
       regions: {
@@ -8978,7 +8977,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     kafka: {
       consumerGroupId: "view-server-type-test",
@@ -8991,7 +8990,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     kafka: {
       consumerGroupId: "view-server-type-test",
@@ -9034,7 +9033,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     kafka: {
       consumerGroupId: "view-server-type-test",
@@ -9048,7 +9047,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     // @ts-expect-error committed Kafka start config requires committedConsumerGroup.
     kafka: {
@@ -9062,7 +9061,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     // @ts-expect-error runtime Kafka startFrom only accepts earliest, latest, or committed group config.
     kafka: {
@@ -9074,7 +9073,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     // @ts-expect-error committed Kafka start fallback must be earliest, latest, or fail.
     kafka: {
@@ -9089,7 +9088,7 @@ const assertCompileTimeContracts = () => {
     },
   });
 
-  viewServer.defineRuntimeOptions({
+  topicOwnedViewServer.defineRuntimeOptions({
     websocketPort: 8080,
     kafka: {
       consumerGroupId: "view-server-type-test",

@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- c915f73: Add topic-owned Kafka and gRPC source declarations with derived Kafka runtime topics.
+- c915f73: Add topic-owned Kafka and gRPC source declarations with derived Kafka runtime topics. This removes the old runtime-owned Kafka source declaration path: declare `kafkaSource` / `grpcSource` on topics, and keep runtime options for operational settings such as consumer group, start position, broker overrides, and ports.
 
 ## 0.0.4
 

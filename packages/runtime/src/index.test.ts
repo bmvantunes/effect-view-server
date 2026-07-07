@@ -13650,26 +13650,27 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.effect("resolves runtime Kafka regions without configured source topics", () =>
+  it.effect("rejects runtime Kafka options without configured source topics", () =>
     Effect.gen(function* () {
-      const options = yield* resolvePublicViewServerRuntimeOptions({
-        kafka: {
-          consumerGroupId: "view-server-no-kafka-topics",
-          regions: {
-            local: "localhost:9092",
+      const error = yield* Effect.flip(
+        resolvePublicViewServerRuntimeOptions({
+          kafka: {
+            consumerGroupId: "view-server-no-kafka-topics",
+            regions: {
+              local: "localhost:9092",
+            },
           },
-        },
-      });
+        }),
+      );
 
-      expect({
-        consumerGroupId: options.kafkaOptions?.consumerGroupId,
-        regions: options.kafkaOptions?.regions,
-        topics: options.kafkaOptions?.topics,
-      }).toStrictEqual({
-        consumerGroupId: "view-server-no-kafka-topics",
-        regions: nullRecord([["local", "localhost:9092"]]),
-        topics: nullRecord([]),
-      });
+      expect(error).toStrictEqual(
+        new ViewServerKafkaIngressError({
+          message:
+            "runtime options.kafka was provided, but no topic-owned Kafka sources were declared; remove options.kafka or add kafkaSource to a View Server topic.",
+          cause: "missing-kafka-source-topics",
+        }),
+      );
+      expect(error.cause).toBe("missing-kafka-source-topics");
     }),
   );
 

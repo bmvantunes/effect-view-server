@@ -737,7 +737,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
-  it.effect("rejects topic-owned tombstones without Kafka keys", () =>
+  it.effect("commits and skips topic-owned tombstones without Kafka keys", () =>
     Effect.gen(function* () {
       const regions = {
         local: kafkaBootstrapServers,
@@ -780,35 +780,47 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         },
       });
 
-      const error = yield* Effect.flip(
-        processKafkaMessage(
-          topicOwnedViewServer,
-          runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
-          kafkaOptions,
-          health,
-          "local",
-          kafkaProcessorMessage({
-            key: null,
-            topic: "orders-source",
-            value: null,
-          }),
-        ),
+      const committedOffsets: Array<bigint> = [];
+      const keylessTombstone = kafkaProcessorMessage({
+        key: null,
+        offset: 41n,
+        topic: "orders-source",
+        value: null,
+      });
+
+      yield* processKafkaMessage(
+        topicOwnedViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        kafkaOptions,
+        health,
+        "local",
+        {
+          ...keylessTombstone,
+          commit: () => {
+            committedOffsets.push(keylessTombstone.offset);
+          },
+        },
       );
       const snapshot = yield* runtimeCore.client.snapshot("orders", {
         select: ["id", "customerId", "price"],
         limit: 10,
       });
+      const degradedHealth = health.healthOverlay(yield* runtimeCore.client.health(), 41);
       yield* runtimeCore.close;
 
-      expect(error).toStrictEqual(
-        new ViewServerKafkaIngressError({
-          message: "Failed to map Kafka message for source topic orders-source",
-          cause: "missing-kafka-key",
-          region: "local",
-          sourceTopic: "orders-source",
-        }),
-      );
+      expect(committedOffsets).toStrictEqual([41n]);
+      expect({
+        committedOffset:
+          degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.committedOffset,
+        lastError: degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.lastError,
+        mappingFailures:
+          degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.mappingFailuresPerSecond,
+      }).toStrictEqual({
+        committedOffset: "42",
+        lastError: "Kafka source key bytes are required",
+        mappingFailures: 1,
+      });
       expect(snapshot).toStrictEqual({
         version: 0,
         rows: [],
@@ -819,7 +831,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
-  it.effect("flushes valid topic-owned batch prefix before failing keyless tombstones", () =>
+  it.effect("flushes valid topic-owned batch prefix and commits keyless tombstones", () =>
     Effect.gen(function* () {
       const regions = {
         local: kafkaBootstrapServers,
@@ -878,45 +890,47 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
         value: null,
       });
 
-      const error = yield* Effect.flip(
-        processKafkaMessageBatch(
-          topicOwnedViewServer,
-          runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
-          kafkaOptions,
-          health,
-          "local",
-          [
-            {
-              ...validMessage,
-              commit: () => {
-                committedOffsets.push(validMessage.offset);
-              },
+      yield* processKafkaMessageBatch(
+        topicOwnedViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.requestHealthRefresh,
+        kafkaOptions,
+        health,
+        "local",
+        [
+          {
+            ...validMessage,
+            commit: () => {
+              committedOffsets.push(validMessage.offset);
             },
-            {
-              ...keylessTombstone,
-              commit: () => {
-                committedOffsets.push(keylessTombstone.offset);
-              },
+          },
+          {
+            ...keylessTombstone,
+            commit: () => {
+              committedOffsets.push(keylessTombstone.offset);
             },
-          ],
-        ),
+          },
+        ],
       );
       const ordersSnapshot = yield* runtimeCore.client.snapshot("orders", {
         select: ["id", "customerId", "price"],
         limit: 10,
       });
+      const degradedHealth = health.healthOverlay(yield* runtimeCore.client.health(), 2);
       yield* runtimeCore.close;
 
-      expect(error).toStrictEqual(
-        new ViewServerKafkaIngressError({
-          message: "Failed to map Kafka message for source topic orders-source",
-          cause: "missing-kafka-key",
-          region: "local",
-          sourceTopic: "orders-source",
-        }),
-      );
-      expect(committedOffsets).toStrictEqual([1n]);
+      expect(committedOffsets).toStrictEqual([1n, 2n]);
+      expect({
+        committedOffset:
+          degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.committedOffset,
+        lastError: degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.lastError,
+        mappingFailures:
+          degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.mappingFailuresPerSecond,
+      }).toStrictEqual({
+        committedOffset: "3",
+        lastError: "Kafka source key bytes are required",
+        mappingFailures: 1,
+      });
       expect(ordersSnapshot).toStrictEqual({
         version: 1,
         rows: [
@@ -1387,57 +1401,52 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
     }),
   );
 
-  it.effect("rejects topic-owned Kafka source rows when Kafka key bytes are missing", () =>
-    Effect.gen(function* () {
-      const regions = {
-        local: kafkaBootstrapServers,
-      };
-      const kafkaBackedViewServer = defineViewServerConfig({
-        kafka: regions,
-        topics: {
-          orders: {
-            schema: Order,
-            key: "id",
-            kafkaSource: kafka.source({
-              topic: "orders-source",
-              regions: ["local"],
-              value: kafka.json(IncomingOrder),
-              key: kafka.stringKey(),
-              rowKey: ({ key }) => key,
-              map: ({ value }) => ({
-                customerId: value.customerId,
-                price: value.price,
+  it.effect(
+    "commits and skips topic-owned Kafka source rows when Kafka key bytes are missing",
+    () =>
+      Effect.gen(function* () {
+        const regions = {
+          local: kafkaBootstrapServers,
+        };
+        const kafkaBackedViewServer = defineViewServerConfig({
+          kafka: regions,
+          topics: {
+            orders: {
+              schema: Order,
+              key: "id",
+              kafkaSource: kafka.source({
+                topic: "orders-source",
+                regions: ["local"],
+                value: kafka.json(IncomingOrder),
+                key: kafka.stringKey(),
+                rowKey: ({ key }) => key,
+                map: ({ value }) => ({
+                  customerId: value.customerId,
+                  price: value.price,
+                }),
               }),
-            }),
+            },
           },
-        },
-      });
-      const resolved = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
-        kafka: {
-          consumerGroupId: "view-server-direct-null-key-upsert",
-        },
-      });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
-      const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
-        regions: kafkaOptions.regions,
-        startFrom: kafkaOptions.consume,
-        topics: {
-          "orders-source": {
-            regions: ["local"],
-            viewServerTopic: "orders",
+        });
+        const resolved = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+          kafka: {
+            consumerGroupId: "view-server-direct-null-key-upsert",
           },
-        },
-      });
-
-      const error = yield* processKafkaMessage(
-        kafkaBackedViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
-        kafkaOptions,
-        health,
-        "local",
-        kafkaProcessorMessage({
+        });
+        const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
+        const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
+          regions: kafkaOptions.regions,
+          startFrom: kafkaOptions.consume,
+          topics: {
+            "orders-source": {
+              regions: ["local"],
+              viewServerTopic: "orders",
+            },
+          },
+        });
+        const committedOffsets: Array<bigint> = [];
+        const keylessMessage = kafkaProcessorMessage({
           key: null,
           offset: 1n,
           topic: "orders-source",
@@ -1445,30 +1454,50 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             customerId: "customer-1",
             price: 10,
           }),
-        }),
-      ).pipe(Effect.flip);
-      const snapshot = yield* runtimeCore.client.snapshot("orders", {
-        select: ["id", "customerId", "price"],
-        limit: 10,
-      });
-      yield* runtimeCore.close;
+        });
 
-      expect(error).toStrictEqual(
-        new ViewServerKafkaIngressError({
-          message: "Failed to map Kafka message for source topic orders-source",
-          cause: "missing-kafka-key",
-          region: "local",
-          sourceTopic: "orders-source",
-        }),
-      );
-      expect(snapshot).toStrictEqual({
-        version: 0,
-        rows: [],
-        totalRows: 0,
-        status: "ready",
-        statusCode: "Ready",
-      });
-    }),
+        yield* processKafkaMessage(
+          kafkaBackedViewServer,
+          runtimeCore.internalClient,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          health,
+          "local",
+          {
+            ...keylessMessage,
+            commit: () => {
+              committedOffsets.push(keylessMessage.offset);
+            },
+          },
+        );
+        const snapshot = yield* runtimeCore.client.snapshot("orders", {
+          select: ["id", "customerId", "price"],
+          limit: 10,
+        });
+        const degradedHealth = health.healthOverlay(yield* runtimeCore.client.health(), 41);
+        yield* runtimeCore.close;
+
+        expect(committedOffsets).toStrictEqual([1n]);
+        expect({
+          committedOffset:
+            degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.committedOffset,
+          lastError: degradedHealth.kafka?.topics["orders-source"]?.regions["local"]?.lastError,
+          mappingFailures:
+            degradedHealth.kafka?.topics["orders-source"]?.regions["local"]
+              ?.mappingFailuresPerSecond,
+        }).toStrictEqual({
+          committedOffset: "2",
+          lastError: "Kafka source key bytes are required",
+          mappingFailures: 1,
+        });
+        expect(snapshot).toStrictEqual({
+          version: 0,
+          rows: [],
+          totalRows: 0,
+          status: "ready",
+          statusCode: "Ready",
+        });
+      }),
   );
 
   it.effect("validates topic-owned Kafka mapped rows with decoded transform schema values", () =>

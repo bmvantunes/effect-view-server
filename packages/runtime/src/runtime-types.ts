@@ -19,6 +19,11 @@ import type {
   ViewServerRuntimeError,
   GrpcRuntimeClients,
 } from "@effect-view-server/config";
+import type {
+  RuntimeKafkaSourceOwnershipConstraint,
+  RuntimeKafkaSourceRegionConstraint,
+  TopicOwnedKafkaSourceTopic,
+} from "@effect-view-server/config/internal";
 import type { Duration, Effect, Schema } from "effect";
 
 export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &
@@ -141,17 +146,6 @@ type RuntimeGroupedIncrementalAdmissionLimitsExactKeysConstraint<Options> = Opti
     }
   : unknown;
 
-type TopicOwnedKafkaSourceTopic<Topics extends object> = Extract<
-  {
-    readonly [Topic in keyof Topics]: Topics[Topic] extends {
-      readonly kafkaSource: object;
-    }
-      ? Topic
-      : never;
-  }[keyof Topics],
-  string
->;
-
 type TopicOwnedGrpcSourceTopic<Topics extends object> = Extract<
   {
     readonly [Topic in keyof Topics]: Topics[Topic] extends {
@@ -166,71 +160,6 @@ type TopicOwnedGrpcSourceTopic<Topics extends object> = Extract<
 type TopicOwnedSourceTopic<Topics extends object> =
   | TopicOwnedKafkaSourceTopic<Topics>
   | TopicOwnedGrpcSourceTopic<Topics>;
-
-type TopicOwnedKafkaSourceRegion<Topics extends object> = Extract<
-  {
-    readonly [Topic in keyof Topics]: Topics[Topic] extends {
-      readonly kafkaSource: {
-        readonly regions: infer Regions extends ReadonlyArray<string>;
-      };
-    }
-      ? Regions[number]
-      : never;
-  }[keyof Topics],
-  string
->;
-
-type RuntimeRegionsAreBroad<Regions extends RuntimeRegions> = string extends keyof Regions
-  ? true
-  : false;
-
-type RuntimeKafkaSourceRegionConstraint<
-  Topics extends object,
-  ConfigRegions extends RuntimeRegions,
-  Options,
-> = [TopicOwnedKafkaSourceRegion<Topics>] extends [never]
-  ? unknown
-  : Options extends {
-        readonly kafka: {
-          readonly regions: infer Regions extends RuntimeRegions;
-        };
-      }
-    ? RuntimeRegionsAreBroad<Regions> extends true
-      ? {
-          readonly kafka: {
-            readonly regions: never;
-          };
-        }
-      : Exclude<TopicOwnedKafkaSourceRegion<Topics>, keyof Regions> extends never
-        ? unknown
-        : {
-            readonly kafka: {
-              readonly regions: never;
-            };
-          }
-    : RuntimeRegionsAreBroad<ConfigRegions> extends true
-      ? {
-          readonly kafka: {
-            readonly regions: never;
-          };
-        }
-      : unknown;
-
-type RuntimeKafkaSourceOwnershipConstraint<Topics extends object, Options> = [
-  TopicOwnedKafkaSourceTopic<Topics>,
-] extends [never]
-  ? unknown
-  : Options extends {
-        readonly kafka: infer CandidateKafka;
-      }
-    ? {
-        readonly kafka: CandidateKafka & {
-          readonly consumerGroupId: string;
-        };
-      }
-    : {
-        readonly kafka: never;
-      };
 
 type RuntimeSourceOwnedTopic<Topics extends object, _Options> = Extract<
   TopicOwnedSourceTopic<Topics>,
@@ -277,7 +206,11 @@ export type ViewServerRuntimeOptionsArgs<
   GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
   Options extends object = ViewServerRuntimeOptions<Topics, ConfigRegions, GrpcClients>,
 > = [TopicOwnedKafkaSourceTopic<Topics>] extends [never]
-  ? [options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>]
+  ? [
+      options?: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options> & {
+        readonly kafka?: never;
+      },
+    ]
   : [options: ViewServerRuntimeOptionsInput<Topics, ConfigRegions, GrpcClients, Options>];
 
 type RuntimePublicMutationTopic<Topics extends object, SourceOwnedTopics extends string> = Extract<

@@ -102,6 +102,12 @@ Core. Topic-owned sources upsert with source-owned storage keys, and compacted
 topic tombstones delete by that same key. Offsets are committed only after the
 corresponding Runtime Core mutation succeeds.
 
+Kafka records without key bytes cannot derive a source-owned row key. The
+runtime records a mapping failure, commits the record, and skips it so one
+poison record cannot replay forever and stall the whole region. Tombstone
+deletes are idempotent: a tombstone for an already-missing row is a successful
+no-op after the delete mutation runs.
+
 If a message fails decode or mapping, health records a decode or mapping failure
 for the source topic and region. If publishing fails, the corresponding messages
 remain uncommitted so Kafka can replay them.

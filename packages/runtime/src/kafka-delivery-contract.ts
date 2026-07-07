@@ -6,6 +6,14 @@ type KafkaMessageBytes = Buffer | null | undefined;
 
 export type KafkaConsumerMessage = Message<KafkaMessageBytes, KafkaMessageBytes, Buffer, Buffer>;
 
+export type KeyedKafkaConsumerMessage = KafkaConsumerMessage & {
+  readonly key: Buffer;
+};
+
+export const kafkaConsumerMessageHasKey = (
+  message: KafkaConsumerMessage,
+): message is KeyedKafkaConsumerMessage => message.key !== null && message.key !== undefined;
+
 export type KafkaBatchTopic<Topics extends ViewServerRuntimeTopicDefinitions> = Extract<
   keyof Topics,
   string

@@ -77,6 +77,11 @@ Topics without `kafkaSource` or `grpcSource` are externally/manual published
 topics, for example through TCP publish or an in-memory test client. A topic can
 only have one source owner.
 
+Runtime reset is rejected while any source-owned topic exists. Resetting only
+manual topics while Kafka or gRPC topics continue running would make the public
+contract ambiguous, so source-backed rebuilds should be driven by source replay
+or by restarting a runtime with the intended Kafka start position.
+
 Kafka source topics must define `rowKey`. The runtime uses that value as the
 topic row key and forces the configured key field on the mapped row to match it,
 so source-owned rows cannot drift away from their Kafka identity.

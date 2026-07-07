@@ -155,6 +155,10 @@ Offsets are committed only after the corresponding Runtime Core mutation
 succeeds. If publish/delete fails, the original Kafka messages remain
 uncommitted so Kafka can replay them.
 
+Kafka records without key bytes are not publishable because source-owned row
+identity is key-derived. They are recorded as mapping failures, committed, and
+skipped so one malformed record cannot poison the region indefinitely.
+
 If a later message in a batch fails decode or mapping after earlier messages
 were decoded, the decoded prefix is published and committed before the failing
 message is reported. If the Kafka stream fails after yielding messages, the

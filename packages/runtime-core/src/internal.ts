@@ -34,6 +34,13 @@ export {
   collectSourceOwnershipConflicts,
   makeSourceOwnershipPolicy,
 } from "./source-ownership-policy";
+export { makeRuntimeCoreMutationPipeline } from "./source-mutation-pipeline";
+export type {
+  RuntimeCoreDecodedRowWithStorageKey,
+  RuntimeCoreMutationPipeline,
+  ViewServerRuntimeCoreCheckedMutations,
+  ViewServerRuntimeCoreInternalMutations,
+} from "./source-mutation-pipeline";
 export type {
   SourceOwnershipAccessProfile,
   SourceOwnershipConflict,

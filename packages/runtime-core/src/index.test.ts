@@ -319,6 +319,7 @@ describe("@effect-view-server/runtime-core", () => {
 
       const spansByName = new Map(observedSpans.map((span) => [span.name, span]));
       const clientPublish = spansByName.get("ViewServerRuntimeCore.client.publish");
+      const sourceMutationApply = spansByName.get("ViewServerRuntimeCore.sourceMutation.apply");
       const publish = spansByName.get("ColumnLiveViewEngine.publish");
       const topicStorePublish = spansByName.get("ColumnLiveViewEngine.topicStore.publish");
       const mutationTransaction = spansByName.get(
@@ -367,6 +368,12 @@ describe("@effect-view-server/runtime-core", () => {
           parentSpanId: publish?.parentSpanId,
           traceId: publish?.traceId,
         },
+        sourceMutationApply: {
+          name: sourceMutationApply?.name,
+          parentName: sourceMutationApply?.parentName,
+          parentSpanId: sourceMutationApply?.parentSpanId,
+          traceId: sourceMutationApply?.traceId,
+        },
         topicStorePublish: {
           name: topicStorePublish?.name,
           parentName: topicStorePublish?.parentName,
@@ -409,6 +416,12 @@ describe("@effect-view-server/runtime-core", () => {
         },
         publish: {
           name: "ColumnLiveViewEngine.publish",
+          parentName: "ViewServerRuntimeCore.sourceMutation.apply",
+          parentSpanId: sourceMutationApply?.spanId,
+          traceId: clientPublish?.traceId,
+        },
+        sourceMutationApply: {
+          name: "ViewServerRuntimeCore.sourceMutation.apply",
           parentName: "ViewServerRuntimeCore.client.publish",
           parentSpanId: clientPublish?.spanId,
           traceId: clientPublish?.traceId,

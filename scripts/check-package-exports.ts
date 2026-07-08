@@ -444,8 +444,18 @@ requireExport(
   runtimeCoreInternalPackage,
   "makeSourceOwnershipPolicy",
 );
+requireExport(
+  "@effect-view-server/runtime-core/internal",
+  runtimeCoreInternalPackage,
+  "makeRuntimeCoreMutationPipeline",
+);
 rejectExport("@effect-view-server/runtime-core", runtimeCorePackage, "makeViewServerRuntimeCoreInternal");
 rejectExport("@effect-view-server/runtime-core", runtimeCorePackage, "makeSourceOwnershipPolicy");
+rejectExport(
+  "@effect-view-server/runtime-core",
+  runtimeCorePackage,
+  "makeRuntimeCoreMutationPipeline",
+);
 rejectExport(
   "@effect-view-server/runtime-core",
   runtimeCorePackage,

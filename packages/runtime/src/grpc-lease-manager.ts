@@ -477,6 +477,28 @@ const topicDefinitionFor = <const Topics extends ViewServerRuntimeTopicDefinitio
     });
   });
 
+const isRuntimeTopic = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  config: ViewServerTopicConfig<Topics>,
+  topic: string,
+): topic is Extract<keyof Topics, string> => Object.hasOwn(config.topics, topic);
+
+const runtimeTopicFor = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  config: ViewServerTopicConfig<Topics>,
+  topic: string,
+  feedName: string,
+): Effect.Effect<Extract<keyof Topics, string>, ViewServerGrpcIngressError> =>
+  Effect.suspend(() => {
+    if (isRuntimeTopic(config, topic)) {
+      return Effect.succeed(topic);
+    }
+    return grpcLeaseError({
+      message: `gRPC leased feed ${feedName} references unknown topic ${topic}`,
+      cause: topic,
+      feedName,
+      topic,
+    });
+  });
+
 const mapLeasedValue = Effect.fn("ViewServerRuntime.grpc.leased.map")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
 >(
@@ -820,16 +842,16 @@ const externalizeLeasedEvent = <Row extends object>(
 
 const callRuntimePublishMany = Effect.fn(
   "ViewServerRuntime.grpc.leased.runtime.publishManyDecoded",
-)(function* <const Topics extends ViewServerRuntimeTopicDefinitions, const Topic extends string>(
+)(function* <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Topic extends Extract<keyof Topics, string>,
+>(
   runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
   topic: Topic,
   rows: ReadonlyArray<LeasedRowWithStorageKey>,
   feedName: string,
 ) {
-  const effect = Reflect.apply(runtimeClient.publishManyDecodedRowsWithStorageKeys, runtimeClient, [
-    topic,
-    rows,
-  ]);
+  const effect = runtimeClient.publishManyDecodedRowsWithStorageKeys(topic, rows);
   if (!isRuntimeMutationEffect(effect)) {
     return yield* grpcLeaseError({
       message: `Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
@@ -853,14 +875,14 @@ const callRuntimePublishMany = Effect.fn(
 
 const callRuntimeDelete = Effect.fn("ViewServerRuntime.grpc.leased.runtime.delete")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Topic extends string,
+  const Topic extends Extract<keyof Topics, string>,
 >(
   runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
   topic: Topic,
   key: string,
   feedName: string,
 ) {
-  const effect = Reflect.apply(runtimeClient.delete, runtimeClient, [topic, key]);
+  const effect = runtimeClient.delete(topic, key);
   if (!isRuntimeMutationEffect(effect)) {
     return yield* grpcLeaseError({
       message: `Runtime delete did not return an Effect for leased gRPC feed ${feedName}`,
@@ -911,7 +933,8 @@ const publishLeasedBatch = Effect.fn("ViewServerRuntime.grpc.leased.publishBatch
   const internalRows = yield* Effect.forEach(rows, (row) =>
     internalizeLeasedRow(config, lease, row),
   );
-  yield* callRuntimePublishMany(runtimeClient, lease.feed.topic, internalRows, lease.feedName).pipe(
+  const topic = yield* runtimeTopicFor(config, lease.feed.topic, lease.feedName);
+  yield* callRuntimePublishMany(runtimeClient, topic, internalRows, lease.feedName).pipe(
     Effect.tapError((error) =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((nowMillis) =>
@@ -969,7 +992,7 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
         yield* releaseResources();
         yield* health.feedDegraded(lease.feedKey, input.healthMessage);
         yield* health.clientDegraded(lease.feed.client, input.healthMessage);
-        const cleanupExit = yield* closeLeaseRows(runtimeClient, lease).pipe(Effect.exit);
+        const cleanupExit = yield* closeLeaseRows(config, runtimeClient, lease).pipe(Effect.exit);
         if (Exit.isSuccess(cleanupExit)) {
           yield* resetLeaseRowCount(requestHealthRefresh, health, lease);
         } else {
@@ -1020,10 +1043,15 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
 
 const closeLeaseRows = Effect.fn("ViewServerRuntime.grpc.leased.rows.close")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>, lease: ActiveLease) {
+>(
+  config: ViewServerTopicConfig<Topics>,
+  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
+  lease: ActiveLease,
+) {
+  const topic = yield* runtimeTopicFor(config, lease.feed.topic, lease.feedName);
   yield* Effect.forEach(
     lease.internalToPublicKeys.keys(),
-    (key) => callRuntimeDelete(runtimeClient, lease.feed.topic, key, lease.feedName),
+    (key) => callRuntimeDelete(runtimeClient, topic, key, lease.feedName),
     {
       discard: true,
     },
@@ -1294,7 +1322,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     "ViewServerRuntime.grpc.leased.releaseLease.cleanup",
   )(function* (lease: ActiveLease) {
     yield* Scope.close(lease.scope, Exit.void);
-    const cleanupExit = yield* closeLeaseRows(runtimeClient, lease).pipe(Effect.exit);
+    const cleanupExit = yield* closeLeaseRows(config, runtimeClient, lease).pipe(Effect.exit);
     if (Exit.isFailure(cleanupExit)) {
       yield* ignoreLeasedReleaseFailure(Effect.failCause(cleanupExit.cause));
       yield* health.feedDegraded(
@@ -1570,7 +1598,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
             }),
           ),
           Effect.andThen(Effect.sync(() => lease.statusQueues.clear())),
-          Effect.andThen(closeLeaseRows(runtimeClient, lease).pipe(ignoreLeasedReleaseFailure)),
+          Effect.andThen(
+            closeLeaseRows(config, runtimeClient, lease).pipe(ignoreLeasedReleaseFailure),
+          ),
           Effect.andThen(health.leasedFeedRemoved(lease.feedKey)),
         ),
       ),

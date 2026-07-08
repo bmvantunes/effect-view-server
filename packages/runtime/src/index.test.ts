@@ -9818,6 +9818,81 @@ describe("@effect-view-server/runtime", () => {
       }),
   );
 
+  it.live("marks leased gRPC cleanup degraded when runtime topic disappears before close", () =>
+    Effect.gen(function* () {
+      const localViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({
+              routeBy: ["region"],
+            }),
+          },
+        },
+      });
+      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
+      const feed = localGrpcFeed.leasedFeed({
+        topic: "orders",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: ({ request }) =>
+          longRunningGrpcStream([grpcOrderValue(`${request.orderId}-order-1`, 10)]),
+        map: ({ value, route }) => ({
+          id: `${route.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
+        typeof localViewServer.topics,
+        Record<string, string>,
+        typeof grpcClients
+      >({
+        grpc: {
+          clients: grpcClients,
+          feeds: {
+            ordersLease: feed,
+          },
+        },
+      });
+      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+      const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
+      yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 1);
+      Reflect.deleteProperty(localViewServer.topics, "orders");
+
+      yield* subscription.close();
+      const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
+
+      expect(
+        currentHealth.grpc?.feeds["orders"]?.leased[
+          "orders/ordersLease/leased/region=string%3A3%3Ausa"
+        ]?.lastError,
+      ).toBe("gRPC leased feed row cleanup failed for ordersLease");
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.live("fails leased gRPC subscription when acquire does not return a Stream", () =>
     Effect.gen(function* () {
       let released = 0;

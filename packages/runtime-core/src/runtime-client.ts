@@ -23,6 +23,10 @@ import {
   type RuntimeCoreTransportHealth,
 } from "./health";
 import { engineErrorToRuntimeError, invalidRuntimeQueryError } from "./runtime-error";
+import {
+  makeRuntimeCoreMutationPipeline,
+  type ViewServerRuntimeCoreInternalMutations,
+} from "./source-mutation-pipeline";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
@@ -34,26 +38,7 @@ export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> 
 };
 
 export type ViewServerRuntimeCoreInternalClient<Topics extends DecodableTopicDefinitions> =
-  ViewServerRuntimeClient<Topics> & {
-    readonly publishManyDecodedRows: (
-      topic: Extract<keyof Topics, string>,
-      rows: ReadonlyArray<object>,
-    ) => Effect.Effect<void, ViewServerRuntimeError>;
-    readonly publishManyDecodedRowsWithStorageKeys: (
-      topic: Extract<keyof Topics, string>,
-      rows: ReadonlyArray<{
-        readonly storageKey: string;
-        readonly row: object;
-      }>,
-    ) => Effect.Effect<void, ViewServerRuntimeError>;
-    readonly publishManyWithStorageKeys: <Topic extends Extract<keyof Topics, string>>(
-      topic: Topic,
-      rows: ReadonlyArray<{
-        readonly storageKey: string;
-        readonly row: TopicRow<Topics, Topic>;
-      }>,
-    ) => Effect.Effect<void, ViewServerRuntimeError>;
-  };
+  ViewServerRuntimeClient<Topics> & ViewServerRuntimeCoreInternalMutations<Topics>;
 
 export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.make")(
   <const Topics extends DecodableTopicDefinitions>(
@@ -117,6 +102,11 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
           );
         },
       );
+      const mutationPipeline = makeRuntimeCoreMutationPipeline(
+        config,
+        engine,
+        requestHealthRefresh(),
+      );
       const snapshot = <
         Topic extends Extract<keyof Topics, string>,
         const Query extends
@@ -138,79 +128,19 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
             .snapshot<Topic, Query>(topic, query)
             .pipe(Effect.mapError(engineErrorToRuntimeError));
         });
-      const publish = Effect.fn("ViewServerRuntimeCore.client.publish")(function* <
-        Topic extends Extract<keyof Topics, string>,
-      >(topic: Topic, row: TopicRow<Topics, Topic>) {
-        yield* Effect.uninterruptible(
-          engine.publish(topic, row).pipe(Effect.tap(() => requestHealthRefresh())),
-        ).pipe(Effect.mapError(engineErrorToRuntimeError));
-      });
       const internalClient: ViewServerRuntimeCoreInternalClient<Topics> = {
-        publish,
-        publishMany: (topic, rows) =>
-          Effect.uninterruptible(
-            engine.publishMany(topic, rows).pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
-        publishManyDecodedRows: (topic, rows) =>
-          Effect.uninterruptible(
-            engine
-              .publishManyDecodedRows(topic, rows)
-              .pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
-        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
-          Effect.uninterruptible(
-            engine
-              .publishManyDecodedRowsWithStorageKeys(topic, rows)
-              .pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
-        publishManyWithStorageKeys: (topic, rows) =>
-          Effect.uninterruptible(
-            engine
-              .publishManyWithStorageKeys(topic, rows)
-              .pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
-        patch: (topic, key, patch) =>
-          Effect.uninterruptible(
-            engine.patch(topic, key, patch).pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
-        delete: (topic, key) =>
-          Effect.uninterruptible(
-            engine.delete(topic, key).pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
+        ...mutationPipeline.internalMutations,
         snapshot,
         health: () => healthReader(),
-        reset: () =>
-          Effect.uninterruptible(
-            engine.reset().pipe(Effect.tap(() => requestHealthRefresh())),
-          ).pipe(Effect.mapError(engineErrorToRuntimeError)),
       };
       return {
         client: {
-          publish: (topic, row) =>
-            sourceOwnership
-              .requirePublicMutationAllowed(topic, "runtimeCore")
-              .pipe(Effect.flatMap(() => internalClient.publish(topic, row))),
-          publishMany: (topic, rows) =>
-            sourceOwnership
-              .requirePublicMutationAllowed(topic, "runtimeCore")
-              .pipe(Effect.flatMap(() => internalClient.publishMany(topic, rows))),
-          patch: (topic, key, patch) =>
-            sourceOwnership
-              .requirePublicMutationAllowed(topic, "runtimeCore")
-              .pipe(Effect.flatMap(() => internalClient.patch(topic, key, patch))),
-          delete: (topic, key) =>
-            sourceOwnership
-              .requirePublicMutationAllowed(topic, "runtimeCore")
-              .pipe(Effect.flatMap(() => internalClient.delete(topic, key))),
+          ...mutationPipeline.checkedMutations,
           snapshot: (topic, query) =>
             sourceOwnership
               .requirePublicReadAllowed(topic, "runtimeCore")
               .pipe(Effect.flatMap(() => internalClient.snapshot(topic, query))),
           health: internalClient.health,
-          reset: () =>
-            sourceOwnership
-              .requirePublicResetAllowed("runtimeCore")
-              .pipe(Effect.flatMap(() => internalClient.reset())),
         },
         internalClient,
         close: healthRefreshScheduler.close,

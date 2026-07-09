@@ -1,6 +1,8 @@
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import {
   collectSourceOwnershipConflicts,
+  makeTopicSourceBindings,
+  type TopicGrpcSourceValidMetadata,
   type SourceOwnershipGrpcOptions,
   type SourceOwnershipKafkaOptions,
 } from "@effect-view-server/runtime-core/internal";
@@ -157,8 +159,6 @@ type BoundGrpcSource = {
   readonly map: RuntimeGrpcFeedCallable;
 };
 
-type ValidGrpcTopicSourceMetadata = Extract<GrpcTopicSourceMetadata, { readonly _tag: "valid" }>;
-
 const runtimeGrpcFeedCallable = (value: unknown): value is RuntimeGrpcFeedCallable =>
   typeof value === "function";
 
@@ -169,7 +169,7 @@ const grpcMethodIsServerStreaming = (method: unknown): boolean =>
 
 const boundGrpcSourceFromUnknown = (
   source: unknown,
-  sourceMetadata: ValidGrpcTopicSourceMetadata,
+  sourceMetadata: TopicGrpcSourceValidMetadata,
 ): BoundGrpcSource | undefined => {
   const sourceObject = Object(source);
   const lifecycle = sourceMetadata.lifecycle;
@@ -223,18 +223,11 @@ const grpcFeedsFromConfig = <
   if (config === undefined) {
     return feeds;
   }
-  for (const [topic, topicDefinition] of Object.entries(config.topics)) {
-    const source =
-      typeof topicDefinition === "object" &&
-      topicDefinition !== null &&
-      Object.prototype.hasOwnProperty.call(topicDefinition, "grpcSource")
-        ? Reflect.get(topicDefinition, "grpcSource")
-        : undefined;
-    const sourceMetadata = grpcTopicSourceMetadata(topicDefinition);
-    if (sourceMetadata._tag !== "valid") {
+  for (const [topic, binding] of makeTopicSourceBindings(config)) {
+    if (binding.grpcMetadata._tag !== "valid") {
       continue;
     }
-    const bound = boundGrpcSourceFromUnknown(source, sourceMetadata);
+    const bound = boundGrpcSourceFromUnknown(binding.grpcSource, binding.grpcMetadata);
     if (bound === undefined) {
       continue;
     }
@@ -264,14 +257,13 @@ const validateConfigGrpcSourceMetadata = <
     if (config === undefined) {
       return;
     }
-    for (const [topic, topicDefinition] of Object.entries(config.topics)) {
-      const sourceMetadata = grpcTopicSourceMetadata(topicDefinition);
-      if (sourceMetadata._tag !== "invalid") {
+    for (const [topic, binding] of makeTopicSourceBindings(config)) {
+      if (binding.grpcMetadata._tag !== "invalid") {
         continue;
       }
       return yield* new ViewServerGrpcIngressError({
         message: `View Server topic ${topic} declares invalid gRPC source metadata.`,
-        cause: sourceMetadata.cause,
+        cause: binding.grpcMetadata.cause,
         feedName: topic,
         topic,
         phase: "configuration",
@@ -682,129 +674,6 @@ export const validateSourceOwnership: (
   }
 });
 
-type GrpcTopicSourceMetadata =
-  | {
-      readonly _tag: "absent";
-    }
-  | {
-      readonly _tag: "invalid";
-      readonly cause: unknown;
-    }
-  | {
-      readonly _tag: "valid";
-      readonly lifecycle: "materialized";
-    }
-  | {
-      readonly _tag: "valid";
-      readonly lifecycle: "leased";
-      readonly routeBy: ReadonlyArray<string>;
-    };
-
-const hasDefinedOwnProperty = (value: object, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
-
-const hasOnlyOwnStringKeys = (value: object, allowedKeys: ReadonlyArray<string>): boolean =>
-  Object.getOwnPropertyNames(value).every((key) => allowedKeys.includes(key));
-
-const hasConcreteGrpcBinding = (source: object): boolean =>
-  ["client", "method", "request", "acquire", "release", "map"].some((key) =>
-    hasDefinedOwnProperty(source, key),
-  );
-
-const hasCompleteConcreteGrpcBinding = (source: object): boolean => {
-  const request = Reflect.get(source, "request");
-  const acquire = Reflect.get(source, "acquire");
-  const release = Reflect.get(source, "release");
-  const map = Reflect.get(source, "map");
-  return (
-    hasDefinedOwnProperty(source, "client") &&
-    hasDefinedOwnProperty(source, "method") &&
-    runtimeGrpcFeedCallable(request) &&
-    runtimeGrpcFeedCallable(acquire) &&
-    runtimeGrpcFeedCallable(map) &&
-    (release === undefined || runtimeGrpcFeedCallable(release))
-  );
-};
-
-const grpcTopicSourceFromUnknown = (source: unknown): GrpcTopicSourceMetadata => {
-  if (typeof source !== "object" || source === null) {
-    return { _tag: "invalid", cause: source };
-  }
-  if (Reflect.get(source, "kind") !== "grpc") {
-    return { _tag: "invalid", cause: source };
-  }
-  const lifecycle = Reflect.get(source, "lifecycle");
-  if (lifecycle !== "leased" && lifecycle !== "materialized") {
-    return { _tag: "invalid", cause: source };
-  }
-  const sourceTag = Reflect.get(source, "_tag");
-  if (lifecycle === "materialized") {
-    if (
-      !hasOnlyOwnStringKeys(source, [
-        "_tag",
-        "kind",
-        "lifecycle",
-        "client",
-        "method",
-        "request",
-        "acquire",
-        "release",
-        "map",
-      ])
-    ) {
-      return { _tag: "invalid", cause: source };
-    }
-    if (sourceTag !== "GrpcMaterializedTopicSource") {
-      return { _tag: "invalid", cause: source };
-    }
-    if (hasConcreteGrpcBinding(source) && !hasCompleteConcreteGrpcBinding(source)) {
-      return { _tag: "invalid", cause: source };
-    }
-    return { _tag: "valid", lifecycle };
-  }
-  if (
-    !hasOnlyOwnStringKeys(source, [
-      "_tag",
-      "kind",
-      "lifecycle",
-      "routeBy",
-      "client",
-      "method",
-      "request",
-      "acquire",
-      "release",
-      "map",
-    ])
-  ) {
-    return { _tag: "invalid", cause: source };
-  }
-  if (sourceTag !== "GrpcLeasedTopicSource") {
-    return { _tag: "invalid", cause: source };
-  }
-  if (hasConcreteGrpcBinding(source) && !hasCompleteConcreteGrpcBinding(source)) {
-    return { _tag: "invalid", cause: source };
-  }
-  const routeBy = Reflect.get(source, "routeBy");
-  if (
-    !Array.isArray(routeBy) ||
-    routeBy.length === 0 ||
-    !routeBy.every((field) => typeof field === "string")
-  ) {
-    return { _tag: "invalid", cause: source };
-  }
-  return { _tag: "valid", lifecycle, routeBy };
-};
-
-const grpcTopicSourceMetadata = (topicDefinition: unknown): GrpcTopicSourceMetadata => {
-  if (typeof topicDefinition !== "object" || topicDefinition === null) {
-    return { _tag: "absent" };
-  }
-  if (hasDefinedOwnProperty(topicDefinition, "grpcSource")) {
-    return grpcTopicSourceFromUnknown(Reflect.get(topicDefinition, "grpcSource"));
-  }
-  return { _tag: "absent" };
-};
-
 const grpcFeedLeasedRouteBy = (feed: unknown): ReadonlyArray<string> | undefined => {
   const routeBy = Reflect.get(Object(feed), "routeBy");
   return Array.isArray(routeBy) && routeBy.every((field) => typeof field === "string")
@@ -831,21 +700,21 @@ export const validateGrpcSourceFeeds: <
   grpcOptions: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients> | undefined,
 ) {
   const feedEntries = Object.entries(grpcOptions?.feeds ?? {});
-  for (const [topic, topicDefinition] of Object.entries(config.topics)) {
-    const sourceMetadata = grpcTopicSourceMetadata(topicDefinition);
-    if (sourceMetadata._tag === "absent") {
+  const bindings = makeTopicSourceBindings(config);
+  for (const [topic, binding] of bindings) {
+    if (binding.grpcMetadata._tag === "absent") {
       continue;
     }
-    if (sourceMetadata._tag === "invalid") {
+    if (binding.grpcMetadata._tag === "invalid") {
       return yield* new ViewServerGrpcIngressError({
         message: `View Server topic ${topic} declares invalid gRPC source metadata.`,
-        cause: sourceMetadata.cause,
+        cause: binding.grpcMetadata.cause,
         feedName: topic,
         topic,
         phase: "configuration",
       });
     }
-    const lifecycle = sourceMetadata.lifecycle;
+    const lifecycle = binding.grpcMetadata.lifecycle;
     const matchingFeeds = feedEntries.filter(([_feedName, feed]) => feed.topic === topic);
     if (matchingFeeds.length === 0) {
       return yield* new ViewServerGrpcIngressError({
@@ -866,7 +735,7 @@ export const validateGrpcSourceFeeds: <
       });
     }
     if (lifecycle === "leased") {
-      const sourceRouteBy = sourceMetadata.routeBy;
+      const sourceRouteBy = binding.grpcMetadata.routeBy;
       const routeMismatch = matchingFeeds.find(([_feedName, feed]) => {
         const feedRouteBy = grpcFeedLeasedRouteBy(feed);
         return feedRouteBy === undefined || !sameRouteBy(sourceRouteBy, feedRouteBy);
@@ -884,8 +753,8 @@ export const validateGrpcSourceFeeds: <
     }
   }
   for (const [feedName, feed] of feedEntries) {
-    const topicDefinition = config.topics[feed.topic];
-    if (topicDefinition === undefined) {
+    const binding = bindings.get(feed.topic);
+    if (binding === undefined) {
       return yield* new ViewServerGrpcIngressError({
         message: `gRPC feed ${feedName} references unknown View Server topic ${feed.topic}.`,
         cause: feed.topic,
@@ -893,8 +762,7 @@ export const validateGrpcSourceFeeds: <
         topic: feed.topic,
       });
     }
-    const sourceMetadata = grpcTopicSourceMetadata(topicDefinition);
-    if (sourceMetadata._tag === "absent") {
+    if (binding.grpcMetadata._tag === "absent") {
       return yield* new ViewServerGrpcIngressError({
         message: `gRPC feed ${feedName} targets View Server topic ${feed.topic}, but that topic does not declare a gRPC source.`,
         cause: feed.topic,

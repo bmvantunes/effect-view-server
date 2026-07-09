@@ -18,24 +18,13 @@ import type {
   ViewServerTransportError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
-
-type HasRequiredDefinedObjectProperty<Definition, Key extends string> = Key extends keyof Definition
-  ? undefined extends Definition[Key]
-    ? false
-    : Exclude<Definition[Key], undefined> extends object
-      ? true
-      : false
-  : false;
-
-type HasSourceOwner<Definition> = true extends
-  | HasRequiredDefinedObjectProperty<Definition, "kafkaSource">
-  | HasRequiredDefinedObjectProperty<Definition, "grpcSource">
-  ? true
-  : false;
+import type { TopicDefinitionHasSourceOwner } from "./source-binding-resolution";
 
 type RuntimeCorePublicTopic<Topics extends TopicDefinitions> = Extract<
   {
-    readonly [Topic in keyof Topics]: HasSourceOwner<Topics[Topic]> extends true ? never : Topic;
+    readonly [Topic in keyof Topics]: TopicDefinitionHasSourceOwner<Topics[Topic]> extends true
+      ? never
+      : Topic;
   }[keyof Topics],
   string
 >;
@@ -56,7 +45,9 @@ type RuntimeCoreLeasedTopic<Topics extends TopicDefinitions> = Extract<
 
 type RuntimeCoreSourceOwnedTopic<Topics extends TopicDefinitions> = Extract<
   {
-    readonly [Topic in keyof Topics]: HasSourceOwner<Topics[Topic]> extends true ? Topic : never;
+    readonly [Topic in keyof Topics]: TopicDefinitionHasSourceOwner<Topics[Topic]> extends true
+      ? Topic
+      : never;
   }[keyof Topics],
   string
 >;

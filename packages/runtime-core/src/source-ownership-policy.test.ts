@@ -251,6 +251,48 @@ describe("SourceOwnershipPolicy", () => {
     }),
   );
 
+  it.effect("preserves leased runtime protection for invalid declared leased metadata", () =>
+    Effect.gen(function* () {
+      const malformedLeasedViewServer = defineViewServerConfig({
+        topics: {
+          malformedLeasedOrders: {
+            schema: Row,
+            key: "id",
+          },
+        },
+      });
+      Object.defineProperty(malformedLeasedViewServer.topics.malformedLeasedOrders, "grpcSource", {
+        value: {
+          _tag: "GrpcLeasedTopicSource",
+          kind: "grpc",
+          lifecycle: "leased",
+          routeBy: [],
+        },
+      });
+      const policy = makeSourceOwnershipPolicy(malformedLeasedViewServer);
+
+      const runtimeCoreReadError = yield* policy
+        .requirePublicReadAllowed("malformedLeasedOrders", "runtimeCore")
+        .pipe(Effect.flip);
+
+      expect([...policy.grpcLeasedTopics]).toStrictEqual(["malformedLeasedOrders"]);
+      expect([...policy.topics]).toStrictEqual([
+        [
+          "malformedLeasedOrders",
+          {
+            grpcLeased: true,
+            owners: [{ _tag: "grpc", lifecycle: "leased" }],
+            sourceOwned: true,
+            topic: "malformedLeasedOrders",
+          },
+        ],
+      ]);
+      expect(runtimeCoreReadError).toStrictEqual(
+        runtimeCoreLeasedAccessError("malformedLeasedOrders"),
+      );
+    }),
+  );
+
   it("classifies malformed and conflicting source declarations without caller reflection", () => {
     const malformedViewServer = defineViewServerConfig({
       kafka: {

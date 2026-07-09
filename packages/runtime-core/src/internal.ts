@@ -34,7 +34,20 @@ export {
   collectSourceOwnershipConflicts,
   makeSourceOwnershipPolicy,
 } from "./source-ownership-policy";
+export {
+  makeTopicSourceBindings,
+  topicGrpcSourceMetadataFromUnknown,
+} from "./source-binding-resolution";
 export { makeRuntimeCoreMutationPipeline } from "./source-mutation-pipeline";
+export type {
+  TopicDefinitionHasRequiredDefinedObjectProperty,
+  TopicDefinitionHasSourceOwner,
+  TopicGrpcSourceLifecycle,
+  TopicGrpcSourceMetadata,
+  TopicGrpcSourceValidMetadata,
+  TopicSourceBinding,
+  TopicSourceOwner,
+} from "./source-binding-resolution";
 export type {
   RuntimeCoreDecodedRowWithStorageKey,
   RuntimeCoreMutationPipeline,

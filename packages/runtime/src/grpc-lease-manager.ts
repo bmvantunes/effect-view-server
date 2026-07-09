@@ -38,10 +38,17 @@ import {
 import * as BigDecimal from "effect/BigDecimal";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import {
+  callLeasedGrpcSourceAcquire,
+  callLeasedGrpcSourceRelease,
+  callLeasedGrpcSourceRequest,
+  makeGrpcSourceInput,
   makeDefaultGrpcClient,
+  makeViewServerGrpcSourceError,
   ViewServerGrpcIngressError,
   type ViewServerGrpcClientFactory,
-} from "./grpc-ingress";
+  type ViewServerGrpcRuntimeCallable,
+  type ViewServerGrpcSourceInput,
+} from "./grpc-source-lifecycle";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 import {
@@ -52,17 +59,15 @@ import {
 
 type ViewServerGrpcHealthRefreshRequest = Effect.Effect<void>;
 
-type RuntimeCallable = (...args: ReadonlyArray<never>) => unknown;
-
 type RuntimeLeasedFeedDefinition = {
   readonly lifecycle: "leased";
   readonly topic: string;
   readonly client: string;
   readonly routeBy: ReadonlyArray<string>;
-  readonly request: RuntimeCallable;
-  readonly acquire: RuntimeCallable;
-  readonly release?: RuntimeCallable;
-  readonly map: RuntimeCallable;
+  readonly request: ViewServerGrpcRuntimeCallable;
+  readonly acquire: ViewServerGrpcRuntimeCallable;
+  readonly release?: ViewServerGrpcRuntimeCallable;
+  readonly map: ViewServerGrpcRuntimeCallable;
 };
 
 const isRuntimeLeasedFeed = (feed: {
@@ -88,16 +93,7 @@ type CanonicalRouteValue =
 
 type LeasedFeedRoute = Readonly<Record<string, CanonicalRouteValue>>;
 
-type LeasedFeedRuntimeInput = {
-  readonly client: unknown;
-  readonly request: unknown;
-  readonly route: LeasedFeedRoute;
-  readonly session: {
-    readonly id: string | null;
-    readonly forwardedHeaders: Readonly<Record<string, string>>;
-    readonly systemHeaders: Readonly<Record<string, string>>;
-  };
-};
+type LeasedFeedRuntimeInput = ViewServerGrpcSourceInput<LeasedFeedRoute>;
 
 type ActiveLease = {
   readonly feedName: string;
@@ -133,18 +129,6 @@ export type ViewServerGrpcLeaseManager<Topics extends ViewServerRuntimeTopicDefi
 const grpcMessageBatchSize = 256;
 const grpcMessageBatchFlushInterval = "2 millis";
 
-const sharedLeasedFeedSession = {
-  id: null,
-  forwardedHeaders: {},
-  systemHeaders: {},
-};
-
-const isRuntimeLeasedStream = (value: unknown): value is Stream.Stream<unknown, unknown, never> =>
-  Stream.isStream(value);
-
-const isRuntimeReleaseEffect = (value: unknown): value is Effect.Effect<void, unknown, never> =>
-  Effect.isEffect(value);
-
 const isRuntimeMutationEffect = (value: unknown): value is Effect.Effect<unknown, unknown, never> =>
   Effect.isEffect(value);
 
@@ -178,12 +162,14 @@ const runtimeError = (input: {
 const grpcLeaseError = (input: {
   readonly message: string;
   readonly cause: unknown;
+  readonly phase: NonNullable<ViewServerGrpcIngressError["phase"]>;
   readonly feedName: string;
   readonly topic: string;
 }) =>
-  new ViewServerGrpcIngressError({
+  makeViewServerGrpcSourceError({
     message: input.message,
     cause: input.cause,
+    phase: input.phase,
     feedName: input.feedName,
     topic: input.topic,
   });
@@ -368,6 +354,7 @@ const routeFeedKey = Effect.fn("ViewServerRuntime.grpc.leased.route.feedKey")(fu
       return yield* grpcLeaseError({
         message: `Leased gRPC route is missing configured field ${field}`,
         cause: route,
+        phase: "request",
         feedName,
         topic,
       });
@@ -381,83 +368,23 @@ const routeFeedKey = Effect.fn("ViewServerRuntime.grpc.leased.route.feedKey")(fu
 const internalRowKey = (feedKey: string, publicKey: string): string =>
   `${feedKey}/row/${publicKey}`;
 
-const callFeedRequest: (
+const callFeedRequest = (
   feedName: string,
   feed: RuntimeLeasedFeedDefinition,
   route: LeasedFeedRoute,
-) => Effect.Effect<unknown, ViewServerGrpcIngressError, never> = Effect.fn(
-  "ViewServerRuntime.grpc.leased.request",
-)(function* (feedName, feed, route) {
-  return yield* Effect.try({
-    try: () => Reflect.apply(feed.request, undefined, [route]),
-    catch: (cause) =>
-      grpcLeaseError({
-        message: `gRPC leased feed request creation failed for ${feedName}`,
-        cause,
-        feedName,
-        topic: feed.topic,
-      }),
-  });
-});
+) => callLeasedGrpcSourceRequest(feedName, feed, route);
 
-const callFeedAcquire: (
+const callFeedAcquire = (
   feedName: string,
   feed: RuntimeLeasedFeedDefinition,
   input: LeasedFeedRuntimeInput,
-) => Effect.Effect<Stream.Stream<unknown, unknown, never>, ViewServerGrpcIngressError, never> =
-  Effect.fn("ViewServerRuntime.grpc.leased.acquire")(function* (feedName, feed, input) {
-    const stream = yield* Effect.try({
-      try: () => Reflect.apply(feed.acquire, undefined, [input]),
-      catch: (cause) =>
-        grpcLeaseError({
-          message: `gRPC leased feed acquire failed for ${feedName}`,
-          cause,
-          feedName,
-          topic: feed.topic,
-        }),
-    });
-    if (isRuntimeLeasedStream(stream)) {
-      return stream;
-    }
-    return yield* grpcLeaseError({
-      message: `gRPC leased feed acquire did not return a Stream for ${feedName}`,
-      cause: stream,
-      feedName,
-      topic: feed.topic,
-    });
-  });
+) => callLeasedGrpcSourceAcquire(feedName, feed, input);
 
-const callFeedRelease: (
+const callFeedRelease = (
   feedName: string,
   feed: RuntimeLeasedFeedDefinition,
   input: LeasedFeedRuntimeInput,
-) => Effect.Effect<void, unknown, never> = Effect.fn("ViewServerRuntime.grpc.leased.release")(
-  function* (feedName, feed, input) {
-    const releaseCallback = feed.release;
-    if (releaseCallback === undefined) {
-      return;
-    }
-    const release = yield* Effect.try({
-      try: () => Reflect.apply(releaseCallback, undefined, [input]),
-      catch: (cause) =>
-        grpcLeaseError({
-          message: `gRPC leased feed release failed for ${feedName}`,
-          cause,
-          feedName,
-          topic: feed.topic,
-        }),
-    });
-    if (!isRuntimeReleaseEffect(release)) {
-      return yield* grpcLeaseError({
-        message: `gRPC leased feed release did not return an Effect for ${feedName}`,
-        cause: release,
-        feedName,
-        topic: feed.topic,
-      });
-    }
-    yield* release.pipe(Effect.asVoid);
-  },
-);
+) => callLeasedGrpcSourceRelease(feedName, feed, input);
 
 const topicDefinitionFor = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
@@ -472,6 +399,7 @@ const topicDefinitionFor = <const Topics extends ViewServerRuntimeTopicDefinitio
     return grpcLeaseError({
       message: `gRPC leased feed ${feedName} references unknown topic ${topic}`,
       cause: topic,
+      phase: "configuration",
       feedName,
       topic,
     });
@@ -494,6 +422,7 @@ const runtimeTopicFor = <const Topics extends ViewServerRuntimeTopicDefinitions>
     return grpcLeaseError({
       message: `gRPC leased feed ${feedName} references unknown topic ${topic}`,
       cause: topic,
+      phase: "configuration",
       feedName,
       topic,
     });
@@ -522,6 +451,7 @@ const mapLeasedValue = Effect.fn("ViewServerRuntime.grpc.leased.map")(function* 
       grpcLeaseError({
         message: `gRPC leased feed mapping failed for ${feedName}`,
         cause,
+        phase: "mapping",
         feedName,
         topic: feed.topic,
       }),
@@ -531,6 +461,7 @@ const mapLeasedValue = Effect.fn("ViewServerRuntime.grpc.leased.map")(function* 
       grpcLeaseError({
         message: `gRPC leased feed mapping produced an invalid row for ${feedName}`,
         cause,
+        phase: "mapping",
         feedName,
         topic: feed.topic,
       }),
@@ -555,6 +486,7 @@ const rowKey = <const Topics extends ViewServerRuntimeTopicDefinitions>(
     return yield* grpcLeaseError({
       message: `gRPC leased feed row key ${keyField} for ${topic} is not a string`,
       cause: key,
+      phase: "mapping",
       feedName,
       topic,
     });
@@ -602,6 +534,7 @@ const validateLeasedRowRoute = Effect.fn("ViewServerRuntime.grpc.leased.row.vali
             rowValue,
             routeValue,
           },
+          phase: "mapping",
           feedName: lease.feedName,
           topic: lease.feed.topic,
         });
@@ -856,6 +789,7 @@ const callRuntimePublishMany = Effect.fn(
     return yield* grpcLeaseError({
       message: `Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
       cause: effect,
+      phase: "publish",
       feedName,
       topic,
     });
@@ -866,6 +800,7 @@ const callRuntimePublishMany = Effect.fn(
       grpcLeaseError({
         message: `gRPC leased feed publish failed for ${feedName}`,
         cause,
+        phase: "publish",
         feedName,
         topic,
       }),
@@ -887,6 +822,7 @@ const callRuntimeDelete = Effect.fn("ViewServerRuntime.grpc.leased.runtime.delet
     return yield* grpcLeaseError({
       message: `Runtime delete did not return an Effect for leased gRPC feed ${feedName}`,
       cause: effect,
+      phase: "release",
       feedName,
       topic,
     });
@@ -897,6 +833,7 @@ const callRuntimeDelete = Effect.fn("ViewServerRuntime.grpc.leased.runtime.delet
       grpcLeaseError({
         message: `gRPC leased feed row cleanup failed for ${feedName}`,
         cause,
+        phase: "release",
         feedName,
         topic,
       }),
@@ -1007,6 +944,7 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
       grpcLeaseError({
         message: `gRPC leased feed stream failed for ${lease.feedName}`,
         cause,
+        phase: "stream",
         feedName: lease.feedName,
         topic: lease.feed.topic,
       }),
@@ -1195,6 +1133,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
         grpcLeaseError({
           message: `gRPC leased client creation failed for ${feedName}`,
           cause,
+          phase: "client",
           feedName,
           topic,
         }),
@@ -1235,12 +1174,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         leases.set(feedKey, lease);
-        const input: LeasedFeedRuntimeInput = {
-          client: grpcClient,
-          request,
-          route,
-          session: sharedLeasedFeedSession,
-        };
+        const input: LeasedFeedRuntimeInput = makeGrpcSourceInput(grpcClient, request, route);
         const startedAt = yield* Clock.currentTimeMillis;
         yield* health.clientConnected(feed.client, startedAt);
         yield* health.leasedFeedStarting({

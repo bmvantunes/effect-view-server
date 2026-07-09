@@ -8,7 +8,7 @@ import type {
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
-import { Config, Effect, Exit, Layer } from "effect";
+import { Config, Effect, Layer } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
@@ -19,6 +19,7 @@ import type { ViewServerKafkaIngressError } from "./kafka-ingress";
 import type { ViewServerGrpcIngressError } from "./grpc-ingress";
 import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
+import { makeViewServerRuntimeLifecycle } from "./runtime-lifecycle";
 import {
   resolveViewServerRuntimeOptions,
   resolveViewServerRuntimeOptionsWithRuntimeFeeds,
@@ -208,134 +209,101 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         : grpcHealth.healthOverlay(kafkaOverlayed, nowMillis);
     };
   }
-  const runtimeCore = yield* dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput);
-  const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
-  const grpcLeaseManager =
-    grpcOptions === undefined || grpcHealth === undefined
-      ? undefined
-      : yield* makeViewServerGrpcLeaseManager(
+  const lifecycle = yield* makeViewServerRuntimeLifecycle();
+  return yield* Effect.gen(function* () {
+    const runtimeCore = yield* lifecycle.acquire(
+      "runtimeCore",
+      dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
+      (resource) => resource.close,
+    );
+    const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
+    const grpcLeaseManager =
+      grpcOptions === undefined || grpcHealth === undefined
+        ? undefined
+        : yield* lifecycle.acquire(
+            "grpcLeaseManager",
+            makeViewServerGrpcLeaseManager(
+              dependencyConfig,
+              runtimeCore.internalClient,
+              runtimeCore.liveClient,
+              runtimeCore.internalLiveClient,
+              runtimeCore.requestHealthRefresh,
+              grpcOptions,
+              grpcHealth,
+            ),
+            (resource) => resource.close,
+          );
+    const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
+    const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
+    const tcpPublishIngress =
+      resolvedOptions.tcpPublishOptions === undefined
+        ? undefined
+        : yield* lifecycle.acquire(
+            "tcpPublishIngress",
+            dependencies.makeTcpPublishIngress(dependencyConfig, runtimeCore.internalClient, {
+              ...resolvedOptions.tcpPublishOptions,
+              ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+            }),
+            (resource) => resource.close,
+          );
+    const server = yield* lifecycle.acquire(
+      "server",
+      dependencies.makeServer(
+        dependencyConfig,
+        {
+          ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+          liveClient: runtimeLiveClient,
+          runtime: runtimeClient,
+          transport: {
+            clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshTransportHealth)),
+            clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshTransportHealth)),
+            streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshTransportHealth)),
+            streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshTransportHealth)),
+          },
+        },
+        resolvedOptions.serverOptions,
+      ),
+      (resource) => resource.close,
+    );
+    if (kafkaOptions !== undefined && kafkaHealth !== undefined) {
+      yield* lifecycle.acquire(
+        "kafkaIngress",
+        dependencies.makeKafkaIngress(
           dependencyConfig,
           runtimeCore.internalClient,
-          runtimeCore.liveClient,
-          runtimeCore.internalLiveClient,
+          runtimeCore.requestHealthRefresh,
+          kafkaOptions,
+          kafkaHealth,
+        ),
+        (resource) => resource.close,
+      );
+    }
+    if (grpcOptions !== undefined && grpcHealth !== undefined) {
+      yield* lifecycle.acquire(
+        "grpcIngress",
+        dependencies.makeGrpcIngress(
+          dependencyConfig,
+          runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           grpcOptions,
           grpcHealth,
-        );
-  const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
-  const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
-  const closeGrpcLeaseManager =
-    grpcLeaseManager === undefined ? Effect.void : grpcLeaseManager.close;
-  const tcpPublishIngress =
-    resolvedOptions.tcpPublishOptions === undefined
-      ? undefined
-      : yield* dependencies
-          .makeTcpPublishIngress(dependencyConfig, runtimeCore.internalClient, {
-            ...resolvedOptions.tcpPublishOptions,
-            ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-          })
-          .pipe(
-            Effect.onExit((exit) =>
-              Exit.isFailure(exit)
-                ? closeGrpcLeaseManager.pipe(Effect.ensuring(runtimeCore.close))
-                : Effect.void,
-            ),
-          );
-  const server = yield* dependencies
-    .makeServer(
-      dependencyConfig,
-      {
-        ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-        liveClient: runtimeLiveClient,
-        runtime: runtimeClient,
-        transport: {
-          clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshTransportHealth)),
-          clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshTransportHealth)),
-          streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshTransportHealth)),
-          streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshTransportHealth)),
-        },
-      },
-      resolvedOptions.serverOptions,
-    )
-    .pipe(
-      Effect.onExit((exit) =>
-        Exit.isFailure(exit)
-          ? (tcpPublishIngress?.close ?? Effect.void).pipe(
-              Effect.ensuring(closeGrpcLeaseManager),
-              Effect.ensuring(runtimeCore.close),
-            )
-          : Effect.void,
-      ),
-    );
-  const kafkaIngress =
-    kafkaOptions === undefined || kafkaHealth === undefined
-      ? undefined
-      : yield* dependencies
-          .makeKafkaIngress(
-            dependencyConfig,
-            runtimeCore.internalClient,
-            runtimeCore.requestHealthRefresh,
-            kafkaOptions,
-            kafkaHealth,
-          )
-          .pipe(
-            Effect.onExit((exit) =>
-              Exit.isFailure(exit)
-                ? (tcpPublishIngress?.close ?? Effect.void).pipe(
-                    Effect.ensuring(server.close),
-                    Effect.ensuring(closeGrpcLeaseManager),
-                    Effect.ensuring(runtimeCore.close),
-                  )
-                : Effect.void,
-            ),
-          );
-  const grpcIngress =
-    grpcOptions === undefined || grpcHealth === undefined
-      ? undefined
-      : yield* dependencies
-          .makeGrpcIngress(
-            dependencyConfig,
-            runtimeCore.internalClient,
-            runtimeCore.requestHealthRefresh,
-            grpcOptions,
-            grpcHealth,
-          )
-          .pipe(
-            Effect.onExit((exit) =>
-              Exit.isFailure(exit)
-                ? (tcpPublishIngress?.close ?? Effect.void).pipe(
-                    Effect.ensuring(kafkaIngress?.close ?? Effect.void),
-                    Effect.ensuring(closeGrpcLeaseManager),
-                    Effect.ensuring(server.close),
-                    Effect.ensuring(runtimeCore.close),
-                  )
-                : Effect.void,
-            ),
-          );
-  const closeGrpcIngress: Effect.Effect<void> =
-    grpcIngress === undefined ? Effect.void : grpcIngress.close;
-  const closeKafkaIngress: Effect.Effect<void> =
-    kafkaIngress === undefined ? Effect.void : kafkaIngress.close;
-  const closeTcpPublishIngress: Effect.Effect<void> =
-    tcpPublishIngress === undefined ? Effect.void : tcpPublishIngress.close;
-  const close: Effect.Effect<void> = closeTcpPublishIngress.pipe(
-    Effect.ensuring(closeGrpcIngress),
-    Effect.ensuring(closeGrpcLeaseManager),
-    Effect.ensuring(closeKafkaIngress),
-    Effect.ensuring(server.close),
-    Effect.ensuring(runtimeCore.close),
-  );
-  const publicLiveClient = toPublicLiveClient(runtimeLiveClient, close);
-  return {
-    url: server.url,
-    healthUrl: server.healthUrl,
-    metricsUrl: server.metricsUrl,
-    ...(tcpPublishIngress === undefined ? {} : { tcpPublishUrl: tcpPublishIngress.url }),
-    client: runtimeClient,
-    liveClient: publicLiveClient,
-    health: runtimeClient.health,
-    close,
-  };
+        ),
+        (resource) => resource.close,
+      );
+    }
+    const close: Effect.Effect<void> = lifecycle.close;
+    const publicLiveClient = toPublicLiveClient(runtimeLiveClient, close);
+    return {
+      url: server.url,
+      healthUrl: server.healthUrl,
+      metricsUrl: server.metricsUrl,
+      ...(tcpPublishIngress === undefined ? {} : { tcpPublishUrl: tcpPublishIngress.url }),
+      client: runtimeClient,
+      liveClient: publicLiveClient,
+      health: runtimeClient.health,
+      close,
+    };
+  }).pipe(Effect.onInterrupt(() => lifecycle.close));
 });
 
 const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <

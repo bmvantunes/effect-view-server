@@ -33,6 +33,7 @@ export type TcpPublishCommandAuthContext = {
 
 type TcpFieldSchema = NonNullable<RowSchema["fields"][string]>;
 type TcpDecodePhase = "key" | "patch" | "row";
+type TcpFieldDefaultDecoder = Effect.Effect<Option.Option<unknown>>;
 type TcpConfiguredTopic<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly fieldSchemas: ReadonlyMap<string, TcpFieldSchema>;
   readonly keyField: string;
@@ -246,6 +247,32 @@ const decodeTcpFieldForRuntime = Effect.fn("ViewServerRuntime.tcpPublish.field.d
   return yield* decodeTcpFieldForRuntimeInternal(schema, topic, phase, value);
 });
 
+const makeTcpMissingFieldDefaultDecoder = (
+  schema: TcpFieldSchema,
+  field: string,
+): TcpFieldDefaultDecoder => {
+  const fieldDefaultSchema = Schema.Struct({ [field]: schema });
+  return Effect.suspend(() =>
+    Result.match(Schema.decodeUnknownResult(fieldDefaultSchema)({}, strictParseOptions), {
+      onSuccess: (decodedDefault) =>
+        Object.hasOwn(decodedDefault, field)
+          ? Effect.succeed(Option.some(decodedDefault[field]))
+          : Effect.succeed(Option.none()),
+      onFailure: () => Effect.succeed(Option.none()),
+    }),
+  ).pipe(Effect.withSpan("ViewServerRuntime.tcpPublish.field.default.decode"));
+};
+
+const makeTcpRowDefaultDecoders = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  topicDefinition: TcpConfiguredTopic<Topics>,
+): ReadonlyMap<string, TcpFieldDefaultDecoder> => {
+  const defaultDecoders = new Map<string, TcpFieldDefaultDecoder>();
+  for (const [field, fieldSchema] of topicDefinition.fieldSchemas) {
+    defaultDecoders.set(field, makeTcpMissingFieldDefaultDecoder(fieldSchema, field));
+  }
+  return defaultDecoders;
+};
+
 const decodeTcpKey = Effect.fn("ViewServerRuntime.tcpPublish.key.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
 >(topicDefinition: TcpConfiguredTopic<Topics>, key: string) {
@@ -266,7 +293,12 @@ const decodeTcpKey = Effect.fn("ViewServerRuntime.tcpPublish.key.decode")(functi
 
 const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(topicDefinition: TcpConfiguredTopic<Topics>, topic: string, row: Record<string, unknown>) {
+>(
+  topicDefinition: TcpConfiguredTopic<Topics>,
+  topic: string,
+  row: Record<string, unknown>,
+  defaultDecoders: ReadonlyMap<string, TcpFieldDefaultDecoder>,
+) {
   const decodedRow: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(row)) {
     const fieldSchema = topicDefinition.fieldSchemas.get(field);
@@ -279,14 +311,18 @@ const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(functi
       yield* decodeTcpFieldForRuntime(fieldSchema, topic, "row", value),
     );
   }
-  yield* Schema.decodeUnknownEffect(Schema.toType(topicDefinition.schema))(
+  for (const [field, defaultDecoder] of defaultDecoders) {
+    if (!Object.hasOwn(row, field)) {
+      const defaultValue = yield* defaultDecoder;
+      if (Option.isSome(defaultValue)) {
+        setDecodedField(decodedRow, field, defaultValue.value);
+      }
+    }
+  }
+  return yield* Schema.decodeUnknownEffect(Schema.toType(topicDefinition.schema))(
     decodedRow,
     strictParseOptions,
-  ).pipe(
-    Effect.asVoid,
-    Effect.mapError((cause) => tcpDecodeSchemaError(topic, "row", cause)),
-  );
-  return decodedRow;
+  ).pipe(Effect.mapError((cause) => tcpDecodeSchemaError(topic, "row", cause)));
 });
 
 const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(function* <
@@ -296,7 +332,10 @@ const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(func
   topic: string,
   rows: ReadonlyArray<Record<string, unknown>>,
 ) {
-  return yield* Effect.forEach(rows, (row) => decodeTcpRow(topicDefinition, topic, row));
+  const defaultDecoders = makeTcpRowDefaultDecoders(topicDefinition);
+  return yield* Effect.forEach(rows, (row) =>
+    decodeTcpRow(topicDefinition, topic, row, defaultDecoders),
+  );
 });
 
 const decodeTcpPatch = Effect.fn("ViewServerRuntime.tcpPublish.patch.decode")(function* <
@@ -348,7 +387,12 @@ export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPubli
     const topicDefinition = yield* topicSchema(config, command.topic);
     yield* ensureTopicCanBeMutated(topicDefinition.topic, sourceOwnership);
     if (command.op === "publish") {
-      const row = yield* decodeTcpRow(topicDefinition, topicDefinition.topic, command.row);
+      const row = yield* decodeTcpRow(
+        topicDefinition,
+        topicDefinition.topic,
+        command.row,
+        makeTcpRowDefaultDecoders(topicDefinition),
+      );
       yield* client
         .publishManyDecodedRows(topicDefinition.topic, [row])
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "publish")));

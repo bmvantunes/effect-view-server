@@ -197,6 +197,21 @@ const unionCodecTcpViewServer = defineViewServerConfig({
   },
 });
 
+const DefaultedTcpOrder = Schema.Struct({
+  id: Schema.String,
+  price: Schema.Number,
+  status: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed("open"))),
+});
+
+const defaultedTcpViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: DefaultedTcpOrder,
+      key: "id",
+    },
+  },
+});
+
 const JsonCodecTcpNested = Schema.Struct({
   encodedQuantity: Schema.BigIntFromString,
   runtimeAmount: Schema.BigDecimal,
@@ -1359,6 +1374,51 @@ describe("@effect-view-server/runtime", () => {
       expect(snapshot).toStrictEqual({
         rows: [{ id: "a", quantity: 9007199254740995n }],
         totalRows: 1,
+        version: 2,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.live("preserves TCP publish rows materialized by the topic schema decoder", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeViewServerRuntime(defaultedTcpViewServer, {
+        host: "127.0.0.1",
+        tcpPublishPort: 0,
+        websocketPort: 0,
+      });
+      const tcpUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+
+      const response = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "publish",
+        topic: "orders",
+        row: { id: "a", price: 12 },
+      });
+      const publishManyResponse = yield* sendTcpPublishCommand(tcpUrl, {
+        op: "publishMany",
+        topic: "orders",
+        rows: [
+          { id: "b", price: 24 },
+          { id: "c", price: 36 },
+        ],
+      });
+      const snapshot = yield* runtime.client.snapshot("orders", {
+        select: ["id", "price", "status"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(response).toStrictEqual({ ok: true });
+      expect(publishManyResponse).toStrictEqual({ ok: true });
+      expect(snapshot).toStrictEqual({
+        rows: [
+          { id: "a", price: 12, status: "open" },
+          { id: "b", price: 24, status: "open" },
+          { id: "c", price: 36, status: "open" },
+        ],
+        totalRows: 3,
         version: 2,
         status: "ready",
         statusCode: "Ready",

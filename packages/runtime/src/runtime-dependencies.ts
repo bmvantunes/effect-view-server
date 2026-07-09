@@ -1,7 +1,6 @@
 import type {
   GrpcRuntimeClients,
   RuntimeRegions,
-  ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { type ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
@@ -69,7 +68,7 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   ) => Effect.Effect<ViewServerKafkaIngress, ViewServerKafkaIngressError>;
   readonly makeTcpPublishIngress: (
     config: ViewServerRuntimeDependencyConfig<Topics>,
-    client: ViewServerRuntimeClient<Topics>,
+    client: ViewServerRuntimeCoreInternalClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) => Effect.Effect<ViewServerTcpPublishIngress, ViewServerTcpPublishIngressError>;
   readonly makeGrpcIngress: <const Clients extends GrpcRuntimeClients>(

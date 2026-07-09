@@ -38,6 +38,7 @@ import {
   acquireTopicStoreSubscription,
   closeTopicStoreSubscriptions,
   deleteTopicStoreRow,
+  patchTopicStoreDecodedFields,
   patchTopicStoreRow,
   publishTopicStoreDecodedRows,
   publishTopicStoreDecodedRowsWithStorageKeys,
@@ -160,6 +161,15 @@ class InMemoryColumnLiveViewEngine<
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
       yield* publishTopicStoreRowsWithStorageKeys(store, rows, invalidRow);
+    });
+
+  readonly patchDecodedFields: ColumnLiveViewEngineInternal<Topics>["patchDecodedFields"] =
+    Effect.fn("ColumnLiveViewEngine.patchDecodedFields")({ self: this }, function* <
+      Topic extends Extract<keyof Topics, string>,
+    >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, key: string, patch: object) {
+      yield* this.ensureOpen();
+      const store = yield* this.getStore(topic);
+      yield* patchTopicStoreDecodedFields(store, key, patch, invalidRow);
     });
 
   readonly patch: ColumnLiveViewEngine<Topics>["patch"] = Effect.fn("ColumnLiveViewEngine.patch")(

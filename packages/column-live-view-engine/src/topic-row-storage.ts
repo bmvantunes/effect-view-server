@@ -33,6 +33,7 @@ import {
 } from "./topic-row-change-journal";
 import { deleteCompactingTopicRowSlot } from "./topic-row-storage-lifecycle";
 import {
+  prepareDecodedTopicPatch,
   prepareDecodedTopicRow,
   prepareDecodedTopicRowWithStorageKey,
   prepareTopicPatch,
@@ -380,6 +381,23 @@ export class TopicRowStorage {
       invalidRow,
     );
   });
+
+  prepareDecodedPatch = Effect.fn("ColumnLiveViewEngine.topicRowStorage.decodedPatch.prepare")(
+    function* <Patch extends Partial<RowObject>, Error>(
+      this: TopicRowStorage,
+      key: string,
+      patch: Patch,
+      invalidRow: InvalidRowErrorFactory<Error>,
+    ) {
+      return yield* prepareDecodedTopicPatch(
+        this.rowPreparation,
+        key,
+        this.rowForKey(key),
+        patch,
+        invalidRow,
+      );
+    },
+  );
 
   private writeSlot(slot: number, prepared: PreparedTopicRow): void {
     this.slots[slot] = {

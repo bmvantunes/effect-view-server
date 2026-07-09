@@ -280,6 +280,7 @@ export const failingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
   delete: () => Effect.fail(runtimeUnavailable),
   health: () => Effect.fail(runtimeUnavailable),
   patch: () => Effect.fail(runtimeUnavailable),
+  patchDecodedFields: () => Effect.fail(runtimeUnavailable),
   publish: () => Effect.fail(runtimeUnavailable),
   publishMany: () => Effect.fail(runtimeUnavailable),
   publishManyDecodedRows: () => Effect.fail(runtimeUnavailable),

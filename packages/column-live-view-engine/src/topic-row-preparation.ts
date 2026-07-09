@@ -65,6 +65,22 @@ const normalizeDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decode
   },
 );
 
+const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.validate")(
+  function* <Error>(
+    context: TopicRowPreparationContext,
+    row: RowObject,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) {
+    return yield* Effect.try({
+      try: () => {
+        const decoded = Schema.decodeUnknownSync(Schema.toType(context.schema))(row);
+        return normalizedDecodedTopicRow(context, decoded);
+      },
+      catch: (cause) => invalidRow(context.topic, String(cause)),
+    });
+  },
+);
+
 const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function* <Error>(
   context: TopicRowPreparationContext,
   row: RowObject,
@@ -161,19 +177,20 @@ export const prepareDecodedTopicRowWithStorageKey = Effect.fn(
   } satisfies PreparedTopicRow;
 });
 
-export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.prepare")(
+const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.preparePatched")(
   function* <Patch extends Partial<RowObject>, Error>(
     context: TopicRowPreparationContext,
     key: string,
     current: RowObject | undefined,
     patch: Patch,
     invalidRow: InvalidRowErrorFactory<Error>,
+    preparePatchedRow: (row: RowObject) => Effect.Effect<RowObject, Error>,
   ) {
     yield* validateTopicPatchKeys(context, patch, invalidRow);
     if (current === undefined) {
       return yield* Effect.fail(invalidRow(context.topic, `Cannot patch missing key: ${key}`));
     }
-    const decoded = yield* decodeTopicRow(context, { ...current, ...patch }, invalidRow);
+    const decoded = yield* preparePatchedRow({ ...current, ...patch });
     const decodedKey = yield* topicRowKey(context, decoded, invalidRow);
     if (decodedKey !== key) {
       return yield* Effect.fail(invalidRow(context.topic, "Patch must not change the row key."));
@@ -199,3 +216,31 @@ export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.
     } satisfies PreparedTopicRow;
   },
 );
+
+export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.prepare")(
+  function* <Patch extends Partial<RowObject>, Error>(
+    context: TopicRowPreparationContext,
+    key: string,
+    current: RowObject | undefined,
+    patch: Patch,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) {
+    return yield* preparePatchedTopicRow(context, key, current, patch, invalidRow, (row) =>
+      decodeTopicRow(context, row, invalidRow),
+    );
+  },
+);
+
+export const prepareDecodedTopicPatch = Effect.fn(
+  "ColumnLiveViewEngine.topicRow.decodedPatch.prepare",
+)(function* <Patch extends Partial<RowObject>, Error>(
+  context: TopicRowPreparationContext,
+  key: string,
+  current: RowObject | undefined,
+  patch: Patch,
+  invalidRow: InvalidRowErrorFactory<Error>,
+) {
+  return yield* preparePatchedTopicRow(context, key, current, patch, invalidRow, (row) =>
+    validateDecodedTopicRow(context, row, invalidRow),
+  );
+});

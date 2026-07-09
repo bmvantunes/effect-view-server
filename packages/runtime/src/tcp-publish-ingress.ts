@@ -1,28 +1,21 @@
-import type {
-  RowSchema,
-  ViewServerTopicConfig,
-  ViewServerRuntimeClient,
-  ViewServerRuntimeError,
-} from "@effect-view-server/config";
-import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/server";
-import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
+import type { ViewServerRuntimeError, ViewServerTopicConfig } from "@effect-view-server/config";
+import type { ViewServerAuth } from "@effect-view-server/server";
+import { ViewServerAuthError } from "@effect-view-server/server";
 import {
   makeSourceOwnershipPolicy,
   type SourceOwnershipPolicy,
+  type ViewServerRuntimeCoreInternalClient,
 } from "@effect-view-server/runtime-core/internal";
-import { Cause, Effect, Exit, Fiber, Option, Result, Schema, SchemaAST } from "effect";
+import { Cause, Effect, Exit, Fiber, Option, Schema } from "effect";
 import * as Net from "node:net";
+import {
+  handleTcpPublishCommandLine,
+  type TcpPublishCommandError,
+  ViewServerTcpPublishIngressError,
+} from "./tcp-publish-command";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
-export class ViewServerTcpPublishIngressError extends Schema.TaggedErrorClass<ViewServerTcpPublishIngressError>()(
-  "ViewServerTcpPublishIngressError",
-  {
-    cause: Schema.Unknown,
-    message: Schema.String,
-    phase: Schema.Literals(["configuration", "listen", "decode", "runtime", "backpressure"]),
-    topic: Schema.optional(Schema.String),
-  },
-) {}
+export { ViewServerTcpPublishIngressError } from "./tcp-publish-command";
 
 export type ViewServerTcpPublishIngressOptions = {
   readonly host?: string;
@@ -39,50 +32,11 @@ export type ViewServerTcpPublishIngress = {
   readonly close: Effect.Effect<void>;
 };
 
-type RuntimeMutationEffect = Effect.Effect<unknown, unknown, never>;
-type TcpPublishCommandError =
-  | ViewServerAuthError
-  | ViewServerRuntimeError
-  | ViewServerTcpPublishIngressError;
-
 const TcpAddress = Schema.Struct({
   address: Schema.String,
   family: Schema.String,
   port: Schema.Number,
 });
-
-const TcpJsonObject = Schema.Record(Schema.String, Schema.Json);
-const TcpHeaders = Schema.Record(Schema.String, Schema.String);
-
-const TcpPublishCommandSchema = Schema.Union([
-  Schema.Struct({
-    headers: Schema.optional(TcpHeaders),
-    op: Schema.Literal("publish"),
-    topic: Schema.String,
-    row: TcpJsonObject,
-  }),
-  Schema.Struct({
-    headers: Schema.optional(TcpHeaders),
-    op: Schema.Literal("publishMany"),
-    topic: Schema.String,
-    rows: Schema.Array(TcpJsonObject),
-  }),
-  Schema.Struct({
-    headers: Schema.optional(TcpHeaders),
-    op: Schema.Literal("patch"),
-    topic: Schema.String,
-    key: Schema.String,
-    patch: TcpJsonObject,
-  }),
-  Schema.Struct({
-    headers: Schema.optional(TcpHeaders),
-    op: Schema.Literal("delete"),
-    topic: Schema.String,
-    key: Schema.String,
-  }),
-]);
-
-type TcpPublishCommand = typeof TcpPublishCommandSchema.Type;
 
 type TcpPublishSocketState = {
   readonly activeFibers: Set<Fiber.Fiber<void, TcpPublishCommandError>>;
@@ -118,393 +72,12 @@ type TcpResponseSocket = {
   readonly write: (chunk: string, callback: () => void) => boolean;
 };
 
-type TcpFieldSchema = NonNullable<RowSchema["fields"][string]>;
-type TcpSuspendedSchema = {
-  readonly ast: SchemaAST.Suspend;
-};
-
 const defaultMaxLineBytes = 1024 * 1024;
 const defaultMaxConnections = 1024;
 const defaultMaxGlobalQueuedCommands = 1024;
 const defaultMaxQueuedCommands = 1024;
 const acceptedSocketPreCommandDeadlineMs = 30_000;
 const rejectedSocketDestroyTimeoutMs = 1_000;
-const strictParseOptions = {
-  onExcessProperty: "error",
-} as const;
-
-const isTopicDefinitionWithSchema = (value: unknown): value is { readonly schema: RowSchema } =>
-  typeof value === "object" && value !== null && Schema.isSchema(Reflect.get(value, "schema"));
-
-const isRuntimeMutationEffect = (value: unknown): value is RuntimeMutationEffect =>
-  Effect.isEffect(value);
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
-
-const isSuspendSchema = (schema: TcpFieldSchema): schema is TcpFieldSchema & TcpSuspendedSchema =>
-  SchemaAST.isSuspend(schema.ast);
-
-const isViewServerRuntimeError = (value: unknown): value is ViewServerRuntimeError => {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const tag = Reflect.get(value, "_tag");
-  const code = Reflect.get(value, "code");
-  const message = Reflect.get(value, "message");
-  return (
-    (tag === "ViewServerRuntimeError" || tag === "ViewServerBackpressureError") &&
-    typeof code === "string" &&
-    typeof message === "string"
-  );
-};
-
-const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngressError =>
-  new ViewServerTcpPublishIngressError({
-    message: "TCP publish command must be valid JSON.",
-    cause: { cause, line },
-    phase: "decode",
-  });
-
-const parseCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.parse")(function* (
-  line: string,
-) {
-  const value = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
-    line,
-    strictParseOptions,
-  ).pipe(Effect.mapError((cause) => tcpDecodeError(line, cause)));
-  return yield* Result.match(
-    Schema.decodeUnknownResult(TcpPublishCommandSchema)(value, strictParseOptions),
-    {
-      onSuccess: Effect.succeed,
-      onFailure: (cause) =>
-        Effect.fail(
-          new ViewServerTcpPublishIngressError({
-            message: "TCP publish command must match the publish command schema.",
-            cause,
-            phase: "decode",
-          }),
-        ),
-    },
-  );
-});
-
-const tcpAuthRequest = (command: TcpPublishCommand, socket: Net.Socket): ViewServerAuthRequest => ({
-  headers: command.headers ?? {},
-  method: "POST",
-  remoteAddress: Option.fromUndefinedOr(socket.remoteAddress),
-  url: "tcp://view-server/tcp-publish",
-});
-
-const runtimeCallFailed = (
-  method: string,
-  topic: string,
-  cause: unknown,
-): ViewServerTcpPublishIngressError =>
-  new ViewServerTcpPublishIngressError({
-    message: `Runtime ${method} did not return an Effect for TCP publish topic ${topic}.`,
-    cause,
-    phase: "runtime",
-    topic,
-  });
-
-const runRuntimeMutation = Effect.fn("ViewServerRuntime.tcpPublish.runtime.mutate")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  client: ViewServerRuntimeClient<Topics>,
-  method: "delete" | "patch" | "publish" | "publishMany",
-  topic: string,
-  args: ReadonlyArray<unknown>,
-) {
-  const fn = Reflect.get(client, method);
-  if (typeof fn !== "function") {
-    return yield* runtimeCallFailed(method, topic, fn);
-  }
-  const effect = Reflect.apply(fn, client, args);
-  if (!isRuntimeMutationEffect(effect)) {
-    return yield* runtimeCallFailed(method, topic, effect);
-  }
-  yield* effect.pipe(
-    Effect.asVoid,
-    Effect.mapError(
-      (cause): TcpPublishCommandError =>
-        isViewServerRuntimeError(cause)
-          ? cause
-          : new ViewServerTcpPublishIngressError({
-              message: `TCP publish runtime ${method} failed for topic ${topic}.`,
-              cause,
-              phase: "runtime",
-              topic,
-            }),
-    ),
-  );
-});
-
-const topicSchema = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerTopicConfig<Topics>,
-  topic: string,
-): Effect.Effect<RowSchema, ViewServerTcpPublishIngressError> => {
-  const topicDefinition = Reflect.get(config.topics, topic);
-  return isTopicDefinitionWithSchema(topicDefinition)
-    ? Effect.succeed(topicDefinition.schema)
-    : Effect.fail(
-        new ViewServerTcpPublishIngressError({
-          message: `TCP publish cannot find View Server topic ${topic}.`,
-          cause: topic,
-          phase: "decode",
-          topic,
-        }),
-      );
-};
-
-const tcpDecodeSchemaError = (
-  topic: string,
-  phase: "patch" | "row",
-  cause: unknown,
-): ViewServerTcpPublishIngressError =>
-  new ViewServerTcpPublishIngressError({
-    message: `TCP publish ${phase} did not match View Server topic ${topic}.`,
-    cause,
-    phase: "decode",
-    topic,
-  });
-
-const tcpFieldSchemaFromAst = (ast: SchemaAST.AST): TcpFieldSchema => Schema.make(ast);
-
-const setDecodedField = (record: Record<string, unknown>, field: string, value: unknown): void => {
-  Object.defineProperty(record, field, {
-    configurable: true,
-    enumerable: true,
-    value,
-    writable: true,
-  });
-};
-
-const nestedTcpFieldAst = (ast: SchemaAST.Objects, field: string): SchemaAST.AST | undefined =>
-  ast.propertySignatures.find((property) => property.name === field)?.type;
-
-const arrayElementAst = (
-  ast: SchemaAST.Arrays,
-  index: number,
-  length: number,
-): SchemaAST.AST | undefined => {
-  if (index < ast.elements.length) {
-    return ast.elements[index];
-  }
-  if (ast.rest.length === 0) {
-    return undefined;
-  }
-  if (ast.rest.length === 1) {
-    return ast.rest[0];
-  }
-  const trailingCount = ast.rest.length - 1;
-  const firstTrailingIndex = length - trailingCount;
-  if (index >= firstTrailingIndex) {
-    const trailingIndex = index - firstTrailingIndex + 1;
-    return ast.rest[trailingIndex];
-  }
-  return ast.rest[0];
-};
-
-const decodeTcpFieldForRuntimeInternal: (
-  schema: TcpFieldSchema,
-  topic: string,
-  phase: "patch" | "row",
-  value: unknown,
-) => Effect.Effect<unknown, ViewServerTcpPublishIngressError> = Effect.fn(
-  "ViewServerRuntime.tcpPublish.field.decode.internal",
-)(function* (schema, topic, phase, value) {
-  const rawDecode = yield* Effect.exit(
-    Schema.decodeUnknownEffect(schema)(value, strictParseOptions),
-  );
-  if (Exit.isSuccess(rawDecode)) {
-    // Transform schemas such as BigIntFromString must keep the JSON input shape for the engine path.
-    return value;
-  }
-  if (isSuspendSchema(schema)) {
-    const decodedValue = yield* decodeTcpFieldForRuntimeInternal(
-      Schema.make(schema.ast.thunk()),
-      topic,
-      phase,
-      value,
-    );
-    const decodeError = tcpDecodeSchemaError.bind(undefined, topic, phase);
-    yield* Schema.decodeUnknownEffect(schema)(decodedValue, strictParseOptions).pipe(
-      Effect.asVoid,
-      Effect.mapError(decodeError),
-    );
-    return decodedValue;
-  }
-  if (SchemaAST.isObjects(schema.ast) && isPlainRecord(value)) {
-    const decodedValue: Record<string, unknown> = {};
-    const indexSignature = schema.ast.indexSignatures[0];
-    for (const [field, fieldValue] of Object.entries(value)) {
-      const fieldAst = nestedTcpFieldAst(schema.ast, field) ?? indexSignature?.type;
-      if (fieldAst === undefined) {
-        return yield* tcpDecodeSchemaError(topic, phase, { field });
-      }
-      setDecodedField(
-        decodedValue,
-        field,
-        yield* decodeTcpFieldForRuntimeInternal(
-          tcpFieldSchemaFromAst(fieldAst),
-          topic,
-          phase,
-          fieldValue,
-        ),
-      );
-    }
-    yield* Schema.decodeUnknownEffect(schema)(decodedValue, strictParseOptions).pipe(
-      Effect.asVoid,
-      Effect.mapError((cause) => tcpDecodeSchemaError(topic, phase, cause)),
-    );
-    return decodedValue;
-  }
-  if (SchemaAST.isArrays(schema.ast) && Array.isArray(value)) {
-    const decodedValue: Array<unknown> = Array.from(value);
-    for (const [index, item] of value.entries()) {
-      const elementAst = arrayElementAst(schema.ast, index, value.length);
-      if (elementAst !== undefined) {
-        decodedValue[index] = yield* decodeTcpFieldForRuntimeInternal(
-          tcpFieldSchemaFromAst(elementAst),
-          topic,
-          phase,
-          item,
-        );
-      }
-    }
-    yield* Schema.decodeUnknownEffect(schema)(decodedValue, strictParseOptions).pipe(
-      Effect.asVoid,
-      Effect.mapError((cause) => tcpDecodeSchemaError(topic, phase, cause)),
-    );
-    return decodedValue;
-  }
-  if (SchemaAST.isUnion(schema.ast)) {
-    for (const member of schema.ast.types) {
-      const memberDecode = yield* Effect.exit(
-        decodeTcpFieldForRuntimeInternal(tcpFieldSchemaFromAst(member), topic, phase, value).pipe(
-          Effect.flatMap((decodedValue) =>
-            Schema.decodeUnknownEffect(schema)(decodedValue, strictParseOptions).pipe(
-              Effect.as(decodedValue),
-            ),
-          ),
-        ),
-      );
-      if (Exit.isSuccess(memberDecode)) {
-        return memberDecode.value;
-      }
-    }
-  }
-  return yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(
-    value,
-    strictParseOptions,
-  ).pipe(Effect.mapError((cause) => tcpDecodeSchemaError(topic, phase, cause)));
-});
-
-const decodeTcpFieldForRuntime = Effect.fn("ViewServerRuntime.tcpPublish.field.decode")(function* (
-  schema: TcpFieldSchema,
-  topic: string,
-  phase: "patch" | "row",
-  value: unknown,
-) {
-  return yield* decodeTcpFieldForRuntimeInternal(schema, topic, phase, value);
-});
-
-const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(config: ViewServerTopicConfig<Topics>, topic: string, row: Record<string, unknown>) {
-  const schema = yield* topicSchema(config, topic);
-  const decodedRow: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(row)) {
-    const fieldSchema = Object.entries(schema.fields).find(
-      ([fieldName]) => fieldName === field,
-    )?.[1];
-    if (fieldSchema === undefined) {
-      return yield* tcpDecodeSchemaError(topic, "row", { field });
-    }
-    setDecodedField(
-      decodedRow,
-      field,
-      yield* decodeTcpFieldForRuntime(fieldSchema, topic, "row", value),
-    );
-  }
-  yield* Schema.decodeUnknownEffect(schema)(decodedRow, strictParseOptions).pipe(
-    Effect.asVoid,
-    Effect.mapError((cause) => tcpDecodeSchemaError(topic, "row", cause)),
-  );
-  return decodedRow;
-});
-
-const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  config: ViewServerTopicConfig<Topics>,
-  topic: string,
-  rows: ReadonlyArray<Record<string, unknown>>,
-) {
-  return yield* Effect.forEach(rows, (row) => decodeTcpRow(config, topic, row));
-});
-
-const decodeTcpPatch = Effect.fn("ViewServerRuntime.tcpPublish.patch.decode")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(config: ViewServerTopicConfig<Topics>, topic: string, patch: Record<string, unknown>) {
-  const schema = yield* topicSchema(config, topic);
-  const decodedPatch: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(patch)) {
-    const fieldSchema = Object.entries(schema.fields).find(
-      ([fieldName]) => fieldName === field,
-    )?.[1];
-    if (fieldSchema === undefined) {
-      return yield* tcpDecodeSchemaError(topic, "patch", { field });
-    }
-    setDecodedField(
-      decodedPatch,
-      field,
-      yield* decodeTcpFieldForRuntime(fieldSchema, topic, "patch", value),
-    );
-  }
-  return decodedPatch;
-});
-
-const handleCommand = Effect.fn("ViewServerRuntime.tcpPublish.command.handle")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  socket: Net.Socket,
-  state: TcpPublishSocketState,
-  config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
-  options: ViewServerTcpPublishIngressOptions,
-  sourceOwnership: SourceOwnershipPolicy,
-  line: string,
-) {
-  const command = yield* parseCommand(line);
-  yield* validateViewServerAuthRequest(options.auth, tcpAuthRequest(command, socket));
-  clearTcpPreCommandDeadline(state);
-  yield* ensureTopicCanBeMutated(command.topic, sourceOwnership);
-  if (command.op === "publish") {
-    const row = yield* decodeTcpRow(config, command.topic, command.row);
-    yield* runRuntimeMutation(client, "publish", command.topic, [command.topic, row]);
-    return;
-  }
-  if (command.op === "publishMany") {
-    const rows = yield* decodeTcpRows(config, command.topic, command.rows);
-    yield* runRuntimeMutation(client, "publishMany", command.topic, [command.topic, rows]);
-    return;
-  }
-  if (command.op === "patch") {
-    const patch = yield* decodeTcpPatch(config, command.topic, command.patch);
-    yield* runRuntimeMutation(client, "patch", command.topic, [command.topic, command.key, patch]);
-    return;
-  }
-  yield* topicSchema(config, command.topic);
-  yield* runRuntimeMutation(client, "delete", command.topic, [command.topic, command.key]);
-});
-
-const ensureTopicCanBeMutated = (
-  topic: string,
-  sourceOwnership: SourceOwnershipPolicy,
-): Effect.Effect<void, ViewServerRuntimeError> =>
-  sourceOwnership.requirePublicMutationAllowed(topic, "runtimeCore");
 
 const wireError = (cause: Cause.Cause<TcpPublishCommandError>): object => {
   const failure = Cause.findErrorOption(cause);
@@ -549,6 +122,20 @@ const wireError = (cause: Cause.Cause<TcpPublishCommandError>): object => {
     },
   };
 };
+
+const logUntypedTcpCommandCause = (cause: Cause.Cause<TcpPublishCommandError>): Promise<void> => {
+  if (Cause.findErrorOption(cause)._tag === "Some") {
+    return Promise.resolve();
+  }
+  return Effect.runPromise(
+    Effect.logWarning("TCP publish command failed with an untyped cause.").pipe(
+      Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+    ),
+  );
+};
+
+const isViewServerRuntimeError = (value: TcpPublishCommandError): value is ViewServerRuntimeError =>
+  value._tag === "ViewServerRuntimeError" || value._tag === "ViewServerBackpressureError";
 
 const wireSuccess = (): object => ({ ok: true });
 
@@ -669,7 +256,7 @@ const executeLine = async <const Topics extends ViewServerRuntimeTopicDefinition
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   sourceOwnership: SourceOwnershipPolicy,
   line: string,
@@ -679,7 +266,16 @@ const executeLine = async <const Topics extends ViewServerRuntimeTopicDefinition
       return;
     }
     const fiber = Effect.runFork(
-      handleCommand(socket, state, config, client, options, sourceOwnership, line),
+      handleTcpPublishCommandLine(
+        {
+          remoteAddress: Option.fromUndefinedOr(socket.remoteAddress),
+        },
+        config,
+        client,
+        options,
+        sourceOwnership,
+        line,
+      ),
     );
     serverState.activeFibers.add(fiber);
     state.activeFibers.add(fiber);
@@ -693,6 +289,7 @@ const executeLine = async <const Topics extends ViewServerRuntimeTopicDefinition
       await writeTcpJsonLine(socket, state, wireSuccess());
       return;
     }
+    await logUntypedTcpCommandCause(exit.cause);
     await writeTcpJsonLine(socket, state, wireError(exit.cause));
   } finally {
     state.queuedCommands -= 1;
@@ -727,7 +324,7 @@ const enqueueLine = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   sourceOwnership: SourceOwnershipPolicy,
   line: string,
@@ -747,6 +344,7 @@ const enqueueLine = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   }
   state.queuedCommands += 1;
   serverState.queuedCommands += 1;
+  clearTcpPreCommandDeadline(state);
   const previousChain = state.chain;
   const chain = (async () => {
     await Promise.allSettled([previousChain]);
@@ -792,7 +390,7 @@ const installSocketHandler = <const Topics extends ViewServerRuntimeTopicDefinit
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   sourceOwnership: SourceOwnershipPolicy,
 ): void => {
@@ -927,7 +525,7 @@ export const installTcpPublishAcceptedSocket = <
   socket: Net.Socket,
   state: TcpPublishServerState,
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeClient<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
 ): void => {
   const sourceOwnership = makeSourceOwnershipPolicy(config);
@@ -968,7 +566,7 @@ export const installTcpPublishAcceptedSocket = <
 export const makeViewServerTcpPublishIngress = Effect.fn("ViewServerRuntime.tcpPublish.make")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
-    client: ViewServerRuntimeClient<Topics>,
+    client: ViewServerRuntimeCoreInternalClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) {
     yield* validateTcpPublishOptions(options);

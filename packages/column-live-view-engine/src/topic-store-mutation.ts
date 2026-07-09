@@ -24,6 +24,11 @@ export type TopicStoreMutationContext = {
     patch: Patch,
     invalidRow: InvalidRowErrorFactory<Error>,
   ) => Effect.Effect<number, Error>;
+  readonly patchDecoded: <Patch extends Partial<RowObject>, Error>(
+    key: string,
+    patch: Patch,
+    invalidRow: InvalidRowErrorFactory<Error>,
+  ) => Effect.Effect<number, Error>;
   readonly delete: (key: string) => number;
 };
 
@@ -107,6 +112,11 @@ const topicStoreMutationContext = (state: TopicStoreMutationState): TopicStoreMu
   patch: (key, patch, invalidRow) =>
     Effect.gen(function* () {
       const prepared = yield* state.storage.preparePatch(key, patch, invalidRow);
+      return state.storage.setPrepared(prepared);
+    }),
+  patchDecoded: (key, patch, invalidRow) =>
+    Effect.gen(function* () {
+      const prepared = yield* state.storage.prepareDecodedPatch(key, patch, invalidRow);
       return state.storage.setPrepared(prepared);
     }),
   delete: (key) => state.storage.delete(key),
@@ -258,6 +268,19 @@ export const patchTopicStoreRow = Effect.fn("ColumnLiveViewEngine.topicStore.pat
 >(store: TopicStore, key: string, patch: Patch, invalidRow: InvalidRowErrorFactory<Error>) {
   yield* runTopicStoreMutationTransaction(topicStoreState(store), store, (mutation) =>
     mutation.patch(key, patch, invalidRow),
+  );
+});
+
+export const patchTopicStoreDecodedFields = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.patchDecodedFields",
+)(function* <Patch extends Partial<RowObject>, Error>(
+  store: TopicStore,
+  key: string,
+  patch: Patch,
+  invalidRow: InvalidRowErrorFactory<Error>,
+) {
+  yield* runTopicStoreMutationTransaction(topicStoreState(store), store, (mutation) =>
+    mutation.patchDecoded(key, patch, invalidRow),
   );
 });
 

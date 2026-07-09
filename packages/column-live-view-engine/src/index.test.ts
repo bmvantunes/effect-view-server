@@ -12804,6 +12804,101 @@ describe("ColumnLiveViewEngine validation and health", () => {
     }),
   );
 
+  it.effect("patches decoded runtime fields through the internal engine entrypoint", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({
+        topics: viewServer.topics,
+      });
+
+      yield* engine.publishManyDecodedRows("orders", [
+        {
+          customerId: "customer-decoded-1",
+          id: "decoded-1",
+          price: 42,
+          region: "emea",
+          status: "open",
+          updatedAt: 1,
+        },
+      ]);
+      yield* engine.patchDecodedFields("orders", "decoded-1", {
+        price: 43,
+        status: "closed",
+      });
+      const snapshot = yield* engine.snapshot("orders", {
+        select: ["id", "price", "status"],
+        limit: 10,
+      });
+
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            id: "decoded-1",
+            price: 43,
+            status: "closed",
+          },
+        ],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 2,
+      });
+    }),
+  );
+
+  it.effect("validates decoded runtime patches against the merged topic row schema", () =>
+    Effect.gen(function* () {
+      const PublicOrder = Schema.Struct({
+        id: Schema.String.pipe(Schema.check(Schema.isPattern(/^public-/))),
+        price: Schema.Number,
+      });
+      const publicViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: PublicOrder,
+            key: "id",
+          },
+        },
+      });
+      const engine = yield* createColumnLiveViewEngineInternal({
+        topics: publicViewServer.topics,
+      });
+
+      yield* engine.publishManyDecodedRows("orders", [
+        {
+          id: "public-1",
+          price: 42,
+        },
+      ]);
+      const error = yield* Effect.flip(
+        engine.patchDecodedFields("orders", "public-1", {
+          id: "private-1",
+        }),
+      );
+      const snapshot = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+        limit: 10,
+      });
+
+      expect(error).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "orders",
+      });
+      expect(error).toBeInstanceOf(InvalidRowError);
+      expect(snapshot).toStrictEqual({
+        rows: [
+          {
+            id: "public-1",
+            price: 42,
+          },
+        ],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 1,
+      });
+    }),
+  );
+
   it.effect("does not decode internal decoded runtime rows twice", () =>
     Effect.gen(function* () {
       const TransformId = Schema.String.pipe(
@@ -12987,17 +13082,19 @@ describe("ColumnLiveViewEngine validation and health", () => {
       }),
   );
 
-  it.effect("does not expose internal publishing from the public engine factory", () =>
+  it.effect("does not expose internal decoded mutations from the public engine factory", () =>
     Effect.gen(function* () {
       const engine = yield* createColumnLiveViewEngine({
         topics: viewServer.topics,
       });
 
       expect({
+        patchDecodedFields: "patchDecodedFields" in engine,
         publishManyDecodedRows: "publishManyDecodedRows" in engine,
         publishManyDecodedRowsWithStorageKeys: "publishManyDecodedRowsWithStorageKeys" in engine,
         publishManyWithStorageKeys: "publishManyWithStorageKeys" in engine,
       }).toStrictEqual({
+        patchDecodedFields: false,
         publishManyDecodedRows: false,
         publishManyDecodedRowsWithStorageKeys: false,
         publishManyWithStorageKeys: false,

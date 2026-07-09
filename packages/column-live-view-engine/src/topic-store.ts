@@ -3,6 +3,7 @@ import { TopicStore } from "./topic-store-state";
 export { TopicStore };
 export {
   deleteTopicStoreRow,
+  patchTopicStoreDecodedFields,
   patchTopicStoreRow,
   publishTopicStoreDecodedRows,
   publishTopicStoreDecodedRowsWithStorageKeys,

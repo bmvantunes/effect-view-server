@@ -230,7 +230,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     resolvedOptions.tcpPublishOptions === undefined
       ? undefined
       : yield* dependencies
-          .makeTcpPublishIngress(dependencyConfig, runtimeClient, {
+          .makeTcpPublishIngress(dependencyConfig, runtimeCore.internalClient, {
             ...resolvedOptions.tcpPublishOptions,
             ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
           })

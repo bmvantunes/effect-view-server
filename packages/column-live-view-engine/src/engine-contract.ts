@@ -189,6 +189,11 @@ export type ColumnLiveViewEngine<Topics extends DecodableTopicDefinitions> = {
 
 export type ColumnLiveViewEngineInternal<Topics extends DecodableTopicDefinitions> =
   ColumnLiveViewEngine<Topics> & {
+    readonly patchDecodedFields: (
+      topic: Extract<keyof Topics, string>,
+      key: string,
+      patch: object,
+    ) => Effect.Effect<void, ColumnLiveViewEngineError>;
     readonly publishManyDecodedRows: (
       topic: Extract<keyof Topics, string>,
       rows: ReadonlyArray<object>,

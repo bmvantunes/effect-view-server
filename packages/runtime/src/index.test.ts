@@ -86,6 +86,12 @@ import {
   sendTcpPublishLine,
   waitForTransportHealth,
 } from "../test-harness/runtime";
+import {
+  makeLeasedGrpcRuntimeHarness,
+  makeMaterializedGrpcRuntimeHarness,
+  readGrpcHealthOverlay,
+  readGrpcHealthOverlayNow,
+} from "../test-harness/grpc-runtime";
 import { makeViewServerRuntimeTransportHealth } from "./transport-health";
 import * as Net from "node:net";
 
@@ -858,26 +864,6 @@ const waitForGrpcSnapshotRows = Effect.fn("ViewServerRuntime.test.grpc.snapshotR
           until: (snapshot) => snapshot.totalRows === expectedTotalRows,
         }),
       );
-  },
-);
-
-const readGrpcHealthOverlay = Effect.fn("ViewServerRuntime.test.grpc.healthOverlay.read")(
-  function* (
-    client: ViewServerRuntimeClient<GrpcTopics>,
-    health: ReturnType<typeof makeViewServerGrpcHealthLedger<GrpcTopics>>,
-    nowMillis: number,
-  ) {
-    return health.healthOverlay(yield* client.health(), nowMillis);
-  },
-);
-
-const readGrpcHealthOverlayNow = Effect.fn("ViewServerRuntime.test.grpc.healthOverlay.readNow")(
-  function* (
-    client: ViewServerRuntimeClient<GrpcTopics>,
-    health: ReturnType<typeof makeViewServerGrpcHealthLedger<GrpcTopics>>,
-  ) {
-    const nowMillis = yield* Clock.currentTimeMillis;
-    return health.healthOverlay(yield* client.health(), nowMillis);
   },
 );
 
@@ -7018,17 +7004,12 @@ describe("@effect-view-server/runtime", () => {
           ]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
+      const harness = yield* makeLeasedGrpcRuntimeHarness({
+        config: leasedGrpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeLeasedGrpcHealth(grpcOptions),
+      });
+      const { health, manager, runtimeCore } = harness;
       const idleHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
@@ -7115,8 +7096,7 @@ describe("@effect-view-server/runtime", () => {
         statusCode: "Ready",
       });
       expect(Object.keys(stoppedHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([]);
-      yield* manager.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -7135,17 +7115,12 @@ describe("@effect-view-server/runtime", () => {
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
+      const harness = yield* makeLeasedGrpcRuntimeHarness({
+        config: leasedGrpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeLeasedGrpcHealth(grpcOptions),
+      });
+      const { health, manager, runtimeCore } = harness;
 
       const first = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
       const second = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
@@ -7169,8 +7144,7 @@ describe("@effect-view-server/runtime", () => {
           "orders/ordersLease/leased/region=string%3A3%3Ausa"
         ]?.subscriberCount,
       ).toBe(1);
-      yield* manager.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -7181,17 +7155,12 @@ describe("@effect-view-server/runtime", () => {
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
+      const harness = yield* makeLeasedGrpcRuntimeHarness({
+        config: leasedGrpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeLeasedGrpcHealth(grpcOptions),
+      });
+      const { manager } = harness;
 
       const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
       const events = yield* subscription.events.pipe(Stream.take(2), Stream.runCollect);
@@ -7227,8 +7196,7 @@ describe("@effect-view-server/runtime", () => {
         totalRows: 1,
       });
       yield* subscription.close();
-      yield* manager.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -7242,17 +7210,12 @@ describe("@effect-view-server/runtime", () => {
           ]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
+      const harness = yield* makeLeasedGrpcRuntimeHarness({
+        config: leasedGrpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeLeasedGrpcHealth(grpcOptions),
+      });
+      const { manager } = harness;
 
       const subscription = yield* manager.liveClient.subscribe("orders", {
         select: ["id", "price"],
@@ -7293,8 +7256,7 @@ describe("@effect-view-server/runtime", () => {
         totalRows: 2,
       });
       yield* subscription.close();
-      yield* manager.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -11678,17 +11640,16 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       const feed = grpcMaterializedFeed(Stream.make(grpcOrderValue("order-1", 10)));
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-      const health = makeGrpcHealth(grpcOptions);
-      const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
-        runtimeCore.internalClient,
-        Effect.void,
+      const harness = yield* makeMaterializedGrpcRuntimeHarness({
+        config: grpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeGrpcHealth(grpcOptions),
+      });
 
-      const degradedHealth = yield* readGrpcHealthOverlayNow(runtimeCore.client, health).pipe(
+      const degradedHealth = yield* readGrpcHealthOverlayNow(
+        harness.runtimeCore.client,
+        harness.health,
+      ).pipe(
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) => {
@@ -11707,8 +11668,7 @@ describe("@effect-view-server/runtime", () => {
       );
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(3);
       expect(grpcHealthClient(degradedHealth)?.activeFeeds).toBe(0);
-      yield* ingress.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -11757,17 +11717,16 @@ describe("@effect-view-server/runtime", () => {
           },
         });
         const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-        const health = makeGrpcHealth(grpcOptions);
-        const ingress = yield* makeViewServerGrpcIngress(
-          grpcViewServer,
-          runtimeCore.internalClient,
-          Effect.void,
+        const harness = yield* makeMaterializedGrpcRuntimeHarness({
+          config: grpcViewServer,
           grpcOptions,
-          health,
-        );
+          health: makeGrpcHealth(grpcOptions),
+        });
 
-        const degradedHealth = yield* readGrpcHealthOverlayNow(runtimeCore.client, health).pipe(
+        const degradedHealth = yield* readGrpcHealthOverlayNow(
+          harness.runtimeCore.client,
+          harness.health,
+        ).pipe(
           Effect.repeat({
             schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
             until: (currentHealth) => grpcHealthFeed(currentHealth)?.status === "degraded",
@@ -11779,8 +11738,7 @@ describe("@effect-view-server/runtime", () => {
         );
         expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(1);
         expect(acquireCount).toBe(2);
-        yield* ingress.close;
-        yield* runtimeCore.close;
+        yield* harness.close;
       }),
   );
 
@@ -11824,17 +11782,16 @@ describe("@effect-view-server/runtime", () => {
         },
       });
       const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-      const health = makeGrpcHealth(grpcOptions);
-      const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
-        runtimeCore.internalClient,
-        Effect.void,
+      const harness = yield* makeMaterializedGrpcRuntimeHarness({
+        config: grpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeGrpcHealth(grpcOptions),
+      });
 
-      const degradedHealth = yield* readGrpcHealthOverlayNow(runtimeCore.client, health).pipe(
+      const degradedHealth = yield* readGrpcHealthOverlayNow(
+        harness.runtimeCore.client,
+        harness.health,
+      ).pipe(
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) => grpcHealthFeed(currentHealth)?.status === "degraded",
@@ -11851,8 +11808,7 @@ describe("@effect-view-server/runtime", () => {
           "gRPC feed ordersFeed failed: gRPC feed stream failed for ordersFeed: upstream down",
         reconnects: 1,
       });
-      yield* ingress.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -11860,17 +11816,16 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       const feed = grpcMaterializedFeed(Stream.failCause(Cause.interrupt()));
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-      const health = makeGrpcHealth(grpcOptions);
-      const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
-        runtimeCore.internalClient,
-        Effect.void,
+      const harness = yield* makeMaterializedGrpcRuntimeHarness({
+        config: grpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeGrpcHealth(grpcOptions),
+      });
 
-      const stoppingHealth = yield* readGrpcHealthOverlayNow(runtimeCore.client, health).pipe(
+      const stoppingHealth = yield* readGrpcHealthOverlayNow(
+        harness.runtimeCore.client,
+        harness.health,
+      ).pipe(
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) => grpcHealthFeed(currentHealth)?.status === "stopping",
@@ -11878,8 +11833,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(grpcHealthFeed(stoppingHealth)?.lastError).toBe(null);
-      yield* ingress.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 
@@ -11907,17 +11861,16 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-      const health = makeGrpcHealth(grpcOptions);
-      const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
-        runtimeCore.internalClient,
-        Effect.void,
+      const harness = yield* makeMaterializedGrpcRuntimeHarness({
+        config: grpcViewServer,
         grpcOptions,
-        health,
-      );
+        health: makeGrpcHealth(grpcOptions),
+      });
 
-      const stoppingHealth = yield* readGrpcHealthOverlayNow(runtimeCore.client, health).pipe(
+      const stoppingHealth = yield* readGrpcHealthOverlayNow(
+        harness.runtimeCore.client,
+        harness.health,
+      ).pipe(
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) => grpcHealthFeed(currentHealth)?.status === "stopping",
@@ -11933,8 +11886,7 @@ describe("@effect-view-server/runtime", () => {
         reconnects: 0,
         releaseCount: 1,
       });
-      yield* ingress.close;
-      yield* runtimeCore.close;
+      yield* harness.close;
     }),
   );
 

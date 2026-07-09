@@ -1,78 +1,47 @@
-import { createClient } from "@connectrpc/connect";
-import { createGrpcTransport } from "@connectrpc/connect-node";
-import {
-  type GrpcClientValue,
-  type GrpcConnectClientDefinition,
-  type GrpcRuntimeClients,
-  type ViewServerTopicConfig,
-} from "@effect-view-server/config";
+import { type GrpcRuntimeClients, type ViewServerTopicConfig } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import { Cause, Clock, Effect, Exit, Fiber, Option, Schema, Scope, Stream } from "effect";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
+import {
+  callMaterializedGrpcSourceAcquire,
+  callMaterializedGrpcSourceRelease,
+  callMaterializedGrpcSourceRequest,
+  makeGrpcSourceInput,
+  makeDefaultGrpcClient,
+  makeViewServerGrpcSourceError,
+  ViewServerGrpcIngressError,
+  type ViewServerGrpcClientFactory,
+  type ViewServerGrpcRuntimeCallable,
+} from "./grpc-source-lifecycle";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
-export class ViewServerGrpcIngressError extends Schema.TaggedErrorClass<ViewServerGrpcIngressError>()(
-  "ViewServerGrpcIngressError",
-  {
-    message: Schema.String,
-    cause: Schema.Unknown,
-    phase: Schema.optionalKey(
-      Schema.Literals([
-        "configuration",
-        "client",
-        "request",
-        "acquire",
-        "stream",
-        "mapping",
-        "publish",
-        "release",
-      ]),
-    ),
-    feedName: Schema.optionalKey(Schema.String),
-    topic: Schema.optionalKey(Schema.String),
-  },
-) {}
+export { ViewServerGrpcIngressError } from "./grpc-source-lifecycle";
 
 export type ViewServerGrpcIngress = {
   readonly close: Effect.Effect<void>;
 };
-
-type RuntimeCallable = (...args: ReadonlyArray<never>) => unknown;
 
 type RuntimeMaterializedFeedDefinition<Topic extends string = string> = {
   readonly lifecycle: "materialized";
   readonly topic: Topic;
   readonly client: string;
   readonly method: string;
-  readonly request: RuntimeCallable;
-  readonly acquire: RuntimeCallable;
-  readonly release?: RuntimeCallable;
-  readonly map: RuntimeCallable;
+  readonly request: ViewServerGrpcRuntimeCallable;
+  readonly acquire: ViewServerGrpcRuntimeCallable;
+  readonly release?: ViewServerGrpcRuntimeCallable;
+  readonly map: ViewServerGrpcRuntimeCallable;
 };
 
 const isRuntimeMaterializedFeed = <const Topic extends string>(feed: {
   readonly lifecycle: string;
 }): feed is RuntimeMaterializedFeedDefinition<Topic> => feed.lifecycle === "materialized";
 
-export type ViewServerGrpcClientFactory = <
-  const ClientDefinition extends GrpcConnectClientDefinition,
->(
-  definition: ClientDefinition,
-  baseUrl: string,
-) => GrpcClientValue<ClientDefinition>;
-
 type ViewServerGrpcHealthRefreshRequest = Effect.Effect<void>;
 
 const grpcMessageBatchSize = 256;
 const grpcMessageBatchFlushInterval = "2 millis";
-
-const materializedFeedSession = {
-  id: null,
-  forwardedHeaders: {},
-  systemHeaders: {},
-};
 
 const ignoreGrpcFeedReleaseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
   "Ignoring gRPC feed release failure.",
@@ -81,35 +50,13 @@ const ignoreGrpcHealthRefreshFailure = ignoreLoggedTypedFailuresPreserveNonTyped
   "Ignoring gRPC health refresh failure.",
 );
 
-const isRuntimeMaterializedStream = (
-  value: unknown,
-): value is Stream.Stream<unknown, unknown, never> => Stream.isStream(value);
-
-const isRuntimeReleaseEffect = (value: unknown): value is Effect.Effect<void, unknown, never> =>
-  Effect.isEffect(value);
-
-export function makeDefaultGrpcClient<const ClientDefinition extends GrpcConnectClientDefinition>(
-  definition: ClientDefinition,
-  baseUrl: string,
-): GrpcClientValue<ClientDefinition>;
-export function makeDefaultGrpcClient(definition: GrpcConnectClientDefinition, baseUrl: string) {
-  return createClient(definition.service, createGrpcTransport({ baseUrl }));
-}
-
 const grpcIngressError = (input: {
   readonly message: string;
   readonly cause: unknown;
   readonly phase: NonNullable<ViewServerGrpcIngressError["phase"]>;
   readonly feedName: string;
   readonly topic: string;
-}) =>
-  new ViewServerGrpcIngressError({
-    message: input.message,
-    cause: input.cause,
-    phase: input.phase,
-    feedName: input.feedName,
-    topic: input.topic,
-  });
+}) => makeViewServerGrpcSourceError(input);
 
 const hasMessage = (value: unknown): value is { readonly message: string } =>
   typeof value === "object" &&
@@ -352,13 +299,6 @@ const publishMaterializedBatch = Effect.fn("ViewServerRuntime.grpc.materialized.
   },
 );
 
-const materializedAcquireInput = (grpcClient: unknown, request: unknown) => ({
-  client: grpcClient,
-  request,
-  route: undefined,
-  session: materializedFeedSession,
-});
-
 const startMaterializedFeed = Effect.fn("ViewServerRuntime.grpc.materialized.start")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Clients extends GrpcRuntimeClients,
@@ -406,19 +346,8 @@ const startMaterializedFeed = Effect.fn("ViewServerRuntime.grpc.materialized.sta
         topic: feed.topic,
       }),
   });
-  const request = yield* Effect.try({
-    try: () => feed.request(),
-    catch: (cause) =>
-      grpcIngressError({
-        message: `gRPC feed request creation failed for ${feedName}`,
-        cause,
-        phase: "request",
-        feedName,
-        topic: feed.topic,
-      }),
-  });
-  const input = materializedAcquireInput(grpcClient, request);
-  const releaseFeed = feed.release;
+  const request = yield* callMaterializedGrpcSourceRequest(feedName, feed);
+  const input = makeGrpcSourceInput(grpcClient, request, undefined);
   const startedAt = yield* Clock.currentTimeMillis;
   yield* health.clientConnected(feed.client, startedAt);
   yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
@@ -431,70 +360,8 @@ const startMaterializedFeed = Effect.fn("ViewServerRuntime.grpc.materialized.sta
   registerCloseFeedState(() => {
     closing = true;
   });
-  const releaseFeedEffect = Effect.fn("ViewServerRuntime.grpc.materialized.feed.release")(
-    function* () {
-      if (releaseFeed === undefined) {
-        return;
-      }
-      const releaseCandidate = yield* Effect.try({
-        try: () => Reflect.apply(releaseFeed, undefined, [input]),
-        catch: (cause) =>
-          grpcIngressError({
-            message: `gRPC feed release failed for ${feedName}`,
-            cause,
-            phase: "release",
-            feedName,
-            topic: feed.topic,
-          }),
-      });
-      if (!isRuntimeReleaseEffect(releaseCandidate)) {
-        return yield* grpcIngressError({
-          message: `gRPC feed release did not return an Effect for ${feedName}`,
-          cause: releaseCandidate,
-          phase: "release",
-          feedName,
-          topic: feed.topic,
-        });
-      }
-      yield* releaseCandidate.pipe(
-        Effect.mapError((cause) =>
-          grpcIngressError({
-            message: `gRPC feed release failed for ${feedName}`,
-            cause,
-            phase: "release",
-            feedName,
-            topic: feed.topic,
-          }),
-        ),
-      );
-    },
-  );
-  const acquireFeedStream = Effect.try({
-    try: () => Reflect.apply(feed.acquire, undefined, [input]),
-    catch: (cause) =>
-      grpcIngressError({
-        message: `gRPC feed acquire failed for ${feedName}`,
-        cause,
-        phase: "acquire",
-        feedName,
-        topic: feed.topic,
-      }),
-  }).pipe(
-    Effect.flatMap((stream) => {
-      if (isRuntimeMaterializedStream(stream)) {
-        return Effect.succeed(stream);
-      }
-      return Effect.fail(
-        grpcIngressError({
-          message: `gRPC feed acquire did not return a Stream for ${feedName}`,
-          cause: stream,
-          phase: "acquire",
-          feedName,
-          topic: feed.topic,
-        }),
-      );
-    }),
-  );
+  const releaseFeedEffect = () => callMaterializedGrpcSourceRelease(feedName, feed, input);
+  const acquireFeedStream = callMaterializedGrpcSourceAcquire(feedName, feed, input);
   const runFeedStream = Effect.fn("ViewServerRuntime.grpc.materialized.stream")(function* (
     stream: Stream.Stream<unknown, unknown>,
   ) {

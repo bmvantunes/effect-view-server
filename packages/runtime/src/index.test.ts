@@ -14655,6 +14655,50 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
+  it.live("releases the runtime core when startup is interrupted before returning a runtime", () =>
+    Effect.gen(function* () {
+      let runtimeCoreClosed = false;
+      const serverStartupStarted = yield* Deferred.make<void>();
+      const releaseServerStartup = yield* Deferred.make<void>();
+      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+        makeRuntimeCore: (config, options) =>
+          makeViewServerRuntimeCoreInternal(config, options).pipe(
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              close: runtimeCore.close.pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    runtimeCoreClosed = true;
+                  }),
+                ),
+              ),
+            })),
+          ),
+        makeServer: () =>
+          Deferred.succeed(serverStartupStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseServerStartup)),
+            Effect.as({
+              url: "ws://127.0.0.1:0/rpc",
+              healthUrl: "http://127.0.0.1:0/health",
+              metricsUrl: "http://127.0.0.1:0/metrics",
+              close: Effect.void,
+            }),
+          ),
+      };
+
+      const startupFiber = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        viewServer,
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Deferred.await(serverStartupStarted);
+      yield* Fiber.interrupt(startupFiber);
+
+      expect(runtimeCoreClosed).toBe(true);
+    }),
+  );
+
   it.live("releases server and runtime core when Kafka ingress startup fails", () =>
     Effect.gen(function* () {
       let runtimeCoreClosed = false;

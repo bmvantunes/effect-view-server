@@ -36,16 +36,20 @@ export const hasTopic = <Topics extends TopicDefinitions>(
   topic: string,
 ): topic is Extract<keyof Topics, string> => Object.hasOwn(config.topics, topic);
 
+export const hasOwnField = (schema: RowSchema, field: string): boolean =>
+  Object.hasOwn(schema.fields, field);
+
 export const getFieldSchema = <const Topics extends TopicDefinitions>(
   config: { readonly topics: Topics },
   topic: Extract<keyof Topics, string>,
   field: string,
 ) => {
-  return config.topics[topic]!.schema.fields[field];
+  const schema = config.topics[topic]!.schema;
+  return hasOwnField(schema, field) ? schema.fields[field] : undefined;
 };
 
 export const hasOnlyKnownFields = (schema: RowSchema, fields: Iterable<string>): boolean =>
-  Array.from(fields).every((field) => schema.fields[field] !== undefined);
+  Array.from(fields).every((field) => hasOwnField(schema, field));
 
 export const validateWindow = Effect.fn("ViewServerProtocol.query.window.validate")(function* (
   topic: string,

@@ -15,6 +15,7 @@ import {
   decodeWhere,
   encodeWhere,
   hasOnlyKnownFields,
+  hasOwnField,
   hasTopic,
   invalidQuery,
   invalidTopic,
@@ -62,7 +63,7 @@ const validateGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.validate
     );
   }
   for (const groupField of decoded.groupBy) {
-    if (schema.fields[groupField] === undefined) {
+    if (!hasOwnField(schema, groupField)) {
       return yield* Effect.fail(
         invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
       );
@@ -79,7 +80,7 @@ const validateGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.validate
         invalidQuery(topic, `Aggregate alias collides with groupBy field: ${alias}`),
       );
     }
-    if (aggregate.aggFunc !== "count" && schema.fields[aggregate.field] === undefined) {
+    if (aggregate.aggFunc !== "count" && !hasOwnField(schema, aggregate.field)) {
       return yield* Effect.fail(
         invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
       );

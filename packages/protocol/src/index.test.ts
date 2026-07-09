@@ -79,6 +79,21 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const nonOwnTopicRowFields = [
+  "toString",
+  "valueOf",
+  "hasOwnProperty",
+  "constructor",
+  "missing",
+] as const;
+
+const unknownTopicRowFieldError = {
+  _tag: "ViewServerRuntimeError",
+  code: "InvalidQuery",
+  message: "Query references an unknown field for topic: orders",
+  topic: "orders",
+} as const;
+
 const formatDecodedDecimal = (value: unknown): string =>
   BigDecimal.isBigDecimal(value) ? BigDecimal.format(value) : String(value);
 
@@ -1410,6 +1425,99 @@ describe("@effect-view-server/protocol", () => {
         ],
         totalRows: 2,
       });
+    }),
+  );
+
+  it.effect("rejects non-own Topic Row fields in raw select encoding and decoding", () =>
+    Effect.gen(function* () {
+      for (const field of nonOwnTopicRowFields) {
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeRawQuery(viewServer, "orders", { select: [field] }),
+        );
+        expect(encodeError).toStrictEqual(unknownTopicRowFieldError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeRawQuery(viewServer, "orders", { select: [field] }),
+        );
+        expect(decodeError).toStrictEqual(unknownTopicRowFieldError);
+      }
+    }),
+  );
+
+  it.effect("rejects non-own Topic Row fields in raw where encoding and decoding", () =>
+    Effect.gen(function* () {
+      for (const field of nonOwnTopicRowFields) {
+        const query = { select: ["id"], where: { [field]: "x" } };
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeRawQuery(viewServer, "orders", query),
+        );
+        expect(encodeError).toStrictEqual(unknownTopicRowFieldError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeRawQuery(viewServer, "orders", query),
+        );
+        expect(decodeError).toStrictEqual(unknownTopicRowFieldError);
+      }
+    }),
+  );
+
+  it.effect("rejects non-own Topic Row fields in raw orderBy encoding and decoding", () =>
+    Effect.gen(function* () {
+      for (const field of nonOwnTopicRowFields) {
+        const query = {
+          select: ["id"],
+          orderBy: [{ field, direction: "asc" }],
+        };
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeRawQuery(viewServer, "orders", query),
+        );
+        expect(encodeError).toStrictEqual(unknownTopicRowFieldError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeRawQuery(viewServer, "orders", query),
+        );
+        expect(decodeError).toStrictEqual(unknownTopicRowFieldError);
+      }
+    }),
+  );
+
+  it.effect("rejects non-own Topic Row fields in grouped groupBy encoding and decoding", () =>
+    Effect.gen(function* () {
+      for (const field of nonOwnTopicRowFields) {
+        const query = {
+          groupBy: [field],
+          aggregates: { rowCount: { aggFunc: "count" } },
+        };
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeGroupedQuery(viewServer, "orders", query),
+        );
+        expect(encodeError).toStrictEqual(unknownTopicRowFieldError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeGroupedQuery(viewServer, "orders", query),
+        );
+        expect(decodeError).toStrictEqual(unknownTopicRowFieldError);
+      }
+    }),
+  );
+
+  it.effect("rejects non-own Topic Row fields in grouped aggregate encoding and decoding", () =>
+    Effect.gen(function* () {
+      for (const field of nonOwnTopicRowFields) {
+        const query = {
+          groupBy: ["id"],
+          aggregates: { total: { aggFunc: "sum", field } },
+        };
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeGroupedQuery(viewServer, "orders", query),
+        );
+        expect(encodeError).toStrictEqual(unknownTopicRowFieldError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeGroupedQuery(viewServer, "orders", query),
+        );
+        expect(decodeError).toStrictEqual(unknownTopicRowFieldError);
+      }
     }),
   );
 

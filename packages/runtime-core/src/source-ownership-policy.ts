@@ -8,17 +8,15 @@ import {
   sourceOwnedRuntimeMutationError,
   sourceOwnedRuntimeResetError,
 } from "./runtime-error";
+import {
+  makeTopicSourceBindings,
+  type TopicGrpcSourceLifecycle,
+  type TopicSourceOwner,
+} from "./source-binding-resolution";
 
 export type SourceOwnershipAccessProfile = "managedRuntime" | "runtimeCore";
-export type SourceOwnershipGrpcLifecycle = "leased" | "materialized" | "unknown";
-export type SourceOwnershipOwner =
-  | {
-      readonly _tag: "kafka";
-    }
-  | {
-      readonly _tag: "grpc";
-      readonly lifecycle: SourceOwnershipGrpcLifecycle;
-    };
+export type SourceOwnershipGrpcLifecycle = TopicGrpcSourceLifecycle;
+export type SourceOwnershipOwner = TopicSourceOwner;
 
 export type SourceOwnershipTopic = {
   readonly grpcLeased: boolean;
@@ -48,52 +46,6 @@ export type SourceOwnershipKafkaOptions = {
 
 export type SourceOwnershipGrpcOptions = {
   readonly feeds: Readonly<Record<string, { readonly topic: string }>>;
-};
-
-const hasDefinedOwnProperty = (value: object, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(value, key) && Reflect.get(value, key) !== undefined;
-
-const topicGrpcSource = (definition: object): unknown => {
-  if (hasDefinedOwnProperty(definition, "grpcSource")) {
-    return Reflect.get(definition, "grpcSource");
-  }
-  return undefined;
-};
-
-const grpcLifecycle = (source: unknown): SourceOwnershipGrpcLifecycle => {
-  if (typeof source !== "object" || source === null || Reflect.get(source, "kind") !== "grpc") {
-    return "unknown";
-  }
-  const lifecycle = Reflect.get(source, "lifecycle");
-  if (lifecycle === "leased" || lifecycle === "materialized") {
-    return lifecycle;
-  }
-  return "unknown";
-};
-
-const topicOwners = (definition: object): ReadonlyArray<SourceOwnershipOwner> => {
-  const owners: Array<SourceOwnershipOwner> = [];
-  if (hasDefinedOwnProperty(definition, "kafkaSource")) {
-    owners.push({ _tag: "kafka" });
-  }
-  const grpcSource = topicGrpcSource(definition);
-  if (grpcSource !== undefined) {
-    owners.push({
-      _tag: "grpc",
-      lifecycle: grpcLifecycle(grpcSource),
-    });
-  }
-  return owners;
-};
-
-const topicOwnership = (topic: string, definition: object): SourceOwnershipTopic => {
-  const owners = topicOwners(definition);
-  return {
-    grpcLeased: owners.some((owner) => owner._tag === "grpc" && owner.lifecycle === "leased"),
-    owners,
-    sourceOwned: owners.length > 0,
-    topic,
-  };
 };
 
 export type SourceOwnershipPolicy = {
@@ -153,8 +105,13 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
   const grpcLeasedTopics = new Set<string>();
   const sourceOwnedTopics = new Set<string>();
   const topics = new Map<string, SourceOwnershipTopic>();
-  for (const [topic, definition] of Object.entries(config.topics)) {
-    const ownership = topicOwnership(topic, definition);
+  for (const [topic, binding] of makeTopicSourceBindings(config)) {
+    const ownership = {
+      grpcLeased: binding.grpcLeased,
+      owners: binding.owners,
+      sourceOwned: binding.sourceOwned,
+      topic: binding.topic,
+    };
     topics.set(topic, ownership);
     if (ownership.sourceOwned) {
       sourceOwnedTopics.add(topic);

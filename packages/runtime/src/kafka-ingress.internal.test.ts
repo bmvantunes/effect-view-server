@@ -4658,18 +4658,8 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
       > = {
         ...runtimeCore.internalClient,
         publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
-        publishManyDecodedRows: (topic, rows) =>
-          Effect.sync(() => {
-            operations.push(`publishMany:${topic}:${rows.length}`);
-          }).pipe(
-            Effect.andThen(
-              rows.some(
-                (row) => Reflect.get(row, "customerId") === "customer-payment-publish-failed",
-              )
-                ? Effect.fail(runtimeUnavailable)
-                : runtimeCore.internalClient.publishManyDecodedRows(topic, rows),
-            ),
-          ),
+        publishManyDecodedRows: () =>
+          Effect.die("Kafka stream should publish decoded rows with storage keys"),
         publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
           Effect.sync(() => {
             operations.push(`publishMany:${topic}:${rows.length}`);
@@ -4701,6 +4691,9 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
                 price: 10,
               }),
               offset: 1n,
+              onCommit: () => {
+                operations.push("commit:orders:1");
+              },
             });
             yield kafkaMessage({
               topic: paymentsSourceTopic,
@@ -4710,6 +4703,9 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
                 price: 20,
               }),
               offset: 2n,
+              onCommit: () => {
+                operations.push("commit:payments:2");
+              },
             });
           })(),
         ),
@@ -4739,7 +4735,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
           message: `Failed to process Kafka message for source topic ${paymentsSourceTopic}`,
           sourceTopic: paymentsSourceTopic,
         },
-        operations: ["publishMany:orders:1", "publishMany:payments:1"],
+        operations: ["publishMany:orders:1", "commit:orders:1", "publishMany:payments:1"],
         health: {
           ordersPublishFailures: 0,
           paymentsPublishFailures: 1,

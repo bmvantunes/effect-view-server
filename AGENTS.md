@@ -17,6 +17,20 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 ## Agent Skills
 
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub at `bmvantunes/effect-view-server`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+### Engineering workflows
+
 - Use `.agents/skills/effect-ts/SKILL.md` for all Effect-related implementation and review work. The repository tracks `.repos/effect` as a submodule for source-level Effect checks.
 - Use `.agents/skills/vitest/SKILL.md` for tests, coverage, fixtures, and especially type tests. For type-heavy packages, read `.agents/skills/vitest/references/advanced-type-testing.md` before reviewing or writing tests.
 - Use `.agents/skills/vite/SKILL.md` for `vite.config.ts`, build, library packaging, and Vite/Vite+ integration work.

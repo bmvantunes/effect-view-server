@@ -65,6 +65,8 @@ type TcpErrorHandlingServer = {
   readonly on: (event: "error", listener: (cause: Error) => void) => unknown;
 };
 
+type TcpPublishServerFactory = (connectionListener: (socket: Net.Socket) => void) => Net.Server;
+
 type TcpResponseSocket = {
   readonly destroyed: boolean;
   readonly off: (event: "close" | "error", listener: () => void) => unknown;
@@ -422,9 +424,6 @@ const installSocketHandler = <const Topics extends ViewServerRuntimeTopicDefinit
 
 const closeTcpServer = (server: Net.Server, state: TcpPublishServerState): Effect.Effect<void> =>
   Effect.gen(function* () {
-    if (state.closed) {
-      return;
-    }
     state.closed = true;
     for (const socketState of state.socketStates.values()) {
       socketState.closed = true;
@@ -563,57 +562,76 @@ export const installTcpPublishAcceptedSocket = <
   installSocketHandler(socket, socketState, state, config, client, options, sourceOwnership);
 };
 
+/** @internal Package-local test seam; not exported from @effect-view-server/runtime. */
+export const makeViewServerTcpPublishIngressWithServerFactory = Effect.fn(
+  "ViewServerRuntime.tcpPublish.makeWithServerFactory",
+)(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  config: ViewServerTopicConfig<Topics>,
+  client: ViewServerRuntimeCoreInternalClient<Topics>,
+  options: ViewServerTcpPublishIngressOptions,
+  createServer: TcpPublishServerFactory,
+) {
+  yield* validateTcpPublishOptions(options);
+  const host = options.host ?? "127.0.0.1";
+  const state: TcpPublishServerState = {
+    activeChains: new Set(),
+    activeFibers: new Set(),
+    closed: false,
+    preCommandDeadlineMs: undefined,
+    queuedCommands: 0,
+    socketStates: new Map(),
+    sockets: new Set(),
+  };
+  const server = createServer((socket) => {
+    installTcpPublishAcceptedSocket(socket, state, config, client, options);
+  });
+  return yield* Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const close = (yield* Effect.cached(closeTcpServer(server, state))).pipe(
+        Effect.uninterruptible,
+      );
+      yield* restore(
+        Effect.callback<void, ViewServerTcpPublishIngressError>((resume) => {
+          const onStartupError = (cause: Error) => {
+            resume(
+              Effect.fail(
+                new ViewServerTcpPublishIngressError({
+                  message: "TCP publish server failed to listen.",
+                  cause,
+                  phase: "listen",
+                }),
+              ),
+            );
+          };
+          server.once("error", onStartupError);
+          server.listen({ host, port: options.port }, () => {
+            server.off("error", onStartupError);
+            installTcpServerSteadyStateErrorHandler(server, close);
+            resume(Effect.void);
+          });
+          return close;
+        }),
+      );
+      const address = Schema.decodeUnknownSync(TcpAddress)(server.address());
+      return {
+        url: tcpPublishUrl(address),
+        close,
+      };
+    }),
+  );
+});
+
 export const makeViewServerTcpPublishIngress = Effect.fn("ViewServerRuntime.tcpPublish.make")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
     client: ViewServerRuntimeCoreInternalClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) {
-    yield* validateTcpPublishOptions(options);
-    const host = options.host ?? "127.0.0.1";
-    const state: TcpPublishServerState = {
-      activeChains: new Set(),
-      activeFibers: new Set(),
-      closed: false,
-      preCommandDeadlineMs: undefined,
-      queuedCommands: 0,
-      socketStates: new Map(),
-      sockets: new Set(),
-    };
-    const server = Net.createServer((socket) => {
-      installTcpPublishAcceptedSocket(socket, state, config, client, options);
-    });
-    return yield* Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const close = closeTcpServer(server, state);
-        yield* restore(
-          Effect.callback<void, ViewServerTcpPublishIngressError>((resume) => {
-            const onStartupError = (cause: Error) => {
-              resume(
-                Effect.fail(
-                  new ViewServerTcpPublishIngressError({
-                    message: "TCP publish server failed to listen.",
-                    cause,
-                    phase: "listen",
-                  }),
-                ),
-              );
-            };
-            server.once("error", onStartupError);
-            server.listen({ host, port: options.port }, () => {
-              server.off("error", onStartupError);
-              installTcpServerSteadyStateErrorHandler(server, close);
-              resume(Effect.void);
-            });
-            return close;
-          }),
-        );
-        const address = Schema.decodeUnknownSync(TcpAddress)(server.address());
-        return {
-          url: tcpPublishUrl(address),
-          close,
-        };
-      }),
+    return yield* makeViewServerTcpPublishIngressWithServerFactory(
+      config,
+      client,
+      options,
+      (connectionListener) => Net.createServer(connectionListener),
     );
   },
 );

@@ -52,6 +52,7 @@ import {
 import { makeViewServerGrpcHealthLedger, type ViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcIngress, ViewServerGrpcIngressError } from "./grpc-ingress";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
+import { makeDefaultGrpcClient } from "./grpc-source-lifecycle";
 import { makeViewServerRuntime, runViewServerRuntime } from "./index";
 import { messageFromUnknown, ViewServerKafkaIngressError } from "./kafka-ingress";
 import {
@@ -8069,6 +8070,324 @@ describe("@effect-view-server/runtime", () => {
       yield* subscription.close();
       yield* manager.close;
       yield* runtimeCore.close;
+    }),
+  );
+
+  it.live("bounds grouped-key translations to each leased subscription lifetime", () =>
+    Effect.gen(function* () {
+      const churnRows = Array.from({ length: 64 }, (_, index) => ({
+        customerId: `customer-${index}`,
+        rowCount: 1n,
+      }));
+      const churnInternalKeys = churnRows.map((_row, index) => `customer-internal-${index}`);
+      const removalOperations: ReadonlyArray<{ readonly type: "remove"; readonly key: string }> =
+        churnInternalKeys.slice(1).map((key) => ({ type: "remove", key }));
+      const replacementRows = [
+        { customerId: "replacement-a", rowCount: 1n },
+        { customerId: "replacement-b", rowCount: 1n },
+      ];
+      const replacementInternalKeys = ["replacement-internal-a", "replacement-internal-b"];
+      const customerSnapshot = {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "customer-groups",
+        version: 0,
+        keys: churnInternalKeys,
+        rows: churnRows,
+        totalRows: churnRows.length,
+      } as const;
+      const customerRemovalDelta = {
+        type: "delta",
+        topic: "orders",
+        queryId: "customer-groups",
+        fromVersion: 0,
+        toVersion: 1,
+        operations: removalOperations,
+        totalRows: 1,
+      } as const;
+      const customerReplacementSnapshot = {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "customer-groups",
+        version: 2,
+        keys: replacementInternalKeys,
+        rows: replacementRows,
+        totalRows: replacementRows.length,
+      } as const;
+      const statusSnapshot = {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "status-groups",
+        version: 0,
+        keys: ["status-internal-open"],
+        rows: [{ status: "open", rowCount: 64n }],
+        totalRows: 1,
+      } as const;
+      const statusMoveDelta = {
+        type: "delta",
+        topic: "orders",
+        queryId: "status-groups",
+        fromVersion: 0,
+        toVersion: 1,
+        operations: [
+          {
+            type: "update",
+            key: "status-internal-open",
+            row: { status: "open", rowCount: 65n },
+            index: 0,
+          },
+          {
+            type: "move",
+            key: "status-internal-open",
+            fromIndex: 0,
+            toIndex: 0,
+          },
+        ],
+        totalRows: 1,
+      } as const;
+      const publicGroupedStringKey = (field: string, value: string): string => {
+        const fieldToken = `["array",[["string",${JSON.stringify(field)}],["string",${JSON.stringify(value)}]]]`;
+        return `["array",[${fieldToken}]]`;
+      };
+      const releaseCustomerRemovals = yield* Deferred.make<void>();
+      const releaseCustomerReplacement = yield* Deferred.make<void>();
+      const releaseStatusMove = yield* Deferred.make<void>();
+      const translationStates: Array<ReadonlyMap<string, string>> = [];
+      const feed = grpcLeasedFeed({
+        streamForRegion: () => Stream.never,
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+
+      yield* Effect.acquireUseRelease(
+        makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {}),
+        (runtimeCore) => {
+          let subscriptionIndex = 0;
+          const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
+            typeof leasedGrpcViewServer.topics
+          > = {
+            ...runtimeCore.internalLiveClient,
+            subscribeRuntimeObservedInternal: (_topic, _query, observer) => {
+              if (subscriptionIndex === 0) {
+                subscriptionIndex += 1;
+                return observer.onQueryRegistered(customerSnapshot.queryId).pipe(
+                  Effect.as({
+                    events: Stream.make(customerSnapshot).pipe(
+                      Stream.concat(
+                        Stream.fromEffect(
+                          Deferred.await(releaseCustomerRemovals).pipe(
+                            Effect.as(customerRemovalDelta),
+                          ),
+                        ),
+                      ),
+                      Stream.concat(
+                        Stream.fromEffect(
+                          Deferred.await(releaseCustomerReplacement).pipe(
+                            Effect.as(customerReplacementSnapshot),
+                          ),
+                        ),
+                      ),
+                      Stream.concat(Stream.never),
+                    ),
+                    close: () => Effect.void,
+                  }),
+                );
+              }
+              subscriptionIndex += 1;
+              return observer.onQueryRegistered(statusSnapshot.queryId).pipe(
+                Effect.as({
+                  events: Stream.make(statusSnapshot).pipe(
+                    Stream.concat(
+                      Stream.fromEffect(
+                        Deferred.await(releaseStatusMove).pipe(Effect.as(statusMoveDelta)),
+                      ),
+                    ),
+                    Stream.concat(Stream.never),
+                  ),
+                  close: () => Effect.void,
+                }),
+              );
+            },
+          };
+          const health = makeLeasedGrpcHealth(grpcOptions);
+          return Effect.acquireUseRelease(
+            makeViewServerGrpcLeaseManager(
+              leasedGrpcViewServer,
+              runtimeCore.internalClient,
+              runtimeCore.liveClient,
+              fakeInternalLiveClient,
+              Effect.void,
+              grpcOptions,
+              health,
+              makeDefaultGrpcClient,
+              {
+                onGroupedKeyTranslationsCreated: (translations) => {
+                  translationStates.push(translations);
+                },
+              },
+            ),
+            (manager) =>
+              Effect.acquireUseRelease(
+                manager.liveClient.subscribeRuntime("orders", {
+                  groupBy: ["customerId"],
+                  aggregates: {
+                    rowCount: { aggFunc: "count" },
+                  },
+                  where: {
+                    region: { eq: "usa" },
+                  },
+                  limit: 100,
+                }),
+                (customerSubscription) =>
+                  Effect.acquireUseRelease(
+                    manager.liveClient.subscribeRuntime("orders", {
+                      groupBy: ["status"],
+                      aggregates: {
+                        rowCount: { aggFunc: "count" },
+                      },
+                      where: {
+                        region: { eq: "usa" },
+                      },
+                      limit: 10,
+                    }),
+                    (statusSubscription) =>
+                      Effect.gen(function* () {
+                        const customerTranslations = yield* Effect.fromNullishOr(
+                          translationStates[0],
+                        );
+                        const statusTranslations = yield* Effect.fromNullishOr(
+                          translationStates[1],
+                        );
+                        const customerEventQueue = yield* Queue.unbounded<unknown>();
+                        const customerEventsFiber = yield* customerSubscription.events.pipe(
+                          Stream.runForEach((event) => Queue.offer(customerEventQueue, event)),
+                          Effect.forkChild({ startImmediately: true }),
+                        );
+                        const customerSnapshotEvent = yield* Queue.take(customerEventQueue).pipe(
+                          Effect.timeout("1 second"),
+                        );
+                        expect(customerTranslations.size).toBe(64);
+
+                        yield* Deferred.succeed(releaseCustomerRemovals, undefined);
+                        const customerRemovalEvent = yield* Queue.take(customerEventQueue).pipe(
+                          Effect.timeout("1 second"),
+                        );
+                        expect(customerTranslations.size).toBe(1);
+
+                        yield* Deferred.succeed(releaseCustomerReplacement, undefined);
+                        const customerReplacementEvent = yield* Queue.take(customerEventQueue).pipe(
+                          Effect.timeout("1 second"),
+                        );
+                        expect(customerTranslations.size).toBe(2);
+                        const customerEvents = [
+                          customerSnapshotEvent,
+                          customerRemovalEvent,
+                          customerReplacementEvent,
+                        ];
+                        const statusEventQueue = yield* Queue.unbounded<unknown>();
+                        const statusEventsFiber = yield* statusSubscription.events.pipe(
+                          Stream.runForEach((event) => Queue.offer(statusEventQueue, event)),
+                          Effect.forkChild({ startImmediately: true }),
+                        );
+                        const statusSnapshotEvent = yield* Queue.take(statusEventQueue).pipe(
+                          Effect.timeout("1 second"),
+                        );
+
+                        expect({
+                          customerTranslations: customerTranslations.size,
+                          statusTranslations: statusTranslations.size,
+                        }).toStrictEqual({
+                          customerTranslations: 2,
+                          statusTranslations: 1,
+                        });
+
+                        yield* customerSubscription.close();
+                        expect({
+                          customerTranslations: customerTranslations.size,
+                          statusTranslations: statusTranslations.size,
+                        }).toStrictEqual({
+                          customerTranslations: 0,
+                          statusTranslations: 1,
+                        });
+                        yield* Fiber.interrupt(customerEventsFiber);
+                        yield* Deferred.succeed(releaseStatusMove, undefined);
+                        const statusMoveEvent = yield* Queue.take(statusEventQueue).pipe(
+                          Effect.timeout("1 second"),
+                        );
+                        const statusEvents = [statusSnapshotEvent, statusMoveEvent];
+
+                        expect(customerEvents).toStrictEqual([
+                          {
+                            ...customerSnapshot,
+                            keys: churnRows.map((row) =>
+                              publicGroupedStringKey("customerId", row.customerId),
+                            ),
+                          },
+                          {
+                            ...customerRemovalDelta,
+                            operations: churnRows.slice(1).map((row) => ({
+                              type: "remove",
+                              key: publicGroupedStringKey("customerId", row.customerId),
+                            })),
+                          },
+                          {
+                            ...customerReplacementSnapshot,
+                            keys: replacementRows.map((row) =>
+                              publicGroupedStringKey("customerId", row.customerId),
+                            ),
+                          },
+                        ]);
+                        expect(statusEvents).toStrictEqual([
+                          {
+                            ...statusSnapshot,
+                            keys: [publicGroupedStringKey("status", "open")],
+                          },
+                          {
+                            ...statusMoveDelta,
+                            operations: [
+                              {
+                                ...statusMoveDelta.operations[0],
+                                key: publicGroupedStringKey("status", "open"),
+                              },
+                              {
+                                ...statusMoveDelta.operations[1],
+                                key: publicGroupedStringKey("status", "open"),
+                              },
+                            ],
+                          },
+                        ]);
+                        expect({
+                          customerTranslations: customerTranslations.size,
+                          statusTranslations: statusTranslations.size,
+                        }).toStrictEqual({
+                          customerTranslations: 0,
+                          statusTranslations: 1,
+                        });
+                        yield* statusSubscription.close();
+                        expect({
+                          customerTranslations: customerTranslations.size,
+                          statusTranslations: statusTranslations.size,
+                        }).toStrictEqual({
+                          customerTranslations: 0,
+                          statusTranslations: 0,
+                        });
+                        yield* Fiber.interrupt(statusEventsFiber);
+                      }).pipe(
+                        Effect.ensuring(
+                          Deferred.succeed(releaseCustomerRemovals, undefined).pipe(
+                            Effect.andThen(Deferred.succeed(releaseCustomerReplacement, undefined)),
+                            Effect.andThen(Deferred.succeed(releaseStatusMove, undefined)),
+                          ),
+                        ),
+                      ),
+                    (subscription) => subscription.close(),
+                  ),
+                (subscription) => subscription.close(),
+              ),
+            (manager) => manager.close,
+          );
+        },
+        (runtimeCore) => runtimeCore.close,
+      );
     }),
   );
 

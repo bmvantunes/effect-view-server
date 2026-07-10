@@ -58,6 +58,7 @@ import {
   installTcpPublishAcceptedSocket,
   installTcpServerSteadyStateErrorHandler,
   makeViewServerTcpPublishIngress,
+  makeViewServerTcpPublishIngressWithServerFactory,
   rejectTcpSocketWhenClosed,
   tcpPublishUrl,
   ViewServerTcpPublishIngressError,
@@ -3795,6 +3796,213 @@ describe("@effect-view-server/runtime", () => {
       });
       yield* Effect.sync(() => server.removeAllListeners());
     }),
+  );
+
+  it.live(
+    "joins listener, explicit ingress, and runtime shutdown before runtime-core teardown",
+    () =>
+      Effect.gen(function* () {
+        const commandStarted = yield* Deferred.make<void>();
+        const commandInterruptStarted = yield* Deferred.make<void>();
+        const allowCommandFinalize = yield* Deferred.make<void>();
+        const commandFinalized = yield* Deferred.make<void>();
+        const explicitIngressCloseCompleted = yield* Deferred.make<void>();
+        const runtimeIngressCloseEntered = yield* Deferred.make<void>();
+        const runtimeCoreCloseStarted = yield* Deferred.make<void>();
+        const runtimeCloseCompleted = yield* Deferred.make<void>();
+        let tcpServerCloseCount = 0;
+        let tcpServer: Net.Server | undefined;
+        let explicitIngressClose: Effect.Effect<void> | undefined;
+        const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+          ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
+          makeRuntimeCore: (config, options) =>
+            makeViewServerRuntimeCoreInternal(config, options).pipe(
+              Effect.map((runtimeCore) => ({
+                ...runtimeCore,
+                internalClient: {
+                  ...runtimeCore.internalClient,
+                  publishManyDecodedRows: () =>
+                    Deferred.succeed(commandStarted, undefined).pipe(
+                      Effect.andThen(Effect.never),
+                      Effect.ensuring(
+                        Deferred.succeed(commandInterruptStarted, undefined).pipe(
+                          Effect.andThen(Deferred.await(allowCommandFinalize)),
+                          Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
+                        ),
+                      ),
+                    ),
+                },
+                close: Deferred.succeed(runtimeCoreCloseStarted, undefined).pipe(
+                  Effect.andThen(runtimeCore.close),
+                ),
+              })),
+            ),
+          makeServer: () =>
+            Effect.succeed({
+              url: "ws://127.0.0.1:0/rpc",
+              healthUrl: "http://127.0.0.1:0/health",
+              metricsUrl: "http://127.0.0.1:0/metrics",
+              close: Effect.void,
+            }),
+          makeTcpPublishIngress: (config, client, options) =>
+            makeViewServerTcpPublishIngressWithServerFactory(
+              config,
+              client,
+              options,
+              (connectionListener) => {
+                const server = Net.createServer(connectionListener);
+                const closeServer = server.close.bind(server);
+                const countedClose: Net.Server["close"] = (callback) => {
+                  tcpServerCloseCount += 1;
+                  return closeServer(callback);
+                };
+                Object.defineProperty(server, "close", {
+                  value: countedClose,
+                });
+                tcpServer = server;
+                return server;
+              },
+            ).pipe(
+              Effect.map((ingress) => {
+                explicitIngressClose = ingress.close;
+                return {
+                  ...ingress,
+                  close: Deferred.succeed(runtimeIngressCloseEntered, undefined).pipe(
+                    Effect.andThen(ingress.close),
+                  ),
+                };
+              }),
+            ),
+        };
+        yield* Effect.acquireUseRelease(
+          makeViewServerRuntimeWithDependencies(dependencies, viewServer, {
+            tcpPublishPort: 0,
+            websocketPort: 0,
+          }),
+          (runtime) =>
+            Effect.gen(function* () {
+              const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
+              const server = yield* Effect.fromNullishOr(tcpServer);
+              const ingressClose = yield* Effect.fromNullishOr(explicitIngressClose);
+              yield* Effect.acquireUseRelease(
+                connectTcpPublishSocket(tcpPublishUrl),
+                (socket) =>
+                  Effect.gen(function* () {
+                    socket.write(
+                      `${JSON.stringify({
+                        op: "publish",
+                        topic: "orders",
+                        row: order("shutdown-overlap", 10),
+                      })}\n`,
+                    );
+                    yield* Deferred.await(commandStarted).pipe(Effect.timeout("1 second"));
+
+                    server.emit("error", new Error("tcp shutdown overlap"));
+                    yield* Deferred.await(commandInterruptStarted).pipe(Effect.timeout("1 second"));
+                    const explicitIngressCloseFiber = yield* ingressClose.pipe(
+                      Effect.ensuring(Deferred.succeed(explicitIngressCloseCompleted, undefined)),
+                      Effect.forkChild({ startImmediately: true }),
+                    );
+                    const runtimeCloseFiber = yield* runtime.close.pipe(
+                      Effect.ensuring(Deferred.succeed(runtimeCloseCompleted, undefined)),
+                      Effect.forkChild({ startImmediately: true }),
+                    );
+                    yield* Deferred.await(runtimeIngressCloseEntered).pipe(
+                      Effect.timeout("1 second"),
+                    );
+
+                    expect({
+                      commandFinalized: yield* Deferred.isDone(commandFinalized),
+                      explicitIngressCloseCompleted: yield* Deferred.isDone(
+                        explicitIngressCloseCompleted,
+                      ),
+                      runtimeCloseCompleted: yield* Deferred.isDone(runtimeCloseCompleted),
+                      runtimeCoreCloseStarted: yield* Deferred.isDone(runtimeCoreCloseStarted),
+                    }).toStrictEqual({
+                      commandFinalized: false,
+                      explicitIngressCloseCompleted: false,
+                      runtimeCloseCompleted: false,
+                      runtimeCoreCloseStarted: false,
+                    });
+
+                    yield* Deferred.succeed(allowCommandFinalize, undefined);
+                    yield* Fiber.join(explicitIngressCloseFiber).pipe(Effect.timeout("1 second"));
+                    yield* Fiber.join(runtimeCloseFiber).pipe(Effect.timeout("1 second"));
+                    const priorCloseExit = Effect.runSyncExit(ingressClose);
+
+                    expect({
+                      commandFinalized: yield* Deferred.isDone(commandFinalized),
+                      explicitIngressCloseCompleted: yield* Deferred.isDone(
+                        explicitIngressCloseCompleted,
+                      ),
+                      priorCloseSucceeded: Exit.isSuccess(priorCloseExit),
+                      runtimeCloseCompleted: yield* Deferred.isDone(runtimeCloseCompleted),
+                      runtimeCoreCloseStarted: yield* Deferred.isDone(runtimeCoreCloseStarted),
+                      tcpServerCloseCount,
+                    }).toStrictEqual({
+                      commandFinalized: true,
+                      explicitIngressCloseCompleted: true,
+                      priorCloseSucceeded: true,
+                      runtimeCloseCompleted: true,
+                      runtimeCoreCloseStarted: true,
+                      tcpServerCloseCount: 1,
+                    });
+                  }).pipe(Effect.ensuring(Deferred.succeed(allowCommandFinalize, undefined))),
+                (socket) => Effect.sync(() => socket.destroy()),
+              );
+            }),
+          (runtime) =>
+            Deferred.succeed(allowCommandFinalize, undefined).pipe(Effect.andThen(runtime.close)),
+        );
+      }),
+  );
+
+  it.live("closes TCP publish startup interrupted before listen completes", () =>
+    Effect.acquireUseRelease(
+      makeViewServerRuntimeCoreInternal(viewServer, {}),
+      (runtimeCore) =>
+        Effect.gen(function* () {
+          const listenStarted = yield* Deferred.make<void>();
+          const serverClosed = yield* Deferred.make<void>();
+          let server: Net.Server | undefined;
+          const startupFiber = yield* makeViewServerTcpPublishIngressWithServerFactory(
+            viewServer,
+            runtimeCore.internalClient,
+            { port: 0 },
+            (connectionListener) => {
+              const createdServer = Net.createServer(connectionListener);
+              server = createdServer;
+              Object.defineProperty(createdServer, "listen", {
+                value: (_options: Net.ListenOptions, _callback: () => void) => {
+                  Deferred.doneUnsafe(listenStarted, Effect.void);
+                  return createdServer;
+                },
+              });
+              Object.defineProperty(createdServer, "close", {
+                value: (callback?: (error?: Error) => void) => {
+                  Deferred.doneUnsafe(serverClosed, Effect.void);
+                  callback?.();
+                  return createdServer;
+                },
+              });
+              return createdServer;
+            },
+          ).pipe(Effect.forkChild({ startImmediately: true }));
+
+          yield* Effect.gen(function* () {
+            yield* Deferred.await(listenStarted).pipe(Effect.timeout("1 second"));
+            yield* Fiber.interrupt(startupFiber);
+            expect(yield* Deferred.isDone(serverClosed)).toBe(true);
+          }).pipe(
+            Effect.ensuring(
+              Fiber.interrupt(startupFiber).pipe(
+                Effect.andThen(Effect.sync(() => server?.removeAllListeners())),
+              ),
+            ),
+          );
+        }),
+      (runtimeCore) => runtimeCore.close,
+    ),
   );
 
   it.live("fails startup when the TCP publish port is already bound", () =>

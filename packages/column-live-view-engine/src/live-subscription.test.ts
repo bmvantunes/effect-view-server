@@ -59,6 +59,11 @@ describe("live subscription observability", () => {
         execution,
         permit,
         release: Effect.void,
+        terminalObserver: {
+          onQueryRegistered: () => Effect.void,
+          onTerminalOccurrence: () => Effect.void,
+          onTerminalReady: () => Effect.void,
+        },
       });
       const subscribers = Array.from(topicStoreState(store).subscribers);
 

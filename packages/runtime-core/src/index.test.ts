@@ -1,8 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import {
-  createColumnLiveViewEngine,
-  type ColumnLiveViewEngineHealth,
-} from "@effect-view-server/column-live-view-engine";
+import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
+import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import {
   defineViewServerConfig,
   kafka,
@@ -1111,9 +1109,126 @@ describe("@effect-view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("forwards producer terminal observation through the internal live client", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {
+        subscriptionQueueCapacity: 1,
+      });
+      const phases: Array<string> = [];
+      const subscription = yield* runtimeCore.internalLiveClient.subscribeObservedInternal(
+        "orders",
+        {
+          select: ["id"],
+          limit: 10,
+        },
+        {
+          onQueryRegistered: (queryId) =>
+            Effect.sync(() => {
+              phases.push(`registered:${queryId}`);
+            }),
+          onTerminalOccurrence: () =>
+            Effect.sync(() => {
+              phases.push("occurrence");
+            }),
+          onTerminalReady: () =>
+            Effect.sync(() => {
+              phases.push("ready");
+            }),
+        },
+      );
+
+      yield* runtimeCore.internalClient.publish("orders", order("observed", 10));
+      const events = yield* subscription.events.pipe(Stream.runCollect);
+      expect(phases).toStrictEqual(["registered:query-0", "occurrence", "ready"]);
+      expect(Array.from(events)).toStrictEqual([
+        {
+          type: "status",
+          topic: "orders",
+          queryId: "query-0",
+          status: "closed",
+          code: "BackpressureExceeded",
+          message: "Subscription closed because its event queue exceeded capacity.",
+        },
+      ]);
+
+      const runtimeQueryIds: Array<string> = [];
+      const runtimeSubscription =
+        yield* runtimeCore.internalLiveClient.subscribeRuntimeObservedInternal(
+          "orders",
+          { select: ["id"] },
+          {
+            onQueryRegistered: (queryId) =>
+              Effect.sync(() => {
+                runtimeQueryIds.push(queryId);
+              }),
+            onTerminalOccurrence: () => Effect.void,
+            onTerminalReady: () => Effect.void,
+          },
+        );
+      expect(runtimeQueryIds).toStrictEqual(["query-1"]);
+      yield* runtimeSubscription.close();
+      yield* subscription.close();
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("releases observed subscriptions when initial health refresh fails", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
+      const health = AtomRef.make(healthFromEngine(yield* engine.health()));
+      const liveClient = yield* makeRuntimeCoreLiveClient(
+        viewServer,
+        engine,
+        health,
+        Effect.fail(refreshFailed),
+      );
+      const observer = {
+        onQueryRegistered: () => Effect.void,
+        onTerminalOccurrence: () => Effect.void,
+        onTerminalReady: () => Effect.void,
+      };
+
+      const failedTyped = yield* liveClient
+        .subscribeObservedInternal(
+          "orders",
+          {
+            select: ["id"],
+            limit: 1,
+          },
+          observer,
+        )
+        .pipe(Effect.flip);
+      const afterTypedFailure = yield* engine.health();
+      const failedRuntime = yield* liveClient
+        .subscribeRuntimeObservedInternal(
+          "orders",
+          {
+            select: ["id"],
+            limit: 1,
+          },
+          observer,
+        )
+        .pipe(Effect.flip);
+      const afterRuntimeFailure = yield* engine.health();
+
+      expect({
+        failedTyped,
+        typedSubscriptions: afterTypedFailure.activeSubscriptions,
+        failedRuntime,
+        runtimeSubscriptions: afterRuntimeFailure.activeSubscriptions,
+      }).toStrictEqual({
+        failedTyped: refreshFailed,
+        typedSubscriptions: 0,
+        failedRuntime: refreshFailed,
+        runtimeSubscriptions: 0,
+      });
+      yield* liveClient.close;
+    }),
+  );
+
   it.effect("releases acquired live subscriptions when initial health refresh fails", () =>
     Effect.gen(function* () {
-      const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
         viewServer,
@@ -1148,7 +1263,7 @@ describe("@effect-view-server/runtime-core", () => {
 
   it.effect("releases pushed health subscriptions when initial health refresh fails", () =>
     Effect.gen(function* () {
-      const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
         viewServer,
@@ -1470,7 +1585,7 @@ describe("@effect-view-server/runtime-core", () => {
 
   it.effect("closes slow pushed health summary subscriptions with typed backpressure", () =>
     Effect.gen(function* () {
-      const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
         viewServer,
@@ -1510,7 +1625,7 @@ describe("@effect-view-server/runtime-core", () => {
     "keeps detailed health subscription acquisition stable when health changes during refresh",
     () =>
       Effect.gen(function* () {
-        const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+        const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
         const health = AtomRef.make(healthFromEngine(yield* engine.health()));
         const refreshStarted = yield* Deferred.make<void>();
         const releaseRefresh = yield* Deferred.make<void>();
@@ -1625,7 +1740,7 @@ describe("@effect-view-server/runtime-core", () => {
     "rejects pending pushed health subscriptions when live client closes during refresh",
     () =>
       Effect.gen(function* () {
-        const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+        const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
         const health = AtomRef.make(healthFromEngine(yield* engine.health()));
         const refreshStarted = yield* Deferred.make<void>();
         const releaseRefresh = yield* Deferred.make<void>();
@@ -1695,7 +1810,7 @@ describe("@effect-view-server/runtime-core", () => {
 
   it.effect("closes slow pushed detailed health subscriptions with typed backpressure", () =>
     Effect.gen(function* () {
-      const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
       const health = AtomRef.make(healthFromEngine(yield* engine.health()));
       const liveClient = yield* makeRuntimeCoreLiveClient(
         viewServer,

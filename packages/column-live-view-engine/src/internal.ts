@@ -1,2 +1,5 @@
 export { createColumnLiveViewEngineInternal } from "./engine";
-export type { ColumnLiveViewEngineInternal } from "./engine-contract";
+export type {
+  ColumnLiveViewEngineInternal,
+  ColumnLiveViewTerminalObserver,
+} from "./engine-contract";

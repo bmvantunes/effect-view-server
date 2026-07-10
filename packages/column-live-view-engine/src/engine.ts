@@ -19,6 +19,7 @@ import type {
   ColumnLiveViewEngineInternalConfig,
   ColumnLiveViewEngineInternal,
   ColumnLiveViewSubscription,
+  ColumnLiveViewTerminalObserver,
   DecodableTopicDefinitions,
 } from "./engine-contract";
 import {
@@ -50,6 +51,12 @@ import {
 } from "./topic-store";
 
 const defaultSubscriptionQueueCapacity = 1_024;
+
+const unobservedTerminal: ColumnLiveViewTerminalObserver = {
+  onQueryRegistered: () => Effect.void,
+  onTerminalOccurrence: () => Effect.void,
+  onTerminalReady: () => Effect.void,
+};
 
 const invalidRow = (topic: string, message: string) =>
   new InvalidRowError({
@@ -272,6 +279,7 @@ class InMemoryColumnLiveViewEngine<
   >(
     topic: Topic,
     query: unknown,
+    terminalObserver: ColumnLiveViewTerminalObserver,
   ) =>
     Effect.fn("ColumnLiveViewEngine.subscribe")(
       { self: this },
@@ -293,6 +301,7 @@ class InMemoryColumnLiveViewEngine<
                 permit,
                 queryId,
                 queueCapacity: this.subscriptionQueueCapacity,
+                terminalObserver,
               });
               yield* markAcquired(acquiredSubscription);
               return acquiredSubscription;
@@ -354,11 +363,69 @@ class InMemoryColumnLiveViewEngine<
     ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   > {
-    return this.subscribeQuery(topic, query);
+    return this.subscribeQuery(topic, query, unobservedTerminal);
   }
 
   readonly subscribeRuntime: ColumnLiveViewEngine<Topics>["subscribeRuntime"] = (topic, query) =>
-    this.subscribeQuery(topic, query);
+    this.subscribeQuery(topic, query, unobservedTerminal);
+
+  subscribeObserved<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+    observer: ColumnLiveViewTerminalObserver,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  subscribeObserved<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+    observer: ColumnLiveViewTerminalObserver,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  subscribeObserved<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+    observer: ColumnLiveViewTerminalObserver,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  >;
+  subscribeObserved<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: Query &
+      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
+      ValidateLiveQuery<NoInfer<Query>>,
+    observer: ColumnLiveViewTerminalObserver,
+  ): Effect.Effect<
+    ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ColumnLiveViewEngineError
+  > {
+    return this.subscribeQuery(topic, query, observer);
+  }
+
+  readonly subscribeRuntimeObserved: ColumnLiveViewEngineInternal<Topics>["subscribeRuntimeObserved"] =
+    (topic, query, observer) => this.subscribeQuery(topic, query, observer);
 
   readonly health: ColumnLiveViewEngine<Topics>["health"] = Effect.fn(
     "ColumnLiveViewEngine.health",

@@ -1,6 +1,7 @@
 import type { DeltaEvent, SnapshotEvent, StatusEvent } from "@effect-view-server/config";
 import { Cause, Effect, Option, Queue, Stream } from "effect";
 import type { LiveQueryExecution } from "./active-query";
+import type { ColumnLiveViewTerminalObserver } from "./engine-contract";
 import type { TopicStore, TopicStoreSubscriptionPermit } from "./topic-store";
 import {
   closeBackpressuredTopicStoreSubscription,
@@ -23,6 +24,7 @@ type MakeLiveSubscriptionOptions<ResultRow extends RowObject> = {
   readonly execution: LiveQueryExecution<ResultRow>;
   readonly permit: TopicStoreSubscriptionPermit;
   readonly release: Effect.Effect<void>;
+  readonly terminalObserver: ColumnLiveViewTerminalObserver;
 };
 
 export type LiveSubscription<ResultRow extends RowObject> = {
@@ -66,13 +68,17 @@ const closeForBackpressure = Effect.fn(
   subscriber: LiveTopicSubscriber,
   queue: Queue.Queue<LiveSubscriptionEvent<ResultRow>, Cause.Done>,
   release: Effect.Effect<void>,
+  terminalObserver: ColumnLiveViewTerminalObserver,
 ) {
+  const event = backpressureStatusEvent(store, subscriber);
   yield* Effect.uninterruptible(
     Effect.gen(function* () {
+      yield* terminalObserver.onTerminalOccurrence(event);
       yield* closeBackpressuredTopicStoreSubscription(store, subscriber, release);
       yield* clearBufferedEvents(queue);
-      yield* offerTerminalStatusEvent(queue, backpressureStatusEvent(store, subscriber));
+      yield* offerTerminalStatusEvent(queue, event);
       yield* Queue.end(queue);
+      yield* terminalObserver.onTerminalReady(event);
     }),
   );
 });
@@ -87,6 +93,7 @@ const notifyLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscription.
   execution: LiveQueryExecution<ResultRow>,
   cursor: ReturnType<LiveQueryExecution<ResultRow>["createCursor"]>,
   releaseExecution: Effect.Effect<void>,
+  terminalObserver: ColumnLiveViewTerminalObserver,
 ) {
   yield* Effect.annotateCurrentSpan({
     queryId,
@@ -98,7 +105,7 @@ const notifyLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscription.
   }
   const offered = yield* Queue.offer(queue, nextEvent.value);
   if (!offered) {
-    yield* closeForBackpressure(store, subscriber, queue, releaseExecution);
+    yield* closeForBackpressure(store, subscriber, queue, releaseExecution, terminalObserver);
     return;
   }
 
@@ -108,7 +115,7 @@ const notifyLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscription.
 
 export const makeLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscription.make")(
   function* <ResultRow extends RowObject>(options: MakeLiveSubscriptionOptions<ResultRow>) {
-    const { execution, permit, queryId, queueCapacity } = options;
+    const { execution, permit, queryId, queueCapacity, terminalObserver } = options;
     const { release } = options;
     const { store } = permit;
     const queue = yield* Queue.dropping<LiveSubscriptionEvent<ResultRow>, Cause.Done>(
@@ -130,17 +137,22 @@ export const makeLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscrip
           execution,
           cursor,
           releaseExecution,
+          terminalObserver,
         ),
       queuedEvents: Queue.size(queue),
       end: Queue.end(queue),
       closeWithStatus: (event) =>
-        Effect.gen(function* () {
-          subscriber.closed = true;
-          yield* clearBufferedEvents(queue);
-          yield* releaseExecution;
-          yield* offerTerminalStatusEvent(queue, event);
-          yield* Queue.end(queue);
-        }),
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* terminalObserver.onTerminalOccurrence(event);
+            subscriber.closed = true;
+            yield* clearBufferedEvents(queue);
+            yield* releaseExecution;
+            yield* offerTerminalStatusEvent(queue, event);
+            yield* Queue.end(queue);
+            yield* terminalObserver.onTerminalReady(event);
+          }),
+        ),
       maxQueueDepth: 0,
       backpressureEvents: 0,
       closed: false,
@@ -149,6 +161,7 @@ export const makeLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscrip
     yield* registerTopicStoreSubscription(permit, subscriber);
     yield* Queue.offer(queue, execution.initial(queryId));
     yield* trackTopicStoreSubscriptionQueueDepth(store, subscriber, yield* Queue.size(queue));
+    yield* terminalObserver.onQueryRegistered(queryId);
 
     const close = Effect.fn("ColumnLiveViewEngine.liveSubscription.close")(function* () {
       yield* closeTopicStoreSubscription(

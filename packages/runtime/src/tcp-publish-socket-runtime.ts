@@ -43,6 +43,12 @@ type TcpPublishServerState = {
   readonly sockets: Map<Net.Socket, TcpPublishSocketState>;
 };
 
+type TcpPendingSocketReservation = {
+  readonly isActive: () => boolean;
+  readonly release: () => void;
+  readonly releaseAdmission: () => void;
+};
+
 export type TcpPublishServerFactory = (
   connectionListener: (socket: Net.Socket) => void,
 ) => Net.Server;
@@ -299,9 +305,15 @@ const listenNodeServer = (
   server: Net.Server,
   host: string,
   port: number,
+  onSteadyStateError: (cause: Error) => void,
 ): Effect.Effect<void, ViewServerTcpPublishIngressError> =>
-  Effect.callback<void, ViewServerTcpPublishIngressError>((resume) => {
+  Effect.callback<void, ViewServerTcpPublishIngressError>((resume, signal) => {
+    let active = true;
     const onStartupError = (cause: Error) => {
+      if (signal.aborted || active === false) {
+        return;
+      }
+      active = false;
       resume(
         Effect.fail(
           new ViewServerTcpPublishIngressError({
@@ -314,10 +326,18 @@ const listenNodeServer = (
     };
     server.once("error", onStartupError);
     server.listen({ host, port }, () => {
+      if (signal.aborted || active === false) {
+        return;
+      }
+      active = false;
+      server.on("error", onSteadyStateError);
       server.off("error", onStartupError);
       resume(Effect.void);
     });
-    return Effect.sync(() => server.off("error", onStartupError));
+    return Effect.sync(() => {
+      active = false;
+      server.off("error", onStartupError);
+    });
   });
 
 /** @internal The sole TCP listener/socket implementation for the runtime package. */
@@ -343,9 +363,15 @@ export const makeTcpPublishSocketServer = Effect.fn(
 
   const installAcceptedSocket = Effect.fn("ViewServerRuntime.tcpPublish.socket.accept")(function* (
     socket: Net.Socket,
+    reservation: TcpPendingSocketReservation,
   ) {
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        if (state.closed || socket.destroyed || reservation.isActive() === false) {
+          reservation.releaseAdmission();
+          socket.destroy();
+          return;
+        }
         const socketScope = yield* Scope.fork(serverScope, "sequential");
         const closeSocket = (yield* Effect.cached(Scope.close(socketScope, Exit.void))).pipe(
           Effect.uninterruptible,
@@ -381,9 +407,11 @@ export const makeTcpPublishSocketServer = Effect.fn(
           withOpenSocket(() => {
             socketState.closed = true;
             socket.pause();
+            // Admission counts logical sessions; terminal sockets are Closed while cleanup drains.
+            state.sockets.delete(socket);
             runServerFiber(
-              closeWork.pipe(
-                Effect.andThen(endTcpJsonLine(socket, tcpErrorPayload(error))),
+              endTcpJsonLine(socket, tcpErrorPayload(error)).pipe(
+                Effect.andThen(closeWork),
                 Effect.andThen(closeSocket),
               ),
             );
@@ -436,16 +464,10 @@ export const makeTcpPublishSocketServer = Effect.fn(
         };
         const onClose = (): void => {
           socketState.closed = true;
+          state.sockets.delete(socket);
           runServerFiber(closeSocket);
         };
 
-        socket.setEncoding("utf8");
-        socket.on("data", onData);
-        socket.on("error", onError);
-        socket.on("close", onClose);
-        state.sockets.set(socket, socketState);
-        // The child scope owns the socket now; transfer the admission count before yielding.
-        state.pendingSockets.delete(socket);
         yield* Scope.addFinalizer(
           socketScope,
           // Signal the peer first, join command work second, then remove the last error listener.
@@ -466,6 +488,26 @@ export const makeTcpPublishSocketServer = Effect.fn(
             ),
           ),
         );
+        const transferred = yield* Effect.sync(() => {
+          if (state.closed || socket.destroyed || reservation.isActive() === false) {
+            return false;
+          }
+          socket.setEncoding("utf8");
+          if (state.closed || socket.destroyed || reservation.isActive() === false) {
+            return false;
+          }
+          socket.on("data", onData);
+          socket.on("error", onError);
+          socket.on("close", onClose);
+          state.sockets.set(socket, socketState);
+          // Permanent ownership overlaps the provisional handlers, so no error-listener gap exists.
+          reservation.release();
+          return true;
+        });
+        if (transferred === false) {
+          reservation.releaseAdmission();
+          return yield* closeSocket;
+        }
         runSocketFiber(
           restore(
             runSocketWorker(socket, socketState, state, config, client, options, sourceOwnership),
@@ -476,11 +518,15 @@ export const makeTcpPublishSocketServer = Effect.fn(
   });
 
   const rejectPendingSocket = Effect.fn("ViewServerRuntime.tcpPublish.socket.rejectPending")(
-    function* (socket: Net.Socket, maxConnections: number) {
+    function* (
+      socket: Net.Socket,
+      maxConnections: number,
+      reservation: TcpPendingSocketReservation,
+    ) {
       return yield* rejectTcpSocket(socket, tcpConnectionExceededError(maxConnections)).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            state.pendingSockets.delete(socket);
+            reservation.releaseAdmission();
             socket.destroy();
           }),
         ),
@@ -489,26 +535,45 @@ export const makeTcpPublishSocketServer = Effect.fn(
   );
 
   const server = createServer((socket) => {
-    if (state.closed) {
+    let admissionReleased = false;
+    const releaseAdmission = (): void => {
+      state.pendingSockets.delete(socket);
+      admissionReleased = true;
+    };
+    const release = (): void => {
+      releaseAdmission();
+      socket.off("error", onPendingError);
+      socket.off("close", onPendingClose);
+    };
+    const onPendingError = (): void => {
       socket.destroy();
-      return;
-    }
+    };
+    const onPendingClose = (): void => {
+      release();
+      // Covers a close emitted reentrantly during the synchronous ownership transfer.
+      state.sockets.delete(socket);
+    };
+    const reservation: TcpPendingSocketReservation = {
+      isActive: () => admissionReleased === false && state.pendingSockets.has(socket),
+      release,
+      releaseAdmission,
+    };
+    socket.on("error", onPendingError);
+    socket.on("close", onPendingClose);
     const maxConnections = options.maxConnections ?? defaultMaxConnections;
     // Reserve synchronously at the Node callback edge, before an Effect fiber can yield.
     state.pendingSockets.add(socket);
-    if (state.sockets.size + state.pendingSockets.size > maxConnections) {
-      runServerFiber(rejectPendingSocket(socket, maxConnections));
+    if (state.closed || socket.destroyed || reservation.isActive() === false) {
+      reservation.releaseAdmission();
+      socket.destroy();
       return;
     }
-    runServerFiber(installAcceptedSocket(socket));
+    if (state.sockets.size + state.pendingSockets.size > maxConnections) {
+      runServerFiber(rejectPendingSocket(socket, maxConnections, reservation));
+      return;
+    }
+    runServerFiber(installAcceptedSocket(socket, reservation));
   });
-  let removeSteadyStateErrorHandler = (): void => undefined;
-  yield* Scope.addFinalizer(
-    serverScope,
-    closeNodeServer(server).pipe(
-      Effect.ensuring(Effect.sync(() => removeSteadyStateErrorHandler())),
-    ),
-  );
   const close = (yield* Effect.cached(
     Effect.sync(() => {
       state.closed = true;
@@ -521,21 +586,26 @@ export const makeTcpPublishSocketServer = Effect.fn(
       }
     }).pipe(Effect.andThen(Scope.close(serverScope, Exit.void))),
   )).pipe(Effect.uninterruptible);
+  const onSteadyStateError = (cause: Error): void => {
+    runLifecycleFiber(
+      Effect.logWarning("TCP publish server emitted an error after listen; closing ingress.").pipe(
+        Effect.annotateLogs({ cause }),
+        Effect.andThen(close),
+      ),
+    );
+  };
+  yield* Scope.addFinalizer(
+    serverScope,
+    closeNodeServer(server).pipe(
+      Effect.ensuring(Effect.sync(() => server.off("error", onSteadyStateError))),
+    ),
+  );
 
   return yield* Effect.uninterruptibleMask((restore) =>
     restore(
-      listenNodeServer(server, options.host ?? "127.0.0.1", options.port).pipe(
+      listenNodeServer(server, options.host ?? "127.0.0.1", options.port, onSteadyStateError).pipe(
         Effect.andThen(
           Effect.sync(() => {
-            const onSteadyStateError = (cause: Error): void => {
-              runLifecycleFiber(
-                Effect.logWarning(
-                  "TCP publish server emitted an error after listen; closing ingress.",
-                ).pipe(Effect.annotateLogs({ cause }), Effect.andThen(close)),
-              );
-            };
-            server.on("error", onSteadyStateError);
-            removeSteadyStateErrorHandler = () => server.off("error", onSteadyStateError);
             const address = Schema.decodeUnknownSync(TcpAddress)(server.address());
             return {
               url: tcpPublishUrl(address),

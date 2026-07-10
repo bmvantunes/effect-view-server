@@ -3243,6 +3243,155 @@ describe("@effect-view-server/runtime", () => {
     ),
   );
 
+  it.live("sends terminal TCP queue errors before joining command finalizers", () =>
+    Effect.acquireUseRelease(
+      makeViewServerRuntimeCoreInternal(viewServer, {}),
+      (runtimeCore) =>
+        Effect.gen(function* () {
+          const commandStarted = yield* Deferred.make<void>();
+          const commandFinalizerStarted = yield* Deferred.make<void>();
+          const allowCommandFinalizer = yield* Deferred.make<void>();
+          const commandFinalized = yield* Deferred.make<void>();
+          const client: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
+            ...runtimeCore.internalClient,
+            publishManyDecodedRows: () =>
+              Effect.acquireUseRelease(
+                Deferred.succeed(commandStarted, undefined),
+                () => Effect.never,
+                () =>
+                  Deferred.succeed(commandFinalizerStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowCommandFinalizer)),
+                    Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
+                  ),
+              ),
+          };
+
+          yield* Effect.acquireUseRelease(
+            makeViewServerTcpPublishIngress(viewServer, client, {
+              maxQueuedCommands: 1,
+              port: 0,
+            }),
+            (ingress) =>
+              Effect.acquireUseRelease(
+                connectTcpPublishSocket(ingress.url),
+                (socket) =>
+                  Effect.gen(function* () {
+                    const commandLine = `${JSON.stringify({
+                      op: "publish",
+                      topic: "orders",
+                      row: order("terminal-before-finalizer", 10),
+                    })}\n`;
+                    socket.write(commandLine);
+                    yield* Deferred.await(commandStarted).pipe(Effect.timeout("1 second"));
+                    socket.write(commandLine);
+
+                    const response = yield* readTcpPublishResponse(socket).pipe(
+                      Effect.timeout("1 second"),
+                    );
+                    expect({
+                      commandFinalized: yield* Deferred.isDone(commandFinalized),
+                      response,
+                    }).toStrictEqual({
+                      commandFinalized: false,
+                      response: {
+                        ok: false,
+                        error: {
+                          _tag: "ViewServerTcpPublishIngressError",
+                          message: "TCP publish command queue exceeded 1 commands.",
+                          phase: "backpressure",
+                        },
+                      },
+                    });
+
+                    yield* Deferred.await(commandFinalizerStarted).pipe(Effect.timeout("1 second"));
+                    expect(yield* Deferred.isDone(commandFinalized)).toBe(false);
+                    yield* Deferred.succeed(allowCommandFinalizer, undefined);
+                    yield* Deferred.await(commandFinalized).pipe(Effect.timeout("1 second"));
+                  }).pipe(Effect.ensuring(Deferred.succeed(allowCommandFinalizer, undefined))),
+                (socket) => Effect.sync(() => socket.destroy()),
+              ),
+            (ingress) => ingress.close,
+          );
+        }),
+      (runtimeCore) => runtimeCore.close,
+    ),
+  );
+
+  it.live("releases TCP connection admission before joining disconnect finalizers", () =>
+    Effect.acquireUseRelease(
+      makeViewServerRuntimeCoreInternal(viewServer, {}),
+      (runtimeCore) =>
+        Effect.gen(function* () {
+          const commandStarted = yield* Deferred.make<void>();
+          const commandFinalizerStarted = yield* Deferred.make<void>();
+          const allowCommandFinalizer = yield* Deferred.make<void>();
+          const commandFinalized = yield* Deferred.make<void>();
+          let publishCalls = 0;
+          const client: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
+            ...runtimeCore.internalClient,
+            publishManyDecodedRows: () => {
+              publishCalls += 1;
+              if (publishCalls > 1) {
+                return Effect.void;
+              }
+              return Effect.acquireUseRelease(
+                Deferred.succeed(commandStarted, undefined),
+                () => Effect.never,
+                () =>
+                  Deferred.succeed(commandFinalizerStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowCommandFinalizer)),
+                    Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
+                  ),
+              );
+            },
+          };
+
+          yield* Effect.acquireUseRelease(
+            makeViewServerTcpPublishIngress(viewServer, client, {
+              maxConnections: 1,
+              port: 0,
+            }),
+            (ingress) =>
+              Effect.acquireUseRelease(
+                connectTcpPublishSocket(ingress.url),
+                (firstSocket) =>
+                  Effect.gen(function* () {
+                    firstSocket.write(
+                      `${JSON.stringify({
+                        op: "publish",
+                        topic: "orders",
+                        row: order("disconnect-with-finalizer", 10),
+                      })}\n`,
+                    );
+                    yield* Deferred.await(commandStarted).pipe(Effect.timeout("1 second"));
+                    firstSocket.destroy();
+                    yield* Deferred.await(commandFinalizerStarted).pipe(Effect.timeout("1 second"));
+
+                    const secondResponse = yield* sendTcpPublishCommand(ingress.url, {
+                      op: "publish",
+                      topic: "orders",
+                      row: order("admitted-before-finalizer", 20),
+                    });
+                    expect({
+                      commandFinalized: yield* Deferred.isDone(commandFinalized),
+                      secondResponse,
+                    }).toStrictEqual({
+                      commandFinalized: false,
+                      secondResponse: { ok: true },
+                    });
+
+                    yield* Deferred.succeed(allowCommandFinalizer, undefined);
+                    yield* Deferred.await(commandFinalized).pipe(Effect.timeout("1 second"));
+                  }).pipe(Effect.ensuring(Deferred.succeed(allowCommandFinalizer, undefined))),
+                (socket) => Effect.sync(() => socket.destroy()),
+              ),
+            (ingress) => ingress.close,
+          );
+        }),
+      (runtimeCore) => runtimeCore.close,
+    ),
+  );
+
   it.live("bounds TCP publish line size and command queue", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
@@ -3819,9 +3968,11 @@ describe("@effect-view-server/runtime", () => {
       (runtimeCore) =>
         Effect.gen(function* () {
           const closeEntered = yield* Deferred.make<void>();
+          let emitLateStartupError = (): void => undefined;
           let releaseServerClose = (): void => undefined;
           let server: Net.Server | undefined;
           let listenerCountBefore = -1;
+          let listenerCountWhenStartupListenerRemoved = -1;
           yield* Effect.acquireUseRelease(
             makeViewServerTcpPublishIngressWithServerFactory(
               viewServer,
@@ -3830,8 +3981,35 @@ describe("@effect-view-server/runtime", () => {
               (connectionListener) => {
                 const created = Net.createServer(connectionListener);
                 const closeServer = created.close.bind(created);
+                const offServer = created.off.bind(created);
+                const onceServer = created.once.bind(created);
                 server = created;
                 listenerCountBefore = created.listenerCount("error");
+                const observeStartupError = (
+                  eventName: string | symbol,
+                  listener: (...args: ReadonlyArray<unknown>) => void,
+                ): Net.Server => {
+                  if (eventName === "error") {
+                    emitLateStartupError = () => listener(new Error("late startup error"));
+                  }
+                  return onceServer(eventName, listener);
+                };
+                const observeStartupListenerRemoval = (
+                  eventName: string | symbol,
+                  listener: (...args: ReadonlyArray<unknown>) => void,
+                ): Net.Server => {
+                  const result = offServer(eventName, listener);
+                  if (eventName === "error" && listenerCountWhenStartupListenerRemoved === -1) {
+                    listenerCountWhenStartupListenerRemoved = created.listenerCount("error");
+                  }
+                  return result;
+                };
+                Object.defineProperty(created, "off", {
+                  value: observeStartupListenerRemoval,
+                });
+                Object.defineProperty(created, "once", {
+                  value: observeStartupError,
+                });
                 Object.defineProperty(created, "close", {
                   value: (callback?: (error?: Error) => void) => {
                     Deferred.doneUnsafe(closeEntered, Effect.void);
@@ -3853,6 +4031,8 @@ describe("@effect-view-server/runtime", () => {
               Effect.gen(function* () {
                 const ownedServer = yield* Effect.fromNullishOr(server);
                 const listenerCountAfter = ownedServer.listenerCount("error");
+                yield* Effect.sync(emitLateStartupError);
+                const listenerCountAfterLateStartupError = ownedServer.listenerCount("error");
 
                 ownedServer.emit("error", new Error("tcp test steady-state failure"));
                 yield* Deferred.await(closeEntered).pipe(Effect.timeout("1 second"));
@@ -3867,19 +4047,170 @@ describe("@effect-view-server/runtime", () => {
                 expect({
                   listenerCountAfter,
                   listenerCountAfterClose: ownedServer.listenerCount("error"),
+                  listenerCountAfterLateStartupError,
                   listenerCountAfterSecondError,
                   listenerCountBefore,
                   listenerCountDuringDrain,
+                  listenerCountWhenStartupListenerRemoved,
                 }).toStrictEqual({
                   listenerCountAfter: 1,
                   listenerCountAfterClose: 0,
+                  listenerCountAfterLateStartupError: 1,
                   listenerCountAfterSecondError: 1,
                   listenerCountBefore: 0,
                   listenerCountDuringDrain: 1,
+                  listenerCountWhenStartupListenerRemoved: 1,
                 });
               }),
             (ingress) =>
               Effect.sync(releaseServerClose).pipe(Effect.andThen(ingress.close), Effect.asVoid),
+          );
+        }),
+      (runtimeCore) => runtimeCore.close,
+    ),
+  );
+
+  it.live("guards accepted TCP sockets before Effect ownership transfer", () =>
+    Effect.acquireUseRelease(
+      makeViewServerRuntimeCoreInternal(viewServer, {}),
+      (runtimeCore) =>
+        Effect.gen(function* () {
+          let acceptSocket: ((socket: Net.Socket) => void) | undefined;
+          yield* Effect.acquireUseRelease(
+            makeViewServerTcpPublishIngressWithServerFactory(
+              viewServer,
+              runtimeCore.internalClient,
+              { maxConnections: 1, port: 0 },
+              (connectionListener) => {
+                acceptSocket = connectionListener;
+                return Net.createServer(connectionListener);
+              },
+            ),
+            () =>
+              Effect.gen(function* () {
+                const accept = yield* Effect.fromNullishOr(acceptSocket);
+                const closedBeforeEffectOwnership = new Net.Socket();
+                let closedBeforeEffectOwnershipReads = 0;
+                let closedBeforeEffectOwnershipDestroying = false;
+                let closedBeforeEffectOwnershipErrorListeners = -1;
+                let closedBeforeEffectOwnershipTouches = 0;
+                Object.defineProperty(closedBeforeEffectOwnership, "destroyed", {
+                  get: () => {
+                    closedBeforeEffectOwnershipReads += 1;
+                    return closedBeforeEffectOwnershipReads >= 2;
+                  },
+                });
+                Object.defineProperty(closedBeforeEffectOwnership, "setEncoding", {
+                  value: (_encoding: BufferEncoding) => {
+                    closedBeforeEffectOwnershipTouches += 1;
+                    return closedBeforeEffectOwnership;
+                  },
+                });
+                closedBeforeEffectOwnership.destroy = () => {
+                  if (closedBeforeEffectOwnershipDestroying) {
+                    return closedBeforeEffectOwnership;
+                  }
+                  closedBeforeEffectOwnershipDestroying = true;
+                  closedBeforeEffectOwnershipErrorListeners =
+                    closedBeforeEffectOwnership.listenerCount("error");
+                  closedBeforeEffectOwnership.emit(
+                    "error",
+                    new Error("destroyed before Effect ownership"),
+                  );
+                  closedBeforeEffectOwnership.emit("close");
+                  return closedBeforeEffectOwnership;
+                };
+                accept(closedBeforeEffectOwnership);
+
+                const closedBeforeTransfer = new Net.Socket();
+                let closedBeforeTransferReads = 0;
+                let closedBeforeTransferDestroying = false;
+                let closedBeforeTransferErrorListeners = -1;
+                let closedBeforeTransferTouches = 0;
+                Object.defineProperty(closedBeforeTransfer, "destroyed", {
+                  get: () => {
+                    closedBeforeTransferReads += 1;
+                    return closedBeforeTransferReads >= 3;
+                  },
+                });
+                Object.defineProperty(closedBeforeTransfer, "setEncoding", {
+                  value: (_encoding: BufferEncoding) => {
+                    closedBeforeTransferTouches += 1;
+                    return closedBeforeTransfer;
+                  },
+                });
+                closedBeforeTransfer.destroy = () => {
+                  if (closedBeforeTransferDestroying) {
+                    return closedBeforeTransfer;
+                  }
+                  closedBeforeTransferDestroying = true;
+                  closedBeforeTransferErrorListeners = closedBeforeTransfer.listenerCount("error");
+                  closedBeforeTransfer.emit("error", new Error("destroyed before active transfer"));
+                  closedBeforeTransfer.emit("close");
+                  return closedBeforeTransfer;
+                };
+                accept(closedBeforeTransfer);
+
+                const resetBeforeTransfer = new Net.Socket();
+                const resetSetEncoding = resetBeforeTransfer.setEncoding.bind(resetBeforeTransfer);
+                let errorListenersAtReset = -1;
+                Object.defineProperty(resetBeforeTransfer, "setEncoding", {
+                  value: (encoding: BufferEncoding) => {
+                    errorListenersAtReset = resetBeforeTransfer.listenerCount("error");
+                    resetBeforeTransfer.emit("error", new Error("reset before ownership transfer"));
+                    resetBeforeTransfer.emit("close");
+                    return resetSetEncoding(encoding);
+                  },
+                });
+                accept(resetBeforeTransfer);
+
+                expect(errorListenersAtReset).toBe(1);
+
+                const acceptedTouched = yield* Deferred.make<void>();
+                const accepted = new Net.Socket();
+                const setEncoding = accepted.setEncoding.bind(accepted);
+                let errorListenersAtFirstEffectTouch = -1;
+                Object.defineProperty(accepted, "setEncoding", {
+                  value: (encoding: BufferEncoding) => {
+                    errorListenersAtFirstEffectTouch = accepted.listenerCount("error");
+                    const result = setEncoding(encoding);
+                    Deferred.doneUnsafe(acceptedTouched, Effect.void);
+                    return result;
+                  },
+                });
+
+                accept(accepted);
+                yield* Deferred.await(acceptedTouched).pipe(Effect.timeout("1 second"));
+                yield* Effect.yieldNow;
+
+                expect({
+                  closedBeforeEffectOwnershipErrorListeners,
+                  closedBeforeEffectOwnershipListeners:
+                    closedBeforeEffectOwnership.listenerCount("close") +
+                    closedBeforeEffectOwnership.listenerCount("error"),
+                  closedBeforeEffectOwnershipTouches,
+                  closedBeforeTransferErrorListeners,
+                  closedBeforeTransferListeners:
+                    closedBeforeTransfer.listenerCount("close") +
+                    closedBeforeTransfer.listenerCount("error"),
+                  closedBeforeTransferTouches,
+                  destroyed: accepted.destroyed,
+                  errorListenersAfterTransfer: accepted.listenerCount("error"),
+                  errorListenersAtFirstEffectTouch,
+                }).toStrictEqual({
+                  closedBeforeEffectOwnershipErrorListeners: 1,
+                  closedBeforeEffectOwnershipListeners: 0,
+                  closedBeforeEffectOwnershipTouches: 0,
+                  closedBeforeTransferErrorListeners: 1,
+                  closedBeforeTransferListeners: 0,
+                  closedBeforeTransferTouches: 0,
+                  destroyed: false,
+                  errorListenersAfterTransfer: 1,
+                  errorListenersAtFirstEffectTouch: 1,
+                });
+                accepted.destroy();
+              }),
+            (ingress) => ingress.close,
           );
         }),
       (runtimeCore) => runtimeCore.close,
@@ -3919,26 +4250,75 @@ describe("@effect-view-server/runtime", () => {
             }
           }).pipe(Effect.timeout("1 second"));
 
+          const pendingRejectedClosed = yield* Deferred.make<void>();
           const pendingRejectedSocket = new Net.Socket();
+          let pendingRejectedDestroying = false;
+          const pendingRejectedErrorListenersDuringDestroy: Array<number> = [];
           Object.defineProperty(pendingRejectedSocket, "end", {
-            value: () => pendingRejectedSocket,
+            value: (_chunk: string, callback: () => void) => {
+              callback();
+              return pendingRejectedSocket;
+            },
           });
+          pendingRejectedSocket.destroy = () => {
+            if (pendingRejectedDestroying) {
+              return pendingRejectedSocket;
+            }
+            pendingRejectedErrorListenersDuringDestroy.push(
+              pendingRejectedSocket.listenerCount("error"),
+            );
+            if (pendingRejectedErrorListenersDuringDestroy.length === 2) {
+              pendingRejectedDestroying = true;
+              pendingRejectedSocket.emit("error", new Error("error while rejection closes"));
+              pendingRejectedSocket.emit("close");
+              Deferred.doneUnsafe(pendingRejectedClosed, Effect.void);
+            }
+            return pendingRejectedSocket;
+          };
           const acceptPendingSocket = yield* Effect.fromNullishOr(acceptSocket);
           acceptPendingSocket(pendingRejectedSocket);
-          yield* Effect.gen(function* () {
-            while (pendingRejectedSocket.listenerCount("close") === 0) {
-              yield* Effect.sleep("1 millis");
+          yield* Deferred.await(pendingRejectedClosed).pipe(Effect.timeout("1 second"));
+
+          const pendingCloseStarted = yield* Deferred.make<void>();
+          const pendingDuringCloseSocket = new Net.Socket();
+          let pendingDuringCloseDestroying = false;
+          let pendingDuringCloseErrorListeners = -1;
+          Object.defineProperty(pendingDuringCloseSocket, "end", {
+            value: (_chunk: string, _callback: () => void) => {
+              Deferred.doneUnsafe(pendingCloseStarted, Effect.void);
+              return pendingDuringCloseSocket;
+            },
+          });
+          pendingDuringCloseSocket.destroy = () => {
+            if (pendingDuringCloseDestroying) {
+              return pendingDuringCloseSocket;
             }
-          }).pipe(Effect.timeout("1 second"));
+            pendingDuringCloseDestroying = true;
+            pendingDuringCloseErrorListeners = pendingDuringCloseSocket.listenerCount("error");
+            pendingDuringCloseSocket.emit("error", new Error("error while ingress closes pending"));
+            pendingDuringCloseSocket.emit("close");
+            return pendingDuringCloseSocket;
+          };
+          acceptPendingSocket(pendingDuringCloseSocket);
+          yield* Deferred.await(pendingCloseStarted).pipe(Effect.timeout("1 second"));
 
           ownedAcceptedSocket.emit("error", new Error("accepted socket test error"));
           yield* Deferred.await(clientClosed).pipe(Effect.timeout("1 second"));
           yield* ingress.close;
 
           const lateSocket = new Net.Socket();
+          let lateSocketDestroying = false;
           const lateSocketDestroyed: Array<"socket"> = [];
+          let lateSocketErrorListenersDuringDestroy = -1;
           lateSocket.destroy = () => {
+            if (lateSocketDestroying) {
+              return lateSocket;
+            }
+            lateSocketDestroying = true;
             lateSocketDestroyed.push("socket");
+            lateSocketErrorListenersDuringDestroy = lateSocket.listenerCount("error");
+            lateSocket.emit("error", new Error("error while late socket closes"));
+            lateSocket.emit("close");
             return lateSocket;
           };
           const acceptLateSocket = yield* Effect.fromNullishOr(acceptSocket);
@@ -3946,12 +4326,27 @@ describe("@effect-view-server/runtime", () => {
 
           expect({
             clientSocketDestroyed: clientSocket.destroyed,
+            lateSocketErrorListenersDuringDestroy,
+            lateSocketListeners:
+              lateSocket.listenerCount("close") + lateSocket.listenerCount("error"),
             lateSocketDestroyed,
-            pendingRejectedSocketDestroyed: pendingRejectedSocket.destroyed,
+            pendingRejectedErrorListenersDuringDestroy,
+            pendingRejectedSocketListeners:
+              pendingRejectedSocket.listenerCount("close") +
+              pendingRejectedSocket.listenerCount("error"),
+            pendingDuringCloseErrorListeners,
+            pendingDuringCloseSocketListeners:
+              pendingDuringCloseSocket.listenerCount("close") +
+              pendingDuringCloseSocket.listenerCount("error"),
           }).toStrictEqual({
             clientSocketDestroyed: true,
+            lateSocketErrorListenersDuringDestroy: 1,
+            lateSocketListeners: 0,
             lateSocketDestroyed: ["socket"],
-            pendingRejectedSocketDestroyed: true,
+            pendingRejectedErrorListenersDuringDestroy: [1, 1],
+            pendingRejectedSocketListeners: 0,
+            pendingDuringCloseErrorListeners: 2,
+            pendingDuringCloseSocketListeners: 0,
           });
           clientSocket.destroy();
         }),
@@ -4125,6 +4520,7 @@ describe("@effect-view-server/runtime", () => {
         Effect.gen(function* () {
           const listenStarted = yield* Deferred.make<void>();
           const serverClosed = yield* Deferred.make<void>();
+          let completeListen = (): void => undefined;
           let server: Net.Server | undefined;
           const startupFiber = yield* makeViewServerTcpPublishIngressWithServerFactory(
             viewServer,
@@ -4134,7 +4530,8 @@ describe("@effect-view-server/runtime", () => {
               const createdServer = Net.createServer(connectionListener);
               server = createdServer;
               Object.defineProperty(createdServer, "listen", {
-                value: (_options: Net.ListenOptions, _callback: () => void) => {
+                value: (_options: Net.ListenOptions, callback: () => void) => {
+                  completeListen = callback;
                   Deferred.doneUnsafe(listenStarted, Effect.void);
                   return createdServer;
                 },
@@ -4153,7 +4550,15 @@ describe("@effect-view-server/runtime", () => {
           yield* Effect.gen(function* () {
             yield* Deferred.await(listenStarted).pipe(Effect.timeout("1 second"));
             yield* Fiber.interrupt(startupFiber);
-            expect(yield* Deferred.isDone(serverClosed)).toBe(true);
+            yield* Effect.sync(completeListen);
+            const ownedServer = yield* Effect.fromNullishOr(server);
+            expect({
+              errorListenerCount: ownedServer.listenerCount("error"),
+              serverClosed: yield* Deferred.isDone(serverClosed),
+            }).toStrictEqual({
+              errorListenerCount: 0,
+              serverClosed: true,
+            });
           }).pipe(
             Effect.ensuring(
               Fiber.interrupt(startupFiber).pipe(

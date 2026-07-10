@@ -12767,6 +12767,74 @@ describe("ColumnLiveViewEngine validation and health", () => {
     }),
   );
 
+  it.effect("observes producer terminal occurrence before the terminal queue is ready", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({
+        topics: viewServer.topics,
+        subscriptionQueueCapacity: 1,
+      });
+      const phases: Array<string> = [];
+      const observedStatuses: Array<StatusEvent> = [];
+      const observer = {
+        onQueryRegistered: (queryId: string) =>
+          Effect.sync(() => {
+            phases.push(`registered:${queryId}`);
+          }),
+        onTerminalOccurrence: (event: StatusEvent) =>
+          Effect.sync(() => {
+            phases.push("occurrence");
+            observedStatuses.push(event);
+          }),
+        onTerminalReady: (event: StatusEvent) =>
+          Effect.sync(() => {
+            phases.push("ready");
+            observedStatuses.push(event);
+          }),
+      };
+      const subscription = yield* engine.subscribeObserved(
+        "orders",
+        {
+          select: ["id"],
+          limit: 10,
+        },
+        observer,
+      );
+
+      expect(phases).toStrictEqual(["registered:query-0"]);
+      yield* engine.publish("orders", order("observed", "open", 10, 1));
+      expect(phases).toStrictEqual(["registered:query-0", "occurrence", "ready"]);
+      const events = yield* subscription.events.pipe(Stream.runCollect);
+      const expectedStatus = {
+        type: "status",
+        topic: "orders",
+        queryId: "query-0",
+        status: "closed",
+        code: "BackpressureExceeded",
+        message: "Subscription closed because its event queue exceeded capacity.",
+      } as const;
+      expect(Array.from(events)).toStrictEqual([expectedStatus]);
+      expect(observedStatuses).toStrictEqual([expectedStatus, expectedStatus]);
+
+      const runtimeQueryIds: Array<string> = [];
+      const runtimeSubscription = yield* engine.subscribeRuntimeObserved(
+        "orders",
+        { select: ["id"] },
+        {
+          onQueryRegistered: (queryId) =>
+            Effect.sync(() => {
+              runtimeQueryIds.push(queryId);
+            }),
+          onTerminalOccurrence: () => Effect.void,
+          onTerminalReady: () => Effect.void,
+        },
+      );
+      expect(runtimeQueryIds).toStrictEqual(["query-1"]);
+      yield* runtimeSubscription.close();
+      yield* subscription.close();
+      yield* engine.close();
+    }),
+  );
+
   it.effect("publishes decoded runtime rows through the internal engine entrypoint", () =>
     Effect.gen(function* () {
       const engine = yield* createColumnLiveViewEngineInternal({

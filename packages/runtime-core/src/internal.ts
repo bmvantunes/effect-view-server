@@ -66,7 +66,10 @@ export type {
   SourceOwnershipTopic,
 } from "./source-ownership-policy";
 
-export type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client";
+export type {
+  ViewServerRuntimeCoreInternalLiveClient,
+  ViewServerRuntimeCoreTerminalObserver,
+} from "./live-client";
 export type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
 
 export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicDefinitions> = Omit<

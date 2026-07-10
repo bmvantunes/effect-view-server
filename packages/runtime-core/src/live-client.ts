@@ -1,7 +1,12 @@
 import type {
-  ColumnLiveViewEngine,
+  ColumnLiveViewEngineError,
+  ColumnLiveViewSubscription,
   DecodableTopicDefinitions,
 } from "@effect-view-server/column-live-view-engine";
+import type {
+  ColumnLiveViewEngineInternal,
+  ColumnLiveViewTerminalObserver,
+} from "@effect-view-server/column-live-view-engine/internal";
 import type {
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
@@ -60,6 +65,8 @@ export type ViewServerRuntimeCoreEngineQueryInput<
   Query,
 > = ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>;
 
+export type ViewServerRuntimeCoreTerminalObserver = ColumnLiveViewTerminalObserver;
+
 export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopicDefinitions> = {
   readonly subscribeInternal: <
     Topic extends Extract<keyof Topics, string>,
@@ -71,9 +78,28 @@ export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopi
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
   >;
+  readonly subscribeObservedInternal: <
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    terminalObserver: ColumnLiveViewTerminalObserver,
+  ) => Effect.Effect<
+    ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
   readonly subscribeRuntimeInternal: <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
     query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  ) => Effect.Effect<
+    ViewServerLiveSubscription<object>,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
+  readonly subscribeRuntimeObservedInternal: <Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+    query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    terminalObserver: ColumnLiveViewTerminalObserver,
   ) => Effect.Effect<
     ViewServerLiveSubscription<object>,
     ViewServerRuntimeError | ViewServerTransportError
@@ -97,7 +123,7 @@ const runtimeHealthBackpressureStatus = <Topic extends string>(
 export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveClient.make")(
   <const Topics extends DecodableTopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
-    engine: ColumnLiveViewEngine<Topics>,
+    engine: ColumnLiveViewEngineInternal<Topics>,
     health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
     refreshHealth: Effect.Effect<ViewServerHealth<Topics>, ViewServerRuntimeError>,
   ): Effect.Effect<
@@ -107,6 +133,26 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
       ViewServerRuntimeLiveClient<Topics> & ViewServerRuntimeCoreInternalLiveClient<Topics>
     >(() => {
       const sourceOwnership = makeSourceOwnershipPolicy(config);
+      function wrapEngineSubscription<Row>(
+        acquisition: Effect.Effect<ColumnLiveViewSubscription<Row>, ColumnLiveViewEngineError>,
+      ): Effect.Effect<ViewServerLiveSubscription<Row>, ViewServerRuntimeError> {
+        return Effect.suspend(() => {
+          const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
+          return acquisition.pipe(
+            Effect.mapError(engineErrorToRuntimeError),
+            Effect.flatMap((subscription) => {
+              const wrapped = {
+                events: subscription.events,
+                close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
+              } satisfies ViewServerLiveSubscription<Row>;
+              return refreshHealth.pipe(
+                Effect.as(wrapped),
+                Effect.onError(() => subscription.close().pipe(ignoreLiveSubscriptionCloseFailure)),
+              );
+            }),
+          );
+        });
+      }
       function subscribeInternal<
         Topic extends Extract<keyof Topics, string>,
         const Query extends
@@ -131,41 +177,43 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError | ViewServerTransportError
       > {
-        return Effect.suspend(() => {
-          const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
-          return engine.subscribe<Topic, Query>(topic, query).pipe(
-            Effect.mapError(engineErrorToRuntimeError),
-            Effect.flatMap((subscription) =>
-              refreshHealth.pipe(
-                Effect.as({
-                  events: subscription.events,
-                  close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
-                }),
-                Effect.onError(() => subscription.close().pipe(ignoreLiveSubscriptionCloseFailure)),
-              ),
-            ),
-          );
-        });
+        return wrapEngineSubscription(engine.subscribe<Topic, Query>(topic, query));
+      }
+      function subscribeObservedInternal<
+        Topic extends Extract<keyof Topics, string>,
+        const Query extends
+          | RawQuery<TopicRow<Topics, Topic>>
+          | GroupedQuery<TopicRow<Topics, Topic>>,
+      >(
+        topic: Topic,
+        query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+        terminalObserver: ColumnLiveViewTerminalObserver,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+        ViewServerRuntimeError | ViewServerTransportError
+      >;
+      function subscribeObservedInternal<
+        Topic extends Extract<keyof Topics, string>,
+        const Query extends
+          | RawQuery<TopicRow<Topics, Topic>>
+          | GroupedQuery<TopicRow<Topics, Topic>>,
+      >(
+        topic: Topic,
+        query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
+        terminalObserver: ColumnLiveViewTerminalObserver,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+        ViewServerRuntimeError | ViewServerTransportError
+      > {
+        return wrapEngineSubscription(
+          engine.subscribeObserved<Topic, Query>(topic, query, terminalObserver),
+        );
       }
       const subscribeRuntimeInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeInternal"] =
-        (topic, query) =>
-          Effect.suspend(() => {
-            const closeRefresh = ignoreRuntimeHealthRefreshFailure(refreshHealth);
-            return engine.subscribeRuntime(topic, query).pipe(
-              Effect.mapError(engineErrorToRuntimeError),
-              Effect.flatMap((subscription) =>
-                refreshHealth.pipe(
-                  Effect.as({
-                    events: subscription.events,
-                    close: () => subscription.close().pipe(Effect.andThen(closeRefresh)),
-                  }),
-                  Effect.onError(() =>
-                    subscription.close().pipe(ignoreLiveSubscriptionCloseFailure),
-                  ),
-                ),
-              ),
-            );
-          });
+        (topic, query) => wrapEngineSubscription(engine.subscribeRuntime(topic, query));
+      const subscribeRuntimeObservedInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeObservedInternal"] =
+        (topic, query, terminalObserver) =>
+          wrapEngineSubscription(engine.subscribeRuntimeObserved(topic, query, terminalObserver));
       function subscribe<
         Topic extends Extract<keyof Topics, string>,
         const Query extends
@@ -397,7 +445,9 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         subscribe,
         subscribeRuntime,
         subscribeInternal,
+        subscribeObservedInternal,
         subscribeRuntimeInternal,
+        subscribeRuntimeObservedInternal,
         subscribeHealthSummary: () =>
           makeHealthSubscription<
             typeof VIEW_SERVER_HEALTH_SUMMARY_TOPIC,

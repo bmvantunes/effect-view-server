@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import type { ColumnLiveViewTerminalObserver } from "./engine-contract";
 import { makeLiveSubscription } from "./live-subscription";
 import type { CompiledGroupedQuery } from "./grouped-query-compiler";
 import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
@@ -75,6 +76,7 @@ export const subscribeExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExe
       readonly permit: TopicStoreSubscriptionPermit;
       readonly queryId: string;
       readonly queueCapacity: number;
+      readonly terminalObserver: ColumnLiveViewTerminalObserver;
     },
   ) {
     const { store } = input.permit;
@@ -87,6 +89,7 @@ export const subscribeExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExe
         execution,
         queueCapacity: input.queueCapacity,
         release: releaseTopicStoreRawQueryExecution(store, executable.compiled),
+        terminalObserver: input.terminalObserver,
       });
     }
 
@@ -101,6 +104,7 @@ export const subscribeExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExe
       execution,
       queueCapacity: input.queueCapacity,
       release: releaseTopicStoreMaterializedQueryExecution(store, executable.compiled),
+      terminalObserver: input.terminalObserver,
     });
   },
 );

@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import MarkdownIt from "markdown-it";
+import type Token from "markdown-it/lib/token.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageSourceRoot = (name: string): string => join(repoRoot, "packages", name, "src");
@@ -12,6 +14,10 @@ const topicStoreMutationFile = join(engineSourceRoot, "topic-store-mutation.ts")
 const topicStoreQueryFile = join(engineSourceRoot, "topic-store-query.ts");
 const topicStoreStateFile = join(engineSourceRoot, "topic-store-state.ts");
 const topicStoreSubscriptionFile = join(engineSourceRoot, "topic-store-subscription.ts");
+const typescriptModuleExtensions = [".ts", ".tsx", ".mts", ".cts"] as const;
+
+const typescriptModuleExtensionFor = (path: string): string | undefined =>
+  typescriptModuleExtensions.find((extension) => path.endsWith(extension));
 
 const restrictedTopicStoreHelpers = [
   {
@@ -36,17 +42,26 @@ const restrictedTopicStoreHelpers = [
   },
 ] as const;
 
-export const sourceFiles = (directory: string): ReadonlyArray<string> => {
-  const entries = readdirSync(directory, { withFileTypes: true });
+const noIgnoredSourceDirectories: ReadonlySet<string> = new Set();
+
+export const sourceFiles = (
+  directory: string,
+  ignoredDirectoryNames: ReadonlySet<string> = noIgnoredSourceDirectories,
+): ReadonlyArray<string> => {
+  const entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
   const files: Array<string> = [];
 
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...sourceFiles(path));
+      if (!ignoredDirectoryNames.has(entry.name)) {
+        files.push(...sourceFiles(path, ignoredDirectoryNames));
+      }
       continue;
     }
-    if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+    if (entry.isFile() && typescriptModuleExtensionFor(entry.name) !== undefined) {
       files.push(path);
     }
   }
@@ -54,12 +69,8 @@ export const sourceFiles = (directory: string): ReadonlyArray<string> => {
   return files;
 };
 
-const isTestFile = (path: string): boolean =>
-  path.endsWith(".test.ts") ||
-  path.endsWith(".test.tsx") ||
-  path.endsWith(".test-d.ts") ||
-  path.endsWith(".bench.ts") ||
-  path.endsWith(".bench.tsx");
+export const isTestFile = (path: string): boolean =>
+  /\.(?:test|test-d|bench)\.(?:ts|tsx|mts|cts)$/.test(path);
 
 type RestrictedPackageImport = {
   readonly allowedRelativePathSpecifiers?: ReadonlyMap<string, ReadonlySet<string>>;
@@ -1562,6 +1573,182 @@ const approvedPublicViewServerSpecifiers = new Set([
   "effect-view-server/server",
 ]);
 
+const approvedConsumerViewServerSpecifiers = new Set(
+  Array.from(approvedPublicViewServerSpecifiers).filter(isPublicViewServerSpecifier),
+);
+
+export const consumerImportViolationsFor = ({
+  contents,
+  relativePath,
+}: {
+  readonly contents: string;
+  readonly relativePath: string;
+}): ReadonlyArray<string> =>
+  importedViewServerSpecifiers(contents).flatMap((specifier) => {
+    if (isCurrentViewServerSpecifier(specifier)) {
+      return [
+        `${relativePath} imports ${specifier}: consumers must import the publishable effect-view-server/* facade.`,
+      ];
+    }
+    if (isStaleViewServerSpecifier(specifier)) {
+      return [
+        `${relativePath} imports ${specifier}: stale View Server package scope; consumers must use approved effect-view-server/* subpaths.`,
+      ];
+    }
+    if (specifier === publicViewServerPackage) {
+      return [
+        `${relativePath} imports ${specifier}: the package root is not exported; consumers must use an approved effect-view-server/* subpath.`,
+      ];
+    }
+    return approvedConsumerViewServerSpecifiers.has(specifier)
+      ? []
+      : [
+          `${relativePath} imports ${specifier}: consumers must use approved effect-view-server/* package exports.`,
+        ];
+  });
+
+type ConsumerMarkdownSourceFence = {
+  readonly contents: string;
+  readonly openingLine: number;
+};
+
+type ConsumerMarkdownFenceToken = Token & {
+  readonly map: [number, number];
+  readonly type: "fence";
+};
+
+const consumerMarkdown = new MarkdownIt("commonmark");
+
+// markdown-it's fence rule assigns a source map whenever it emits a fence token.
+const isConsumerMarkdownFenceToken = (token: Token): token is ConsumerMarkdownFenceToken =>
+  token.type === "fence";
+
+const consumerSourceFencesFromMarkdown = (
+  contents: string,
+): ReadonlyArray<ConsumerMarkdownSourceFence> =>
+  consumerMarkdown
+    .parse(contents, {})
+    .filter(isConsumerMarkdownFenceToken)
+    .map((token) => ({
+      contents: token.content,
+      openingLine: token.map[0] + 1,
+    }));
+
+export const consumerMarkdownImportViolationsFor = ({
+  contents,
+  relativePath,
+}: {
+  readonly contents: string;
+  readonly relativePath: string;
+}): ReadonlyArray<string> =>
+  consumerSourceFencesFromMarkdown(contents).flatMap((sourceFence) =>
+    consumerImportViolationsFor({
+      contents: sourceFence.contents,
+      relativePath: `${relativePath}:${sourceFence.openingLine}`,
+    }),
+  );
+
+const consumerIgnoredDirectoryNames = new Set([
+  ".next",
+  ".output",
+  ".vite",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+]);
+
+const consumerMarkdownFiles = (repositoryRoot: string): ReadonlyArray<string> => {
+  const markdownFiles = (directory: string): ReadonlyArray<string> => {
+    if (!existsSync(directory)) {
+      return [];
+    }
+    const files: Array<string> = [];
+    const entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!consumerIgnoredDirectoryNames.has(entry.name)) {
+          files.push(...markdownFiles(path));
+        }
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        files.push(path);
+      }
+    }
+
+    return files;
+  };
+
+  const rootReadmePath = join(repositoryRoot, "README.md");
+  const files = existsSync(rootReadmePath) ? [rootReadmePath] : [];
+  for (const directoryName of ["apps", "docs", "examples", "plans"]) {
+    files.push(...markdownFiles(join(repositoryRoot, directoryName)));
+  }
+  const packagesRoot = join(repositoryRoot, "packages");
+  if (!existsSync(packagesRoot)) {
+    return files.sort();
+  }
+  const packageEntries = readdirSync(packagesRoot, { withFileTypes: true }).sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  for (const entry of packageEntries) {
+    if (entry.isDirectory()) {
+      const readmePath = join(packagesRoot, entry.name, "README.md");
+      if (existsSync(readmePath)) {
+        files.push(readmePath);
+      }
+    }
+  }
+
+  return files.sort();
+};
+
+export const collectConsumerImportViolations = (
+  repositoryRoot = repoRoot,
+): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
+
+  for (const directoryName of ["apps", "examples"]) {
+    const directory = join(repositoryRoot, directoryName);
+    for (const path of sourceFiles(directory, consumerIgnoredDirectoryNames)) {
+      violations.push(
+        ...consumerImportViolationsFor({
+          contents: readFileSync(path, "utf8"),
+          relativePath: toPosixRelativePath(relative(repositoryRoot, path)),
+        }),
+      );
+    }
+  }
+
+  for (const path of consumerMarkdownFiles(repositoryRoot)) {
+    violations.push(
+      ...consumerMarkdownImportViolationsFor({
+        contents: readFileSync(path, "utf8"),
+        relativePath: toPosixRelativePath(relative(repositoryRoot, path)),
+      }),
+    );
+  }
+
+  return violations.sort();
+};
+
+export const consumerImportViolationMessage = (violations: ReadonlyArray<string>): string =>
+  ["Consumer facade import violations found.", ...violations.map((violation) => `- ${violation}`)].join(
+    "\n",
+  );
+
+export const assertNoConsumerImportViolations = (violations: ReadonlyArray<string>) => {
+  if (violations.length === 0) {
+    return;
+  }
+  throw new Error(consumerImportViolationMessage(violations));
+};
+
 type PackageExportConditionTarget = {
   readonly condition: string;
   readonly suffix: ".d.ts" | ".js";
@@ -1783,21 +1970,23 @@ const distTargetEntrypoint = (target: string, suffix: ".d.ts" | ".js"): string |
 export const sourceEntrypointForRelativeDistEntrypoint = (
   packageName: string,
   relativeEntrypoint: string,
+  repositoryRoot = repoRoot,
 ): string | undefined => {
-  const sourceBase = join(repoRoot, "packages", packageName, "src", relativeEntrypoint);
-  const tsEntrypoint = `${sourceBase}.ts`;
-  if (existsSync(tsEntrypoint)) {
-    return tsEntrypoint;
+  const sourceBase = join(repositoryRoot, "packages", packageName, "src", relativeEntrypoint);
+  for (const extension of typescriptModuleExtensions) {
+    const sourceEntrypoint = `${sourceBase}${extension}`;
+    if (existsSync(sourceEntrypoint)) {
+      return sourceEntrypoint;
+    }
   }
-  const tsxEntrypoint = `${sourceBase}.tsx`;
-  return existsSync(tsxEntrypoint) ? tsxEntrypoint : undefined;
+  return undefined;
 };
 
 export const sourceEntrypointForPackEntry = (entryPath: string): string | undefined => {
-  if (!entryPath.startsWith("src/") || (!entryPath.endsWith(".ts") && !entryPath.endsWith(".tsx"))) {
+  const sourceExtension = typescriptModuleExtensionFor(entryPath);
+  if (!entryPath.startsWith("src/") || sourceExtension === undefined) {
     return undefined;
   }
-  const sourceExtension = entryPath.endsWith(".tsx") ? ".tsx" : ".ts";
   const relativeEntrypoint = entryPath.slice("src/".length, -sourceExtension.length);
   const segments = relativeEntrypoint.split(/[\\/]/);
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
@@ -2400,3 +2589,4 @@ export const assertNoPackageImportViolations = (violations: ReadonlyArray<string
 };
 
 assertNoPackageImportViolations(collectPackageImportViolations());
+assertNoConsumerImportViolations(collectConsumerImportViolations());

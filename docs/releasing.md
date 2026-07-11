@@ -88,6 +88,11 @@ approval is pending. It is not authoritative: reruns still ask npm so rejected
 stages can be restaged. No follow-up GitHub workflow is required after approval:
 `npm stage approve <stage-id>` is the step that makes the package public.
 
+`scripts/release-publish.mjs` is only the process Adapter. Release Publish
+Orchestration owns the temporary artifact, npm state decisions, marker tag, and
+cleanup behind an injected command Adapter, so repository tests exercise the
+real file staging without invoking npm staging or Git pushes.
+
 ## Manual checks
 
 Useful local checks before merging release-sensitive changes:

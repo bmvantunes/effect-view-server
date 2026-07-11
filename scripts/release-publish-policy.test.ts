@@ -240,8 +240,12 @@ describe("release publish policy", () => {
     const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 
     expect(releaseWorkflow).toContain("- stage");
+    expect(releaseWorkflow).toContain("id-token: write");
+    expect(releaseWorkflow).toContain("node scripts/release-publish.mjs");
     expect(releaseWorkflow).not.toContain("- finalize");
     expect(releaseWorkflow).not.toContain("inputs.version");
+    expect(releaseWorkflow).not.toContain("NPM_TOKEN");
+    expect(releaseWorkflow).not.toContain("run: npm publish");
     expect(releaseWorkflow).not.toContain("--finalize-version");
   });
 
@@ -255,11 +259,17 @@ describe("release publish policy", () => {
     expect(result.stdout).toBe("");
   });
 
-  it("stages the package README instead of the repository README", () => {
+  it("keeps package README staging behind the release orchestration Module", () => {
     const releaseScript = readFileSync(new URL("./release-publish.mjs", import.meta.url), "utf8");
+    const orchestrationModule = readFileSync(
+      new URL("./release-publish-orchestration.mjs", import.meta.url),
+      "utf8",
+    );
 
-    expect(releaseScript).toContain("../packages/effect-view-server/README.md");
-    expect(releaseScript).not.toContain("../README.md");
+    expect(releaseScript).toContain('from "./release-publish-orchestration.mjs"');
+    expect(releaseScript).not.toContain("cpSync");
+    expect(orchestrationModule).toContain('join(publicPackageDirectory, "README.md")');
+    expect(orchestrationModule).not.toContain('join(rootDirectory, "README.md")');
   });
 
   it("does not create version pull requests from the main-branch release workflow", () => {

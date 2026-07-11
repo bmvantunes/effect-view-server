@@ -179,6 +179,10 @@ The repository Module that declares every private workspace package entrypoint, 
 Package inspection is syntactic and non-interprocedural: it rejects direct loader roots, explicit capability escapes, and direct CommonJS or dynamic acquisition of `node:module`, but it does not resolve arbitrary data-flow aliases such as loaders returned by concise arrows or arrays. New loader idioms require an explicit policy fixture. Unlabeled and unknown-language Markdown fences use TSX parsing to avoid JSX-text false positives; examples that use TypeScript angle-bracket assertions must label the fence `ts`.
 _Avoid_: Export allowlist, pack-entry copy, bespoke source parser
 
+**Release Publish Orchestration**:
+The repository Module that builds one sanitized temporary npm artifact, asks npm for the current version state, stages an unpublished version with provenance, reconciles the pending marker tag, and guarantees temporary-artifact cleanup. Its Interface receives the repository root, trusted release environment, generic command Adapter, output sinks, and temporary parent directory. Tests cross the same Interface with a real temporary package tree and an in-memory command transcript; the CLI Adapter alone owns process exit.
+_Avoid_: Publish helper, release script, npm wrapper
+
 **Kafka Source Codec**:
 A typed decoder contract for Kafka message keys and values before Mapping, such as protobuf, JSON, string, bytes, or a custom Effectful decoder. It is the source-format Seam; the View Server Topic schema remains the target truth.
 _Avoid_: Topic schema, row schema, serializer
@@ -243,6 +247,7 @@ _Avoid_: Browser write, send, emit
 - A **Source Topic** uses one **Kafka Source Codec** for its value and optionally one **Kafka Source Codec** for its key.
 - A **Source Topic** is mapped into a **View Server Topic** through a **Mapping**.
 - The **Package Surface Policy** is the single Seam for private package exports, consumer facade projections, pack entries, package direction, and deep-import rejection.
+- **Release Publish Orchestration** owns npm staging decisions, pending marker-tag reconciliation, and temporary-artifact cleanup; the release CLI only adapts process state to its Interface.
 - The current **Kafka Delivery Contract** is live-process at-least-once after successful publish-then-commit sequencing, but not durable restart recovery unless Kafka is replayed from an authoritative position.
 - A **Kafka Consumer Group Assumption** must be documented anywhere runtime options expose consumer-group resume behavior.
 - **Health Ledger** state feeds engine health, runtime health, transport health, and React health.

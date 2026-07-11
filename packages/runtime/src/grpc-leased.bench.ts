@@ -5,7 +5,6 @@ import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
-import { defineGrpcFeed, grpcSourceMarkers } from "@effect-view-server/config/internal";
 import type { ViewServerLiveSubscription } from "@effect-view-server/client";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import {
@@ -20,6 +19,8 @@ import {
   makeViewServerGrpcLeaseManager,
   type ViewServerGrpcLeaseManager,
 } from "./grpc-lease-manager";
+import { makeDefaultRuntimeDependencies } from "./runtime-dependencies";
+import { resolveViewServerRuntimeOptions } from "./runtime-options";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -108,19 +109,6 @@ const GrpcOrder = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
-const viewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: GrpcOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region"],
-      }),
-    },
-  },
-});
-
-type Topics = typeof viewServer.topics;
 type OrderRow = typeof GrpcOrder.Type;
 type OrderStatus = OrderRow["status"];
 
@@ -243,10 +231,7 @@ const grpcClients = {
   }),
 };
 
-const grpcFeed = defineGrpcFeed<Topics, typeof grpcClients>();
-const grpcHealthClientBaseUrls = {
-  orders: "https://orders.example.test",
-};
+const grpcTopicSources = grpc.topicSources(grpcClients);
 
 const orderStatus = (index: number): OrderStatus =>
   index % 5 === 0 ? "cancelled" : index % 3 === 0 ? "closed" : "open";
@@ -317,23 +302,31 @@ const missingBenchmarkQueue = (region: string): never => {
   throw new Error(`gRPC leased benchmark route ${region} was not configured.`);
 };
 
-const grpcLeasedFeed = (queues: ReadonlyMap<string, Queue.Queue<GrpcOrderValueMessage>>) =>
-  grpcFeed.leasedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    routeBy: ["region"],
-    request: ({ region }) => ({ region }),
-    acquire: ({ route }) => Stream.fromQueue(queueForRoute(queues, String(route.region))),
-    map: ({ value }) => ({
-      id: `${value.region}:${value.customerId}`,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: value.region,
-      updatedAt: value.updatedAt,
-    }),
+const grpcLeasedViewServer = (queues: ReadonlyMap<string, Queue.Queue<GrpcOrderValueMessage>>) =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ region }),
+        acquire: ({ route }) => Stream.fromQueue(queueForRoute(queues, String(route.region))),
+        map: ({ value }) => ({
+          id: `${value.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: value.region,
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
   });
+
+type Topics = ReturnType<typeof grpcLeasedViewServer>["topics"];
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
   const memory = process.memoryUsage();
@@ -411,28 +404,21 @@ const makeBenchmarkProfile = Effect.fn("ViewServerRuntime.grpc.leased.bench.prof
         ),
     );
     const queues = new Map(queueEntries);
+    const viewServer = grpcLeasedViewServer(queues);
+    const resolvedOptions = yield* resolveViewServerRuntimeOptions(viewServer);
+    const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
     const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-    const health = makeViewServerGrpcHealthLedger<Topics>({
-      clients: grpcHealthClientBaseUrls,
-      feeds: {},
-    });
+    const health = makeDefaultRuntimeDependencies<Topics>().makeGrpcHealthLedger(
+      viewServer,
+      grpcOptions,
+    );
     const manager = yield* makeViewServerGrpcLeaseManager(
       viewServer,
       runtimeCore.internalClient,
       runtimeCore.liveClient,
       runtimeCore.internalLiveClient,
       Effect.void,
-      {
-        clientBaseUrls: grpcHealthClientBaseUrls,
-        clients: grpcClients,
-        feeds: {
-          ordersLease: grpcLeasedFeed(queues),
-        },
-        materializedReconnect: {
-          delay: "1 second",
-          maxReconnects: 60,
-        },
-      },
+      grpcOptions,
       health,
     );
     return {

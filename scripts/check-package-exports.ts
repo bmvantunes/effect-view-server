@@ -29,6 +29,7 @@ import type { ViewServerHealthHttpJson, ViewServerWebSocketServer } from "@effec
 import * as configPackage from "@effect-view-server/config";
 import * as healthPackage from "@effect-view-server/config/health";
 import * as grpcPackage from "@effect-view-server/config/grpc";
+import * as configInternalPackage from "@effect-view-server/config/internal";
 import * as kafkaPackage from "@effect-view-server/config/kafka";
 import * as liveProtocolPackage from "@effect-view-server/config/live-protocol";
 import * as queryPackage from "@effect-view-server/config/query";
@@ -59,9 +60,42 @@ import * as publicReactPackage from "effect-view-server/react";
 import * as publicReactTestingPackage from "effect-view-server/react/testing";
 import * as publicRuntimePackage from "effect-view-server/runtime";
 import * as publicServerPackage from "effect-view-server/server";
+// @ts-expect-error standalone gRPC topic selectors are not workspace config exports.
+import type { GrpcLeasedTopic as RemovedWorkspaceGrpcLeasedTopic } from "@effect-view-server/config";
+// @ts-expect-error standalone gRPC topic selectors are not workspace config exports.
+import type { GrpcMaterializedTopic as RemovedWorkspaceGrpcMaterializedTopic } from "@effect-view-server/config";
+// @ts-expect-error standalone gRPC topic selectors are not workspace gRPC exports.
+import type { GrpcLeasedTopic as RemovedWorkspaceGrpcModuleLeasedTopic } from "@effect-view-server/config/grpc";
+// @ts-expect-error standalone gRPC topic selectors are not workspace gRPC exports.
+import type { GrpcMaterializedTopic as RemovedWorkspaceGrpcModuleMaterializedTopic } from "@effect-view-server/config/grpc";
+// @ts-expect-error standalone gRPC feed definitions are not internal config exports.
+import type { GrpcFeedDefinition as RemovedWorkspaceGrpcFeedDefinition } from "@effect-view-server/config/internal";
+// @ts-expect-error standalone gRPC topic selectors are not public facade config exports.
+import type { GrpcLeasedTopic as RemovedPublicGrpcLeasedTopic } from "effect-view-server/config";
+// @ts-expect-error standalone gRPC topic selectors are not public facade config exports.
+import type { GrpcMaterializedTopic as RemovedPublicGrpcMaterializedTopic } from "effect-view-server/config";
+// @ts-expect-error standalone gRPC topic selectors are not public facade gRPC exports.
+import type { GrpcLeasedTopic as RemovedPublicGrpcModuleLeasedTopic } from "effect-view-server/config/grpc";
+// @ts-expect-error standalone gRPC topic selectors are not public facade gRPC exports.
+import type { GrpcMaterializedTopic as RemovedPublicGrpcModuleMaterializedTopic } from "effect-view-server/config/grpc";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const packagesRoot = join(repoRoot, "packages");
+
+type RemovedGrpcTypeExports = readonly [
+  RemovedWorkspaceGrpcLeasedTopic,
+  RemovedWorkspaceGrpcMaterializedTopic,
+  RemovedWorkspaceGrpcModuleLeasedTopic,
+  RemovedWorkspaceGrpcModuleMaterializedTopic,
+  RemovedWorkspaceGrpcFeedDefinition,
+  RemovedPublicGrpcLeasedTopic,
+  RemovedPublicGrpcMaterializedTopic,
+  RemovedPublicGrpcModuleLeasedTopic,
+  RemovedPublicGrpcModuleMaterializedTopic,
+];
+
+const removedGrpcTypeExportsAreCompileTimeOnly: RemovedGrpcTypeExports | undefined = undefined;
+void removedGrpcTypeExportsAreCompileTimeOnly;
 
 type PublicKafkaExportTopics = {
   readonly orders: {
@@ -382,6 +416,7 @@ requireExport("effect-view-server/config/kafka", publicConfigKafkaPackage, "deco
 requireExport("effect-view-server/config", publicConfigPackage, "decodeKafkaCodec");
 requireExport("@effect-view-server/config/grpc", grpcPackage, "grpc");
 rejectExport("@effect-view-server/config/grpc", grpcPackage, "defineGrpcFeed");
+rejectExport("@effect-view-server/config/internal", configInternalPackage, "defineGrpcFeed");
 requireExport("@effect-view-server/config/runtime", runtimePackage, "runtimeConfig");
 requireExport("@effect-view-server/config/runtime", runtimePackage, "runtimeEnvironmentConfig");
 requireExport("@effect-view-server/client", clientPackage, "stableQueryKey");

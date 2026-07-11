@@ -10,15 +10,13 @@ import {
   grpc,
   kafka,
   type GrpcRuntimeClients,
-  type RowSchema,
+  type RuntimeRegions,
+  type ViewServerConfig,
   type ViewServerHealth,
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import {
-  defineGrpcFeed as defineGrpcFeedInternal,
-  grpcSourceMarkers,
-} from "@effect-view-server/config/internal";
+import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import type {
   ViewServerRuntimeCoreInternalClient,
@@ -47,7 +45,6 @@ import type { ViewServerRuntimeDependencies } from "./internal";
 import {
   makeDefaultRuntimeDependencies,
   makeViewServerRuntimeWithDependencies,
-  makeViewServerRuntimeWithRuntimeFeedsAndDependencies,
   runViewServerRuntimeWithDependencies,
 } from "./internal";
 import { makeViewServerGrpcHealthLedger, type ViewServerGrpcHealthLedger } from "./grpc-health";
@@ -64,13 +61,13 @@ import {
   writeTcpJsonLine,
 } from "./tcp-publish-ingress";
 import {
-  resolveViewServerRuntimeOptions as resolvePublicViewServerRuntimeOptions,
-  resolveViewServerRuntimeOptionsWithRuntimeFeeds as resolveViewServerRuntimeOptions,
+  resolveViewServerRuntimeOptions,
   validateGrpcSourceFeeds,
   validateSourceOwnership,
   type ResolvedViewServerGrpcRuntimeOptions,
   type ResolvedViewServerKafkaRuntimeOptions,
 } from "./runtime-options";
+import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 import {
   closeTestTcpServer,
   connectTcpPublishSocket,
@@ -104,13 +101,6 @@ const Trade = Schema.Struct({
   id: Schema.String,
   symbol: Schema.String,
 });
-
-const defineGrpcFeed =
-  <const Config extends { readonly topics: Record<string, { readonly schema: RowSchema }> }>(
-    _config: Config,
-  ) =>
-  <const Clients extends GrpcRuntimeClients>() =>
-    defineGrpcFeedInternal<Config["topics"], Clients>();
 
 const viewServer = defineViewServerConfig({
   topics: {
@@ -438,30 +428,6 @@ const positivePriceTcpViewServer = defineViewServerConfig({
   },
 });
 
-const publicKeyLeasedGrpcViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: PublicKeyGrpcOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region"],
-      }),
-    },
-  },
-});
-
-const keyLeasedGrpcViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: GrpcOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["id"],
-      }),
-    },
-  },
-});
-
 const RouteEncodingOrder = Schema.Struct({
   id: Schema.String,
   text: Schema.String,
@@ -477,42 +443,6 @@ const RouteEncodingOrder = Schema.Struct({
     desk: Schema.String,
   }),
   weird: Schema.Unknown,
-});
-
-const routeEncodingLeasedGrpcViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: RouteEncodingOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: [
-          "amount",
-          "count",
-          "disabled",
-          "flag",
-          "meta",
-          "none",
-          "plainScore",
-          "score",
-          "tags",
-          "text",
-          "weird",
-        ],
-      }),
-    },
-  },
-});
-
-const groupedKeyEncodingLeasedGrpcViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: RouteEncodingOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["text"],
-      }),
-    },
-  },
 });
 
 const grpcClients = {
@@ -575,18 +505,7 @@ const grpcTopicOwnedSourceViewServer = defineViewServerConfig({
   },
 });
 
-const grpcFeed = defineGrpcFeed(grpcViewServer)<typeof grpcClients>();
-const grpcFeedWithOrphan = defineGrpcFeed(grpcViewServer)<typeof grpcClientsWithOrphan>();
-const mixedGrpcFeed = defineGrpcFeed(grpcAndKafkaViewServer)<typeof grpcClients>();
-const leasedGrpcFeed = defineGrpcFeed(leasedGrpcViewServer)<typeof grpcClients>();
-const publicKeyLeasedGrpcFeed = defineGrpcFeed(publicKeyLeasedGrpcViewServer)<typeof grpcClients>();
-const keyLeasedGrpcFeed = defineGrpcFeed(keyLeasedGrpcViewServer)<typeof grpcClients>();
-const routeEncodingLeasedGrpcFeed = defineGrpcFeed(routeEncodingLeasedGrpcViewServer)<
-  typeof grpcClients
->();
-const groupedKeyEncodingLeasedGrpcFeed = defineGrpcFeed(groupedKeyEncodingLeasedGrpcViewServer)<
-  typeof grpcClients
->();
+const grpcTopicSourcesWithOrphan = grpc.topicSources(grpcClientsWithOrphan);
 
 const grpcOrderValue = (
   customerId: string,
@@ -600,181 +519,295 @@ const grpcOrderValue = (
   updatedAt: price,
 });
 
-const grpcMaterializedFeed = (stream: Stream.Stream<GrpcOrderValueMessage, unknown, never>) =>
-  grpcFeed.materializedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    request: () => ({ orderId: "all" }),
-    acquire: () => stream,
-    map: ({ value }) => ({
-      id: value.customerId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
+const grpcMaterializedViewServer = (stream: Stream.Stream<GrpcOrderValueMessage, unknown, never>) =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => stream,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
   });
 
-const grpcMaterializedFeedWithRelease = (
+const grpcMaterializedViewServerFromCallbacks = (input: {
+  readonly request?: () => { readonly orderId?: string };
+  readonly acquire: () => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
+  readonly release?: () => Effect.Effect<void, unknown, never>;
+  readonly map?: (input: { readonly value: GrpcOrderValueMessage }) => typeof GrpcOrder.Type;
+}) =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: input.request ?? (() => ({ orderId: "all" })),
+        acquire: input.acquire,
+        ...(input.release === undefined ? {} : { release: input.release }),
+        map: ({ value }) =>
+          input.map?.({ value }) ?? {
+            id: value.customerId,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: "usa",
+            updatedAt: value.updatedAt,
+          },
+      }),
+    },
+  });
+
+const grpcMaterializedViewServerWithRelease = (
   stream: Stream.Stream<GrpcOrderValueMessage, unknown, never>,
   release: Effect.Effect<void>,
 ) =>
-  grpcFeed.materializedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    request: () => ({ orderId: "all" }),
-    acquire: () => stream,
-    release: () => release,
-    map: ({ value }) => ({
-      id: value.customerId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
-  });
-
-const grpcMaterializedFeedWithRequestFailure = () =>
-  grpcFeed.materializedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    request: () => {
-      throw new Error("request exploded");
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => stream,
+        release: () => release,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      }),
     },
-    acquire: () => Stream.never,
-    map: ({ value }) => ({
-      id: value.customerId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
   });
 
-const grpcMaterializedFeedWithAcquireFailure = () =>
-  grpcFeed.materializedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    request: () => ({ orderId: "all" }),
-    acquire: () => {
-      throw new Error("acquire exploded");
+const grpcMaterializedViewServerWithRequestFailure = () =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: () => {
+          throw new Error("request exploded");
+        },
+        acquire: () => Stream.never,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      }),
     },
-    map: ({ value }) => ({
-      id: value.customerId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
   });
 
-const grpcMaterializedFeedWithMappingFailure = (
+const grpcMaterializedViewServerWithAcquireFailure = () =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => {
+          throw new Error("acquire exploded");
+        },
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
+  });
+
+const grpcMaterializedViewServerWithMappingFailure = (
   stream: Stream.Stream<GrpcOrderValueMessage, unknown, never>,
 ) =>
-  grpcFeed.materializedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    request: () => ({ orderId: "all" }),
-    acquire: () => stream,
-    map: () => {
-      throw new Error("mapping exploded");
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => stream,
+        map: () => {
+          throw new Error("mapping exploded");
+        },
+      }),
     },
   });
 
-const grpcMaterializedFeedWithOrphanClient = () =>
-  grpcFeedWithOrphan.materializedFeed({
-    topic: "orders",
-    client: "orphan",
-    method: "streamOrders",
-    request: () => ({ orderId: "all" }),
-    acquire: () => Stream.never,
-    map: ({ value }) => ({
-      id: value.customerId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
+const grpcMaterializedViewServerWithOrphanClient = () =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClientsWithOrphan },
+    topics: {
+      orders: grpcTopicSourcesWithOrphan.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orphan",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => Stream.never,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
   });
 
-const grpcLeasedFeed = (input: {
+const grpcLeasedViewServer = (input: {
   readonly streamForRegion: (
     region: string,
   ) => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
   readonly acquired?: (region: string) => void;
   readonly release?: Effect.Effect<void>;
 }) =>
-  leasedGrpcFeed.leasedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    routeBy: ["region"],
-    request: ({ region }) => ({ orderId: region }),
-    acquire: ({ route }) => {
-      input.acquired?.(route.region);
-      return input.streamForRegion(route.region);
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: ({ route }) => {
+          input.acquired?.(route.region);
+          return input.streamForRegion(route.region);
+        },
+        release: () => input.release ?? Effect.void,
+        map: ({ value, route }) => ({
+          id: `${route.region}:${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      }),
     },
-    release: () => input.release ?? Effect.void,
-    map: ({ value, route }) => ({
-      id: `${route.region}:${value.customerId}`,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: route.region,
-      updatedAt: value.updatedAt,
-    }),
   });
 
-const grpcPublicKeyLeasedFeed = (input: {
+const grpcLeasedViewServerFromCallbacks = (input: {
+  readonly request?: (route: { readonly region: string }) => {
+    readonly orderId?: string;
+  };
+  readonly acquire: (input: {
+    readonly route: { readonly region: string };
+  }) => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
+  readonly release?: () => Effect.Effect<void, unknown, never>;
+  readonly map: (input: {
+    readonly value: GrpcOrderValueMessage;
+    readonly route: { readonly region: string };
+  }) => typeof GrpcOrder.Type;
+}) =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: input.request ?? (({ region }) => ({ orderId: region })),
+        acquire: input.acquire,
+        ...(input.release === undefined ? {} : { release: input.release }),
+        map: input.map,
+      }),
+    },
+  });
+
+const grpcPublicKeyLeasedViewServer = (input: {
   readonly streamForRegion: (
     region: string,
   ) => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
 }) =>
-  publicKeyLeasedGrpcFeed.leasedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    routeBy: ["region"],
-    request: ({ region }) => ({ orderId: region }),
-    acquire: ({ route }) => input.streamForRegion(route.region),
-    map: ({ value, route }) => ({
-      id: `public-${route.region}-${value.customerId}`,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: route.region,
-      updatedAt: value.updatedAt,
-    }),
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: PublicKeyGrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["region"],
+        request: ({ region }) => ({ orderId: region }),
+        acquire: ({ route }) => input.streamForRegion(route.region),
+        map: ({ value, route }) => ({
+          id: `public-${route.region}-${value.customerId}`,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: route.region,
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
   });
 
-const grpcKeyLeasedFeed = (input: {
+const grpcKeyLeasedViewServer = (input: {
   readonly streamForId: (id: string) => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
 }) =>
-  keyLeasedGrpcFeed.leasedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    routeBy: ["id"],
-    request: ({ id }) => ({ orderId: id }),
-    acquire: ({ route }) => input.streamForId(route.id),
-    map: ({ value, route }) => ({
-      id: route.id,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "key-route",
-      updatedAt: value.updatedAt,
-    }),
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["id"],
+        request: ({ id }) => ({ orderId: id }),
+        acquire: ({ route }) => input.streamForId(route.id),
+        map: ({ value, route }) => ({
+          id: route.id,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "key-route",
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
   });
 
 const routeEncodingValues = {
@@ -796,30 +829,56 @@ const routeEncodingValues = {
   },
 };
 
-const grpcRouteEncodingLeasedFeed = () =>
-  routeEncodingLeasedGrpcFeed.leasedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    routeBy: [
-      "amount",
-      "count",
-      "disabled",
-      "flag",
-      "meta",
-      "none",
-      "plainScore",
-      "score",
-      "tags",
-      "text",
-      "weird",
-    ],
-    request: (route) => ({ orderId: String(route.text) }),
-    acquire: () => Stream.never,
-    map: () => ({
-      id: "route-encoding",
-      ...routeEncodingValues,
-    }),
+const grpcRouteEncodingLeasedViewServer = () =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: RouteEncodingOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: [
+          "amount",
+          "count",
+          "disabled",
+          "flag",
+          "meta",
+          "none",
+          "plainScore",
+          "score",
+          "tags",
+          "text",
+          "weird",
+        ],
+        request: (route) => ({ orderId: String(route.text) }),
+        acquire: () => Stream.never,
+        map: () => ({
+          id: "route-encoding",
+          ...routeEncodingValues,
+        }),
+      }),
+    },
+  });
+
+const grpcGroupedKeyEncodingLeasedViewServer = (input: {
+  readonly acquire: () => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
+  readonly map: (value: GrpcOrderValueMessage) => typeof RouteEncodingOrder.Type;
+}) =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.leased({
+        schema: RouteEncodingOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["text"],
+        request: ({ text }) => ({ orderId: text }),
+        acquire: input.acquire,
+        map: ({ value }) => input.map(value),
+      }),
+    },
   });
 
 const longRunningGrpcStream = (
@@ -867,22 +926,22 @@ const waitForGrpcSnapshotRows = Effect.fn("ViewServerRuntime.test.grpc.snapshotR
   },
 );
 
-const makeGrpcHealth = (
-  grpcOptions: ResolvedViewServerGrpcRuntimeOptions<GrpcTopics, typeof grpcClients>,
+const makeGrpcHealth = <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const Clients extends GrpcRuntimeClients,
+>(
+  grpcOptions: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients> & {
+    readonly sourceConfig: ViewServerConfig<Topics, Regions, Clients>;
+  },
 ) =>
-  makeViewServerGrpcHealthLedger<GrpcTopics>({
-    clients: grpcOptions.clientBaseUrls,
-    feeds: {
-      ordersFeed: {
-        client: "orders",
-        lifecycle: "materialized",
-        topic: "orders",
-      },
-    },
-  });
+  makeDefaultRuntimeDependencies<Topics>().makeGrpcHealthLedger(
+    grpcOptions.sourceConfig,
+    grpcOptions,
+  );
 
 const grpcHealthFeed = (health: ViewServerHealth<GrpcTopics>) =>
-  health.grpc?.feeds["orders"]?.materialized["ordersFeed"];
+  health.grpc?.feeds["orders"]?.materialized["orders"];
 
 const grpcHealthClient = (health: ViewServerHealth<GrpcTopics>) => health.grpc?.clients["orders"];
 
@@ -892,58 +951,38 @@ const fastGrpcMaterializedReconnect = {
 } satisfies ResolvedViewServerGrpcRuntimeOptions<GrpcTopics>["materializedReconnect"];
 
 const resolveGrpcRuntimeOptions = Effect.fn("ViewServerRuntime.test.grpc.options.resolve")(
-  function* (feed: ReturnType<typeof grpcMaterializedFeed>) {
-    const options = yield* resolveViewServerRuntimeOptions<
-      GrpcTopics,
-      Record<string, string>,
-      typeof grpcClients
-    >({
+  function* <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions,
+    const Clients extends GrpcRuntimeClients,
+  >(
+    config: ViewServerConfig<Topics, Regions, Clients>,
+    materializedReconnect: ResolvedViewServerGrpcRuntimeOptions<
+      Topics,
+      Clients
+    >["materializedReconnect"] = fastGrpcMaterializedReconnect,
+  ) {
+    const options = yield* resolveViewServerRuntimeOptions(config, {
       grpc: {
-        clients: grpcClients,
-        feeds: {
-          ordersFeed: feed,
-        },
-        materializedReconnect: fastGrpcMaterializedReconnect,
+        materializedReconnect,
       },
     });
-    return yield* Effect.fromNullishOr(options.grpcOptions);
+    const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+    return {
+      ...grpcOptions,
+      sourceConfig: config,
+    };
   },
 );
 
-const resolveLeasedGrpcRuntimeOptions = Effect.fn(
-  "ViewServerRuntime.test.grpc.leased.options.resolve",
-)(function* (feed: ReturnType<typeof grpcLeasedFeed>) {
-  const options = yield* resolveViewServerRuntimeOptions<
-    typeof leasedGrpcViewServer.topics,
-    Record<string, string>,
-    typeof grpcClients
-  >({
-    grpc: {
-      clients: grpcClients,
-      feeds: {
-        ordersLease: feed,
-      },
-      materializedReconnect: fastGrpcMaterializedReconnect,
-    },
-  });
-  return yield* Effect.fromNullishOr(options.grpcOptions);
-});
+const resolveLeasedGrpcRuntimeOptions = resolveGrpcRuntimeOptions;
 
-const makeLeasedGrpcHealth = (
-  grpcOptions: ResolvedViewServerGrpcRuntimeOptions<
-    typeof leasedGrpcViewServer.topics,
-    typeof grpcClients
-  >,
-) =>
-  makeViewServerGrpcHealthLedger<typeof leasedGrpcViewServer.topics>({
-    clients: grpcOptions.clientBaseUrls,
-    feeds: {},
-  });
+const makeLeasedGrpcHealth = makeGrpcHealth;
 
-const captureLeasedGrpcDegradation = (
-  health: ViewServerGrpcHealthLedger<typeof leasedGrpcViewServer.topics>,
+const captureLeasedGrpcDegradation = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  health: ViewServerGrpcHealthLedger<Topics>,
   messages: Array<string>,
-): ViewServerGrpcHealthLedger<typeof leasedGrpcViewServer.topics> => ({
+): ViewServerGrpcHealthLedger<Topics> => ({
   ...health,
   feedDegraded: (feedKey, message) =>
     Effect.sync(() => {
@@ -5299,41 +5338,9 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.live("rejects gRPC feeds when neither config nor runtime provides clients", () =>
-    Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
-
-      const error = yield* resolveViewServerRuntimeOptions<
-        typeof grpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          feeds: {
-            ordersFeed: feed,
-          },
-        },
-      }).pipe(Effect.flip);
-      const grpcError = yield* Schema.decodeUnknownEffect(ViewServerGrpcIngressError)(error);
-
-      expect({
-        _tag: grpcError._tag,
-        cause: grpcError.cause,
-        message: grpcError.message,
-        phase: grpcError.phase,
-      }).toStrictEqual({
-        _tag: "ViewServerGrpcIngressError",
-        cause: "missing-grpc-clients",
-        message:
-          "gRPC feeds are configured, but no gRPC clients were provided on config.grpc.clients.",
-        phase: "configuration",
-      });
-    }),
-  );
-
   it.live("rejects explicit gRPC runtime options without clients or feeds", () =>
     Effect.gen(function* () {
-      const error = yield* resolveViewServerRuntimeOptions(viewServer, {
+      const error = yield* resolveViewServerRuntimeOptions({
         grpc: {},
       }).pipe(Effect.flip);
       const grpcError = yield* Schema.decodeUnknownEffect(ViewServerGrpcIngressError)(error);
@@ -5348,6 +5355,28 @@ describe("@effect-view-server/runtime", () => {
         cause: "missing-grpc-clients",
         message:
           "runtime options.grpc was provided, but no gRPC clients were provided on config.grpc.clients.",
+        phase: "configuration",
+      });
+    }),
+  );
+
+  it.live("rejects topic-owned gRPC feeds without config-owned clients", () =>
+    Effect.gen(function* () {
+      const config = grpcMaterializedViewServer(Stream.never);
+      Reflect.deleteProperty(config, "grpc");
+      const error = yield* resolveViewServerRuntimeOptions(config).pipe(Effect.flip);
+      const grpcError = yield* Schema.decodeUnknownEffect(ViewServerGrpcIngressError)(error);
+
+      expect({
+        _tag: grpcError._tag,
+        cause: grpcError.cause,
+        message: grpcError.message,
+        phase: grpcError.phase,
+      }).toStrictEqual({
+        _tag: "ViewServerGrpcIngressError",
+        cause: "missing-grpc-clients",
+        message:
+          "gRPC feeds are configured, but no gRPC clients were provided on config.grpc.clients.",
         phase: "configuration",
       });
     }),
@@ -5368,7 +5397,7 @@ describe("@effect-view-server/runtime", () => {
       Object.defineProperty(feedsOptions.grpc, "feeds", {
         enumerable: true,
         value: {
-          ordersFeed: grpcMaterializedFeed(Stream.never),
+          orders: {},
         },
       });
       const unknownOptions = {
@@ -5404,32 +5433,32 @@ describe("@effect-view-server/runtime", () => {
         grpc: [],
       };
 
-      const clientsError = yield* resolvePublicViewServerRuntimeOptions(
+      const clientsError = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         clientsOptions,
       ).pipe(Effect.flip);
-      const feedsError = yield* resolvePublicViewServerRuntimeOptions(
+      const feedsError = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         feedsOptions,
       ).pipe(Effect.flip);
-      const unknownError = yield* resolvePublicViewServerRuntimeOptions(
+      const unknownError = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         unknownOptions,
       ).pipe(Effect.flip);
-      const unknownReconnectError = yield* resolvePublicViewServerRuntimeOptions(
+      const unknownReconnectError = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         unknownReconnectOptions,
       ).pipe(Effect.flip);
-      const nullReconnectResult = yield* resolvePublicViewServerRuntimeOptions(
+      const nullReconnectResult = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         nullReconnectOptions,
       );
-      const nullGrpcError = yield* resolvePublicViewServerRuntimeOptions(
+      const nullGrpcError = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         // @ts-expect-error runtime guard rejects malformed public grpc options.
         nullGrpcOptions,
       ).pipe(Effect.flip);
-      const arrayGrpcError = yield* resolvePublicViewServerRuntimeOptions(
+      const arrayGrpcError = yield* resolveViewServerRuntimeOptions(
         grpcTopicOwnedSourceViewServer,
         // @ts-expect-error runtime guard rejects malformed public grpc options.
         arrayGrpcOptions,
@@ -5691,7 +5720,7 @@ describe("@effect-view-server/runtime", () => {
         }).grpcSource,
       });
 
-      const options = yield* resolvePublicViewServerRuntimeOptions(viewServerWithInheritedSource);
+      const options = yield* resolveViewServerRuntimeOptions(viewServerWithInheritedSource);
 
       expect(options.grpcOptions).toBeUndefined();
     }),
@@ -5699,15 +5728,17 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("does not register gRPC health feeds for unknown topics", () =>
     Effect.gen(function* () {
-      const grpcOptions = yield* resolveGrpcRuntimeOptions(grpcMaterializedFeed(Stream.never));
-      const ordersFeed = yield* Effect.fromNullishOr(grpcOptions.feeds["ordersFeed"]);
-      Object.defineProperty(ordersFeed, "topic", {
+      const config = grpcMaterializedViewServer(Stream.never);
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(config);
+      const ordersSourceFeed = yield* Effect.fromNullishOr(grpcOptions.feeds["orders"]);
+      Object.defineProperty(ordersSourceFeed, "topic", {
         value: "missing",
       });
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-      const health = makeDefaultRuntimeDependencies<
-        typeof grpcViewServer.topics
-      >().makeGrpcHealthLedger(grpcViewServer, grpcOptions);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, {});
+      const health = makeDefaultRuntimeDependencies<typeof config.topics>().makeGrpcHealthLedger(
+        config,
+        grpcOptions,
+      );
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 2_000);
 
       expect(Object.entries(currentHealth.grpc?.feeds ?? {})).toStrictEqual([]);
@@ -5715,88 +5746,39 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.live("rejects multiple gRPC feeds targeting the same View Server topic", () =>
-    Effect.gen(function* () {
-      const firstFeed = grpcMaterializedFeed(Stream.never);
-      const secondFeed = grpcFeedWithOrphan.materializedFeed({
-        topic: "orders",
-        client: "orphan",
-        method: "streamOrders",
-        request: () => ({ orderId: "all" }),
-        acquire: () => Stream.never,
-        map: ({ value }) => ({
-          id: value.customerId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: "usa",
-          updatedAt: value.updatedAt,
-        }),
-      });
-
-      const error = yield* resolveViewServerRuntimeOptions(grpcViewServer, {
-        grpc: {
-          clients: grpcClientsWithOrphan,
-          feeds: {
-            ordersFeed: firstFeed,
-            secondOrdersFeed: secondFeed,
-          },
-        },
-      }).pipe(Effect.flip);
-
-      expect(error).toBeInstanceOf(ViewServerGrpcIngressError);
-      expect(error.message).toBe(
-        "gRPC feed secondOrdersFeed conflicts with ordersFeed; View Server topic orders already has a gRPC feed owner.",
-      );
-    }),
-  );
-
   it.live("accepts leased gRPC feeds for runtime lease management", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const config = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
+      const options = yield* resolveViewServerRuntimeOptions(config);
 
-      const options = yield* resolveViewServerRuntimeOptions<
-        typeof leasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
+      expect(options.grpcOptions?.feeds["orders"]).toMatchObject({
+        client: "orders",
+        lifecycle: "leased",
+        method: "streamOrders",
+        routeBy: ["region"],
+        topic: "orders",
       });
-
-      expect(options.grpcOptions?.feeds["ordersLease"]).toBe(feed);
     }),
   );
 
   it.live("rejects resolved gRPC feeds that reference non-server-streaming methods", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
-      Object.defineProperty(feed, "method", {
+      const config = grpcMaterializedViewServer(Stream.never);
+      Object.defineProperty(config.topics.orders.grpcSource, "method", {
         enumerable: true,
         value: "getOrder",
       });
 
-      const error = yield* resolveViewServerRuntimeOptions(grpcViewServer, {
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: feed,
-          },
-        },
-      }).pipe(Effect.flip);
+      const error = yield* resolveViewServerRuntimeOptions(config).pipe(Effect.flip);
 
       expect(error).toStrictEqual(
         new ViewServerGrpcIngressError({
           message:
-            "gRPC feed ordersFeed references non-server-streaming method getOrder on client orders",
+            "gRPC feed orders references non-server-streaming method getOrder on client orders",
           cause: "getOrder",
-          feedName: "ordersFeed",
+          feedName: "orders",
           topic: "orders",
           phase: "configuration",
         }),
@@ -5806,12 +5788,9 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects invalid materialized gRPC reconnect maxReconnects", () =>
     Effect.gen(function* () {
-      const error = yield* resolveViewServerRuntimeOptions(grpcViewServer, {
+      const config = grpcMaterializedViewServer(Stream.never);
+      const error = yield* resolveViewServerRuntimeOptions(config, {
         grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: grpcMaterializedFeed(Stream.never),
-          },
           materializedReconnect: {
             delay: "10 millis",
             maxReconnects: Infinity,
@@ -5833,12 +5812,9 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects invalid materialized gRPC reconnect delay", () =>
     Effect.gen(function* () {
-      const error = yield* resolveViewServerRuntimeOptions(grpcViewServer, {
+      const config = grpcMaterializedViewServer(Stream.never);
+      const error = yield* resolveViewServerRuntimeOptions(config, {
         grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: grpcMaterializedFeed(Stream.never),
-          },
           materializedReconnect: {
             delay: "Infinity",
             maxReconnects: 3,
@@ -5859,12 +5835,9 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects zero materialized gRPC reconnect delay", () =>
     Effect.gen(function* () {
-      const error = yield* resolveViewServerRuntimeOptions(grpcViewServer, {
+      const config = grpcMaterializedViewServer(Stream.never);
+      const error = yield* resolveViewServerRuntimeOptions(config, {
         grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: grpcMaterializedFeed(Stream.never),
-          },
           materializedReconnect: {
             delay: 0,
             maxReconnects: 3,
@@ -5885,33 +5858,19 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("keeps refined public leased row keys out of internal storage keys", () =>
     Effect.gen(function* () {
-      const feed = grpcPublicKeyLeasedFeed({
+      const feed = grpcPublicKeyLeasedViewServer({
         streamForRegion: (region) =>
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
-      const options = yield* resolveViewServerRuntimeOptions<
-        typeof publicKeyLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
+      const options = yield* resolveViewServerRuntimeOptions(feed);
       const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
-        publicKeyLeasedGrpcViewServer,
-        {},
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(feed, {});
+      const health = makeDefaultRuntimeDependencies<typeof feed.topics>().makeGrpcHealthLedger(
+        feed,
+        grpcOptions,
       );
-      const health = makeViewServerGrpcHealthLedger<typeof publicKeyLeasedGrpcViewServer.topics>({
-        clients: grpcOptions.clientBaseUrls,
-        feeds: {},
-      });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        publicKeyLeasedGrpcViewServer,
+        feed,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -5966,14 +5925,14 @@ describe("@effect-view-server/runtime", () => {
   it.live("releases an interrupted same-route leased subscriber acquisition", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         release: Effect.sync(() => {
           released += 1;
         }),
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(feed, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const secondSubscribeStarted = yield* Deferred.make<void>();
       const internalSubscription = {
@@ -5992,15 +5951,13 @@ describe("@effect-view-server/runtime", () => {
           return yield* Effect.never;
         }),
       );
-      const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
-        typeof leasedGrpcViewServer.topics
-      > = {
+      const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<typeof feed.topics> = {
         ...runtimeCore.internalLiveClient,
         subscribeInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
         subscribeObservedInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        feed,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -6022,9 +5979,8 @@ describe("@effect-view-server/runtime", () => {
       expect({
         released,
         subscriberCount:
-          activeHealth.grpc?.feeds["orders"]?.leased[
-            "orders/ordersLease/leased/region=string%3A3%3Ausa"
-          ]?.subscriberCount,
+          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            ?.subscriberCount,
       }).toStrictEqual({
         released: 0,
         subscriberCount: 1,
@@ -6211,24 +6167,25 @@ describe("@effect-view-server/runtime", () => {
     "delegates direct manager reset when gRPC is configured without source-owned topics",
     () =>
       Effect.gen(function* () {
-        const options = yield* resolveViewServerRuntimeOptions<
-          typeof viewServer.topics,
-          Record<string, string>,
-          typeof grpcClients
-        >({
-          grpc: {
-            clients: grpcClients,
-            feeds: {},
+        const sourceFreeGrpcViewServer = defineViewServerConfig({
+          grpc: { clients: grpcClients },
+          topics: {
+            orders: {
+              schema: Order,
+              key: "id",
+            },
           },
         });
-        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-        const health = makeViewServerGrpcHealthLedger<typeof viewServer.topics>({
-          clients: grpcOptions.clientBaseUrls,
-          feeds: {},
+        const options = yield* resolveViewServerRuntimeOptions(sourceFreeGrpcViewServer, {
+          grpc: {},
         });
+        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(sourceFreeGrpcViewServer, {});
+        const health = makeDefaultRuntimeDependencies<
+          typeof sourceFreeGrpcViewServer.topics
+        >().makeGrpcHealthLedger(sourceFreeGrpcViewServer, grpcOptions);
         const manager = yield* makeViewServerGrpcLeaseManager(
-          viewServer,
+          sourceFreeGrpcViewServer,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           runtimeCore.internalLiveClient,
@@ -6383,12 +6340,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects direct manager mutations for materialized gRPC source-owned topics", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
+      const feed = grpcMaterializedViewServer(Stream.never);
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(feed, {});
       const health = makeGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcViewServer,
+        feed,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -6440,14 +6397,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects direct manager reset when leased gRPC topics exist", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(feed, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        feed,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -6543,55 +6500,15 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("validates topic-owned grpcSource feeds", () =>
     Effect.gen(function* () {
-      const grpcSourceViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
+      const config = grpcLeasedViewServer({
+        streamForRegion: () => Stream.never,
       });
-      const grpcSourceFeed = defineGrpcFeed(grpcSourceViewServer)<typeof grpcClients>();
-      const feed = grpcSourceFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-
-      const options = yield* resolveViewServerRuntimeOptions<
-        typeof grpcSourceViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      yield* validateGrpcSourceFeeds(
-        grpcSourceViewServer,
-        yield* Effect.fromNullishOr(options.grpcOptions),
-      );
+      const options = yield* resolveViewServerRuntimeOptions(config);
+      yield* validateGrpcSourceFeeds(config, yield* Effect.fromNullishOr(options.grpcOptions));
 
       expect({
-        feedTopic: options.grpcOptions?.feeds["ordersLease"]?.topic,
-        routeBy: options.grpcOptions?.feeds["ordersLease"]?.routeBy,
+        feedTopic: options.grpcOptions?.feeds["orders"]?.topic,
+        routeBy: options.grpcOptions?.feeds["orders"]?.routeBy,
       }).toStrictEqual({
         feedTopic: "orders",
         routeBy: ["region"],
@@ -6602,59 +6519,26 @@ describe("@effect-view-server/runtime", () => {
   it.live("subscribes topic-owned grpcSource leased feeds", () =>
     Effect.gen(function* () {
       let acquired = 0;
-      const grpcSourceViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
-      });
-      const grpcSourceFeed = defineGrpcFeed(grpcSourceViewServer)<typeof grpcClients>();
-      const feed = grpcSourceFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: ({ route }) => {
+      const config = grpcLeasedViewServer({
+        acquired: () => {
           acquired += 1;
-          return longRunningGrpcStream([grpcOrderValue(`${route.region}-order-1`, 10)]);
         },
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
+        streamForRegion: (region) =>
+          longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
-
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof grpcSourceViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, {
         grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
           materializedReconnect: fastGrpcMaterializedReconnect,
         },
       });
       const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcSourceViewServer, {});
-      const health = makeViewServerGrpcHealthLedger<typeof grpcSourceViewServer.topics>({
-        clients: grpcOptions.clientBaseUrls,
-        feeds: {},
-      });
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, {});
+      const health = makeDefaultRuntimeDependencies<typeof config.topics>().makeGrpcHealthLedger(
+        config,
+        grpcOptions,
+      );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcSourceViewServer,
+        config,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -6713,72 +6597,27 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects gRPC feeds that target unknown or non-gRPC View Server topics", () =>
     Effect.gen(function* () {
-      const unknownTopicFeed = mixedGrpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        request: () => ({ orderId: "all" }),
-        acquire: () => Stream.never,
-        map: ({ value }) => ({
-          id: value.customerId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: "usa",
-          updatedAt: value.updatedAt,
-        }),
-      });
-      const nonGrpcTopicFeed = mixedGrpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        request: () => ({ orderId: "all" }),
-        acquire: () => Stream.never,
-        map: ({ value }) => ({
-          id: value.customerId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: "usa",
-          updatedAt: value.updatedAt,
-        }),
-      });
-      Object.defineProperty(unknownTopicFeed, "topic", { value: "unknown" });
-      Object.defineProperty(nonGrpcTopicFeed, "topic", { value: "audit" });
-
-      const unknownTopicOptions = yield* resolveViewServerRuntimeOptions<
-        typeof grpcAndKafkaViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: grpcMaterializedFeed(Stream.never),
-            unknownTopicFeed,
-          },
-        },
-      });
-      const nonGrpcTopicOptions = yield* resolveViewServerRuntimeOptions<
-        typeof grpcAndKafkaViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: grpcMaterializedFeed(Stream.never),
-            nonGrpcTopicFeed,
-          },
-        },
-      });
+      const unknownTopicConfig = grpcMaterializedViewServer(Stream.never);
+      const nonGrpcTopicConfig = grpcMaterializedViewServer(Stream.never);
+      const unknownTopicOptions = yield* resolveGrpcRuntimeOptions(unknownTopicConfig);
+      const nonGrpcTopicOptions = yield* resolveGrpcRuntimeOptions(nonGrpcTopicConfig);
+      const unknownTopicFeed = yield* Effect.fromNullishOr(unknownTopicOptions.feeds["orders"]);
+      const nonGrpcTopicFeed = yield* Effect.fromNullishOr(nonGrpcTopicOptions.feeds["orders"]);
+      unknownTopicOptions.feeds["unknown"] = {
+        ...unknownTopicFeed,
+        topic: "unknown",
+      };
+      nonGrpcTopicOptions.feeds["audit"] = {
+        ...nonGrpcTopicFeed,
+        topic: "audit",
+      };
       const unknownTopicError = yield* validateGrpcSourceFeeds(
         grpcAndKafkaViewServer,
-        yield* Effect.fromNullishOr(unknownTopicOptions.grpcOptions),
+        unknownTopicOptions,
       ).pipe(Effect.flip);
       const nonGrpcTopicError = yield* validateGrpcSourceFeeds(
         grpcAndKafkaViewServer,
-        yield* Effect.fromNullishOr(nonGrpcTopicOptions.grpcOptions),
+        nonGrpcTopicOptions,
       ).pipe(Effect.flip);
 
       expect({
@@ -6787,56 +6626,40 @@ describe("@effect-view-server/runtime", () => {
         nonGrpcTopicMessage: nonGrpcTopicError.message,
         nonGrpcTopicFeedName: Reflect.get(nonGrpcTopicError, "feedName"),
       }).toStrictEqual({
-        unknownTopicMessage:
-          "gRPC feed unknownTopicFeed references unknown View Server topic unknown.",
-        unknownTopicFeedName: "unknownTopicFeed",
+        unknownTopicMessage: "gRPC feed unknown references unknown View Server topic unknown.",
+        unknownTopicFeedName: "unknown",
         nonGrpcTopicMessage:
-          "gRPC feed nonGrpcTopicFeed targets View Server topic audit, but that topic does not declare a gRPC source.",
-        nonGrpcTopicFeedName: "nonGrpcTopicFeed",
+          "gRPC feed audit targets View Server topic audit, but that topic does not declare a gRPC source.",
+        nonGrpcTopicFeedName: "audit",
       });
     }),
   );
 
   it.live("rejects gRPC feed lifecycle mismatches from the feed validation boundary", () =>
     Effect.gen(function* () {
-      const materializedFeed = grpcMaterializedFeed(Stream.never);
-      const leasedFeed = grpcLeasedFeed({
+      const materializedConfig = grpcMaterializedViewServer(Stream.never);
+      const leasedConfig = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
+      const materializedTopicLeasedFeedOptions =
+        yield* resolveGrpcRuntimeOptions(materializedConfig);
+      const leasedTopicMaterializedFeedOptions =
+        yield* resolveLeasedGrpcRuntimeOptions(leasedConfig);
+      const materializedFeed = yield* Effect.fromNullishOr(
+        materializedTopicLeasedFeedOptions.feeds["orders"],
+      );
+      const leasedFeed = yield* Effect.fromNullishOr(
+        leasedTopicMaterializedFeedOptions.feeds["orders"],
+      );
       Object.defineProperty(materializedFeed, "lifecycle", { value: "leased" });
       Object.defineProperty(leasedFeed, "lifecycle", { value: "materialized" });
-
-      const materializedTopicLeasedFeedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof grpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            materializedFeed,
-          },
-        },
-      });
-      const leasedTopicMaterializedFeedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof leasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            leasedFeed,
-          },
-        },
-      });
       const materializedTopicLeasedFeedError = yield* validateGrpcSourceFeeds(
         grpcViewServer,
-        yield* Effect.fromNullishOr(materializedTopicLeasedFeedOptions.grpcOptions),
+        materializedTopicLeasedFeedOptions,
       ).pipe(Effect.flip);
       const leasedTopicMaterializedFeedError = yield* validateGrpcSourceFeeds(
         leasedGrpcViewServer,
-        yield* Effect.fromNullishOr(leasedTopicMaterializedFeedOptions.grpcOptions),
+        leasedTopicMaterializedFeedOptions,
       ).pipe(Effect.flip);
 
       expect({
@@ -6846,46 +6669,32 @@ describe("@effect-view-server/runtime", () => {
         leasedTopicFeedName: Reflect.get(leasedTopicMaterializedFeedError, "feedName"),
       }).toStrictEqual({
         materializedTopicMessage:
-          "gRPC feed materializedFeed lifecycle leased does not match View Server topic orders source lifecycle materialized.",
-        materializedTopicFeedName: "materializedFeed",
+          "gRPC feed orders lifecycle leased does not match View Server topic orders source lifecycle materialized.",
+        materializedTopicFeedName: "orders",
         leasedTopicMessage:
-          "gRPC feed leasedFeed lifecycle materialized does not match View Server topic orders source lifecycle leased.",
-        leasedTopicFeedName: "leasedFeed",
+          "gRPC feed orders lifecycle materialized does not match View Server topic orders source lifecycle leased.",
+        leasedTopicFeedName: "orders",
       });
     }),
   );
 
   it.live("rejects resolved gRPC feeds that reference missing clients or methods", () =>
     Effect.gen(function* () {
-      const missingClientFeed = grpcMaterializedFeed(Stream.never);
-      const missingMethodFeed = grpcMaterializedFeed(Stream.never);
-      Object.defineProperty(missingClientFeed, "client", { value: "missing" });
-      Object.defineProperty(missingMethodFeed, "method", { value: "missingMethod" });
+      const missingClientConfig = grpcMaterializedViewServer(Stream.never);
+      const missingMethodConfig = grpcMaterializedViewServer(Stream.never);
+      Object.defineProperty(missingClientConfig.topics.orders.grpcSource, "client", {
+        value: "missing",
+      });
+      Object.defineProperty(missingMethodConfig.topics.orders.grpcSource, "method", {
+        value: "missingMethod",
+      });
 
-      const missingClientError = yield* resolveViewServerRuntimeOptions<
-        typeof grpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            missingClientFeed,
-          },
-        },
-      }).pipe(Effect.flip);
-      const missingMethodError = yield* resolveViewServerRuntimeOptions<
-        typeof grpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            missingMethodFeed,
-          },
-        },
-      }).pipe(Effect.flip);
+      const missingClientError = yield* resolveViewServerRuntimeOptions(missingClientConfig).pipe(
+        Effect.flip,
+      );
+      const missingMethodError = yield* resolveViewServerRuntimeOptions(missingMethodConfig).pipe(
+        Effect.flip,
+      );
 
       expect({
         missingClient: {
@@ -6905,16 +6714,15 @@ describe("@effect-view-server/runtime", () => {
       }).toStrictEqual({
         missingClient: {
           cause: "missing",
-          feedName: "missingClientFeed",
-          message: "gRPC feed missingClientFeed references missing client: missing",
+          feedName: "orders",
+          message: "gRPC feed orders references missing client: missing",
           phase: "configuration",
           topic: "orders",
         },
         missingMethod: {
           cause: "missingMethod",
-          feedName: "missingMethodFeed",
-          message:
-            "gRPC feed missingMethodFeed references missing method missingMethod on client orders",
+          feedName: "orders",
+          message: "gRPC feed orders references missing method missingMethod on client orders",
           phase: "configuration",
           topic: "orders",
         },
@@ -6924,92 +6732,50 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects leased gRPC feed routeBy mismatches from the feed validation boundary", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
+      const makeLocalViewServer = () =>
+        defineViewServerConfig({
+          grpc: { clients: grpcClients },
+          topics: {
+            orders: grpcTopicSources.leased({
+              schema: GrpcOrder,
+              key: "id",
+              client: "orders",
+              method: "streamOrders",
               routeBy: ["region", "status"],
+              request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
+              acquire: () => Stream.never,
+              map: ({ value, route }) => ({
+                id: `${route.region}:${value.customerId}`,
+                customerId: value.customerId,
+                status: route.status,
+                price: value.price,
+                region: route.region,
+                updatedAt: value.updatedAt,
+              }),
             }),
           },
-        },
-      });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region", "status"],
-        request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: route.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-      Object.defineProperty(feed, "routeBy", {
-        value: ["status", "region"],
-      });
-      const invalidFeedRouteBy = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region", "status"],
-        request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: route.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
+        });
+      const localViewServer = makeLocalViewServer();
+      const invalidFeedRouteByViewServer = makeLocalViewServer();
+      const invalidSourceRouteByViewServer = makeLocalViewServer();
+      const resolvedGrpcOptions = yield* resolveGrpcRuntimeOptions(localViewServer);
+      const invalidFeedRouteByOptions = yield* resolveGrpcRuntimeOptions(
+        invalidFeedRouteByViewServer,
+      );
+      const feed = yield* Effect.fromNullishOr(resolvedGrpcOptions.feeds["orders"]);
+      const invalidFeedRouteBy = yield* Effect.fromNullishOr(
+        invalidFeedRouteByOptions.feeds["orders"],
+      );
+      Object.defineProperty(feed, "routeBy", { value: ["status", "region"] });
       Object.defineProperty(invalidFeedRouteBy, "routeBy", {
         value: ["region", 1],
-      });
-      const invalidSourceRouteByViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region", "status"],
-            }),
-          },
-        },
       });
       Object.defineProperty(invalidSourceRouteByViewServer.topics.orders.grpcSource, "routeBy", {
         value: ["region", 1],
       });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const resolvedGrpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
       const error = yield* validateGrpcSourceFeeds(localViewServer, resolvedGrpcOptions).pipe(
         Effect.flip,
       );
-      const invalidFeedRouteByOptions = {
-        ...resolvedGrpcOptions,
-        feeds: {
-          ordersLease: invalidFeedRouteBy,
-        },
-      };
       const invalidFeedRouteByError = yield* validateGrpcSourceFeeds(
         localViewServer,
         invalidFeedRouteByOptions,
@@ -7026,10 +6792,10 @@ describe("@effect-view-server/runtime", () => {
         invalidSourceRouteByMessage: invalidSourceRouteByError.message,
       }).toStrictEqual({
         message:
-          "gRPC leased feed ordersLease routeBy status, region does not match View Server topic orders source routeBy region, status.",
-        feedName: "ordersLease",
+          "gRPC leased feed orders routeBy status, region does not match View Server topic orders source routeBy region, status.",
+        feedName: "orders",
         invalidFeedRouteByMessage:
-          "gRPC leased feed ordersLease routeBy  does not match View Server topic orders source routeBy region, status.",
+          "gRPC leased feed orders routeBy  does not match View Server topic orders source routeBy region, status.",
         invalidSourceRouteByMessage:
           "View Server topic orders declares invalid gRPC source metadata.",
       });
@@ -7200,22 +6966,12 @@ describe("@effect-view-server/runtime", () => {
       Object.defineProperty(extraLeasedGrpcSourceConfig.topics.orders.grpcSource, "extra", {
         value: true,
       });
-      const feed = grpcMaterializedFeed(Stream.never);
-      const leasedFeed = grpcLeasedFeed({
+      const feed = grpcMaterializedViewServer(Stream.never);
+      const leasedFeed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const leasedGrpcOptions = yield* resolveLeasedGrpcRuntimeOptions(leasedFeed);
-      const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<
-        typeof grpcViewServer.topics,
-        typeof grpcClients
-      > = {
-        clients: grpcClients,
-        clientBaseUrls: nullRecord([["orders", "https://orders.example.test"]]),
-        feeds: {
-          ordersFeed: feed,
-        },
-        materializedReconnect: fastGrpcMaterializedReconnect,
-      };
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
       const nullTopicError = yield* validateGrpcSourceFeeds(nullTopicConfig, grpcOptions).pipe(
         Effect.flip,
       );
@@ -7296,8 +7052,8 @@ describe("@effect-view-server/runtime", () => {
         extraLeasedGrpcSourceFeedName: Reflect.get(extraLeasedGrpcSourceError, "feedName"),
       }).toStrictEqual({
         nullTopicMessage:
-          "gRPC feed ordersFeed targets View Server topic orders, but that topic does not declare a gRPC source.",
-        nullTopicFeedName: "ordersFeed",
+          "gRPC feed orders targets View Server topic orders, but that topic does not declare a gRPC source.",
+        nullTopicFeedName: "orders",
         nonGrpcKindMessage: "View Server topic orders declares invalid gRPC source metadata.",
         nonGrpcKindFeedName: "orders",
         invalidLifecycleMessage: "View Server topic orders declares invalid gRPC source metadata.",
@@ -7335,19 +7091,10 @@ describe("@effect-view-server/runtime", () => {
     "rejects gRPC feed lifecycle mismatch when validation sees inconsistent resolved options",
     () =>
       Effect.gen(function* () {
-        const feed = grpcMaterializedFeed(Stream.never);
+        const config = grpcMaterializedViewServer(Stream.never);
+        const grpcOptions = yield* resolveGrpcRuntimeOptions(config);
+        const feed = yield* Effect.fromNullishOr(grpcOptions.feeds["orders"]);
         Object.defineProperty(feed, "lifecycle", { value: "leased" });
-        const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<
-          typeof grpcViewServer.topics,
-          typeof grpcClients
-        > = {
-          clients: grpcClients,
-          clientBaseUrls: nullRecord([["orders", "https://orders.example.test"]]),
-          feeds: {
-            ordersFeed: feed,
-          },
-          materializedReconnect: fastGrpcMaterializedReconnect,
-        };
 
         const error = yield* validateGrpcSourceFeeds(grpcViewServer, grpcOptions).pipe(Effect.flip);
 
@@ -7356,8 +7103,8 @@ describe("@effect-view-server/runtime", () => {
           feedName: Reflect.get(error, "feedName"),
         }).toStrictEqual({
           message:
-            "gRPC feed ordersFeed lifecycle leased does not match View Server topic orders source lifecycle materialized.",
-          feedName: "ordersFeed",
+            "gRPC feed orders lifecycle leased does not match View Server topic orders source lifecycle materialized.",
+          feedName: "orders",
         });
       }),
   );
@@ -7374,7 +7121,7 @@ describe("@effect-view-server/runtime", () => {
         },
         {
           feeds: {
-            ordersFeed: {
+            orders: {
               topic: "orders",
             },
           },
@@ -7383,7 +7130,7 @@ describe("@effect-view-server/runtime", () => {
 
       expect(error).toBeInstanceOf(ViewServerGrpcIngressError);
       expect(error.message).toBe(
-        "View Server topic orders cannot be owned by both Kafka source orders-source and gRPC feed ordersFeed.",
+        "View Server topic orders cannot be owned by both Kafka source orders-source and gRPC feed orders.",
       );
     }),
   );
@@ -7814,7 +7561,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let acquired = 0;
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         acquired: () => {
           acquired += 1;
         },
@@ -7827,11 +7574,8 @@ describe("@effect-view-server/runtime", () => {
             grpcOrderValue(`${region}-order-2`, 20),
           ]),
       });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const harness = yield* makeLeasedGrpcRuntimeHarness({
-        config: leasedGrpcViewServer,
-        grpcOptions,
-        health: makeLeasedGrpcHealth(grpcOptions),
+        config: feed,
       });
       const { health, manager, runtimeCore } = harness;
       const idleHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
@@ -7886,17 +7630,15 @@ describe("@effect-view-server/runtime", () => {
         },
       ]);
       expect(Object.keys(readyHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/ordersLease/leased/region=string%3A3%3Ausa",
+        "orders/orders/leased/region=string%3A3%3Ausa",
       ]);
       expect(
-        readyHealth.grpc?.feeds["orders"]?.leased[
-          "orders/ordersLease/leased/region=string%3A3%3Ausa"
-        ],
+        readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"],
       ).toStrictEqual({
         status: "ready",
         lifecycle: "leased",
-        feedName: "ordersLease",
-        feedKey: "orders/ordersLease/leased/region=string%3A3%3Ausa",
+        feedName: "orders",
+        feedKey: "orders/orders/leased/region=string%3A3%3Ausa",
         topic: "orders",
         subscriberCount: 1,
         rowCount: 2,
@@ -7907,9 +7649,8 @@ describe("@effect-view-server/runtime", () => {
         publishFailuresPerSecond: 0,
         reconnects: 0,
         lastMessageAt:
-          readyHealth.grpc?.feeds["orders"]?.leased[
-            "orders/ordersLease/leased/region=string%3A3%3Ausa"
-          ]?.lastMessageAt,
+          readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            ?.lastMessageAt,
         lastError: null,
       });
       expect(emptySnapshot).toStrictEqual({
@@ -7928,7 +7669,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let acquired = 0;
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         acquired: () => {
           acquired += 1;
         },
@@ -7938,11 +7679,8 @@ describe("@effect-view-server/runtime", () => {
         streamForRegion: (region) =>
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const harness = yield* makeLeasedGrpcRuntimeHarness({
-        config: leasedGrpcViewServer,
-        grpcOptions,
-        health: makeLeasedGrpcHealth(grpcOptions),
+        config: feed,
       });
       const { health, manager, runtimeCore } = harness;
 
@@ -7959,13 +7697,12 @@ describe("@effect-view-server/runtime", () => {
       expect(acquired).toBe(1);
       expect(released).toBe(1);
       expect(
-        sharedHealth.grpc?.feeds["orders"]?.leased[
-          "orders/ordersLease/leased/region=string%3A3%3Ausa"
-        ]?.subscriberCount,
+        sharedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          ?.subscriberCount,
       ).toBe(2);
       expect(
         afterFirstClose.grpc?.feeds["orders"]?.leased[
-          "orders/ordersLease/leased/region=string%3A3%3Ausa"
+          "orders/orders/leased/region=string%3A3%3Ausa"
         ]?.subscriberCount,
       ).toBe(1);
       yield* harness.close;
@@ -7974,15 +7711,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("externalizes leased gRPC row keys on public live events", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) =>
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const harness = yield* makeLeasedGrpcRuntimeHarness({
-        config: leasedGrpcViewServer,
-        grpcOptions,
-        health: makeLeasedGrpcHealth(grpcOptions),
+        config: feed,
       });
       const { manager } = harness;
 
@@ -8026,18 +7760,15 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("preserves public row-key tie-break ordering for leased gRPC feeds", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) =>
           longRunningGrpcStream([
             grpcOrderValue(`${region}-a `, 10),
             grpcOrderValue(`${region}-a!`, 10),
           ]),
       });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const harness = yield* makeLeasedGrpcRuntimeHarness({
-        config: leasedGrpcViewServer,
-        grpcOptions,
-        health: makeLeasedGrpcHealth(grpcOptions),
+        config: feed,
       });
       const { manager } = harness;
 
@@ -8087,7 +7818,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("shares leased gRPC feeds while applying grouped queries locally", () =>
     Effect.gen(function* () {
       let acquired = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         acquired: () => {
           acquired += 1;
         },
@@ -8098,10 +7829,10 @@ describe("@effect-view-server/runtime", () => {
           ]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -8195,7 +7926,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("externalizes grouped leased gRPC keys that include the topic key field", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) =>
           longRunningGrpcStream([
             grpcOrderValue(`${region}-order-1`, 10),
@@ -8203,10 +7934,10 @@ describe("@effect-view-server/runtime", () => {
           ]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -8316,35 +8047,24 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("supports leased gRPC feeds routed by the topic key", () =>
     Effect.gen(function* () {
-      const feed = grpcKeyLeasedFeed({
+      const feed = grpcKeyLeasedViewServer({
         streamForId: (id) => longRunningGrpcStream([grpcOrderValue(`${id}-customer`, 10)]),
       });
-      const grpcOptions = yield* resolveViewServerRuntimeOptions<
-        typeof keyLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersById: feed,
-          },
-        },
-      }).pipe(Effect.map((options) => options.grpcOptions));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(keyLeasedGrpcViewServer, {});
-      const health = makeViewServerGrpcHealthLedger<typeof keyLeasedGrpcViewServer.topics>({
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
         clients: {
           orders: "https://orders.example.test",
         },
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        keyLeasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
         Effect.void,
-        yield* Effect.fromNullishOr(grpcOptions),
+        grpcOptions,
         health,
       );
 
@@ -8395,34 +8115,17 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("creates stable leased feed keys for non-string route values", () =>
     Effect.gen(function* () {
-      const feed = grpcRouteEncodingLeasedFeed();
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof routeEncodingLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
-        routeEncodingLeasedGrpcViewServer,
-        {},
-      );
-      const health = makeViewServerGrpcHealthLedger<
-        typeof routeEncodingLeasedGrpcViewServer.topics
-      >({
+      const feed = grpcRouteEncodingLeasedViewServer();
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
         clients: {
           orders: "https://orders.example.test",
         },
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        routeEncodingLeasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -8451,7 +8154,7 @@ describe("@effect-view-server/runtime", () => {
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect(Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/ordersLease/leased/amount=bigDecimal%3A6%3A123.45&count=bigint%3A16%3A9007199254740993&disabled=boolean%3A5%3Afalse&flag=boolean%3A4%3Atrue&meta=object%3A28%3A6%3A%22desk%2217%3Astring%3A8%3Aequities&none=null%3A4%3Anull&plainScore=number%3A2%3A42&score=number%3A2%3A-0&tags=array%3A34%3A13%3Astring%3A4%3Afast15%3Astring%3A6%3Ashared&text=string%3A5%3Aroute&weird=object%3A53%3A7%3A%22alpha%2214%3Astring%3A5%3Afirst8%3A%22stable%2214%3Astring%3A5%3Aroute",
+        "orders/orders/leased/amount=bigDecimal%3A6%3A123.45&count=bigint%3A16%3A9007199254740993&disabled=boolean%3A5%3Afalse&flag=boolean%3A4%3Atrue&meta=object%3A28%3A6%3A%22desk%2217%3Astring%3A8%3Aequities&none=null%3A4%3Anull&plainScore=number%3A2%3A42&score=number%3A2%3A-0&tags=array%3A34%3A13%3Astring%3A4%3Afast15%3Astring%3A6%3Ashared&text=string%3A5%3Aroute&weird=object%3A53%3A7%3A%22alpha%2214%3Astring%3A5%3Afirst8%3A%22stable%2214%3Astring%3A5%3Aroute",
       ]);
       yield* subscription.close();
       yield* manager.close;
@@ -8461,19 +8164,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("externalizes grouped leased gRPC route values with public grouped keys", () =>
     Effect.gen(function* () {
-      const feed = groupedKeyEncodingLeasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["text"],
-        request: ({ text }) => ({ orderId: text }),
+      const feed = grpcGroupedKeyEncodingLeasedViewServer({
         acquire: () =>
           Stream.make(
             grpcOrderValue("route-encoding-1", 10),
             grpcOrderValue("route-encoding-2", 20),
             grpcOrderValue("route-encoding-3", 30),
           ),
-        map: ({ value }) => ({
+        map: (value) => ({
           id: value.customerId,
           ...routeEncodingValues,
           meta: {
@@ -8488,33 +8186,16 @@ describe("@effect-view-server/runtime", () => {
           weird: undefined,
         }),
       });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof groupedKeyEncodingLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
-        groupedKeyEncodingLeasedGrpcViewServer,
-        {},
-      );
-      const health = makeViewServerGrpcHealthLedger<
-        typeof groupedKeyEncodingLeasedGrpcViewServer.topics
-      >({
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
         clients: {
           orders: "https://orders.example.test",
         },
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        groupedKeyEncodingLeasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -8756,13 +8437,13 @@ describe("@effect-view-server/runtime", () => {
       const releaseCustomerReplacement = yield* Deferred.make<void>();
       const releaseStatusMove = yield* Deferred.make<void>();
       const translationStates: Array<ReadonlyMap<string, string>> = [];
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
 
       yield* Effect.acquireUseRelease(
-        makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {}),
+        makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {}),
         (runtimeCore) => {
           let subscriptionIndex = 0;
           const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
@@ -8814,7 +8495,7 @@ describe("@effect-view-server/runtime", () => {
           const health = makeLeasedGrpcHealth(grpcOptions);
           return Effect.acquireUseRelease(
             makeViewServerGrpcLeaseManager(
-              leasedGrpcViewServer,
+              grpcOptions.sourceConfig,
               runtimeCore.internalClient,
               runtimeCore.liveClient,
               fakeInternalLiveClient,
@@ -8996,46 +8677,24 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails grouped leased gRPC event streams for non-canonical public key values", () =>
     Effect.gen(function* () {
-      const feed = groupedKeyEncodingLeasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["text"],
-        request: ({ text }) => ({ orderId: text }),
+      const feed = grpcGroupedKeyEncodingLeasedViewServer({
         acquire: () => longRunningGrpcStream([grpcOrderValue("route-encoding-1", 10)]),
-        map: ({ value }) => ({
+        map: (value) => ({
           id: value.customerId,
           ...routeEncodingValues,
           weird: new Uint8Array([1]),
         }),
       });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof groupedKeyEncodingLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
-        groupedKeyEncodingLeasedGrpcViewServer,
-        {},
-      );
-      const health = makeViewServerGrpcHealthLedger<
-        typeof groupedKeyEncodingLeasedGrpcViewServer.topics
-      >({
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
         clients: {
           orders: "https://orders.example.test",
         },
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        groupedKeyEncodingLeasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9082,46 +8741,24 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails grouped leased gRPC snapshots for non-canonical public key values", () =>
     Effect.gen(function* () {
-      const feed = groupedKeyEncodingLeasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["text"],
-        request: ({ text }) => ({ orderId: text }),
+      const feed = grpcGroupedKeyEncodingLeasedViewServer({
         acquire: () => longRunningGrpcStream([grpcOrderValue("route-encoding-1", 10)]),
-        map: ({ value }) => ({
+        map: (value) => ({
           id: value.customerId,
           ...routeEncodingValues,
           weird: new Uint8Array([1]),
         }),
       });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof groupedKeyEncodingLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
-        groupedKeyEncodingLeasedGrpcViewServer,
-        {},
-      );
-      const health = makeViewServerGrpcHealthLedger<
-        typeof groupedKeyEncodingLeasedGrpcViewServer.topics
-      >({
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
         clients: {
           orders: "https://orders.example.test",
         },
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        groupedKeyEncodingLeasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9205,34 +8842,17 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects non-canonical leased gRPC route values instead of sharing a fallback key", () =>
     Effect.gen(function* () {
-      const feed = grpcRouteEncodingLeasedFeed();
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof routeEncodingLeasedGrpcViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
-        routeEncodingLeasedGrpcViewServer,
-        {},
-      );
-      const health = makeViewServerGrpcHealthLedger<
-        typeof routeEncodingLeasedGrpcViewServer.topics
-      >({
+      const feed = grpcRouteEncodingLeasedViewServer();
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
         clients: {
           orders: "https://orders.example.test",
         },
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        routeEncodingLeasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9312,7 +8932,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("opens independent leased gRPC feeds for different routes", () =>
     Effect.gen(function* () {
       const acquiredRegions: Array<string> = [];
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         acquired: (region) => {
           acquiredRegions.push(region);
         },
@@ -9320,10 +8940,10 @@ describe("@effect-view-server/runtime", () => {
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, region.length)]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9360,8 +8980,8 @@ describe("@effect-view-server/runtime", () => {
         },
       ]);
       expect(Object.keys(routeHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/ordersLease/leased/region=string%3A3%3Ausa",
-        "orders/ordersLease/leased/region=string%3A2%3Aeu",
+        "orders/orders/leased/region=string%3A3%3Ausa",
+        "orders/orders/leased/region=string%3A2%3Aeu",
       ]);
       yield* usa.close();
       yield* eu.close();
@@ -9373,14 +8993,14 @@ describe("@effect-view-server/runtime", () => {
   it.live("externalizes leased gRPC snapshot and delta live events", () =>
     Effect.gen(function* () {
       const values = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.fromQueue(values),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9456,14 +9076,14 @@ describe("@effect-view-server/runtime", () => {
   it.live("rewrites leased gRPC public row-key filters before local query execution", () =>
     Effect.gen(function* () {
       const values = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.fromQueue(values),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9549,14 +9169,14 @@ describe("@effect-view-server/runtime", () => {
   it.live("externalizes leased gRPC remove deltas when rows leave a result window", () =>
     Effect.gen(function* () {
       const values = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.fromQueue(values),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9638,11 +9258,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("passes leased gRPC runtime status events through the manager", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const statusEvent = {
         type: "status",
@@ -9682,7 +9302,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -9712,7 +9332,7 @@ describe("@effect-view-server/runtime", () => {
         let releaseCount = 0;
         const upstreamRows = yield* Queue.unbounded<GrpcOrderValueMessage>();
         const upstreamFinalized = yield* Deferred.make<void>();
-        const feed = grpcLeasedFeed({
+        const feed = grpcLeasedViewServer({
           streamForRegion: () =>
             Stream.fromQueue(upstreamRows).pipe(
               Stream.ensuring(Deferred.succeed(upstreamFinalized, undefined)),
@@ -9722,12 +9342,12 @@ describe("@effect-view-server/runtime", () => {
           }),
         });
         const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {
           subscriptionQueueCapacity: 1,
         });
         const health = makeLeasedGrpcHealth(grpcOptions);
         const manager = yield* makeViewServerGrpcLeaseManager(
-          leasedGrpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           runtimeCore.internalLiveClient,
@@ -9837,7 +9457,7 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const upstreamRows = yield* Queue.unbounded<GrpcOrderValueMessage>();
       const upstreamFinalized = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromQueue(upstreamRows).pipe(
             Stream.ensuring(Deferred.succeed(upstreamFinalized, undefined)),
@@ -9847,12 +9467,12 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {
         subscriptionQueueCapacity: 1,
       });
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -9900,9 +9520,8 @@ describe("@effect-view-server/runtime", () => {
           until: (currentHealth) =>
             currentHealth.engine.topics.orders.activeSubscriptions === 1 &&
             currentHealth.engine.topics.orders.backpressureEvents === 1 &&
-            currentHealth.grpc?.feeds.orders?.leased[
-              "orders/ordersLease/leased/region=string%3A3%3Ausa"
-            ]?.subscriberCount === 1,
+            currentHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+              ?.subscriberCount === 1,
         }),
         Effect.timeout("1 second"),
       );
@@ -9942,9 +9561,8 @@ describe("@effect-view-server/runtime", () => {
         activeSubscriptions: isolatedHealth.engine.topics.orders.activeSubscriptions,
         retainedRows: isolatedHealth.engine.topics.orders.rowCount,
         subscriberCount:
-          isolatedHealth.grpc?.feeds.orders?.leased[
-            "orders/ordersLease/leased/region=string%3A3%3Ausa"
-          ]?.subscriberCount,
+          isolatedHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            ?.subscriberCount,
         releaseCount,
         upstreamFinalizedWithPeerActive,
       }).toStrictEqual({
@@ -10002,7 +9620,7 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const failUpstream = yield* Deferred.make<void>();
       const upstreamReleased = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -10012,10 +9630,10 @@ describe("@effect-view-server/runtime", () => {
         }).pipe(Effect.andThen(Deferred.succeed(upstreamReleased, undefined)), Effect.asVoid),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -10084,7 +9702,7 @@ describe("@effect-view-server/runtime", () => {
       const rawClosed = yield* Deferred.make<void>();
       const degradeReached = yield* Deferred.make<void>();
       const allowDegrade = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -10094,7 +9712,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const baseHealth = makeLeasedGrpcHealth(grpcOptions);
       const health = {
         ...baseHealth,
@@ -10125,7 +9743,7 @@ describe("@effect-view-server/runtime", () => {
           }),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -10203,14 +9821,14 @@ describe("@effect-view-server/runtime", () => {
       const subscribeStarted = yield* Deferred.make<void>();
       const releaseSubscribe = yield* Deferred.make<void>();
       const rawClosed = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
         release: Effect.sync(() => {
           releaseCount += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -10231,7 +9849,7 @@ describe("@effect-view-server/runtime", () => {
           }),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -10275,14 +9893,14 @@ describe("@effect-view-server/runtime", () => {
       const rawCloseStarted = yield* Deferred.make<void>();
       const allowRawClose = yield* Deferred.make<void>();
       const secondCloseReturned = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
         release: Effect.sync(() => {
           releaseCount += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -10303,7 +9921,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -10366,14 +9984,14 @@ describe("@effect-view-server/runtime", () => {
         const rawCloseDefect = { _tag: "LeasedRawCloseDefect" } as const;
         const rawCloseStarted = yield* Deferred.make<void>();
         const allowRawClose = yield* Deferred.make<void>();
-        const feed = grpcLeasedFeed({
+        const feed = grpcLeasedViewServer({
           streamForRegion: () => Stream.never,
           release: Effect.sync(() => {
             releaseCount += 1;
           }),
         });
         const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeLeasedGrpcHealth(grpcOptions);
         const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
           typeof leasedGrpcViewServer.topics
@@ -10395,7 +10013,7 @@ describe("@effect-view-server/runtime", () => {
             ),
         };
         const manager = yield* makeViewServerGrpcLeaseManager(
-          leasedGrpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           fakeInternalLiveClient,
@@ -10459,7 +10077,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let releaseCount = 0;
       const releaseDefect = { _tag: "LeasedFeedReleaseDefect" } as const;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           longRunningGrpcStream([grpcOrderValue("explicit-release-defect-row", 10)]),
         release: Effect.sync(() => {
@@ -10467,10 +10085,10 @@ describe("@effect-view-server/runtime", () => {
         }).pipe(Effect.andThen(Effect.die(releaseDefect))),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -10512,19 +10130,19 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const releaseDefect = { _tag: "EngineTerminalFeedReleaseDefect" } as const;
       const upstreamRows = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.fromQueue(upstreamRows),
         release: Effect.sync(() => {
           releaseCount += 1;
         }).pipe(Effect.andThen(Effect.die(releaseDefect))),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {
         subscriptionQueueCapacity: 1,
       });
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -10619,7 +10237,7 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const releaseDefect = { _tag: "UpstreamFeedReleaseDefect" } as const;
       const failUpstream = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -10629,10 +10247,10 @@ describe("@effect-view-server/runtime", () => {
         }).pipe(Effect.andThen(Effect.die(releaseDefect))),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -10712,14 +10330,14 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let deleteCount = 0;
       let releaseCount = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.make(grpcOrderValue("exactly-once-row", 10)),
         release: Effect.sync(() => {
           releaseCount += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const runtimeDelete = runtimeCore.internalClient.delete;
       Object.defineProperty(runtimeCore.internalClient, "delete", {
         value: (topic: "orders", key: string) =>
@@ -10729,7 +10347,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -10782,7 +10400,7 @@ describe("@effect-view-server/runtime", () => {
       const rawCloseDefect = { _tag: "OverlappingRawCloseDefect" } as const;
       const releaseStarted = yield* Deferred.make<void>();
       const allowRelease = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
         release: Effect.sync(() => {
           releaseCount += 1;
@@ -10792,7 +10410,7 @@ describe("@effect-view-server/runtime", () => {
         ),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -10810,7 +10428,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -10868,7 +10486,7 @@ describe("@effect-view-server/runtime", () => {
       const releaseStarted = yield* Deferred.make<void>();
       const allowRelease = yield* Deferred.make<void>();
       const secondCloseReturned = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => longRunningGrpcStream([grpcOrderValue("manager-close-row", 10)]),
         release: Effect.sync(() => {
           releaseCount += 1;
@@ -10878,7 +10496,7 @@ describe("@effect-view-server/runtime", () => {
         ),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -10896,7 +10514,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -10947,14 +10565,14 @@ describe("@effect-view-server/runtime", () => {
       const rawCloseStarted = yield* Deferred.make<void>();
       const allowRawClose = yield* Deferred.make<void>();
       const rawEvents = yield* Queue.unbounded<never, Cause.Done>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => longRunningGrpcStream([grpcOrderValue("release-defect-row", 10)]),
         release: Effect.sync(() => {
           releaseCount += 1;
         }).pipe(Effect.andThen(Effect.die(releaseDefect))),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -10976,7 +10594,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11051,7 +10669,7 @@ describe("@effect-view-server/runtime", () => {
       const secondRawClosed = yield* Deferred.make<void>();
       const degradeReached = yield* Deferred.make<void>();
       const allowDegrade = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -11061,7 +10679,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const baseHealth = makeLeasedGrpcHealth(grpcOptions);
       const health = {
         ...baseHealth,
@@ -11105,7 +10723,7 @@ describe("@effect-view-server/runtime", () => {
           }),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11197,7 +10815,7 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const failUpstream = yield* Deferred.make<void>();
       const initialEventSeen = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -11207,10 +10825,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -11282,7 +10900,7 @@ describe("@effect-view-server/runtime", () => {
       const initialEventSeen = yield* Deferred.make<void>();
       const rawSubscriptionClosed = yield* Deferred.make<void>();
       const emitEngineTerminal = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -11292,7 +10910,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const initialSnapshot = {
         type: "snapshot",
@@ -11368,7 +10986,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11436,7 +11054,7 @@ describe("@effect-view-server/runtime", () => {
       const rawSubscriptionClosed = yield* Deferred.make<void>();
       const degradeReached = yield* Deferred.make<void>();
       const allowDegrade = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -11446,7 +11064,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const baseHealth = makeLeasedGrpcHealth(grpcOptions);
       const health = {
         ...baseHealth,
@@ -11488,7 +11106,7 @@ describe("@effect-view-server/runtime", () => {
           }),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11539,7 +11157,7 @@ describe("@effect-view-server/runtime", () => {
       const rawCloseCalls = yield* Queue.unbounded<void>();
       const emittedEvents = yield* Queue.unbounded<unknown>();
       const degradeReached = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -11549,7 +11167,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const baseHealth = makeLeasedGrpcHealth(grpcOptions);
       const health = {
         ...baseHealth,
@@ -11588,7 +11206,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11643,7 +11261,7 @@ describe("@effect-view-server/runtime", () => {
       const allowRawClose = yield* Deferred.make<void>();
       const rawCloseCalls = yield* Queue.unbounded<void>();
       const emittedEvents = yield* Queue.unbounded<unknown>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () =>
           Stream.fromEffect(
             Deferred.await(failUpstream).pipe(Effect.andThen(Effect.fail("upstream down"))),
@@ -11653,7 +11271,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const malformedGroupedSnapshot = {
         type: "snapshot",
@@ -11685,7 +11303,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11763,14 +11381,14 @@ describe("@effect-view-server/runtime", () => {
         totalRows: 0,
       } as const;
       const rawEvents = yield* Queue.unbounded<typeof malformedGroupedDelta, Cause.Done>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
         release: Effect.sync(() => {
           releaseCount += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -11797,7 +11415,7 @@ describe("@effect-view-server/runtime", () => {
           }),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11878,14 +11496,14 @@ describe("@effect-view-server/runtime", () => {
         totalRows: 0,
       } as const;
       const rawEvents = yield* Queue.unbounded<typeof malformedGroupedDelta, Cause.Done>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
         release: Effect.sync(() => {
           releaseCount += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -11912,7 +11530,7 @@ describe("@effect-view-server/runtime", () => {
           }),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -11972,17 +11590,17 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let releaseCount = 0;
       const initialEventSeen = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
         release: Effect.sync(() => {
           releaseCount += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -12029,11 +11647,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("delivers leased terminal status when the runtime stream has no initial event", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.empty,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -12065,7 +11683,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -12099,11 +11717,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("passes through malformed internal leased rows without rewriting non-string keys", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const malformedSnapshot = {
         type: "snapshot",
@@ -12138,7 +11756,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -12181,11 +11799,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("keeps non-string leased row-key predicates unchanged in internal runtime queries", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
         typeof leasedGrpcViewServer.topics
@@ -12245,7 +11863,7 @@ describe("@effect-view-server/runtime", () => {
           ),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -12299,14 +11917,14 @@ describe("@effect-view-server/runtime", () => {
   it.live("releases leased gRPC leases when internal subscription creation fails", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         release: Effect.sync(() => {
           released += 1;
         }),
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const subscriptionFailure: ViewServerRuntimeError = {
         _tag: "ViewServerRuntimeError",
@@ -12324,7 +11942,7 @@ describe("@effect-view-server/runtime", () => {
         subscribeRuntimeObservedInternal: () => Effect.fail(subscriptionFailure),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -12360,14 +11978,14 @@ describe("@effect-view-server/runtime", () => {
   it.live("keeps leased gRPC leases alive when an additional internal subscription fails", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         release: Effect.sync(() => {
           released += 1;
         }),
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const subscriptionFailure: ViewServerRuntimeError = {
         _tag: "ViewServerRuntimeError",
@@ -12393,7 +12011,7 @@ describe("@effect-view-server/runtime", () => {
         subscribeObservedInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         fakeInternalLiveClient,
@@ -12415,9 +12033,8 @@ describe("@effect-view-server/runtime", () => {
         secondSubscribeError,
         released,
         subscriberCount:
-          activeHealth.grpc?.feeds["orders"]?.leased[
-            "orders/ordersLease/leased/region=string%3A3%3Ausa"
-          ]?.subscriberCount,
+          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            ?.subscriberCount,
       }).toStrictEqual({
         secondSubscribeError: subscriptionFailure,
         released: 0,
@@ -12439,11 +12056,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("isolates identical public leased row keys across different routes", () =>
     Effect.gen(function* () {
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: ({ region }) => ({ orderId: region }),
         acquire: () => longRunningGrpcStream([grpcOrderValue("shared-order", 10)]),
         map: ({ value, route }) => ({
@@ -12456,10 +12069,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -12517,11 +12130,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       const usaQueue = yield* Queue.unbounded<GrpcOrderValueMessage>();
       const euQueue = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: ({ region }) => ({ orderId: region }),
         acquire: ({ route }) =>
           route.region === "usa" ? Stream.fromQueue(usaQueue) : Stream.fromQueue(euQueue),
@@ -12535,10 +12144,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -12640,7 +12249,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("shares one leased gRPC feed while applying different local filters", () =>
     Effect.gen(function* () {
       let acquired = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         acquired: () => {
           acquired += 1;
         },
@@ -12651,10 +12260,10 @@ describe("@effect-view-server/runtime", () => {
           ]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -12738,14 +12347,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects leased gRPC subscriptions without exact route equality", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -12777,46 +12386,10 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("maps leased gRPC acquisition topic metadata failures to runtime unavailable", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
+      const localViewServer = grpcLeasedViewServer({
+        streamForRegion: () => Stream.never,
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-      const grpcOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
@@ -12856,48 +12429,33 @@ describe("@effect-view-server/runtime", () => {
         customerId: Schema.String,
         price: Schema.Number,
       });
+      let acquiredRoute: bigint | null = null;
       const localViewServer = defineViewServerConfig({
+        grpc: { clients: grpcClients },
         topics: {
-          orders: {
+          orders: grpcTopicSources.leased({
             schema: BigIntRouteOrder,
             key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["accountId"],
+            client: "orders",
+            method: "streamOrders",
+            routeBy: ["accountId"],
+            request: ({ accountId }) => ({ orderId: accountId.toString() }),
+            acquire: ({ route }) => {
+              acquiredRoute = route.accountId;
+              return Stream.never;
+            },
+            map: ({ value, route }) => ({
+              id: `${route.accountId}:${value.customerId}`,
+              accountId: route.accountId,
+              customerId: value.customerId,
+              price: value.price,
             }),
-          },
+          }),
         },
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      let acquiredRoute: bigint | null = null;
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["accountId"],
-        request: ({ accountId }) => ({ orderId: accountId.toString() }),
-        acquire: ({ route }) => {
-          acquiredRoute = route.accountId;
-          return Stream.never;
-        },
-        map: ({ value, route }) => ({
-          id: `${route.accountId}:${value.customerId}`,
-          accountId: route.accountId,
-          customerId: value.customerId,
-          price: value.price,
-        }),
-      });
-      const grpcOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const grpcOptions = yield* resolveViewServerRuntimeOptions(localViewServer).pipe(
+        Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)),
+      );
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
@@ -12948,14 +12506,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects decoded leased gRPC route values that fail topic schema validation", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -12987,52 +12545,17 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects leased gRPC route extraction when query shape or route schema is invalid", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
+      const localViewServer = grpcLeasedViewServer({
+        streamForRegion: () => Stream.never,
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const missingRouteFieldFeed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
+      const missingRouteFieldFeed = yield* Effect.fromNullishOr(grpcOptions.feeds["orders"]);
       Object.defineProperty(localViewServer.topics.orders.grpcSource, "routeBy", {
         value: ["missing"],
       });
       Object.defineProperty(missingRouteFieldFeed, "routeBy", {
         value: ["missing"],
       });
-      const grpcOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: missingRouteFieldFeed,
-          },
-        },
-      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
@@ -13086,46 +12609,10 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects leased gRPC route extraction when topic source metadata is corrupted", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
+      const localViewServer = grpcLeasedViewServer({
+        streamForRegion: () => Stream.never,
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-      const grpcOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       Object.defineProperty(localViewServer.topics.orders, "source", {
         value: grpcSourceMarkers.materialized(),
       });
@@ -13184,46 +12671,10 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("rejects leased gRPC route extraction when route validation metadata disappears", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
+      const localViewServer = grpcLeasedViewServer({
+        streamForRegion: () => Stream.never,
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-      const grpcOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
@@ -13284,21 +12735,22 @@ describe("@effect-view-server/runtime", () => {
     "fails leased gRPC subscription when feed route metadata changes during acquisition",
     () =>
       Effect.gen(function* () {
-        const feed = grpcLeasedFeed({
+        const feed = grpcLeasedViewServer({
           streamForRegion: () => Stream.empty,
         });
         const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+        const resolvedFeed = yield* Effect.fromNullishOr(grpcOptions.feeds["orders"]);
         let routeByReads = 0;
-        Object.defineProperty(feed, "routeBy", {
+        Object.defineProperty(resolvedFeed, "routeBy", {
           get: () => {
             routeByReads += 1;
             return routeByReads <= 2 ? ["region"] : ["region", "status"];
           },
         });
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeLeasedGrpcHealth(grpcOptions);
         const manager = yield* makeViewServerGrpcLeaseManager(
-          leasedGrpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           runtimeCore.internalLiveClient,
@@ -13333,7 +12785,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("fails leased gRPC subscription when acquire fails before returning a stream", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => {
           throw new Error("leased acquire exploded");
         },
@@ -13342,10 +12794,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -13368,7 +12820,7 @@ describe("@effect-view-server/runtime", () => {
           _tag: "ViewServerRuntimeError",
           code: "RuntimeUnavailable",
           topic: "orders",
-          message: "gRPC leased feed acquire failed for ordersLease",
+          message: "gRPC leased feed acquire failed for orders",
         },
         released: 1,
         leasedFeeds: [],
@@ -13386,7 +12838,7 @@ describe("@effect-view-server/runtime", () => {
         let releaseCount = 0;
         const acquireFailure = new Error("leased acquire exploded before stream creation");
         const releaseDefect = { _tag: "AcquireRollbackReleaseDefect" } as const;
-        const feed = grpcLeasedFeed({
+        const feed = grpcLeasedViewServer({
           streamForRegion: () => {
             acquireCount += 1;
             if (acquireCount === 1) {
@@ -13400,10 +12852,10 @@ describe("@effect-view-server/runtime", () => {
           }),
         });
         const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeLeasedGrpcHealth(grpcOptions);
         const manager = yield* makeViewServerGrpcLeaseManager(
-          leasedGrpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           runtimeCore.internalLiveClient,
@@ -13439,7 +12891,7 @@ describe("@effect-view-server/runtime", () => {
           _tag: "ViewServerRuntimeError",
           code: "RuntimeUnavailable",
           topic: "orders",
-          message: "gRPC leased feed acquire failed for ordersLease",
+          message: "gRPC leased feed acquire failed for orders",
         });
         expect(failedAcquireDefect).toBe(releaseDefect);
         expect({
@@ -13450,7 +12902,7 @@ describe("@effect-view-server/runtime", () => {
           failedLeaseKeys: Object.keys(afterFailedAcquire.grpc?.feeds.orders?.leased ?? {}),
           freshSubscriberCount:
             afterFreshAcquire.grpc?.feeds.orders?.leased[
-              "orders/ordersLease/leased/region=string%3A3%3Ausa"
+              "orders/orders/leased/region=string%3A3%3Ausa"
             ]?.subscriberCount,
           freshCloseSucceeded: Exit.isSuccess(freshCloseExit),
           managerCloseSucceeded: Exit.isSuccess(managerCloseExit),
@@ -13469,14 +12921,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails leased gRPC subscription when client creation throws", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -13496,7 +12948,7 @@ describe("@effect-view-server/runtime", () => {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
         topic: "orders",
-        message: "gRPC leased client creation failed for ordersLease",
+        message: "gRPC leased client creation failed for orders",
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -13505,11 +12957,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails leased gRPC subscription when request creation throws", () =>
     Effect.gen(function* () {
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: () => {
           throw new Error("request exploded");
         },
@@ -13524,10 +12972,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -13544,7 +12992,7 @@ describe("@effect-view-server/runtime", () => {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
         topic: "orders",
-        message: "gRPC leased feed request creation failed for ordersLease",
+        message: "gRPC leased feed request creation failed for orders",
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -13556,56 +13004,21 @@ describe("@effect-view-server/runtime", () => {
     () =>
       Effect.gen(function* () {
         let released = 0;
-        const localViewServer = defineViewServerConfig({
-          topics: {
-            orders: {
-              schema: GrpcOrder,
-              key: "id",
-              grpcSource: grpcSourceMarkers.leased({
-                routeBy: ["region"],
-              }),
-            },
-          },
+        const localViewServer = grpcLeasedViewServer({
+          streamForRegion: () => Stream.never,
+          release: Effect.sync(() => {
+            released += 1;
+          }),
         });
-        const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-        const feed = localGrpcFeed.leasedFeed({
-          topic: "orders",
-          client: "orders",
-          method: "streamOrders",
-          routeBy: ["region"],
-          request: ({ region }) => {
+        Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
+          value: ({ region }: { readonly region: string }) => {
             Object.defineProperty(localViewServer.topics, "orders", {
               value: undefined,
             });
             return { orderId: region };
           },
-          acquire: () => Stream.never,
-          release: () =>
-            Effect.sync(() => {
-              released += 1;
-            }),
-          map: ({ value, route }) => ({
-            id: `${route.region}:${value.customerId}`,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region: route.region,
-            updatedAt: value.updatedAt,
-          }),
         });
-        const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-          typeof localViewServer.topics,
-          Record<string, string>,
-          typeof grpcClients
-        >({
-          grpc: {
-            clients: grpcClients,
-            feeds: {
-              ordersLease: feed,
-            },
-          },
-        });
-        const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
         const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
           clients: grpcOptions.clientBaseUrls,
@@ -13635,7 +13048,7 @@ describe("@effect-view-server/runtime", () => {
             _tag: "ViewServerRuntimeError",
             code: "RuntimeUnavailable",
             topic: "orders",
-            message: "gRPC leased feed ordersLease references unknown topic orders",
+            message: "gRPC leased feed orders references unknown topic orders",
           },
           released: 1,
           leasedFeedKeys: [],
@@ -13650,56 +13063,21 @@ describe("@effect-view-server/runtime", () => {
     () =>
       Effect.gen(function* () {
         let released = 0;
-        const localViewServer = defineViewServerConfig({
-          topics: {
-            orders: {
-              schema: GrpcOrder,
-              key: "id",
-              grpcSource: grpcSourceMarkers.leased({
-                routeBy: ["region"],
-              }),
-            },
-          },
+        const localViewServer = grpcLeasedViewServer({
+          streamForRegion: () => Stream.never,
+          release: Effect.sync(() => {
+            released += 1;
+          }),
         });
-        const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-        const feed = localGrpcFeed.leasedFeed({
-          topic: "orders",
-          client: "orders",
-          method: "streamOrders",
-          routeBy: ["region"],
-          request: ({ region }) => {
+        Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
+          value: ({ region }: { readonly region: string }) => {
             Object.defineProperty(localViewServer.topics, "orders", {
               value: undefined,
             });
             return { orderId: region };
           },
-          acquire: () => Stream.never,
-          release: () =>
-            Effect.sync(() => {
-              released += 1;
-            }),
-          map: ({ value, route }) => ({
-            id: `${route.region}:${value.customerId}`,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region: route.region,
-            updatedAt: value.updatedAt,
-          }),
         });
-        const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-          typeof localViewServer.topics,
-          Record<string, string>,
-          typeof grpcClients
-        >({
-          grpc: {
-            clients: grpcClients,
-            feeds: {
-              ordersLease: feed,
-            },
-          },
-        });
-        const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
         const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
           clients: grpcOptions.clientBaseUrls,
@@ -13729,7 +13107,7 @@ describe("@effect-view-server/runtime", () => {
             _tag: "ViewServerRuntimeError",
             code: "RuntimeUnavailable",
             topic: "orders",
-            message: "gRPC leased feed ordersLease references unknown topic orders",
+            message: "gRPC leased feed orders references unknown topic orders",
           },
           released: 1,
           leasedFeedKeys: [],
@@ -13741,48 +13119,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks leased gRPC cleanup degraded when runtime topic disappears before close", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
+      const localViewServer = grpcLeasedViewServer({
+        streamForRegion: (region) =>
+          longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: ({ request }) =>
-          longRunningGrpcStream([grpcOrderValue(`${request.orderId}-order-1`, 10)]),
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
@@ -13805,10 +13146,9 @@ describe("@effect-view-server/runtime", () => {
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect(
-        currentHealth.grpc?.feeds["orders"]?.leased[
-          "orders/ordersLease/leased/region=string%3A3%3Ausa"
-        ]?.lastError,
-      ).toBe("gRPC leased feed row cleanup failed for ordersLease");
+        currentHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          ?.lastError,
+      ).toBe("gRPC leased feed row cleanup failed for orders");
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -13817,14 +13157,9 @@ describe("@effect-view-server/runtime", () => {
   it.live("fails leased gRPC subscription when acquire does not return a Stream", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: ({ region }) => ({ orderId: region }),
-        // @ts-expect-error defensive runtime-boundary test intentionally returns a non-stream.
-        acquire: () => "not-a-stream",
+        acquire: () => Stream.never,
         release: () =>
           Effect.sync(() => {
             released += 1;
@@ -13838,11 +13173,14 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
+      Object.defineProperty(feed.topics.orders.grpcSource, "acquire", {
+        value: () => "not-a-stream",
+      });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -13865,7 +13203,7 @@ describe("@effect-view-server/runtime", () => {
           _tag: "ViewServerRuntimeError",
           code: "RuntimeUnavailable",
           topic: "orders",
-          message: "gRPC leased feed acquire did not return a Stream for ordersLease",
+          message: "gRPC leased feed acquire did not return a Stream for orders",
         },
         released: 1,
         leasedFeeds: [],
@@ -13877,11 +13215,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when runtime publishMany violates the client contract", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) => Stream.make(grpcOrderValue(`${region}-order-1`, 10)),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       Object.defineProperty(runtimeCore.internalClient, "publishManyDecodedRowsWithStorageKeys", {
         value: () => "not-an-effect",
       });
@@ -13891,7 +13229,7 @@ describe("@effect-view-server/runtime", () => {
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -13913,7 +13251,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease failed: ViewServerGrpcIngressError: Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ordersLease",
+        "gRPC leased feed orders failed: ViewServerGrpcIngressError: Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed orders",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
@@ -13930,11 +13268,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when runtime publishMany fails", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) => Stream.make(grpcOrderValue(`${region}-order-1`, 10)),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       Object.defineProperty(runtimeCore.internalClient, "publishManyDecodedRowsWithStorageKeys", {
         value: () =>
           Effect.fail(
@@ -13949,7 +13287,7 @@ describe("@effect-view-server/runtime", () => {
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -13971,7 +13309,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease failed: ViewServerGrpcIngressError: gRPC leased feed publish failed for ordersLease",
+        "gRPC leased feed orders failed: ViewServerGrpcIngressError: gRPC leased feed publish failed for orders",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
@@ -13989,7 +13327,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("keeps leased gRPC close total when runtime delete violates the client contract", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         release: Effect.sync(() => {
           released += 1;
         }),
@@ -13997,10 +13335,10 @@ describe("@effect-view-server/runtime", () => {
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14020,16 +13358,14 @@ describe("@effect-view-server/runtime", () => {
       expect({
         released,
         leasedFeed:
-          idleHealth.grpc?.feeds["orders"]?.leased[
-            "orders/ordersLease/leased/region=string%3A3%3Ausa"
-          ],
+          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"],
       }).toStrictEqual({
         released: 1,
         leasedFeed: {
           status: "degraded",
           lifecycle: "leased",
-          feedName: "ordersLease",
-          feedKey: "orders/ordersLease/leased/region=string%3A3%3Ausa",
+          feedName: "orders",
+          feedKey: "orders/orders/leased/region=string%3A3%3Ausa",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 1,
@@ -14040,10 +13376,9 @@ describe("@effect-view-server/runtime", () => {
           publishFailuresPerSecond: 0,
           reconnects: 0,
           lastMessageAt:
-            idleHealth.grpc?.feeds["orders"]?.leased[
-              "orders/ordersLease/leased/region=string%3A3%3Ausa"
-            ]?.lastMessageAt,
-          lastError: "gRPC leased feed row cleanup failed for ordersLease",
+            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+              ?.lastMessageAt,
+          lastError: "gRPC leased feed row cleanup failed for orders",
         },
       });
       yield* manager.close;
@@ -14054,7 +13389,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("keeps leased gRPC close total when runtime delete fails", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         release: Effect.sync(() => {
           released += 1;
         }),
@@ -14062,10 +13397,10 @@ describe("@effect-view-server/runtime", () => {
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14090,16 +13425,14 @@ describe("@effect-view-server/runtime", () => {
       expect({
         released,
         leasedFeed:
-          idleHealth.grpc?.feeds["orders"]?.leased[
-            "orders/ordersLease/leased/region=string%3A3%3Ausa"
-          ],
+          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"],
       }).toStrictEqual({
         released: 1,
         leasedFeed: {
           status: "degraded",
           lifecycle: "leased",
-          feedName: "ordersLease",
-          feedKey: "orders/ordersLease/leased/region=string%3A3%3Ausa",
+          feedName: "orders",
+          feedKey: "orders/orders/leased/region=string%3A3%3Ausa",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 1,
@@ -14110,10 +13443,9 @@ describe("@effect-view-server/runtime", () => {
           publishFailuresPerSecond: 0,
           reconnects: 0,
           lastMessageAt:
-            idleHealth.grpc?.feeds["orders"]?.leased[
-              "orders/ordersLease/leased/region=string%3A3%3Ausa"
-            ]?.lastMessageAt,
-          lastError: "gRPC leased feed row cleanup failed for ordersLease",
+            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+              ?.lastMessageAt,
+          lastError: "gRPC leased feed row cleanup failed for orders",
         },
       });
       yield* manager.close;
@@ -14123,31 +13455,30 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails leased gRPC subscription when the client configuration is missing", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const resolvedOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const grpcOptions = {
+        ...resolvedOptions,
+        clients: {},
+        clientBaseUrls: {},
+      };
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
+        resolvedOptions.sourceConfig,
+        {},
+      );
       const health = makeViewServerGrpcHealthLedger<typeof leasedGrpcViewServer.topics>({
         clients: {},
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        resolvedOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
         Effect.void,
-        {
-          clients: {},
-          clientBaseUrls: {},
-          feeds: {
-            ordersLease: feed,
-          },
-          materializedReconnect: {
-            delay: "1 second",
-            maxReconnects: 0,
-          },
-        },
+        grpcOptions,
         health,
       );
 
@@ -14159,7 +13490,7 @@ describe("@effect-view-server/runtime", () => {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
         topic: "orders",
-        message: "gRPC leased feed ordersLease references missing client: orders",
+        message: "gRPC leased feed orders references missing client: orders",
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -14168,28 +13499,29 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails leased gRPC subscription when the client URL is unresolved", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const resolvedOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const grpcOptions = {
+        ...resolvedOptions,
+        clientBaseUrls: {},
+      };
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
+        resolvedOptions.sourceConfig,
+        {},
+      );
       const health = makeViewServerGrpcHealthLedger<typeof leasedGrpcViewServer.topics>({
         clients: {},
         feeds: {},
       });
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        resolvedOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
         Effect.void,
-        {
-          clients: grpcClients,
-          clientBaseUrls: {},
-          feeds: {
-            ordersLease: feed,
-          },
-          materializedReconnect: fastGrpcMaterializedReconnect,
-        },
+        grpcOptions,
         health,
       );
 
@@ -14201,7 +13533,7 @@ describe("@effect-view-server/runtime", () => {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
         topic: "orders",
-        message: "gRPC leased feed ordersLease references unresolved client URL: orders",
+        message: "gRPC leased feed orders references unresolved client URL: orders",
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -14210,56 +13542,16 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when mapped rows have a non-string row key", () =>
     Effect.gen(function* () {
-      const localViewServer = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
-          },
-        },
-      });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
       const firstValue = yield* Deferred.make<GrpcOrderValueMessage>();
-      const feed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () =>
+      const localViewServer = grpcLeasedViewServer({
+        streamForRegion: () =>
           Stream.fromEffect(Deferred.await(firstValue)).pipe(Stream.concat(Stream.never)),
-        map: ({ value, route }) => ({
-          id: value.customerId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
       });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: feed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const degradationMessages: Array<string> = [];
       const health = captureLeasedGrpcDegradation(
-        makeViewServerGrpcHealthLedger({
-          clients: grpcOptions.clientBaseUrls,
-          feeds: {},
-        }),
+        makeLeasedGrpcHealth(grpcOptions),
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
@@ -14290,16 +13582,16 @@ describe("@effect-view-server/runtime", () => {
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) =>
             degradationMessages.length > 0 &&
-            Object.keys(currentHealth.grpc?.feeds.orders?.leased ?? {}).length === 0,
+            Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}).length === 0,
         }),
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease failed: ViewServerGrpcIngressError: gRPC leased feed row key price for orders is not a string",
+        "gRPC leased feed orders failed: ViewServerGrpcIngressError: gRPC leased feed row key price for orders is not a string",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
-        leasedFeedKeys: Object.keys(cleanedHealth.grpc?.feeds.orders?.leased ?? {}),
+        leasedFeedKeys: Object.keys(cleanedHealth.grpc?.feeds["orders"]?.leased ?? {}),
       }).toStrictEqual({
         runtimeStatus: "ready",
         leasedFeedKeys: [],
@@ -14314,7 +13606,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let released = 0;
       const streamInterrupted = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         release: Effect.sync(() => {
           released += 1;
         }),
@@ -14324,10 +13616,10 @@ describe("@effect-view-server/runtime", () => {
           ),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14418,11 +13710,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("closes leased gRPC feeds when release callback throws", () =>
     Effect.gen(function* () {
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: ({ region }) => ({ orderId: region }),
         acquire: ({ route }) =>
           longRunningGrpcStream([grpcOrderValue(`${route.region}-order-1`, 10)]),
@@ -14439,10 +13727,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14475,18 +13763,18 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("closes leased gRPC feeds when release callback returns a non-Effect", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) =>
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
-      Object.defineProperty(feed, "release", {
+      Object.defineProperty(feed.topics.orders.grpcSource, "release", {
         value: () => "not-an-effect",
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14519,11 +13807,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when mapping throws", () =>
     Effect.gen(function* () {
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: ({ region }) => ({ orderId: region }),
         acquire: () => Stream.make(grpcOrderValue("bad-map", 10)).pipe(Stream.concat(Stream.never)),
         map: () => {
@@ -14531,14 +13815,14 @@ describe("@effect-view-server/runtime", () => {
         },
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const degradationMessages: Array<string> = [];
       const health = captureLeasedGrpcDegradation(
         makeLeasedGrpcHealth(grpcOptions),
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14560,7 +13844,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease failed: ViewServerGrpcIngressError: gRPC leased feed mapping failed for ordersLease",
+        "gRPC leased feed orders failed: ViewServerGrpcIngressError: gRPC leased feed mapping failed for orders",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
@@ -14577,11 +13861,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when mapping returns an invalid row", () =>
     Effect.gen(function* () {
-      const feed = leasedGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
+      const feed = grpcLeasedViewServerFromCallbacks({
         request: ({ region }) => ({ orderId: region }),
         acquire: () =>
           Stream.make(grpcOrderValue("invalid-row", 10)).pipe(Stream.concat(Stream.never)),
@@ -14599,14 +13879,14 @@ describe("@effect-view-server/runtime", () => {
         },
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const degradationMessages: Array<string> = [];
       const health = captureLeasedGrpcDegradation(
         makeLeasedGrpcHealth(grpcOptions),
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14628,7 +13908,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease failed: ViewServerGrpcIngressError: gRPC leased feed mapping produced an invalid row for ordersLease",
+        "gRPC leased feed orders failed: ViewServerGrpcIngressError: gRPC leased feed mapping produced an invalid row for orders",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
@@ -14645,18 +13925,18 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when its upstream stream fails", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.fail("upstream down"),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const degradationMessages: Array<string> = [];
       const health = captureLeasedGrpcDegradation(
         makeLeasedGrpcHealth(grpcOptions),
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14678,7 +13958,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease failed: ViewServerGrpcIngressError: gRPC leased feed stream failed for ordersLease",
+        "gRPC leased feed orders failed: ViewServerGrpcIngressError: gRPC leased feed stream failed for orders",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
@@ -14697,14 +13977,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("externalizes leased gRPC cleanup remove deltas after upstream completion", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) => Stream.make(grpcOrderValue(`${region}-order-1`, 10)),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14797,17 +14077,17 @@ describe("@effect-view-server/runtime", () => {
   it.live("keeps leased gRPC subscribers informed when upstream cleanup delete fails", () =>
     Effect.gen(function* () {
       const completeUpstream = yield* Deferred.make<void>();
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) =>
           Stream.make(grpcOrderValue(`${region}-order-1`, 10)).pipe(
             Stream.concat(Stream.fromEffect(Deferred.await(completeUpstream)).pipe(Stream.drain)),
           ),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14880,15 +14160,14 @@ describe("@effect-view-server/runtime", () => {
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) =>
             currentHealth.grpc?.feeds["orders"]?.leased[
-              "orders/ordersLease/leased/region=string%3A3%3Ausa"
+              "orders/orders/leased/region=string%3A3%3Ausa"
             ]?.rowCount === 1,
         }),
       );
       expect(
-        degradedHealth.grpc?.feeds["orders"]?.leased[
-          "orders/ordersLease/leased/region=string%3A3%3Ausa"
-        ]?.lastError,
-      ).toContain("gRPC leased feed row cleanup failed for ordersLease");
+        degradedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          ?.lastError,
+      ).toContain("gRPC leased feed row cleanup failed for orders");
 
       yield* subscription.close();
       yield* Fiber.interrupt(eventsFiber);
@@ -14899,18 +14178,18 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("cleans a leased gRPC feed when upstream self-interrupts", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.fromEffect(Effect.interrupt),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const degradationMessages: Array<string> = [];
       const health = captureLeasedGrpcDegradation(
         makeLeasedGrpcHealth(grpcOptions),
         degradationMessages,
       );
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -14932,7 +14211,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(degradationMessages).toStrictEqual([
-        "gRPC leased feed ordersLease interrupted unexpectedly.",
+        "gRPC leased feed orders interrupted unexpectedly.",
       ]);
       expect({
         runtimeStatus: cleanedHealth.status,
@@ -14991,50 +14270,34 @@ describe("@effect-view-server/runtime", () => {
   it.live("delegates non-leased topics through the gRPC lease manager", () =>
     Effect.gen(function* () {
       const localViewServer = defineViewServerConfig({
+        grpc: { clients: grpcClients },
         topics: {
-          orders: {
+          orders: grpcTopicSources.leased({
             schema: GrpcOrder,
             key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
+            client: "orders",
+            method: "streamOrders",
+            routeBy: ["region"],
+            request: ({ region }) => ({ orderId: region }),
+            acquire: () => Stream.never,
+            map: ({ value, route }) => ({
+              id: `${route.region}:${value.customerId}`,
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region: route.region,
+              updatedAt: value.updatedAt,
             }),
-          },
+          }),
           audit: {
             schema: Order,
             key: "id",
           },
         },
       });
-      const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-      const mixedLeaseFeed = localGrpcFeed.leasedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
-        routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () => Stream.never,
-        map: ({ value, route }) => ({
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        }),
-      });
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions<
-        typeof localViewServer.topics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersLease: mixedLeaseFeed,
-          },
-        },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const grpcOptions = yield* resolveViewServerRuntimeOptions(localViewServer).pipe(
+        Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)),
+      );
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
@@ -15117,17 +14380,17 @@ describe("@effect-view-server/runtime", () => {
   it.live("cleans completed leased feeds and allows later subscribers to reacquire", () =>
     Effect.gen(function* () {
       let released = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         streamForRegion: (region) => Stream.make(grpcOrderValue(`${region}-order-1`, 10)),
         release: Effect.sync(() => {
           released += 1;
         }),
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         runtimeCore.liveClient,
         runtimeCore.internalLiveClient,
@@ -15182,14 +14445,14 @@ describe("@effect-view-server/runtime", () => {
     "delivers terminal status when a leased gRPC stream completes before publishing rows",
     () =>
       Effect.gen(function* () {
-        const feed = grpcLeasedFeed({
+        const feed = grpcLeasedViewServer({
           streamForRegion: () => Stream.empty,
         });
         const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeLeasedGrpcHealth(grpcOptions);
         const manager = yield* makeViewServerGrpcLeaseManager(
-          leasedGrpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           runtimeCore.liveClient,
           runtimeCore.internalLiveClient,
@@ -15254,12 +14517,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed degraded when stream completion exhausts reconnects", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.make(grpcOrderValue("order-1", 10)));
-      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
+      const feed = grpcMaterializedViewServer(Stream.make(grpcOrderValue("order-1", 10)));
       const harness = yield* makeMaterializedGrpcRuntimeHarness({
-        config: grpcViewServer,
-        grpcOptions,
-        health: makeGrpcHealth(grpcOptions),
+        config: feed,
+        grpc: {
+          materializedReconnect: fastGrpcMaterializedReconnect,
+        },
       });
 
       const degradedHealth = yield* readGrpcHealthOverlayNow(
@@ -15273,14 +14536,14 @@ describe("@effect-view-server/runtime", () => {
             return (
               feedHealth?.status === "degraded" &&
               feedHealth.reconnects === 3 &&
-              feedHealth.lastError === "gRPC feed ordersFeed completed unexpectedly."
+              feedHealth.lastError === "gRPC feed orders completed unexpectedly."
             );
           },
         }),
       );
 
       expect(grpcHealthFeed(degradedHealth)?.lastError).toBe(
-        "gRPC feed ordersFeed completed unexpectedly.",
+        "gRPC feed orders completed unexpectedly.",
       );
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(3);
       expect(grpcHealthClient(degradedHealth)?.activeFeeds).toBe(0);
@@ -15297,10 +14560,7 @@ describe("@effect-view-server/runtime", () => {
           Stream.fromEffect(Effect.sleep("20 millis")).pipe(Stream.drain),
           Stream.fromEffect(Effect.sleep("20 millis")).pipe(Stream.drain),
         ];
-        const feed = grpcFeed.materializedFeed({
-          topic: "orders",
-          client: "orders",
-          method: "streamOrders",
+        const feed = grpcMaterializedViewServerFromCallbacks({
           request: () => ({ orderId: "all" }),
           acquire: () => {
             const stream = streams[acquireCount] ?? Stream.never;
@@ -15316,27 +14576,14 @@ describe("@effect-view-server/runtime", () => {
             updatedAt: value.updatedAt,
           }),
         });
-        const options = yield* resolveViewServerRuntimeOptions<
-          GrpcTopics,
-          Record<string, string>,
-          typeof grpcClients
-        >({
+        const harness = yield* makeMaterializedGrpcRuntimeHarness({
+          config: feed,
           grpc: {
-            clients: grpcClients,
-            feeds: {
-              ordersFeed: feed,
-            },
             materializedReconnect: {
               delay: "10 millis",
               maxReconnects: 1,
             },
           },
-        });
-        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-        const harness = yield* makeMaterializedGrpcRuntimeHarness({
-          config: grpcViewServer,
-          grpcOptions,
-          health: makeGrpcHealth(grpcOptions),
         });
 
         const degradedHealth = yield* readGrpcHealthOverlayNow(
@@ -15350,7 +14597,7 @@ describe("@effect-view-server/runtime", () => {
         );
 
         expect(grpcHealthFeed(degradedHealth)?.lastError).toBe(
-          "gRPC feed ordersFeed completed unexpectedly.",
+          "gRPC feed orders completed unexpectedly.",
         );
         expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(1);
         expect(acquireCount).toBe(2);
@@ -15362,10 +14609,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let acquireCount = 0;
       const streams = [Stream.empty, Stream.fail("upstream down"), Stream.never];
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => {
           const stream = streams[acquireCount] ?? Stream.never;
@@ -15381,27 +14625,14 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      const options = yield* resolveViewServerRuntimeOptions<
-        GrpcTopics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
+      const harness = yield* makeMaterializedGrpcRuntimeHarness({
+        config: feed,
         grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: feed,
-          },
           materializedReconnect: {
             delay: "10 millis",
             maxReconnects: 1,
           },
         },
-      });
-      const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const harness = yield* makeMaterializedGrpcRuntimeHarness({
-        config: grpcViewServer,
-        grpcOptions,
-        health: makeGrpcHealth(grpcOptions),
       });
 
       const degradedHealth = yield* readGrpcHealthOverlayNow(
@@ -15420,8 +14651,7 @@ describe("@effect-view-server/runtime", () => {
         reconnects: grpcHealthFeed(degradedHealth)?.reconnects,
       }).toStrictEqual({
         acquireCount: 2,
-        lastError:
-          "gRPC feed ordersFeed failed: gRPC feed stream failed for ordersFeed: upstream down",
+        lastError: "gRPC feed orders failed: gRPC feed stream failed for orders: upstream down",
         reconnects: 1,
       });
       yield* harness.close;
@@ -15430,12 +14660,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed stopping when the stream is interrupted", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.failCause(Cause.interrupt()));
-      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
+      const feed = grpcMaterializedViewServer(Stream.failCause(Cause.interrupt()));
       const harness = yield* makeMaterializedGrpcRuntimeHarness({
-        config: grpcViewServer,
-        grpcOptions,
-        health: makeGrpcHealth(grpcOptions),
+        config: feed,
+        grpc: {
+          materializedReconnect: fastGrpcMaterializedReconnect,
+        },
       });
 
       const stoppingHealth = yield* readGrpcHealthOverlayNow(
@@ -15456,10 +14686,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("keeps materialized gRPC stream interruption terminal when release fails", () =>
     Effect.gen(function* () {
       let releaseCount = 0;
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => Stream.failCause(Cause.interrupt()),
         release: () =>
@@ -15476,11 +14703,11 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
       const harness = yield* makeMaterializedGrpcRuntimeHarness({
-        config: grpcViewServer,
-        grpcOptions,
-        health: makeGrpcHealth(grpcOptions),
+        config: feed,
+        grpc: {
+          materializedReconnect: fastGrpcMaterializedReconnect,
+        },
       });
 
       const stoppingHealth = yield* readGrpcHealthOverlayNow(
@@ -15510,7 +14737,7 @@ describe("@effect-view-server/runtime", () => {
     "does not reconnect materialized gRPC feed when failure cause includes interruption",
     () =>
       Effect.gen(function* () {
-        const feed = grpcMaterializedFeed(
+        const feed = grpcMaterializedViewServer(
           Stream.failCause(
             Cause.fromReasons([
               Cause.makeFailReason("upstream down during shutdown"),
@@ -15519,10 +14746,10 @@ describe("@effect-view-server/runtime", () => {
           ),
         );
         const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -15539,8 +14766,8 @@ describe("@effect-view-server/runtime", () => {
         expect(grpcHealthFeed(stoppingHealth)).toStrictEqual({
           status: "stopping",
           lifecycle: "materialized",
-          feedName: "ordersFeed",
-          feedKey: "orders/ordersFeed/materialized",
+          feedName: "orders",
+          feedKey: "orders/orders/materialized",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 0,
@@ -15560,15 +14787,15 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("publishes materialized gRPC stream rows into runtime core and health", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(
+      const feed = grpcMaterializedViewServer(
         longRunningGrpcStream([grpcOrderValue("order-1", 10), grpcOrderValue("order-2", 5)]),
       );
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeViewServerGrpcHealthLedger<GrpcTopics>({
         clients: grpcOptions.clientBaseUrls,
         feeds: {
-          ordersFeed: {
+          orders: {
             client: "orders",
             lifecycle: "materialized",
             topic: "orders",
@@ -15576,7 +14803,7 @@ describe("@effect-view-server/runtime", () => {
         },
       });
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -15586,7 +14813,7 @@ describe("@effect-view-server/runtime", () => {
       const snapshot = yield* waitForGrpcSnapshotRows(runtimeCore.client, 2);
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 2_000);
       const clientHealth = currentHealth.grpc?.clients["orders"];
-      const feedHealth = currentHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"];
+      const feedHealth = currentHealth.grpc?.feeds["orders"]?.materialized["orders"];
 
       expect(snapshot).toStrictEqual({
         rows: [
@@ -15608,8 +14835,8 @@ describe("@effect-view-server/runtime", () => {
       expect(feedHealth).toStrictEqual({
         status: "ready",
         lifecycle: "materialized",
-        feedName: "ordersFeed",
-        feedKey: "orders/ordersFeed/materialized",
+        feedName: "orders",
+        feedKey: "orders/orders/materialized",
         topic: "orders",
         subscriberCount: 0,
         rowCount: 2,
@@ -15627,9 +14854,7 @@ describe("@effect-view-server/runtime", () => {
 
       yield* ingress.close;
       const stoppedHealth = health.healthOverlay(yield* runtimeCore.client.health(), 2_000);
-      expect(stoppedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status).toBe(
-        "stopping",
-      );
+      expect(stoppedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.status).toBe("stopping");
       yield* runtimeCore.close;
     }),
   );
@@ -15638,7 +14863,7 @@ describe("@effect-view-server/runtime", () => {
     "reports materialized gRPC row count from engine health instead of cumulative publishes",
     () =>
       Effect.gen(function* () {
-        const feed = grpcMaterializedFeed(
+        const feed = grpcMaterializedViewServer(
           longRunningGrpcStream([
             grpcOrderValue("order-1", 10),
             grpcOrderValue("order-1", 20),
@@ -15646,10 +14871,10 @@ describe("@effect-view-server/runtime", () => {
           ]),
         );
         const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -15666,7 +14891,7 @@ describe("@effect-view-server/runtime", () => {
           status: "ready",
           statusCode: "Ready",
         });
-        expect(currentHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.rowCount).toBe(1);
+        expect(currentHealth.grpc?.feeds["orders"]?.materialized["orders"]?.rowCount).toBe(1);
 
         yield* ingress.close;
         yield* runtimeCore.close;
@@ -15675,12 +14900,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed degraded when the stream defects", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.fromEffect(Effect.die("defect down")));
+      const feed = grpcMaterializedViewServer(Stream.fromEffect(Effect.die("defect down")));
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -15694,7 +14919,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       );
 
-      expect(grpcHealthFeed(degradedHealth)?.lastError).toContain("gRPC feed ordersFeed failed:");
+      expect(grpcHealthFeed(degradedHealth)?.lastError).toContain("gRPC feed orders failed:");
       expect(grpcHealthFeed(degradedHealth)?.lastError).toContain("defect down");
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(0);
       yield* ingress.close;
@@ -15706,10 +14931,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let acquireCount = 0;
       let releaseCount = 0;
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => {
           acquireCount += 1;
@@ -15729,27 +14951,14 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      const options = yield* resolveViewServerRuntimeOptions<
-        GrpcTopics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: feed,
-          },
-          materializedReconnect: {
-            delay: "10 millis",
-            maxReconnects: 1,
-          },
-        },
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed, {
+        delay: "10 millis",
+        maxReconnects: 1,
       });
-      const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -15793,10 +15002,7 @@ describe("@effect-view-server/runtime", () => {
         ),
         longRunningGrpcStream([grpcOrderValue("final-row", 12)]),
       ];
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => {
           const stream = streams[acquireCount] ?? Stream.never;
@@ -15812,27 +15018,14 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      const options = yield* resolveViewServerRuntimeOptions<
-        GrpcTopics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: feed,
-          },
-          materializedReconnect: {
-            delay: "10 millis",
-            maxReconnects: 1,
-          },
-        },
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed, {
+        delay: "10 millis",
+        maxReconnects: 1,
       });
-      const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -15887,10 +15080,7 @@ describe("@effect-view-server/runtime", () => {
           ),
           longRunningGrpcStream([grpcOrderValue("stable-reset-row", 13)]),
         ];
-        const feed = grpcFeed.materializedFeed({
-          topic: "orders",
-          client: "orders",
-          method: "streamOrders",
+        const feed = grpcMaterializedViewServerFromCallbacks({
           request: () => ({ orderId: "all" }),
           acquire: () => {
             const stream = streams[acquireCount] ?? Stream.never;
@@ -15906,27 +15096,14 @@ describe("@effect-view-server/runtime", () => {
             updatedAt: value.updatedAt,
           }),
         });
-        const options = yield* resolveViewServerRuntimeOptions<
-          GrpcTopics,
-          Record<string, string>,
-          typeof grpcClients
-        >({
-          grpc: {
-            clients: grpcClients,
-            feeds: {
-              ordersFeed: feed,
-            },
-            materializedReconnect: {
-              delay: "10 millis",
-              maxReconnects: 1,
-            },
-          },
+        const grpcOptions = yield* resolveGrpcRuntimeOptions(feed, {
+          delay: "10 millis",
+          maxReconnects: 1,
         });
-        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -15964,10 +15141,7 @@ describe("@effect-view-server/runtime", () => {
         Stream.fail("upstream down"),
         longRunningGrpcStream([grpcOrderValue("order-after-reconnect", 10)]),
       ];
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => {
           const stream = streams[acquireCount] ?? Stream.never;
@@ -15988,10 +15162,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16024,8 +15198,8 @@ describe("@effect-view-server/runtime", () => {
       expect(feedHealth).toStrictEqual({
         status: "ready",
         lifecycle: "materialized",
-        feedName: "ordersFeed",
-        feedKey: "orders/ordersFeed/materialized",
+        feedName: "orders",
+        feedKey: "orders/orders/materialized",
         topic: "orders",
         subscriberCount: 0,
         rowCount: 1,
@@ -16051,10 +15225,7 @@ describe("@effect-view-server/runtime", () => {
     Effect.gen(function* () {
       let acquireCount = 0;
       let releaseCount = 0;
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => {
           acquireCount += 1;
@@ -16074,27 +15245,14 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      const options = yield* resolveViewServerRuntimeOptions<
-        GrpcTopics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: feed,
-          },
-          materializedReconnect: {
-            delay: "10 millis",
-            maxReconnects: 3,
-          },
-        },
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed, {
+        delay: "10 millis",
+        maxReconnects: 3,
       });
-      const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16109,7 +15267,7 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(grpcHealthFeed(degradedHealth)?.lastError).toBe(
-        "gRPC feed ordersFeed failed: gRPC feed release failed for ordersFeed: release down",
+        "gRPC feed orders failed: gRPC feed release failed for orders: release down",
       );
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(0);
       expect(acquireCount).toBe(1);
@@ -16122,10 +15280,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("marks materialized gRPC feed degraded when release defects after completion", () =>
     Effect.gen(function* () {
       let releaseCount = 0;
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => Stream.empty,
         release: () =>
@@ -16143,10 +15298,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16160,7 +15315,7 @@ describe("@effect-view-server/runtime", () => {
         }),
       );
 
-      expect(grpcHealthFeed(degradedHealth)?.lastError).toContain("gRPC feed ordersFeed failed:");
+      expect(grpcHealthFeed(degradedHealth)?.lastError).toContain("gRPC feed orders failed:");
       expect(grpcHealthFeed(degradedHealth)?.lastError).toContain("release defect");
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(0);
       expect(releaseCount).toBe(1);
@@ -16172,10 +15327,7 @@ describe("@effect-view-server/runtime", () => {
   it.live("marks materialized gRPC feed stopping when release is interrupted", () =>
     Effect.gen(function* () {
       let releaseCount = 0;
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => Stream.fail("upstream down"),
         release: () =>
@@ -16193,10 +15345,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16220,29 +15372,16 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed health degraded when the stream fails", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.fail("upstream down"));
-      const options = yield* resolveViewServerRuntimeOptions<
-        GrpcTopics,
-        Record<string, string>,
-        typeof grpcClients
-      >({
-        grpc: {
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: feed,
-          },
-          materializedReconnect: {
-            delay: "10 millis",
-            maxReconnects: 0,
-          },
-        },
+      const feed = grpcMaterializedViewServer(Stream.fail("upstream down"));
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(feed, {
+        delay: "10 millis",
+        maxReconnects: 0,
       });
-      const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeViewServerGrpcHealthLedger<GrpcTopics>({
         clients: grpcOptions.clientBaseUrls,
         feeds: {
-          ordersFeed: {
+          orders: {
             client: "orders",
             lifecycle: "materialized",
             topic: "orders",
@@ -16250,7 +15389,7 @@ describe("@effect-view-server/runtime", () => {
         },
       });
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16261,19 +15400,17 @@ describe("@effect-view-server/runtime", () => {
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) =>
-            currentHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status === "degraded",
+            currentHealth.grpc?.feeds["orders"]?.materialized["orders"]?.status === "degraded",
         }),
       );
 
       expect(degradedHealth.status).toBe("degraded");
       expect(degradedHealth.grpc?.clients["orders"]?.status).toBe("degraded");
-      expect(degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status).toBe(
-        "degraded",
+      expect(degradedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.status).toBe("degraded");
+      expect(degradedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.lastError).toBe(
+        "gRPC feed orders failed: gRPC feed stream failed for orders: upstream down",
       );
-      expect(degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.lastError).toBe(
-        "gRPC feed ordersFeed failed: gRPC feed stream failed for ordersFeed: upstream down",
-      );
-      expect(degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.reconnects).toBe(0);
+      expect(degradedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.reconnects).toBe(0);
 
       yield* ingress.close;
       yield* runtimeCore.close;
@@ -16283,15 +15420,15 @@ describe("@effect-view-server/runtime", () => {
   it.live("releases materialized gRPC feed resources when ingress closes", () =>
     Effect.gen(function* () {
       const released = yield* Deferred.make<void>();
-      const feed = grpcMaterializedFeedWithRelease(
+      const feed = grpcMaterializedViewServerWithRelease(
         Stream.never,
         Deferred.succeed(released, undefined),
       );
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16305,8 +15442,8 @@ describe("@effect-view-server/runtime", () => {
       ).toStrictEqual({
         status: "stopping",
         lifecycle: "materialized",
-        feedName: "ordersFeed",
-        feedKey: "orders/ordersFeed/materialized",
+        feedName: "orders",
+        feedKey: "orders/orders/materialized",
         topic: "orders",
         subscriberCount: 0,
         rowCount: 0,
@@ -16330,10 +15467,7 @@ describe("@effect-view-server/runtime", () => {
         let releaseCount = 0;
         const releaseStarted = yield* Deferred.make<void>();
         const releaseContinue = yield* Deferred.make<void>();
-        const feed = grpcFeed.materializedFeed({
-          topic: "orders",
-          client: "orders",
-          method: "streamOrders",
+        const feed = grpcMaterializedViewServerFromCallbacks({
           request: () => ({ orderId: "all" }),
           acquire: () => Stream.empty,
           release: () =>
@@ -16352,10 +15486,10 @@ describe("@effect-view-server/runtime", () => {
           }),
         });
         const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
         const health = makeGrpcHealth(grpcOptions);
         const ingress = yield* makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -16379,8 +15513,8 @@ describe("@effect-view-server/runtime", () => {
         ).toStrictEqual({
           status: "stopping",
           lifecycle: "materialized",
-          feedName: "ordersFeed",
-          feedKey: "orders/ordersFeed/materialized",
+          feedName: "orders",
+          feedKey: "orders/orders/materialized",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 0,
@@ -16402,10 +15536,7 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const releaseStarted = yield* Deferred.make<void>();
       const releaseContinue = yield* Deferred.make<void>();
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => Stream.empty,
         release: () =>
@@ -16425,10 +15556,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16454,8 +15585,8 @@ describe("@effect-view-server/runtime", () => {
         feed: {
           status: "stopping",
           lifecycle: "materialized",
-          feedName: "ordersFeed",
-          feedKey: "orders/ordersFeed/materialized",
+          feedName: "orders",
+          feedKey: "orders/orders/materialized",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 0,
@@ -16478,10 +15609,7 @@ describe("@effect-view-server/runtime", () => {
       let releaseCount = 0;
       const releaseStarted = yield* Deferred.make<void>();
       const releaseContinue = yield* Deferred.make<void>();
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => Stream.fail("upstream down"),
         release: () =>
@@ -16500,10 +15628,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16527,8 +15655,8 @@ describe("@effect-view-server/runtime", () => {
       ).toStrictEqual({
         status: "stopping",
         lifecycle: "materialized",
-        feedName: "ordersFeed",
-        feedKey: "orders/ordersFeed/materialized",
+        feedName: "orders",
+        feedKey: "orders/orders/materialized",
         topic: "orders",
         subscriberCount: 0,
         rowCount: 0,
@@ -16547,10 +15675,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("ignores materialized gRPC release construction failures during ingress close", () =>
     Effect.gen(function* () {
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all-orders" }),
         acquire: () => Stream.never,
         release: () => {
@@ -16566,10 +15691,10 @@ describe("@effect-view-server/runtime", () => {
         }),
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16586,12 +15711,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("refreshes materialized gRPC health after an idle feed becomes ready", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
+      const feed = grpcMaterializedViewServer(Stream.never);
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16608,8 +15733,10 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("ignores reconnect health updates for unknown gRPC feeds", () =>
     Effect.gen(function* () {
-      const grpcOptions = yield* resolveGrpcRuntimeOptions(grpcMaterializedFeed(Stream.never));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const grpcOptions = yield* resolveGrpcRuntimeOptions(
+        grpcMaterializedViewServer(Stream.never),
+      );
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
 
       yield* health.feedReconnecting("missingFeed", "ignored reconnect");
@@ -16618,8 +15745,8 @@ describe("@effect-view-server/runtime", () => {
       expect(grpcHealthFeed(currentHealth)).toStrictEqual({
         status: "starting",
         lifecycle: "materialized",
-        feedName: "ordersFeed",
-        feedKey: "orders/ordersFeed/materialized",
+        feedName: "orders",
+        feedKey: "orders/orders/materialized",
         topic: "orders",
         subscriberCount: 0,
         rowCount: 0,
@@ -16638,13 +15765,13 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails materialized gRPC ingress startup when request creation fails", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeedWithRequestFailure();
+      const feed = grpcMaterializedViewServerWithRequestFailure();
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -16653,8 +15780,8 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(error._tag).toBe("ViewServerGrpcIngressError");
-      expect(error.message).toBe("gRPC feed request creation failed for ordersFeed");
-      expect(error.feedName).toBe("ordersFeed");
+      expect(error.message).toBe("gRPC feed request creation failed for orders");
+      expect(error.feedName).toBe("orders");
       expect(error.topic).toBe("orders");
       yield* runtimeCore.close;
     }),
@@ -16662,15 +15789,15 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed degraded when acquire does not return a Stream", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
-      Object.defineProperty(feed, "acquire", {
+      const feed = grpcMaterializedViewServer(Stream.never);
+      Object.defineProperty(feed.topics.orders.grpcSource, "acquire", {
         value: () => "not-a-stream",
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16691,8 +15818,8 @@ describe("@effect-view-server/runtime", () => {
         feed: {
           status: "degraded",
           lifecycle: "materialized",
-          feedName: "ordersFeed",
-          feedKey: "orders/ordersFeed/materialized",
+          feedName: "orders",
+          feedKey: "orders/orders/materialized",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 0,
@@ -16704,7 +15831,7 @@ describe("@effect-view-server/runtime", () => {
           reconnects: 3,
           lastMessageAt: null,
           lastError:
-            "gRPC feed ordersFeed failed: gRPC feed acquire did not return a Stream for ordersFeed: not-a-stream",
+            "gRPC feed orders failed: gRPC feed acquire did not return a Stream for orders: not-a-stream",
         },
       });
       yield* ingress.close;
@@ -16714,13 +15841,13 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails materialized gRPC ingress startup when client creation throws", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
+      const feed = grpcMaterializedViewServer(Stream.never);
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -16732,8 +15859,8 @@ describe("@effect-view-server/runtime", () => {
       );
 
       expect(error._tag).toBe("ViewServerGrpcIngressError");
-      expect(error.message).toBe("gRPC client creation failed for ordersFeed");
-      expect(error.feedName).toBe("ordersFeed");
+      expect(error.message).toBe("gRPC client creation failed for orders");
+      expect(error.feedName).toBe("orders");
       expect(error.topic).toBe("orders");
       yield* runtimeCore.close;
     }),
@@ -16741,10 +15868,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed degraded when release does not return an Effect", () =>
     Effect.gen(function* () {
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all-orders" }),
         acquire: () => Stream.empty,
         release: () => Effect.void,
@@ -16757,14 +15881,14 @@ describe("@effect-view-server/runtime", () => {
           updatedAt: value.updatedAt,
         }),
       });
-      Object.defineProperty(feed, "release", {
+      Object.defineProperty(feed.topics.orders.grpcSource, "release", {
         value: () => "not-an-effect",
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16785,8 +15909,8 @@ describe("@effect-view-server/runtime", () => {
         feed: {
           status: "degraded",
           lifecycle: "materialized",
-          feedName: "ordersFeed",
-          feedKey: "orders/ordersFeed/materialized",
+          feedName: "orders",
+          feedKey: "orders/orders/materialized",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 0,
@@ -16798,7 +15922,7 @@ describe("@effect-view-server/runtime", () => {
           reconnects: 0,
           lastMessageAt: null,
           lastError:
-            "gRPC feed ordersFeed failed: gRPC feed release did not return an Effect for ordersFeed: not-an-effect",
+            "gRPC feed orders failed: gRPC feed release did not return an Effect for orders: not-an-effect",
         },
       });
       yield* ingress.close;
@@ -16809,31 +15933,21 @@ describe("@effect-view-server/runtime", () => {
   it.live("ignores leased feeds in the materialized gRPC ingress", () =>
     Effect.gen(function* () {
       let acquired = 0;
-      const feed = grpcLeasedFeed({
+      const feed = grpcLeasedViewServer({
         acquired: () => {
           acquired += 1;
         },
         streamForRegion: () => Stream.never,
       });
-      const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<
-        typeof leasedGrpcViewServer.topics,
-        typeof grpcClients
-      > = {
-        clients: grpcClients,
-        clientBaseUrls: nullRecord([["orders", "https://orders.example.test"]]),
-        feeds: {
-          ordersLease: feed,
-        },
-        materializedReconnect: fastGrpcMaterializedReconnect,
-      };
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedGrpcViewServer, {});
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeViewServerGrpcHealthLedger<typeof leasedGrpcViewServer.topics>({
         clients: grpcOptions.clientBaseUrls,
         feeds: {},
       });
 
       const ingress = yield* makeViewServerGrpcIngress(
-        leasedGrpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -16851,40 +15965,51 @@ describe("@effect-view-server/runtime", () => {
   it.live("closes already-started gRPC feed resources when another feed fails startup", () =>
     Effect.gen(function* () {
       const released = yield* Deferred.make<void>();
-      const runningFeed = grpcMaterializedFeedWithRelease(
-        Stream.never,
-        Deferred.succeed(released, undefined),
-      );
-      const failingFeed = grpcMaterializedFeedWithRequestFailure();
-      const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<GrpcTopics, typeof grpcClients> = {
-        clients: grpcClients,
-        clientBaseUrls: nullRecord([["orders", "https://orders.example.test"]]),
-        feeds: {
-          runningFeed,
-          failingFeed,
-        },
-        materializedReconnect: fastGrpcMaterializedReconnect,
-      };
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
-      const health = makeViewServerGrpcHealthLedger<GrpcTopics>({
-        clients: grpcOptions.clientBaseUrls,
-        feeds: {
-          runningFeed: {
+      const mapOrder = ({ value }: { readonly value: GrpcOrderValueMessage }) => ({
+        id: value.customerId,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        region: "usa",
+        updatedAt: value.updatedAt,
+      });
+      const config = defineViewServerConfig({
+        grpc: { clients: grpcClients },
+        topics: {
+          activeOrders: grpcTopicSources.materialized({
+            schema: GrpcOrder,
+            key: "id",
             client: "orders",
-            lifecycle: "materialized",
-            topic: "orders",
-          },
-          failingFeed: {
+            method: "streamOrders",
+            request: () => ({ orderId: "running" }),
+            acquire: () => Stream.never,
+            release: () => Deferred.succeed(released, undefined),
+            map: mapOrder,
+          }),
+          failingOrders: grpcTopicSources.materialized({
+            schema: GrpcOrder,
+            key: "id",
             client: "orders",
-            lifecycle: "materialized",
-            topic: "orders",
-          },
+            method: "streamOrders",
+            request: () => {
+              throw new Error("request exploded");
+            },
+            acquire: () => Stream.never,
+            map: mapOrder,
+          }),
         },
       });
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions(config);
+      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, {});
+      const health = makeDefaultRuntimeDependencies<typeof config.topics>().makeGrpcHealthLedger(
+        config,
+        grpcOptions,
+      );
 
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
-          grpcViewServer,
+          config,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -16893,34 +16018,28 @@ describe("@effect-view-server/runtime", () => {
       );
 
       yield* Deferred.await(released);
-      expect(error.message).toBe("gRPC feed request creation failed for failingFeed");
-      expect(error.feedName).toBe("failingFeed");
-      expect(error.topic).toBe("orders");
+      expect(error.message).toBe("gRPC feed request creation failed for failingOrders");
+      expect(error.feedName).toBe("failingOrders");
+      expect(error.topic).toBe("failingOrders");
       yield* runtimeCore.close;
     }),
   );
 
   it.live("fails materialized gRPC ingress startup when feed client is missing", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeedWithOrphanClient();
-      const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<
-        GrpcTopics,
-        typeof grpcClientsWithOrphan
-      > = {
-        // @ts-expect-error defensive runtime-boundary test intentionally omits the orphan client.
+      const feed = grpcMaterializedViewServerWithOrphanClient();
+      const resolvedOptions = yield* resolveGrpcRuntimeOptions(feed);
+      const grpcOptions = {
+        ...resolvedOptions,
         clients: {},
         clientBaseUrls: {},
-        feeds: {
-          ordersFeed: feed,
-        },
-        materializedReconnect: fastGrpcMaterializedReconnect,
       };
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeViewServerGrpcHealthLedger<GrpcTopics>({
         clients: grpcOptions.clientBaseUrls,
         feeds: {
-          ordersFeed: {
-            client: "orders",
+          orders: {
+            client: "orphan",
             lifecycle: "materialized",
             topic: "orders",
           },
@@ -16928,7 +16047,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -16936,8 +16055,8 @@ describe("@effect-view-server/runtime", () => {
         ),
       );
 
-      expect(error.message).toBe("gRPC feed ordersFeed references missing client: orphan");
-      expect(error.feedName).toBe("ordersFeed");
+      expect(error.message).toBe("gRPC feed orders references missing client: orphan");
+      expect(error.feedName).toBe("orders");
       expect(error.topic).toBe("orders");
       yield* runtimeCore.close;
     }),
@@ -16945,20 +16064,17 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("fails materialized gRPC ingress startup when feed client URL is unresolved", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(Stream.never);
-      const grpcOptions: ResolvedViewServerGrpcRuntimeOptions<GrpcTopics, typeof grpcClients> = {
-        clients: grpcClients,
+      const feed = grpcMaterializedViewServer(Stream.never);
+      const resolvedOptions = yield* resolveGrpcRuntimeOptions(feed);
+      const grpcOptions = {
+        ...resolvedOptions,
         clientBaseUrls: {},
-        feeds: {
-          ordersFeed: feed,
-        },
-        materializedReconnect: fastGrpcMaterializedReconnect,
       };
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeViewServerGrpcHealthLedger<GrpcTopics>({
         clients: grpcOptions.clientBaseUrls,
         feeds: {
-          ordersFeed: {
+          orders: {
             client: "orders",
             lifecycle: "materialized",
             topic: "orders",
@@ -16967,7 +16083,7 @@ describe("@effect-view-server/runtime", () => {
       });
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(
-          grpcViewServer,
+          grpcOptions.sourceConfig,
           runtimeCore.internalClient,
           Effect.void,
           grpcOptions,
@@ -16975,8 +16091,8 @@ describe("@effect-view-server/runtime", () => {
         ),
       );
 
-      expect(error.message).toBe("gRPC feed ordersFeed references unresolved client URL: orders");
-      expect(error.feedName).toBe("ordersFeed");
+      expect(error.message).toBe("gRPC feed orders references unresolved client URL: orders");
+      expect(error.feedName).toBe("orders");
       expect(error.topic).toBe("orders");
       yield* runtimeCore.close;
     }),
@@ -16984,12 +16100,12 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("marks materialized gRPC feed degraded when acquire throws", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeedWithAcquireFailure();
+      const feed = grpcMaterializedViewServerWithAcquireFailure();
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -17007,7 +16123,7 @@ describe("@effect-view-server/runtime", () => {
       expect(grpcHealthClient(degradedHealth)?.status).toBe("degraded");
       expect(grpcHealthFeed(degradedHealth)?.status).toBe("degraded");
       expect(grpcHealthFeed(degradedHealth)?.lastError).toBe(
-        "gRPC feed ordersFeed failed: gRPC feed acquire failed for ordersFeed: acquire exploded",
+        "gRPC feed orders failed: gRPC feed acquire failed for orders: acquire exploded",
       );
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(3);
       yield* ingress.close;
@@ -17017,14 +16133,14 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("records materialized gRPC mapping failures in health", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeedWithMappingFailure(
+      const feed = grpcMaterializedViewServerWithMappingFailure(
         longRunningGrpcStream([grpcOrderValue("order-1", 10)]),
       );
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -17043,7 +16159,7 @@ describe("@effect-view-server/runtime", () => {
       expect(grpcHealthFeed(degradedHealth)?.publishFailuresPerSecond).toBe(0);
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(0);
       expect(grpcHealthFeed(degradedHealth)?.lastError).toBe(
-        "gRPC feed ordersFeed failed: gRPC feed mapping failed for ordersFeed: mapping exploded",
+        "gRPC feed orders failed: gRPC feed mapping failed for orders: mapping exploded",
       );
       yield* ingress.close;
       yield* runtimeCore.close;
@@ -17052,10 +16168,7 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("records materialized gRPC invalid mapped rows as mapping failures", () =>
     Effect.gen(function* () {
-      const feed = grpcFeed.materializedFeed({
-        topic: "orders",
-        client: "orders",
-        method: "streamOrders",
+      const feed = grpcMaterializedViewServerFromCallbacks({
         request: () => ({ orderId: "all" }),
         acquire: () => longRunningGrpcStream([grpcOrderValue("invalid-materialized-row", 10)]),
         map: ({ value }) => {
@@ -17072,10 +16185,10 @@ describe("@effect-view-server/runtime", () => {
         },
       });
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         runtimeCore.internalClient,
         Effect.void,
         grpcOptions,
@@ -17094,7 +16207,7 @@ describe("@effect-view-server/runtime", () => {
       expect(grpcHealthFeed(degradedHealth)?.publishFailuresPerSecond).toBe(0);
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(0);
       expect(grpcHealthFeed(degradedHealth)?.lastError).toContain(
-        "gRPC feed mapping produced an invalid row for ordersFeed",
+        "gRPC feed mapping produced an invalid row for orders",
       );
       yield* ingress.close;
       yield* runtimeCore.close;
@@ -17105,49 +16218,15 @@ describe("@effect-view-server/runtime", () => {
     "marks materialized gRPC feed degraded when topic metadata disappears before mapping",
     () =>
       Effect.gen(function* () {
-        const localViewServer = defineViewServerConfig({
-          topics: {
-            orders: {
-              schema: GrpcOrder,
-              key: "id",
-              grpcSource: grpcSourceMarkers.materialized(),
-            },
-          },
-        });
-        const localGrpcFeed = defineGrpcFeed(localViewServer)<typeof grpcClients>();
-        const feed = localGrpcFeed.materializedFeed({
-          topic: "orders",
-          client: "orders",
-          method: "streamOrders",
-          request: () => ({ orderId: "all" }),
-          acquire: () => longRunningGrpcStream([grpcOrderValue("order-without-topic", 10)]),
-          map: ({ value }) => ({
-            id: value.customerId,
-            customerId: value.customerId,
-            status: value.status,
-            price: value.price,
-            region: "usa",
-            updatedAt: value.updatedAt,
-          }),
-        });
-        const grpcOptions = yield* resolveViewServerRuntimeOptions<
-          typeof localViewServer.topics,
-          Record<string, string>,
-          typeof grpcClients
-        >({
-          grpc: {
-            clients: grpcClients,
-            feeds: {
-              ordersFeed: feed,
-            },
-            materializedReconnect: fastGrpcMaterializedReconnect,
-          },
-        }).pipe(Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)));
+        const localViewServer = grpcMaterializedViewServer(
+          longRunningGrpcStream([grpcOrderValue("order-without-topic", 10)]),
+        );
+        const grpcOptions = yield* resolveGrpcRuntimeOptions(localViewServer);
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
         const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
           clients: grpcOptions.clientBaseUrls,
           feeds: {
-            ordersFeed: {
+            orders: {
               client: "orders",
               lifecycle: "materialized",
               topic: "orders",
@@ -17167,24 +16246,22 @@ describe("@effect-view-server/runtime", () => {
           Effect.repeat({
             schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
             until: (currentHealth) =>
-              currentHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status ===
-              "degraded",
+              currentHealth.grpc?.feeds["orders"]?.materialized["orders"]?.status === "degraded",
           }),
         );
 
         expect({
           runtimeStatus: degradedHealth.status,
-          feedStatus: degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.status,
+          feedStatus: degradedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.status,
           mappingFailures:
-            degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]
-              ?.mappingFailuresPerSecond,
-          lastError: degradedHealth.grpc?.feeds["orders"]?.materialized["ordersFeed"]?.lastError,
+            degradedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.mappingFailuresPerSecond,
+          lastError: degradedHealth.grpc?.feeds["orders"]?.materialized["orders"]?.lastError,
         }).toStrictEqual({
           runtimeStatus: "degraded",
           feedStatus: "degraded",
           mappingFailures: 1,
           lastError:
-            "gRPC feed ordersFeed failed: gRPC feed ordersFeed references unknown topic orders: orders",
+            "gRPC feed orders failed: gRPC feed orders references unknown topic orders: orders",
         });
         yield* ingress.close;
         yield* runtimeCore.close;
@@ -17193,9 +16270,11 @@ describe("@effect-view-server/runtime", () => {
 
   it.live("records materialized gRPC publish failures in health", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedFeed(longRunningGrpcStream([grpcOrderValue("order-1", 10)]));
+      const feed = grpcMaterializedViewServer(
+        longRunningGrpcStream([grpcOrderValue("order-1", 10)]),
+      );
       const grpcOptions = yield* resolveGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const publishFailure: ViewServerRuntimeError = {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
@@ -17208,7 +16287,7 @@ describe("@effect-view-server/runtime", () => {
       };
       const health = makeGrpcHealth(grpcOptions);
       const ingress = yield* makeViewServerGrpcIngress(
-        grpcViewServer,
+        grpcOptions.sourceConfig,
         failingRuntimeClient,
         Effect.void,
         grpcOptions,
@@ -17227,7 +16306,7 @@ describe("@effect-view-server/runtime", () => {
       expect(grpcHealthFeed(degradedHealth)?.publishFailuresPerSecond).toBe(1);
       expect(grpcHealthFeed(degradedHealth)?.reconnects).toBe(0);
       expect(grpcHealthFeed(degradedHealth)?.lastError).toBe(
-        "gRPC feed ordersFeed failed: gRPC feed publish failed for ordersFeed: publish unavailable",
+        "gRPC feed orders failed: gRPC feed publish failed for orders: publish unavailable",
       );
       yield* ingress.close;
       yield* runtimeCore.close;
@@ -17588,8 +16667,8 @@ describe("@effect-view-server/runtime", () => {
 
   it.effect("resolves default runtime options from config-only overload", () =>
     Effect.gen(function* () {
-      const options = yield* resolvePublicViewServerRuntimeOptions(viewServer);
-      const optionsWithOverrides = yield* resolvePublicViewServerRuntimeOptions(viewServer, {
+      const options = yield* resolveViewServerRuntimeOptions(viewServer);
+      const optionsWithOverrides = yield* resolveViewServerRuntimeOptions(viewServer, {
         host: "127.0.0.1",
         websocketPort: 3800,
       });
@@ -17608,26 +16687,10 @@ describe("@effect-view-server/runtime", () => {
     }),
   );
 
-  it.effect("resolves runtime-feeds options without gRPC declarations", () =>
-    Effect.gen(function* () {
-      const options = yield* resolveViewServerRuntimeOptions({
-        host: "127.0.0.1",
-      });
-
-      expect({
-        hasGrpcOptions: "grpcOptions" in options,
-        serverHost: options.serverOptions.host,
-      }).toStrictEqual({
-        hasGrpcOptions: false,
-        serverHost: "127.0.0.1",
-      });
-    }),
-  );
-
   it.effect("rejects runtime Kafka options without configured source topics", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
-        resolvePublicViewServerRuntimeOptions({
+        resolveViewServerRuntimeOptions({
           kafka: {
             consumerGroupId: "view-server-no-kafka-topics",
             regions: {
@@ -17926,33 +16989,6 @@ describe("@effect-view-server/runtime", () => {
       });
 
       yield* runtime.close;
-    }),
-  );
-
-  it.live("starts runtime with internal runtime-feed options", () =>
-    Effect.gen(function* () {
-      let serverCloseCount = 0;
-      const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
-        ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
-        makeServer: () =>
-          Effect.succeed({
-            url: "ws://127.0.0.1:0/rpc",
-            healthUrl: "http://127.0.0.1:0/health",
-            metricsUrl: "http://127.0.0.1:0/metrics",
-            close: Effect.sync(() => {
-              serverCloseCount += 1;
-            }),
-          }),
-      };
-
-      const runtime = yield* makeViewServerRuntimeWithRuntimeFeedsAndDependencies(
-        dependencies,
-        viewServer,
-        {},
-      );
-      yield* runtime.close;
-
-      expect(serverCloseCount).toBe(1);
     }),
   );
 

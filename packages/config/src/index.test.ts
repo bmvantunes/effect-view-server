@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import type { GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import type { GenMessage } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import * as BigDecimal from "effect/BigDecimal";
@@ -74,7 +74,7 @@ import {
   type ViewServerRuntimeError,
   type ViewServerTransportError,
 } from "./index";
-import { defineGrpcFeed, grpcSourceMarkers, type GrpcFeedDefinition } from "./internal";
+import { grpcSourceMarkers } from "./internal";
 import {
   decodeKafkaCodec,
   decodeKafkaTopicMessage,
@@ -2256,7 +2256,7 @@ describe("defineViewServerConfig", () => {
   });
 
   it("types gRPC clients and feed mapping contracts", () => {
-    const grpcViewServer = defineViewServerConfig({
+    defineViewServerConfig({
       grpc: {
         clients: grpcTestClients,
       },
@@ -2956,35 +2956,6 @@ describe("defineViewServerConfig", () => {
         }),
       },
     });
-    const standaloneFeed = defineGrpcFeed<typeof grpcViewServer.topics, typeof clients>();
-    const feed = defineGrpcFeed<typeof grpcViewServer.topics, typeof clients>();
-    const configBoundFeed = defineGrpcFeed<typeof grpcInfraViewServer.topics, typeof clients>();
-    const grpcSourceMaterializedViewServer = defineViewServerConfig({
-      grpc: {
-        clients,
-      },
-      topics: {
-        trades: topicSources.materialized({
-          schema: Trade,
-          key: "id",
-          client: "trades",
-          method: "streamTrades",
-          request: () => ({ orderId: "all-source-trades" }),
-          acquire: () => Stream.never,
-          map: ({ value }) => ({
-            id: value.symbol,
-            symbol: value.symbol,
-            quantity: value.quantity,
-            price: value.price,
-            region: "usa",
-          }),
-        }),
-      },
-    });
-    const grpcSourceFeed = defineGrpcFeed<
-      typeof grpcSourceMaterializedViewServer.topics,
-      typeof clients
-    >();
     expect(grpcInfraViewServer.grpc).toStrictEqual({
       clients,
     });
@@ -3006,187 +2977,6 @@ describe("defineViewServerConfig", () => {
           Reflect.get(topicOwnedGrpcViewServer.topics.trades.grpcSource, symbol) === clients,
       ),
     ).toBe(false);
-    expectTypeOf(standaloneFeed.leasedFeed).toBeFunction();
-    const leasedOrders = feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => {
-        expectTypeOf(region).toEqualTypeOf<string>();
-        expectTypeOf(status).toEqualTypeOf<"open" | "closed" | "cancelled">();
-        return { orderId: `${region}:${status}` };
-      },
-      acquire: ({ client, request, route, session }) => {
-        expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
-        expectTypeOf(client.streamOrders).toBeFunction();
-        expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
-        expectTypeOf(route).toEqualTypeOf<{
-          readonly region: string;
-          readonly status: "open" | "closed" | "cancelled";
-        }>();
-        expectTypeOf(session.forwardedHeaders).toEqualTypeOf<Readonly<Record<string, string>>>();
-        return Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        });
-      },
-      release: ({ client, request, route, session }) => {
-        expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
-        expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
-        expectTypeOf(route).toEqualTypeOf<{
-          readonly region: string;
-          readonly status: "open" | "closed" | "cancelled";
-        }>();
-        expectTypeOf(session.systemHeaders).toEqualTypeOf<Readonly<Record<string, string>>>();
-        return Effect.void;
-      },
-      map: ({ value, route, schema }) => {
-        expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
-        expectTypeOf(route.region).toEqualTypeOf<string>();
-        expectTypeOf(schema).toEqualTypeOf<typeof Order>();
-        return {
-          id: `${route.region}:${value.customerId}`,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: route.region,
-          updatedAt: value.updatedAt,
-        };
-      },
-    });
-    const materializedTrades = feed.materializedFeed({
-      topic: "trades",
-      client: "orders",
-      method: "streamTrades",
-      request: () => ({ orderId: "all-trades" }),
-      acquire: ({ client, route }) => {
-        expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
-        expectTypeOf(route).toEqualTypeOf<undefined>();
-        return Stream.make({
-          $typeName: "viewserver.test.TradeValue",
-          symbol: "AAPL",
-          quantity: 1,
-          price: 10,
-        });
-      },
-      release: ({ request, route }) => {
-        expectTypeOf(request.orderId).toEqualTypeOf<string | undefined>();
-        expectTypeOf(route).toEqualTypeOf<undefined>();
-        return Effect.void;
-      },
-      map: ({ value }) => ({
-        id: value.symbol,
-        symbol: value.symbol,
-        quantity: value.quantity,
-        price: value.price,
-        region: "usa",
-      }),
-    });
-    const configBoundOrders = configBoundFeed.materializedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      request: () => ({ orderId: "all-config-bound-orders" }),
-      acquire: ({ client }) => {
-        expectTypeOf(client).toEqualTypeOf<GrpcClientValue<(typeof clients)["orders"]>>();
-        return Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-config-bound-1",
-          status: "open",
-          price: 20,
-          updatedAt: 1,
-        });
-      },
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-        updatedAt: value.updatedAt,
-      }),
-    });
-    const invalidConfigBoundClient = configBoundFeed.materializedFeed({
-      topic: "orders",
-      // @ts-expect-error config-bound grpcFeed rejects clients outside config.grpc.clients.
-      client: "missing",
-      method: "streamOrders",
-      request: () => ({ orderId: "all-config-bound-orders" }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-config-bound-1",
-          status: "open",
-          price: 20,
-          updatedAt: 1,
-        }),
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-        updatedAt: value.updatedAt,
-      }),
-    });
-    const grpcSourceMaterializedTrades = grpcSourceFeed.materializedFeed({
-      topic: "trades",
-      client: "trades",
-      method: "streamTrades",
-      request: () => ({ orderId: "all-grpc-source-trades" }),
-      acquire: ({ route }) => {
-        expectTypeOf(route).toEqualTypeOf<undefined>();
-        return Stream.make({
-          $typeName: "viewserver.test.TradeValue",
-          symbol: "MSFT",
-          quantity: 2,
-          price: 20,
-        });
-      },
-      map: ({ value }) => ({
-        id: value.symbol,
-        symbol: value.symbol,
-        quantity: value.quantity,
-        price: value.price,
-        region: "usa",
-      }),
-    });
-
-    expect(leasedOrders.lifecycle).toBe("leased");
-    expect(materializedTrades.lifecycle).toBe("materialized");
-    expect(configBoundOrders.lifecycle).toBe("materialized");
-    expect(grpcSourceMaterializedTrades.lifecycle).toBe("materialized");
-    expectTypeOf(invalidConfigBoundClient).not.toBeAny();
-    expectTypeOf(ordersService).toEqualTypeOf<
-      GenService<{
-        readonly streamOrders: {
-          readonly input: typeof ordersKeySchema;
-          readonly output: typeof ordersValueSchema;
-          readonly methodKind: "server_streaming";
-        };
-        readonly streamTrades: {
-          readonly input: typeof ordersKeySchema;
-          readonly output: typeof tradesValueSchema;
-          readonly methodKind: "server_streaming";
-        };
-        readonly streamWrappedOrders: {
-          readonly input: typeof wrappedOrdersKeySchema;
-          readonly output: typeof ordersValueSchema;
-          readonly methodKind: "server_streaming";
-        };
-        readonly getOrder: {
-          readonly input: typeof ordersKeySchema;
-          readonly output: typeof ordersValueSchema;
-          readonly methodKind: "unary";
-        };
-      }>
-    >();
-
-    const openOrderStatus = "open" as const;
 
     const invalidSpreadTopicOwnedMaterializedRequest: typeof topicOwnedGrpcViewServer.topics.trades.grpcSource =
       {
@@ -3206,300 +2996,48 @@ describe("defineViewServerConfig", () => {
     expectTypeOf(invalidSpreadTopicOwnedMaterializedRequest).not.toBeNever();
     expectTypeOf(invalidSpreadTopicOwnedLeasedRequest).not.toBeNever();
 
-    const invalidManualRuntimeFeedDefinition: typeof leasedOrders = {
-      _tag: "GrpcLeasedFeedDefinition",
-      lifecycle: "leased",
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        }),
-      // @ts-expect-error runtime feed definitions require helper-branded maps, so manual objects cannot bypass map exactness.
-      map: () => ({
-        id: "order-1",
-        customerId: "customer-1",
-        status: openOrderStatus,
-        price: 10,
-        region: "usa",
-        updatedAt: 1,
-        ze: true,
-      }),
-    };
-    expectTypeOf(invalidManualRuntimeFeedDefinition).not.toBeNever();
-
-    const invalidSpreadRuntimeFeedDefinition: typeof leasedOrders = {
-      ...leasedOrders,
-      // @ts-expect-error spread feeds cannot replace helper-branded exact maps with a broader function.
-      map: () => ({
-        id: "order-1",
-        customerId: "customer-1",
-        status: openOrderStatus,
-        price: 10,
-        region: "usa",
-        updatedAt: 1,
-        ze: true,
-      }),
-    };
-    expectTypeOf(invalidSpreadRuntimeFeedDefinition).not.toBeNever();
-
-    // @ts-expect-error spread-mutated materialized feeds must preserve client/method/request/acquire/map correlation.
-    const invalidMaterializedFeedClientMutation: GrpcFeedDefinition<
-      typeof grpcViewServer.topics,
-      typeof clients
-    > = {
-      ...materializedTrades,
-      client: "trades",
-    };
-    expectTypeOf(invalidMaterializedFeedClientMutation).not.toBeNever();
-
-    // @ts-expect-error spread-mutated leased feeds must preserve method/request/acquire/map correlation.
-    const invalidLeasedFeedMethodMutation: GrpcFeedDefinition<
-      typeof grpcViewServer.topics,
-      typeof clients
-    > = {
-      ...leasedOrders,
-      method: "streamTrades",
-    };
-    expectTypeOf(invalidLeasedFeedMethodMutation).not.toBeNever();
-
-    feed.materializedFeed({
-      topic: "trades",
-      client: "trades",
-      // @ts-expect-error gRPC feed methods must belong to the selected client.
-      method: "streamOrders",
-      request: () => ({ orderId: "all-trades" }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.TradeValue",
-          symbol: "AAPL",
-          quantity: 1,
-          price: 10,
-        }),
-      map: ({ value }) => ({
-        id: value.symbol,
-        symbol: value.symbol,
-        quantity: value.quantity,
-        price: value.price,
-        region: "usa",
-      }),
-    });
-
-    feed.materializedFeed({
-      // @ts-expect-error materialized feeds can only target topics declared with a materialized gRPC source.
-      topic: "orders",
-      client: "orders",
-      method: "streamTrades",
-      request: () => ({ orderId: "all-trades" }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.TradeValue",
-          symbol: "AAPL",
-          quantity: 1,
-          price: 10,
-        }),
-      map: ({ value }) => ({
-        id: value.symbol,
-        symbol: value.symbol,
-        quantity: value.quantity,
-        price: value.price,
-        region: "usa",
-      }),
-    });
-
-    feed.materializedFeed({
-      // @ts-expect-error materialized feeds can only target topics explicitly marked as gRPC materialized.
-      topic: "positions",
-      client: "orders",
-      method: "streamTrades",
-      request: () => ({ orderId: "positions" }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.TradeValue",
-          symbol: "AAPL",
-          quantity: 1,
-          price: 10,
-        }),
-      map: ({ value }) => ({
-        id: value.symbol,
-        symbol: value.symbol,
-        quantity: value.quantity,
-        price: value.price,
-        region: "usa",
-      }),
-    });
-
-    feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      // @ts-expect-error gRPC feeds must use server-streaming methods.
-      method: "getOrder",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        }),
-      map: () => ({
-        id: "order-1",
-        customerId: "customer-1",
-        status: openOrderStatus,
-        price: 10,
-        region: "usa",
-        updatedAt: 1,
-      }),
-    });
-
-    feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      // @ts-expect-error leased feed routeBy must match the configured topic route tuple.
-      routeBy: ["region"],
-      request: ({ region }) => ({ orderId: region }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        }),
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-        updatedAt: value.updatedAt,
-      }),
-    });
-
-    feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-      // @ts-expect-error leased feed acquire callbacks must accept every configured route value.
-      acquire: (input: {
-        readonly route: {
-          readonly region: "usa";
-          readonly status: "open";
-        };
-      }) =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: input.route.region,
-          status: input.route.status,
-          price: 10,
-          updatedAt: 1,
-        }),
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-        updatedAt: value.updatedAt,
-      }),
-    });
-
-    feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        }),
-      // @ts-expect-error leased feed release callbacks must accept every configured route value.
-      release: (input: {
-        readonly route: {
-          readonly region: "usa";
-          readonly status: "open";
-        };
-      }) => Effect.logDebug(input.route.region),
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-        updatedAt: value.updatedAt,
-      }),
-    });
-
-    feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        }),
-      // @ts-expect-error gRPC feed mappings must not return fields outside the topic schema.
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-        updatedAt: value.updatedAt,
-        ze: true,
-      }),
-    });
-
-    feed.leasedFeed({
-      topic: "orders",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: ({ region, status }) => ({ orderId: `${region}:${status}` }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.test.OrderValue",
-          customerId: "customer-1",
-          status: "open",
-          price: 10,
-          updatedAt: 1,
-        }),
-      // @ts-expect-error gRPC feed mappings must return every topic field.
-      map: ({ value }) => ({
-        id: value.customerId,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: "usa",
-      }),
-    });
-
-    expect(grpcViewServer.topics.orders.grpcSource.lifecycle).toBe("leased");
-    expect(grpcViewServer.topics.orders.grpcSource.routeBy).toStrictEqual(["region", "status"]);
-    expect(grpcViewServer.topics.trades.grpcSource.lifecycle).toBe("materialized");
+    const invalidSpreadTopicOwnedMaterializedMap: typeof topicOwnedGrpcViewServer.topics.trades.grpcSource =
+      {
+        ...topicOwnedGrpcViewServer.topics.trades.grpcSource,
+        // @ts-expect-error spread-mutated topic-owned materialized gRPC sources cannot replace helper-branded exact maps.
+        map: ({ value, route, schema }) => {
+          expectTypeOf(value).toEqualTypeOf<TradesValueMessage>();
+          expectTypeOf(route).toEqualTypeOf<undefined>();
+          expectTypeOf(schema).toEqualTypeOf<typeof Trade>();
+          return {
+            id: value.symbol,
+            symbol: value.symbol,
+            quantity: value.quantity,
+            price: value.price,
+            region: "usa",
+            extra: true,
+          };
+        },
+      };
+    const invalidSpreadTopicOwnedLeasedMap: typeof topicOwnedGrpcViewServer.topics.orders.grpcSource =
+      {
+        ...topicOwnedGrpcViewServer.topics.orders.grpcSource,
+        // @ts-expect-error spread-mutated topic-owned leased gRPC sources cannot replace helper-branded exact maps.
+        map: ({ value, route, schema }) => {
+          expectTypeOf(value).toEqualTypeOf<OrdersValueMessage>();
+          expectTypeOf(route).toEqualTypeOf<{
+            readonly region: string;
+            readonly status: "open" | "closed" | "cancelled";
+          }>();
+          expectTypeOf(schema).toEqualTypeOf<typeof Order>();
+          return {
+            id: `${route.region}:${value.customerId}`,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: route.region,
+            updatedAt: value.updatedAt,
+            extra: true,
+          };
+        },
+      };
+    expectTypeOf(invalidSpreadTopicOwnedMaterializedMap).not.toBeNever();
+    expectTypeOf(invalidSpreadTopicOwnedLeasedMap).not.toBeNever();
   });
 
   it("derives schema field metadata for query validation", () => {

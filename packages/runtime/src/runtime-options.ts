@@ -86,22 +86,6 @@ export type ResolvedViewServerGrpcRuntimeOptions<
   };
 };
 
-type ViewServerGrpcRuntimeOptionsWithRuntimeFeeds<
-  Topics extends ViewServerRuntimeTopicDefinitions,
-  Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
-> = ViewServerGrpcRuntimeOptions<Topics, Clients> & {
-  readonly clients?: Clients;
-  readonly feeds?: Record<string, ResolvedViewServerGrpcFeedDefinition>;
-};
-
-export type ViewServerRuntimeOptionsWithRuntimeFeeds<
-  Topics extends ViewServerRuntimeTopicDefinitions = ViewServerRuntimeTopicDefinitions,
-  Regions extends RuntimeRegions = RuntimeRegions,
-  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-> = Omit<ViewServerRuntimeOptions<Topics, Regions, GrpcClients>, "grpc"> & {
-  readonly grpc?: ViewServerGrpcRuntimeOptionsWithRuntimeFeeds<Topics, GrpcClients>;
-};
-
 const resolveRuntimeValue = <A>(value: RuntimeValue<A>): Effect.Effect<A, Config.ConfigError> =>
   Config.isConfig(value) ? value : Effect.succeed(value);
 
@@ -470,8 +454,6 @@ const resolveGrpcOptions: <
 >(
   config: ViewServerConfig<Topics, RuntimeRegions, Clients> | undefined,
   options: ViewServerGrpcRuntimeOptions<Topics, Clients>,
-  runtimeFeeds: Record<string, ResolvedViewServerGrpcFeedDefinition>,
-  runtimeClients?: Clients,
 ) => Effect.Effect<
   ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   Config.ConfigError | ViewServerGrpcIngressError
@@ -481,19 +463,10 @@ const resolveGrpcOptions: <
 >(
   config: ViewServerConfig<Topics, RuntimeRegions, Clients> | undefined,
   options: ViewServerGrpcRuntimeOptions<Topics, Clients>,
-  runtimeFeeds: Record<string, ResolvedViewServerGrpcFeedDefinition>,
-  runtimeClients?: Clients,
 ) {
   yield* validateConfigGrpcSourceMetadata(config);
-  const clients = runtimeClients ?? config?.grpc?.clients;
-  const configFeeds = grpcFeedsFromConfig(config);
-  const feeds: Record<string, ResolvedViewServerGrpcFeedDefinition> = Object.create(null);
-  for (const [feedName, feed] of Object.entries(configFeeds)) {
-    feeds[feedName] = feed;
-  }
-  for (const [feedName, feed] of Object.entries(runtimeFeeds)) {
-    feeds[feedName] = feed;
-  }
+  const clients = config?.grpc?.clients;
+  const feeds = grpcFeedsFromConfig(config);
   if (clients === undefined) {
     if (Object.keys(feeds).length > 0) {
       return yield* new ViewServerGrpcIngressError({
@@ -536,7 +509,6 @@ const resolveGrpcOptions: <
   const materializedReconnectMaxReconnects = yield* validateGrpcMaterializedMaxReconnects(
     options.materializedReconnect?.maxReconnects ?? defaultGrpcMaterializedReconnect.maxReconnects,
   );
-  const feedTopics = new Map<string, string>();
   for (const [feedName, feed] of Object.entries(feeds)) {
     const client = clients[feed.client];
     if (client === undefined) {
@@ -567,16 +539,6 @@ const resolveGrpcOptions: <
         phase: "configuration",
       });
     }
-    const previousFeedName = feedTopics.get(feed.topic);
-    if (previousFeedName !== undefined) {
-      return yield* new ViewServerGrpcIngressError({
-        message: `gRPC feed ${feedName} conflicts with ${previousFeedName}; View Server topic ${feed.topic} already has a gRPC feed owner.`,
-        cause: feed.topic,
-        feedName,
-        topic: feed.topic,
-      });
-    }
-    feedTopics.set(feed.topic, feedName);
   }
   return {
     clients,
@@ -780,8 +742,6 @@ const resolveViewServerRuntimeOptionsWithConfig: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
   options: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  runtimeFeeds?: Record<string, ResolvedViewServerGrpcFeedDefinition>,
-  runtimeClients?: GrpcClients,
 ) => Effect.Effect<
   ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
   Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
@@ -792,8 +752,6 @@ const resolveViewServerRuntimeOptionsWithConfig: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
   options: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  runtimeFeeds: Record<string, ResolvedViewServerGrpcFeedDefinition> = {},
-  runtimeClients?: GrpcClients,
 ) {
   const runtimeCoreOptions = {
     ...(options.groupedIncrementalAdmissionLimits === undefined
@@ -830,8 +788,8 @@ const resolveViewServerRuntimeOptionsWithConfig: <
     options.grpc === undefined
       ? Object.keys(configGrpcFeeds).length === 0
         ? undefined
-        : yield* resolveGrpcOptions(config, {}, runtimeFeeds, runtimeClients)
-      : yield* resolveGrpcOptions(config, options.grpc, runtimeFeeds, runtimeClients);
+        : yield* resolveGrpcOptions(config, {})
+      : yield* resolveGrpcOptions(config, options.grpc);
   yield* validateSourceOwnership(kafkaOptions, grpcOptions);
   return {
     ...(options.auth === undefined ? {} : { auth: options.auth }),
@@ -896,67 +854,5 @@ export function resolveViewServerRuntimeOptions<
   }
   return validatePublicGrpcRuntimeOptions(configOrOptions.grpc).pipe(
     Effect.andThen(resolveViewServerRuntimeOptionsWithConfig(undefined, configOrOptions)),
-  );
-}
-
-export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
->(
-  options: ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
-): Effect.Effect<
-  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
->;
-export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-): Effect.Effect<
-  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
->;
-export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  options: ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
-): Effect.Effect<
-  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
->;
-export function resolveViewServerRuntimeOptionsWithRuntimeFeeds<
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
->(
-  configOrOptions:
-    | ViewServerConfig<Topics, Regions, GrpcClients>
-    | ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
-  maybeOptions?: ViewServerRuntimeOptionsWithRuntimeFeeds<Topics, Regions, GrpcClients>,
-): Effect.Effect<
-  ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  Config.ConfigError | ViewServerGrpcIngressError | ViewServerKafkaIngressError
-> {
-  // Private dependency-injection seam for tests/benchmarks. Public runtime options
-  // are validated by `resolveViewServerRuntimeOptions` and reject `grpc.feeds`.
-  if ("defineRuntimeOptions" in configOrOptions) {
-    return resolveViewServerRuntimeOptionsWithConfig(
-      configOrOptions,
-      maybeOptions ?? {},
-      maybeOptions?.grpc?.feeds ?? {},
-      maybeOptions?.grpc?.clients,
-    );
-  }
-  return resolveViewServerRuntimeOptionsWithConfig(
-    undefined,
-    configOrOptions,
-    configOrOptions.grpc?.feeds ?? {},
-    configOrOptions.grpc?.clients,
   );
 }

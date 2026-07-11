@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed. Awaiting the explicit maintainer decision required by issue #304.
+Accepted on 2026-07-11. Implementation is tracked by issue #305.
 
-This ADR changes no compatibility behavior while it is Proposed.
+This decision issue changes no compatibility behavior.
 
 ## Context
 
@@ -97,11 +97,11 @@ Define a smaller list such as structs, arrays, tuples, unions, records, and sele
 - **Maintenance cost:** medium to high. Every supported constructor and nesting rule needs a stable classifier and adversarial tests.
 - **Architecture:** a narrower Compatibility Adapter, but still a shallow contract whose meaning depends on representation knowledge.
 
-## Proposed decision
+## Decision
 
 Choose **Option B: require an explicit canonical JSON codec**.
 
-The accepted contract would be:
+The accepted contract is:
 
 1. `kafka.json(...)` accepts a lazy zero-argument factory returning exactly `Schema.toCodecJson<SourceSchema>`; a merely structural `Schema.Codec`, an `any` factory, a factory returning `any`, or a factory inferred to return `never` is not the accepted Interface.
 2. The codec's encoded value is Effect's public `Schema.Json` type and its decoded value is the Source Topic Mapping's `value` field.
@@ -111,11 +111,11 @@ The accepted contract would be:
 6. A schema or wire format outside that contract uses `kafka.codec(...)`, which remains fully typed in both its decoded value and error channel.
 7. Effect upgrades must pass focused sentinel tests for the public canonical codec Interface and its exact representative JSON wire fixtures, but View Server does not preserve private Effect declaration representations.
 
-This proposal deliberately makes the wire decision visible at configuration Locality. It does not claim that every schema accepted by today's Compatibility Adapter remains a supported `kafka.json` input.
+This decision deliberately makes the wire choice visible at configuration Locality. It does not claim that every schema accepted by today's Compatibility Adapter remains a supported `kafka.json` input.
 
 ## Migration and release implications
 
-If Option B is accepted, ordinary callers migrate mechanically:
+Ordinary callers migrate mechanically:
 
 ```ts
 // Before
@@ -146,9 +146,9 @@ The migration must update the Kafka call sites in package tests, runtime tests a
 
 The release notes must call the change out as a breaking Kafka configuration change. Version selection follows the repository's release policy; this ADR does not publish a package.
 
-If Option A is accepted instead, no migration or Changeset is required solely for the decision, but #305 must isolate the present compatibility machinery behind one Adapter and retain upgrade, duplicate-installation, bundle, transpilation, and minification sentinels.
+Had Option A been accepted instead, no migration or Changeset would have been required solely for the decision, but #305 would have needed to isolate the present compatibility machinery behind one Adapter and retain upgrade, duplicate-installation, bundle, transpilation, and minification sentinels.
 
-## Consequences if the proposal is accepted
+## Consequences
 
 The Kafka Source Codec Module retains `KafkaCodec` as its small stable Seam with high Leverage. The JSON Adapter owns canonical codec construction, JSON parsing, and canonical codec decoding. The custom Adapter owns intentionally non-canonical decoding. Effect owns its public canonical codec Implementation.
 
@@ -162,4 +162,4 @@ No production behavior changes in issue #304. Implementation belongs exclusively
 
 ## Maintainer decision record
 
-Pending. A maintainer must explicitly select Option A, B, or C before this ADR can become Accepted and before issue #305 begins.
+On 2026-07-11, maintainer Bruno Antunes explicitly selected Option B in the active PRD #292 implementation task. This approval unlocks issue #305; it does not authorize compatibility behavior to change in issue #304 itself.

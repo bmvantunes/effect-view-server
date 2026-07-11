@@ -174,6 +174,11 @@ _Avoid_: Runtime-owned topic, external mutation topic
 The Runtime Core Module that derives ownership facts from View Server Topic declarations: which topics are source-owned, which topics allow direct mutation, and which topics require leased gRPC lifecycle. It is the single Seam for source ownership decisions.
 _Avoid_: Source helper, source registry, runtime topic helper
 
+**Package Surface Policy**:
+The repository Module that declares every private workspace package entrypoint, public facade projection, manifest target, Vite+ pack entry, package-direction allowance, runtime export sentinel, and rejected deep-import probe. Repository checks inspect TypeScript modules with the TypeScript compiler and project this one policy across source, built output, and package resolution.
+Package inspection is syntactic and non-interprocedural: it rejects direct loader roots, explicit capability escapes, and direct CommonJS or dynamic acquisition of `node:module`, but it does not resolve arbitrary data-flow aliases such as loaders returned by concise arrows or arrays. New loader idioms require an explicit policy fixture. Unlabeled and unknown-language Markdown fences use TSX parsing to avoid JSX-text false positives; examples that use TypeScript angle-bracket assertions must label the fence `ts`.
+_Avoid_: Export allowlist, pack-entry copy, bespoke source parser
+
 **Kafka Source Codec**:
 A typed decoder contract for Kafka message keys and values before Mapping, such as protobuf, JSON, string, bytes, or a custom Effectful decoder. It is the source-format Seam; the View Server Topic schema remains the target truth.
 _Avoid_: Topic schema, row schema, serializer
@@ -237,6 +242,7 @@ _Avoid_: Browser write, send, emit
 - A **Real View Server** and **In-Memory View Server** differ only by transport and ingress **Adapters**, not by query, storage, health, or subscription logic.
 - A **Source Topic** uses one **Kafka Source Codec** for its value and optionally one **Kafka Source Codec** for its key.
 - A **Source Topic** is mapped into a **View Server Topic** through a **Mapping**.
+- The **Package Surface Policy** is the single Seam for private package exports, consumer facade projections, pack entries, package direction, and deep-import rejection.
 - The current **Kafka Delivery Contract** is live-process at-least-once after successful publish-then-commit sequencing, but not durable restart recovery unless Kafka is replayed from an authoritative position.
 - A **Kafka Consumer Group Assumption** must be documented anywhere runtime options expose consumer-group resume behavior.
 - **Health Ledger** state feeds engine health, runtime health, transport health, and React health.

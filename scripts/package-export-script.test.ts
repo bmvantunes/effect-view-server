@@ -8,7 +8,7 @@ describe("package export script", () => {
     expect(packageJson.scripts["check:package-exports"]).toStrictEqual(
       [
         "vp run --filter './packages/*' build",
-        "tsc --ignoreConfig --noEmit --strict --skipLibCheck --module preserve --moduleResolution bundler scripts/node-ambient.d.ts scripts/check-package-exports.ts",
+        "tsc --ignoreConfig --noEmit --strict --skipLibCheck --module preserve --moduleResolution bundler --allowImportingTsExtensions scripts/node-ambient.d.ts scripts/check-package-exports.ts",
         "node --experimental-strip-types scripts/check-package-exports.ts",
       ].join(" && "),
     );

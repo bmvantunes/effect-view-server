@@ -1,1638 +1,151 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
+import {
+  consumerPackageSpecifiers,
+  expectedPackageSurfaces,
+  facadeProjections,
+  packageSurfacePolicy,
+  sourceModuleExtensions,
+  sourceForbiddenExportPolicies,
+  workspacePackageSpecifiers,
+  type ExpectedPackageSurface,
+  type FacadeProjection,
+  type PrivatePackageSurface,
+  type SourceForbiddenExportPolicy,
+} from "./package-surface-policy.ts";
+import {
+  identifierNamesFromTypeScript,
+  inspectLibraryPack,
+  inspectReexportModule,
+  inspectTypeScriptModule,
+  namespaceImportsFromTypeScript,
+  type UnsupportedModuleLoad,
+} from "./typescript-module-inspection.ts";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const packageSourceRoot = (name: string): string => join(repoRoot, "packages", name, "src");
-const engineSourceRoot = join(repoRoot, "packages", "column-live-view-engine", "src");
-const topicStoreFile = join(engineSourceRoot, "topic-store.ts");
-const topicStoreHealthFile = join(engineSourceRoot, "topic-store-health.ts");
-const topicStoreLifecycleFile = join(engineSourceRoot, "topic-store-lifecycle.ts");
-const topicStoreMutationFile = join(engineSourceRoot, "topic-store-mutation.ts");
-const topicStoreQueryFile = join(engineSourceRoot, "topic-store-query.ts");
-const topicStoreStateFile = join(engineSourceRoot, "topic-store-state.ts");
-const topicStoreSubscriptionFile = join(engineSourceRoot, "topic-store-subscription.ts");
-const typescriptModuleExtensions = [".ts", ".tsx", ".mts", ".cts"] as const;
+const noIgnoredDirectories: ReadonlySet<string> = new Set();
 
-const typescriptModuleExtensionFor = (path: string): string | undefined =>
-  typescriptModuleExtensions.find((extension) => path.endsWith(extension));
-
-const restrictedTopicStoreHelpers = [
-  {
-    name: "makeTopicStoreSubscriptionPermit",
-    pattern: /\bmakeTopicStoreSubscriptionPermit\b/,
-    allowedPaths: new Set([topicStoreStateFile, topicStoreSubscriptionFile]),
-  },
-  {
-    name: "topicStoreRawQueryMetadata",
-    pattern: /\btopicStoreRawQueryMetadata\b/,
-    allowedPaths: new Set([topicStoreQueryFile, topicStoreStateFile]),
-  },
-  {
-    name: "topicStoreReadModel",
-    pattern: /\btopicStoreReadModel\b/,
-    allowedPaths: new Set([topicStoreQueryFile, topicStoreStateFile]),
-  },
-  {
-    name: "topicStoreState",
-    pattern: /\btopicStoreState\b/,
-    allowedPaths: new Set([topicStoreMutationFile, topicStoreStateFile]),
-  },
-] as const;
-
-const noIgnoredSourceDirectories: ReadonlySet<string> = new Set();
+const toPosixPath = (path: string): string => path.replaceAll("\\", "/");
 
 export const sourceFiles = (
   directory: string,
-  ignoredDirectoryNames: ReadonlySet<string> = noIgnoredSourceDirectories,
+  ignoredDirectoryNames: ReadonlySet<string> = noIgnoredDirectories,
 ): ReadonlyArray<string> => {
+  if (!existsSync(directory)) {
+    return [];
+  }
+  const files: Array<string> = [];
   const entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
     left.name.localeCompare(right.name),
   );
-  const files: Array<string> = [];
-
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
       if (!ignoredDirectoryNames.has(entry.name)) {
         files.push(...sourceFiles(path, ignoredDirectoryNames));
       }
-      continue;
-    }
-    if (entry.isFile() && typescriptModuleExtensionFor(entry.name) !== undefined) {
+    } else if (
+      entry.isFile() &&
+      sourceModuleExtensions.some((extension) => entry.name.endsWith(extension))
+    ) {
       files.push(path);
     }
   }
-
   return files;
 };
 
 export const isTestFile = (path: string): boolean =>
   /\.(?:test|test-d|bench)\.(?:ts|tsx|mts|cts)$/.test(path);
 
-type RestrictedPackageImport = {
-  readonly allowedRelativePathSpecifiers?: ReadonlyMap<string, ReadonlySet<string>>;
-  readonly allowedSpecifiers?: ReadonlySet<string>;
-  readonly forbiddenSpecifiers: ReadonlySet<string>;
-  readonly message: string;
-  readonly packageName: string;
-};
-
-const currentViewServerScope = "@effect-view-server";
-const staleViewServerScope = "@view" + "-server";
-const publicViewServerPackage = "effect-view-server";
-
-const isCurrentViewServerSpecifier = (specifier: string): boolean =>
-  specifier === currentViewServerScope || specifier.startsWith(`${currentViewServerScope}/`);
-
-const isStaleViewServerSpecifier = (specifier: string): boolean =>
-  specifier === staleViewServerScope || specifier.startsWith(`${staleViewServerScope}/`);
-
-const isPublicViewServerSpecifier = (specifier: string): boolean =>
-  specifier === publicViewServerPackage || specifier.startsWith(`${publicViewServerPackage}/`);
-
-const isViewServerSpecifier = (specifier: string): boolean =>
-  isCurrentViewServerSpecifier(specifier) ||
-  isStaleViewServerSpecifier(specifier) ||
-  isPublicViewServerSpecifier(specifier);
-
-const previousNonWhitespaceCharacter = (contents: string, index: number): string | undefined => {
-  let nextIndex = index;
-  while (nextIndex >= 0) {
-    const character = contents.charAt(nextIndex);
-    if (!/\s/.test(character)) {
-      return character;
-    }
-    nextIndex -= 1;
-  }
-  return undefined;
-};
-
-const isRegexLiteralStartContext = (contents: string, index: number): boolean => {
-  const previous = previousNonWhitespaceCharacter(contents, index - 1);
-  const previousSource = contents.slice(0, index).trimEnd();
-  return (
-    previous === undefined ||
-    previous === "(" ||
-    previous === "[" ||
-    previous === "{" ||
-    previous === "=" ||
-    previous === ":" ||
-    previous === "," ||
-    previous === "?" ||
-    previous === ">" ||
-    previous === ";" ||
-    previous === "&" ||
-    previous === "|" ||
-    previous === "!" ||
-    previous === "+" ||
-    previous === "-" ||
-    previous === "*" ||
-    previous === "~" ||
-    previous === "^" ||
-    previous === "<" ||
-    /\b(?:return|throw|case|yield|await|typeof|void|delete|in|of|instanceof|else|do)$/.test(previousSource) ||
-    /\b(?:if|while|for|with)\s*\([\s\S]*\)$/.test(previousSource)
-  );
-};
-
-const skipRegexLiteral = (contents: string, index: number): number => {
-  let insideCharacterClass = false;
-  let nextIndex = index + 1;
-
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    if (character === "\n") {
-      return index + 1;
-    }
-    if (character === "\\") {
-      nextIndex += 2;
-      continue;
-    }
-    if (character === "[") {
-      insideCharacterClass = true;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === "]") {
-      insideCharacterClass = false;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === "/" && !insideCharacterClass) {
-      nextIndex += 1;
-      while (/[A-Za-z]/.test(contents.charAt(nextIndex))) {
-        nextIndex += 1;
-      }
-      return nextIndex;
-    }
-    nextIndex += 1;
-  }
-
-  return index + 1;
-};
-
-export const sourceWithoutComments = (contents: string): string => {
-  let output = "";
-  let index = 0;
-  let quote: '"' | "'" | "`" | undefined;
-  let lineComment = false;
-  let blockComment = false;
-
-  while (index < contents.length) {
-    const character = contents.charAt(index);
-    const nextCharacter = contents.charAt(index + 1);
-
-    if (lineComment) {
-      if (character === "\n") {
-        lineComment = false;
-        output += character;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (blockComment) {
-      if (character === "\n") {
-        output += character;
-      }
-      if (character === "*" && nextCharacter === "/") {
-        blockComment = false;
-        index += 2;
-        continue;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (quote !== undefined) {
-      output += character;
-      if (character === "\\") {
-        output += nextCharacter;
-        index += 2;
-        continue;
-      }
-      if (character === quote) {
-        quote = undefined;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (isJsxTagStart(contents, index)) {
-      const jsxElement = jsxElementImportSpecifiers(contents, index);
-      const nextIndex = jsxElement.nextIndex;
-      output += contents.slice(index, nextIndex);
-      index = nextIndex;
-      continue;
-    }
-
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, index)
-    ) {
-      const nextIndex = skipRegexLiteral(contents, index);
-      output += contents.slice(index, nextIndex);
-      index = nextIndex;
-      continue;
-    }
-
-    if (character === "/" && nextCharacter === "/") {
-      lineComment = true;
-      index += 2;
-      continue;
-    }
-
-    if (character === "/" && nextCharacter === "*") {
-      blockComment = true;
-      index += 2;
-      continue;
-    }
-
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-    }
-    output += character;
-    index += 1;
-  }
-
-  return output;
-};
-
-const importedViewServerSpecifiers = (contents: string): ReadonlyArray<string> =>
-  importSpecifiersFromSource(contents).filter(isViewServerSpecifier);
-
-const specifierMatches = (specifier: string, packageSpecifier: string): boolean =>
-  specifier === packageSpecifier || specifier.startsWith(`${packageSpecifier}/`);
-
-const isImportQuote = (character: string): character is '"' | "'" | "`" =>
-  character === '"' || character === "'" || character === "`";
-
-const identifierCharacterPattern = /[A-Za-z0-9_$]/;
-
-const isIdentifierCharacter = (character: string | undefined): boolean =>
-  character !== undefined && identifierCharacterPattern.test(character);
-
-const isValidCodePoint = (codePoint: number): boolean =>
-  Number.isFinite(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff;
-
-const readEscapedIdentifierCharacter = (
-  contents: string,
-  index: number,
-): { readonly character: string; readonly nextIndex: number } | undefined => {
-  if (contents.charAt(index) !== "\\" || contents.charAt(index + 1) !== "u") {
-    return undefined;
-  }
-  if (contents.charAt(index + 2) === "{") {
-    const closeBraceIndex = contents.indexOf("}", index + 3);
-    const hex = contents.slice(index + 3, Math.max(index + 3, closeBraceIndex));
-    const codePoint = Number.parseInt(hex, 16);
-    return /^[0-9A-Fa-f]+$/.test(hex) && isValidCodePoint(codePoint)
-      ? {
-          character: String.fromCodePoint(codePoint),
-          nextIndex: closeBraceIndex + 1,
-        }
-      : undefined;
-  }
-  const hex = contents.slice(index + 2, index + 6);
-  const codePoint = Number.parseInt(hex, 16);
-  return /^[0-9A-Fa-f]{4}$/.test(hex) && isValidCodePoint(codePoint)
-    ? {
-        character: String.fromCodePoint(codePoint),
-        nextIndex: index + 6,
-      }
-    : undefined;
-};
-
-const readIdentifierNameAt = (
-  contents: string,
-  index: number,
-): { readonly name: string; readonly nextIndex: number } | undefined => {
-  let name = "";
-  let nextIndex = index;
-  while (nextIndex < contents.length) {
-    const escaped = readEscapedIdentifierCharacter(contents, nextIndex);
-    if (escaped !== undefined) {
-      name += escaped.character;
-      nextIndex = escaped.nextIndex;
-      continue;
-    }
-    const character = contents.charAt(nextIndex);
-    if (!isIdentifierCharacter(character)) {
-      break;
-    }
-    name += character;
-    nextIndex += 1;
-  }
-  return name === ""
-    ? undefined
-    : {
-        name,
-        nextIndex,
-      };
-};
-
-const afterKeywordAt = (contents: string, index: number, keyword: string): number | undefined => {
-  const identifier = readIdentifierNameAt(contents, index);
-  return identifier?.name === keyword &&
-    !isIdentifierCharacter(contents[index - 1]) &&
-    !isIdentifierCharacter(contents[identifier.nextIndex])
-    ? identifier.nextIndex
-    : undefined;
-};
-
-const skipWhitespace = (contents: string, index: number): number => {
-  let nextIndex = index;
-  while (nextIndex < contents.length && /\s/.test(contents.charAt(nextIndex))) {
-    nextIndex += 1;
-  }
-  return nextIndex;
-};
-
-const readBracketAccessorAt = (
-  contents: string,
-  index: number,
-  property: string,
-): number | undefined => {
-  if (contents.charAt(index) !== "[") {
-    return undefined;
-  }
-  const propertySpecifier = readQuotedSpecifier(contents, skipWhitespace(contents, index + 1));
-  if (propertySpecifier?.specifier !== property) {
-    return undefined;
-  }
-  const closeBracketIndex = skipWhitespace(contents, propertySpecifier.nextIndex);
-  return contents.charAt(closeBracketIndex) === "]" ? closeBracketIndex + 1 : undefined;
-};
-
-const readPropertyAccessor = (
-  contents: string,
-  index: number,
-  property: string,
-): number | undefined => {
-  const nextIndex = skipWhitespace(contents, index);
-  if (contents.charAt(nextIndex) === ".") {
-    const propertyIndex = skipWhitespace(contents, nextIndex + 1);
-    return afterKeywordAt(contents, propertyIndex, property);
-  }
-  const bracketAccessor = readBracketAccessorAt(contents, nextIndex, property);
-  if (bracketAccessor !== undefined) {
-    return bracketAccessor;
-  }
-  if (contents.charAt(nextIndex) !== "?") {
-    return undefined;
-  }
-  const dotIndex = skipWhitespace(contents, nextIndex + 1);
-  if (contents.charAt(dotIndex) !== ".") {
-    return undefined;
-  }
-  const propertyIndex = skipWhitespace(contents, dotIndex + 1);
-  const optionalBracketAccessor = readBracketAccessorAt(contents, propertyIndex, property);
-  if (optionalBracketAccessor !== undefined) {
-    return optionalBracketAccessor;
-  }
-  return afterKeywordAt(contents, propertyIndex, property);
-};
-
-const readOptionalCallOpenParen = (contents: string, index: number): number | undefined => {
-  const nextIndex = skipWhitespace(contents, index);
-  if (contents.charAt(nextIndex) !== "?") {
-    return undefined;
-  }
-  const dotIndex = skipWhitespace(contents, nextIndex + 1);
-  if (contents.charAt(dotIndex) !== ".") {
-    return undefined;
-  }
-  const openParenIndex = skipWhitespace(contents, dotIndex + 1);
-  return contents.charAt(openParenIndex) === "(" ? openParenIndex : undefined;
-};
-
-const readQuotedSpecifier = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const quote = contents.charAt(index);
-  if (!isImportQuote(quote)) {
-    return undefined;
-  }
-
-  let specifier = "";
-  let nextIndex = index + 1;
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === "\\") {
-      if (nextCharacter === "u") {
-        if (contents.charAt(nextIndex + 2) === "{") {
-          const closeBraceIndex = contents.indexOf("}", nextIndex + 3);
-          const hex = contents.slice(
-            nextIndex + 3,
-            Math.max(nextIndex + 3, closeBraceIndex),
-          );
-          const codePoint = Number.parseInt(hex, 16);
-          if (/^[0-9A-Fa-f]+$/.test(hex) && isValidCodePoint(codePoint)) {
-            specifier += String.fromCodePoint(codePoint);
-            nextIndex = closeBraceIndex + 1;
-            continue;
-          }
-        }
-        const hex = contents.slice(nextIndex + 2, nextIndex + 6);
-        const codePoint = Number.parseInt(hex, 16);
-        if (/^[0-9A-Fa-f]{4}$/.test(hex) && isValidCodePoint(codePoint)) {
-          specifier += String.fromCodePoint(codePoint);
-          nextIndex += 6;
-          continue;
-        }
-      }
-      if (nextCharacter === "x") {
-        const hex = contents.slice(nextIndex + 2, nextIndex + 4);
-        const codePoint = Number.parseInt(hex, 16);
-        if (/^[0-9A-Fa-f]{2}$/.test(hex) && isValidCodePoint(codePoint)) {
-          specifier += String.fromCodePoint(codePoint);
-          nextIndex += 4;
-          continue;
-        }
-      }
-      specifier += nextCharacter;
-      nextIndex += nextCharacter === "" ? 1 : 2;
-      continue;
-    }
-    if (character === quote) {
-      return {
-        nextIndex: nextIndex + 1,
-        specifier,
-      };
-    }
-    specifier += character;
-    nextIndex += 1;
-  }
-
-  return undefined;
-};
-
-const readStaticQuotedSpecifier = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const quoted = readQuotedSpecifier(contents, index);
-  if (quoted === undefined) {
-    return undefined;
-  }
-  if (
-    contents.charAt(index) === "`" &&
-    quoted.specifier.includes("${") &&
-    !isViewServerSpecifier(quoted.specifier)
-  ) {
-    return undefined;
-  }
-  return quoted;
-};
-
-const skipQuotedLiteral = (contents: string, index: number): number =>
-  readQuotedSpecifier(contents, index)?.nextIndex ?? index + 1;
-
-const isJsxStartContext = (contents: string, index: number): boolean => {
-  const previous = previousNonWhitespaceCharacter(contents, index - 1);
-  const previousSource = contents.slice(0, index).trimEnd();
-  return (
-    previous === undefined ||
-    previous === "(" ||
-    previous === "[" ||
-    previous === "{" ||
-    previous === "=" ||
-    previous === ":" ||
-    previous === "," ||
-    previous === "?" ||
-    previous === ">" ||
-    previous === ";" ||
-    previous === "&" ||
-    previous === "|" ||
-    previous === "!" ||
-    /\breturn$/.test(previousSource)
-  );
-};
-
-const isJsxTagStart = (contents: string, index: number): boolean => {
-  const nextCharacter = contents.charAt(index + 1);
-  return (
-    contents.charAt(index) === "<" &&
-    (nextCharacter === ">" || /[A-Za-z_$/.]/.test(nextCharacter)) &&
-    isJsxStartContext(contents, index)
-  );
-};
-
-const isNestedJsxTagStart = (contents: string, index: number): boolean => {
-  const nextCharacter = contents.charAt(index + 1);
-  return contents.charAt(index) === "<" && (nextCharacter === ">" || /[A-Za-z_$/.]/.test(nextCharacter));
-};
-
-const freeRequireKeywordEndAt = (contents: string, index: number): number | undefined => {
-  const previous = previousNonWhitespaceCharacter(contents, index - 1);
-  const afterRequire = afterKeywordAt(contents, index, "require");
-  return afterRequire !== undefined && previous !== "." && previous !== "#" ? afterRequire : undefined;
-};
-
-const freeCreateRequireKeywordEndAt = (
-  contents: string,
-  index: number,
-): number | undefined => {
-  const previous = previousNonWhitespaceCharacter(contents, index - 1);
-  const afterCreateRequire = afterKeywordAt(contents, index, "createRequire");
-  return afterCreateRequire !== undefined && previous !== "." && previous !== "#"
-    ? afterCreateRequire
-    : undefined;
-};
-
-const moduleRequireAccessorAt = (contents: string, index: number): number | undefined => {
-  const previous = previousNonWhitespaceCharacter(contents, index - 1);
-  if (previous === "." || previous === "#") {
-    return undefined;
-  }
-  const afterModule = afterKeywordAt(contents, index, "module");
-  if (afterModule === undefined) {
-    return undefined;
-  }
-  return readAccessorAfterCallee(contents, index, afterModule, "require");
-};
-
-const callOpenParenIndex = (contents: string, index: number): number | undefined => {
-  const nextIndex = skipWhitespace(contents, index);
-  if (contents[nextIndex] === "(") {
-    return nextIndex;
-  }
-  return readOptionalCallOpenParen(contents, nextIndex);
-};
-
-const resolveAccessorAfterRequire = (
-  contents: string,
-  requireStartIndex: number,
-  index: number,
-): number | undefined => {
-  return readAccessorAfterCallee(contents, requireStartIndex, index, "resolve");
-};
-
-const importMetaResolveAccessorAt = (contents: string, index: number): number | undefined => {
-  const previous = previousNonWhitespaceCharacter(contents, index - 1);
-  if (previous === "." || previous === "#") {
-    return undefined;
-  }
-  const afterImportKeyword = afterKeywordAt(contents, index, "import");
-  if (afterImportKeyword === undefined) {
-    return undefined;
-  }
-  const afterImport = skipWhitespace(contents, afterImportKeyword);
-  if (contents.charAt(afterImport) !== ".") {
-    return undefined;
-  }
-  const metaIndex = skipWhitespace(contents, afterImport + 1);
-  const afterMeta = afterKeywordAt(contents, metaIndex, "meta");
-  if (afterMeta === undefined) {
-    return undefined;
-  }
-  return readAccessorAfterCallee(contents, index, afterMeta, "resolve");
-};
-
-const readCallSpecifier = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const openParen = callOpenParenIndex(contents, index);
-  if (openParen === undefined) {
-    return undefined;
-  }
-  return readStaticQuotedSpecifier(contents, skipWhitespace(contents, openParen + 1));
-};
-
-const readCallSecondSpecifier = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const openParen = callOpenParenIndex(contents, index);
-  if (openParen === undefined) {
-    return undefined;
-  }
-  let depth = 0;
-  let nextIndex = skipWhitespace(contents, openParen + 1);
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === '"' || character === "'" || character === "`") {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, nextIndex)
-    ) {
-      nextIndex = skipRegexLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "(" || character === "[" || character === "{") {
-      depth += 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === ")" && depth === 0) {
-      return undefined;
-    }
-    if (character === ")" || character === "]" || character === "}") {
-      depth -= 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === "," && depth === 0) {
-      return readStaticQuotedSpecifier(contents, skipWhitespace(contents, nextIndex + 1));
-    }
-    nextIndex += 1;
-  }
-  return undefined;
-};
-
-const readCallExpressionEnd = (contents: string, index: number): number | undefined => {
-  const openParen = callOpenParenIndex(contents, index);
-  if (openParen === undefined) {
-    return undefined;
-  }
-  let depth = 0;
-  let nextIndex = openParen + 1;
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === '"' || character === "'" || character === "`") {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, nextIndex)
-    ) {
-      nextIndex = skipRegexLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "(" || character === "[" || character === "{") {
-      depth += 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === ")" && depth === 0) {
-      return nextIndex + 1;
-    }
-    if (character === ")" || character === "]" || character === "}") {
-      depth -= 1;
-      nextIndex += 1;
-      continue;
-    }
-    nextIndex += 1;
-  }
-  return undefined;
-};
-
-const readApplyArraySpecifier = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const openParen = callOpenParenIndex(contents, index);
-  if (openParen === undefined) {
-    return undefined;
-  }
-  let depth = 0;
-  let nextIndex = openParen + 1;
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === '"' || character === "'" || character === "`") {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, nextIndex)
-    ) {
-      nextIndex = skipRegexLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "(" || character === "[" || character === "{") {
-      depth += 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === ")" && depth === 0) {
-      return undefined;
-    }
-    if (character === ")" || character === "]" || character === "}") {
-      depth -= 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === "," && depth === 0) {
-      const openArrayIndex = skipWhitespace(contents, nextIndex + 1);
-      if (contents.charAt(openArrayIndex) !== "[") {
-        return undefined;
-      }
-      const specifier = readStaticQuotedSpecifier(
-        contents,
-        skipWhitespace(contents, openArrayIndex + 1),
-      );
-      if (specifier === undefined) {
-        return undefined;
-      }
-      return {
-        nextIndex: specifier.nextIndex,
-        specifier: specifier.specifier,
-      };
-    }
-    nextIndex += 1;
-  }
-  return undefined;
-};
-
-const matchingCloseParenIndexFromOpen = (
-  contents: string,
-  openParenIndex: number,
-): number | undefined => {
-  let depth = 0;
-  let nextIndex = openParenIndex + 1;
-  let closeParenIndex: number | undefined;
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === '"' || character === "'" || character === "`") {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, nextIndex)
-    ) {
-      nextIndex = skipRegexLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "(") {
-      depth += 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === ")") {
-      if (depth === 0) {
-        closeParenIndex = nextIndex;
-        break;
-      }
-      depth -= 1;
-      nextIndex += 1;
-      continue;
-    }
-    nextIndex += 1;
-  }
-  return closeParenIndex;
-};
-
-const endsWithControlCondition = (contents: string): boolean => {
-  const trimmed = contents.trimEnd();
-  const controlKeywords = ["if", "while", "with", "for", "switch"];
-  let index = 0;
-  while (index < trimmed.length) {
-    for (const keyword of controlKeywords) {
-      const afterKeyword = afterKeywordAt(trimmed, index, keyword);
-      if (afterKeyword === undefined) {
-        continue;
-      }
-      let openParenIndex = skipWhitespace(trimmed, afterKeyword);
-      if (keyword === "for") {
-        const afterAwait = afterKeywordAt(trimmed, openParenIndex, "await");
-        if (afterAwait !== undefined) {
-          openParenIndex = skipWhitespace(trimmed, afterAwait);
-        }
-      }
-      if (trimmed.charAt(openParenIndex) !== "(") {
-        continue;
-      }
-      const closeParenIndex = matchingCloseParenIndexFromOpen(trimmed, openParenIndex);
-      if (closeParenIndex !== undefined && skipWhitespace(trimmed, closeParenIndex + 1) === trimmed.length) {
-        return true;
-      }
-    }
-    index += 1;
-  }
-  return false;
-};
-
-const wrappingOpenParenCountBefore = (contents: string, index: number): number => {
-  let count = 0;
-  let nextIndex = index;
-  while (nextIndex > 0) {
-    const before = contents.slice(0, nextIndex).trimEnd();
-    if (before.at(-1) !== "(") {
-      return count;
-    }
-    const beforeOpenParen = before.slice(0, -1).trimEnd();
-    const precedingCharacter = beforeOpenParen.at(-1);
-    const previousToken = beforeOpenParen.match(/[A-Za-z_$][\w$]*$/)?.[0];
-    const followsKeyword =
-      previousToken === "return" ||
-      previousToken === "await" ||
-      previousToken === "void" ||
-      previousToken === "throw" ||
-      previousToken === "yield" ||
-      previousToken === "delete" ||
-      previousToken === "typeof" ||
-      previousToken === "new" ||
-      previousToken === "else" ||
-      previousToken === "do";
-    const followsControlCondition =
-      precedingCharacter === ")" && endsWithControlCondition(beforeOpenParen);
-    const isExpressionGrouping =
-      precedingCharacter === undefined ||
-      precedingCharacter === "(" ||
-      followsKeyword ||
-      followsControlCondition ||
-      "([{=,:;!?&|+-*/%~^<>".includes(precedingCharacter);
-    if (!isExpressionGrouping) {
-      return 0;
-    }
-    count += 1;
-    nextIndex = before.length - 1;
-  }
-  return count;
-};
-
-const afterWrappingCloseParens = (
-  contents: string,
-  index: number,
-  count: number,
-): number | undefined => {
-  let nextIndex = skipWhitespace(contents, index);
-  for (let parenIndex = 0; parenIndex < count; parenIndex += 1) {
-    if (contents.charAt(nextIndex) !== ")") {
-      return undefined;
-    }
-    nextIndex = skipWhitespace(contents, nextIndex + 1);
-  }
-  return nextIndex;
-};
-
-const readAccessorAfterCallee = (
-  contents: string,
-  calleeStartIndex: number,
-  afterCalleeIndex: number,
-  property: string,
-): number | undefined => {
-  const directAccessor = readPropertyAccessor(contents, afterCalleeIndex, property);
-  if (directAccessor !== undefined) {
-    return directAccessor;
-  }
-  const wrappingOpenParens = wrappingOpenParenCountBefore(contents, calleeStartIndex);
-  if (wrappingOpenParens === 0) {
-    return undefined;
-  }
-  for (let parenCount = wrappingOpenParens; parenCount > 0; parenCount -= 1) {
-    const afterWrappedCallee = afterWrappingCloseParens(contents, afterCalleeIndex, parenCount);
-    if (afterWrappedCallee === undefined) {
-      continue;
-    }
-    const wrappedAccessor = readPropertyAccessor(contents, afterWrappedCallee, property);
-    if (wrappedAccessor !== undefined) {
-      return wrappedAccessor;
-    }
-  }
-  return undefined;
-};
-
-const readBoundOrAppliedSpecifier = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const afterBindAccessor = readPropertyAccessor(contents, index, "bind");
-  if (afterBindAccessor !== undefined) {
-    const boundSpecifier = readCallSecondSpecifier(contents, afterBindAccessor);
-    if (boundSpecifier !== undefined) {
-      return boundSpecifier;
-    }
-    const afterBindCall = readCallExpressionEnd(contents, afterBindAccessor);
-    if (afterBindCall !== undefined) {
-      const boundCall = readCallSpecifier(contents, afterBindCall);
-      if (boundCall !== undefined) {
-        return boundCall;
-      }
-    }
-  }
-
-  const afterApplyAccessor = readPropertyAccessor(contents, index, "apply");
-  return afterApplyAccessor === undefined
-    ? undefined
-    : readApplyArraySpecifier(contents, afterApplyAccessor);
-};
-
-const expressionWrapperCloseParenIndex = (contents: string, index: number): number | undefined => {
-  let depth = 0;
-  let nextIndex = index;
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === '"' || character === "'" || character === "`") {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, nextIndex)
-    ) {
-      nextIndex = skipRegexLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "(" || character === "[" || character === "{") {
-      depth += 1;
-      nextIndex += 1;
-      continue;
-    }
-    if (character === ")" && depth === 0) {
-      return nextIndex;
-    }
-    if (character === ")" || character === "]" || character === "}") {
-      depth -= 1;
-      nextIndex += 1;
-      continue;
-    }
-    nextIndex += 1;
-  }
-  return undefined;
-};
-
-const readSpecifierAfterCallableExpression = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const directCall = readCallSpecifier(contents, index);
-  if (directCall !== undefined) {
-    return directCall;
-  }
-  const afterCallAccessor = readPropertyAccessor(contents, index, "call");
-  if (afterCallAccessor !== undefined) {
-    const calledSpecifier = readCallSecondSpecifier(contents, afterCallAccessor);
-    if (calledSpecifier !== undefined) {
-      return calledSpecifier;
-    }
-  }
-  return readBoundOrAppliedSpecifier(contents, index);
-};
-
-const afterExpressionWrappedCallee = (
-  contents: string,
-  calleeStartIndex: number,
-  afterCalleeIndex: number,
-): number | undefined => {
-  let previous = contents.slice(0, calleeStartIndex).trimEnd();
-  while (previous.endsWith("(")) {
-    previous = previous.slice(0, -1).trimEnd();
-  }
-  const hasExpressionWrapper =
-    previous.endsWith(",") ||
-    previous.endsWith("||") ||
-    previous.endsWith("&&") ||
-    previous.endsWith("?") ||
-    previous.endsWith(":") ||
-    previous.endsWith("??");
-  if (!hasExpressionWrapper) {
-    const afterCallee = skipWhitespace(contents, afterCalleeIndex);
-    const startsWrappedExpression =
-      contents.startsWith("??", afterCallee) ||
-      contents.startsWith("||", afterCallee) ||
-      contents.startsWith(":", afterCallee);
-    if (!startsWrappedExpression) {
-      return undefined;
-    }
-    const closeParenIndex = expressionWrapperCloseParenIndex(contents, afterCallee + 1);
-    return closeParenIndex === undefined ? undefined : closeParenIndex + 1;
-  }
-  const afterCallee = skipWhitespace(contents, afterCalleeIndex);
-  if (contents.charAt(afterCallee) === ")") {
-    return afterCallee + 1;
-  }
-  const startsTernaryTail = previous.endsWith("?") && contents.charAt(afterCallee) === ":";
-  if (!startsTernaryTail) {
-    return undefined;
-  }
-  const closeParenIndex = expressionWrapperCloseParenIndex(contents, afterCallee + 1);
-  return closeParenIndex === undefined ? undefined : closeParenIndex + 1;
-};
-
-const readCalleeCallSpecifier = (
-  contents: string,
-  calleeStartIndex: number,
-  afterCalleeIndex: number,
-): { readonly nextIndex: number; readonly specifier: string } | undefined => {
-  const directCall = readCallSpecifier(contents, afterCalleeIndex);
-  if (directCall !== undefined) {
-    return directCall;
-  }
-
-  const boundOrApplied = readBoundOrAppliedSpecifier(contents, afterCalleeIndex);
-  if (boundOrApplied !== undefined) {
-    return boundOrApplied;
-  }
-
-  const afterExpressionWrapper = afterExpressionWrappedCallee(
-    contents,
-    calleeStartIndex,
-    afterCalleeIndex,
-  );
-  if (afterExpressionWrapper !== undefined) {
-    let nextExpressionWrapper = skipWhitespace(contents, afterExpressionWrapper);
-    while (nextExpressionWrapper < contents.length) {
-      const expressionWrappedSpecifier = readSpecifierAfterCallableExpression(
-        contents,
-        nextExpressionWrapper,
-      );
-      if (expressionWrappedSpecifier !== undefined) {
-        return expressionWrappedSpecifier;
-      }
-      if (contents.charAt(nextExpressionWrapper) !== ")") {
-        break;
-      }
-      nextExpressionWrapper = skipWhitespace(contents, nextExpressionWrapper + 1);
-    }
-  }
-
-  const wrappingOpenParens = wrappingOpenParenCountBefore(contents, calleeStartIndex);
-  if (wrappingOpenParens > 0) {
-    for (let parenCount = wrappingOpenParens; parenCount > 0; parenCount -= 1) {
-      const afterWrappedCallee = afterWrappingCloseParens(contents, afterCalleeIndex, parenCount);
-      if (afterWrappedCallee === undefined) {
-        continue;
-      }
-      const parenthesizedCall = readCallSpecifier(contents, afterWrappedCallee);
-      if (parenthesizedCall !== undefined) {
-        return parenthesizedCall;
-      }
-      const afterParenthesizedCallAccessor = readPropertyAccessor(
-        contents,
-        afterWrappedCallee,
-        "call",
-      );
-      if (afterParenthesizedCallAccessor !== undefined) {
-        return readCallSecondSpecifier(contents, afterParenthesizedCallAccessor);
-      }
-      const parenthesizedBoundOrApplied = readBoundOrAppliedSpecifier(contents, afterWrappedCallee);
-      if (parenthesizedBoundOrApplied !== undefined) {
-        return parenthesizedBoundOrApplied;
-      }
-      const afterWrappedExpressionWrapper = afterExpressionWrappedCallee(
-        contents,
-        calleeStartIndex,
-        afterWrappedCallee,
-      );
-      if (afterWrappedExpressionWrapper !== undefined) {
-        let nextWrappedExpression = skipWhitespace(contents, afterWrappedExpressionWrapper);
-        while (nextWrappedExpression < contents.length) {
-          const wrappedExpressionSpecifier = readSpecifierAfterCallableExpression(
-            contents,
-            nextWrappedExpression,
-          );
-          if (wrappedExpressionSpecifier !== undefined) {
-            return wrappedExpressionSpecifier;
-          }
-          if (contents.charAt(nextWrappedExpression) !== ")") {
-            break;
-          }
-          nextWrappedExpression = skipWhitespace(contents, nextWrappedExpression + 1);
-        }
-      }
-    }
-  }
-
-  const afterCallAccessor = readPropertyAccessor(contents, afterCalleeIndex, "call");
-  if (afterCallAccessor !== undefined) {
-    return readCallSecondSpecifier(contents, afterCallAccessor);
-  }
-
-  return undefined;
-};
-
-const readTemplateExpression = (
-  contents: string,
-  index: number,
-): { readonly expression: string; readonly nextIndex: number } | undefined => {
-  let depth = 1;
-  let nextIndex = index;
-
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (isImportQuote(character)) {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (
-      character === "/" &&
-      nextCharacter !== "/" &&
-      nextCharacter !== "*" &&
-      isRegexLiteralStartContext(contents, nextIndex)
-    ) {
-      nextIndex = skipRegexLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "/" && nextCharacter === "/") {
-      const nextLineIndex = contents.indexOf("\n", nextIndex + 2);
-      nextIndex = nextLineIndex + 1 || contents.length;
-      continue;
-    }
-    if (character === "/" && nextCharacter === "*") {
-      const commentEndIndex = contents.indexOf("*/", nextIndex + 2);
-      nextIndex = commentEndIndex === -1 ? contents.length : commentEndIndex + 2;
-      continue;
-    }
-    if (character === "{") {
-      depth += 1;
-    }
-    if (character === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return {
-          expression: contents.slice(index, nextIndex),
-          nextIndex: nextIndex + 1,
-        };
-      }
-    }
-    nextIndex += 1;
-  }
-
-  return undefined;
-};
-
-const templateExpressionImportSpecifiers = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifiers: ReadonlyArray<string> } => {
-  const specifiers: Array<string> = [];
-  let nextIndex = index + 1;
-
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    const nextCharacter = contents.charAt(nextIndex + 1);
-    if (character === "\\") {
-      nextIndex += 2;
-      continue;
-    }
-    if (character === "`") {
-      return {
-        nextIndex: nextIndex + 1,
-        specifiers,
-      };
-    }
-    if (character === "$" && nextCharacter === "{") {
-      const expression = readTemplateExpression(contents, nextIndex + 2);
-      if (expression === undefined) {
-        return {
-          nextIndex: contents.length,
-          specifiers,
-        };
-      }
-      specifiers.push(...importSpecifiersFromSource(expression.expression));
-      nextIndex = expression.nextIndex;
-      continue;
-    }
-    nextIndex += 1;
-  }
-
-  return {
-    nextIndex,
-    specifiers,
-  };
-};
-
-const readJsxTag = (
-  contents: string,
-  index: number,
-): {
-  readonly _tag: "complete";
-  readonly closing: boolean;
-  readonly nextIndex: number;
-  readonly selfClosing: boolean;
-  readonly specifiers: ReadonlyArray<string>;
-} | {
-  readonly _tag: "incomplete";
-  readonly nextIndex: number;
-  readonly specifiers: ReadonlyArray<string>;
-} => {
-  const specifiers: Array<string> = [];
-  const closing = contents.charAt(index + 1) === "/";
-  let nextIndex = index + 1;
-
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    if (isImportQuote(character)) {
-      nextIndex = skipQuotedLiteral(contents, nextIndex);
-      continue;
-    }
-    if (character === "{") {
-      const expression = readTemplateExpression(contents, nextIndex + 1);
-      if (expression === undefined) {
-        return {
-          _tag: "incomplete",
-          nextIndex: contents.length,
-          specifiers,
-        };
-      }
-      specifiers.push(...importSpecifiersFromSource(expression.expression));
-      nextIndex = expression.nextIndex;
-      continue;
-    }
-    if (character === ">") {
-      return {
-        _tag: "complete",
-        closing,
-        nextIndex: nextIndex + 1,
-        selfClosing: previousNonWhitespaceCharacter(contents, nextIndex - 1) === "/",
-        specifiers,
-      };
-    }
-    nextIndex += 1;
-  }
-
-  return {
-    _tag: "incomplete",
-    nextIndex,
-    specifiers,
-  };
-};
-
-const jsxElementImportSpecifiers = (
-  contents: string,
-  index: number,
-): { readonly nextIndex: number; readonly specifiers: ReadonlyArray<string> } => {
-  const specifiers: Array<string> = [];
-  let depth = 0;
-  let nextIndex = index;
-
-  while (nextIndex < contents.length) {
-    const character = contents.charAt(nextIndex);
-    if (character === "<" && isNestedJsxTagStart(contents, nextIndex)) {
-      const tag = readJsxTag(contents, nextIndex);
-      if (tag._tag === "incomplete") {
-        return {
-          nextIndex: index + 1,
-          specifiers: [],
-        };
-      }
-      specifiers.push(...tag.specifiers);
-      nextIndex = tag.nextIndex;
-      if (tag.closing) {
-        depth -= 1;
-        if (depth <= 0) {
-          return {
-            nextIndex,
-            specifiers,
-          };
-        }
-        continue;
-      }
-      if (!tag.selfClosing) {
-        depth += 1;
-        continue;
-      }
-      if (depth > 0) {
-        continue;
-      }
-      return {
-        nextIndex,
-        specifiers,
-      };
-    }
-    if (character === "{") {
-      const expression = readTemplateExpression(contents, nextIndex + 1);
-      if (expression === undefined) {
-        return {
-          nextIndex: contents.length,
-          specifiers,
-        };
-      }
-      specifiers.push(...importSpecifiersFromSource(expression.expression));
-      nextIndex = expression.nextIndex;
-      continue;
-    }
-    nextIndex += 1;
-  }
-
-  return {
-    nextIndex: index + 1,
-    specifiers: [],
-  };
-};
-
-export const importSpecifiersFromSource = (contents: string): ReadonlyArray<string> => {
-  const source = sourceWithoutComments(contents);
-  const specifiers: Array<string> = [];
-  let index = 0;
-
-  while (index < source.length) {
-    const character = source.charAt(index);
-    if (isJsxTagStart(source, index)) {
-      const jsxElement = jsxElementImportSpecifiers(source, index);
-      specifiers.push(...jsxElement.specifiers);
-      index = jsxElement.nextIndex;
-      continue;
-    }
-    if (character === "`") {
-      const template = templateExpressionImportSpecifiers(source, index);
-      specifiers.push(...template.specifiers);
-      index = template.nextIndex;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      index = skipQuotedLiteral(source, index);
-      continue;
-    }
-
-    const afterFromKeyword = afterKeywordAt(source, index, "from");
-    if (afterFromKeyword !== undefined) {
-      const specifier = readStaticQuotedSpecifier(
-        source,
-        skipWhitespace(source, afterFromKeyword),
-      );
-      if (specifier !== undefined) {
-        specifiers.push(specifier.specifier);
-        index = specifier.nextIndex;
-        continue;
-      }
-    }
-
-    const afterImportKeyword = afterKeywordAt(source, index, "import");
-    if (afterImportKeyword !== undefined) {
-      const previousImportCharacter = previousNonWhitespaceCharacter(source, index - 1);
-      const isFreeImport = previousImportCharacter !== "." && previousImportCharacter !== "#";
-      if (!isFreeImport) {
-        index += 1;
-        continue;
-      }
-      const afterImport = skipWhitespace(source, afterImportKeyword);
-      const sideEffectSpecifier = readStaticQuotedSpecifier(source, afterImport);
-      if (sideEffectSpecifier !== undefined) {
-        specifiers.push(sideEffectSpecifier.specifier);
-        index = sideEffectSpecifier.nextIndex;
-        continue;
-      }
-      if (source[afterImport] === "(") {
-        const dynamicSpecifier = readStaticQuotedSpecifier(
-          source,
-          skipWhitespace(source, afterImport + 1),
-        );
-        if (dynamicSpecifier !== undefined) {
-          specifiers.push(dynamicSpecifier.specifier);
-          index = dynamicSpecifier.nextIndex;
-          continue;
-        }
-      }
-    }
-
-    const afterImportMetaResolveAccessor = importMetaResolveAccessorAt(source, index);
-    if (afterImportMetaResolveAccessor !== undefined) {
-      const resolvedSpecifier = readCalleeCallSpecifier(
-        source,
-        index,
-        afterImportMetaResolveAccessor,
-      );
-      if (resolvedSpecifier !== undefined) {
-        specifiers.push(resolvedSpecifier.specifier);
-        index = resolvedSpecifier.nextIndex;
-        continue;
-      }
-    }
-
-    const afterRequireKeyword = freeRequireKeywordEndAt(source, index);
-    if (afterRequireKeyword !== undefined) {
-      const afterRequire = skipWhitespace(source, afterRequireKeyword);
-      const requireSpecifier = readCalleeCallSpecifier(source, index, afterRequire);
-      if (requireSpecifier !== undefined) {
-        specifiers.push(requireSpecifier.specifier);
-        index = requireSpecifier.nextIndex;
-        continue;
-      }
-      const afterResolve = resolveAccessorAfterRequire(source, index, afterRequire);
-      if (afterResolve !== undefined) {
-        const resolvedSpecifier = readCalleeCallSpecifier(source, index, afterResolve);
-        if (resolvedSpecifier !== undefined) {
-          specifiers.push(resolvedSpecifier.specifier);
-          index = resolvedSpecifier.nextIndex;
-          continue;
-        }
-      }
-    }
-
-    const afterCreateRequireKeyword = freeCreateRequireKeywordEndAt(source, index);
-    if (afterCreateRequireKeyword !== undefined) {
-      const afterCreateRequireFactory = readCallExpressionEnd(source, afterCreateRequireKeyword);
-      if (afterCreateRequireFactory !== undefined) {
-        const createRequireSpecifier = readCalleeCallSpecifier(
-          source,
-          index,
-          afterCreateRequireFactory,
-        );
-        if (createRequireSpecifier !== undefined) {
-          specifiers.push(createRequireSpecifier.specifier);
-          index = createRequireSpecifier.nextIndex;
-          continue;
-        }
-        const afterResolve = readAccessorAfterCallee(
-          source,
-          index,
-          afterCreateRequireFactory,
-          "resolve",
-        );
-        if (afterResolve !== undefined) {
-          const resolvedSpecifier = readCalleeCallSpecifier(source, index, afterResolve);
-          if (resolvedSpecifier !== undefined) {
-            specifiers.push(resolvedSpecifier.specifier);
-            index = resolvedSpecifier.nextIndex;
-            continue;
-          }
-        }
-      }
-    }
-
-    const afterRequireAccessor = moduleRequireAccessorAt(source, index);
-    if (afterRequireAccessor !== undefined) {
-      const afterRequire = skipWhitespace(source, afterRequireAccessor);
-      const moduleRequireSpecifier = readCalleeCallSpecifier(source, index, afterRequire);
-      if (moduleRequireSpecifier !== undefined) {
-        specifiers.push(moduleRequireSpecifier.specifier);
-        index = moduleRequireSpecifier.nextIndex;
-        continue;
-      }
-    }
-
-    index += 1;
-  }
-
-  return specifiers;
-};
-
-export const packageImportViolationsFor = ({
-  contents,
-  relativePath,
-  restriction,
-}: {
-  readonly contents: string;
-  readonly relativePath: string;
-  readonly restriction: RestrictedPackageImport;
-}): ReadonlyArray<string> =>
-  importedViewServerSpecifiers(contents).flatMap((specifier) => {
-    if (isStaleViewServerSpecifier(specifier)) {
-      return [
-        `${relativePath} imports ${specifier}: stale View Server package scope; use ${currentViewServerScope}/* workspace packages.`,
-      ];
-    }
-
-    if (isPublicViewServerSpecifier(specifier)) {
-      return [
-        `${relativePath} imports ${specifier}: public effect-view-server facade is for consumers; internal packages must import ${currentViewServerScope}/* workspace packages.`,
-      ];
-    }
-
-    if (!approvedPublicViewServerSpecifiers.has(specifier)) {
-      return [
-        `${relativePath} imports ${specifier}: View Server imports must use approved package exports.`,
-      ];
-    }
-
-    const isAllowed = (() => {
-      const relativePathAllowedSpecifiers =
-        restriction.allowedRelativePathSpecifiers?.get(relativePath);
-      return (
-        relativePathAllowedSpecifiers?.has(specifier) === true ||
-        restriction.allowedSpecifiers?.has(specifier) === true
-      );
-    })();
-
-    if (isAllowed) {
-      return [];
-    }
-
-    const isForbidden = Array.from(restriction.forbiddenSpecifiers).some((forbiddenSpecifier) =>
-      specifierMatches(specifier, forbiddenSpecifier),
-    );
-
-    return isForbidden
-      ? [`${relativePath} imports ${specifier}: ${restriction.message}`]
-      : [];
-  });
-
-const relativeImportSpecifiers = (contents: string): ReadonlyArray<string> =>
-  importSpecifiersFromSource(contents).filter((specifier) => specifier.startsWith("."));
-
-const approvedPublicViewServerSpecifiers = new Set([
-  "@effect-view-server/client",
-  "@effect-view-server/client/remote",
-  "@effect-view-server/column-live-view-engine",
-  "@effect-view-server/column-live-view-engine/internal",
-  "@effect-view-server/config",
-  "@effect-view-server/config/grpc",
-  "@effect-view-server/config/health",
-  "@effect-view-server/config/internal",
-  "@effect-view-server/config/kafka",
-  "@effect-view-server/config/live-protocol",
-  "@effect-view-server/config/query",
-  "@effect-view-server/config/runtime",
-  "@effect-view-server/effect-utils",
-  "@effect-view-server/in-memory",
-  "@effect-view-server/in-memory/testing",
-  "@effect-view-server/protocol",
-  "@effect-view-server/react",
-  "@effect-view-server/react/testing",
-  "@effect-view-server/runtime",
-  "@effect-view-server/runtime-core",
-  "@effect-view-server/runtime-core/internal",
-  "@effect-view-server/server",
-  "effect-view-server/client",
-  "effect-view-server/client/remote",
-  "effect-view-server/column-live-view-engine",
-  "effect-view-server/config",
-  "effect-view-server/config/grpc",
-  "effect-view-server/config/health",
-  "effect-view-server/config/kafka",
-  "effect-view-server/config/live-protocol",
-  "effect-view-server/config/query",
-  "effect-view-server/config/runtime",
-  "effect-view-server/in-memory",
-  "effect-view-server/in-memory/testing",
-  "effect-view-server/react",
-  "effect-view-server/react/testing",
-  "effect-view-server/runtime",
-  "effect-view-server/server",
-]);
-
-const approvedConsumerViewServerSpecifiers = new Set(
-  Array.from(approvedPublicViewServerSpecifiers).filter(isPublicViewServerSpecifier),
-);
+const currentScope = "@effect-view-server";
+const staleScope = "@view" + "-server";
+const facadePackage = packageSurfacePolicy.facade.packageName;
+const workspaceSpecifierSet = new Set(workspacePackageSpecifiers);
+const consumerSpecifierSet = new Set(consumerPackageSpecifiers);
+
+const isScopeSpecifier = (specifier: string, scope: string): boolean =>
+  specifier === scope || specifier.startsWith(`${scope}/`);
+
+const isFacadeSpecifier = (specifier: string): boolean =>
+  specifier === facadePackage || specifier.startsWith(`${facadePackage}/`);
+
+const inspectionViolationMessage = (
+  relativePath: string,
+  violation: UnsupportedModuleLoad,
+): string =>
+  `${relativePath}:${violation.line}:${violation.column} uses unsupported ${violation.kind} module loading through ${violation.loader}.`;
 
 export const consumerImportViolationsFor = ({
   contents,
+  fileName,
   relativePath,
 }: {
   readonly contents: string;
+  readonly fileName?: string;
   readonly relativePath: string;
-}): ReadonlyArray<string> =>
-  importedViewServerSpecifiers(contents).flatMap((specifier) => {
-    if (isCurrentViewServerSpecifier(specifier)) {
+}): ReadonlyArray<string> => {
+  const inspection = inspectTypeScriptModule({ fileName: fileName ?? relativePath, source: contents });
+  const violations = inspection.moduleSpecifiers.flatMap((specifier) => {
+    if (isScopeSpecifier(specifier, currentScope)) {
       return [
         `${relativePath} imports ${specifier}: consumers must import the publishable effect-view-server/* facade.`,
       ];
     }
-    if (isStaleViewServerSpecifier(specifier)) {
+    if (isScopeSpecifier(specifier, staleScope)) {
       return [
         `${relativePath} imports ${specifier}: stale View Server package scope; consumers must use approved effect-view-server/* subpaths.`,
       ];
     }
-    if (specifier === publicViewServerPackage) {
+    if (specifier === facadePackage) {
       return [
         `${relativePath} imports ${specifier}: the package root is not exported; consumers must use an approved effect-view-server/* subpath.`,
       ];
     }
-    return approvedConsumerViewServerSpecifiers.has(specifier)
-      ? []
-      : [
-          `${relativePath} imports ${specifier}: consumers must use approved effect-view-server/* package exports.`,
-        ];
+    if (isFacadeSpecifier(specifier) && !consumerSpecifierSet.has(specifier)) {
+      return [
+        `${relativePath} imports ${specifier}: consumers must use approved effect-view-server/* package exports.`,
+      ];
+    }
+    return [];
   });
-
-type ConsumerMarkdownSourceFence = {
-  readonly contents: string;
-  readonly openingLine: number;
+  violations.push(
+    ...inspection.violations.map((violation) =>
+      inspectionViolationMessage(relativePath, violation),
+    ),
+  );
+  return violations;
 };
 
-type ConsumerMarkdownFenceToken = Token & {
+type MarkdownFenceToken = Token & {
   readonly map: [number, number];
   readonly type: "fence";
 };
 
-const consumerMarkdown = new MarkdownIt("commonmark");
+const markdown = new MarkdownIt("commonmark");
+const isFenceToken = (token: Token): token is MarkdownFenceToken => token.type === "fence";
 
-// markdown-it's fence rule assigns a source map whenever it emits a fence token.
-const isConsumerMarkdownFenceToken = (token: Token): token is ConsumerMarkdownFenceToken =>
-  token.type === "fence";
-
-const consumerSourceFencesFromMarkdown = (
-  contents: string,
-): ReadonlyArray<ConsumerMarkdownSourceFence> =>
-  consumerMarkdown
-    .parse(contents, {})
-    .filter(isConsumerMarkdownFenceToken)
-    .map((token) => ({
-      contents: token.content,
-      openingLine: token.map[0] + 1,
-    }));
+const virtualFenceExtension = (info: string): string => {
+  const language = info.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  if (language === "ts" || language === "typescript") {
+    return ".ts";
+  }
+  if (language === "mts" || language === "cts") {
+    return `.${language}`;
+  }
+  if (language === "tsx" || language === "jsx") {
+    return `.${language}`;
+  }
+  if (language === "js" || language === "mjs" || language === "cjs") {
+    return `.${language}`;
+  }
+  if (language === "javascript") {
+    return ".js";
+  }
+  return ".tsx";
+};
 
 export const consumerMarkdownImportViolationsFor = ({
   contents,
@@ -1641,14 +154,19 @@ export const consumerMarkdownImportViolationsFor = ({
   readonly contents: string;
   readonly relativePath: string;
 }): ReadonlyArray<string> =>
-  consumerSourceFencesFromMarkdown(contents).flatMap((sourceFence) =>
-    consumerImportViolationsFor({
-      contents: sourceFence.contents,
-      relativePath: `${relativePath}:${sourceFence.openingLine}`,
-    }),
-  );
+  markdown
+    .parse(contents, {})
+    .filter(isFenceToken)
+    .flatMap((token) => {
+      const openingLine = token.map[0] + 1;
+      return consumerImportViolationsFor({
+        contents: token.content,
+        fileName: `${relativePath}:${openingLine}${virtualFenceExtension(token.info)}`,
+        relativePath: `${relativePath}:${openingLine}`,
+      });
+    });
 
-const consumerIgnoredDirectoryNames = new Set([
+const consumerIgnoredDirectories = new Set([
   ".next",
   ".output",
   ".vite",
@@ -1658,53 +176,39 @@ const consumerIgnoredDirectoryNames = new Set([
   "node_modules",
 ]);
 
-const consumerMarkdownFiles = (repositoryRoot: string): ReadonlyArray<string> => {
-  const markdownFiles = (directory: string): ReadonlyArray<string> => {
-    if (!existsSync(directory)) {
-      return [];
-    }
-    const files: Array<string> = [];
-    const entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
-      left.name.localeCompare(right.name),
-    );
-
-    for (const entry of entries) {
+const markdownFiles = (directory: string): ReadonlyArray<string> => {
+  if (!existsSync(directory)) {
+    return [];
+  }
+  return readdirSync(directory, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
       const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (!consumerIgnoredDirectoryNames.has(entry.name)) {
-          files.push(...markdownFiles(path));
-        }
-        continue;
+      if (entry.isDirectory() && !consumerIgnoredDirectories.has(entry.name)) {
+        return markdownFiles(path);
       }
-      if (entry.isFile() && entry.name.endsWith(".md")) {
-        files.push(path);
-      }
-    }
+      return entry.isFile() && entry.name.endsWith(".md") ? [path] : [];
+    });
+};
 
-    return files;
-  };
-
-  const rootReadmePath = join(repositoryRoot, "README.md");
-  const files = existsSync(rootReadmePath) ? [rootReadmePath] : [];
-  for (const directoryName of ["apps", "docs", "examples", "plans"]) {
-    files.push(...markdownFiles(join(repositoryRoot, directoryName)));
+const consumerMarkdownFiles = (repositoryRoot: string): ReadonlyArray<string> => {
+  const files = existsSync(join(repositoryRoot, "README.md"))
+    ? [join(repositoryRoot, "README.md")]
+    : [];
+  for (const directory of ["apps", "docs", "examples", "plans"]) {
+    files.push(...markdownFiles(join(repositoryRoot, directory)));
   }
   const packagesRoot = join(repositoryRoot, "packages");
-  if (!existsSync(packagesRoot)) {
-    return files.sort();
-  }
-  const packageEntries = readdirSync(packagesRoot, { withFileTypes: true }).sort((left, right) =>
-    left.name.localeCompare(right.name),
-  );
-  for (const entry of packageEntries) {
-    if (entry.isDirectory()) {
-      const readmePath = join(packagesRoot, entry.name, "README.md");
-      if (existsSync(readmePath)) {
-        files.push(readmePath);
+  if (existsSync(packagesRoot)) {
+    for (const entry of readdirSync(packagesRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const readme = join(packagesRoot, entry.name, "README.md");
+        if (existsSync(readme)) {
+          files.push(readme);
+        }
       }
     }
   }
-
   return files.sort();
 };
 
@@ -1712,675 +216,566 @@ export const collectConsumerImportViolations = (
   repositoryRoot = repoRoot,
 ): ReadonlyArray<string> => {
   const violations: Array<string> = [];
-
-  for (const directoryName of ["apps", "examples"]) {
-    const directory = join(repositoryRoot, directoryName);
-    for (const path of sourceFiles(directory, consumerIgnoredDirectoryNames)) {
+  for (const directory of ["apps", "examples"]) {
+    for (const path of sourceFiles(
+      join(repositoryRoot, directory),
+      consumerIgnoredDirectories,
+    )) {
       violations.push(
         ...consumerImportViolationsFor({
           contents: readFileSync(path, "utf8"),
-          relativePath: toPosixRelativePath(relative(repositoryRoot, path)),
+          fileName: path,
+          relativePath: toPosixPath(relative(repositoryRoot, path)),
         }),
       );
     }
   }
-
   for (const path of consumerMarkdownFiles(repositoryRoot)) {
     violations.push(
       ...consumerMarkdownImportViolationsFor({
         contents: readFileSync(path, "utf8"),
-        relativePath: toPosixRelativePath(relative(repositoryRoot, path)),
+        relativePath: toPosixPath(relative(repositoryRoot, path)),
       }),
     );
   }
-
   return violations.sort();
 };
 
-export const consumerImportViolationMessage = (violations: ReadonlyArray<string>): string =>
-  ["Consumer facade import violations found.", ...violations.map((violation) => `- ${violation}`)].join(
-    "\n",
-  );
-
-export const assertNoConsumerImportViolations = (violations: ReadonlyArray<string>) => {
-  if (violations.length === 0) {
-    return;
-  }
-  throw new Error(consumerImportViolationMessage(violations));
-};
-
-type PackageExportConditionTarget = {
-  readonly condition: string;
-  readonly suffix: ".d.ts" | ".js";
-  readonly target: string;
-};
-
-type PackageManifest = {
-  readonly name?: unknown;
-  readonly exports?: unknown;
-};
-
-const packageManifestPath = (packageName: string): string =>
-  join(repoRoot, "packages", packageName, "package.json");
-
-const parsePackageManifest = (contents: string): PackageManifest => JSON.parse(contents);
-
-const manifestExportObject = (manifest: PackageManifest): object | undefined => {
-  if (typeof manifest.exports !== "object" || manifest.exports === null || Array.isArray(manifest.exports)) {
-    return undefined;
-  }
-  return manifest.exports;
-};
-
-const manifestExportsAreRootConditionMap = (exportsObject: object): boolean => {
-  const keys = Object.keys(exportsObject);
-  return keys.length > 0 && keys.every((key) => !key.startsWith("."));
-};
-
-const manifestExportEntries = (manifest: PackageManifest): ReadonlyArray<readonly [string, unknown]> => {
-  if (typeof manifest.exports === "string" || Array.isArray(manifest.exports)) {
-    return [[".", manifest.exports]];
-  }
-  const exportsObject = manifestExportObject(manifest);
-  if (exportsObject === undefined) {
-    return [];
-  }
-  if (manifestExportsAreRootConditionMap(exportsObject)) {
-    return [[".", exportsObject]];
-  }
-  return Object.entries(exportsObject);
-};
-
-const manifestExportKeys = (manifest: PackageManifest): ReadonlyArray<string> =>
-  manifestExportEntries(manifest).map(([exportKey]) => exportKey);
-
-const importTargetForExportTarget = (
-  target: unknown,
-):
-  | {
-      readonly _tag: "ExportTarget";
-      readonly importTarget: string | undefined;
-      readonly typesTarget: string | undefined;
-    }
-  | { readonly _tag: "Unsupported" } => {
-  if (typeof target !== "string" && !Array.isArray(target) && (typeof target !== "object" || target === null)) {
-    return {
-      _tag: "Unsupported",
-    };
-  }
-
-  const firstRuntimeTargetString = (target: unknown, conditionPath: string): string | undefined => {
-    if (typeof target === "string") {
-      return conditionPathIsTypes(conditionPath) ? undefined : target;
-    }
-    if (Array.isArray(target)) {
-      for (const conditionTarget of target) {
-        const nestedTarget = firstRuntimeTargetString(conditionTarget, conditionPath);
-        if (nestedTarget !== undefined) {
-          return nestedTarget;
-        }
-      }
-    }
-    if (typeof target === "object" && target !== null) {
-      for (const [condition, conditionTarget] of Object.entries(target)) {
-        const childConditionPath = conditionPath === "" ? condition : `${conditionPath}.${condition}`;
-        const nestedTarget = firstRuntimeTargetString(conditionTarget, childConditionPath);
-        if (nestedTarget !== undefined) {
-          return nestedTarget;
-        }
-      }
-    }
-    return undefined;
-  };
-
-  const firstTypesTargetString = (target: unknown, conditionPath: string): string | undefined => {
-    if (typeof target === "string") {
-      return conditionPathIsTypes(conditionPath) ? target : undefined;
-    }
-    if (Array.isArray(target)) {
-      for (const conditionTarget of target) {
-        const nestedTarget = firstTypesTargetString(conditionTarget, conditionPath);
-        if (nestedTarget !== undefined) {
-          return nestedTarget;
-        }
-      }
-    }
-    if (typeof target === "object" && target !== null) {
-      for (const [condition, conditionTarget] of Object.entries(target)) {
-        const childConditionPath = conditionPath === "" ? condition : `${conditionPath}.${condition}`;
-        const nestedTarget = firstTypesTargetString(conditionTarget, childConditionPath);
-        if (nestedTarget !== undefined) {
-          return nestedTarget;
-        }
-      }
-    }
-    return undefined;
-  };
-
-  const firstNamedRuntimeConditionTargetString = (
-    target: unknown,
-    condition: string,
-    conditionPath: string,
-  ): string | undefined => {
-    if (Array.isArray(target)) {
-      for (const conditionTarget of target) {
-        const nestedTarget = firstNamedRuntimeConditionTargetString(conditionTarget, condition, conditionPath);
-        if (nestedTarget !== undefined) {
-          return nestedTarget;
-        }
-      }
-    }
-    if (typeof target === "object" && target !== null) {
-      for (const [conditionKey, conditionTarget] of Object.entries(target)) {
-        const childConditionPath = conditionPath === "" ? conditionKey : `${conditionPath}.${conditionKey}`;
-        const nestedTarget =
-          conditionKey === condition
-            ? firstRuntimeTargetString(conditionTarget, childConditionPath)
-            : firstNamedRuntimeConditionTargetString(conditionTarget, condition, childConditionPath);
-        if (nestedTarget !== undefined) {
-          return nestedTarget;
-        }
-      }
-    }
-    return undefined;
-  };
-
-  return {
-    _tag: "ExportTarget",
-    importTarget:
-      firstNamedRuntimeConditionTargetString(target, "import", "") ?? firstRuntimeTargetString(target, ""),
-    typesTarget: firstTypesTargetString(target, ""),
-  };
-};
-
-const conditionTargetSuffix = (condition: string): ".d.ts" | ".js" =>
-  conditionPathIsTypes(condition) ? ".d.ts" : ".js";
-
-function conditionWithoutArrayIndexes(condition: string): string {
-  return condition.replace(/\[\d+\]/g, "");
-}
-
-const conditionPartIsTypes = (conditionPart: string): boolean =>
-  conditionPart === "types" || conditionPart.startsWith("types@");
-
-const conditionPathIsTypes = (condition: string): boolean =>
-  conditionWithoutArrayIndexes(condition)
-    .split(".")
-    .some(conditionPartIsTypes);
-
-const stringConditionTargetsForExportTarget = (
-  target: unknown,
-  conditionPath: string,
-): ReadonlyArray<PackageExportConditionTarget> => {
-  if (typeof target === "string") {
-    return [
-      {
-        condition: conditionPath === "" ? "import" : conditionPath,
-        suffix: conditionTargetSuffix(conditionPath),
-        target,
-      },
-    ];
-  }
-  if (Array.isArray(target)) {
-    return target.flatMap((conditionTarget, index) =>
-      stringConditionTargetsForExportTarget(
-        conditionTarget,
-        conditionPath === "" ? "" : `${conditionPath}[${index}]`,
-      ),
-    );
-  }
-  if (typeof target !== "object" || target === null) {
-    return [];
-  }
-  return Object.entries(target).flatMap(([condition, conditionTarget]) => {
-    const childConditionPath = conditionPath === "" ? condition : `${conditionPath}.${condition}`;
-    return stringConditionTargetsForExportTarget(conditionTarget, childConditionPath);
-  });
-};
-
-const exportSpecifierFor = (packageSpecifier: string, exportKey: string): string =>
-  exportKey === "."
-    ? packageSpecifier
-    : `${packageSpecifier}/${exportKey.startsWith("./") ? exportKey.slice("./".length) : exportKey}`;
-
-export const packageExportSpecifiersForManifest = (
-  manifestContents: string,
-): ReadonlyArray<string> => {
-  const manifest = parsePackageManifest(manifestContents);
-  const packageSpecifier = manifest.name;
-  if (typeof packageSpecifier !== "string") {
-    return [];
-  }
-  return manifestExportKeys(manifest).map((exportKey) => exportSpecifierFor(packageSpecifier, exportKey));
-};
-
-const distTargetEntrypoint = (target: string, suffix: ".d.ts" | ".js"): string | undefined => {
-  const prefix = "./dist/";
-  if (!target.startsWith(prefix) || !target.endsWith(suffix)) {
-    return undefined;
-  }
-  const entrypoint = target.slice(prefix.length, -suffix.length);
-  const segments = entrypoint.split(/[\\/]/);
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-    return undefined;
-  }
-  return entrypoint;
-};
-
-export const sourceEntrypointForRelativeDistEntrypoint = (
-  packageName: string,
-  relativeEntrypoint: string,
-  repositoryRoot = repoRoot,
-): string | undefined => {
-  const sourceBase = join(repositoryRoot, "packages", packageName, "src", relativeEntrypoint);
-  for (const extension of typescriptModuleExtensions) {
-    const sourceEntrypoint = `${sourceBase}${extension}`;
-    if (existsSync(sourceEntrypoint)) {
-      return sourceEntrypoint;
-    }
-  }
-  return undefined;
-};
-
-export const sourceEntrypointForPackEntry = (entryPath: string): string | undefined => {
-  const sourceExtension = typescriptModuleExtensionFor(entryPath);
-  if (!entryPath.startsWith("src/") || sourceExtension === undefined) {
-    return undefined;
-  }
-  const relativeEntrypoint = entryPath.slice("src/".length, -sourceExtension.length);
-  const segments = relativeEntrypoint.split(/[\\/]/);
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-    return undefined;
-  }
-  return relativeEntrypoint;
-};
-
-export const libraryPackEntrypointPaths = (viteConfigContents: string): ReadonlyArray<string> => {
-  const viteConfigSource = sourceWithoutComments(viteConfigContents);
-  const stringMatch = /pack:\s*libraryPack\(\s*"[^"]+"\s*\)/m.exec(viteConfigSource);
-  if (stringMatch !== null) {
-    const callSource = stringMatch[0];
-    return [callSource.slice(callSource.indexOf('"') + 1, callSource.lastIndexOf('"'))];
-  }
-  const arrayMatch = /pack:\s*libraryPack\(\s*\[[\s\S]*?\]\s*\)/m.exec(viteConfigSource);
-  if (arrayMatch === null) {
-    return [];
-  }
-  const callSource = arrayMatch[0];
-  const arrayEntrypoints = callSource.slice(callSource.indexOf("[") + 1, callSource.lastIndexOf("]"));
-  return Array.from(arrayEntrypoints.matchAll(/"[^"]+"/g), (entrypointMatch) => entrypointMatch[0].slice(1, -1));
-};
-
-export const packedEntrypointsFromViteConfigContents = (viteConfigContents: string): ReadonlySet<string> => {
-  const entrypoints = libraryPackEntrypointPaths(viteConfigContents).flatMap((entryPath) => {
-    const entrypoint = sourceEntrypointForPackEntry(entryPath);
-    return entrypoint === undefined ? [] : [entrypoint];
-  });
-  return new Set(entrypoints);
-};
-
-export const packedPackageEntrypointsForPackage = (packageName: string): ReadonlySet<string> => {
-  const viteConfigPath = join(repoRoot, "packages", packageName, "vite.config.ts");
-  if (!existsSync(viteConfigPath)) {
-    return new Set();
-  }
-  return packedEntrypointsFromViteConfigContents(readFileSync(viteConfigPath, "utf8"));
-};
-
-const isPackedPackageEntrypoint = (packageName: string, relativeEntrypoint: string): boolean =>
-  packedPackageEntrypointsForPackage(packageName).has(relativeEntrypoint);
-
-const hasPackedSourceEntrypoint = (packageName: string, relativeEntrypoint: string): boolean =>
-  isPackedPackageEntrypoint(packageName, relativeEntrypoint) &&
-  sourceEntrypointForRelativeDistEntrypoint(packageName, relativeEntrypoint) !== undefined;
-
-const packageExportTargetViolation = ({
-  condition,
-  exportKey,
-  packageDirectoryName,
-  target,
-}: {
-  readonly condition: string;
-  readonly exportKey: string;
-  readonly packageDirectoryName: string;
-  readonly target: string;
-}): string => {
-  const normalizedCondition = conditionWithoutArrayIndexes(condition);
-  if (normalizedCondition === "import" || normalizedCondition === "types") {
-    return `packages/${packageDirectoryName}/package.json export ${exportKey} points at ${target} without a matching packed src entrypoint.`;
-  }
-  return `packages/${packageDirectoryName}/package.json export ${exportKey} condition ${condition} points at ${target} without a matching packed src entrypoint.`;
-};
-
-const packageExportTargetMismatchViolation = ({
-  condition,
-  exportKey,
-  importTarget,
-  packageDirectoryName,
-  target,
-}: {
-  readonly condition: string;
-  readonly exportKey: string;
-  readonly importTarget: string;
-  readonly packageDirectoryName: string;
-  readonly target: string;
-}): string => {
-  const normalizedCondition = conditionWithoutArrayIndexes(condition);
-  if (normalizedCondition === "types") {
-    return `packages/${packageDirectoryName}/package.json export ${exportKey} types target ${target} does not match import target ${importTarget}.`;
-  }
-  return `packages/${packageDirectoryName}/package.json export ${exportKey} condition ${condition} target ${target} does not match import target ${importTarget}.`;
-};
-
-export const packageExportViolationsForManifest = ({
-  manifestContents,
-  packageDirectoryName,
-}: {
-  readonly manifestContents: string;
-  readonly packageDirectoryName: string;
-}): ReadonlyArray<string> => {
-  const manifest = parsePackageManifest(manifestContents);
-  const packageSpecifier =
-    typeof manifest.name === "string" ? manifest.name : `packages/${packageDirectoryName}`;
-  const violations: Array<string> = [];
-
-  for (const [exportKey, target] of manifestExportEntries(manifest)) {
-    const specifier = exportSpecifierFor(packageSpecifier, exportKey);
-    if (!approvedPublicViewServerSpecifiers.has(specifier)) {
-      violations.push(
-        `packages/${packageDirectoryName}/package.json exports ${specifier}: add intentional public specifier approval or remove the export.`,
-      );
-    }
-    for (const conditionTarget of stringConditionTargetsForExportTarget(target, "")) {
-      const targetEntrypoint = distTargetEntrypoint(conditionTarget.target, conditionTarget.suffix);
-      if (
-        targetEntrypoint === undefined ||
-        !hasPackedSourceEntrypoint(packageDirectoryName, targetEntrypoint)
-      ) {
-        violations.push(
-          packageExportTargetViolation({
-            condition: conditionTarget.condition,
-            exportKey,
-            packageDirectoryName,
-            target: conditionTarget.target,
-          }),
-        );
-      }
-    }
-    const importTarget = importTargetForExportTarget(target);
-    if (importTarget._tag === "Unsupported") {
-      violations.push(
-        `packages/${packageDirectoryName}/package.json export ${exportKey} has no import target.`,
-      );
-      continue;
-    }
-    if (importTarget.importTarget === undefined) {
-      violations.push(
-        `packages/${packageDirectoryName}/package.json export ${exportKey} has no import target.`,
-      );
-      continue;
-    }
-    if (importTarget.typesTarget === undefined) {
-      violations.push(
-        `packages/${packageDirectoryName}/package.json export ${exportKey} has no types target.`,
-      );
-    }
-    const importEntrypoint = distTargetEntrypoint(importTarget.importTarget, ".js");
-    if (
-      importEntrypoint !== undefined &&
-      hasPackedSourceEntrypoint(packageDirectoryName, importEntrypoint)
-    ) {
-      for (const conditionTarget of stringConditionTargetsForExportTarget(target, "")) {
-        const targetEntrypoint = distTargetEntrypoint(conditionTarget.target, conditionTarget.suffix);
-        if (
-          targetEntrypoint !== undefined &&
-          hasPackedSourceEntrypoint(packageDirectoryName, targetEntrypoint) &&
-          targetEntrypoint !== importEntrypoint
-        ) {
-          violations.push(
-            packageExportTargetMismatchViolation({
-              condition: conditionTarget.condition,
-              exportKey,
-              importTarget: importTarget.importTarget,
-              packageDirectoryName,
-              target: conditionTarget.target,
-            }),
-          );
-        }
-      }
-    }
-  }
-
-  return violations;
-};
-
-const viewServerPackageDirectories = [
-  "client",
-  "column-live-view-engine",
-  "config",
-  "effect-utils",
-  "effect-view-server",
-  "in-memory",
-  "protocol",
-  "react",
-  "runtime",
-  "runtime-core",
-  "server",
-] as const;
-
-export const staleApprovedPackageExportViolations = ({
-  approvedSpecifiers,
-  exportedSpecifiers,
-}: {
-  readonly approvedSpecifiers: ReadonlySet<string>;
-  readonly exportedSpecifiers: ReadonlySet<string>;
-}): ReadonlyArray<string> => {
-  const violations: Array<string> = [];
-  for (const approvedSpecifier of approvedSpecifiers) {
-    if (!exportedSpecifiers.has(approvedSpecifier)) {
-      violations.push(
-        `${approvedSpecifier} is approved as public but is not exported by any package.json.`,
-      );
-    }
-  }
-  return violations;
-};
-
-export const collectPackageExportViolations = (): ReadonlyArray<string> => {
-  const violations: Array<string> = [];
-  const exportedSpecifiers = new Set<string>();
-
-  for (const packageDirectoryName of viewServerPackageDirectories) {
-    const manifestContents = readFileSync(packageManifestPath(packageDirectoryName), "utf8");
-    for (const specifier of packageExportSpecifiersForManifest(manifestContents)) {
-      exportedSpecifiers.add(specifier);
-    }
-    violations.push(
-      ...packageExportViolationsForManifest({
-        manifestContents,
-        packageDirectoryName,
-      }),
-    );
-  }
-
-  violations.push(
-    ...staleApprovedPackageExportViolations({
-      approvedSpecifiers: approvedPublicViewServerSpecifiers,
-      exportedSpecifiers,
-    }),
-  );
-
-  return violations;
-};
-
-export const packageExportViolationMessage = (violations: ReadonlyArray<string>): string =>
-  [
-    "Package public export violations found.",
-    ...violations.map((violation) => `- ${violation}`),
-  ].join("\n");
-
-export const assertNoPackageExportViolations = (violations: ReadonlyArray<string>) => {
-  if (violations.length === 0) {
-    return;
-  }
-  throw new Error(packageExportViolationMessage(violations));
-};
-
-assertNoPackageExportViolations(collectPackageExportViolations());
-
-const isInsideDirectory = (parentDirectory: string, childPath: string): boolean => {
-  const relativeChildPath = relative(parentDirectory, childPath);
+const isInsideDirectory = (parent: string, child: string): boolean => {
+  const relativePath = relative(parent, child);
   return (
-    relativeChildPath === "" ||
-    (!relativeChildPath.startsWith("..") && !isAbsolute(relativeChildPath))
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !resolve(parent, relativePath).startsWith(".."))
   );
 };
 
-export const packageRelativeImportViolationsFor = ({
+const allowedSpecifiersFor = (
+  packagePolicy: PrivatePackageSurface,
+  relativePath: string,
+): ReadonlySet<string> => {
+  const allowed = new Set(packagePolicy.architecture.allowedWorkspaceSpecifiers);
+  for (const override of packagePolicy.architecture.relativeOverrides) {
+    if (toPosixPath(relativePath) === override.relativePath) {
+      for (const specifier of override.allowedWorkspaceSpecifiers) {
+        allowed.add(specifier);
+      }
+    }
+  }
+  return allowed;
+};
+
+export const packageImportViolationsForSource = ({
   contents,
+  fileName,
+  packagePolicy,
   packageRoot,
   path,
 }: {
   readonly contents: string;
+  readonly fileName: string;
+  readonly packagePolicy: PrivatePackageSurface;
   readonly packageRoot: string;
   readonly path: string;
-}): ReadonlyArray<string> =>
-  relativeImportSpecifiers(contents)
-    .map((specifier) => ({
-      resolvedPath: resolve(dirname(path), specifier),
-      specifier,
-    }))
-    .filter(({ resolvedPath }) => !isInsideDirectory(packageRoot, resolvedPath))
-    .map(
-      ({ specifier }) =>
-        `${relative(packageRoot, path)} imports ${specifier}: relative imports must not cross package seams.`,
-    );
-
-export const toPosixRelativePath = (path: string): string => path.replaceAll("\\", "/");
-
-const restrictedTopicStoreStateExports = [
-  {
-    label: "namespace import",
-    pattern: /import\s+\*\s+as\s+\w+\s+from\s+["']\.\/topic-store-state["']/,
-  },
-  {
-    label: "wildcard re-export",
-    pattern: /export\s+\*\s+from\s+["']\.\/topic-store-state["']/,
-  },
-  {
-    label: "namespace re-export",
-    pattern: /export\s+\*\s+as\s+\w+\s+from\s+["']\.\/topic-store-state["']/,
-  },
-  {
-    label: "subscription permit factory re-export",
-    pattern:
-      /export\s+\{[^}]*\bmakeTopicStoreSubscriptionPermit\b[^}]*\}\s+from\s+["']\.\/topic-store-state["']/s,
-  },
-  {
-    label: "local subscription permit factory re-export",
-    pattern: /export\s+\{[^}]*\bmakeTopicStoreSubscriptionPermit\b[^}]*\}/s,
-  },
-  {
-    label: "raw query metadata helper re-export",
-    pattern:
-      /export\s+\{[^}]*\btopicStoreRawQueryMetadata\b[^}]*\}\s+from\s+["']\.\/topic-store-state["']/s,
-  },
-  {
-    label: "local raw query metadata helper re-export",
-    pattern: /export\s+\{[^}]*\btopicStoreRawQueryMetadata\b[^}]*\}/s,
-  },
-  {
-    label: "read model helper re-export",
-    pattern:
-      /export\s+\{[^}]*\btopicStoreReadModel\b[^}]*\}\s+from\s+["']\.\/topic-store-state["']/s,
-  },
-  {
-    label: "local read model helper re-export",
-    pattern: /export\s+\{[^}]*\btopicStoreReadModel\b[^}]*\}/s,
-  },
-  {
-    label: "state helper re-export",
-    pattern:
-      /export\s+\{[^}]*\btopicStoreState\b[^}]*\}\s+from\s+["']\.\/topic-store-state["']/s,
-  },
-  {
-    label: "local state helper re-export",
-    pattern: /export\s+\{[^}]*\btopicStoreState\b[^}]*\}/s,
-  },
-] as const;
-
-export const topicStoreStateExportViolationsForFile = ({
-  contents,
-  path,
-}: {
-  readonly contents: string;
-  readonly path: string;
 }): ReadonlyArray<string> => {
-  if (path === topicStoreStateFile) {
+  const relativePath = toPosixPath(relative(packageRoot, path));
+  const displayPath = `packages/${packagePolicy.directory}/${relativePath}`;
+  const inspection = inspectTypeScriptModule({ fileName, source: contents });
+  const allowed = allowedSpecifiersFor(packagePolicy, relativePath);
+  const violations = inspection.moduleSpecifiers.flatMap((specifier) => {
+    if (isScopeSpecifier(specifier, staleScope)) {
+      return [
+        `${displayPath} imports ${specifier}: stale View Server package scope; use @effect-view-server/* workspace packages.`,
+      ];
+    }
+    if (isFacadeSpecifier(specifier)) {
+      return [
+        `${displayPath} imports ${specifier}: public effect-view-server facade is for consumers; internal packages must import @effect-view-server/* workspace packages.`,
+      ];
+    }
+    if (isScopeSpecifier(specifier, currentScope)) {
+      if (!workspaceSpecifierSet.has(specifier)) {
+        return [
+          `${displayPath} imports ${specifier}: View Server imports must use approved package exports.`,
+        ];
+      }
+      if (!allowed.has(specifier)) {
+        return [
+          `${displayPath} imports ${specifier}: ${packagePolicy.architecture.message}`,
+        ];
+      }
+    }
     return [];
+  });
+  for (const specifier of inspection.moduleSpecifiers.filter((candidate) =>
+    candidate.startsWith("."),
+  )) {
+    if (!isInsideDirectory(packageRoot, resolve(dirname(path), specifier))) {
+      violations.push(
+        `${displayPath} imports ${specifier}: relative imports must not cross package seams.`,
+      );
+    }
   }
+  violations.push(
+    ...inspection.violations.map((violation) =>
+      inspectionViolationMessage(displayPath, violation),
+    ),
+  );
+  return violations;
+};
 
+export const collectPackageImportViolations = (
+  repositoryRoot = repoRoot,
+): ReadonlyArray<string> => {
   const violations: Array<string> = [];
-  for (const restriction of restrictedTopicStoreStateExports) {
-    if (restriction.pattern.test(contents)) {
-      violations.push(`${relative(repoRoot, path)} has a restricted ${restriction.label}`);
+  for (const packagePolicy of packageSurfacePolicy.packages) {
+    const packageRoot = join(repositoryRoot, "packages", packagePolicy.directory);
+    for (const path of sourceFiles(join(packageRoot, "src"))) {
+      if (!isTestFile(path)) {
+        violations.push(
+          ...packageImportViolationsForSource({
+            contents: readFileSync(path, "utf8"),
+            fileName: path,
+            packagePolicy,
+            packageRoot,
+            path,
+          }),
+        );
+      }
+    }
+  }
+  return violations.sort();
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+export const packageSurfaceViolationsForManifest = ({
+  manifestContents,
+  surface,
+}: {
+  readonly manifestContents: string;
+  readonly surface: ExpectedPackageSurface;
+}): ReadonlyArray<string> => {
+  const path = `packages/${surface.directory}/package.json`;
+  const parsed: unknown = JSON.parse(manifestContents);
+  if (!isRecord(parsed)) {
+    return [`${path} must contain an object.`];
+  }
+  const violations: Array<string> = [];
+  if (parsed.name !== surface.packageName) {
+    violations.push(`${path} name must be ${surface.packageName}, received ${String(parsed.name)}.`);
+  }
+  if (!isRecord(parsed.exports)) {
+    violations.push(`${path} exports must be an exact object.`);
+    return violations;
+  }
+  const expectedByKey = new Map(
+    surface.manifestExports.map((manifestExport) => [manifestExport.exportKey, manifestExport]),
+  );
+  const actualKeys = Object.keys(parsed.exports);
+  for (const exportKey of actualKeys.filter((key) => !expectedByKey.has(key)).sort()) {
+    violations.push(`${path} has unapproved export ${exportKey}.`);
+  }
+  for (const expected of surface.manifestExports) {
+    if (!(expected.exportKey in parsed.exports)) {
+      violations.push(`${path} is missing export ${expected.exportKey}.`);
+      continue;
+    }
+    const target = parsed.exports[expected.exportKey];
+    if (!isRecord(target)) {
+      violations.push(`${path} export ${expected.exportKey} must have exact types and import targets.`);
+      continue;
+    }
+    for (const condition of Object.keys(target).filter(
+      (condition) => condition !== "types" && condition !== "import",
+    )) {
+      violations.push(`${path} export ${expected.exportKey} has unapproved condition ${condition}.`);
+    }
+    if (target.types !== expected.typesTarget) {
+      violations.push(
+        `${path} export ${expected.exportKey} types target must be ${expected.typesTarget}, received ${String(target.types)}.`,
+      );
+    }
+    if (target.import !== expected.importTarget) {
+      violations.push(
+        `${path} export ${expected.exportKey} import target must be ${expected.importTarget}, received ${String(target.import)}.`,
+      );
     }
   }
   return violations;
 };
+
+export const packageSurfaceViolationsForViteConfig = ({
+  surface,
+  viteConfigContents,
+}: {
+  readonly surface: ExpectedPackageSurface;
+  readonly viteConfigContents: string;
+}): ReadonlyArray<string> => {
+  const path = `packages/${surface.directory}/vite.config.ts`;
+  const inspection = inspectLibraryPack({ fileName: path, source: viteConfigContents });
+  const violations = inspection.violations.map(
+    (violation) => {
+      if (violation.kind === "duplicate-library-pack") {
+        return `${path}:${violation.line}:${violation.column} declares package pack more than once.`;
+      }
+      if (violation.kind === "missing-library-pack") {
+        return `${path}:${violation.line}:${violation.column} does not declare package pack in its default config object.`;
+      }
+      return violation.kind === "ambiguous-library-pack-override"
+        ? `${path}:${violation.line}:${violation.column} may override package pack through a spread or computed property.`
+        : `${path}:${violation.line}:${violation.column} uses a non-literal libraryPack declaration.`;
+    },
+  );
+  const expected = new Set(surface.packEntrypoints);
+  const actual = new Set(inspection.entrypoints);
+  for (const duplicate of inspection.entrypoints.filter(
+    (entrypoint, index) => inspection.entrypoints.indexOf(entrypoint) !== index,
+  )) {
+    violations.push(`${path} repeats pack entry ${duplicate}.`);
+  }
+  for (const entrypoint of surface.packEntrypoints.filter((entrypoint) => !actual.has(entrypoint))) {
+    violations.push(`${path} is missing pack entry ${entrypoint}.`);
+  }
+  for (const entrypoint of Array.from(actual).filter((entrypoint) => !expected.has(entrypoint)).sort()) {
+    violations.push(`${path} has unapproved pack entry ${entrypoint}.`);
+  }
+  return violations;
+};
+
+export const packageSourceViolationsFor = ({
+  repositoryRoot,
+  surface,
+}: {
+  readonly repositoryRoot: string;
+  readonly surface: ExpectedPackageSurface;
+}): ReadonlyArray<string> =>
+  surface.packEntrypoints.flatMap((sourceEntrypoint) =>
+    existsSync(join(repositoryRoot, "packages", surface.directory, sourceEntrypoint))
+      ? []
+      : [`packages/${surface.directory}/${sourceEntrypoint} is missing.`],
+  );
+
+export const facadeProjectionViolationsForSource = ({
+  contents,
+  fileName,
+  projection,
+  relativePath,
+}: {
+  readonly contents: string;
+  readonly fileName: string;
+  readonly projection: FacadeProjection;
+  readonly relativePath: string;
+}): ReadonlyArray<string> => {
+  const inspection = inspectReexportModule({ fileName, source: contents });
+  const violations = inspection.violations.map((violation) =>
+    inspectionViolationMessage(relativePath, violation),
+  );
+  if (inspection.nonReexportStatements.length > 0) {
+    violations.push(`${relativePath} must contain only package re-export declarations.`);
+  }
+  if (projection.reexport.kind === "all") {
+    if (
+      inspection.reexports.length !== 1 ||
+      inspection.reexports[0]?.kind !== "all" ||
+      inspection.reexports[0].moduleSpecifier !== projection.workspaceSpecifier ||
+      inspection.reexports[0].typeOnly
+    ) {
+      violations.push(
+        `${relativePath} must exclusively re-export all of ${projection.workspaceSpecifier}.`,
+      );
+    }
+    return violations;
+  }
+  const namedReexports = inspection.reexports.flatMap((reexport) =>
+    reexport.kind === "named" && reexport.moduleSpecifier === projection.workspaceSpecifier
+      ? [reexport]
+      : [],
+  );
+  const namedExports = namedReexports.flatMap((reexport) => reexport.exports);
+  const runtimeNames = namedExports
+    .filter((namedExport) => !namedExport.typeOnly)
+    .map((namedExport) => namedExport.exportedName);
+  const typeNames = namedExports
+    .filter((namedExport) => namedExport.typeOnly)
+    .map((namedExport) => namedExport.exportedName);
+  if (
+    inspection.reexports.length !== namedReexports.length ||
+    namedExports.some((namedExport) => namedExport.sourceName !== namedExport.exportedName) ||
+    runtimeNames.join("\0") !== projection.reexport.runtime.join("\0") ||
+    typeNames.join("\0") !== projection.reexport.types.join("\0")
+  ) {
+    violations.push(
+      `${relativePath} must exactly re-export the curated runtime and type symbols from ${projection.workspaceSpecifier}.`,
+    );
+  }
+  return violations;
+};
+
+export const sourceForbiddenExportViolationsForSource = ({
+  contents,
+  fileName,
+  policy,
+  relativePath,
+}: {
+  readonly contents: string;
+  readonly fileName: string;
+  readonly policy: SourceForbiddenExportPolicy;
+  readonly relativePath: string;
+}): ReadonlyArray<string> => {
+  const inspection = inspectTypeScriptModule({ fileName, source: contents });
+  const violations = inspection.reexports.flatMap((reexport) => {
+    if (reexport.kind === "all") {
+      return [
+        `${relativePath} wildcard re-export cannot prove the forbidden source export policy for ${policy.specifier}.`,
+      ];
+    }
+    return reexport.kind === "namespace"
+      ? [
+          `${relativePath} namespace re-export cannot prove the forbidden source export policy for ${policy.specifier}.`,
+        ]
+      : [];
+  });
+  const identifiers = new Set([
+    ...identifierNamesFromTypeScript({ fileName, source: contents }),
+    ...inspection.reexports.flatMap((reexport) =>
+      reexport.kind === "named"
+        ? reexport.exports.flatMap((namedExport) => [
+            namedExport.sourceName,
+            namedExport.exportedName,
+          ])
+        : [],
+    ),
+  ]);
+  violations.push(
+    ...policy.forbidden
+      .filter((forbiddenName) => identifiers.has(forbiddenName))
+      .map(
+        (forbiddenName) =>
+          `${relativePath} exports forbidden package-surface symbol ${forbiddenName}.`,
+      ),
+  );
+  return violations;
+};
+
+const facadeProjectionViolations = (repositoryRoot: string): ReadonlyArray<string> =>
+  facadeProjections.flatMap((projection) => {
+    const path = join(
+      repositoryRoot,
+      "packages",
+      packageSurfacePolicy.facade.directory,
+      projection.consumerSourceEntrypoint,
+    );
+    const relativePath = toPosixPath(relative(repositoryRoot, path));
+    return existsSync(path)
+      ? facadeProjectionViolationsForSource({
+          contents: readFileSync(path, "utf8"),
+          fileName: path,
+          projection,
+          relativePath,
+        })
+      : [`${relativePath} is missing.`];
+  });
+
+export const collectPackageSurfaceViolations = (
+  repositoryRoot = repoRoot,
+): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
+  const packagesRoot = join(repositoryRoot, "packages");
+  const expectedDirectories = new Set(expectedPackageSurfaces.map((surface) => surface.directory));
+  if (existsSync(packagesRoot)) {
+    for (const entry of readdirSync(packagesRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && !expectedDirectories.has(entry.name)) {
+        violations.push(`packages/${entry.name} is not declared by the Package Surface Policy.`);
+      }
+    }
+  }
+  for (const surface of expectedPackageSurfaces) {
+    const directory = join(repositoryRoot, "packages", surface.directory);
+    const manifestPath = join(directory, "package.json");
+    const viteConfigPath = join(directory, "vite.config.ts");
+    if (!existsSync(manifestPath)) {
+      violations.push(`packages/${surface.directory}/package.json is missing.`);
+    } else {
+      violations.push(
+        ...packageSurfaceViolationsForManifest({
+          manifestContents: readFileSync(manifestPath, "utf8"),
+          surface,
+        }),
+      );
+    }
+    if (!existsSync(viteConfigPath)) {
+      violations.push(`packages/${surface.directory}/vite.config.ts is missing.`);
+    } else {
+      violations.push(
+        ...packageSurfaceViolationsForViteConfig({
+          surface,
+          viteConfigContents: readFileSync(viteConfigPath, "utf8"),
+        }),
+      );
+    }
+    if (surface.directory !== packageSurfacePolicy.facade.directory) {
+      violations.push(...packageSourceViolationsFor({ repositoryRoot, surface }));
+    }
+  }
+  for (const policy of sourceForbiddenExportPolicies) {
+    const path = join(repositoryRoot, "packages", policy.directory, policy.sourceEntrypoint);
+    const relativePath = toPosixPath(relative(repositoryRoot, path));
+    if (existsSync(path)) {
+      violations.push(
+        ...sourceForbiddenExportViolationsForSource({
+          contents: readFileSync(path, "utf8"),
+          fileName: path,
+          policy,
+          relativePath,
+        }),
+      );
+    }
+  }
+  violations.push(...facadeProjectionViolations(repositoryRoot));
+  return violations.sort();
+};
+
+const restrictedTopicStoreHelpers = [
+  {
+    name: "makeTopicStoreSubscriptionPermit",
+    allowed: new Set([
+      "packages/column-live-view-engine/src/topic-store-state.ts",
+      "packages/column-live-view-engine/src/topic-store-subscription.ts",
+    ]),
+  },
+  {
+    name: "topicStoreRawQueryMetadata",
+    allowed: new Set([
+      "packages/column-live-view-engine/src/topic-store-query.ts",
+      "packages/column-live-view-engine/src/topic-store-state.ts",
+    ]),
+  },
+  {
+    name: "topicStoreReadModel",
+    allowed: new Set([
+      "packages/column-live-view-engine/src/topic-store-query.ts",
+      "packages/column-live-view-engine/src/topic-store-state.ts",
+    ]),
+  },
+  {
+    name: "topicStoreState",
+    allowed: new Set([
+      "packages/column-live-view-engine/src/topic-store-mutation.ts",
+      "packages/column-live-view-engine/src/topic-store-state.ts",
+    ]),
+  },
+] as const;
 
 export const topicStoreHelperViolationsForFile = ({
   contents,
   path,
+  repositoryRoot = repoRoot,
 }: {
   readonly contents: string;
   readonly path: string;
+  readonly repositoryRoot?: string;
 }): ReadonlyArray<string> => {
-  const violations: Array<string> = [];
-
-  for (const helper of restrictedTopicStoreHelpers) {
-    if (!helper.allowedPaths.has(path) && helper.pattern.test(contents)) {
-      violations.push(`${relative(repoRoot, path)} uses ${helper.name}`);
-    }
-  }
-
-  return violations;
+  const relativePath = toPosixPath(relative(repositoryRoot, path));
+  const identifiers = new Set(identifierNamesFromTypeScript({ fileName: path, source: contents }));
+  return restrictedTopicStoreHelpers.flatMap((helper) =>
+    identifiers.has(helper.name) && !helper.allowed.has(relativePath)
+      ? [
+          `${relativePath} references ${helper.name} outside the Topic Store Module.`,
+        ]
+      : [],
+  );
 };
 
-export const collectEngineSeamViolations = () => {
+const restrictedStateExportNames: ReadonlySet<string> = new Set(
+  restrictedTopicStoreHelpers.map((helper) => helper.name),
+);
+
+export const topicStoreStateExportViolationsForFile = ({
+  contents,
+  path,
+  repositoryRoot = repoRoot,
+}: {
+  readonly contents: string;
+  readonly path: string;
+  readonly repositoryRoot?: string;
+}): ReadonlyArray<string> => {
+  const relativePath = toPosixPath(relative(repositoryRoot, path));
+  if (relativePath.endsWith("/topic-store-state.ts")) {
+    return [];
+  }
+  const inspection = inspectTypeScriptModule({ fileName: path, source: contents });
+  const namespaceImportViolations = namespaceImportsFromTypeScript({
+    fileName: path,
+    source: contents,
+  }).flatMap((namespaceImport) =>
+    namespaceImport.moduleSpecifier === "./topic-store-state"
+      ? [
+          `${relativePath} namespace imports restricted Topic Store state internals.`,
+        ]
+      : [],
+  );
+  return [
+    ...namespaceImportViolations,
+    ...inspection.reexports.flatMap((reexport) => {
+    if (reexport.kind === "all" && reexport.moduleSpecifier === "./topic-store-state") {
+      return [`${relativePath} wildcard re-exports restricted Topic Store state internals.`];
+    }
+    if (reexport.kind === "namespace" && reexport.moduleSpecifier === "./topic-store-state") {
+      return [`${relativePath} namespace re-exports restricted Topic Store state internals.`];
+    }
+    if (
+      reexport.kind === "named" &&
+      reexport.exports.some(
+        (namedExport) =>
+          restrictedStateExportNames.has(namedExport.sourceName) ||
+          restrictedStateExportNames.has(namedExport.exportedName),
+      )
+    ) {
+      return [`${relativePath} named re-exports restricted Topic Store state internals.`];
+    }
+      return [];
+    }),
+  ];
+};
+
+export const collectEngineSeamViolations = (
+  repositoryRoot = repoRoot,
+): {
+  readonly helperViolations: ReadonlyArray<string>;
+  readonly stateExportViolations: ReadonlyArray<string>;
+} => {
   const helperViolations: Array<string> = [];
   const stateExportViolations: Array<string> = [];
-
-  for (const path of sourceFiles(engineSourceRoot)) {
-    if (isTestFile(path)) {
-      continue;
+  const sourceRoot = join(repositoryRoot, "packages", "column-live-view-engine", "src");
+  for (const path of sourceFiles(sourceRoot)) {
+    if (!isTestFile(path)) {
+      const contents = readFileSync(path, "utf8");
+      helperViolations.push(
+        ...topicStoreHelperViolationsForFile({ contents, path, repositoryRoot }),
+      );
+      stateExportViolations.push(
+        ...topicStoreStateExportViolationsForFile({ contents, path, repositoryRoot }),
+      );
     }
-
-    const contents = readFileSync(path, "utf8");
-    helperViolations.push(...topicStoreHelperViolationsForFile({ contents, path }));
-    stateExportViolations.push(...topicStoreStateExportViolationsForFile({ contents, path }));
   }
-
-  return {
-    helperViolations,
-    stateExportViolations,
-  };
+  return { helperViolations, stateExportViolations };
 };
 
-export const topicStoreHelperViolationMessage = (violations: ReadonlyArray<string>): string =>
-  [
-    "Production engine modules must not use restricted TopicStore state helpers.",
-    "Route query/read-model behavior through TopicStore helper operations instead.",
-    ...violations.map((path) => `- ${path}`),
-  ].join("\n");
+const assertNoViolations = (heading: string, violations: ReadonlyArray<string>): void => {
+  if (violations.length > 0) {
+    throw new Error([heading, ...violations.map((violation) => `- ${violation}`)].join("\n"));
+  }
+};
 
-export const topicStoreStateExportViolationMessage = (
-  violations: ReadonlyArray<string>,
-): string =>
-  [
-    "Production engine modules must not re-export restricted TopicStore state internals.",
-    ...violations.map((path) => `- ${path}`),
-  ].join("\n");
+export const assertNoPackageSurfaceViolations = (violations: ReadonlyArray<string>): void =>
+  assertNoViolations("Package Surface Policy violations found.", violations);
+
+export const assertNoPackageImportViolations = (violations: ReadonlyArray<string>): void =>
+  assertNoViolations("Package architecture seam violations found.", violations);
+
+export const assertNoConsumerImportViolations = (violations: ReadonlyArray<string>): void =>
+  assertNoViolations("Consumer facade import violations found.", violations);
 
 export const assertNoEngineSeamViolations = ({
   helperViolations,
@@ -2388,205 +783,13 @@ export const assertNoEngineSeamViolations = ({
 }: {
   readonly helperViolations: ReadonlyArray<string>;
   readonly stateExportViolations: ReadonlyArray<string>;
-}) => {
-  if (helperViolations.length > 0) {
-    throw new Error(topicStoreHelperViolationMessage(helperViolations));
-  }
-  if (stateExportViolations.length > 0) {
-    throw new Error(topicStoreStateExportViolationMessage(stateExportViolations));
-  }
-};
+}): void =>
+  assertNoViolations("Topic Store Module seam violations found.", [
+    ...helperViolations,
+    ...stateExportViolations,
+  ]);
 
-assertNoEngineSeamViolations(collectEngineSeamViolations());
-
-const viewServerPackages = {
-  client: "@effect-view-server/client",
-  config: "@effect-view-server/config",
-  configInternal: "@effect-view-server/config/internal",
-  effectUtils: "@effect-view-server/effect-utils",
-  engine: "@effect-view-server/column-live-view-engine",
-  engineInternal: "@effect-view-server/column-live-view-engine/internal",
-  inMemory: "@effect-view-server/in-memory",
-  inMemoryTesting: "@effect-view-server/in-memory/testing",
-  protocol: "@effect-view-server/protocol",
-  react: "@effect-view-server/react",
-  runtime: "@effect-view-server/runtime",
-  runtimeCore: "@effect-view-server/runtime-core",
-  runtimeCoreInternal: "@effect-view-server/runtime-core/internal",
-  server: "@effect-view-server/server",
-} as const;
-
-const allViewServerPackages = new Set(Object.values(viewServerPackages));
-
-const restrictedPackageImports: ReadonlyArray<RestrictedPackageImport> = [
-  {
-    packageName: "config",
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Config contracts must stay at the bottom of the dependency graph.",
-  },
-  {
-    packageName: "effect-utils",
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Effect utility helpers must stay independent of View Server packages.",
-  },
-  {
-    packageName: "protocol",
-    allowedSpecifiers: new Set([viewServerPackages.config]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Protocol may depend on config contracts only.",
-  },
-  {
-    packageName: "client",
-    allowedSpecifiers: new Set([
-      viewServerPackages.config,
-      viewServerPackages.effectUtils,
-      viewServerPackages.protocol,
-    ]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Client code must not depend on runtime, server, React, in-memory, or engine code.",
-  },
-  {
-    packageName: "column-live-view-engine",
-    allowedSpecifiers: new Set([viewServerPackages.config]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "The engine must stay transport/runtime independent.",
-  },
-  {
-    packageName: "runtime-core",
-    allowedSpecifiers: new Set([
-      viewServerPackages.client,
-      viewServerPackages.config,
-      viewServerPackages.effectUtils,
-      viewServerPackages.engine,
-      viewServerPackages.engineInternal,
-    ]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Runtime core may compose client contracts, config, effect utils, and engine only.",
-  },
-  {
-    packageName: "runtime",
-    allowedSpecifiers: new Set([
-      viewServerPackages.client,
-      viewServerPackages.config,
-      viewServerPackages.configInternal,
-      viewServerPackages.effectUtils,
-      viewServerPackages.runtimeCore,
-      viewServerPackages.runtimeCoreInternal,
-      viewServerPackages.server,
-    ]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Production runtime must compose runtime-core/server directly.",
-  },
-  {
-    packageName: "in-memory",
-    allowedSpecifiers: new Set([
-      viewServerPackages.client,
-      viewServerPackages.config,
-      viewServerPackages.runtimeCore,
-    ]),
-    allowedRelativePathSpecifiers: new Map([
-      ["src/testing.ts", new Set([viewServerPackages.runtimeCoreInternal])],
-    ]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "The in-memory Adapter must use runtime-core instead of reaching into lower layers.",
-  },
-  {
-    packageName: "server",
-    allowedSpecifiers: new Set([
-      viewServerPackages.client,
-      viewServerPackages.config,
-      viewServerPackages.effectUtils,
-      viewServerPackages.protocol,
-    ]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message: "Server code may depend on protocol/client contracts, not runtime or React adapters.",
-  },
-  {
-    allowedRelativePathSpecifiers: new Map([
-      [
-        "src/testing.tsx",
-        new Set([viewServerPackages.inMemory, viewServerPackages.inMemoryTesting]),
-      ],
-    ]),
-    packageName: "react",
-    allowedSpecifiers: new Set([
-      viewServerPackages.client,
-      `${viewServerPackages.client}/remote`,
-      viewServerPackages.config,
-      viewServerPackages.effectUtils,
-    ]),
-    forbiddenSpecifiers: allViewServerPackages,
-    message:
-      "React bindings may use client transports but must not import runtime, server, engine, or in-memory outside the testing entrypoint.",
-  },
-] as const;
-
-export const packageImportViolationsForFile = ({
-  contents,
-  packageRoot,
-  path,
-  restriction,
-}: {
-  readonly contents: string;
-  readonly packageRoot: string;
-  readonly path: string;
-  readonly restriction: RestrictedPackageImport;
-}): ReadonlyArray<string> => {
-  const violations: Array<string> = [];
-
-  for (const violation of packageRelativeImportViolationsFor({
-    contents,
-    packageRoot,
-    path,
-  })) {
-    violations.push(`packages/${restriction.packageName}/${violation}`);
-  }
-
-  for (const violation of packageImportViolationsFor({
-    contents,
-    relativePath: toPosixRelativePath(relative(packageRoot, path)),
-    restriction,
-  })) {
-    violations.push(`packages/${restriction.packageName}/${violation}`);
-  }
-
-  return violations;
-};
-
-export const collectPackageImportViolations = (): ReadonlyArray<string> => {
-  const violations: Array<string> = [];
-
-  for (const restriction of restrictedPackageImports) {
-    for (const path of sourceFiles(packageSourceRoot(restriction.packageName))) {
-      if (isTestFile(path)) {
-        continue;
-      }
-      violations.push(
-        ...packageImportViolationsForFile({
-          contents: readFileSync(path, "utf8"),
-          packageRoot: join(repoRoot, "packages", restriction.packageName),
-          path,
-          restriction,
-        }),
-      );
-    }
-  }
-
-  return violations;
-};
-
-export const packageImportViolationMessage = (violations: ReadonlyArray<string>): string =>
-  [
-    "Package architecture seam violations found.",
-    ...violations.map((path) => `- ${path}`),
-  ].join("\n");
-
-export const assertNoPackageImportViolations = (violations: ReadonlyArray<string>) => {
-  if (violations.length === 0) {
-    return;
-  }
-  throw new Error(packageImportViolationMessage(violations));
-};
-
+assertNoPackageSurfaceViolations(collectPackageSurfaceViolations());
 assertNoPackageImportViolations(collectPackageImportViolations());
 assertNoConsumerImportViolations(collectConsumerImportViolations());
+assertNoEngineSeamViolations(collectEngineSeamViolations());

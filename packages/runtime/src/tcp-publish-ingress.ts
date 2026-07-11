@@ -91,7 +91,12 @@ const validateTcpPublishOptions = (
   return Effect.void;
 };
 
-/** @internal Package-local test seam; not exported from @effect-view-server/runtime. */
+/**
+ * @internal Package-local Adapter constructor for deterministic socket ownership tests.
+ * Node's real server cannot reliably force listen, handoff, and close failures at exact lifecycle
+ * boundaries; injecting only the server factory keeps those failure paths observable without
+ * exposing test controls from the public runtime package.
+ */
 export const makeViewServerTcpPublishIngressWithServerFactory = Effect.fn(
   "ViewServerRuntime.tcpPublish.makeWithServerFactory",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(

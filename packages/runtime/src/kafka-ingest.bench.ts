@@ -344,7 +344,7 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.kafka.bench.setup")(function
         kafkaSource: kafka.source({
           topic: jsonOrdersSourceTopic,
           regions: ["local"],
-          value: kafka.json(IncomingJsonOrder),
+          value: kafka.json(() => Schema.toCodecJson(IncomingJsonOrder)),
           key: kafka.stringKey(),
           rowKey: ({ key }) => key,
           map: ({ value }) => ({

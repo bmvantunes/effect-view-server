@@ -80,7 +80,7 @@ definitions in the View Server config. Runtime options provide only operational
 values such as the consumer group, optional start position, and Region broker overrides:
 
 ```ts
-import { Config } from "effect";
+import { Config, Schema } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
 import { defineViewServerConfig, kafka } from "effect-view-server/config";
 import { runViewServerRuntime } from "effect-view-server/runtime";
@@ -119,7 +119,7 @@ const viewServer = defineViewServerConfig({
       kafkaSource: kafka.source({
         topic: "sourceTradesLondon",
         regions: ["london"],
-        value: kafka.json(KafkaTrade),
+        value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
         key: kafka.stringKey(),
         rowKey: ({ key }) => key,
         map: ({ value, region }) => ({
@@ -144,6 +144,11 @@ NodeRuntime.runMain(
   }),
 );
 ```
+
+The JSON Adapter requires the explicit canonical factory shown above. The
+factory runs once when the Kafka Source Codec is constructed. Use a named
+`kafka.codec(...)` Adapter for versioned or otherwise non-canonical wire data;
+see `docs/kafka-mapping.md` for the typed custom-codec pattern.
 
 Startup fails through Effect `Config` if required environment-backed Kafka
 broker values are missing. Do not silently default brokers or production

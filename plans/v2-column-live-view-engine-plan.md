@@ -274,7 +274,7 @@ Accepted combined-source shape:
 
 ```ts
 // view-server.config.ts
-import { Config, Stream } from "effect";
+import { Config, Schema, Stream } from "effect";
 import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
 import { KafkaTrade, Order, Strategy, Trade } from "./schemas";
 import { ordersService, strategiesService } from "./generated/grpc";
@@ -308,7 +308,7 @@ export const viewServer = defineViewServerConfig({
       kafkaSource: kafka.source({
         topic: "sourceTrades",
         regions: ["usa", "london"],
-        value: kafka.json(KafkaTrade),
+        value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
         key: kafka.stringKey(),
         rowKey: ({ key }) => key,
         map: ({ value, region }) => ({
@@ -808,7 +808,9 @@ The runtime API should enforce these at compile time:
   `map`; the schema is not exposed on the user mapping callback's public typed input.
 - `metadata` should leave room for Kafka headers, partition, offset, timestamp, source topic, and source region.
 - Protobuf source codecs should accept the direct generated Buf descriptor/code.
-- JSON source codecs should validate decoded JSON through the provided Effect Schema.
+- JSON source codecs accept a lazy zero-argument factory for
+  `Schema.toCodecJson(SourceRowSchema)`, construct that canonical codec once, and validate decoded
+  JSON through it. Non-canonical or versioned wire formats use `kafka.codec(...)`.
 - Custom source codecs should keep arbitrary formats behind one typed decoder seam.
 
 The `map` function should receive one object argument, not positional arguments. Positional arguments will age badly once metadata, tracing, validation, or decode context is added.

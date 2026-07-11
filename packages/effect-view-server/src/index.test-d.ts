@@ -1,8 +1,8 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig } from "effect-view-server/config";
+import { defineViewServerConfig, kafka as kafkaFromConfig } from "effect-view-server/config";
 import { decodeKafkaCodec as decodeKafkaCodecFromConfig } from "effect-view-server/config";
-import { decodeKafkaCodec } from "effect-view-server/config/kafka";
-import type { LiveQueryResult } from "effect-view-server/config";
+import { decodeKafkaCodec, kafka } from "effect-view-server/config/kafka";
+import type { KafkaCodecType, LiveQueryResult } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
@@ -29,6 +29,8 @@ const viewServer = defineViewServerConfig({
 });
 
 const react = createViewServerReact(viewServer);
+const kafkaOrderCodec = kafka.json(() => Schema.toCodecJson(Order));
+const kafkaOrderCodecFromConfig = kafkaFromConfig.json(() => Schema.toCodecJson(Order));
 
 describe("public effect-view-server subpath type contracts", () => {
   it("rejects bare root package imports", () => {
@@ -45,6 +47,11 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(createInMemoryViewServer).not.toBeAny();
     expectTypeOf(decodeKafkaCodec).not.toBeAny();
     expectTypeOf(decodeKafkaCodecFromConfig).not.toBeAny();
+    expectTypeOf<KafkaCodecType<typeof kafkaOrderCodec>>().toEqualTypeOf<typeof Order.Type>();
+    expectTypeOf<KafkaCodecType<typeof kafkaOrderCodecFromConfig>>().toEqualTypeOf<
+      typeof Order.Type
+    >();
+    expectTypeOf(kafkaOrderCodec).not.toHaveProperty("schema");
     expectTypeOf<ViewServerLiveClient<typeof viewServer.topics>>().not.toBeAny();
   });
 
@@ -107,6 +114,11 @@ describe("public effect-view-server subpath type contracts", () => {
         },
       },
     });
+
+    // @ts-expect-error public config/kafka rejects raw Row Schemas
+    kafka.json(Order);
+    // @ts-expect-error public config rejects direct canonical codecs
+    kafkaFromConfig.json(Schema.toCodecJson(Order));
   });
 
   it("preserves public in-memory client and React testing provider types", () => {

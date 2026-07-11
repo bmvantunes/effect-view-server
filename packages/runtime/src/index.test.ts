@@ -2925,7 +2925,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -3093,7 +3093,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "audit-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -4937,7 +4937,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -6223,7 +6223,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -7164,7 +7164,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16323,7 +16323,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16411,7 +16411,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16481,7 +16481,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16544,7 +16544,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16584,7 +16584,7 @@ describe("@effect-view-server/runtime", () => {
               kafkaSource: kafka.source({
                 topic: "orders-source",
                 regions: ["local"],
-                value: kafka.json(Order),
+                value: kafka.json(() => Schema.toCodecJson(Order)),
                 key: kafka.stringKey(),
                 rowKey: ({ key }) => key,
                 map: ({ value }) => ({
@@ -16629,7 +16629,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16754,7 +16754,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "shared-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16768,7 +16768,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "shared-source",
               regions: ["local"],
-              value: kafka.json(Trade),
+              value: kafka.json(() => Schema.toCodecJson(Trade)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16809,7 +16809,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16852,7 +16852,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -16908,7 +16908,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "__proto__",
               regions: ["__proto__"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -17002,7 +17002,7 @@ describe("@effect-view-server/runtime", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(Order),
+              value: kafka.json(() => Schema.toCodecJson(Order)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({

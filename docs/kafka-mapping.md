@@ -9,7 +9,7 @@ field from `rowKey`, so Kafka tombstones can delete the same source-owned row
 without decoding a value.
 
 ```ts
-import { Config } from "effect";
+import { Config, Schema } from "effect";
 import { NodeRuntime } from "@effect/platform-node";
 import { defineViewServerConfig, kafka } from "effect-view-server/config";
 import { runViewServerRuntime } from "effect-view-server/runtime";
@@ -48,7 +48,7 @@ export const viewServer = defineViewServerConfig({
       kafkaSource: kafka.source({
         topic: "sourceTradesLondon",
         regions: ["london"],
-        value: kafka.json(KafkaTrade),
+        value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
         key: kafka.stringKey(),
         rowKey: ({ key }) => key,
         map: ({ value, region }) => ({
@@ -75,6 +75,40 @@ NodeRuntime.runMain(
 
 `kafka.protobuf(...)` expects the Buf generated `DescMessage` descriptor symbol,
 not a TypeScript value type.
+
+`kafka.json(...)` accepts only a lazy zero-argument factory for Effect's canonical
+JSON codec. The Adapter invokes that factory once when it is constructed, parses
+Kafka bytes as JSON, and decodes the parsed value through the canonical codec:
+
+```ts
+value: kafka.json(() => Schema.toCodecJson(KafkaTrade));
+```
+
+The returned Kafka Source Codec infers `KafkaTrade.Type`; it does not expose a
+runtime `schema` field. A versioned or non-canonical wire format belongs behind
+the typed custom Kafka Source Codec Seam:
+
+```ts
+import type { KafkaCodecDecodeInput } from "effect-view-server/config";
+import type { Effect } from "effect";
+
+type TradeJsonV1Error = {
+  readonly _tag: "TradeJsonV1Error";
+  readonly message: string;
+};
+
+declare const decodeTradeJsonV1: (
+  input: KafkaCodecDecodeInput,
+) => Effect.Effect<typeof KafkaTrade.Type, TradeJsonV1Error>;
+
+const tradeJsonV1 = kafka.codec({
+  name: "trade-json-v1",
+  decode: decodeTradeJsonV1,
+});
+```
+
+This custom Adapter keeps both its decoded value and error channel typed while
+making ownership of the non-canonical wire contract explicit.
 
 The region names in each `kafkaSource.regions` tuple are checked against
 `config.kafka`. In the example above, `["usa"]` and `["london"]` are valid, but

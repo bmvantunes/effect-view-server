@@ -40,7 +40,7 @@ it("renders pushed orders", async () => {
     }),
   );
 
-  await expect.element(screen.getByText("order-1")).toBeVisible();
+  await expect.element(screen.getByText("order-1", { exact: true })).toBeVisible();
 });
 ```
 

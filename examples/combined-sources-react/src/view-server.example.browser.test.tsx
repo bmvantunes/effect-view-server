@@ -15,13 +15,22 @@ describe("combined sources React example", () => {
     );
 
     await expect
-      .element(screen.getByRole("heading", { name: "Kafka plus leased and materialized gRPC" }))
+      .element(
+        screen.getByRole("heading", {
+          name: "Kafka plus leased and materialized gRPC",
+          exact: true,
+        }),
+      )
       .toBeVisible();
-    await expect.element(screen.getByRole("heading", { name: "Leased orders" })).toBeVisible();
     await expect
-      .element(screen.getByRole("heading", { name: "Materialized strategies" }))
+      .element(screen.getByRole("heading", { name: "Leased orders", exact: true }))
       .toBeVisible();
-    await expect.element(screen.getByRole("heading", { name: "Kafka trades" })).toBeVisible();
+    await expect
+      .element(screen.getByRole("heading", { name: "Materialized strategies", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(screen.getByRole("heading", { name: "Kafka trades", exact: true }))
+      .toBeVisible();
     await Effect.runPromise(
       Effect.all(
         [

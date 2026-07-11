@@ -1,5 +1,9 @@
 # @effect-view-server/runtime
 
+> This README is a contributor reference for the private runtime implementation package.
+> Applications install `effect-view-server` and import from `effect-view-server/runtime`; they must
+> not depend on `@effect-view-server/runtime` directly.
+
 Production runtime composition for View Server.
 
 This package wires Runtime Core, Effect RPC WebSocket transport, `GET /health`,
@@ -71,9 +75,9 @@ NodeRuntime.runMain(
 
 ## Kafka Ingestion
 
-Kafka is optional. Prefer topic-owned `kafkaSource` definitions in the View
-Server config. Runtime options then provide only operational values such as the
-consumer group and optional start position:
+Kafka is optional. Kafka Source Topics belong in topic-owned `kafkaSource`
+definitions in the View Server config. Runtime options provide only operational
+values such as the consumer group, optional start position, and Region broker overrides:
 
 ```ts
 import { Config } from "effect";
@@ -281,6 +285,10 @@ const viewServer = defineViewServerConfig({
         updatedAt: value.updatedAt,
       }),
     }),
+    manualOrders: {
+      schema: Order,
+      key: "id",
+    },
   },
 });
 
@@ -309,13 +317,17 @@ different interface only behind your own network controls.
 The protocol is NDJSON over TCP: one JSON command per line and one JSON response
 per line.
 
+The gRPC config above also declares source-free `manualOrders` as a legal TCP
+target. TCP mutations to the source-owned `orders` and `strategies` Topics are
+rejected.
+
 Supported commands:
 
 ```json
-{ "op": "publish", "topic": "orders", "row": { "id": "o1", "price": 10 } }
-{ "op": "publishMany", "topic": "orders", "rows": [{ "id": "o1", "price": 10 }] }
-{ "op": "patch", "topic": "orders", "key": "o1", "patch": { "price": 20 } }
-{ "op": "delete", "topic": "orders", "key": "o1" }
+{ "op": "publish", "topic": "manualOrders", "row": { "id": "o1", "customerId": "customer-1", "strategyId": "strategy-alpha", "status": "open", "price": 99, "region": "london", "updatedAt": 1 } }
+{ "op": "publishMany", "topic": "manualOrders", "rows": [{ "id": "o2", "customerId": "customer-2", "strategyId": "strategy-beta", "status": "open", "price": 42, "region": "usa", "updatedAt": 1 }] }
+{ "op": "patch", "topic": "manualOrders", "key": "o1", "patch": { "status": "closed" } }
+{ "op": "delete", "topic": "manualOrders", "key": "o1" }
 ```
 
 Responses:

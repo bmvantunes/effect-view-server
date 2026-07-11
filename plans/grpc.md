@@ -26,7 +26,8 @@ This plan does not conflict with `plans/v2-column-live-view-engine-plan.md`.
 
 The existing plan says:
 
-- runtime config owns Kafka, TCP publishing, gRPC publishing, and deploy-time/server-only wiring
+- View Server Topics own Kafka and gRPC source declarations; runtime config owns operational
+  deploy-time/server-only wiring and optional TCP publish ingress
 - browser bundles must not import runtime config
 - the engine package must not depend on Kafka, WebSocket, React, TCP, gRPC, or server runtime code
 - the same authoritative in-memory Topic Store serves snapshots, deltas, counts, grouped views, and subscription change streams
@@ -38,7 +39,10 @@ Validation result:
 
 - Compatible with the v2 plan's core rule that the `ColumnLiveViewEngine` is the only query/snapshot/delta engine.
 - Compatible with the one-topic-one-logical-table model because leased feed instances are internal runtime partitions for one public View Server topic, not public topics and not a second storage API.
-- Compatible with the runtime boundary because gRPC clients, upstream requests, session headers, reconnect policy, and source lifecycle are server-only runtime concerns.
+- Compatible with the server-runtime Adapter boundary because connection instantiation, upstream
+  stream calls, session headers, reconnect policy, and source lifecycle execute only in the server
+  runtime. Declarative `grpc.clients` and Topic-owned `grpcSource` bindings can remain in the shared
+  typed config without teaching React hooks about gRPC.
 - Compatible with the React/provider model because `useLiveQuery` does not learn about gRPC. The server resolves leased feeds behind the same Live Query contract.
 - Compatible with the health cadence rule because gRPC health is a ledger/cached snapshot, not a full per-message health rebuild.
 - Compatible with the transport policy because browser live data continues over Effect RPC WebSocket with NDJSON. gRPC is ingress only.
@@ -46,7 +50,9 @@ Validation result:
 
 Important boundaries carried forward from the v2 plan:
 
-- Browser code must not import runtime/gRPC config. The only browser-facing API is still the typed React provider/hooks.
+- Browser code may import the shared declarative View Server config used to create typed React
+  bindings. It must not import server runtime options or gRPC execution Adapters; the browser-facing
+  runtime API remains the typed React provider/hooks.
 - In-memory testing must continue to use the same runtime-core and engine. gRPC leased/materialized feeds are server runtime Adapters, not a special test engine.
 - Production browser live traffic stays on Effect RPC WebSocket + NDJSON until a separate transport decision changes that. gRPC is not a browser transport.
 - Runtime health must remain cached/coalesced. gRPC message ingestion may update cheap counters, but it must not rebuild full health per upstream event.
@@ -70,7 +76,7 @@ Use these names consistently:
 
 Avoid the names `hot`, `cold`, `eager`, and `lazy` in code. They are useful conversational shortcuts, but they blur the real contract:
 
-- `materialized` means runtime-owned, startup-acquired, retained state.
+- `materialized` means runtime-lifetime, startup-acquired, retained state.
 - `leased` means subscription-owned, route-keyed, retained only while there is demand.
 
 Do not call leased feed instances "topics" in public APIs. Health can expose feed instances under a topic, but the public topic remains stable.
@@ -113,7 +119,7 @@ attribute decode failures separately from stream failures.
 Use for bounded or globally useful sources, for example all strategies.
 
 ```ts
-import { Effect, Stream } from "effect";
+import { Config, Stream } from "effect";
 import { defineViewServerConfig, grpc } from "effect-view-server/config";
 
 const grpcClients = {
@@ -194,7 +200,6 @@ const viewServer = defineViewServerConfig({
       }),
       acquire: ({ client, request }) =>
         Stream.fromAsyncIterable(client.streamOrders(request), (cause) => cause),
-      release: () => Effect.void,
       map: ({ value, route }) => ({
         id: value.orderId,
         strategyId: route.strategyId,
@@ -259,7 +264,8 @@ useLiveQuery("orders", {
 
 Route predicates must be exact equality predicates. Do not allow `in`, `startsWith`, `gte`, `lte`, ranges, missing route fields, or ambiguous access paths for leased feeds.
 
-The runtime must reject invalid leased-feed queries with `InvalidQueryError`. Never fall back to an unfiltered upstream stream.
+The runtime must reject invalid leased-feed queries with `ViewServerRuntimeError` code
+`"InvalidQuery"`. Never fall back to an unfiltered upstream stream.
 
 The type system should reject the same invalid leased-feed query shapes whenever the query object is statically visible. Runtime validation still remains
 mandatory because remote clients and decoded wire payloads can bypass TypeScript.
@@ -315,8 +321,9 @@ The gRPC API must be as type-safe as the Kafka API.
 
 Compile-time guarantees:
 
-- `topic` only accepts keys from `defineViewServerConfig`.
-- `routeBy` only accepts keys from the target topic row schema.
+- The containing `topics` key is the public View Server Topic identity; `grpcSource` accepts no
+  second target-topic field.
+- `routeBy` only accepts keys from the containing Topic Row schema.
 - leased-feed topics require exact equality filters for every `routeBy` field in `useLiveQuery`.
 - route fields in `request(route)` are inferred from the configured topic row schema.
 - `method` only accepts server-streaming methods from the configured ConnectRPC service.
@@ -427,17 +434,16 @@ orders <- Kafka source and gRPC leased source
 orders <- gRPC materialized source and gRPC leased source
 ```
 
-`ordersByStrategyRegion` is a feed definition name, not a public View Server topic name. A leased
-feed definition may create many internal feed instances such as `orders/ordersByStrategyRegion/...`,
-but `useLiveQuery` still queries the public `orders` topic and the runtime must route that query to
-exactly one internal feed instance before executing local filters/sorts/groups.
+The configured View Server Topic key is the sole public source-binding identity. There is no
+separately named public feed definition. A leased `grpcSource` on the
+`orders` Topic may create many internal feed instances under the runtime's resolved `orders` source
+binding, but `useLiveQuery` still queries the public `orders` Topic and the runtime must route that
+query to exactly one internal feed instance before executing local filters/sorts/groups.
 
-The current public config shape can remain for now, but runtime/config validation must reject:
-
-- Kafka and gRPC both targeting the same View Server topic
-- multiple materialized gRPC feeds targeting the same View Server topic
-- multiple leased gRPC feed definitions targeting the same View Server topic
-- a materialized and leased gRPC feed both targeting the same View Server topic
+The topic-owned public config shape exposes one source slot per Topic. Runtime/config validation
+must still reject erased or malformed values that declare competing source owners, invalid gRPC
+source metadata, or runtime feed metadata that does not resolve one-to-one to the Topic-owned
+`grpcSource`.
 
 If a future design needs multi-source topics, it must be explicit and must define ordering, deduplication, health, and restart semantics first.
 
@@ -510,29 +516,33 @@ Validation rules:
 - Plain/no-source topics remain writable by in-memory/TCP-style public publish clients.
 - Public in-memory/runtime clients must reject direct publish/snapshot/subscribe/reset operations that would bypass leased-feed ownership.
 
-Do not let users manually return `feedKey` from `acquire`. The runtime derives `feedKey` from topic, feed name, `routeBy`, and canonical route values.
-That keeps feed identity stable, auditable, and independent from user callback bugs.
+Do not let users manually return `feedKey` from `acquire`. The runtime derives `feedKey` from the
+Topic key, the internal source-binding identity derived from that same Topic key, the `leased`
+lifecycle tag, `routeBy`, and canonical route values. That keeps feed identity stable, auditable,
+and independent from user callback bugs.
 
 ## Feed Key
 
 Users should not manually return `feedKey` from `acquire`.
 
-The framework should derive it from:
+The framework derives it from:
 
-- View Server topic
-- feed definition name
-- routeBy field names
+- View Server Topic key
+- internal source-binding identity, currently the same Topic key
+- the `leased` lifecycle tag
+- `routeBy` field names in configured order
 - canonical route values
 
 Example:
 
 ```txt
 topic: orders
-feed: ordersByStrategyRegion
+source binding: orders
+routeBy: ["strategyId", "region"]
 route: { strategyId: "s1", region: "usa" }
 
 feedKey:
-orders/ordersByStrategyRegion/region=usa/strategyId=s1
+orders/orders/leased/strategyId=string%3A2%3As1&region=string%3A3%3Ausa
 ```
 
 Canonicalization rules:
@@ -733,7 +743,7 @@ Current leased manager runtime/e2e tests:
 - subscriber with different route opens a second upstream stream
 - extra local filters produce different views over the same leased feed
 - last subscriber for a feed closes upstream and drops feed rows
-- invalid leased query returns `InvalidQueryError`
+- invalid leased query returns `ViewServerRuntimeError` code `"InvalidQuery"`
 - health reports leased feed keys, subscriber counts, row counts, and failures
 - runtime shutdown releases all leased gRPC streams
 - real ConnectRPC HTTP/2 integration proves same-route leased subscriptions share one upstream stream through the configured ConnectRPC client path
@@ -867,7 +877,8 @@ Implement in slices that keep `vp run -w ready`, strict Effect LSP, package seam
 2. Runtime ownership validation
    - Reject Kafka + gRPC ownership conflicts.
    - Reject source/client/schema/key/method mismatches at config definition and runtime option resolution boundaries.
-   - Keep browser/react packages free from runtime/gRPC imports.
+   - Keep browser/React packages free from server runtime and gRPC execution Adapter imports while
+     allowing the shared declarative View Server config used for typed bindings.
 
 3. Materialized feed runtime
    - Acquire materialized streams at runtime startup.
@@ -900,7 +911,6 @@ Implement in slices that keep `vp run -w ready`, strict Effect LSP, package seam
 
 Do not implement these in the first gRPC slice unless needed:
 
-- full public config migration to `topics: { orders: kafka.topic(...), liveOrders: grpc.leasedTopic(...) }`
 - generic non-gRPC stream-source API
 - multi-source topics
 - merging multiple leased feed instances for one user query

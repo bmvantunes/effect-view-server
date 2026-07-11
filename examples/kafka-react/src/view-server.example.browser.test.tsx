@@ -17,7 +17,12 @@ describe("Kafka React example", () => {
     );
 
     await expect
-      .element(screen.getByRole("heading", { name: "Apache Kafka to View Server to React" }))
+      .element(
+        screen.getByRole("heading", {
+          name: "Apache Kafka to View Server to React",
+          exact: true,
+        }),
+      )
       .toBeVisible();
     await Effect.runPromise(
       inMemoryExample.client.publish("orders", {
@@ -29,9 +34,11 @@ describe("Kafka React example", () => {
         updatedAt: 1,
       }),
     );
-    await expect.element(screen.getByRole("cell", { name: "order-kafka-browser" })).toBeVisible();
     await expect
-      .element(screen.getByRole("cell", { name: "customer-kafka-browser" }))
+      .element(screen.getByRole("cell", { name: "order-kafka-browser", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(screen.getByRole("cell", { name: "customer-kafka-browser", exact: true }))
       .toBeVisible();
     await screen.unmount();
     await Effect.runPromise(inMemoryExample.close);

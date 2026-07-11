@@ -17,7 +17,9 @@ describe("TCP publisher React example", () => {
     );
 
     await expect
-      .element(screen.getByRole("heading", { name: "TCP ingress to live React table" }))
+      .element(
+        screen.getByRole("heading", { name: "TCP ingress to live React table", exact: true }),
+      )
       .toBeVisible();
     await Effect.runPromise(
       inMemoryExample.client.publish("orders", {

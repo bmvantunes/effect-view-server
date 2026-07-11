@@ -15,10 +15,17 @@ describe("materialized gRPC React example", () => {
     );
 
     await expect
-      .element(screen.getByRole("heading", { name: "Startup materialized strategy stream" }))
+      .element(
+        screen.getByRole("heading", {
+          name: "Startup materialized strategy stream",
+          exact: true,
+        }),
+      )
       .toBeVisible();
-    await expect.element(screen.getByRole("heading", { name: "Active strategies" })).toBeVisible();
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Runtime status: ready");
+    await expect
+      .element(screen.getByRole("heading", { name: "Active strategies", exact: true }))
+      .toBeVisible();
+    await expect.element(screen.getByRole("status")).toHaveTextContent(/^Runtime status: ready$/);
     await Effect.runPromise(
       inMemoryExample.client.publish("strategies", {
         id: "strategy-browser-row",

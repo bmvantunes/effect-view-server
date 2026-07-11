@@ -183,7 +183,12 @@ A named Kafka/source deployment location configured for ingestion.
 _Avoid_: Location string, environment, cluster unless discussing infrastructure
 
 **Mapping**:
-The typed function that transforms a source message, key, region, schema, and metadata into a Topic Row for a View Server Topic.
+The typed ingress transformation from decoded source values into a View Server Topic Row. Kafka
+`map` receives the decoded value and key, Region, derived `rowKey`, and metadata, then returns the
+non-key fields; the runtime combines the derived key with those fields and validates the completed
+Topic Row through the containing schema. The Kafka schema is not exposed on `map`'s public typed
+input. gRPC `map` receives the streamed value, the leased route when present, and the containing
+Topic schema, then returns the complete Topic Row for runtime validation.
 _Avoid_: Serializer, mapper when it obscures the target Topic Row contract
 
 **Kafka Delivery Contract**:

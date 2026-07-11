@@ -3,13 +3,19 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  assertNoConsumerImportViolations,
   assertNoPackageImportViolations,
   assertNoPackageExportViolations,
   assertNoEngineSeamViolations,
+  collectConsumerImportViolations,
   collectEngineSeamViolations,
   collectPackageExportViolations,
   collectPackageImportViolations,
+  consumerImportViolationsFor,
+  consumerImportViolationMessage,
+  consumerMarkdownImportViolationsFor,
   importSpecifiersFromSource,
+  isTestFile,
   libraryPackEntrypointPaths,
   packageExportSpecifiersForManifest,
   packageExportViolationMessage,
@@ -35,20 +41,468 @@ import {
 const makeDirectory = () => mkdtempSync(join(tmpdir(), "view-server-internal-seams-"));
 
 describe("internal seam checker", () => {
-  it("scans TypeScript and TSX source files recursively", () => {
+  it("rejects private workspace imports from consumer source", () => {
+    expect(
+      consumerImportViolationsFor({
+        contents: 'import { defineViewServerConfig } from "@effect-view-server/config";',
+        relativePath: "apps/example/src/view-server.config.ts",
+      }),
+    ).toStrictEqual([
+      "apps/example/src/view-server.config.ts imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("allows only approved publishable consumer subpaths", () => {
+    const staleScope = "@view" + "-server";
+
+    expect(
+      consumerImportViolationsFor({
+        contents: [
+          'import "@effect-view-server/config";',
+          'import "@effect-view-server/runtime/internal";',
+          `import "${staleScope}/react";`,
+          'import "effect-view-server";',
+          'import "effect-view-server/config/internal";',
+          'import "effect-view-server/config";',
+          'import "effect-view-server/react/testing";',
+          'import "effect-view-server/runtime";',
+          'import "effect";',
+        ].join("\n"),
+        relativePath: "examples/example/src/index.ts",
+      }),
+    ).toStrictEqual([
+      "examples/example/src/index.ts imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+      "examples/example/src/index.ts imports @effect-view-server/runtime/internal: consumers must import the publishable effect-view-server/* facade.",
+      `examples/example/src/index.ts imports ${staleScope}/react: stale View Server package scope; consumers must use approved effect-view-server/* subpaths.`,
+      "examples/example/src/index.ts imports effect-view-server: the package root is not exported; consumers must use an approved effect-view-server/* subpath.",
+      "examples/example/src/index.ts imports effect-view-server/config/internal: consumers must use approved effect-view-server/* package exports.",
+    ]);
+  });
+
+  it("rejects private workspace imports from consumer TypeScript code fences", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "# Consumer setup",
+          "```ts",
+          'import { defineViewServerConfig } from "@effect-view-server/config";',
+          "```",
+        ].join("\n"),
+        relativePath: "README.md",
+      }),
+    ).toStrictEqual([
+      "README.md:2 imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("checks TSX, MTS, and CTS fences with Markdown fence semantics", () => {
+    const staleScope = "@view" + "-server";
+
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "# More examples",
+          "~~~tsx",
+          'import "@effect-view-server/react";',
+          "```",
+          "~~~~",
+          "```mts",
+          `export * from "${staleScope}/runtime";`,
+          "``",
+          "````",
+          "````cts",
+          'const facade = require("effect-view-server");',
+          "`````",
+          "```typescript",
+          'import "effect-view-server/config";',
+          "```",
+        ].join("\r\n"),
+        relativePath: "docs/examples.md",
+      }),
+    ).toStrictEqual([
+      "docs/examples.md:2 imports @effect-view-server/react: consumers must import the publishable effect-view-server/* facade.",
+      `docs/examples.md:6 imports ${staleScope}/runtime: stale View Server package scope; consumers must use approved effect-view-server/* subpaths.`,
+      "docs/examples.md:10 imports effect-view-server: the package root is not exported; consumers must use an approved effect-view-server/* subpath.",
+    ]);
+  });
+
+  it("checks fenced source inside blockquote containers", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "> ```ts",
+          '> import "@effect-view-server/config";',
+          "> ````",
+          ">",
+          "> > ~~~~custom-language",
+          '> > export * from "@effect-view-server/runtime";',
+          "> > ~~~~~",
+        ].join("\n"),
+        relativePath: "docs/blockquote-examples.md",
+      }),
+    ).toStrictEqual([
+      "docs/blockquote-examples.md:1 imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+      "docs/blockquote-examples.md:5 imports @effect-view-server/runtime: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("checks fenced source inside sufficiently indented list containers", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "- ```ts",
+          '  import "@effect-view-server/client";',
+          "  ````",
+          "",
+          "- Outer item",
+          "  1. ~~~~custom-language",
+          '       export * from "@effect-view-server/server";',
+          "       ~~~~~",
+          "",
+          "-     ```ts",
+          '      import "@effect-view-server/config";',
+          "      ```",
+          "",
+          ">     ```ts",
+          '>     import "@effect-view-server/react";',
+          ">     ```",
+          "",
+          "    ```ts",
+          '    import "@effect-view-server/runtime";',
+          "    ```",
+        ].join("\n"),
+        relativePath: "examples/list-examples.md",
+      }),
+    ).toStrictEqual([
+      "examples/list-examples.md:1 imports @effect-view-server/client: consumers must import the publishable effect-view-server/* facade.",
+      "examples/list-examples.md:6 imports @effect-view-server/server: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("checks fences continued beneath list item content indentation", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "- Example:",
+          "    ```ts",
+          '    import "@effect-view-server/config";',
+          "    ````",
+          "",
+          "10. Ordered example:",
+          "    ~~~~custom-language",
+          '    export * from "@effect-view-server/runtime";',
+          "    ~~~~~",
+          "",
+          "- Parent",
+          "",
+          "    - ```ts",
+          '      import "@effect-view-server/server";',
+          "      ````",
+          "",
+          "- Tab-indented parent",
+          "",
+          "\t- ~~~~ts",
+          '\t  import "@effect-view-server/client";',
+          "\t  ~~~~~",
+        ].join("\n"),
+        relativePath: "docs/list-continuations.md",
+      }),
+    ).toStrictEqual([
+      "docs/list-continuations.md:2 imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+      "docs/list-continuations.md:7 imports @effect-view-server/runtime: consumers must import the publishable effect-view-server/* facade.",
+      "docs/list-continuations.md:13 imports @effect-view-server/server: consumers must import the publishable effect-view-server/* facade.",
+      "docs/list-continuations.md:19 imports @effect-view-server/client: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("checks a fence in a tab-padded list item", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "-\t```ts",
+          '\timport "@effect-view-server/config";',
+          "\t````",
+        ].join("\n"),
+        relativePath: "docs/tab-padded-list.md",
+      }),
+    ).toStrictEqual([
+      "docs/tab-padded-list.md:1 imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("checks a fence beneath an empty ordered list item", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "10.",
+          "    ```ts",
+          '    import "@effect-view-server/runtime";',
+          "    ````",
+        ].join("\n"),
+        relativePath: "docs/empty-list-item.md",
+      }),
+    ).toStrictEqual([
+      "docs/empty-list-item.md:2 imports @effect-view-server/runtime: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("does not treat a non-one ordered paragraph continuation as a list", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "Paragraph",
+          "2. continuation",
+          "    ```ts",
+          '    import "@effect-view-server/server";',
+          "    ```",
+        ].join("\n"),
+        relativePath: "docs/paragraph-continuation.md",
+      }),
+    ).toStrictEqual([]);
+  });
+
+  it("stops a contained fence when its Markdown container ends", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "> ```ts",
+          '> import "effect-view-server/config";',
+          'import "@effect-view-server/server";',
+          "```ts",
+          'import "@effect-view-server/client";',
+          "```",
+        ].join("\n"),
+        relativePath: "docs/blockquote-boundary.md",
+      }),
+    ).toStrictEqual([
+      "docs/blockquote-boundary.md:4 imports @effect-view-server/client: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "- Example:",
+          "    ```ts",
+          "",
+          '    import "effect-view-server/config";',
+          'import "@effect-view-server/runtime";',
+        ].join("\n"),
+        relativePath: "docs/list-boundary.md",
+      }),
+    ).toStrictEqual([]);
+  });
+
+  it("checks every fence while ignoring prose, inline code, task names, and data values", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          'Prose may explain `import "@effect-view-server/config"` without being executable.',
+          "```sh",
+          "vp run @effect-view-server/example#test",
+          "```",
+          "```json",
+          '{ "task": "@effect-view-server/runtime" }',
+          "```",
+          "```ts",
+          'const taskName = "@effect-view-server/runtime";',
+          "```",
+          "```text",
+          'import "@effect-view-server/server";',
+          "```",
+          "```",
+          'export * from "@effect-view-server/client";',
+          "```",
+          "```custom-language",
+          'const protocol = require("@effect-view-server/protocol");',
+          "```",
+        ].join("\n"),
+        relativePath: "plans/example.md",
+      }),
+    ).toStrictEqual([
+      "plans/example.md:11 imports @effect-view-server/server: consumers must import the publishable effect-view-server/* facade.",
+      "plans/example.md:14 imports @effect-view-server/client: consumers must import the publishable effect-view-server/* facade.",
+      "plans/example.md:17 imports @effect-view-server/protocol: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("checks an unclosed source fence through end of file", () => {
+    expect(
+      consumerMarkdownImportViolationsFor({
+        contents: [
+          "Consumer example:",
+          "~~~javascript",
+          'const runtime = import("@effect-view-server/runtime");',
+          "~~",
+        ].join("\n"),
+        relativePath: "examples/example/README.md",
+      }),
+    ).toStrictEqual([
+      "examples/example/README.md:2 imports @effect-view-server/runtime: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("scans every supported TypeScript module extension recursively", () => {
     const directory = makeDirectory();
     const nested = join(directory, "nested");
     mkdirSync(nested);
     writeFileSync(join(directory, "index.ts"), "");
     writeFileSync(join(directory, "component.tsx"), "");
+    writeFileSync(join(directory, "module.mts"), "");
+    writeFileSync(join(directory, "common.cts"), "");
     writeFileSync(join(directory, "ignore.js"), "");
+    writeFileSync(join(directory, "ignore.jsx"), "");
     writeFileSync(join(nested, "testing.tsx"), "");
+    writeFileSync(join(nested, "testing.mts"), "");
+    writeFileSync(join(nested, "testing.cts"), "");
 
-    expect(sourceFiles(directory).map((path) => basename(path)).sort()).toStrictEqual([
+    expect(sourceFiles(directory).map((path) => basename(path))).toStrictEqual([
+      "common.cts",
       "component.tsx",
       "index.ts",
+      "module.mts",
+      "testing.cts",
+      "testing.mts",
       "testing.tsx",
     ]);
+  });
+
+  it("collects consumer source violations across apps, examples, tests, and module extensions", () => {
+    const directory = makeDirectory();
+    const appRoot = join(directory, "apps", "z-app");
+    const exampleRoot = join(directory, "examples", "a-example");
+    mkdirSync(join(appRoot, "src"), { recursive: true });
+    mkdirSync(join(appRoot, "node_modules"), { recursive: true });
+    mkdirSync(join(appRoot, "dist"), { recursive: true });
+    mkdirSync(join(exampleRoot, "src"), { recursive: true });
+    mkdirSync(join(exampleRoot, "coverage"), { recursive: true });
+    mkdirSync(join(exampleRoot, ".vite"), { recursive: true });
+    writeFileSync(
+      join(appRoot, "src", "component.test.tsx"),
+      'import "@effect-view-server/react";',
+    );
+    writeFileSync(join(appRoot, "vite.config.ts"), 'import "@effect-view-server/config";');
+    writeFileSync(
+      join(exampleRoot, "runtime.cts"),
+      'const runtime = require("@effect-view-server/runtime");',
+    );
+    writeFileSync(
+      join(exampleRoot, "src", "module.test.mts"),
+      'export * from "@effect-view-server/server";',
+    );
+    writeFileSync(
+      join(appRoot, "node_modules", "private.ts"),
+      'import "@effect-view-server/config";',
+    );
+    writeFileSync(join(appRoot, "dist", "generated.ts"), 'import "@effect-view-server/config";');
+    writeFileSync(
+      join(exampleRoot, "coverage", "ignored.mts"),
+      'import "@effect-view-server/config";',
+    );
+    writeFileSync(
+      join(exampleRoot, ".vite", "ignored.cts"),
+      'import "@effect-view-server/config";',
+    );
+
+    expect(collectConsumerImportViolations(directory)).toStrictEqual([
+      "apps/z-app/src/component.test.tsx imports @effect-view-server/react: consumers must import the publishable effect-view-server/* facade.",
+      "apps/z-app/vite.config.ts imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+      "examples/a-example/runtime.cts imports @effect-view-server/runtime: consumers must import the publishable effect-view-server/* facade.",
+      "examples/a-example/src/module.test.mts imports @effect-view-server/server: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("collects consumer Markdown violations from the approved documentation scope", () => {
+    const directory = makeDirectory();
+    mkdirSync(join(directory, "apps", "example"), { recursive: true });
+    mkdirSync(join(directory, "docs"), { recursive: true });
+    mkdirSync(join(directory, "examples", "example"), { recursive: true });
+    mkdirSync(join(directory, "packages", "facade"), { recursive: true });
+    mkdirSync(join(directory, "plans"), { recursive: true });
+    mkdirSync(join(directory, ".agents"), { recursive: true });
+    const markdownWithPrivateImport = (specifier: string) =>
+      ["```ts", `import "${specifier}";`, "```"].join("\n");
+    writeFileSync(
+      join(directory, "README.md"),
+      markdownWithPrivateImport("@effect-view-server/config"),
+    );
+    writeFileSync(
+      join(directory, "apps", "example", "guide.md"),
+      markdownWithPrivateImport("@effect-view-server/react"),
+    );
+    writeFileSync(
+      join(directory, "docs", "guide.md"),
+      markdownWithPrivateImport("@effect-view-server/client"),
+    );
+    writeFileSync(
+      join(directory, "examples", "example", "README.md"),
+      markdownWithPrivateImport("@effect-view-server/runtime"),
+    );
+    writeFileSync(
+      join(directory, "packages", "facade", "README.md"),
+      markdownWithPrivateImport("@effect-view-server/server"),
+    );
+    writeFileSync(
+      join(directory, "plans", "active.md"),
+      markdownWithPrivateImport("@effect-view-server/protocol"),
+    );
+    writeFileSync(
+      join(directory, "packages", "facade", "internal.md"),
+      markdownWithPrivateImport("@effect-view-server/config"),
+    );
+    writeFileSync(join(directory, "packages", "not-a-package.txt"), "");
+    writeFileSync(
+      join(directory, ".agents", "README.md"),
+      markdownWithPrivateImport("@effect-view-server/config"),
+    );
+
+    expect(collectConsumerImportViolations(directory)).toStrictEqual([
+      "README.md:1 imports @effect-view-server/config: consumers must import the publishable effect-view-server/* facade.",
+      "apps/example/guide.md:1 imports @effect-view-server/react: consumers must import the publishable effect-view-server/* facade.",
+      "docs/guide.md:1 imports @effect-view-server/client: consumers must import the publishable effect-view-server/* facade.",
+      "examples/example/README.md:1 imports @effect-view-server/runtime: consumers must import the publishable effect-view-server/* facade.",
+      "packages/facade/README.md:1 imports @effect-view-server/server: consumers must import the publishable effect-view-server/* facade.",
+      "plans/active.md:1 imports @effect-view-server/protocol: consumers must import the publishable effect-view-server/* facade.",
+    ]);
+  });
+
+  it("formats and throws consumer import violation summaries", () => {
+    const violations = [
+      "apps/example/src/index.ts imports @effect-view-server/config: consumers must use the facade.",
+    ];
+
+    expect(consumerImportViolationMessage(violations)).toStrictEqual(
+      [
+        "Consumer facade import violations found.",
+        "- apps/example/src/index.ts imports @effect-view-server/config: consumers must use the facade.",
+      ].join("\n"),
+    );
+    expect(() => assertNoConsumerImportViolations(violations)).toThrowError(
+      "Consumer facade import violations found.",
+    );
+    expect(assertNoConsumerImportViolations([])).toStrictEqual(undefined);
+  });
+
+  it("keeps current consumer source and documentation imports facade-only", () => {
+    expect(collectConsumerImportViolations()).toStrictEqual([]);
+  });
+
+  it("classifies tests and benchmarks for every supported TypeScript module extension", () => {
+    const paths = [
+      "src/index.test.ts",
+      "src/component.test.tsx",
+      "src/module.test.mts",
+      "src/common.test.cts",
+      "src/index.test-d.ts",
+      "src/module.test-d.mts",
+      "src/index.bench.ts",
+      "src/component.bench.tsx",
+      "src/module.bench.mts",
+      "src/common.bench.cts",
+      "src/index.ts",
+      "src/test.ts",
+    ];
+
+    expect(paths.filter(isTestFile)).toStrictEqual(paths.slice(0, 10));
   });
 
   it("collects engine seam violations for restricted helpers and re-exports", () => {
@@ -1224,8 +1678,12 @@ describe("internal seam checker", () => {
   it("normalizes safe libraryPack source entrypoints only", () => {
     expect(sourceEntrypointForPackEntry("src/index.ts")).toStrictEqual("index");
     expect(sourceEntrypointForPackEntry("src/testing.tsx")).toStrictEqual("testing");
+    expect(sourceEntrypointForPackEntry("src/module.mts")).toStrictEqual("module");
+    expect(sourceEntrypointForPackEntry("src/common.cts")).toStrictEqual("common");
     expect(sourceEntrypointForPackEntry("generated/index.ts")).toStrictEqual(undefined);
     expect(sourceEntrypointForPackEntry("src/index.js")).toStrictEqual(undefined);
+    expect(sourceEntrypointForPackEntry("src/index.mjs")).toStrictEqual(undefined);
+    expect(sourceEntrypointForPackEntry("src/index.cjs")).toStrictEqual(undefined);
     expect(sourceEntrypointForPackEntry("src/../index.ts")).toStrictEqual(undefined);
   });
 
@@ -1258,6 +1716,21 @@ describe("internal seam checker", () => {
       true,
     );
     expect(sourceEntrypointForRelativeDistEntrypoint("react", "missing")).toStrictEqual(undefined);
+  });
+
+  it("resolves MTS and CTS package source entrypoint files", () => {
+    const directory = makeDirectory();
+    const sourceRoot = join(directory, "packages", "example", "src");
+    mkdirSync(sourceRoot, { recursive: true });
+    writeFileSync(join(sourceRoot, "module.mts"), "");
+    writeFileSync(join(sourceRoot, "common.cts"), "");
+
+    expect(
+      sourceEntrypointForRelativeDistEntrypoint("example", "module", directory),
+    ).toStrictEqual(join(sourceRoot, "module.mts"));
+    expect(
+      sourceEntrypointForRelativeDistEntrypoint("example", "common", directory),
+    ).toStrictEqual(join(sourceRoot, "common.cts"));
   });
 
   it("collects root conditional package export maps as the root specifier", () => {

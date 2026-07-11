@@ -14,7 +14,12 @@ describe("in-memory React example", () => {
     );
 
     await expect
-      .element(screen.getByRole("heading", { name: "Live orders without a server process" }))
+      .element(
+        screen.getByRole("heading", {
+          name: "Live orders without a server process",
+          exact: true,
+        }),
+      )
       .toBeVisible();
     await expect.element(screen.getByText("Total rows: 0", { exact: true })).toBeVisible();
 
@@ -29,8 +34,12 @@ describe("in-memory React example", () => {
       }),
     );
 
-    await expect.element(screen.getByRole("cell", { name: "order-browser" })).toBeVisible();
-    await expect.element(screen.getByRole("cell", { name: "customer-browser" })).toBeVisible();
+    await expect
+      .element(screen.getByRole("cell", { name: "order-browser", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(screen.getByRole("cell", { name: "customer-browser", exact: true }))
+      .toBeVisible();
     await expect.element(screen.getByText("Grouped rows: 1", { exact: true })).toBeVisible();
     await screen.unmount();
     await Effect.runPromise(inMemoryExample.close);

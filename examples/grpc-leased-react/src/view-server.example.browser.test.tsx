@@ -15,12 +15,12 @@ describe("leased gRPC React example", () => {
     );
 
     await expect
-      .element(screen.getByRole("heading", { name: "On-demand shared gRPC route" }))
+      .element(screen.getByRole("heading", { name: "On-demand shared gRPC route", exact: true }))
       .toBeVisible();
     await expect
-      .element(screen.getByRole("heading", { name: "Strategy alpha orders" }))
+      .element(screen.getByRole("heading", { name: "Strategy alpha orders", exact: true }))
       .toBeVisible();
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Runtime status: ready");
+    await expect.element(screen.getByRole("status")).toHaveTextContent(/^Runtime status: ready$/);
     await Effect.runPromise(
       inMemoryExample.client.publish("orders", {
         id: "leased-order-browser",

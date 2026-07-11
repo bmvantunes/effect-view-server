@@ -34,7 +34,9 @@ publish URLs and keeps the runtime alive until interrupted.
   `127.0.0.1`.
 - `tcpPublishPort`: enables optional TCP publish ingress.
 - `tcpPublishMaxConnections`: bounds TCP publisher connections.
-- `kafka`: optional Kafka source configuration.
+- `kafka`: Kafka operational configuration, required when a Topic owns a `kafkaSource` and
+  unavailable when no Topic is Kafka-owned. It contains the consumer group, start position, and
+  Region broker overrides; source declarations remain topic-owned.
 - `grpc`: optional gRPC operational configuration, currently materialized
   reconnect policy.
 

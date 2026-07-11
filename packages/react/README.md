@@ -1,10 +1,13 @@
-# @effect-view-server/react
+# @effect-view-server/react contributor reference
 
-Production code should import from `@effect-view-server/react`. That entry depends only on
-`@effect-view-server/client`, `@effect-view-server/config`, Effect, and React.
+> This README documents a private workspace implementation package. Application authors install
+> `effect-view-server` and must not depend on `@effect-view-server/*` packages directly.
 
-Tests can import `createInMemoryViewServerReact` from `@effect-view-server/react/testing`.
-That testing subpath intentionally uses `@effect-view-server/in-memory` as a package
-devDependency in this repository and an optional peer for external consumers. It must
-be created from the same `createViewServerReact(...)` binding object used by the app
-hooks, so the test provider and hook contexts cannot drift apart.
+Consumer production code imports from `effect-view-server/react`. Browser tests import
+`createInMemoryViewServerReact` from `effect-view-server/react/testing`.
+
+For contributors, the private React implementation package depends on the private client, config,
+and Effect utility packages plus Effect and React. Its testing subpath uses the private in-memory
+Adapter as a development dependency and optional peer. The testing helper must be created from the
+same `createViewServerReact(...)` binding object used by application hooks, so the test provider and
+hook contexts cannot drift apart.

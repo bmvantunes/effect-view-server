@@ -36,7 +36,7 @@ describe("OrdersApp", () => {
       </inMemory.ViewServerInMemoryProvider>,
     );
 
-    await expect.element(view.getByRole("heading", { name: "Orders" })).toBeVisible();
+    await expect.element(view.getByRole("heading", { name: "Orders", exact: true })).toBeVisible();
     await expect.element(view.getByText("Open orders: 0", { exact: true })).toBeVisible();
 
     await Effect.runPromise(
@@ -61,9 +61,11 @@ describe("OrdersApp", () => {
     );
 
     await expect.element(view.getByText("Open orders: 1", { exact: true })).toBeVisible();
-    await expect.element(view.getByRole("cell", { name: "order-a" })).toBeVisible();
-    await expect.element(view.getByRole("cell", { name: "42" })).toBeVisible();
-    await expect.element(view.getByRole("cell", { name: "order-b" })).not.toBeInTheDocument();
+    await expect.element(view.getByRole("cell", { name: "order-a", exact: true })).toBeVisible();
+    await expect.element(view.getByRole("cell", { name: "42", exact: true })).toBeVisible();
+    await expect
+      .element(view.getByRole("cell", { name: "order-b", exact: true }))
+      .not.toBeInTheDocument();
 
     await view.unmount();
     await Effect.runPromise(inMemory.close);

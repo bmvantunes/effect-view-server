@@ -39,31 +39,25 @@ Before implementing product code, set up Effect v4 beta and the Effect language 
 
 Required package baseline:
 
-- Use the latest `effect` v4 beta.
-- Current known baseline: `effect@4.0.0-beta.91`.
+- Use the workspace-pinned `effect` v4 beta; do not update it as part of unrelated work.
+- Current workspace baseline: `effect@4.0.0-beta.91`.
 - Use `@effect/vitest` for all tests.
-- Check for updated beta versions at the start of each new implementation day.
+- Run strict Effect language-service diagnostics before considering a change complete.
 
-Local reference repositories:
+Repository references:
 
-- Effect source of truth: `/Users/bruno/projects/effect-smol`
-- Effect language service source: `/Users/bruno/projects/language-service`
-- Production Effect v4 beta reference app: `/Users/bruno/projects/t3code`
+- Vendored Effect source of truth: `.repos/effect`
+- Repository Effect workflow guide: `.agents/skills/effect-ts/SKILL.md`
 
-If implementation patterns conflict, `effect-smol` is the single source of truth.
+If implementation patterns conflict, the workspace pin and `.repos/effect` are the source of truth.
 
 Useful source files:
 
-- `/Users/bruno/projects/effect-smol/packages/effect/src/Config.ts`
-- `/Users/bruno/projects/effect-smol/packages/effect/src/ConfigProvider.ts`
-- `/Users/bruno/projects/effect-smol/packages/effect/src/Clock.ts`
-- `/Users/bruno/projects/effect-smol/packages/vitest`
-
-GitHub references if the local repo is not available:
-
-- `https://github.com/Effect-TS/effect-smol/blob/main/packages/effect/src/Config.ts`
-- `https://github.com/Effect-TS/effect-smol/blob/main/packages/effect/src/ConfigProvider.ts`
-- `https://github.com/Effect-TS/effect-smol/blob/main/packages/effect/src/Clock.ts`
+- `.repos/effect/packages/effect/src/Config.ts`
+- `.repos/effect/packages/effect/src/ConfigProvider.ts`
+- `.repos/effect/packages/effect/src/Clock.ts`
+- `.repos/effect/packages/effect/src/Metric.ts`
+- `.repos/effect/packages/vitest`
 
 Runtime configuration must use Effect Config:
 
@@ -260,9 +254,14 @@ Because there is no external snapshot backend, browser-mode Vitest can run full 
 
 ## Runtime API Direction
 
-`runViewServerRuntime` / `makeViewServerRuntime` own deploy-time/server-only wiring. This includes ports, Kafka brokers, Kafka topic mapping, TCP publishing, gRPC publishing, memory budgets, WAL/checkpoints, and similar runtime concerns.
+`runViewServerRuntime` / `makeViewServerRuntime` own deploy-time/server-only operational wiring. This
+includes ports, Kafka consumer groups and start positions, Region broker overrides, gRPC reconnect
+policy, TCP publishing, memory budgets, WAL/checkpoints, and similar runtime concerns.
 
-Runtime config must not be imported by browser bundles.
+Source Ownership Policy does not live in runtime options. Every View Server Topic owns either a
+topic-owned `kafkaSource`, a topic-owned `grpcSource`, or no source declaration for direct Runtime
+Client/TCP publishing. The top-level Kafka Region map and `grpc.clients` are infrastructure used by
+those topic-owned declarations. Runtime config must not be imported by browser bundles.
 
 Kafka implementation decision:
 
@@ -271,74 +270,125 @@ Kafka implementation decision:
 - Do not use the Confluent client.
 - Revisit only if a dedicated benchmark shows `@platformatic/kafka` cannot meet throughput/lag/operational requirements.
 
-Preferred shape:
+Accepted combined-source shape:
+
+```ts
+// view-server.config.ts
+import { Config, Stream } from "effect";
+import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
+import { KafkaTrade, Order, Strategy, Trade } from "./schemas";
+import { ordersService, strategiesService } from "./generated/grpc";
+
+const kafkaRegions = {
+  usa: Config.string("KAFKA_USA_BOOTSTRAP"),
+  london: Config.string("KAFKA_LONDON_BOOTSTRAP"),
+};
+
+const grpcClients = {
+  orders: grpc.connectClient({
+    service: ordersService,
+    baseUrl: Config.string("ORDERS_GRPC_URL"),
+  }),
+  strategies: grpc.connectClient({
+    service: strategiesService,
+    baseUrl: Config.string("STRATEGIES_GRPC_URL"),
+  }),
+};
+const grpcTopics = grpc.topicSources(grpcClients);
+
+export const viewServer = defineViewServerConfig({
+  kafka: kafkaRegions,
+  grpc: {
+    clients: grpcClients,
+  },
+  topics: {
+    trades: {
+      schema: Trade,
+      key: "id",
+      kafkaSource: kafka.source({
+        topic: "sourceTrades",
+        regions: ["usa", "london"],
+        value: kafka.json(KafkaTrade),
+        key: kafka.stringKey(),
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          symbol: value.symbol,
+          side: value.side,
+          quantity: value.quantity,
+          region,
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
+    strategies: grpcTopics.materialized({
+      schema: Strategy,
+      key: "id",
+      client: "strategies",
+      method: "streamStrategies",
+      request: () => ({ universe: "global" }),
+      acquire: ({ client, request }) =>
+        Stream.fromAsyncIterable(client.streamStrategies(request), (cause) => cause),
+      map: ({ value }) => ({
+        id: `${value.strategyId}:${value.region}`,
+        strategyId: value.strategyId,
+        region: value.region,
+        status: value.status,
+        notional: value.notional,
+        updatedAt: value.updatedAt,
+      }),
+    }),
+    orders: grpcTopics.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["strategyId", "region"],
+      request: ({ strategyId, region }) => ({ strategyId, region }),
+      acquire: ({ client, request }) =>
+        Stream.fromAsyncIterable(client.streamOrders(request), (cause) => cause),
+      map: ({ value, route }) => ({
+        id: `${route.strategyId}:${route.region}:${value.orderId}`,
+        strategyId: route.strategyId,
+        region: route.region,
+        customerId: value.customerId,
+        status: value.status,
+        price: value.price,
+        updatedAt: value.updatedAt,
+      }),
+    }),
+    manualOrders: {
+      schema: Order,
+      key: "id",
+    },
+  },
+});
+```
+
+Runtime options stay operational-only:
 
 ```ts
 // runtime.ts
 import { NodeRuntime } from "@effect/platform-node";
-import {
-  ordersBufProtoKey,
-  ordersBufProtoValue,
-  tradesBufProtoValue,
-} from "@buf/generated_code/orders_buf_proto";
-import { kafka } from "effect-view-server/config";
+import { Config } from "effect";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import { viewServer } from "./view-server.config";
-
-const kafkaRegions = {
-  usa: "broker-a:9092,broker-b:9092",
-  london: "broker-c:9092,broker-d:9092",
-};
-
-const kafkaTopic = viewServer.kafkaTopic<typeof kafkaRegions>();
 
 NodeRuntime.runMain(
   runViewServerRuntime(viewServer, {
     websocketPort: 8080,
     tcpPublishPort: 8081,
-
     kafka: {
       consumerGroupId: "view-server-orders",
-      regions: kafkaRegions,
-
-      topics: {
-        orders: kafkaTopic({
-          regions: ["usa", "london"],
-
-          value: kafka.protobuf(ordersBufProtoValue),
-          key: kafka.protobuf(ordersBufProtoKey),
-
-          viewServerTopic: "orders",
-
-          mapping: ({ key, value, region, schema, metadata }) => {
-            return {
-              id: key.orderId,
-              customerId: value.customerId,
-              status: value.status,
-              price: value.price,
-              region,
-              updatedAt: value.updatedAt,
-            };
-          },
-        }),
-
-        trades: kafkaTopic({
-          regions: ["usa"],
-
-          value: kafka.protobuf(tradesBufProtoValue),
-
-          viewServerTopic: "trades",
-
-          mapping: ({ key, value, region, schema, metadata }) => {
-            return {
-              id: key,
-              symbol: value.symbol,
-              quantity: value.quantity,
-              price: value.price,
-              region,
-            };
-          },
-        }),
+      startFrom: { committedConsumerGroup: "view-server-orders", fallback: "earliest" },
+      regions: {
+        usa: Config.string("KAFKA_USA_RUNTIME_BOOTSTRAP"),
+        london: Config.string("KAFKA_LONDON_RUNTIME_BOOTSTRAP"),
+      },
+    },
+    grpc: {
+      materializedReconnect: {
+        maxReconnects: 60,
+        delay: "1 second",
       },
     },
   }),
@@ -373,7 +423,7 @@ import { Effect } from "effect";
 import { createInMemoryViewServer, useLiveQuery } from "./view-server.config";
 
 function Orders() {
-  const result = useLiveQuery("orders", {
+  const result = useLiveQuery("manualOrders", {
     where: { status: "open" },
     select: ["id", "price"],
     orderBy: [{ field: "price", direction: "desc" }],
@@ -392,9 +442,10 @@ render(
 );
 
 await Effect.runPromise(
-  client.publish("orders", {
+  client.publish("manualOrders", {
     id: "order-2",
     customerId: "customer-2",
+    strategyId: "strategy-alpha",
     status: "open",
     price: 99,
     region: "london",
@@ -689,11 +740,20 @@ const fanoutDeltas = Effect.fn("transport.fanoutDeltas")(function* (topic, delta
 Do not create spans inside per-row tight loops. That would destroy the performance signal and add overhead exactly where the engine is trying to be fast. For tight loops, record aggregate counters/timers around the loop:
 
 ```ts
+import { Clock, Effect, Metric } from "effect";
+
+const scanColumnDurationMs = Metric.histogram("engine.scanColumn.ms", {
+  boundaries: Metric.linearBoundaries({ start: 0, width: 1, count: 20 }),
+});
+const scanColumnRows = Metric.counter("engine.scanColumn.rows", { incremental: true });
+
 const scanColumn = Effect.fn("engine.scanColumn")(function* (topic, column, predicate) {
-  const start = performance.now();
+  const startedAt = yield* Clock.currentTimeNanos;
   const result = scanColumnUnsafe(column, predicate);
-  yield* Metrics.histogram("engine.scanColumn.ms").record(performance.now() - start);
-  yield* Metrics.counter("engine.scanColumn.rows").increment(column.length);
+  const finishedAt = yield* Clock.currentTimeNanos;
+  const elapsedMillis = Number(finishedAt - startedAt) / 1_000_000;
+  yield* Metric.update(scanColumnDurationMs, elapsedMillis);
+  yield* Metric.update(scanColumnRows, column.length);
   return result;
 });
 ```
@@ -728,25 +788,30 @@ protoSchemaKey;
 
 The runtime API should enforce these at compile time:
 
-- `kafka.regions` values are bootstrap strings, not arrays.
-- Kafka source topic definitions must be created with `viewServer.kafkaTopic<typeof kafkaRegions>()(...)`; direct unwrapped objects are rejected so nested topic contracts cannot widen.
-- `topics[...].regions` only accepts keys from `kafka.regions`.
+- The config-level Kafka Region map and any runtime `kafka.regions` overrides use bootstrap strings
+  or Effect `Config` values, not arrays.
+- A Kafka-owned View Server Topic declares exactly one `kafkaSource: kafka.source(...)`; runtime
+  options cannot declare Source Topics or target View Server Topics.
+- `kafkaSource.regions` only accepts keys from the config-level Kafka Region map.
 - `regions: ["usa", "london"]` passes.
 - `regions: ["USA"]` fails.
-- `viewServerTopic` only accepts topic keys from `defineViewServerConfig`.
+- The containing View Server Topic is the target; `kafka.source(...)` does not accept a second
+  target-topic name.
 - `value` must be an explicit Kafka source codec such as `kafka.protobuf(...)`, `kafka.json(...)`, `kafka.string()`, `kafka.bytes()`, or `kafka.codec(...)`.
-- If `key` is provided, `mapping({ key })` is inferred from that Kafka key codec.
-- If `key` is omitted, `mapping({ key })` is a UTF-8 string.
-- `mapping({ value })` is inferred from the Kafka value codec.
-- `mapping({ region })` is narrowed to the configured region literals for that Kafka topic.
-- `mapping` return value must match the target `viewServerTopic` row schema.
-- `schema` in `mapping` should be the Effect Schema from the target View Server topic.
+- If `key` is provided, `map({ key })` is inferred from that Kafka key codec.
+- If `key` is omitted, `map({ key })` is a UTF-8 string.
+- `map({ value })` is inferred from the Kafka value codec.
+- `map({ region })` is narrowed to the configured Region literals for that Source Topic.
+- `rowKey` and `map` together must produce exactly the containing View Server Topic's Topic Row;
+  missing or extra fields fail.
+- The containing View Server Topic's Effect Schema validates the completed row after `rowKey` and
+  `map`; the schema is not exposed on the user mapping callback's public typed input.
 - `metadata` should leave room for Kafka headers, partition, offset, timestamp, source topic, and source region.
 - Protobuf source codecs should accept the direct generated Buf descriptor/code.
 - JSON source codecs should validate decoded JSON through the provided Effect Schema.
 - Custom source codecs should keep arbitrary formats behind one typed decoder seam.
 
-The mapping function should receive one object argument, not positional arguments. Positional arguments will age badly once metadata, tracing, validation, or decode context is added.
+The `map` function should receive one object argument, not positional arguments. Positional arguments will age badly once metadata, tracing, validation, or decode context is added.
 
 ## No User-Defined Indexes
 
@@ -783,7 +848,9 @@ This package should have no Kafka, WebSocket, React, TCP, or server runtime depe
 - active view maintenance
 - benchmarks for ingest/query/subscribe/update/fanout behavior
 
-The server runtime package should compose this engine with Kafka, TCP/gRPC publishing, WebSocket transport, health, auth, and deployment concerns.
+The server runtime package composes this engine with Kafka/gRPC source ingress Adapters, the TCP
+publish ingress Adapter, WebSocket transport, health, auth, and deployment concerns. Kafka and gRPC
+source declarations remain local to their View Server Topics.
 
 Initial modules:
 
@@ -1096,7 +1163,7 @@ Responsibilities:
 - `packages/protocol`: Effect RPC WebSocket wire schema and encode/decode boundary.
 - `packages/in-memory`: in-process adapter over `runtime-core`; no alternate query engine, fake hook, fake health model, or duplicate runtime logic.
 - `packages/server`: Effect RPC WebSocket server and same-server HTTP health endpoint.
-- `packages/runtime`: production composition of `runtime-core`, server, health URL, lifecycle, and future Kafka/TCP/gRPC ingress adapters.
+- `packages/runtime`: production composition of `runtime-core`, server, health URL, lifecycle, and Kafka/TCP/gRPC ingress Adapters.
 - `packages/react`: production React provider/hooks plus a separate testing entrypoint for the in-memory provider.
 - `apps/example`: minimal real app proving browser usage and runtime URL injection.
 
@@ -1107,7 +1174,7 @@ All publishable `packages/*` must have explicit public exports. Do not leak inte
 Build this full vertical slice first:
 
 1. Define two topics with Effect Schema.
-2. Create a runtime with one Kafka region and one Kafka topic mapping.
+2. Define one Kafka Region as config-level infrastructure and attach one topic-owned `kafkaSource`.
 3. Ingest protobuf Kafka messages through `@platformatic/kafka`.
 4. Map Kafka messages into internal View Server rows.
 5. Store rows in `ColumnLiveViewEngine`.
@@ -1246,10 +1313,10 @@ a browser endpoint.
 The TCP endpoint accepts one JSON command per line:
 
 ```json
-{ "op": "publish", "topic": "orders", "row": { "id": "o1" } }
-{ "op": "publishMany", "topic": "orders", "rows": [{ "id": "o1" }] }
-{ "op": "patch", "topic": "orders", "key": "o1", "patch": { "status": "done" } }
-{ "op": "delete", "topic": "orders", "key": "o1" }
+{ "op": "publish", "topic": "manualOrders", "row": { "id": "o1", "customerId": "customer-1", "strategyId": "strategy-alpha", "status": "open", "price": 99, "region": "london", "updatedAt": 1 } }
+{ "op": "publishMany", "topic": "manualOrders", "rows": [{ "id": "o2", "customerId": "customer-2", "strategyId": "strategy-beta", "status": "open", "price": 42, "region": "usa", "updatedAt": 1 }] }
+{ "op": "patch", "topic": "manualOrders", "key": "o1", "patch": { "status": "closed" } }
+{ "op": "delete", "topic": "manualOrders", "key": "o1" }
 ```
 
 Each response is also one JSON line:

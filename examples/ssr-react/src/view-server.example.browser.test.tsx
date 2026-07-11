@@ -22,11 +22,16 @@ describe("SSR React example", () => {
 
     await expect
       .element(
-        screen.getByRole("heading", { name: "TanStack Start shell with client-only live data" }),
+        screen.getByRole("heading", {
+          name: "TanStack Start shell with client-only live data",
+          exact: true,
+        }),
       )
       .toBeVisible();
-    await screen.getByRole("button", { name: "Connect live data" }).click();
-    await expect.element(screen.getByRole("heading", { name: "Live orders" })).toBeVisible();
+    await screen.getByRole("button", { name: "Connect live data", exact: true }).click();
+    await expect
+      .element(screen.getByRole("heading", { name: "Live orders", exact: true }))
+      .toBeVisible();
     await Effect.runPromise(
       inMemoryExample.client.publish("orders", {
         id: "order-ssr-browser",

@@ -71,7 +71,7 @@ export const viewServer = defineViewServerConfig({
       kafkaSource: kafka.source({
         topic: ordersSourceTopic,
         regions: ["local"],
-        value: kafka.json(IncomingOrder),
+        value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
         key: kafka.stringKey(),
         rowKey: ({ key }) => key,
         map: ({ value }) => ({

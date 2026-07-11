@@ -18,6 +18,7 @@ import {
   Option,
   Queue,
   References,
+  Schema,
   Scope,
 } from "effect";
 import type { ViewServerKafkaHealthLedger } from "./kafka-health";
@@ -4351,7 +4352,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -4366,7 +4367,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: paymentsSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -4504,7 +4505,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -4604,7 +4605,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -4619,7 +4620,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: paymentsSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -4999,7 +5000,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -5014,7 +5015,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: paymentsSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -5199,7 +5200,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -5214,7 +5215,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: paymentsSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -5354,7 +5355,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -5369,7 +5370,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: paymentsSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -7020,7 +7021,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: preciseSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingPrecisePosition),
+              value: kafka.json(() => Schema.toCodecJson(IncomingPrecisePosition)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -7110,7 +7111,7 @@ describe("@effect-view-server/runtime Kafka ingress internals", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: (): never => {

@@ -80,7 +80,7 @@ const sourceOwnedViewServer = defineViewServerConfig({
       kafkaSource: kafka.source({
         topic: "orders-source",
         regions: ["usa"],
-        value: kafka.json(Row),
+        value: kafka.json(() => Schema.toCodecJson(Row)),
         key: kafka.stringKey(),
         rowKey: ({ key }) => key,
         map: ({ value }) => ({
@@ -313,7 +313,7 @@ describe("SourceOwnershipPolicy", () => {
           kafkaSource: kafka.source({
             topic: "multi-owned-orders-source",
             regions: ["usa"],
-            value: kafka.json(Row),
+            value: kafka.json(() => Schema.toCodecJson(Row)),
             key: kafka.stringKey(),
             rowKey: ({ key }) => key,
             map: ({ value }) => ({

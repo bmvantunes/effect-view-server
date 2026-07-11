@@ -185,6 +185,7 @@ _Avoid_: Publish helper, release script, npm wrapper
 
 **Kafka Source Codec**:
 A typed decoder contract for Kafka message keys and values before Mapping, such as protobuf, JSON, string, bytes, or a custom Effectful decoder. It is the source-format Seam; the View Server Topic schema remains the target truth.
+The JSON Adapter receives a lazy factory for Effect's canonical `Schema.toCodecJson(RowSchema)` codec and constructs it once. Versioned or non-canonical wire formats use the named custom Adapter instead.
 _Avoid_: Topic schema, row schema, serializer
 
 **Region**:

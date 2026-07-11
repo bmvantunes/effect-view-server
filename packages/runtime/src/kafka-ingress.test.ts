@@ -229,7 +229,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "ghost-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -304,7 +304,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -385,7 +385,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "transformed-orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingTransformedOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingTransformedOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -463,7 +463,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -560,7 +560,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -648,7 +648,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -751,7 +751,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -845,7 +845,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -961,7 +961,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1045,7 +1045,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1173,7 +1173,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1263,7 +1263,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1278,7 +1278,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "trades-source",
               regions: ["local"],
-              value: kafka.json(IncomingTrade),
+              value: kafka.json(() => Schema.toCodecJson(IncomingTrade)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1417,7 +1417,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
               kafkaSource: kafka.source({
                 topic: "orders-source",
                 regions: ["local"],
-                value: kafka.json(IncomingOrder),
+                value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
                 key: kafka.stringKey(),
                 rowKey: ({ key }) => key,
                 map: ({ value }) => ({
@@ -1514,7 +1514,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "transformed-orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingTransformedOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingTransformedOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1594,7 +1594,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: "orders-source",
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -1696,7 +1696,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
               kafkaSource: kafka.source({
                 topic: ordersSourceTopic,
                 regions: ["local"],
-                value: kafka.json(IncomingOrder),
+                value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
                 key: kafka.stringKey(),
                 rowKey: ({ key }) => key,
                 map: ({ value }) => ({
@@ -1711,7 +1711,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
               kafkaSource: kafka.source({
                 topic: tradesSourceTopic,
                 regions: ["local"],
-                value: kafka.json(IncomingTrade),
+                value: kafka.json(() => Schema.toCodecJson(IncomingTrade)),
                 key: kafka.stringKey(),
                 rowKey: ({ key }) => key,
                 map: ({ value }) => ({
@@ -1951,7 +1951,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: regionalOrdersSourceTopic,
               regions: ["usa", "london"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key, region }) => {
                 expectTypeOf(region).toEqualTypeOf<"usa" | "london">();
@@ -1972,7 +1972,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: usaTradesSourceTopic,
               regions: ["usa"],
-              value: kafka.json(IncomingTrade),
+              value: kafka.json(() => Schema.toCodecJson(IncomingTrade)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value, region }) => {
@@ -2260,7 +2260,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: positionsSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingPrecisePosition),
+              value: kafka.json(() => Schema.toCodecJson(IncomingPrecisePosition)),
               key: kafka.stringKey(),
               rowKey: ({ key, region }) => {
                 expectTypeOf(key).toEqualTypeOf<string>();
@@ -2609,7 +2609,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -2874,7 +2874,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({
@@ -3072,7 +3072,7 @@ describe("@effect-view-server/runtime Kafka ingress", () => {
             kafkaSource: kafka.source({
               topic: ordersSourceTopic,
               regions: ["local"],
-              value: kafka.json(IncomingOrder),
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
               key: kafka.stringKey(),
               rowKey: ({ key }) => key,
               map: ({ value }) => ({

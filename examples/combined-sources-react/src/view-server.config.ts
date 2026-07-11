@@ -117,7 +117,7 @@ export const viewServer = defineViewServerConfig({
       kafkaSource: kafka.source({
         topic: "view-server-example-trades",
         regions: ["usa", "london"],
-        value: kafka.json(KafkaTrade),
+        value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
         key: kafka.stringKey(),
         rowKey: ({ key }) => key,
         map: ({ value, region }) => ({

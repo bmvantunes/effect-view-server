@@ -34,5 +34,4 @@ export type {
   TopicOwnedKafkaSourceTopic,
 } from "./kafka-contract";
 
-export { defineGrpcFeed, grpcSourceMarkers } from "./grpc-contract";
-export type { GrpcFeedDefinition } from "./grpc-contract";
+export { grpcSourceMarkers } from "./grpc-contract";

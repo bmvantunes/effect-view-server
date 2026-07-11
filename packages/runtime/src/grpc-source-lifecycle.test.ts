@@ -36,14 +36,14 @@ describe("gRPC source lifecycle", () => {
           }),
       };
 
-      const request = yield* callMaterializedGrpcSourceRequest("ordersFeed", feed);
+      const request = yield* callMaterializedGrpcSourceRequest("orders", feed);
       const stream = yield* callMaterializedGrpcSourceAcquire(
-        "ordersFeed",
+        "orders",
         feed,
         sourceInput(request, undefined),
       );
       const rows = yield* Stream.runCollect(stream);
-      yield* callMaterializedGrpcSourceRelease("ordersFeed", feed, sourceInput(request, undefined));
+      yield* callMaterializedGrpcSourceRelease("orders", feed, sourceInput(request, undefined));
 
       expect({
         operations,
@@ -66,7 +66,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const error = yield* Effect.flip(
-        callLeasedGrpcSourceRequest("ordersLease", feed, { region: "usa" }),
+        callLeasedGrpcSourceRequest("orders", feed, { region: "usa" }),
       );
       expect({
         _tag: error._tag,
@@ -78,8 +78,8 @@ describe("gRPC source lifecycle", () => {
       }).toStrictEqual({
         _tag: "ViewServerGrpcIngressError",
         cause: "request exploded",
-        feedName: "ordersLease",
-        message: "gRPC leased feed request creation failed for ordersLease",
+        feedName: "orders",
+        message: "gRPC leased feed request creation failed for orders",
         phase: "request",
         topic: "orders",
       });
@@ -95,7 +95,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const error = yield* Effect.flip(
-        callMaterializedGrpcSourceAcquire("ordersFeed", feed, sourceInput(undefined, undefined)),
+        callMaterializedGrpcSourceAcquire("orders", feed, sourceInput(undefined, undefined)),
       );
 
       expect({
@@ -108,8 +108,8 @@ describe("gRPC source lifecycle", () => {
       }).toStrictEqual({
         _tag: "ViewServerGrpcIngressError",
         cause: "not-a-stream",
-        feedName: "ordersFeed",
-        message: "gRPC feed acquire did not return a Stream for ordersFeed",
+        feedName: "orders",
+        message: "gRPC feed acquire did not return a Stream for orders",
         phase: "acquire",
         topic: "orders",
       });
@@ -127,7 +127,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const error = yield* Effect.flip(
-        callLeasedGrpcSourceAcquire("ordersLease", feed, sourceInput(undefined, { region: "usa" })),
+        callLeasedGrpcSourceAcquire("orders", feed, sourceInput(undefined, { region: "usa" })),
       );
 
       expect({
@@ -140,8 +140,8 @@ describe("gRPC source lifecycle", () => {
       }).toStrictEqual({
         _tag: "ViewServerGrpcIngressError",
         cause: "acquire exploded",
-        feedName: "ordersLease",
-        message: "gRPC leased feed acquire failed for ordersLease",
+        feedName: "orders",
+        message: "gRPC leased feed acquire failed for orders",
         phase: "acquire",
         topic: "orders",
       });
@@ -157,7 +157,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const result = yield* callMaterializedGrpcSourceRelease(
-        "ordersFeed",
+        "orders",
         feed,
         sourceInput(undefined, undefined),
       );
@@ -178,7 +178,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const error = yield* Effect.flip(
-        callMaterializedGrpcSourceRelease("ordersFeed", feed, sourceInput(undefined, undefined)),
+        callMaterializedGrpcSourceRelease("orders", feed, sourceInput(undefined, undefined)),
       );
 
       expect({
@@ -191,8 +191,8 @@ describe("gRPC source lifecycle", () => {
       }).toStrictEqual({
         _tag: "ViewServerGrpcIngressError",
         cause: "release exploded",
-        feedName: "ordersFeed",
-        message: "gRPC feed release failed for ordersFeed",
+        feedName: "orders",
+        message: "gRPC feed release failed for orders",
         phase: "release",
         topic: "orders",
       });
@@ -209,7 +209,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const error = yield* Effect.flip(
-        callLeasedGrpcSourceRelease("ordersLease", feed, sourceInput(undefined, { region: "usa" })),
+        callLeasedGrpcSourceRelease("orders", feed, sourceInput(undefined, { region: "usa" })),
       );
 
       expect({
@@ -222,8 +222,8 @@ describe("gRPC source lifecycle", () => {
       }).toStrictEqual({
         _tag: "ViewServerGrpcIngressError",
         cause: "not-an-effect",
-        feedName: "ordersLease",
-        message: "gRPC leased feed release did not return an Effect for ordersLease",
+        feedName: "orders",
+        message: "gRPC leased feed release did not return an Effect for orders",
         phase: "release",
         topic: "orders",
       });
@@ -240,7 +240,7 @@ describe("gRPC source lifecycle", () => {
       };
 
       const error = yield* Effect.flip(
-        callLeasedGrpcSourceRelease("ordersLease", feed, sourceInput(undefined, { region: "usa" })),
+        callLeasedGrpcSourceRelease("orders", feed, sourceInput(undefined, { region: "usa" })),
       );
 
       expect({
@@ -253,8 +253,8 @@ describe("gRPC source lifecycle", () => {
       }).toStrictEqual({
         _tag: "ViewServerGrpcIngressError",
         cause: "release effect failed",
-        feedName: "ordersLease",
-        message: "gRPC leased feed release failed for ordersLease",
+        feedName: "orders",
+        message: "gRPC leased feed release failed for orders",
         phase: "release",
         topic: "orders",
       });
@@ -264,7 +264,7 @@ describe("gRPC source lifecycle", () => {
   it("constructs source errors without a phase when the caller has no phase to report", () => {
     const error = makeViewServerGrpcSourceError({
       cause: "route",
-      feedName: "ordersLease",
+      feedName: "orders",
       message: "leased route failed",
       topic: "orders",
     });
@@ -279,7 +279,7 @@ describe("gRPC source lifecycle", () => {
     }).toStrictEqual({
       _tag: "ViewServerGrpcIngressError",
       cause: "route",
-      feedName: "ordersLease",
+      feedName: "orders",
       message: "leased route failed",
       phase: undefined,
       topic: "orders",

@@ -4,7 +4,6 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
-import { defineGrpcFeed, grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
@@ -15,6 +14,8 @@ import {
 } from "@effect-view-server/runtime-core/internal";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcIngress, type ViewServerGrpcIngress } from "./grpc-ingress";
+import { makeDefaultRuntimeDependencies } from "./runtime-dependencies";
+import { resolveViewServerRuntimeOptions } from "./runtime-options";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -85,17 +86,6 @@ const GrpcOrder = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
-const viewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: GrpcOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.materialized(),
-    },
-  },
-});
-
-type Topics = typeof viewServer.topics;
 type OrderRow = typeof GrpcOrder.Type;
 type OrderStatus = OrderRow["status"];
 
@@ -235,10 +225,7 @@ const grpcClients = {
   }),
 };
 
-const grpcFeed = defineGrpcFeed<Topics, typeof grpcClients>();
-const grpcHealthClientBaseUrls = {
-  orders: "https://orders.example.test",
-};
+const grpcTopicSources = grpc.topicSources(grpcClients);
 
 const orderStatus = (index: number): OrderStatus => {
   if (index % 5 === 0) {
@@ -258,28 +245,30 @@ const grpcOrderValue = (index: number): GrpcOrderValueMessage => ({
   updatedAt: index,
 });
 
-const grpcMaterializedFeed = (stream: Stream.Stream<GrpcOrderValueMessage, never, never>) =>
-  grpcFeed.materializedFeed({
-    topic: "orders",
-    client: "orders",
-    method: "streamOrders",
-    request: () => ({ orderId: "all" }),
-    acquire: () => stream,
-    map: ({ value }) => ({
-      id: value.customerId,
-      customerId: value.customerId,
-      status: value.status,
-      price: value.price,
-      region: "usa",
-      updatedAt: value.updatedAt,
-    }),
+const grpcMaterializedViewServer = (stream: Stream.Stream<GrpcOrderValueMessage, never, never>) =>
+  defineViewServerConfig({
+    grpc: { clients: grpcClients },
+    topics: {
+      orders: grpcTopicSources.materialized({
+        schema: GrpcOrder,
+        key: "id",
+        client: "orders",
+        method: "streamOrders",
+        request: () => ({ orderId: "all" }),
+        acquire: () => stream,
+        map: ({ value }) => ({
+          id: value.customerId,
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: "usa",
+          updatedAt: value.updatedAt,
+        }),
+      }),
+    },
   });
 
-const createRuntimeCoreForBenchmark = Effect.fn("ViewServerRuntime.grpc.bench.core.make")(
-  function* () {
-    return yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-  },
-);
+type Topics = ReturnType<typeof grpcMaterializedViewServer>["topics"];
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
   const memory = process.memoryUsage();
@@ -558,32 +547,19 @@ beforeAll(async () => {
   profile = await Effect.runPromise(
     Effect.gen(function* () {
       const queue = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const runtimeCore = yield* createRuntimeCoreForBenchmark();
-      const health = makeViewServerGrpcHealthLedger<Topics>({
-        clients: grpcHealthClientBaseUrls,
-        feeds: {
-          ordersFeed: {
-            client: "orders",
-            lifecycle: "materialized",
-            topic: "orders",
-          },
-        },
-      });
+      const viewServer = grpcMaterializedViewServer(Stream.fromQueue(queue));
+      const resolvedOptions = yield* resolveViewServerRuntimeOptions(viewServer);
+      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      const health = makeDefaultRuntimeDependencies<Topics>().makeGrpcHealthLedger(
+        viewServer,
+        grpcOptions,
+      );
       const ingress = yield* makeViewServerGrpcIngress(
         viewServer,
         runtimeCore.internalClient,
         Effect.void,
-        {
-          clientBaseUrls: grpcHealthClientBaseUrls,
-          clients: grpcClients,
-          feeds: {
-            ordersFeed: grpcMaterializedFeed(Stream.fromQueue(queue)),
-          },
-          materializedReconnect: {
-            delay: "1 second",
-            maxReconnects: 60,
-          },
-        },
+        grpcOptions,
         health,
       );
       yield* runGrpcBatch(

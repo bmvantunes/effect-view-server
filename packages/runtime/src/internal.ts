@@ -22,10 +22,8 @@ import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import { makeViewServerRuntimeLifecycle } from "./runtime-lifecycle";
 import {
   resolveViewServerRuntimeOptions,
-  resolveViewServerRuntimeOptionsWithRuntimeFeeds,
   validateGrpcSourceFeeds,
   type ResolvedViewServerRuntimeOptions,
-  type ViewServerRuntimeOptionsWithRuntimeFeeds,
 } from "./runtime-options";
 import type {
   ViewServerRuntime,
@@ -103,23 +101,6 @@ type MakeViewServerRuntimeWithDependencies = {
   ): Effect.Effect<ViewServerRuntime<Topics, Options>, ViewServerRuntimeFactoryError>;
 };
 
-type MakeViewServerRuntimeWithRuntimeFeedsAndDependencies = {
-  <
-    const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Regions extends RuntimeRegions = RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-    const Options extends object = ViewServerRuntimeOptionsWithRuntimeFeeds<
-      Topics,
-      Regions,
-      GrpcClients
-    >,
-  >(
-    dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    options: Options,
-  ): Effect.Effect<ViewServerRuntime<Topics, Options>, ViewServerRuntimeFactoryError>;
-};
-
 export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDependencies =
   Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
     const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -136,27 +117,6 @@ export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDep
       return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
     }
     const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, options);
-    return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
-  });
-
-export const makeViewServerRuntimeWithRuntimeFeedsAndDependencies: MakeViewServerRuntimeWithRuntimeFeedsAndDependencies =
-  Effect.fn("ViewServerRuntime.makeWithRuntimeFeedsAndDependencies")(function* <
-    const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Regions extends RuntimeRegions = RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-    const Options extends object = ViewServerRuntimeOptionsWithRuntimeFeeds<
-      Topics,
-      Regions,
-      GrpcClients
-    >,
-  >(
-    dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    options: Options,
-  ) {
-    // Private dependency-injection seam for tests/benchmarks that need already-resolved
-    // gRPC feeds. Public runtime options must use topic-owned `grpcSource` bindings.
-    const resolvedOptions = yield* resolveViewServerRuntimeOptionsWithRuntimeFeeds(config, options);
     return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
   });
 

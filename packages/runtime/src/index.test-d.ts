@@ -284,7 +284,9 @@ describe("runtime type contracts", () => {
     expectTypeOf(runtime.close).toEqualTypeOf<
       ViewServerRuntime<typeof viewServer.topics>["close"]
     >();
+    expectTypeOf<Effect.Services<typeof runtimeEffect>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Success<typeof runEffect>>().toEqualTypeOf<never>();
+    expectTypeOf<Effect.Services<typeof runEffect>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Error<typeof runEffect>>().toEqualTypeOf<
       | HttpServerError.ServeError
       | Config.ConfigError

@@ -8,7 +8,7 @@ import type {
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
-import { Config, Effect, Layer } from "effect";
+import { Config, Effect, Exit, Layer, Scope } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
@@ -18,8 +18,6 @@ import {
 import type { ViewServerKafkaIngressError } from "./kafka-ingress";
 import type { ViewServerGrpcIngressError } from "./grpc-ingress";
 import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
-import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
-import { makeViewServerRuntimeLifecycle } from "./runtime-lifecycle";
 import {
   resolveViewServerRuntimeOptions,
   validateGrpcSourceFeeds,
@@ -60,6 +58,26 @@ const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitio
 const ignoreRuntimeHealthRefreshFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
   "Ignoring runtime health refresh failure.",
 );
+
+const ignoreRuntimeStartupCleanupFailure = <R>(
+  cleanup: Effect.Effect<void, never, R>,
+): Effect.Effect<void, never, R> =>
+  cleanup.pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Ignoring runtime startup cleanup failure.", cause),
+    ),
+    Effect.uninterruptible,
+  );
+
+const acquireRuntimeResource = Effect.fn("ViewServerRuntime.acquireResource")(function* <A, E, R>(
+  scope: Scope.Scope,
+  acquire: Effect.Effect<A, E, R>,
+  release: (resource: A) => Effect.Effect<void>,
+) {
+  return yield* Effect.acquireRelease(acquire, release, { interruptible: true }).pipe(
+    Scope.provide(scope),
+  );
+});
 
 type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
   groupedIncrementalAdmissionLimits?: NonNullable<
@@ -169,10 +187,10 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         : grpcHealth.healthOverlay(kafkaOverlayed, nowMillis);
     };
   }
-  const lifecycle = yield* makeViewServerRuntimeLifecycle();
-  return yield* Effect.gen(function* () {
-    const runtimeCore = yield* lifecycle.acquire(
-      "runtimeCore",
+  const runtimeScope = yield* Scope.make("sequential");
+  const startup = Effect.gen(function* () {
+    const runtimeCore = yield* acquireRuntimeResource(
+      runtimeScope,
       dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
       (resource) => resource.close,
     );
@@ -180,9 +198,9 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     const grpcLeaseManager =
       grpcOptions === undefined || grpcHealth === undefined
         ? undefined
-        : yield* lifecycle.acquire(
-            "grpcLeaseManager",
-            makeViewServerGrpcLeaseManager(
+        : yield* acquireRuntimeResource(
+            runtimeScope,
+            dependencies.makeGrpcLeaseManager(
               dependencyConfig,
               runtimeCore.internalClient,
               runtimeCore.liveClient,
@@ -195,19 +213,8 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           );
     const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
     const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
-    const tcpPublishIngress =
-      resolvedOptions.tcpPublishOptions === undefined
-        ? undefined
-        : yield* lifecycle.acquire(
-            "tcpPublishIngress",
-            dependencies.makeTcpPublishIngress(dependencyConfig, runtimeCore.internalClient, {
-              ...resolvedOptions.tcpPublishOptions,
-              ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-            }),
-            (resource) => resource.close,
-          );
-    const server = yield* lifecycle.acquire(
-      "server",
+    const server = yield* acquireRuntimeResource(
+      runtimeScope,
       dependencies.makeServer(
         dependencyConfig,
         {
@@ -226,8 +233,8 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       (resource) => resource.close,
     );
     if (kafkaOptions !== undefined && kafkaHealth !== undefined) {
-      yield* lifecycle.acquire(
-        "kafkaIngress",
+      yield* acquireRuntimeResource(
+        runtimeScope,
         dependencies.makeKafkaIngress(
           dependencyConfig,
           runtimeCore.internalClient,
@@ -239,8 +246,8 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       );
     }
     if (grpcOptions !== undefined && grpcHealth !== undefined) {
-      yield* lifecycle.acquire(
-        "grpcIngress",
+      yield* acquireRuntimeResource(
+        runtimeScope,
         dependencies.makeGrpcIngress(
           dependencyConfig,
           runtimeCore.internalClient,
@@ -251,7 +258,20 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         (resource) => resource.close,
       );
     }
-    const close: Effect.Effect<void> = lifecycle.close;
+    const tcpPublishIngress =
+      resolvedOptions.tcpPublishOptions === undefined
+        ? undefined
+        : yield* acquireRuntimeResource(
+            runtimeScope,
+            dependencies.makeTcpPublishIngress(dependencyConfig, runtimeCore.internalClient, {
+              ...resolvedOptions.tcpPublishOptions,
+              ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+            }),
+            (resource) => resource.close,
+          );
+    const close: Effect.Effect<void> = (yield* Effect.cached(
+      Scope.close(runtimeScope, Exit.void),
+    )).pipe(Effect.uninterruptible);
     const publicLiveClient = toPublicLiveClient(runtimeLiveClient, close);
     return {
       url: server.url,
@@ -263,7 +283,14 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       health: runtimeClient.health,
       close,
     };
-  }).pipe(Effect.onInterrupt(() => lifecycle.close));
+  });
+  return yield* startup.pipe(
+    Effect.onExit((exit) =>
+      Exit.isFailure(exit)
+        ? ignoreRuntimeStartupCleanupFailure(Scope.close(runtimeScope, exit))
+        : Effect.void,
+    ),
+  );
 });
 
 const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <
@@ -289,12 +316,12 @@ const makeViewServerRuntimeLaunchLayer = <
 ) =>
   Layer.effectDiscard(
     Effect.acquireRelease(
-      (options === undefined
+      options === undefined
         ? makeViewServerRuntimeWithDependencies(dependencies, config)
-        : makeViewServerRuntimeWithDependencies(dependencies, config, options)
-      ).pipe(Effect.tap(logRuntimeStarted)),
+        : makeViewServerRuntimeWithDependencies(dependencies, config, options),
       (runtime) => runtime.close,
-    ),
+      { interruptible: true },
+    ).pipe(Effect.tap(logRuntimeStarted)),
   );
 
 export const runViewServerRuntimeWithDependencies: <

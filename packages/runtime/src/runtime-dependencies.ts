@@ -3,10 +3,12 @@ import type {
   RuntimeRegions,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import { type ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalClient,
+  type ViewServerRuntimeCoreInternalLiveClient,
   type ViewServerRuntimeCoreInternalInstance,
 } from "@effect-view-server/runtime-core/internal";
 import {
@@ -24,6 +26,10 @@ import {
   type ViewServerGrpcIngress,
   type ViewServerGrpcIngressError,
 } from "./grpc-ingress";
+import {
+  makeViewServerGrpcLeaseManager,
+  type ViewServerGrpcLeaseManager,
+} from "./grpc-lease-manager";
 import {
   makeViewServerKafkaIngress,
   type ViewServerKafkaIngress,
@@ -59,6 +65,15 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
     config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
   ) => ViewServerGrpcHealthLedger<Topics>;
+  readonly makeGrpcLeaseManager: <const Clients extends GrpcRuntimeClients>(
+    config: ViewServerRuntimeDependencyConfig<Topics>,
+    runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
+    liveClient: ViewServerRuntimeLiveClient<Topics>,
+    internalLiveClient: ViewServerRuntimeCoreInternalLiveClient<Topics>,
+    requestHealthRefresh: Effect.Effect<void>,
+    options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
+    health: ViewServerGrpcHealthLedger<Topics>,
+  ) => Effect.Effect<ViewServerGrpcLeaseManager<Topics>>;
   readonly makeKafkaIngress: <const Regions extends RuntimeRegions>(
     config: ViewServerRuntimeDependencyConfig<Topics>,
     client: ViewServerRuntimeCoreInternalClient<Topics>,
@@ -128,6 +143,7 @@ export const makeDefaultRuntimeDependencies = <
       feeds,
     });
   },
+  makeGrpcLeaseManager: makeViewServerGrpcLeaseManager,
   makeKafkaIngress: makeViewServerKafkaIngress,
   makeTcpPublishIngress: makeViewServerTcpPublishIngress,
   makeGrpcIngress: makeViewServerGrpcIngress,

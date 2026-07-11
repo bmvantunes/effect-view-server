@@ -12,6 +12,7 @@ export default defineConfig({
         "scripts/bench-runtime-kafka-ingest.mjs",
         "scripts/check-internal-seams.ts",
         "scripts/package-surface-policy.ts",
+        "scripts/release-publish-orchestration.mjs",
         "scripts/release-publish-policy.mjs",
         "scripts/typescript-module-inspection.ts",
       ],

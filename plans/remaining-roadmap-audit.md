@@ -16,20 +16,20 @@ truth, not plan text that predates later implementation work.
 
 `plans/grpc.md` is implemented for the accepted gRPC scope.
 
-| Area                                            | Status                 | Evidence                                                                                                               |
-| ----------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Source contracts and type gates                 | Implemented            | `packages/config/src/grpc-contract.ts`, `packages/config/src/index.test.ts`, `packages/runtime/src/index.test-d.ts`    |
-| Runtime ownership validation                    | Implemented            | Runtime validation tests reject Kafka/gRPC and multi-feed ownership conflicts.                                         |
-| Materialized gRPC runtime                       | Implemented            | `packages/runtime/src/grpc-ingress.ts`, materialized runtime tests, ConnectRPC tests.                                  |
-| Leased gRPC runtime                             | Implemented            | `packages/runtime/src/grpc-lease-manager.ts`, leased runtime tests, ConnectRPC tests.                                  |
-| gRPC health/lifecycle                           | Implemented            | `packages/runtime/src/grpc-health.ts`, runtime health tests, `vp run -w grpc:gate`.                                    |
-| gRPC benchmark gates                            | Implemented            | `benchmarks/baselines/grpc-materialized.json`, `grpc-leased.json`, `grpc-leased-retained.json`, `vp run -w grpc:gate`. |
-| Topic-owned source constructors                 | Implemented            | ADR 0001, `kafka.source(...)`, `grpc.topicSources(...).materialized(...)`, and `.leased(...)` in current examples.     |
-| Session-scoped leased feeds and auth forwarding | Deferred intentionally | Runtime auth validates edge requests; gRPC feeds still use system-scoped shared feed identity.                         |
-| Generic non-gRPC stream-source API              | Deferred intentionally | Plan explicitly keeps ConnectRPC-specific public API.                                                                  |
-| Multi-source topics                             | Deferred intentionally | Requires a separate ordering/dedupe/restart contract.                                                                  |
-| Custom live-event transport                     | Deferred intentionally | Browser transport remains Effect RPC WebSocket + NDJSON.                                                               |
-| WAL/checkpointing for gRPC materialized feeds   | Deferred intentionally | Same recovery policy as the in-memory runtime.                                                                         |
+| Area                                            | Status                 | Evidence                                                                                                                                                     |
+| ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Source contracts and type gates                 | Implemented            | `packages/config/src/grpc-contract.ts`, `packages/config/src/grpc-source-contract.test-d.ts`, `packages/runtime/src/runtime-grpc-options-contract.test-d.ts` |
+| Runtime ownership validation                    | Implemented            | Runtime validation tests reject Kafka/gRPC and multi-feed ownership conflicts.                                                                               |
+| Materialized gRPC runtime                       | Implemented            | `packages/runtime/src/grpc-ingress.ts`, materialized runtime tests, ConnectRPC tests.                                                                        |
+| Leased gRPC runtime                             | Implemented            | `packages/runtime/src/grpc-lease-manager.ts`, leased runtime tests, ConnectRPC tests.                                                                        |
+| gRPC health/lifecycle                           | Implemented            | `packages/runtime/src/grpc-health.ts`, runtime health tests, `vp run -w grpc:gate`.                                                                          |
+| gRPC benchmark gates                            | Implemented            | `benchmarks/baselines/grpc-materialized.json`, `grpc-leased.json`, `grpc-leased-retained.json`, `vp run -w grpc:gate`.                                       |
+| Topic-owned source constructors                 | Implemented            | ADR 0001, `kafka.source(...)`, `grpc.topicSources(...).materialized(...)`, and `.leased(...)` in current examples.                                           |
+| Session-scoped leased feeds and auth forwarding | Deferred intentionally | Runtime auth validates edge requests; gRPC feeds still use system-scoped shared feed identity.                                                               |
+| Generic non-gRPC stream-source API              | Deferred intentionally | Plan explicitly keeps ConnectRPC-specific public API.                                                                                                        |
+| Multi-source topics                             | Deferred intentionally | Requires a separate ordering/dedupe/restart contract.                                                                                                        |
+| Custom live-event transport                     | Deferred intentionally | Browser transport remains Effect RPC WebSocket + NDJSON.                                                                                                     |
+| WAL/checkpointing for gRPC materialized feeds   | Deferred intentionally | Same recovery policy as the in-memory runtime.                                                                                                               |
 
 ## Column Live View Engine Plan
 

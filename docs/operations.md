@@ -13,7 +13,9 @@ ready only after its sources are connected and runtime health is ready.
 ## Prometheus Metrics
 
 Scrape `GET /metrics` on the same HTTP server as WebSocket RPC. Metrics use
-low-cardinality labels and are derived from cached runtime health.
+low-cardinality labels and are derived from a fresh runtime health read for each
+scrape. Overlapping concurrent health reads are coalesced. This on-demand path
+is separate from cadence-controlled cached health pushed to UI clients.
 
 Useful alert/query examples:
 
@@ -56,7 +58,8 @@ starting points and validate names against the current `/metrics` output.
 
 Use `GET /health` for readiness and startup checks. It returns `200` only when
 the runtime is ready, and returns a non-`200` status while the runtime is
-starting, degraded, or stopping.
+starting, degraded, or stopping. Each request reads fresh runtime health;
+overlapping concurrent reads share the same coalesced read.
 
 ```yaml
 readinessProbe:

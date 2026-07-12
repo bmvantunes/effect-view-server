@@ -45,6 +45,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
     config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
     health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
+    runtimeStartedAtNanos: bigint,
     transportHealth: RuntimeCoreTransportHealth<Topics>,
     healthOverlay?: RuntimeCoreHealthOverlay<Topics>,
     healthRefreshCadence?: Duration.Input,
@@ -58,18 +59,17 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
       });
       const readRuntimeHealth = (epoch: number, installMode: "strict" | "scheduled") => {
         const installEpoch = healthInstallEpoch;
-        return readHealth(
-          engine,
-          health,
+        return readHealth(engine, health, {
+          runtimeStartedAtNanos,
           transportHealth,
-          healthOverlay,
-          () =>
+          ...(healthOverlay === undefined ? {} : { healthOverlay }),
+          shouldInstall: () =>
             healthInstallEpoch === installEpoch &&
             (installMode === "scheduled" || healthReadEpoch === epoch),
-          () => {
+          onInstall: () => {
             healthInstallEpoch += 1;
           },
-        );
+        });
       };
       const healthReader = makeCoalescedHealthReader(
         (epoch) => readRuntimeHealth(epoch, "strict"),

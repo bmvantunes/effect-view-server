@@ -1,4 +1,5 @@
-// Benchmarks intentionally import Vitest directly: @effect/vitest does not expose `bench`.
+// Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
+// distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, beforeAll, bench, describe } from "vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
 import type { Message } from "@bufbuild/protobuf";

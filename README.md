@@ -177,9 +177,10 @@ The runtime derives gRPC feeds from topic-owned source bindings. A materialized
 gRPC topic starts at runtime startup. A leased gRPC topic opens one shared
 upstream stream per route key when the first matching subscription arrives.
 
-The same-server `GET /health` endpoint serves the cached runtime health snapshot
-for deployment readiness checks. Internal `bigint` health fields, such as Kafka
-lag, are encoded as decimal strings in the JSON response.
+The same-server `GET /health` endpoint performs a fresh runtime health read for
+deployment readiness checks. Overlapping concurrent reads are coalesced so they
+share one runtime read. Internal `bigint` health fields, such as Kafka lag, are
+encoded as decimal strings in the JSON response.
 
 When `tcpPublishPort` is configured, the runtime also opens a non-browser TCP
 NDJSON publish endpoint and exposes its `tcpPublishUrl`. That endpoint supports
@@ -191,12 +192,15 @@ own `tcpPublishHost` and defaults to `127.0.0.1`; it does not inherit the public
 WebSocket/HTTP host. The TCP endpoint is bounded by connection, line-size, and
 queued-command limits.
 
-The same-server `GET /metrics` endpoint serves Prometheus text exposition derived
-from the same cached health snapshot. It exposes scrape-safe runtime, transport,
-engine, Kafka, and gRPC gauges/counters. It is not a full mirror of health:
-high-cardinality values such as raw error messages and route-specific leased
-feed keys remain in `GET /health`. Scrape failures that cannot decode health return `200` with
-`view_server_metrics_error 1` so the scrape itself remains observable.
+The same-server `GET /metrics` endpoint performs the same fresh, coalesced
+runtime health read and renders Prometheus text exposition from that result. It
+exposes scrape-safe runtime, transport, engine, Kafka, and gRPC gauges/counters.
+It is not a full mirror of health: high-cardinality values such as raw error
+messages and route-specific leased feed keys remain in `GET /health`. Scrape
+failures that cannot decode health return `200` with the
+`view_server_metrics_error` metric set to `1` so the scrape itself remains
+observable. Pushed React health remains cadence-controlled and reads cached
+client health; the HTTP routes are not UI polling interfaces.
 
 Browser React code keeps using the normal provider and hooks:
 

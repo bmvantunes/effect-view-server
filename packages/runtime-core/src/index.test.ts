@@ -7,7 +7,8 @@ import {
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
-import { Deferred, Effect, Fiber, Option, Queue, Schema, Stream, Tracer } from "effect";
+import { Clock, Deferred, Effect, Fiber, Option, Queue, Schema, Stream, Tracer } from "effect";
+import { TestClock } from "effect/testing";
 import { AtomRef } from "effect/unstable/reactivity";
 import {
   healthFromEngine,
@@ -259,6 +260,73 @@ const engineHealth = (
 });
 
 describe("@effect-view-server/runtime-core", () => {
+  it.effect("reports elapsed runtime uptime and passes refresh time to health overlays", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(10_000);
+      const overlayTimes: Array<number> = [];
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {
+        healthOverlay: (health, nowMillis) => {
+          overlayTimes.push(nowMillis);
+          return health;
+        },
+      });
+
+      expect(runtimeCore.liveClient.health.value.uptimeMs).toBe(0);
+      expect(overlayTimes).toStrictEqual([10_000]);
+
+      yield* TestClock.adjust("2500 millis");
+      const refreshedHealth = yield* runtimeCore.refreshHealth;
+
+      expect(refreshedHealth.uptimeMs).toBe(2_500);
+      expect(overlayTimes).toStrictEqual([10_000, 12_500]);
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("clamps runtime uptime when the clock moves before the runtime start", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(10_000);
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+
+      yield* TestClock.setTime(9_000);
+      const refreshedHealth = yield* runtimeCore.refreshHealth;
+
+      expect(refreshedHealth.uptimeMs).toBe(0);
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("uses monotonic time for uptime when wall time moves backward", () =>
+    Effect.gen(function* () {
+      let wallMillis = 10_000;
+      let monotonicNanos = 5_000_000_000n;
+      const clock: Clock.Clock = {
+        currentTimeMillisUnsafe: () => wallMillis,
+        currentTimeMillis: Effect.sync(() => wallMillis),
+        currentTimeNanosUnsafe: () => monotonicNanos,
+        currentTimeNanos: Effect.sync(() => monotonicNanos),
+        sleep: () => Effect.void,
+      };
+      const overlayTimes: Array<number> = [];
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {
+        healthOverlay: (health, nowMillis) => {
+          overlayTimes.push(nowMillis);
+          return health;
+        },
+      }).pipe(Effect.provideService(Clock.Clock, clock));
+
+      wallMillis = 9_000;
+      monotonicNanos = 7_500_000_000n;
+      const refreshedHealth = yield* runtimeCore.refreshHealth.pipe(
+        Effect.provideService(Clock.Clock, clock),
+      );
+
+      expect(refreshedHealth.uptimeMs).toBe(2_500);
+      expect(overlayTimes).toStrictEqual([10_000, 9_000]);
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("records runtime core publish, engine mutation, and subscription fanout spans", () =>
     Effect.gen(function* () {
       const recording = makeRecordingTracer();
@@ -2162,7 +2230,10 @@ describe("@effect-view-server/runtime-core", () => {
         },
       };
       const coalescedHealth = makeCoalescedHealthReader(
-        (readEpoch) => readHealth(engine, health, undefined, undefined, () => epoch === readEpoch),
+        (readEpoch) =>
+          readHealth(engine, health, {
+            shouldInstall: () => epoch === readEpoch,
+          }),
         () => epoch,
       );
 
@@ -2210,16 +2281,12 @@ describe("@effect-view-server/runtime-core", () => {
       const scheduler = yield* makeHealthRefreshScheduler(
         Effect.gen(function* () {
           const readInstallEpoch = installEpoch;
-          yield* readHealth(
-            engine,
-            health,
-            undefined,
-            undefined,
-            () => installEpoch === readInstallEpoch,
-            () => {
+          yield* readHealth(engine, health, {
+            shouldInstall: () => installEpoch === readInstallEpoch,
+            onInstall: () => {
               installEpoch += 1;
             },
-          );
+          });
           yield* Deferred.succeed(scheduledReadFinished, undefined);
         }),
         "0 millis",
@@ -2227,8 +2294,10 @@ describe("@effect-view-server/runtime-core", () => {
 
       yield* scheduler.request;
       yield* Deferred.await(scheduledReadStarted).pipe(Effect.timeout("1 second"));
-      const freshHealth = yield* readHealth(engine, health, undefined, undefined, undefined, () => {
-        installEpoch += 1;
+      const freshHealth = yield* readHealth(engine, health, {
+        onInstall: () => {
+          installEpoch += 1;
+        },
       });
       yield* Deferred.succeed(releaseScheduledRead, undefined);
       yield* Deferred.await(scheduledReadFinished).pipe(Effect.timeout("1 second"));
@@ -2274,16 +2343,12 @@ describe("@effect-view-server/runtime-core", () => {
       const scheduler = yield* makeHealthRefreshScheduler(
         Effect.gen(function* () {
           const readInstallEpoch = installEpoch;
-          yield* readHealth(
-            engine,
-            health,
-            undefined,
-            undefined,
-            () => installEpoch === readInstallEpoch,
-            () => {
+          yield* readHealth(engine, health, {
+            shouldInstall: () => installEpoch === readInstallEpoch,
+            onInstall: () => {
               installEpoch += 1;
             },
-          );
+          });
           yield* Queue.offer(refreshCompleted, undefined);
         }),
         "0 millis",

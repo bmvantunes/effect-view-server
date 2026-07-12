@@ -26,7 +26,7 @@ export const BadJsonField = Schema.String.pipe(
 );
 
 export const BadJsonRow = Schema.Struct({
-  id: BadJsonField,
+  id: Schema.String,
 });
 
 export const viewServer = defineViewServerConfig({

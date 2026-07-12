@@ -26,16 +26,18 @@ describe("Topic source ownership", () => {
   });
 
   it("ignores inherited Kafka source topic entries during config derivation", () => {
-    const viewServer = defineViewServerConfig({
-      kafka: kafkaRegions,
-      topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-        },
+    const topics: {
+      orders: {
+        schema: typeof Order;
+        key: "id";
+      };
+    } = {
+      orders: {
+        schema: Order,
+        key: "id",
       },
-    });
-    Object.setPrototypeOf(viewServer.topics, {
+    };
+    Object.setPrototypeOf(topics, {
       ghost: {
         schema: Order,
         key: "id",
@@ -55,40 +57,40 @@ describe("Topic source ownership", () => {
         }),
       },
     });
+    expect(makeKafkaSourceTopicsForConfig({ topics })).toStrictEqual([]);
+    const viewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics,
+    });
 
     expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
   });
 
   it("ignores non-object topic entries during config derivation", () => {
-    const viewServer = defineViewServerConfig({
-      kafka: kafkaRegions,
-      topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-        },
+    const topics = {
+      orders: {
+        schema: Order,
+        key: "id",
       },
-    });
-    Object.defineProperty(viewServer.topics, "ghost", {
+    };
+    Object.defineProperty(topics, "ghost", {
       configurable: true,
       enumerable: true,
       value: undefined,
     });
 
-    expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
+    expect(makeKafkaSourceTopicsForConfig({ topics })).toStrictEqual([]);
   });
 
   it("ignores inherited Kafka source properties during config derivation", () => {
-    const viewServer = defineViewServerConfig({
-      kafka: kafkaRegions,
-      topics: {
-        orders: {
-          schema: Order,
-          key: "id",
-        },
-      },
-    });
-    Object.setPrototypeOf(viewServer.topics.orders, {
+    const orders: {
+      schema: typeof Order;
+      key: "id";
+    } = {
+      schema: Order,
+      key: "id",
+    };
+    Object.setPrototypeOf(orders, {
       kafkaSource: kafka.source({
         topic: "orders-source",
         regions: ["usa"],
@@ -103,6 +105,10 @@ describe("Topic source ownership", () => {
           updatedAt: value.updatedAt,
         }),
       }),
+    });
+    const viewServer = defineViewServerConfig({
+      kafka: kafkaRegions,
+      topics: { orders },
     });
 
     expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);

@@ -1,14 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { ViewServerLiveEvent } from "@effect-view-server/client";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
-import { Clock, Deferred, Effect, Fiber, Queue, Schedule, Stream } from "effect";
-import * as BigDecimal from "effect/BigDecimal";
+import { Clock, Effect, Fiber, HashMap, Option, Queue, Schedule, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
-import type { GrpcGroupedKeyRetentionView } from "./grpc-grouped-key-translations";
 import { makeDefaultRuntimeDependencies } from "./internal";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
-import { makeDefaultGrpcClient } from "./grpc-source-lifecycle";
 import { resolveViewServerRuntimeOptions } from "./runtime-options";
 import { makeLeasedGrpcRuntimeHarness } from "../test-harness/grpc-runtime";
 
@@ -18,17 +14,18 @@ import {
   resolveLeasedGrpcRuntimeOptions,
 } from "../test-harness/grpc-materialized";
 import {
-  grpcGroupedKeyEncodingLeasedViewServer,
   grpcKeyLeasedViewServer,
   grpcLeasedViewServer,
   grpcLeasedViewServerFromCallbacks,
   grpcPublicKeyLeasedViewServer,
   grpcRouteEncodingLeasedViewServer,
+  grpcSemanticRouteLeasedViewServer,
   leasedGrpcViewServer,
   leasedOrdersQuery,
   longRunningGrpcStream,
   makeLeasedGrpcHealth,
   routeEncodingValues,
+  SemanticRouteClass,
   waitForLeasedGrpcSnapshotRows,
 } from "../test-harness/grpc-leased";
 
@@ -108,15 +105,15 @@ describe("gRPC lease manager query translation", () => {
         },
       ]);
       expect(Object.keys(readyHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/orders/leased/region=string%3A3%3Ausa",
+        "orders/orders/leased/region=%22usa%22",
       ]);
       expect(
-        readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"],
+        readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"],
       ).toStrictEqual({
         status: "ready",
         lifecycle: "leased",
         feedName: "orders",
-        feedKey: "orders/orders/leased/region=string%3A3%3Ausa",
+        feedKey: "orders/orders/leased/region=%22usa%22",
         topic: "orders",
         subscriberCount: 1,
         rowCount: 2,
@@ -127,7 +124,7 @@ describe("gRPC lease manager query translation", () => {
         publishFailuresPerSecond: 0,
         reconnects: 0,
         lastMessageAt:
-          readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
             ?.lastMessageAt,
         lastError: null,
       });
@@ -175,13 +172,12 @@ describe("gRPC lease manager query translation", () => {
       expect(acquired).toBe(1);
       expect(released).toBe(1);
       expect(
-        sharedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+        sharedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
           ?.subscriberCount,
       ).toBe(2);
       expect(
-        afterFirstClose.grpc?.feeds["orders"]?.leased[
-          "orders/orders/leased/region=string%3A3%3Ausa"
-        ]?.subscriberCount,
+        afterFirstClose.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
+          ?.subscriberCount,
       ).toBe(1);
       yield* harness.close;
     }),
@@ -290,236 +286,6 @@ describe("gRPC lease manager query translation", () => {
       });
       yield* subscription.close();
       yield* harness.close;
-    }),
-  );
-
-  it.live("shares leased gRPC feeds while applying grouped queries locally", () =>
-    Effect.gen(function* () {
-      let acquired = 0;
-      const feed = grpcLeasedViewServer({
-        acquired: () => {
-          acquired += 1;
-        },
-        streamForRegion: (region) =>
-          longRunningGrpcStream([
-            grpcOrderValue(`${region}-order-1`, 10),
-            grpcOrderValue(`${region}-order-2`, 20),
-          ]),
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcOptions.sourceConfig,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-
-      const first = yield* manager.liveClient.subscribe("orders", {
-        groupBy: ["status"],
-        aggregates: {
-          rowCount: { aggFunc: "count" },
-        },
-        where: {
-          region: { eq: "usa" },
-        },
-        orderBy: [{ field: "status", direction: "asc" }],
-        limit: 10,
-      });
-      const firstEventQueue = yield* Queue.unbounded<unknown>();
-      const firstEventsFiber = yield* first.events.pipe(
-        Stream.runForEach((event) => Queue.offer(firstEventQueue, event)),
-        Effect.forkChild,
-      );
-      const firstSnapshot = yield* Queue.take(firstEventQueue);
-      const firstDelta = yield* Queue.take(firstEventQueue);
-      const openStatusGroupKey = '["array",[["array",[["string","status"],["string","open"]]]]]';
-      const second = yield* manager.liveClient.subscribe("orders", {
-        groupBy: ["status"],
-        aggregates: {
-          totalPrice: { aggFunc: "sum", field: "price" },
-        },
-        where: {
-          region: { eq: "usa" },
-        },
-        orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
-        limit: 10,
-      });
-      const secondEvents = yield* second.events.pipe(Stream.take(1), Stream.runCollect);
-
-      expect(acquired).toBe(1);
-      expect(firstSnapshot).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-0",
-        version: 0,
-        keys: [],
-        rows: [],
-        totalRows: 0,
-      });
-      expect(firstDelta).toStrictEqual({
-        type: "delta",
-        topic: "orders",
-        queryId: "query-0",
-        fromVersion: 0,
-        toVersion: 1,
-        operations: [
-          {
-            type: "insert",
-            key: openStatusGroupKey,
-            row: {
-              status: "open",
-              rowCount: 2n,
-            },
-            index: 0,
-          },
-        ],
-        totalRows: 1,
-      });
-      expect(secondEvents[0]).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-1",
-        version: 1,
-        keys: [openStatusGroupKey],
-        rows: [
-          {
-            status: "open",
-            totalPrice: BigDecimal.fromStringUnsafe("30"),
-          },
-        ],
-        totalRows: 1,
-      });
-      yield* first.close();
-      yield* second.close();
-      yield* Fiber.interrupt(firstEventsFiber);
-      yield* manager.close;
-      yield* runtimeCore.close;
-    }),
-  );
-
-  it.live("externalizes grouped leased gRPC keys that include the topic key field", () =>
-    Effect.gen(function* () {
-      const feed = grpcLeasedViewServer({
-        streamForRegion: (region) =>
-          longRunningGrpcStream([
-            grpcOrderValue(`${region}-order-1`, 10),
-            grpcOrderValue(`${region}-order-2`, 20),
-          ]),
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcOptions.sourceConfig,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-
-      const first = yield* manager.liveClient.subscribe("orders", {
-        groupBy: ["id"],
-        aggregates: {
-          rowCount: { aggFunc: "count" },
-        },
-        where: {
-          region: { eq: "usa" },
-        },
-        orderBy: [{ field: "id", direction: "asc" }],
-        limit: 10,
-      });
-      const firstEventQueue = yield* Queue.unbounded<unknown>();
-      const firstEventsFiber = yield* first.events.pipe(
-        Stream.runForEach((event) => Queue.offer(firstEventQueue, event)),
-        Effect.forkChild,
-      );
-      const firstSnapshot = yield* Queue.take(firstEventQueue);
-      const firstDelta = yield* Queue.take(firstEventQueue);
-      const second = yield* manager.liveClient.subscribe("orders", {
-        groupBy: ["id"],
-        aggregates: {
-          rowCount: { aggFunc: "count" },
-        },
-        where: {
-          region: { eq: "usa" },
-        },
-        orderBy: [{ field: "id", direction: "asc" }],
-        limit: 10,
-      });
-      const secondEvents = yield* second.events.pipe(Stream.take(1), Stream.runCollect);
-      const firstPublicGroupKey =
-        '["array",[["array",[["string","id"],["string","usa:usa-order-1"]]]]]';
-      const secondPublicGroupKey =
-        '["array",[["array",[["string","id"],["string","usa:usa-order-2"]]]]]';
-
-      expect(firstSnapshot).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-0",
-        version: 0,
-        keys: [],
-        rows: [],
-        totalRows: 0,
-      });
-      expect(firstDelta).toStrictEqual({
-        type: "delta",
-        topic: "orders",
-        queryId: "query-0",
-        fromVersion: 0,
-        toVersion: 1,
-        operations: [
-          {
-            type: "insert",
-            key: firstPublicGroupKey,
-            row: {
-              id: "usa:usa-order-1",
-              rowCount: 1n,
-            },
-            index: 0,
-          },
-          {
-            type: "insert",
-            key: secondPublicGroupKey,
-            row: {
-              id: "usa:usa-order-2",
-              rowCount: 1n,
-            },
-            index: 1,
-          },
-        ],
-        totalRows: 2,
-      });
-      expect(secondEvents[0]).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-1",
-        version: 1,
-        keys: [firstPublicGroupKey, secondPublicGroupKey],
-        rows: [
-          {
-            id: "usa:usa-order-1",
-            rowCount: 1n,
-          },
-          {
-            id: "usa:usa-order-2",
-            rowCount: 1n,
-          },
-        ],
-        totalRows: 2,
-      });
-
-      yield* first.close();
-      yield* second.close();
-      yield* Fiber.interrupt(firstEventsFiber);
-      yield* manager.close;
-      yield* runtimeCore.close;
     }),
   );
 
@@ -632,7 +398,7 @@ describe("gRPC lease manager query translation", () => {
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect(Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/orders/leased/amount=bigDecimal%3A6%3A123.45&count=bigint%3A16%3A9007199254740993&disabled=boolean%3A5%3Afalse&flag=boolean%3A4%3Atrue&meta=object%3A28%3A6%3A%22desk%2217%3Astring%3A8%3Aequities&none=null%3A4%3Anull&plainScore=number%3A2%3A42&score=number%3A2%3A-0&tags=array%3A34%3A13%3Astring%3A4%3Afast15%3Astring%3A6%3Ashared&text=string%3A5%3Aroute&weird=object%3A53%3A7%3A%22alpha%2214%3Astring%3A5%3Afirst8%3A%22stable%2214%3Astring%3A5%3Aroute",
+        "orders/orders/leased/amount=%22123.45%22&count=%229007199254740993%22&disabled=false&flag=true&meta=%7B%22desk%22%3A%22equities%22%7D&none=null&plainScore=42&score=0&tags=%5B%22fast%22%2C%22shared%22%5D&text=%22route%22&weird=%7B%22alpha%22%3A%22first%22%2C%22stable%22%3A%22route%22%7D",
       ]);
       yield* subscription.close();
       yield* manager.close;
@@ -640,653 +406,74 @@ describe("gRPC lease manager query translation", () => {
     }),
   );
 
-  it.live("externalizes grouped leased gRPC route values with public grouped keys", () =>
-    Effect.gen(function* () {
-      const feed = grpcGroupedKeyEncodingLeasedViewServer({
-        acquire: () =>
-          Stream.make(
-            grpcOrderValue("route-encoding-1", 10),
-            grpcOrderValue("route-encoding-2", 20),
-            grpcOrderValue("route-encoding-3", 30),
-          ),
-        map: (value) => ({
-          id: value.customerId,
-          ...routeEncodingValues,
-          meta: {
-            desk: value.price === 30 ? "credit" : value.price === 20 ? "rates" : "equities",
+  it.live(
+    "shares semantic Class, Option, and collision-node HashMap routes by schema identity",
+    () =>
+      Effect.gen(function* () {
+        const feed = grpcSemanticRouteLeasedViewServer();
+        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+        const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
+          clients: {
+            orders: "https://orders.example.test",
           },
-          tags:
-            value.price === 30
-              ? ["unsupported"]
-              : value.price === 20
-                ? ["slow", "shared"]
-                : routeEncodingValues.tags,
-          weird: undefined,
-        }),
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
-        clients: {
-          orders: "https://orders.example.test",
-        },
-        feeds: {},
-      });
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcOptions.sourceConfig,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-
-      const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
-        groupBy: [
-          "amount",
-          "count",
-          "disabled",
-          "flag",
-          "none",
-          "plainScore",
-          "score",
-          "text",
-          "weird",
-          "meta",
-          "tags",
-        ],
-        aggregates: {
-          rowCount: { aggFunc: "count" },
-        },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
-        limit: 10,
-      });
-      const deltaEvents = yield* subscription.events.pipe(
-        Stream.filter((event) => event.type === "delta"),
-        Stream.take(4),
-        Stream.runCollect,
-      );
-      const publicGroupedKeyOne =
-        '["array",[["array",[["string","amount"],["bigDecimal","123.45"]]],["array",[["string","count"],["bigint","9007199254740993"]]],["array",[["string","disabled"],["boolean",false]]],["array",[["string","flag"],["boolean",true]]],["array",[["string","none"],["null"]]],["array",[["string","plainScore"],["number","42"]]],["array",[["string","score"],["number","-0"]]],["array",[["string","text"],["string","route"]]],["array",[["string","weird"],["undefined"]]],["array",[["string","meta"],["canonical","object:28:6:\\"desk\\"17:string:8:equities"]]],["array",[["string","tags"],["canonical","array:34:13:string:4:fast15:string:6:shared"]]]]]';
-      const publicGroupedKeyTwo =
-        '["array",[["array",[["string","amount"],["bigDecimal","123.45"]]],["array",[["string","count"],["bigint","9007199254740993"]]],["array",[["string","disabled"],["boolean",false]]],["array",[["string","flag"],["boolean",true]]],["array",[["string","none"],["null"]]],["array",[["string","plainScore"],["number","42"]]],["array",[["string","score"],["number","-0"]]],["array",[["string","text"],["string","route"]]],["array",[["string","weird"],["undefined"]]],["array",[["string","meta"],["canonical","object:25:6:\\"desk\\"14:string:5:rates"]]],["array",[["string","tags"],["canonical","array:34:13:string:4:slow15:string:6:shared"]]]]]';
-      const publicGroupedKeyThree =
-        '["array",[["array",[["string","amount"],["bigDecimal","123.45"]]],["array",[["string","count"],["bigint","9007199254740993"]]],["array",[["string","disabled"],["boolean",false]]],["array",[["string","flag"],["boolean",true]]],["array",[["string","none"],["null"]]],["array",[["string","plainScore"],["number","42"]]],["array",[["string","score"],["number","-0"]]],["array",[["string","text"],["string","route"]]],["array",[["string","weird"],["undefined"]]],["array",[["string","meta"],["canonical","object:26:6:\\"desk\\"15:string:6:credit"]]],["array",[["string","tags"],["canonical","array:24:21:string:11:unsupported"]]]]]';
-
-      expect(deltaEvents[0]).toStrictEqual({
-        type: "delta",
-        topic: "orders",
-        queryId: "query-0",
-        fromVersion: 0,
-        toVersion: 1,
-        operations: [
-          {
-            type: "insert",
-            key: publicGroupedKeyThree,
-            row: {
-              amount: routeEncodingValues.amount,
-              count: routeEncodingValues.count,
-              disabled: routeEncodingValues.disabled,
-              flag: routeEncodingValues.flag,
-              none: routeEncodingValues.none,
-              plainScore: routeEncodingValues.plainScore,
-              score: routeEncodingValues.score,
-              text: routeEncodingValues.text,
-              weird: undefined,
-              meta: {
-                desk: "credit",
-              },
-              tags: ["unsupported"],
-              rowCount: 1n,
-            },
-            index: 0,
+          feeds: {},
+        });
+        const manager = yield* makeViewServerGrpcLeaseManager(
+          grpcOptions.sourceConfig,
+          runtimeCore.internalClient,
+          runtimeCore.liveClient,
+          runtimeCore.internalLiveClient,
+          Effect.void,
+          grpcOptions,
+          health,
+        );
+        const collisionLeft = "8ocpIaaa";
+        const collisionRight = "GpcpIaaa";
+        const firstRouteOption = yield* Effect.succeed(Option.some("route")).pipe(
+          Effect.filterOrFail(Option.isSome),
+        );
+        const equivalentRouteOption = yield* Effect.succeed(Option.some("route")).pipe(
+          Effect.filterOrFail(Option.isSome),
+        );
+        const firstRoute = {
+          routeClass: SemanticRouteClass.make({ value: "route" }),
+          routeOption: firstRouteOption,
+          routeHashMap: HashMap.make([collisionLeft, "left"], [collisionRight, "right"]),
+        };
+        const equivalentRoute = {
+          routeClass: SemanticRouteClass.make({ value: "route" }),
+          routeOption: equivalentRouteOption,
+          routeHashMap: HashMap.make([collisionRight, "right"], [collisionLeft, "left"]),
+        };
+        const first = yield* manager.liveClient.subscribeRuntime("orders", {
+          select: ["id"],
+          where: {
+            routeClass: { eq: firstRoute.routeClass },
+            routeOption: { eq: firstRoute.routeOption },
+            routeHashMap: { eq: firstRoute.routeHashMap },
           },
-          {
-            type: "insert",
-            key: publicGroupedKeyOne,
-            row: {
-              amount: routeEncodingValues.amount,
-              count: routeEncodingValues.count,
-              disabled: routeEncodingValues.disabled,
-              flag: routeEncodingValues.flag,
-              none: routeEncodingValues.none,
-              plainScore: routeEncodingValues.plainScore,
-              score: routeEncodingValues.score,
-              text: routeEncodingValues.text,
-              weird: undefined,
-              meta: routeEncodingValues.meta,
-              tags: routeEncodingValues.tags,
-              rowCount: 1n,
-            },
-            index: 1,
+          limit: 10,
+        });
+        const second = yield* manager.liveClient.subscribeRuntime("orders", {
+          select: ["id"],
+          where: {
+            routeClass: { eq: equivalentRoute.routeClass },
+            routeOption: { eq: equivalentRoute.routeOption },
+            routeHashMap: { eq: equivalentRoute.routeHashMap },
           },
-          {
-            type: "insert",
-            key: publicGroupedKeyTwo,
-            row: {
-              amount: routeEncodingValues.amount,
-              count: routeEncodingValues.count,
-              disabled: routeEncodingValues.disabled,
-              flag: routeEncodingValues.flag,
-              none: routeEncodingValues.none,
-              plainScore: routeEncodingValues.plainScore,
-              score: routeEncodingValues.score,
-              text: routeEncodingValues.text,
-              weird: undefined,
-              meta: {
-                desk: "rates",
-              },
-              tags: ["slow", "shared"],
-              rowCount: 1n,
-            },
-            index: 2,
-          },
-        ],
-        totalRows: 3,
-      });
-      expect(deltaEvents[1]).toStrictEqual({
-        type: "delta",
-        topic: "orders",
-        queryId: "query-0",
-        fromVersion: 1,
-        toVersion: 2,
-        operations: [
-          {
-            type: "remove",
-            key: publicGroupedKeyOne,
-          },
-        ],
-        totalRows: 2,
-      });
-      expect(deltaEvents[2]).toStrictEqual({
-        type: "delta",
-        topic: "orders",
-        queryId: "query-0",
-        fromVersion: 2,
-        toVersion: 3,
-        operations: [
-          {
-            type: "remove",
-            key: publicGroupedKeyTwo,
-          },
-        ],
-        totalRows: 1,
-      });
-      expect(deltaEvents[3]).toStrictEqual({
-        type: "delta",
-        topic: "orders",
-        queryId: "query-0",
-        fromVersion: 3,
-        toVersion: 4,
-        operations: [
-          {
-            type: "remove",
-            key: publicGroupedKeyThree,
-          },
-        ],
-        totalRows: 0,
-      });
-      yield* subscription.close();
-      yield* manager.close;
-      yield* runtimeCore.close;
-    }),
-  );
+          limit: 10,
+        });
+        const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
+        const feedKeys = Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {});
 
-  it.live("bounds grouped-key translations to each leased subscription lifetime", () =>
-    Effect.gen(function* () {
-      const churnRows = Array.from({ length: 64 }, (_, index) => ({
-        customerId: `customer-${index}`,
-        rowCount: 1n,
-      }));
-      const churnInternalKeys = churnRows.map((_row, index) => `customer-internal-${index}`);
-      const removalOperations: ReadonlyArray<{ readonly type: "remove"; readonly key: string }> =
-        churnInternalKeys.slice(1).map((key) => ({ type: "remove", key }));
-      const replacementRows = [
-        { customerId: "replacement-a", rowCount: 1n },
-        { customerId: "replacement-b", rowCount: 1n },
-      ];
-      const replacementInternalKeys = ["replacement-internal-a", "replacement-internal-b"];
-      const customerSnapshot = {
-        type: "snapshot",
-        topic: "orders",
-        queryId: "customer-groups",
-        version: 0,
-        keys: churnInternalKeys,
-        rows: churnRows,
-        totalRows: churnRows.length,
-      } as const;
-      const customerRemovalDelta = {
-        type: "delta",
-        topic: "orders",
-        queryId: "customer-groups",
-        fromVersion: 0,
-        toVersion: 1,
-        operations: removalOperations,
-        totalRows: 1,
-      } as const;
-      const customerReplacementSnapshot = {
-        type: "snapshot",
-        topic: "orders",
-        queryId: "customer-groups",
-        version: 2,
-        keys: replacementInternalKeys,
-        rows: replacementRows,
-        totalRows: replacementRows.length,
-      } as const;
-      const statusSnapshot = {
-        type: "snapshot",
-        topic: "orders",
-        queryId: "status-groups",
-        version: 0,
-        keys: ["status-internal-open"],
-        rows: [{ status: "open", rowCount: 64n }],
-        totalRows: 1,
-      } as const;
-      const statusMoveDelta = {
-        type: "delta",
-        topic: "orders",
-        queryId: "status-groups",
-        fromVersion: 0,
-        toVersion: 1,
-        operations: [
-          {
-            type: "update",
-            key: "status-internal-open",
-            row: { status: "open", rowCount: 65n },
-            index: 0,
-          },
-          {
-            type: "move",
-            key: "status-internal-open",
-            fromIndex: 0,
-            toIndex: 0,
-          },
-        ],
-        totalRows: 1,
-      } as const;
-      const publicGroupedStringKey = (field: string, value: string): string => {
-        const fieldToken = `["array",[["string",${JSON.stringify(field)}],["string",${JSON.stringify(value)}]]]`;
-        return `["array",[${fieldToken}]]`;
-      };
-      const releaseCustomerRemovals = yield* Deferred.make<void>();
-      const releaseCustomerReplacement = yield* Deferred.make<void>();
-      const releaseStatusMove = yield* Deferred.make<void>();
-      const retentionViews: Array<GrpcGroupedKeyRetentionView> = [];
-      const feed = grpcLeasedViewServer({
-        streamForRegion: () => Stream.never,
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-
-      yield* Effect.acquireUseRelease(
-        makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {}),
-        (runtimeCore) => {
-          let subscriptionIndex = 0;
-          const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
-            typeof leasedGrpcViewServer.topics
-          > = {
-            ...runtimeCore.internalLiveClient,
-            subscribeRuntimeObservedInternal: (_topic, _query, observer) => {
-              if (subscriptionIndex === 0) {
-                subscriptionIndex += 1;
-                return observer.onQueryRegistered(customerSnapshot.queryId).pipe(
-                  Effect.as({
-                    events: Stream.make(customerSnapshot).pipe(
-                      Stream.concat(
-                        Stream.fromEffect(
-                          Deferred.await(releaseCustomerRemovals).pipe(
-                            Effect.as(customerRemovalDelta),
-                          ),
-                        ),
-                      ),
-                      Stream.concat(
-                        Stream.fromEffect(
-                          Deferred.await(releaseCustomerReplacement).pipe(
-                            Effect.as(customerReplacementSnapshot),
-                          ),
-                        ),
-                      ),
-                      Stream.concat(Stream.never),
-                    ),
-                    close: () => Effect.void,
-                  }),
-                );
-              }
-              subscriptionIndex += 1;
-              return observer.onQueryRegistered(statusSnapshot.queryId).pipe(
-                Effect.as({
-                  events: Stream.make(statusSnapshot).pipe(
-                    Stream.concat(
-                      Stream.fromEffect(
-                        Deferred.await(releaseStatusMove).pipe(Effect.as(statusMoveDelta)),
-                      ),
-                    ),
-                    Stream.concat(Stream.never),
-                  ),
-                  close: () => Effect.void,
-                }),
-              );
-            },
-          };
-          const health = makeLeasedGrpcHealth(grpcOptions);
-          return Effect.acquireUseRelease(
-            makeViewServerGrpcLeaseManager(
-              grpcOptions.sourceConfig,
-              runtimeCore.internalClient,
-              runtimeCore.liveClient,
-              fakeInternalLiveClient,
-              Effect.void,
-              grpcOptions,
-              health,
-              makeDefaultGrpcClient,
-              (retention) => {
-                retentionViews.push(retention);
-              },
-            ),
-            (manager) =>
-              Effect.acquireUseRelease(
-                manager.liveClient.subscribeRuntime("orders", {
-                  groupBy: ["customerId"],
-                  aggregates: {
-                    rowCount: { aggFunc: "count" },
-                  },
-                  where: {
-                    region: { eq: "usa" },
-                  },
-                  limit: 100,
-                }),
-                (customerSubscription) =>
-                  Effect.acquireUseRelease(
-                    manager.liveClient.subscribeRuntime("orders", {
-                      groupBy: ["status"],
-                      aggregates: {
-                        rowCount: { aggFunc: "count" },
-                      },
-                      where: {
-                        region: { eq: "usa" },
-                      },
-                      limit: 10,
-                    }),
-                    (statusSubscription) =>
-                      Effect.gen(function* () {
-                        const customerRetention = yield* Effect.fromNullishOr(retentionViews[0]);
-                        const statusRetention = yield* Effect.fromNullishOr(retentionViews[1]);
-                        const customerEventQueue = yield* Queue.unbounded<unknown>();
-                        const customerEventsFiber = yield* customerSubscription.events.pipe(
-                          Stream.runForEach((event) => Queue.offer(customerEventQueue, event)),
-                          Effect.forkChild({ startImmediately: true }),
-                        );
-                        const customerSnapshotEvent = yield* Queue.take(customerEventQueue).pipe(
-                          Effect.timeout("1 second"),
-                        );
-                        expect(customerRetention.retainedEntryCount()).toBe(64);
-
-                        yield* Deferred.succeed(releaseCustomerRemovals, undefined);
-                        const customerRemovalEvent = yield* Queue.take(customerEventQueue).pipe(
-                          Effect.timeout("1 second"),
-                        );
-                        expect(customerRetention.retainedEntryCount()).toBe(1);
-
-                        yield* Deferred.succeed(releaseCustomerReplacement, undefined);
-                        const customerReplacementEvent = yield* Queue.take(customerEventQueue).pipe(
-                          Effect.timeout("1 second"),
-                        );
-                        expect(customerRetention.retainedEntryCount()).toBe(2);
-                        const customerEvents = [
-                          customerSnapshotEvent,
-                          customerRemovalEvent,
-                          customerReplacementEvent,
-                        ];
-                        const statusEventQueue = yield* Queue.unbounded<unknown>();
-                        const statusEventsFiber = yield* statusSubscription.events.pipe(
-                          Stream.runForEach((event) => Queue.offer(statusEventQueue, event)),
-                          Effect.forkChild({ startImmediately: true }),
-                        );
-                        const statusSnapshotEvent = yield* Queue.take(statusEventQueue).pipe(
-                          Effect.timeout("1 second"),
-                        );
-                        expect(statusRetention.retainedEntryCount()).toBe(1);
-
-                        yield* customerSubscription.close();
-                        yield* Fiber.interrupt(customerEventsFiber);
-                        expect(customerRetention.retainedEntryCount()).toBe(0);
-                        yield* Deferred.succeed(releaseStatusMove, undefined);
-                        const statusMoveEvent = yield* Queue.take(statusEventQueue).pipe(
-                          Effect.timeout("1 second"),
-                        );
-                        const statusEvents = [statusSnapshotEvent, statusMoveEvent];
-
-                        expect(customerEvents).toStrictEqual([
-                          {
-                            ...customerSnapshot,
-                            keys: churnRows.map((row) =>
-                              publicGroupedStringKey("customerId", row.customerId),
-                            ),
-                          },
-                          {
-                            ...customerRemovalDelta,
-                            operations: churnRows.slice(1).map((row) => ({
-                              type: "remove",
-                              key: publicGroupedStringKey("customerId", row.customerId),
-                            })),
-                          },
-                          {
-                            ...customerReplacementSnapshot,
-                            keys: replacementRows.map((row) =>
-                              publicGroupedStringKey("customerId", row.customerId),
-                            ),
-                          },
-                        ]);
-                        expect(statusEvents).toStrictEqual([
-                          {
-                            ...statusSnapshot,
-                            keys: [publicGroupedStringKey("status", "open")],
-                          },
-                          {
-                            ...statusMoveDelta,
-                            operations: [
-                              {
-                                ...statusMoveDelta.operations[0],
-                                key: publicGroupedStringKey("status", "open"),
-                              },
-                              {
-                                ...statusMoveDelta.operations[1],
-                                key: publicGroupedStringKey("status", "open"),
-                              },
-                            ],
-                          },
-                        ]);
-                        yield* manager.close;
-                        expect(statusRetention.retainedEntryCount()).toBe(0);
-                        expect(customerRetention.retainedEntryCount()).toBe(0);
-                        yield* manager.close;
-                        expect(statusRetention.retainedEntryCount()).toBe(0);
-                        yield* Fiber.interrupt(statusEventsFiber);
-                      }).pipe(
-                        Effect.ensuring(
-                          Deferred.succeed(releaseCustomerRemovals, undefined).pipe(
-                            Effect.andThen(Deferred.succeed(releaseCustomerReplacement, undefined)),
-                            Effect.andThen(Deferred.succeed(releaseStatusMove, undefined)),
-                          ),
-                        ),
-                      ),
-                    (subscription) => subscription.close(),
-                  ),
-                (subscription) => subscription.close(),
-              ),
-            (manager) => manager.close,
-          );
-        },
-        (runtimeCore) => runtimeCore.close,
-      );
-    }),
-  );
-
-  it.live("fails grouped leased gRPC event streams for non-canonical public key values", () =>
-    Effect.gen(function* () {
-      const feed = grpcGroupedKeyEncodingLeasedViewServer({
-        acquire: () => longRunningGrpcStream([grpcOrderValue("route-encoding-1", 10)]),
-        map: (value) => ({
-          id: value.customerId,
-          ...routeEncodingValues,
-          weird: new Uint8Array([1]),
-        }),
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
-        clients: {
-          orders: "https://orders.example.test",
-        },
-        feeds: {},
-      });
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcOptions.sourceConfig,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-      const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
-        groupBy: ["weird"],
-        aggregates: {
-          rowCount: { aggFunc: "count" },
-        },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
-        limit: 10,
-      });
-      const events = yield* subscription.events.pipe(Stream.runCollect);
-
-      expect(events).toStrictEqual([
-        {
-          type: "snapshot",
-          topic: "orders",
-          queryId: "query-0",
-          version: 0,
-          keys: [],
-          rows: [],
-          totalRows: 0,
-        },
-        {
-          type: "status",
-          topic: "orders",
-          queryId: "query-0",
-          status: "error",
-          code: "RuntimeUnavailable",
-          message: "Leased gRPC grouped key value cannot be encoded as a stable public key",
-        },
-      ]);
-      yield* subscription.close();
-      yield* manager.close;
-      yield* runtimeCore.close;
-    }),
-  );
-
-  it.live("fails grouped leased gRPC snapshots for non-canonical public key values", () =>
-    Effect.gen(function* () {
-      const feed = grpcGroupedKeyEncodingLeasedViewServer({
-        acquire: () => longRunningGrpcStream([grpcOrderValue("route-encoding-1", 10)]),
-        map: (value) => ({
-          id: value.customerId,
-          ...routeEncodingValues,
-          weird: new Uint8Array([1]),
-        }),
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
-        clients: {
-          orders: "https://orders.example.test",
-        },
-        feeds: {},
-      });
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcOptions.sourceConfig,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-      const rawSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
-        select: ["id", "weird"],
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
-        limit: 10,
-      });
-      const rawEventQueue = yield* Queue.unbounded<unknown>();
-      const rawEventsFiber = yield* rawSubscription.events.pipe(
-        Stream.runForEach((event) => Queue.offer(rawEventQueue, event)),
-        Effect.forkChild,
-      );
-      const rawSnapshot = yield* Queue.take(rawEventQueue);
-      const rawDelta = yield* Queue.take(rawEventQueue);
-      const groupedSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
-        groupBy: ["weird"],
-        aggregates: {
-          rowCount: { aggFunc: "count" },
-        },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
-        limit: 10,
-      });
-      const groupedEvents = yield* groupedSubscription.events.pipe(Stream.runCollect);
-
-      expect([rawSnapshot, rawDelta]).toStrictEqual([
-        {
-          type: "snapshot",
-          topic: "orders",
-          queryId: "query-0",
-          version: 0,
-          keys: [],
-          rows: [],
-          totalRows: 0,
-        },
-        {
-          type: "delta",
-          topic: "orders",
-          queryId: "query-0",
-          fromVersion: 0,
-          toVersion: 1,
-          operations: [
-            {
-              type: "insert",
-              key: "route-encoding-1",
-              row: {
-                id: "route-encoding-1",
-                weird: new Uint8Array([1]),
-              },
-              index: 0,
-            },
-          ],
-          totalRows: 1,
-        },
-      ]);
-      expect(groupedEvents).toStrictEqual([
-        {
-          type: "status",
-          topic: "orders",
-          queryId: "query-1",
-          status: "error",
-          code: "RuntimeUnavailable",
-          message: "Leased gRPC grouped key value cannot be encoded as a stable public key",
-        },
-      ]);
-      yield* rawSubscription.close();
-      yield* groupedSubscription.close();
-      yield* Fiber.interrupt(rawEventsFiber);
-      yield* manager.close;
-      yield* runtimeCore.close;
-    }),
+        expect(feedKeys).toHaveLength(1);
+        expect(currentHealth.grpc?.feeds["orders"]?.leased[feedKeys[0]!]?.subscriberCount).toBe(2);
+        yield* first.close();
+        yield* second.close();
+        yield* manager.close;
+        yield* runtimeCore.close;
+      }),
   );
 
   it.live("rejects non-canonical leased gRPC route values instead of sharing a fallback key", () =>
@@ -1362,14 +549,14 @@ describe("gRPC lease manager query translation", () => {
           code: "InvalidQuery",
           topic: "orders",
           message:
-            "Leased topic orders route field weird value cannot be used as a stable leased gRPC route key.",
+            "Leased topic orders route field weird value does not match the topic schema or cannot be used as a stable leased gRPC route key.",
         },
         objectError: {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
           message:
-            "Leased topic orders route field weird value cannot be used as a stable leased gRPC route key.",
+            "Leased topic orders route field weird value does not match the topic schema or cannot be used as a stable leased gRPC route key.",
         },
         leasedFeeds: [],
       });
@@ -1429,8 +616,8 @@ describe("gRPC lease manager query translation", () => {
         },
       ]);
       expect(Object.keys(routeHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/orders/leased/region=string%3A3%3Ausa",
-        "orders/orders/leased/region=string%3A2%3Aeu",
+        "orders/orders/leased/region=%22usa%22",
+        "orders/orders/leased/region=%22eu%22",
       ]);
       yield* usa.close();
       yield* eu.close();
@@ -1855,7 +1042,7 @@ describe("gRPC lease manager query translation", () => {
     }),
   );
 
-  it.live("keeps non-string leased row-key predicates unchanged in internal runtime queries", () =>
+  it.live("captures leased row-key predicates before caller mutation", () =>
     Effect.gen(function* () {
       const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
@@ -1963,7 +1150,7 @@ describe("gRPC lease manager query translation", () => {
           status: "ready",
           code: "Ready",
           message:
-            '{"select":["id","price"],"where":{"region":{"eq":"usa"},"id":{"eq":123}},"limit":10}',
+            '{"select":["id","price"],"where":{"region":{"eq":"usa"},"id":{"eq":"usa:order-1"}},"limit":10}',
         },
       ]);
       yield* subscription.close();
@@ -2404,117 +1591,6 @@ describe("gRPC lease manager query translation", () => {
       yield* subscription.close();
       yield* manager.close;
       yield* runtimeCore.close;
-    }),
-  );
-
-  it.live("externalizes a 200,000-row grouped snapshot without caller-side spread limits", () =>
-    Effect.gen(function* () {
-      const cardinality = 200_000;
-      const midpoint = Math.floor(cardinality / 2);
-      const internalKeys = Array.from(
-        { length: cardinality },
-        (_value, index) => "customer-internal-" + index,
-      );
-      const rows = Array.from({ length: cardinality }, (_value, index) => ({
-        customerId: "customer-" + index,
-        rowCount: 1n,
-      }));
-      const internalSnapshot = {
-        type: "snapshot",
-        topic: "orders",
-        queryId: "large-customer-groups",
-        version: 0,
-        keys: internalKeys,
-        rows,
-        totalRows: cardinality,
-      } as const;
-      const publicGroupedCustomerKey = (customerId: string): string => {
-        const fieldToken =
-          '["array",[["string","customerId"],["string",' + JSON.stringify(customerId) + "]]]";
-        return '["array",[' + fieldToken + "]]";
-      };
-      const feed = grpcLeasedViewServer({
-        streamForRegion: () => Stream.never,
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-
-      yield* Effect.acquireUseRelease(
-        makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {}),
-        (runtimeCore) => {
-          const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<
-            typeof leasedGrpcViewServer.topics
-          > = {
-            ...runtimeCore.internalLiveClient,
-            subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
-              observer.onQueryRegistered(internalSnapshot.queryId).pipe(
-                Effect.as({
-                  events: Stream.make(internalSnapshot).pipe(Stream.concat(Stream.never)),
-                  close: () => Effect.void,
-                }),
-              ),
-          };
-          const health = makeLeasedGrpcHealth(grpcOptions);
-
-          return Effect.acquireUseRelease(
-            makeViewServerGrpcLeaseManager(
-              grpcOptions.sourceConfig,
-              runtimeCore.internalClient,
-              runtimeCore.liveClient,
-              fakeInternalLiveClient,
-              Effect.void,
-              grpcOptions,
-              health,
-            ),
-            (manager) =>
-              Effect.acquireUseRelease(
-                manager.liveClient.subscribeRuntime("orders", {
-                  groupBy: ["customerId"],
-                  aggregates: {
-                    rowCount: { aggFunc: "count" },
-                  },
-                  where: {
-                    region: { eq: "usa" },
-                  },
-                  limit: cardinality,
-                }),
-                (subscription) =>
-                  Effect.gen(function* () {
-                    const firstEventOption = yield* Stream.runHead(subscription.events);
-                    const firstEvent: ViewServerLiveEvent<object> =
-                      yield* Effect.fromOption(firstEventOption);
-                    const snapshot = yield* Effect.succeed(firstEvent).pipe(
-                      Effect.filterOrFail(
-                        (
-                          event,
-                        ): event is Extract<typeof firstEvent, { readonly type: "snapshot" }> =>
-                          event.type === "snapshot",
-                      ),
-                    );
-
-                    expect(snapshot.keys.length).toBe(cardinality);
-                    expect(snapshot.keys[0]).toBe(publicGroupedCustomerKey("customer-0"));
-                    expect(snapshot.keys[cardinality - 1]).toBe(
-                      publicGroupedCustomerKey("customer-" + (cardinality - 1)),
-                    );
-                    expect(snapshot.rows.length).toBe(cardinality);
-                    expect([
-                      snapshot.rows[0],
-                      snapshot.rows[midpoint],
-                      snapshot.rows[cardinality - 1],
-                    ]).toStrictEqual([
-                      { customerId: "customer-0", rowCount: 1n },
-                      { customerId: "customer-" + midpoint, rowCount: 1n },
-                      { customerId: "customer-" + (cardinality - 1), rowCount: 1n },
-                    ]);
-                    expect(snapshot.totalRows).toBe(cardinality);
-                  }),
-                (subscription) => subscription.close(),
-              ),
-            (manager) => manager.close,
-          );
-        },
-        (runtimeCore) => runtimeCore.close,
-      );
     }),
   );
 });

@@ -1,10 +1,18 @@
-import { describe, expect, it } from "@effect/vitest";
-import { deltaOperations, type QueryEvaluation } from "./query-result";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import { Schema } from "effect";
+import { deltaOperations, liveQueryResult, type QueryEvaluation } from "./query-result";
+import { makeQueryResultSemantics } from "./query-result-semantics";
+import { makeSchemaValueSemantics } from "./topic-row-value-semantics";
 
 type TestRow = {
   readonly id: string;
   readonly value: number;
 };
+
+const testResultSemantics = makeQueryResultSemantics([
+  { field: "id", semantics: makeSchemaValueSemantics(Schema.String) },
+  { field: "value", semantics: makeSchemaValueSemantics(Schema.Number) },
+]);
 
 const evaluation = (rows: ReadonlyArray<TestRow>, version: number): QueryEvaluation<TestRow> => ({
   rows,
@@ -17,7 +25,26 @@ const evaluation = (rows: ReadonlyArray<TestRow>, version: number): QueryEvaluat
   version,
 });
 
-describe("query result delta operations", () => {
+describe("query results", () => {
+  it("materializes the typed result through configured fields without reflecting unrelated keys", () => {
+    const row = { id: "row-1", value: 1 };
+    let unrelatedReads = 0;
+    Object.defineProperty(row, "unselected", {
+      enumerable: true,
+      get() {
+        unrelatedReads += 1;
+        throw new Error("unselected result fields must not be read");
+      },
+    });
+
+    const result = liveQueryResult(evaluation([row], 1), testResultSemantics);
+
+    expectTypeOf(result.rows).toEqualTypeOf<ReadonlyArray<TestRow>>();
+    expect(result.rows).toStrictEqual([{ id: "row-1", value: 1 }]);
+    expect(Object.is(result.rows[0], row)).toBe(false);
+    expect(unrelatedReads).toBe(0);
+  });
+
   it("uses batched replacement operations when shared rows stay stable", () => {
     const previous = evaluation(
       [
@@ -42,7 +69,7 @@ describe("query result delta operations", () => {
       2,
     );
 
-    const operations = deltaOperations(previous, next);
+    const operations = deltaOperations(previous, next, testResultSemantics);
 
     expect(operations).toStrictEqual([
       { type: "remove", key: "old-1" },
@@ -74,7 +101,7 @@ describe("query result delta operations", () => {
       2,
     );
 
-    const operations = deltaOperations(previous, next);
+    const operations = deltaOperations(previous, next, testResultSemantics);
 
     expect(operations).toStrictEqual([
       { type: "remove", key: "old-1" },
@@ -108,7 +135,7 @@ describe("query result delta operations", () => {
       2,
     );
 
-    const operations = deltaOperations(previous, next);
+    const operations = deltaOperations(previous, next, testResultSemantics);
 
     expect(operations).toStrictEqual([
       { type: "remove", key: "old-1" },
@@ -147,7 +174,7 @@ describe("query result delta operations", () => {
       2,
     );
 
-    const operations = deltaOperations(previous, next);
+    const operations = deltaOperations(previous, next, testResultSemantics);
 
     expect(operations).toStrictEqual([
       { type: "remove", key: "old-1" },
@@ -174,8 +201,16 @@ describe("query result delta operations", () => {
     const updateOnlyPrevious = evaluation([{ id: "keep-1", value: 2 }], 3);
     const updateOnlyNext = evaluation([{ id: "keep-1", value: 20 }], 4);
 
-    const deleteOperations = deltaOperations(deleteOnlyPrevious, deleteOnlyNext);
-    const updateOperations = deltaOperations(updateOnlyPrevious, updateOnlyNext);
+    const deleteOperations = deltaOperations(
+      deleteOnlyPrevious,
+      deleteOnlyNext,
+      testResultSemantics,
+    );
+    const updateOperations = deltaOperations(
+      updateOnlyPrevious,
+      updateOnlyNext,
+      testResultSemantics,
+    );
 
     expect(deleteOperations).toStrictEqual([{ type: "remove", key: "old-1" }]);
     expect(updateOperations).toStrictEqual([

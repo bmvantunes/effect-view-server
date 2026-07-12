@@ -21,29 +21,15 @@ export const kafkaTestMetadata = <const Region extends "usa" | "london">(
   headers: {},
 });
 
-export type RuntimeGuardKafkaSourceViewServer = {
-  readonly topics: {
-    readonly orders: {
-      readonly kafkaSource: object;
-    };
-  };
-};
-
-export const forceKafkaSourceRowKeyForRuntimeGuard = (
-  viewServer: RuntimeGuardKafkaSourceViewServer,
-  rowKey: () => unknown,
-) => {
-  Object.defineProperty(viewServer.topics.orders.kafkaSource, "rowKey", {
+export const forceKafkaSourceRowKeyForRuntimeGuard = (source: object, rowKey: () => unknown) => {
+  Object.defineProperty(source, "rowKey", {
     configurable: true,
     value: rowKey,
   });
 };
 
-export const forceKafkaSourceMapForRuntimeGuard = (
-  viewServer: RuntimeGuardKafkaSourceViewServer,
-  map: () => unknown,
-) => {
-  Object.defineProperty(viewServer.topics.orders.kafkaSource, "map", {
+export const forceKafkaSourceMapForRuntimeGuard = (source: object, map: () => unknown) => {
+  Object.defineProperty(source, "map", {
     configurable: true,
     value: map,
   });

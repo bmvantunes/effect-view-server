@@ -64,7 +64,10 @@ export const evaluateExecutableQuery = <ResultRow extends RowObject>(
 export const snapshotExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExecution.snapshot")(
   function* <ResultRow extends RowObject>(store: TopicStore, query: unknown) {
     const executable = yield* prepareExecutableQuery<ResultRow>(store, query);
-    return liveQueryResult(evaluateExecutableQuery(store, executable));
+    return liveQueryResult(
+      evaluateExecutableQuery(store, executable),
+      executable.compiled.plan.resultSemantics,
+    );
   },
 );
 

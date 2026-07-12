@@ -241,7 +241,41 @@ describe("Grouped live wire codec", () => {
           totalRows: 1,
         }),
       );
-      expect(invalidMinSnapshot.message).toMatch(/Invalid field minPrice/);
+      expect(invalidMinSnapshot).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        topic: "orders",
+        message:
+          "Invalid field minPrice: aggregate min cannot be undefined because price is required.",
+      });
+      const invalidMinEnvelope = yield* Effect.flip(
+        viewServerDecodeLiveEvent(viewServer, "orders", encodedGrouped, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-undefined-envelope",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: "2" },
+              totalPrice: { _viewServerAggregate: "bigdecimal", value: "21" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "10.5" },
+              minPrice: { _viewServerAggregate: "undefined" },
+              maxPrice: { _viewServerAggregate: "json", value: 11 },
+              distinctPrice: { _viewServerAggregate: "bigint", value: "2" },
+            },
+          ],
+          totalRows: 1,
+        }),
+      );
+      expect(invalidMinEnvelope).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        topic: "orders",
+        message:
+          "Invalid field minPrice: aggregate min cannot be undefined because price is required.",
+      });
 
       const optionalMinQuery = yield* viewServerEncodeGroupedQuery(viewServer, "orders", {
         groupBy: ["id"],
@@ -272,7 +306,7 @@ describe("Grouped live wire codec", () => {
         rows: [
           {
             id: "a",
-            minUnset: { _viewServerAggregate: "json", value: null },
+            minUnset: { _viewServerAggregate: "undefined" },
           },
         ],
         totalRows: 1,

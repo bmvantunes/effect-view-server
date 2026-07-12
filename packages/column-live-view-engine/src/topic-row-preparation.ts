@@ -1,6 +1,9 @@
-import { Effect, Schema } from "effect";
+import type { RowSchema } from "@effect-view-server/config";
+import { validateDecodedRow } from "@effect-view-server/config/internal";
+import { Effect } from "effect";
 import { topicRowChangedFieldsFromRows, type TopicRowChangedFields } from "./row-scan";
-import { cloneRow, fieldValue, isPlainRecord } from "./row-values";
+import { fieldValue, isPlainRecord } from "./row-values";
+import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
 
 type RowObject = object;
 
@@ -16,29 +19,16 @@ export type PreparedTopicRow = {
 export type TopicRowPreparationContext = {
   readonly fieldNames: ReadonlySet<string>;
   readonly keyField: string;
-  readonly schema: Schema.Codec<object, unknown, never, unknown>;
+  readonly schema: RowSchema;
+  readonly semantics: TopicRowValueSemantics;
   readonly topic: string;
 };
-
-const decodeTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decode")(function* <Error>(
-  context: TopicRowPreparationContext,
-  row: RowObject,
-  invalidRow: InvalidRowErrorFactory<Error>,
-) {
-  return yield* Effect.try({
-    try: () => {
-      const decoded = Schema.decodeUnknownSync(context.schema)(row);
-      return normalizedDecodedTopicRow(context, decoded);
-    },
-    catch: (cause) => invalidRow(context.topic, String(cause)),
-  });
-});
 
 const normalizedDecodedTopicRow = (
   context: TopicRowPreparationContext,
   decoded: RowObject,
 ): RowObject => {
-  const cloned = cloneRow(decoded);
+  const cloned = context.semantics.materializeRow(decoded);
   for (const field of context.fieldNames) {
     if (!Object.hasOwn(cloned, field)) {
       Object.defineProperty(cloned, field, {
@@ -71,13 +61,10 @@ const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded
     row: RowObject,
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
-    return yield* Effect.try({
-      try: () => {
-        const decoded = Schema.decodeUnknownSync(Schema.toType(context.schema))(row);
-        return normalizedDecodedTopicRow(context, decoded);
-      },
-      catch: (cause) => invalidRow(context.topic, String(cause)),
-    });
+    const decoded = yield* validateDecodedRow(context.schema, row).pipe(
+      Effect.mapError((cause) => invalidRow(context.topic, String(cause))),
+    );
+    return yield* normalizeDecodedTopicRow(context, decoded, invalidRow);
   },
 );
 
@@ -95,30 +82,56 @@ const topicRowKey = Effect.fn("ColumnLiveViewEngine.topicRow.key")(function* <Er
   return key;
 });
 
-const validateTopicPatchKeys = Effect.fn("ColumnLiveViewEngine.topicRow.patchKeys.validate")(
-  function* <Error>(
-    context: TopicRowPreparationContext,
-    patch: unknown,
-    invalidRow: InvalidRowErrorFactory<Error>,
-  ) {
-    if (!isPlainRecord(patch)) {
-      return yield* Effect.fail(invalidRow(context.topic, "Patch must be a plain object."));
+const inspectTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.inspect")(function* <
+  Error,
+>(context: TopicRowPreparationContext, patch: unknown, invalidRow: InvalidRowErrorFactory<Error>) {
+  const record = yield* Effect.try({
+    try: () => (isPlainRecord(patch) ? patch : undefined),
+    catch: () => invalidRow(context.topic, "Could not inspect patch object."),
+  });
+  if (record === undefined) {
+    return yield* Effect.fail(invalidRow(context.topic, "Patch must be a plain object."));
+  }
+  const keys = yield* Effect.try({
+    try: () => Reflect.ownKeys(record),
+    catch: () => invalidRow(context.topic, "Could not inspect patch fields."),
+  });
+  const inspected: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (typeof key !== "string" || !context.fieldNames.has(key)) {
+      return yield* Effect.fail(
+        invalidRow(context.topic, `Patch contains unknown field: ${String(key)}.`),
+      );
     }
-    for (const key of Reflect.ownKeys(patch)) {
-      if (typeof key !== "string" || !context.fieldNames.has(key)) {
-        return yield* Effect.fail(
-          invalidRow(context.topic, `Patch contains unknown field: ${String(key)}.`),
-        );
-      }
+    const descriptor = yield* Effect.try({
+      try: () => Object.getOwnPropertyDescriptor(record, key),
+      catch: () => invalidRow(context.topic, `Could not inspect patch field: ${key}.`),
+    });
+    if (descriptor === undefined || !("value" in descriptor)) {
+      return yield* Effect.fail(
+        invalidRow(context.topic, `Patch field must be a data property: ${key}.`),
+      );
     }
-  },
-);
+    if (descriptor.enumerable !== true) {
+      return yield* Effect.fail(
+        invalidRow(context.topic, `Patch field must be enumerable: ${key}.`),
+      );
+    }
+    Object.defineProperty(inspected, key, {
+      configurable: true,
+      enumerable: true,
+      value: descriptor.value,
+      writable: true,
+    });
+  }
+  return inspected;
+});
 
 export const prepareTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.prepare")(function* <
   Error,
   Row extends RowObject,
 >(context: TopicRowPreparationContext, row: Row, invalidRow: InvalidRowErrorFactory<Error>) {
-  const decoded = yield* decodeTopicRow(context, row, invalidRow);
+  const decoded = yield* validateDecodedTopicRow(context, row, invalidRow);
   const key = yield* topicRowKey(context, decoded, invalidRow);
   return {
     key,
@@ -135,7 +148,7 @@ export const prepareTopicRowWithStorageKey = Effect.fn(
   storageKey: string,
   invalidRow: InvalidRowErrorFactory<Error>,
 ) {
-  const decoded = yield* decodeTopicRow(context, row, invalidRow);
+  const decoded = yield* validateDecodedTopicRow(context, row, invalidRow);
   yield* topicRowKey(context, decoded, invalidRow);
   return {
     key: storageKey,
@@ -186,11 +199,11 @@ const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.pr
     invalidRow: InvalidRowErrorFactory<Error>,
     preparePatchedRow: (row: RowObject) => Effect.Effect<RowObject, Error>,
   ) {
-    yield* validateTopicPatchKeys(context, patch, invalidRow);
+    const inspectedPatch = yield* inspectTopicPatch(context, patch, invalidRow);
     if (current === undefined) {
       return yield* Effect.fail(invalidRow(context.topic, `Cannot patch missing key: ${key}`));
     }
-    const decoded = yield* preparePatchedRow({ ...current, ...patch });
+    const decoded = yield* preparePatchedRow({ ...current, ...inspectedPatch });
     const decodedKey = yield* topicRowKey(context, decoded, invalidRow);
     if (decodedKey !== key) {
       return yield* Effect.fail(invalidRow(context.topic, "Patch must not change the row key."));
@@ -200,6 +213,7 @@ const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.pr
       current,
       decoded,
       decodedFieldNames,
+      (field, left, right) => context.semantics.equivalentField(field, left, right),
     );
     if (topicRowChangedFields === undefined) {
       return {
@@ -226,7 +240,7 @@ export const prepareTopicPatch = Effect.fn("ColumnLiveViewEngine.topicRow.patch.
     invalidRow: InvalidRowErrorFactory<Error>,
   ) {
     return yield* preparePatchedTopicRow(context, key, current, patch, invalidRow, (row) =>
-      decodeTopicRow(context, row, invalidRow),
+      validateDecodedTopicRow(context, row, invalidRow),
     );
   },
 );

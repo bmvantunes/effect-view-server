@@ -1,9 +1,9 @@
 import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
 import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaAST } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
-  decodeContextualJsonFieldValue,
+  decodeMaterializedJsonFieldValue,
   encodeContextualJsonFieldValue,
   type JsonFieldSchema,
 } from "./protocol-json-field-codec";
@@ -24,26 +24,42 @@ const isBigIntFieldSchema = (schema: JsonFieldSchema): boolean =>
 
 const bigintPattern = /^-?\d+$/;
 
-type AggregateEnvelope =
-  | {
-      readonly _viewServerAggregate: "bigint";
-      readonly value: string;
-    }
-  | {
-      readonly _viewServerAggregate: "bigdecimal";
-      readonly value: string;
-    }
-  | {
-      readonly _viewServerAggregate: "json";
-      readonly value: Schema.Json;
-    };
+type BigIntAggregateEnvelope = {
+  readonly _viewServerAggregate: "bigint";
+  readonly value: string;
+};
 
-const isAggregateEnvelope = (value: unknown): value is AggregateEnvelope =>
+type BigDecimalAggregateEnvelope = {
+  readonly _viewServerAggregate: "bigdecimal";
+  readonly value: string;
+};
+
+type JsonAggregateEnvelope<Value> = {
+  readonly _viewServerAggregate: "json";
+  readonly value: Value;
+};
+
+type UndefinedAggregateEnvelope = {
+  readonly _viewServerAggregate: "undefined";
+};
+
+type AggregateEnvelope =
+  | BigIntAggregateEnvelope
+  | BigDecimalAggregateEnvelope
+  | JsonAggregateEnvelope<Schema.Json>
+  | UndefinedAggregateEnvelope;
+
+const isUndefinedAggregateEnvelope = (value: Schema.Json): value is UndefinedAggregateEnvelope =>
   isRecord(value) &&
-  ((value["_viewServerAggregate"] === "bigint" && typeof value["value"] === "string") ||
-    (value["_viewServerAggregate"] === "bigdecimal" && typeof value["value"] === "string") ||
-    (value["_viewServerAggregate"] === "json" &&
-      Schema.decodeUnknownOption(Schema.Json)(value["value"])._tag === "Some"));
+  value["_viewServerAggregate"] === "undefined" &&
+  !Object.hasOwn(value, "value");
+
+const isAggregateEnvelope = (value: Schema.Json): value is AggregateEnvelope =>
+  isUndefinedAggregateEnvelope(value) ||
+  (isRecord(value) &&
+    ((value["_viewServerAggregate"] === "bigint" && typeof value["value"] === "string") ||
+      (value["_viewServerAggregate"] === "bigdecimal" && typeof value["value"] === "string") ||
+      (value["_viewServerAggregate"] === "json" && Object.hasOwn(value, "value"))));
 
 const encodeJsonAggregateEnvelope = (value: Schema.Json): AggregateEnvelope => ({
   _viewServerAggregate: "json",
@@ -60,8 +76,12 @@ const encodeBigDecimalAggregateEnvelope = (value: BigDecimal.BigDecimal): Aggreg
   value: BigDecimal.format(value),
 });
 
+const encodeUndefinedAggregateEnvelope = (): AggregateEnvelope => ({
+  _viewServerAggregate: "undefined",
+});
+
 const decodeAggregateEnvelope = Effect.fn("ViewServerProtocol.row.aggregate.envelope.decode")(
-  function* (topic: string, field: string, value: unknown) {
+  function* (topic: string, field: string, value: Schema.Json) {
     if (!isAggregateEnvelope(value)) {
       return yield* Effect.fail(
         invalidRow(topic, `Aggregate ${field} must be a View Server aggregate envelope.`),
@@ -92,7 +112,7 @@ const encodeBigIntAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.b
 );
 
 const decodeBigIntAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.bigint.decode")(
-  function* (topic: string, field: string, value: unknown) {
+  function* (topic: string, field: string, value: Schema.Json) {
     const envelope = yield* decodeAggregateEnvelope(topic, field, value);
     if (envelope._viewServerAggregate !== "bigint" || !bigintPattern.test(envelope.value)) {
       return yield* Effect.fail(invalidRow(topic, `Aggregate ${field} must be a bigint envelope.`));
@@ -112,7 +132,7 @@ const encodeBigDecimalAggregateValue = Effect.fn(
 
 const decodeBigDecimalAggregateValue = Effect.fn(
   "ViewServerProtocol.row.aggregate.bigDecimal.decode",
-)(function* (topic: string, field: string, value: unknown) {
+)(function* (topic: string, field: string, value: Schema.Json) {
   const envelope = yield* decodeAggregateEnvelope(topic, field, value);
   if (envelope._viewServerAggregate !== "bigdecimal") {
     return yield* Effect.fail(
@@ -134,16 +154,15 @@ const encodeJsonAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.jso
 );
 
 const decodeJsonAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.json.decode")(
-  function* (topic: string, field: string, schema: JsonFieldSchema, value: unknown) {
+  function* (topic: string, field: string, schema: JsonFieldSchema, value: Schema.Json) {
     const envelope = yield* decodeAggregateEnvelope(topic, field, value);
     if (envelope._viewServerAggregate !== "json") {
       return yield* Effect.fail(
         invalidRow(topic, `Aggregate ${field} must be a JSON aggregate envelope.`),
       );
     }
-    return yield* decodeContextualJsonFieldValue(schema, envelope.value, {
-      invalid: (message) => invalidRow(topic, message),
-      invalidMessage: (message) => `Invalid field ${field}: ${message}`,
+    return yield* decodeMaterializedJsonFieldValue(schema, envelope.value, {
+      invalid: (message) => invalidRow(topic, `Invalid field ${field}: ${message}`),
     });
   },
 );
@@ -160,6 +179,29 @@ const aggregateFieldSchema = Effect.fn("ViewServerProtocol.row.aggregate.fieldSc
   return fieldSchema;
 });
 
+const undefinedAggregateFieldAcceptance = new WeakMap<JsonFieldSchema, boolean>();
+
+const fieldSchemaAllowsUndefinedAggregate = (schema: JsonFieldSchema): boolean => {
+  const cached = undefinedAggregateFieldAcceptance.get(schema);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const accepted = SchemaAST.isOptional(schema.ast) || Schema.is(schema)(undefined);
+  undefinedAggregateFieldAcceptance.set(schema, accepted);
+  return accepted;
+};
+
+const invalidUndefinedAggregate = (
+  topic: string,
+  field: string,
+  aggregateFunction: "min" | "max",
+  aggregateField: string,
+): ViewServerRuntimeError =>
+  invalidRow(
+    topic,
+    `Invalid field ${field}: aggregate ${aggregateFunction} cannot be undefined because ${aggregateField} is required.`,
+  );
+
 export const encodeAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.encode")(function* <
   const Topics extends TopicDefinitions,
 >(
@@ -173,6 +215,14 @@ export const encodeAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.
     return yield* encodeBigIntAggregateValue(topic, field, value);
   }
   const fieldSchema = yield* aggregateFieldSchema(config, topic, aggregate.field);
+  if ((aggregate.aggFunc === "min" || aggregate.aggFunc === "max") && value === undefined) {
+    if (!fieldSchemaAllowsUndefinedAggregate(fieldSchema)) {
+      return yield* Effect.fail(
+        invalidUndefinedAggregate(topic, field, aggregate.aggFunc, aggregate.field),
+      );
+    }
+    return encodeUndefinedAggregateEnvelope();
+  }
   if (aggregate.aggFunc === "avg") {
     return yield* encodeBigDecimalAggregateValue(topic, field, value);
   }
@@ -192,12 +242,23 @@ export const decodeAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.
   topic: Extract<keyof Topics, string>,
   field: string,
   aggregate: ViewServerWireAggregate,
-  value: unknown,
+  value: Schema.Json,
 ) {
   if (aggregate.aggFunc === "count" || aggregate.aggFunc === "countDistinct") {
     return yield* decodeBigIntAggregateValue(topic, field, value);
   }
   const fieldSchema = yield* aggregateFieldSchema(config, topic, aggregate.field);
+  if (
+    (aggregate.aggFunc === "min" || aggregate.aggFunc === "max") &&
+    isUndefinedAggregateEnvelope(value)
+  ) {
+    if (!fieldSchemaAllowsUndefinedAggregate(fieldSchema)) {
+      return yield* Effect.fail(
+        invalidUndefinedAggregate(topic, field, aggregate.aggFunc, aggregate.field),
+      );
+    }
+    return undefined;
+  }
   if (aggregate.aggFunc === "avg") {
     return yield* decodeBigDecimalAggregateValue(topic, field, value);
   }

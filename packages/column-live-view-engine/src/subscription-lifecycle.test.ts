@@ -18,6 +18,7 @@ import {
 import { prepareRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { prepareGroupedQuery } from "./grouped-query-compiler";
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
+import { makeQueryResultSemantics } from "./query-result-semantics";
 import {
   acquireTopicStoreSubscription,
   closeBackpressuredTopicStoreSubscription,
@@ -35,6 +36,8 @@ import { topicStoreRawQueryMetadata, topicStoreReadModel } from "./topic-store-s
 import { expectDefined } from "../test-harness/events";
 import { order, Order } from "../test-harness/public-engine";
 import { registerTestTopicStoreSubscriber } from "../test-harness/topic-store";
+
+const emptyResultSemantics = makeQueryResultSemantics([]);
 
 describe("Subscription lifecycle ownership", () => {
   it.effect("only closes acquired subscriptions for interrupted exits", () =>
@@ -351,8 +354,11 @@ describe("Subscription lifecycle ownership", () => {
           aggregates: { rowCount: { aggFunc: "count" } },
         },
       );
-      const execution = yield* acquireMaterializedQueryExecution(readModel, "journal-bounds", () =>
-        makeIncrementalGroupedQueryExecution(readModel, compiled, () => {}),
+      const execution = yield* acquireMaterializedQueryExecution(
+        readModel,
+        "journal-bounds",
+        compiled.plan.resultSemantics,
+        () => makeIncrementalGroupedQueryExecution(readModel, compiled, () => {}),
       );
       expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
 
@@ -407,11 +413,17 @@ describe("Subscription lifecycle ownership", () => {
           aggregates: { rowCount: { aggFunc: "count" } },
         },
       );
-      yield* acquireMaterializedQueryExecution(storage.readModel, "overflow-journal", () =>
-        makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
+      yield* acquireMaterializedQueryExecution(
+        storage.readModel,
+        "overflow-journal",
+        compiled.plan.resultSemantics,
+        () => makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
       );
-      yield* acquireMaterializedQueryExecution(storage.readModel, "overflow-journal-second", () =>
-        makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
+      yield* acquireMaterializedQueryExecution(
+        storage.readModel,
+        "overflow-journal-second",
+        compiled.plan.resultSemantics,
+        () => makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
       );
       yield* releaseMaterializedQueryExecution(storage.readModel, "overflow-journal-second");
       expect(storage.readModel.changesSince(storage.version)).toStrictEqual([]);
@@ -481,8 +493,11 @@ describe("Subscription lifecycle ownership", () => {
         ),
       );
       fallbackStorage.advanceVersion();
-      yield* acquireMaterializedQueryExecution(fallbackStorage.readModel, "fallback-clear", () =>
-        makeIncrementalGroupedQueryExecution(fallbackStorage.readModel, compiled, () => {}),
+      yield* acquireMaterializedQueryExecution(
+        fallbackStorage.readModel,
+        "fallback-clear",
+        compiled.plan.resultSemantics,
+        () => makeIncrementalGroupedQueryExecution(fallbackStorage.readModel, compiled, () => {}),
       );
       yield* clearStoreRawQueryExecutions(fallbackStorage.readModel);
       expect(yield* activeStoreRawQueryExecutionCount(fallbackStorage.readModel)).toBe(0);
@@ -508,6 +523,7 @@ describe("Subscription lifecycle ownership", () => {
       const execution = yield* acquireMaterializedQueryExecution(
         storage.readModel,
         "demoted-grouped-journal",
+        compiled.plan.resultSemantics,
         (releaseRetainedChanges) =>
           makeIncrementalGroupedQueryExecution(
             storage.readModel,
@@ -720,6 +736,7 @@ describe("Subscription lifecycle ownership", () => {
       const execution = yield* acquireMaterializedQueryExecution(
         readModel,
         "empty-materialized",
+        emptyResultSemantics,
         makeExecution,
       );
       const cursor = execution.createCursor();
@@ -727,7 +744,12 @@ describe("Subscription lifecycle ownership", () => {
 
       expect(Option.isNone(unchanged)).toBe(true);
       expect(evaluationCount).toBe(1);
-      yield* acquireMaterializedQueryExecution(readModel, "second-materialized", makeExecution);
+      yield* acquireMaterializedQueryExecution(
+        readModel,
+        "second-materialized",
+        emptyResultSemantics,
+        makeExecution,
+      );
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(2);
       yield* releaseMaterializedQueryExecution(readModel, "empty-materialized");
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);

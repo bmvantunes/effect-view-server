@@ -4,6 +4,7 @@ import type { ActiveQueryStoreState, LiveQueryExecution } from "./active-query";
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation } from "./query-result";
 import type { GroupedIncrementalExecutionDiagnosticCounts } from "./grouped-incremental-execution";
+import type { QueryResultSemantics } from "./query-result-semantics";
 
 type RowObject = object;
 
@@ -42,12 +43,13 @@ const getActiveMaterializedQueryMap = (
 const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   execution: ActiveMaterializedQueryExecution,
+  resultSemantics: QueryResultSemantics,
 ): LiveQueryExecution<ResultRow> => {
   const latestEvaluation = () => typedQueryEvaluation<ResultRow>(execution.latest());
 
   return {
     initial: (queryId): SnapshotEvent<ResultRow> =>
-      snapshotEvent(store, queryId, latestEvaluation()),
+      snapshotEvent(store, queryId, latestEvaluation(), resultSemantics),
     createCursor: () => ({
       evaluation: latestEvaluation(),
     }),
@@ -55,12 +57,14 @@ const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
       Effect.sync(() => {
         const previous = cursor.evaluation;
         const next = latestEvaluation();
-        const operations = deltaOperations(previous, next);
+        const operations = deltaOperations(previous, next, resultSemantics);
         if (operations.length === 0 && previous.totalRows === next.totalRows) {
           return Option.none();
         }
         cursor.evaluation = next;
-        return Option.some(deltaEvent(store, queryId, previous.version, next, operations));
+        return Option.some(
+          deltaEvent(store, queryId, previous.version, next, operations, resultSemantics),
+        );
       }),
   };
 };
@@ -77,6 +81,7 @@ export const acquireMaterializedQueryExecution = Effect.fn(
 )(function <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   cacheKey: string,
+  resultSemantics: QueryResultSemantics,
   makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution<ResultRow>,
 ) {
   return Effect.sync(() => {
@@ -85,7 +90,7 @@ export const acquireMaterializedQueryExecution = Effect.fn(
     if (existing !== undefined) {
       const entry = existing;
       entry.refs += 1;
-      return leaseMaterializedQueryExecution<ResultRow>(store, entry.execution);
+      return leaseMaterializedQueryExecution<ResultRow>(store, entry.execution, resultSemantics);
     }
 
     let retainedChanges = false;
@@ -106,7 +111,7 @@ export const acquireMaterializedQueryExecution = Effect.fn(
       releaseRetainedChanges,
       refs: 1,
     });
-    return leaseMaterializedQueryExecution<ResultRow>(store, execution);
+    return leaseMaterializedQueryExecution<ResultRow>(store, execution, resultSemantics);
   });
 });
 

@@ -444,6 +444,22 @@ describe("Invalid grouped row wire inputs", () => {
         },
       });
 
+      const invalidEncodedMin = yield* Effect.flip(
+        viewServerEncodeLiveEvent(viewServer, "orders", groupedMinQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-min",
+          version: 1,
+          keys: ["a"],
+          rows: [{ id: "a", minPrice: "not-a-number" }],
+          totalRows: 1,
+        }),
+      );
+
+      expect(invalidEncodedMin.message).toBe(
+        'Invalid field minPrice: Expected number, got "not-a-number"',
+      );
+
       const wrongJsonEnvelope = yield* Effect.flip(
         viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
           viewServer,

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, Schema, SchemaGetter } from "effect";
-import { createColumnLiveViewEngine, EngineClosedError } from "./index";
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect";
+import { createColumnLiveViewEngine, EngineClosedError, InvalidRowError } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
+import { publishTopicStoreRow, type TopicStoreMutationAdmission } from "./topic-store-mutation";
+import { TopicStore, topicStoreState } from "./topic-store-state";
 
 const Row = Schema.Struct({
   id: Schema.String,
@@ -22,48 +24,30 @@ const blockingTerminalObserver = (
 });
 
 describe("ColumnLiveViewEngine close mutation barrier", () => {
-  it.effect("rejects a publish that passed its open check before close completed", () =>
+  it.effect("rejects a mutation when lifecycle closes admission after row preparation", () =>
     Effect.gen(function* () {
-      const decodingStarted = yield* Deferred.make<void>();
-      const continueDecoding = yield* Deferred.make<void>();
-      const DelayedString = Schema.String.pipe(
-        Schema.decode({
-          decode: new SchemaGetter.Getter((value) =>
-            Effect.gen(function* () {
-              yield* Deferred.succeed(decodingStarted, undefined);
-              yield* Deferred.await(continueDecoding);
-              return value;
-            }),
-          ),
-          encode: SchemaGetter.passthrough(),
-        }),
+      let mutationsAllowed = true;
+      const closeAdmission: TopicStoreMutationAdmission = (transaction) =>
+        Effect.sync(() => {
+          mutationsAllowed = false;
+        }).pipe(Effect.andThen(transaction));
+      const store = new TopicStore(
+        "rows",
+        Row,
+        "id",
+        () => {},
+        () => mutationsAllowed,
+        closeAdmission,
       );
-      const DelayedRow = Schema.Struct({
-        id: DelayedString,
-        value: Schema.Number,
-      });
-      const engine = yield* createColumnLiveViewEngine({
-        topics: {
-          rows: {
-            schema: DelayedRow,
-            key: "id",
-          },
-        },
-      });
 
-      const publishFiber = yield* engine
-        .publish("rows", { id: "late", value: 1 })
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(decodingStarted);
-      yield* engine.close();
-      yield* Deferred.succeed(continueDecoding, undefined);
-
-      const error = yield* Fiber.join(publishFiber).pipe(Effect.flip);
-      const health = yield* engine.health();
+      const error = yield* publishTopicStoreRow(store, { id: "late", value: 1 }, (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      ).pipe(Effect.flip);
+      const state = topicStoreState(store);
 
       expect(error).toBeInstanceOf(EngineClosedError);
-      expect(health.topics.rows.rowCount).toBe(0);
-      expect(health.version).toBe(0);
+      expect(state.storage.rowCount).toBe(0);
+      expect(state.storage.version).toBe(0);
     }),
   );
 

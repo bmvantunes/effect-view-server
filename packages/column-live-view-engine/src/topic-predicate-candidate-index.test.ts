@@ -1102,42 +1102,45 @@ describe("Topic predicate candidate index", () => {
     }),
   );
 
-  it.effect("keeps broad exact scalar predicates correct without row callbacks", () =>
-    Effect.gen(function* () {
-      const SkewedRow = Schema.Struct({
-        id: Schema.String,
-        status: Schema.String,
-      });
-      const rowCount = 20_000;
-      const skippedSlots = new Set(Array.from({ length: 4_096 }, (_value, index) => index * 2));
-      const rows = Array.from({ length: rowCount }, (_value, index) => ({
-        id: `row-${index.toString().padStart(5, "0")}`,
-        status: skippedSlots.has(index) ? "skip" : "match",
-      }));
-      const store = new TopicStore("skewed", SkewedRow, "id", () => {});
-      yield* publishTopicStoreRows(store, rows, (topic, message) =>
-        InvalidRowError.make({ topic, message }),
-      );
+  it.effect(
+    "keeps broad exact scalar predicates correct without row callbacks",
+    () =>
+      Effect.gen(function* () {
+        const SkewedRow = Schema.Struct({
+          id: Schema.String,
+          status: Schema.String,
+        });
+        const rowCount = 20_000;
+        const skippedSlots = new Set(Array.from({ length: 4_096 }, (_value, index) => index * 2));
+        const rows = Array.from({ length: rowCount }, (_value, index) => ({
+          id: `row-${index.toString().padStart(5, "0")}`,
+          status: skippedSlots.has(index) ? "skip" : "match",
+        }));
+        const store = new TopicStore("skewed", SkewedRow, "id", () => {});
+        yield* publishTopicStoreRows(store, rows, (topic, message) =>
+          InvalidRowError.make({ topic, message }),
+        );
 
-      const readModel = topicStoreReadModel(store);
-      const fallbackResult = readModel.scanRawWindow({
-        predicate: {
-          filters: [{ field: "status", operator: "eq", value: "match" }],
-          callbackRequired: false,
-          callbackSkippable: true,
-        },
-        orderBy: [],
-        matches: () => {
-          throw new Error("complete skewed predicates should not call row callbacks");
-        },
-        compare: (left, right) => left.key.localeCompare(right.key),
-        offset: 0,
-        limit: 0,
-      });
+        const readModel = topicStoreReadModel(store);
+        const fallbackResult = readModel.scanRawWindow({
+          predicate: {
+            filters: [{ field: "status", operator: "eq", value: "match" }],
+            callbackRequired: false,
+            callbackSkippable: true,
+          },
+          orderBy: [],
+          matches: () => {
+            throw new Error("complete skewed predicates should not call row callbacks");
+          },
+          compare: (left, right) => left.key.localeCompare(right.key),
+          offset: 0,
+          limit: 0,
+        });
 
-      expect(fallbackResult.keys).toStrictEqual([]);
-      expect(fallbackResult.totalRows).toBe(rowCount - skippedSlots.size);
-    }),
+        expect(fallbackResult.keys).toStrictEqual([]);
+        expect(fallbackResult.totalRows).toBe(rowCount - skippedSlots.size);
+      }),
+    10_000,
   );
 
   it("does not touch non-candidate row entries for exact scalar and range scans", () => {

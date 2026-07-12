@@ -11,6 +11,7 @@ import {
 } from "./active-query";
 import { replaceRetainedMatchingEntryAtIndex } from "./active-raw-query";
 import { prepareRawQuery } from "./raw-query-compiler";
+import { makeQueryResultSemantics } from "./query-result-semantics";
 import {
   deleteTopicStoreRow,
   patchTopicStoreRow,
@@ -22,6 +23,7 @@ import {
 import { topicStoreRawQueryMetadata, topicStoreReadModel } from "./topic-store-state";
 
 const invalidRow = (_topic: string, message: string): Error => new Error(message);
+const emptyResultSemantics = makeQueryResultSemantics([]);
 
 describe("column-live-view-engine active query execution", () => {
   it("falls back when an indexed retained replacement points at a different key", () => {
@@ -221,16 +223,21 @@ describe("column-live-view-engine active query execution", () => {
         patchedEvaluationCount: 0,
       });
 
-      yield* acquireMaterializedQueryExecution(readModel, "grouped", () => ({
+      yield* acquireMaterializedQueryExecution(readModel, "grouped", emptyResultSemantics, () => ({
         diagnostics: emptyDiagnostics,
         incremental: false,
         latest: () => emptyEvaluation(readModel.version()),
       }));
-      yield* acquireMaterializedQueryExecution(isolatedReadModel, "grouped", () => ({
-        diagnostics: emptyDiagnostics,
-        incremental: false,
-        latest: () => emptyEvaluation(isolatedReadModel.version()),
-      }));
+      yield* acquireMaterializedQueryExecution(
+        isolatedReadModel,
+        "grouped",
+        emptyResultSemantics,
+        () => ({
+          diagnostics: emptyDiagnostics,
+          incremental: false,
+          latest: () => emptyEvaluation(isolatedReadModel.version()),
+        }),
+      );
 
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);
       expect(yield* activeStoreRawQueryExecutionCount(isolatedReadModel)).toBe(1);
@@ -3094,7 +3101,7 @@ describe("column-live-view-engine active query execution", () => {
         decimalFilter,
       );
 
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(numericStore))).toBe(6);
+      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(numericStore))).toBe(5);
       expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(bigintStore))).toBe(1);
       expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(decimalStore))).toBe(1);
 

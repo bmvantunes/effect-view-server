@@ -63,7 +63,7 @@ const slotFilterMatcher = (
         return (slot) => column.stringAt(slot) === filter.value;
       }
       if (column.kind === "number" && typeof filter.value === "number") {
-        return (slot) => Object.is(column.numberAt(slot), filter.value);
+        return (slot) => column.numberAt(slot) === filter.value;
       }
       if (column.kind === "bigint" && typeof filter.value === "bigint") {
         return (slot) => column.bigintAt(slot) === filter.value;
@@ -88,7 +88,7 @@ const slotFilterMatcher = (
         if (column.kind === "number" && typeof filter.value === "number") {
           return (slot) => {
             const value = column.numberAt(slot);
-            return value !== undefined && !Object.is(value, filter.value);
+            return value !== undefined && value !== filter.value;
           };
         }
         if (column.kind === "bigint" && typeof filter.value === "bigint") {

@@ -430,7 +430,8 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
   const latestEvaluation = () => projectWindowEvaluation(store, compiled, execution.latest());
 
   return {
-    initial: (queryId) => snapshotEvent(store, queryId, latestEvaluation()),
+    initial: (queryId) =>
+      snapshotEvent(store, queryId, latestEvaluation(), compiled.plan.resultSemantics),
     createCursor: () => ({
       evaluation: latestEvaluation(),
     }),
@@ -438,12 +439,21 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
       Effect.sync(() => {
         const previous = cursor.evaluation;
         const next = latestEvaluation();
-        const operations = deltaOperations(previous, next);
+        const operations = deltaOperations(previous, next, compiled.plan.resultSemantics);
         if (operations.length === 0 && previous.totalRows === next.totalRows) {
           return Option.none();
         }
         cursor.evaluation = next;
-        return Option.some(deltaEvent(store, queryId, previous.version, next, operations));
+        return Option.some(
+          deltaEvent(
+            store,
+            queryId,
+            previous.version,
+            next,
+            operations,
+            compiled.plan.resultSemantics,
+          ),
+        );
       }),
   };
 };

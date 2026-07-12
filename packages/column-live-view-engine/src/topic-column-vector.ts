@@ -299,9 +299,7 @@ export const columnScalarEqualityKey = (
   }
   if (column.kind === "number") {
     const value = column.numberAt(slot);
-    return value === undefined
-      ? undefined
-      : `number:${Object.is(value, -0) ? "-0" : value.toString()}`;
+    return value === undefined ? undefined : `number:${value.toString()}`;
   }
   if (column.kind === "bigint") {
     const value = column.bigintAt(slot);

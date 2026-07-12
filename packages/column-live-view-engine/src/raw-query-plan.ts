@@ -3,9 +3,11 @@ import { compareQueryValue, stableQueryValueString } from "./query-value";
 import { compileRawPredicate, type CompiledRawPredicate } from "./raw-predicate-compiler";
 import type { RuntimeRawQuery } from "./raw-query-decoder";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
+import { canonicalRawQueryFilterKey } from "./raw-query-value-semantics";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
-import { cloneUnknown, trustedFieldValue } from "./row-values";
+import { rawQueryResultSemantics, type QueryResultSemantics } from "./query-result-semantics";
+import { trustedFieldValue } from "./row-values";
 
 type RowObject = object;
 
@@ -23,9 +25,10 @@ export type RawQueryPlan<Row extends RowObject, ResultRow extends RowObject> = {
   readonly selectedFields: ReadonlyArray<string>;
   readonly predicate: CompiledRawPredicate<Row>;
   readonly orderBy: ReadonlyArray<TopicRawOrderByPlan>;
-  readonly storageOrderBy: ReadonlyArray<TopicRawOrderByPlan>;
+  readonly storageOrderBy?: ReadonlyArray<TopicRawOrderByPlan>;
   readonly compare: (left: TopicRowEntry<Row>, right: TopicRowEntry<Row>) => number;
   readonly project: (row: Row) => ResultRow;
+  readonly resultSemantics: QueryResultSemantics;
   readonly window: RawQueryPlanWindow;
 };
 
@@ -34,12 +37,28 @@ type RawRowOrderColumn<Row extends RowObject> = {
   readonly direction: "asc" | "desc";
 };
 
-const rawQueryShapeCacheKey = (query: RuntimeRawQuery): string => {
+const rawQueryShapeCacheKey = (
+  metadata: RawQueryCompilerMetadata,
+  query: RuntimeRawQuery,
+): string => {
   const orderBy: ReadonlyArray<readonly [string, "asc" | "desc"]> =
     query.orderBy === undefined ? [] : query.orderBy.map((entry) => [entry.field, entry.direction]);
+  const where =
+    query.where === undefined
+      ? []
+      : Object.entries(query.where)
+          .toSorted(([left], [right]) => Number(left > right) - Number(left < right))
+          .map(([field, filter]) => [
+            field,
+            canonicalRawQueryFilterKey(
+              metadata.valueSemantics.field(field),
+              metadata.structuredFieldNames.has(field),
+              filter,
+            ),
+          ]);
   const token: QueryCacheToken = [
     "raw",
-    query.where === undefined ? "" : stableQueryValueString(query.where),
+    stableQueryValueString(where),
     stableQueryValueString(orderBy),
   ];
   return JSON.stringify(token);
@@ -65,12 +84,6 @@ export const rawQueryPlanWindow = (
 
 const rawQueryPlanWindowFromQuery = (query: RuntimeRawQuery): RawQueryPlanWindow =>
   rawQueryPlanWindow(query.offset ?? 0, query.limit);
-
-const compareRowFieldValues = <Row extends RowObject>(
-  left: Row,
-  right: Row,
-  field: string,
-): number => compareQueryValue(trustedFieldValue(left, field), trustedFieldValue(right, field));
 
 const compareStringRowFieldValues = <Row extends RowObject>(
   left: Row,
@@ -133,19 +146,39 @@ const rawRowOrderColumnComparator = <Row extends RowObject>(
   metadata: RawQueryCompilerMetadata,
   field: string,
 ): ((left: Row, right: Row) => number) => {
-  if (metadata.stringFieldNames.has(field)) {
+  const exactScalarEquality = metadata.exactScalarEqualityFieldNames.has(field);
+  if (exactScalarEquality && metadata.stringFieldNames.has(field)) {
     return (left, right) => compareStringRowFieldValues(left, right, field);
   }
-  if (metadata.numberFieldNames.has(field)) {
+  if (exactScalarEquality && metadata.numberFieldNames.has(field)) {
     return (left, right) => compareNumberRowFieldValues(left, right, field);
   }
-  if (metadata.bigintFieldNames.has(field)) {
+  if (exactScalarEquality && metadata.bigintFieldNames.has(field)) {
     return (left, right) => compareBigintRowFieldValues(left, right, field);
   }
-  if (metadata.bigDecimalFieldNames.has(field)) {
+  if (exactScalarEquality && metadata.bigDecimalFieldNames.has(field)) {
     return (left, right) => compareBigDecimalRowFieldValues(left, right, field);
   }
-  return (left, right) => compareRowFieldValues(left, right, field);
+  const compare = metadata.valueSemantics.field(field).compare;
+  return (left, right) => compare(trustedFieldValue(left, field), trustedFieldValue(right, field));
+};
+
+const storageOrderBy = (
+  metadata: RawQueryCompilerMetadata,
+  orderBy: ReadonlyArray<TopicRawOrderByPlan>,
+): ReadonlyArray<TopicRawOrderByPlan> | undefined => {
+  for (const order of orderBy) {
+    if (
+      !metadata.exactScalarEqualityFieldNames.has(order.field) ||
+      (!metadata.stringFieldNames.has(order.field) &&
+        !metadata.numberFieldNames.has(order.field) &&
+        !metadata.bigintFieldNames.has(order.field) &&
+        !metadata.bigDecimalFieldNames.has(order.field))
+    ) {
+      return undefined;
+    }
+  }
+  return orderBy;
 };
 
 const compiledRawRowOrder = <Row extends RowObject>(
@@ -171,20 +204,15 @@ const compareRows = <Row extends RowObject>(
   return Number(left.key > right.key) - Number(left.key < right.key);
 };
 
-const projectRow = (row: RowObject, select: ReadonlyArray<string>): RowObject => {
-  const projected: Record<string, unknown> = {};
-  for (const field of select) {
-    projected[field] = cloneUnknown(trustedFieldValue(row, field));
-  }
-  return projected;
-};
+const projectRow = (row: RowObject, semantics: QueryResultSemantics): RowObject =>
+  semantics.projectRow(row);
 
 function projectCompiledRow<ResultRow extends RowObject>(
   row: RowObject,
-  select: ReadonlyArray<string>,
+  semantics: QueryResultSemantics,
 ): ResultRow;
-function projectCompiledRow(row: RowObject, select: ReadonlyArray<string>): RowObject {
-  return projectRow(row, select);
+function projectCompiledRow(row: RowObject, semantics: QueryResultSemantics): RowObject {
+  return projectRow(row, semantics);
 }
 
 export const makeRawQueryPlan = <Row extends RowObject, ResultRow extends RowObject>(
@@ -194,15 +222,18 @@ export const makeRawQueryPlan = <Row extends RowObject, ResultRow extends RowObj
   const orderBy = query.orderBy ?? [];
   const rowOrderBy = compiledRawRowOrder<Row>(metadata, orderBy);
   const selectedFields = [...query.select];
+  const resultSemantics = rawQueryResultSemantics(metadata.valueSemantics, selectedFields);
   const predicate = compileRawPredicate<Row>(metadata, query.where);
+  const storageOrder = storageOrderBy(metadata, orderBy);
   return {
-    queryCacheKey: rawQueryShapeCacheKey(query),
+    queryCacheKey: rawQueryShapeCacheKey(metadata, query),
     selectedFields,
     predicate,
     orderBy,
-    storageOrderBy: orderBy,
+    ...(storageOrder === undefined ? {} : { storageOrderBy: storageOrder }),
     compare: (left, right) => compareRows(left, right, rowOrderBy),
-    project: (row) => projectCompiledRow(row, selectedFields),
+    project: (row) => projectCompiledRow(row, resultSemantics),
+    resultSemantics,
     window: rawQueryPlanWindowFromQuery(query),
   };
 };
@@ -213,7 +244,7 @@ export const rawQueryWindowScanPlan = <Row extends RowObject, ResultRow extends 
 ): TopicRawWindowScanPlan<Row> => ({
   predicate: plan.predicate.plan,
   orderBy: plan.orderBy,
-  storageOrderBy: plan.storageOrderBy,
+  ...(plan.storageOrderBy === undefined ? {} : { storageOrderBy: plan.storageOrderBy }),
   matches: plan.predicate.matches,
   compare: plan.compare,
   offset: window.offset,

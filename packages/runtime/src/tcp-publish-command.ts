@@ -319,10 +319,9 @@ const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(functi
       }
     }
   }
-  return yield* Schema.decodeUnknownEffect(Schema.toType(topicDefinition.schema))(
-    decodedRow,
-    strictParseOptions,
-  ).pipe(Effect.mapError((cause) => tcpDecodeSchemaError(topic, "row", cause)));
+  return yield* topicDefinition.schema
+    .makeEffect(decodedRow)
+    .pipe(Effect.mapError((cause) => tcpDecodeSchemaError(topic, "row", cause)));
 });
 
 const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(function* <

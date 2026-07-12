@@ -55,9 +55,9 @@ describe("Grouped query compilation and evaluation", () => {
         },
       ]);
       expect(evaluation.keys).toStrictEqual([
-        '["array",[["array",[["string","symbol"],["string","symbol-1097"]]]]]',
-        '["array",[["array",[["string","symbol"],["string","symbol-1096"]]]]]',
-        '["array",[["array",[["string","symbol"],["string","symbol-1095"]]]]]',
+        '[["symbol","[\\"present\\",\\"\\\\\\"symbol-1097\\\\\\"\\"]"]]',
+        '[["symbol","[\\"present\\",\\"\\\\\\"symbol-1096\\\\\\"\\"]"]]',
+        '[["symbol","[\\"present\\",\\"\\\\\\"symbol-1095\\\\\\"\\"]"]]',
       ]);
       expect(evaluation.totalRows).toBe(1_100);
     }),

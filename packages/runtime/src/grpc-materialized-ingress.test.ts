@@ -46,6 +46,38 @@ import {
 
 import type { GrpcOrderValueMessage, GrpcTopics } from "../test-harness/grpc-config";
 
+const cloneWithMutableTopics = <
+  const Config extends {
+    readonly topics: object;
+  },
+>(
+  config: Config,
+) => ({
+  ...config,
+  topics: { ...config.topics },
+});
+
+const cloneWithMutableOrdersGrpcSource = <
+  const Config extends {
+    readonly topics: {
+      readonly orders: {
+        readonly grpcSource: object;
+      };
+    };
+  },
+>(
+  config: Config,
+) => ({
+  ...config,
+  topics: {
+    ...config.topics,
+    orders: {
+      ...config.topics.orders,
+      grpcSource: { ...config.topics.orders.grpcSource },
+    },
+  },
+});
+
 describe("Materialized gRPC ingress", () => {
   it.live(
     "delivers terminal status when a leased gRPC stream completes before publishing rows",
@@ -1395,7 +1427,7 @@ describe("Materialized gRPC ingress", () => {
 
   it.live("marks materialized gRPC feed degraded when acquire does not return a Stream", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedViewServer(Stream.never);
+      const feed = cloneWithMutableOrdersGrpcSource(grpcMaterializedViewServer(Stream.never));
       Object.defineProperty(feed.topics.orders.grpcSource, "acquire", {
         value: () => "not-a-stream",
       });
@@ -1474,19 +1506,21 @@ describe("Materialized gRPC ingress", () => {
 
   it.live("marks materialized gRPC feed degraded when release does not return an Effect", () =>
     Effect.gen(function* () {
-      const feed = grpcMaterializedViewServerFromCallbacks({
-        request: () => ({ orderId: "all-orders" }),
-        acquire: () => Stream.empty,
-        release: () => Effect.void,
-        map: ({ value }) => ({
-          id: value.customerId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: "usa",
-          updatedAt: value.updatedAt,
+      const feed = cloneWithMutableOrdersGrpcSource(
+        grpcMaterializedViewServerFromCallbacks({
+          request: () => ({ orderId: "all-orders" }),
+          acquire: () => Stream.empty,
+          release: () => Effect.void,
+          map: ({ value }) => ({
+            id: value.customerId,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: "usa",
+            updatedAt: value.updatedAt,
+          }),
         }),
-      });
+      );
       Object.defineProperty(feed.topics.orders.grpcSource, "release", {
         value: () => "not-an-effect",
       });
@@ -1824,8 +1858,10 @@ describe("Materialized gRPC ingress", () => {
     "marks materialized gRPC feed degraded when topic metadata disappears before mapping",
     () =>
       Effect.gen(function* () {
-        const localViewServer = grpcMaterializedViewServer(
-          longRunningGrpcStream([grpcOrderValue("order-without-topic", 10)]),
+        const localViewServer = cloneWithMutableTopics(
+          grpcMaterializedViewServer(
+            longRunningGrpcStream([grpcOrderValue("order-without-topic", 10)]),
+          ),
         );
         const grpcOptions = yield* resolveGrpcRuntimeOptions(localViewServer);
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});

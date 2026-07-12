@@ -26,7 +26,7 @@ describe("ColumnLiveViewEngine validation", () => {
     }),
   );
 
-  it.effect("clones non-plain object row fields before exposing them", () =>
+  it.effect("rejects non-JSON object row fields and preserves plain records", () =>
     Effect.gen(function* () {
       const WithPayload = Schema.Struct({
         id: Schema.String,
@@ -40,8 +40,6 @@ describe("ColumnLiveViewEngine validation", () => {
           },
         },
       });
-      const payload = new Map([["venue", "xnys"]]);
-
       const emptyObjectKeywordFilter = yield* engine.snapshot("payloads", {
         select: ["id"],
         where: {
@@ -50,12 +48,31 @@ describe("ColumnLiveViewEngine validation", () => {
       });
       expect(emptyObjectKeywordFilter.rows).toStrictEqual([]);
 
-      yield* engine.publish("payloads", { id: "1", payload });
+      const mapError = yield* Effect.flip(
+        engine.publish("payloads", {
+          id: "1",
+          payload: new Map([["venue", "xnys"]]),
+        }),
+      );
+      expect(mapError).toBeInstanceOf(InvalidRowError);
+      expect(mapError).toStrictEqual(
+        InvalidRowError.make({
+          topic: "payloads",
+          message:
+            "StrictJsonMaterializationError: Expected a plain data record or dense array at $.payload.",
+        }),
+      );
+
       yield* engine.publish("payloads", { id: "2", payload: { venue: "xlon" } });
 
       const snapshot = yield* engine.snapshot("payloads", { select: ["id", "payload"] });
-      expect(snapshot.rows[0]?.payload).toStrictEqual(payload);
-      expect(snapshot.rows[0]?.payload).not.toBe(payload);
+      expect(snapshot).toStrictEqual({
+        rows: [{ id: "2", payload: { venue: "xlon" } }],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 1,
+      });
 
       const objectFilter = yield* engine.snapshot("payloads", {
         select: ["id", "payload"],
@@ -63,7 +80,13 @@ describe("ColumnLiveViewEngine validation", () => {
           payload: { venue: "xlon" },
         },
       });
-      expect(objectFilter.rows).toStrictEqual([{ id: "2", payload: { venue: "xlon" } }]);
+      expect(objectFilter).toStrictEqual({
+        rows: [{ id: "2", payload: { venue: "xlon" } }],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 1,
+      });
     }),
   );
 
@@ -122,7 +145,7 @@ describe("ColumnLiveViewEngine validation", () => {
     }),
   );
 
-  it.effect("keeps runtime guards for non-struct topic schemas", () =>
+  it.effect("rejects non-struct topic schemas during construction", () =>
     Effect.gen(function* () {
       const nonStructSchemaConfig = {
         topics: {
@@ -132,19 +155,16 @@ describe("ColumnLiveViewEngine validation", () => {
           },
         },
       };
-      // @ts-expect-error invalid configs can still reach runtime through untyped callers.
-      const engine = yield* createColumnLiveViewEngine(nonStructSchemaConfig);
-      const query: object = { select: ["id"] };
-
       const error = yield* Effect.flip(
-        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
-        engine.snapshot("loose", query),
+        // @ts-expect-error invalid configs can still reach runtime through untyped callers.
+        createColumnLiveViewEngine(nonStructSchemaConfig),
       );
 
+      expect(error).toBeInstanceOf(InvalidRowError);
       expect(error).toMatchObject({
-        _tag: "InvalidQueryError",
+        _tag: "InvalidRowError",
         topic: "loose",
-        message: expect.stringContaining("select"),
+        message: "Topic row schema must be an Effect Schema Struct.",
       });
     }),
   );
@@ -199,6 +219,110 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("Patch contains unknown field: prcie"),
       });
       expect(afterUnknownPatch.version).toBe(beforeUnknownPatch.version);
+    }),
+  );
+
+  it.effect("rejects accessor and non-enumerable patch fields without reading caller values", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publish("orders", order("1", "open", 10, 1));
+      let accessorReads = 0;
+      let descriptorReads = 0;
+      const accessorTarget = {};
+      Object.defineProperty(accessorTarget, "price", {
+        enumerable: true,
+        get: () => {
+          accessorReads += 1;
+          return 20;
+        },
+      });
+      const accessorPatch = new Proxy(accessorTarget, {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === "price") {
+            descriptorReads += 1;
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
+      const nonEnumerablePatch = {};
+      Object.defineProperty(nonEnumerablePatch, "price", {
+        enumerable: false,
+        value: 20,
+      });
+      const hostilePrototypePatch = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error("prototype unavailable");
+          },
+        },
+      );
+      const hostileKeysPatch = new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error("keys unavailable");
+          },
+        },
+      );
+      const hostileDescriptorPatch = new Proxy(
+        { price: 20 },
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error("descriptor unavailable");
+          },
+        },
+      );
+
+      const accessorError = yield* Effect.flip(engine.patch("orders", "1", accessorPatch));
+      const nonEnumerableError = yield* Effect.flip(
+        engine.patch("orders", "1", nonEnumerablePatch),
+      );
+      const prototypeError = yield* Effect.flip(engine.patch("orders", "1", hostilePrototypePatch));
+      const keysError = yield* Effect.flip(engine.patch("orders", "1", hostileKeysPatch));
+      const descriptorError = yield* Effect.flip(
+        engine.patch("orders", "1", hostileDescriptorPatch),
+      );
+      const snapshot = yield* engine.snapshot("orders", {
+        select: ["id", "price"],
+      });
+
+      expect(accessorError).toBeInstanceOf(InvalidRowError);
+      expect(accessorError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "orders",
+        message: expect.stringContaining("Patch field must be a data property: price"),
+      });
+      expect(nonEnumerableError).toBeInstanceOf(InvalidRowError);
+      expect(nonEnumerableError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "orders",
+        message: expect.stringContaining("Patch field must be enumerable: price"),
+      });
+      expect(prototypeError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "orders",
+        message: "Could not inspect patch object.",
+      });
+      expect(keysError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "orders",
+        message: "Could not inspect patch fields.",
+      });
+      expect(descriptorError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "orders",
+        message: "Could not inspect patch field: price.",
+      });
+      expect(accessorReads).toBe(0);
+      expect(descriptorReads).toBe(1);
+      expect(snapshot).toStrictEqual({
+        rows: [{ id: "1", price: 10 }],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 1,
+      });
     }),
   );
 

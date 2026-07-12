@@ -2,6 +2,11 @@ import {
   viewServerSchemaFieldMetadata,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import {
+  isRawQueryFilterOperatorKey,
+  isRawQueryRangeFilterOperatorKey,
+  rawQueryFilterOperatorKeys,
+} from "@effect-view-server/config/internal";
 import { Effect, Schema } from "effect";
 import {
   decodeTopicNamedJsonFieldValue,
@@ -9,18 +14,7 @@ import {
   type JsonFieldSchema,
 } from "./protocol-json-field-codec";
 
-export const filterOperatorKeys = new Set([
-  "eq",
-  "neq",
-  "in",
-  "gt",
-  "gte",
-  "lt",
-  "lte",
-  "startsWith",
-]);
-
-const rangeFilterOperatorKeys = new Set(["gt", "gte", "lt", "lte"]);
+export const filterOperatorKeys = rawQueryFilterOperatorKeys;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,7 +22,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const isFilterObject = (value: unknown): value is Record<string, unknown> =>
   isRecord(value) &&
   Object.keys(value).length > 0 &&
-  Object.keys(value).every((key) => filterOperatorKeys.has(key));
+  Object.keys(value).every(isRawQueryFilterOperatorKey);
 
 const invalidQuery = (topic: string, message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
@@ -79,7 +73,7 @@ const validateOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operato
     if (keys.includes("startsWith") && !metadata.isString) {
       return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support startsWith`));
     }
-    if (keys.some((key) => rangeFilterOperatorKeys.has(key)) && !metadata.isNumeric) {
+    if (keys.some(isRawQueryRangeFilterOperatorKey) && !metadata.isNumeric) {
       return yield* Effect.fail(
         invalidQuery(topic, `Filter ${field} does not support range operators`),
       );

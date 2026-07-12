@@ -1,5 +1,23 @@
 import { Cause, Effect, Exit } from "effect";
 
+export {
+  materializeStrictJson,
+  StrictJsonMaterializationError,
+  type StrictJsonMaterializationReason,
+} from "./strict-json-materialization";
+export { makeSchemaJsonIdentity, type SchemaJsonIdentity } from "./schema-json-identity";
+export {
+  compileGroupedKeyIdentity,
+  type CompiledGroupedKeyIdentity,
+  type GroupedKeyIdentityField,
+} from "./grouped-key-identity";
+export {
+  missingSchemaValuePresenceToken,
+  presentSchemaValuePresenceToken,
+  schemaValuePresenceKey,
+  type SchemaValuePresenceToken,
+} from "./schema-value-presence";
+
 const isNonTypedFailureReason = <E>(
   reason: Cause.Reason<E>,
 ): reason is Cause.Die | Cause.Interrupt =>

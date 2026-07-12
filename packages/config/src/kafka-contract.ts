@@ -2,6 +2,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { Effect, Schema } from "effect";
 import type { Config } from "effect";
+import { validateDecodedRow } from "./decoded-row-validation";
 import type { RowSchema, TopicRow } from "./topic-contract";
 
 export type RuntimeValue<A> = A | Config.Config<A>;
@@ -762,19 +763,45 @@ const mapKafkaRowKey = (map: () => string): Effect.Effect<string, KafkaMappingEr
     ),
   );
 
-const kafkaMappedRowParseOptions = { onExcessProperty: "error" } as const;
-
 const validateKafkaMappedRow = <
   Topics extends KafkaTopicSchemaRegistry,
   ViewTopic extends Extract<keyof Topics, string>,
 >(
   schema: KafkaTopicSchemaValue<Topics, ViewTopic>,
-  row: KafkaTopicSchemaValue<Topics, ViewTopic>["Type"],
+  row: unknown,
+  rowKeyField: string,
+  rowKey: string,
 ): Effect.Effect<KafkaTopicSchemaValue<Topics, ViewTopic>["Type"], KafkaMappingError> =>
-  Schema.encodeUnknownEffect(schema)(row, kafkaMappedRowParseOptions).pipe(
+  validateDecodedRow(schema, row).pipe(
     Effect.mapError((cause) => kafkaMappingError("Kafka mapped row failed topic schema", cause)),
-    Effect.as(row),
+    Effect.tap((decoded) => validateKafkaMappedRowKey(decoded, rowKeyField, rowKey)),
   );
+
+const validateKafkaMappedRowKey = Effect.fn("ViewServerConfig.kafka.mappedRowKey.validate")(
+  function* (row: object, rowKeyField: string, rowKey: string) {
+    const descriptor = yield* Effect.try({
+      try: () => Object.getOwnPropertyDescriptor(row, rowKeyField),
+      catch: (cause) => kafkaMappingError("Kafka mapped row key could not be inspected", cause),
+    });
+    if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) {
+      return yield* Effect.fail(
+        kafkaMappingError("Kafka mapped row key must be an enumerable own data property", {
+          rowKey,
+          rowKeyField,
+        }),
+      );
+    }
+    if (descriptor.value !== rowKey) {
+      return yield* Effect.fail(
+        kafkaMappingError("Kafka mapped row changed the configured row key", {
+          decodedRowKey: descriptor.value,
+          rowKey,
+          rowKeyField,
+        }),
+      );
+    }
+  },
+);
 
 const validateKafkaMappedRowDoesNotProvideRowKey = (
   rowKeyField: string,
@@ -1297,7 +1324,7 @@ const makeKafkaResolvedSourceTopicWithKey = <
         ...mappedRowWithoutKey,
         [input.rowKeyField]: rowKey,
       };
-      const row = yield* validateKafkaMappedRow(input.schema, mappedRow);
+      const row = yield* validateKafkaMappedRow(input.schema, mappedRow, input.rowKeyField, rowKey);
       const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
         rowKey,
@@ -1371,7 +1398,7 @@ const makeKafkaResolvedSourceTopicWithoutKey = <
         ...mappedRowWithoutKey,
         [input.rowKeyField]: rowKey,
       };
-      const row = yield* validateKafkaMappedRow(input.schema, mappedRow);
+      const row = yield* validateKafkaMappedRow(input.schema, mappedRow, input.rowKeyField, rowKey);
       const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
         row,
         rowKey,

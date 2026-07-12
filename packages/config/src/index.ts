@@ -7,6 +7,12 @@ import {
   type RuntimeOptionsDefinition,
 } from "./kafka-contract";
 import { grpcTopicSourceDefinitionKey, grpcTopicSourceDefinitionSchema } from "./grpc-contract";
+import {
+  isViewServerRowSchema,
+  snapshotViewServerTopics,
+  viewServerRowSchemaFieldsMatchAst,
+  viewServerRowSchemasShareOrigin,
+} from "./config-ownership";
 import type {
   GrpcLeasedTopicSourceDefinition,
   GrpcMaterializedTopicSource,
@@ -27,6 +33,8 @@ import type {
   TopicDefinitions,
 } from "./topic-contract";
 import { viewServerUnsupportedRuntimeFieldDomain } from "./schema-field-metadata";
+import { Schema } from "effect";
+export { viewSchema } from "./view-schema";
 
 export type {
   Aggregate,
@@ -618,7 +626,11 @@ const validateConcreteGrpcBinding = (
   }
   const sourceSchema = grpcTopicSourceDefinitionSchema(source);
   const topicSchema = Reflect.get(topicDefinition, "schema");
-  if (sourceSchema !== undefined && sourceSchema !== topicSchema) {
+  if (
+    sourceSchema !== undefined &&
+    (!isViewServerRowSchema(topicSchema) ||
+      !viewServerRowSchemasShareOrigin(sourceSchema, topicSchema))
+  ) {
     throw new Error(
       `View Server topic ${topic} declares grpcSource for a different schema than the topic schema.`,
     );
@@ -658,25 +670,52 @@ export function defineViewServerConfig(
   },
   ..._validation: ReadonlyArray<unknown>
 ) {
-  for (const topic of Object.keys(input.topics)) {
+  const topics = snapshotViewServerTopics(input.topics);
+  const inputKafka = input.kafka;
+  const kafka = inputKafka === undefined ? undefined : Object.freeze({ ...inputKafka });
+  const inputGrpc = input.grpc;
+  const grpc =
+    inputGrpc === undefined
+      ? undefined
+      : Object.freeze({
+          clients: Object.freeze({ ...inputGrpc.clients }),
+        });
+
+  for (const topic of Object.keys(topics)) {
     if (viewServerTopicNameIsReserved(topic)) {
       throw new Error(`View Server topic name is reserved for system health streams: ${topic}`);
     }
-    const schema = input.topics[topic]!.schema;
+    const schema = topics[topic]!.schema;
+    if (!isViewServerRowSchema(schema)) {
+      throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
+    }
     for (const field of Object.keys(schema.fields)) {
       if (field === "__proto__" || field === "prototype" || field === "constructor") {
         throw new Error(`View Server topic ${topic} uses a reserved row field name: ${field}`);
       }
-      const unsupportedRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(
-        schema.fields[field],
-      );
+      const fieldSchema = schema.fields[field];
+      if (!Schema.isSchema(fieldSchema)) {
+        throw new Error(`View Server topic ${topic} field ${field} must be an Effect Schema.`);
+      }
+      const unsupportedRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(fieldSchema);
       if (unsupportedRuntimeDomain !== undefined) {
         throw new Error(
           `View Server topic ${topic} field ${field} uses unsupported runtime domain: ${unsupportedRuntimeDomain}`,
         );
       }
     }
-    const topicDefinition = input.topics[topic]!;
+    const unsupportedRowRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(schema);
+    if (unsupportedRowRuntimeDomain !== undefined) {
+      throw new Error(
+        `View Server topic ${topic} row schema uses unsupported runtime domain: ${unsupportedRowRuntimeDomain}`,
+      );
+    }
+    if (!viewServerRowSchemaFieldsMatchAst(schema)) {
+      throw new Error(
+        `View Server topic ${topic} exposed row fields do not match the row schema AST.`,
+      );
+    }
+    const topicDefinition = topics[topic]!;
     if (Object.prototype.hasOwnProperty.call(topicDefinition, "source")) {
       throw new Error(
         `View Server topic ${topic} cannot declare source; use kafkaSource or grpcSource.`,
@@ -694,14 +733,14 @@ export function defineViewServerConfig(
         `View Server topic ${topic} cannot declare more than one source owner: kafkaSource, grpcSource.`,
       );
     }
-    validateConcreteGrpcBinding(topic, topicDefinition, input.grpc?.clients);
+    validateConcreteGrpcBinding(topic, topicDefinition, grpc?.clients);
   }
-  const config = {
-    ...(input.kafka === undefined ? {} : { kafka: input.kafka }),
-    ...(input.grpc === undefined ? {} : { grpc: input.grpc }),
-    topics: input.topics,
+  const config = Object.freeze({
+    ...(kafka === undefined ? {} : { kafka }),
+    ...(grpc === undefined ? {} : { grpc }),
+    topics,
     defineRuntimeOptions: <const Options extends RuntimeOptionsCandidate>(options: Options) =>
       options,
-  };
+  });
   return config;
 }

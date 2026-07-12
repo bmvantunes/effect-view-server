@@ -1,6 +1,5 @@
 import { finalizeGroup, type GroupState } from "./grouped-aggregate-state";
 import type { CompiledGroupedOrderBy, GroupedQueryPlan } from "./grouped-query-plan";
-import { compareQueryValue } from "./raw-query-compiler";
 import type { QueryEvaluation, StoredRowOf } from "./query-result";
 
 type RowObject = object;
@@ -19,7 +18,7 @@ const compareGroupedRows = (
   orderBy: ReadonlyArray<CompiledGroupedOrderBy>,
 ): number => {
   for (const order of orderBy) {
-    const comparison = compareQueryValue(order.rowValue(left), order.rowValue(right));
+    const comparison = order.compare(order.rowValue(left), order.rowValue(right));
     if (comparison !== 0) {
       return order.direction === "asc" ? comparison : -comparison;
     }
@@ -75,7 +74,7 @@ const compareBoundedGroupEntries = (
 ): number => {
   for (let index = 0; index < orderBy.length; index += 1) {
     const order = orderBy[index]!;
-    const comparison = compareQueryValue(left.orderValues[index], right.orderValues[index]);
+    const comparison = order.compare(left.orderValues[index], right.orderValues[index]);
     if (comparison !== 0) {
       return order.direction === "asc" ? comparison : -comparison;
     }
@@ -91,7 +90,7 @@ const compareGroupToBoundedGroupEntry = (
 ): number => {
   for (let index = 0; index < orderBy.length; index += 1) {
     const order = orderBy[index]!;
-    const comparison = compareQueryValue(orderValues[index], right.orderValues[index]);
+    const comparison = order.compare(orderValues[index], right.orderValues[index]);
     if (comparison !== 0) {
       return order.direction === "asc" ? comparison : -comparison;
     }

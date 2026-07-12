@@ -1,4 +1,5 @@
-import { Effect, Schema, Semaphore } from "effect";
+import type { RowSchema } from "@effect-view-server/config";
+import { Effect, Semaphore } from "effect";
 import {
   activeStoreQueryExecutionCounts,
   clearStoreRawQueryExecutions,
@@ -35,7 +36,7 @@ export class TopicStore {
 
   constructor(
     readonly topic: string,
-    schema: Schema.Codec<object, unknown, never, unknown>,
+    schema: RowSchema,
     keyField: string,
     onCommit: () => void,
     mutationsAllowed: () => boolean = () => true,

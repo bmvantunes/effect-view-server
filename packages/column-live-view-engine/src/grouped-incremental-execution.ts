@@ -1,11 +1,12 @@
 import {
   type MaterializedIncrementalGroupState,
   type RetainedMinMaxAggregateState,
+  type ReversibleAggregateState,
   finalizeGroup,
   newIncrementalGroupState,
   recomputeRetainedMinMaxAggregateState,
-  removeAggregateState,
-  updateAggregateState,
+  removeGroupAggregateState,
+  updateGroupAggregateState,
 } from "./grouped-aggregate-state";
 import { typedGroupedEvaluation } from "./grouped-query-evaluation";
 import type { GroupedQueryPlan } from "./grouped-query-plan";
@@ -26,7 +27,6 @@ import {
   type TopicRowChangeBatch,
   type TopicRowScan,
 } from "./row-scan";
-import { trustedFieldValue, valuesEqual } from "./row-values";
 
 type RowObject = object;
 
@@ -244,8 +244,8 @@ const buildMaterializedIncrementalGroupedQueryState = <Row extends RowObject>(
       admitted = false;
       return false;
     }
-    for (const { alias, aggregate } of plan.aggregatePlans) {
-      updateAggregateState(group.aggregates[alias]!, aggregate, row);
+    for (const aggregateState of group.aggregates) {
+      updateGroupAggregateState(aggregateState, row);
     }
     return undefined;
   });
@@ -302,8 +302,8 @@ const removeMaterializedIncrementalGroupedMember = <Row extends RowObject>(
     groups.delete(groupedKey);
     return true;
   }
-  for (const { alias, aggregate } of plan.aggregatePlans) {
-    removeMaterializedAggregateState(dirtyAggregateRecomputes, group, alias, aggregate, row);
+  for (const aggregateState of group.aggregates) {
+    removeMaterializedAggregateState(dirtyAggregateRecomputes, aggregateState, row);
   }
   return true;
 };
@@ -381,14 +381,12 @@ const markDirtyAggregateRecompute = (
 
 const removeMaterializedAggregateState = <Row extends RowObject>(
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
-  group: MaterializedIncrementalGroupState,
-  alias: string,
-  aggregate: GroupedQueryPlan<Row>["aggregates"][string],
+  aggregateState: ReversibleAggregateState,
   row: Row,
 ): void => {
   markDirtyAggregateRecompute(
     dirtyAggregateRecomputes,
-    removeAggregateState(group.aggregates[alias]!, aggregate, row),
+    removeGroupAggregateState(aggregateState, row),
   );
 };
 
@@ -401,20 +399,20 @@ const recomputeDirtyAggregateStates = (
 };
 
 const aggregateValueChanged = <Row extends RowObject>(
-  aggregate: GroupedQueryPlan<Row>["aggregates"][string],
+  aggregateState: ReversibleAggregateState,
   previous: Row,
   next: Row,
   changedFields: TopicRowChangedFields | undefined,
 ): boolean => {
-  if (!("field" in aggregate)) {
+  if (aggregateState.aggFunc === "count") {
     return false;
   }
   if (isTopicRowChangedFields(changedFields)) {
-    return changedFields.fields.has(aggregate.field);
+    return changedFields.fields.has(aggregateState.inputSemantics.field);
   }
-  return !valuesEqual(
-    trustedFieldValue(previous, aggregate.field),
-    trustedFieldValue(next, aggregate.field),
+  return !aggregateState.inputSemantics.equivalent(
+    aggregateState.inputSemantics.read(previous),
+    aggregateState.inputSemantics.read(next),
   );
 };
 
@@ -434,13 +432,13 @@ const upsertMatchingMaterializedIncrementalGroupedMember = <Row extends RowObjec
   const inserted = !group.members.has(key);
   const previous = group.members.get(key);
   if (previous !== undefined) {
-    for (const { alias, aggregate } of plan.aggregatePlans) {
-      removeMaterializedAggregateState(dirtyAggregateRecomputes, group, alias, aggregate, previous);
+    for (const aggregateState of group.aggregates) {
+      removeMaterializedAggregateState(dirtyAggregateRecomputes, aggregateState, previous);
     }
   }
   group.members.set(key, row);
-  for (const { alias, aggregate } of plan.aggregatePlans) {
-    updateAggregateState(group.aggregates[alias]!, aggregate, row);
+  for (const aggregateState of group.aggregates) {
+    updateGroupAggregateState(aggregateState, row);
   }
   return {
     groupSize: group.members.size,
@@ -459,15 +457,14 @@ const replaceMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   changedFields: TopicRowChangedFields | undefined,
 ): void => {
   group.members.set(key, next);
-  for (const { alias, aggregate } of plan.aggregatePlans) {
-    if (aggregateValueChanged(aggregate, previous, next, changedFields)) {
-      const state = group.aggregates[alias]!;
-      markMaterializedAggregateChange(patch, plan, group, alias);
+  for (const aggregateState of group.aggregates) {
+    if (aggregateValueChanged(aggregateState, previous, next, changedFields)) {
+      markMaterializedAggregateChange(patch, plan, group, aggregateState.alias);
       markDirtyAggregateRecompute(
         dirtyAggregateRecomputes,
-        removeAggregateState(state, aggregate, previous),
+        removeGroupAggregateState(aggregateState, previous),
       );
-      updateAggregateState(state, aggregate, next);
+      updateGroupAggregateState(aggregateState, next);
     }
   }
 };

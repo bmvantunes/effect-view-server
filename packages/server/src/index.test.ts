@@ -113,7 +113,7 @@ const BadJsonField = Schema.String.pipe(
 );
 
 const BadJsonRow = Schema.Struct({
-  id: BadJsonField,
+  id: Schema.String,
 });
 
 const viewServer = defineViewServerConfig({
@@ -133,7 +133,7 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const edgeViewServer = defineViewServerConfig({
+const safeEdgeViewServer = defineViewServerConfig({
   topics: {
     badjson: {
       schema: BadJsonRow,
@@ -141,6 +141,21 @@ const edgeViewServer = defineViewServerConfig({
     },
   },
 });
+Object.defineProperty(BadJsonRow.fields, "id", {
+  configurable: true,
+  enumerable: true,
+  value: BadJsonField,
+  writable: true,
+});
+const edgeViewServer = {
+  ...safeEdgeViewServer,
+  topics: {
+    badjson: {
+      ...safeEdgeViewServer.topics.badjson,
+      schema: BadJsonRow,
+    },
+  },
+};
 
 const createServerTestRuntime = <
   const Topics extends TopicDefinitions,
@@ -1802,7 +1817,7 @@ describe("@effect-view-server/server", () => {
 
   it.live("rejects non-json schema encodings during server event encoding", () =>
     Effect.gen(function* () {
-      const inMemory = createServerTestRuntime(edgeViewServer);
+      const inMemory = createServerTestRuntime(safeEdgeViewServer);
       const event: ViewServerLiveEvent<object> = {
         type: "snapshot",
         topic: "badjson",

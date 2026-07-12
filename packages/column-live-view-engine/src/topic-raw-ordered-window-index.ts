@@ -189,7 +189,7 @@ export const compiledRawStorageOrder = (
   const orderColumns: Array<RawStorageOrderColumn> = [];
   for (const order of storageOrderBy) {
     const column = state.columns.get(order.field);
-    if (column === undefined) {
+    if (column === undefined || column.kind === "generic") {
       return undefined;
     }
     orderColumns.push({
@@ -218,7 +218,7 @@ export const compareSlotsByStorageOrder = (
 };
 
 const rawStorageOrderColumnComparator = (
-  column: TopicColumnValues,
+  column: Exclude<TopicColumnValues, { readonly kind: "generic" }>,
 ): ((left: number, right: number) => number) => {
   if (column.kind === "string") {
     return (left, right) => compareStringColumnSlots(column, left, right);
@@ -229,10 +229,7 @@ const rawStorageOrderColumnComparator = (
   if (column.kind === "bigint") {
     return (left, right) => compareBigIntColumnSlots(column, left, right);
   }
-  if (column.kind === "bigDecimal") {
-    return (left, right) => compareBigDecimalColumnSlots(column, left, right);
-  }
-  return (left, right) => compareQueryValue(columnValue(column, left), columnValue(column, right));
+  return (left, right) => compareBigDecimalColumnSlots(column, left, right);
 };
 
 const compareStringColumnSlots = (

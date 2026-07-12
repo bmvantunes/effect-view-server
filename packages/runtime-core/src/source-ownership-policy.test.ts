@@ -253,20 +253,24 @@ describe("SourceOwnershipPolicy", () => {
 
   it.effect("preserves leased runtime protection for invalid declared leased metadata", () =>
     Effect.gen(function* () {
-      const malformedLeasedViewServer = defineViewServerConfig({
-        topics: {
-          malformedLeasedOrders: {
-            schema: Row,
-            key: "id",
-          },
-        },
-      });
-      Object.defineProperty(malformedLeasedViewServer.topics.malformedLeasedOrders, "grpcSource", {
+      const malformedLeasedOrders: {
+        schema: typeof Row;
+        key: "id";
+      } = {
+        schema: Row,
+        key: "id",
+      };
+      Object.defineProperty(malformedLeasedOrders, "grpcSource", {
         value: {
           _tag: "GrpcLeasedTopicSource",
           kind: "grpc",
           lifecycle: "leased",
           routeBy: [],
+        },
+      });
+      const malformedLeasedViewServer = defineViewServerConfig({
+        topics: {
+          malformedLeasedOrders,
         },
       });
       const policy = makeSourceOwnershipPolicy(malformedLeasedViewServer);
@@ -294,48 +298,57 @@ describe("SourceOwnershipPolicy", () => {
   );
 
   it("classifies malformed and conflicting source declarations without caller reflection", () => {
+    const topicDefinition = (): {
+      schema: typeof Row;
+      key: "id";
+    } => ({
+      schema: Row,
+      key: "id",
+    });
+    const malformedGrpcOrders = topicDefinition();
+    const primitiveGrpcOrders = topicDefinition();
+    const multiOwnedOrders = {
+      ...topicDefinition(),
+      kafkaSource: kafka.source({
+        topic: "multi-owned-orders-source",
+        regions: ["usa"],
+        value: kafka.json(() => Schema.toCodecJson(Row)),
+        key: kafka.stringKey(),
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          price: value.price,
+          region: value.region,
+          status: value.status,
+        }),
+      }),
+    };
+    Object.defineProperty(malformedGrpcOrders, "grpcSource", {
+      value: { kind: "grpc", lifecycle: "wat" },
+    });
+    Object.defineProperty(primitiveGrpcOrders, "grpcSource", {
+      value: "not-a-grpc-source",
+    });
+    Object.defineProperty(multiOwnedOrders, "grpcSource", {
+      value: grpcSourceMarkers.materialized(),
+    });
     const malformedViewServer = defineViewServerConfig({
       kafka: {
         usa: "localhost:9092",
       },
       topics: {
-        malformedGrpcOrders: {
-          schema: Row,
-          key: "id",
-        },
-        primitiveGrpcOrders: {
-          schema: Row,
-          key: "id",
-        },
-        multiOwnedOrders: {
-          schema: Row,
-          key: "id",
-          kafkaSource: kafka.source({
-            topic: "multi-owned-orders-source",
-            regions: ["usa"],
-            value: kafka.json(() => Schema.toCodecJson(Row)),
-            key: kafka.stringKey(),
-            rowKey: ({ key }) => key,
-            map: ({ value }) => ({
-              price: value.price,
-              region: value.region,
-              status: value.status,
-            }),
-          }),
-        },
+        malformedGrpcOrders,
+        primitiveGrpcOrders,
       },
     });
-    Object.defineProperty(malformedViewServer.topics.malformedGrpcOrders, "grpcSource", {
-      value: { kind: "grpc", lifecycle: "wat" },
-    });
-    Object.defineProperty(malformedViewServer.topics.primitiveGrpcOrders, "grpcSource", {
-      value: "not-a-grpc-source",
-    });
-    Object.defineProperty(malformedViewServer.topics.multiOwnedOrders, "grpcSource", {
-      value: grpcSourceMarkers.materialized(),
+    // Config admission rejects dual owners, while the policy still defends its structural seam.
+    const policy = makeSourceOwnershipPolicy({
+      topics: {
+        ...malformedViewServer.topics,
+        multiOwnedOrders,
+      },
     });
 
-    expect([...makeSourceOwnershipPolicy(malformedViewServer).topics]).toStrictEqual([
+    expect([...policy.topics]).toStrictEqual([
       [
         "malformedGrpcOrders",
         {

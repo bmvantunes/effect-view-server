@@ -1,7 +1,8 @@
 import { type GrpcRuntimeClients, type ViewServerTopicConfig } from "@effect-view-server/config";
+import { validateDecodedRow } from "@effect-view-server/config/internal";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
-import { Cause, Clock, Effect, Exit, Fiber, Option, Schema, Scope, Stream } from "effect";
+import { Cause, Clock, Effect, Exit, Fiber, Option, Scope, Stream } from "effect";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import {
   callMaterializedGrpcSourceAcquire,
@@ -227,7 +228,7 @@ const mapMaterializedValue = Effect.fn("ViewServerRuntime.grpc.materialized.map"
         topic: feed.topic,
       }),
   });
-  const decodedRow = yield* Schema.decodeUnknownEffect(topicDefinition.schema)(row).pipe(
+  const decodedRow = yield* validateDecodedRow(topicDefinition.schema, row).pipe(
     Effect.mapError((cause) =>
       grpcIngressError({
         message: `gRPC feed mapping produced an invalid row for ${feedName}`,

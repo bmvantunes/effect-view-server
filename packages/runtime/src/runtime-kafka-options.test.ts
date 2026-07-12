@@ -173,7 +173,7 @@ describe("Runtime Kafka options and health", () => {
           },
         },
       });
-      const extraKeyKafkaBackedViewServer = defineViewServerConfig({
+      const validKafkaBackedViewServer = defineViewServerConfig({
         kafka: regions,
         topics: {
           orders: {
@@ -192,9 +192,19 @@ describe("Runtime Kafka options and health", () => {
           },
         },
       });
-      Object.defineProperty(extraKeyKafkaBackedViewServer.topics.orders.kafkaSource, "extra", {
-        value: true,
-      });
+      const extraKeyKafkaBackedViewServer = {
+        ...validKafkaBackedViewServer,
+        topics: {
+          ...validKafkaBackedViewServer.topics,
+          orders: {
+            ...validKafkaBackedViewServer.topics.orders,
+            kafkaSource: {
+              ...validKafkaBackedViewServer.topics.orders.kafkaSource,
+              extra: true,
+            },
+          },
+        },
+      };
 
       const error = yield* Effect.flip(
         resolveViewServerRuntimeOptions(malformedKafkaBackedViewServer, {

@@ -194,12 +194,12 @@ describe("TCP publish Interface", () => {
       const publishResponse = yield* sendTcpPublishCommand(tcpUrl, {
         op: "publish",
         topic: "orders",
-        row: { id: "a", price: 10 },
+        row: { id: "%61", price: 10 },
       });
       const patchResponse = yield* sendTcpPublishCommand(tcpUrl, {
         op: "patch",
         topic: "orders",
-        key: "a",
+        key: "%61",
         patch: { price: 20 },
       });
       const patchedSnapshot = yield* runtime.client.snapshot("orders", {
@@ -209,7 +209,7 @@ describe("TCP publish Interface", () => {
       const deleteResponse = yield* sendTcpPublishCommand(tcpUrl, {
         op: "delete",
         topic: "orders",
-        key: "a",
+        key: "%61",
       });
       const deletedSnapshot = yield* runtime.client.snapshot("orders", {
         select: ["id", "price"],
@@ -219,7 +219,7 @@ describe("TCP publish Interface", () => {
       expect(publishResponse).toStrictEqual({ ok: true });
       expect(patchResponse).toStrictEqual({ ok: true });
       expect(patchedSnapshot).toStrictEqual({
-        rows: [{ id: "decoded-a", price: 20 }],
+        rows: [{ id: "a", price: 20 }],
         totalRows: 1,
         version: 2,
         status: "ready",
@@ -923,7 +923,7 @@ describe("TCP publish Interface", () => {
               },
             },
             id: "a",
-            amount: BigDecimal.fromStringUnsafe("678.90"),
+            amount: BigDecimal.fromStringUnsafe("678.9"),
             fills: [
               {
                 encodedQuantity: 3003n,
@@ -1013,7 +1013,7 @@ describe("TCP publish Interface", () => {
             ],
             meta: {
               encodedQuantity: 1005n,
-              runtimeAmount: BigDecimal.fromStringUnsafe("55.50"),
+              runtimeAmount: BigDecimal.fromStringUnsafe("55.5"),
               runtimeQuantity: 11005n,
             },
             nullableMeta: null,

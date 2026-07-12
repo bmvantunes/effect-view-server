@@ -214,7 +214,7 @@ describe("gRPC lease manager lifecycle", () => {
           until: (currentHealth) =>
             currentHealth.engine.topics.orders.activeSubscriptions === 1 &&
             currentHealth.engine.topics.orders.backpressureEvents === 1 &&
-            currentHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            currentHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
               ?.subscriberCount === 1,
         }),
         Effect.timeout("1 second"),
@@ -255,7 +255,7 @@ describe("gRPC lease manager lifecycle", () => {
         activeSubscriptions: isolatedHealth.engine.topics.orders.activeSubscriptions,
         retainedRows: isolatedHealth.engine.topics.orders.rowCount,
         subscriberCount:
-          isolatedHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          isolatedHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
             ?.subscriberCount,
         releaseCount,
         upstreamFinalizedWithPeerActive,
@@ -2528,7 +2528,7 @@ describe("gRPC lease manager lifecycle", () => {
         secondSubscribeError,
         released,
         subscriberCount:
-          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
             ?.subscriberCount,
       }).toStrictEqual({
         secondSubscribeError: subscriptionFailure,
@@ -2605,7 +2605,7 @@ describe("gRPC lease manager lifecycle", () => {
       expect({
         released,
         subscriberCount:
-          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
             ?.subscriberCount,
       }).toStrictEqual({
         released: 0,

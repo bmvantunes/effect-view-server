@@ -20,6 +20,7 @@ import type {
   TopicLeasedSourceDefinition,
   TopicMaterializedSourceDefinition,
 } from "./source-contract";
+import { isViewServerRowSchema } from "./config-ownership";
 
 const GrpcTopicSourceTypeId: unique symbol = Symbol("@effect-view-server/config/GrpcTopicSource");
 const GrpcTopicSourceClientsTypeId: unique symbol = Symbol(
@@ -511,9 +512,9 @@ export const grpcTopicSourceDefinitionKey = (source: object): string | undefined
   return typeof key === "string" ? key : undefined;
 };
 
-export const grpcTopicSourceDefinitionSchema = (source: object): object | undefined => {
+export const grpcTopicSourceDefinitionSchema = (source: object): RowSchema | undefined => {
   const schema = Reflect.get(source, GrpcTopicSourceSchemaTypeId);
-  return typeof schema === "object" && schema !== null ? schema : undefined;
+  return isViewServerRowSchema(schema) ? schema : undefined;
 };
 
 export type GrpcTopicSourceHelper<Clients extends GrpcRuntimeClients> = {

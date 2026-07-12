@@ -19,7 +19,9 @@ import type {
   ColumnLiveViewSubscription,
   ColumnLiveViewTopicHealth,
   EngineClosedError,
+  InvalidRowError,
 } from "./index";
+import { createColumnLiveViewEngine } from "./index";
 import type { TopicStore } from "./topic-store";
 
 const Order = Schema.Struct({
@@ -62,6 +64,13 @@ declare const optionalNarrowFieldsQuery: {
 };
 
 describe("ColumnLiveViewEngine type contract", () => {
+  it("types engine construction success and initialization errors", () => {
+    const created = createColumnLiveViewEngine({ topics: viewServer.topics });
+
+    expectTypeOf<Effect.Success<typeof created>>().toEqualTypeOf<Engine>();
+    expectTypeOf<Effect.Error<typeof created>>().toEqualTypeOf<InvalidRowError>();
+  });
+
   it("requires explicit selected-row snapshots and subscription events", () => {
     const idSnapshot = engine.snapshot("orders", { select: ["id"] });
     expectTypeOf<EffectSuccess<typeof idSnapshot>>().toEqualTypeOf<

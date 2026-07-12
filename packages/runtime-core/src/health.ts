@@ -10,21 +10,53 @@ type EngineHealthReader<Topics extends DecodableTopicDefinitions> = {
   readonly health: () => Effect.Effect<ColumnLiveViewEngineHealth<Topics>, never>;
 };
 
+type RuntimeCoreHealthTiming = {
+  readonly nowMillis: number;
+  readonly nowNanos: bigint;
+  readonly runtimeStartedAtNanos: bigint;
+};
+
+type RuntimeCoreHealthInput<Topics extends DecodableTopicDefinitions> = {
+  readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
+  readonly healthOverlay?: RuntimeCoreHealthOverlay<Topics>;
+  readonly timing?: RuntimeCoreHealthTiming;
+};
+
+type ReadHealthInput<Topics extends DecodableTopicDefinitions> = {
+  readonly runtimeStartedAtNanos?: bigint;
+  readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
+  readonly healthOverlay?: RuntimeCoreHealthOverlay<Topics>;
+  readonly shouldInstall?: () => boolean;
+  readonly onInstall?: () => void;
+};
+
+const zeroRuntimeCoreHealthTiming: RuntimeCoreHealthTiming = {
+  nowMillis: 0,
+  nowNanos: 0n,
+  runtimeStartedAtNanos: 0n,
+};
+
+const uptimeMillis = (timing: RuntimeCoreHealthTiming): number => {
+  const elapsedNanos = timing.nowNanos - timing.runtimeStartedAtNanos;
+  return elapsedNanos <= 0n ? 0 : Number(elapsedNanos / 1_000_000n);
+};
+
 export const healthFromEngine = <Topics extends DecodableTopicDefinitions>(
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
-  transportHealth: RuntimeCoreTransportHealth<Topics> = defaultRuntimeCoreTransportHealth,
-  healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
-  nowMillis = 0,
+  input: RuntimeCoreHealthInput<Topics> = {},
 ): ViewServerHealth<Topics> => {
+  const transportHealth = input.transportHealth ?? defaultRuntimeCoreTransportHealth;
+  const healthOverlay = input.healthOverlay ?? defaultRuntimeCoreHealthOverlay;
+  const timing = input.timing ?? zeroRuntimeCoreHealthTiming;
   return healthOverlay(
     {
       status: engineHealth.status,
       version: engineHealth.version,
-      uptimeMs: 0,
+      uptimeMs: uptimeMillis(timing),
       engine: { topics: engineHealth.topics },
       transport: transportHealth(engineHealth),
     },
-    nowMillis,
+    timing.nowMillis,
   );
 };
 
@@ -73,17 +105,23 @@ export const readHealth = Effect.fn("ViewServerRuntimeCore.health.read")(functio
 >(
   engine: EngineHealthReader<Topics>,
   health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
-  transportHealth: RuntimeCoreTransportHealth<Topics> = defaultRuntimeCoreTransportHealth,
-  healthOverlay: RuntimeCoreHealthOverlay<Topics> = defaultRuntimeCoreHealthOverlay,
-  shouldInstall: () => boolean = () => true,
-  onInstall: () => void = () => undefined,
+  input: ReadHealthInput<Topics> = {},
 ) {
   const nowMillis = yield* Clock.currentTimeMillis;
-  const value = healthFromEngine(yield* engine.health(), transportHealth, healthOverlay, nowMillis);
+  const nowNanos = yield* Clock.currentTimeNanos;
+  const value = healthFromEngine(yield* engine.health(), {
+    transportHealth: input.transportHealth ?? defaultRuntimeCoreTransportHealth,
+    healthOverlay: input.healthOverlay ?? defaultRuntimeCoreHealthOverlay,
+    timing: {
+      nowMillis,
+      nowNanos,
+      runtimeStartedAtNanos: input.runtimeStartedAtNanos ?? 0n,
+    },
+  });
   yield* Effect.sync(() => {
-    if (shouldInstall()) {
+    if (input.shouldInstall === undefined || input.shouldInstall()) {
       health.update((current) => nextHealthValue(current, value));
-      onInstall();
+      input.onInstall?.();
     }
   });
   return health.value;

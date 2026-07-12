@@ -1,4 +1,5 @@
-// Benchmarks intentionally import Vitest directly: @effect/vitest does not expose `bench`.
+// Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
+// distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { Cause, Effect, Exit, Schema, Scope, Stream } from "effect";

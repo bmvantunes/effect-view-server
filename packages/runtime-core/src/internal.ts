@@ -112,14 +112,24 @@ export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableT
     };
     const engine = yield* createColumnLiveViewEngineInternal<Topics>(engineConfig);
     const engineHealth = yield* engine.health();
-    const nowMillis = yield* Clock.currentTimeMillis;
+    const runtimeStartedAtMillis = yield* Clock.currentTimeMillis;
+    const runtimeStartedAtNanos = yield* Clock.currentTimeNanos;
     const health: AtomRef.AtomRef<ViewServerHealth<Topics>> = AtomRef.make(
-      healthFromEngine(engineHealth, transportHealth, healthOverlay, nowMillis),
+      healthFromEngine(engineHealth, {
+        transportHealth,
+        ...(healthOverlay === undefined ? {} : { healthOverlay }),
+        timing: {
+          nowMillis: runtimeStartedAtMillis,
+          nowNanos: runtimeStartedAtNanos,
+          runtimeStartedAtNanos,
+        },
+      }),
     );
     const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
       config,
       engine,
       health,
+      runtimeStartedAtNanos,
       transportHealth,
       healthOverlay,
       input.healthRefreshCadence,

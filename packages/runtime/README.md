@@ -41,17 +41,20 @@ The runtime exposes a same-server `GET /health` endpoint for deployment
 readiness checks. It returns `200` when the runtime status is `ready` and a
 non-`200` status when the runtime is starting, degraded, or stopping.
 
-The JSON response is the current runtime health snapshot. Internal `bigint`
-fields, such as Kafka lag, are encoded as decimal strings.
+Each request performs a fresh runtime health read. Overlapping concurrent reads
+are coalesced so they share one runtime read. Internal `bigint` fields, such as
+Kafka lag, are encoded as decimal strings.
 
 React applications should use the pushed health hooks from `effect-view-server/react`;
 `GET /health` is for infrastructure and smoke checks, not UI polling.
+Those hooks consume cached client health refreshed on a bounded cadence; the
+HTTP health routes read runtime health on demand.
 
 ## Metrics
 
 The runtime exposes a same-server `GET /metrics` endpoint for Prometheus-style
 scrapes. The response uses `text/plain; version=0.0.4; charset=utf-8` and is
-derived from the same cached runtime health snapshot as `GET /health`.
+derived from a fresh, coalesced runtime health read just like `GET /health`.
 
 Metrics include runtime status/version/uptime, transport pressure, engine topic
 rows/versions/queues/backpressure, Kafka region lag and failure rates, and gRPC

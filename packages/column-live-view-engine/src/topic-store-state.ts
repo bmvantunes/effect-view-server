@@ -7,7 +7,7 @@ import {
 } from "./active-query";
 import { TopicRowStorage } from "./topic-row-storage";
 import { createTopicHealthLedger } from "./topic-health-ledger";
-import type { TopicStoreMutationState } from "./topic-store-mutation";
+import type { TopicStoreMutationAdmission, TopicStoreMutationState } from "./topic-store-mutation";
 import type { RawQueryCompilerMetadata } from "./raw-query-compiler";
 import type { LiveTopicSubscriber } from "./topic-subscriber";
 
@@ -28,6 +28,8 @@ export type TopicStoreHealthSource = {
   readonly topic: string;
 };
 
+const identityMutationAdmission: TopicStoreMutationAdmission = (transaction) => transaction;
+
 export class TopicStore {
   declare private readonly topicStoreBrand: void;
 
@@ -36,6 +38,8 @@ export class TopicStore {
     schema: Schema.Codec<object, unknown, never, unknown>,
     keyField: string,
     onCommit: () => void,
+    mutationsAllowed: () => boolean = () => true,
+    withMutationAdmission: TopicStoreMutationAdmission = identityMutationAdmission,
   ) {
     const storage = new TopicRowStorage(topic, schema, keyField);
     const subscribers = new Set<LiveTopicSubscriber>();
@@ -45,7 +49,9 @@ export class TopicStore {
       mutationSemaphore: Semaphore.makeUnsafe(1),
       notificationSemaphore: Semaphore.makeUnsafe(1),
       healthLedger: createTopicHealthLedger(),
+      mutationsAllowed,
       onCommit,
+      withMutationAdmission,
     };
     topicStoreStates.set(this, state);
   }

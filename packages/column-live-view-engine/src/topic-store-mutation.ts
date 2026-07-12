@@ -1,4 +1,5 @@
 import { Clock, Effect, Semaphore } from "effect";
+import { EngineClosedError } from "./engine-errors";
 import type { TopicRowStorage } from "./topic-row-storage";
 import type { InvalidRowErrorFactory, PreparedTopicRow } from "./topic-row-preparation";
 import type { createTopicHealthLedger } from "./topic-health-ledger";
@@ -13,8 +14,14 @@ export type TopicStoreMutationState = {
   readonly mutationSemaphore: Semaphore.Semaphore;
   readonly notificationSemaphore: Semaphore.Semaphore;
   readonly healthLedger: ReturnType<typeof createTopicHealthLedger>;
+  readonly mutationsAllowed: () => boolean;
   readonly onCommit: () => void;
+  readonly withMutationAdmission: TopicStoreMutationAdmission;
 };
+
+export type TopicStoreMutationAdmission = <Success, Error, Requirements>(
+  transaction: Effect.Effect<Success, Error, Requirements>,
+) => Effect.Effect<Success, Error, Requirements>;
 
 export type TopicStoreMutationContext = {
   readonly publishPrepared: (prepared: PreparedTopicRow) => number;
@@ -165,19 +172,26 @@ export const runTopicStoreMutationTransaction = Effect.fn(
   store: TopicStore,
   mutate: (mutation: TopicStoreMutationContext) => Effect.Effect<number, Error, Requirements>,
 ) {
-  yield* withTopicStoreMutationBatch(
-    state,
-    Effect.gen(function* () {
-      const subscribers = yield* withTopicStoreStateTransaction(
-        state,
-        Effect.gen(function* () {
-          const rowsChanged = yield* mutate(topicStoreMutationContext(state));
-          const occurredAt = yield* Clock.currentTimeMillis;
-          return recordTopicStoreMutation(state, rowsChanged, occurredAt);
-        }),
-      );
-      yield* notifyTopicStoreSubscribers(state, store, subscribers);
-    }),
+  yield* state.withMutationAdmission(
+    withTopicStoreMutationBatch(
+      state,
+      Effect.gen(function* () {
+        const subscribers = yield* withTopicStoreStateTransaction(
+          state,
+          Effect.gen(function* () {
+            if (!state.mutationsAllowed()) {
+              return yield* EngineClosedError.make({
+                message: "ColumnLiveViewEngine is closed.",
+              });
+            }
+            const rowsChanged = yield* mutate(topicStoreMutationContext(state));
+            const occurredAt = yield* Clock.currentTimeMillis;
+            return recordTopicStoreMutation(state, rowsChanged, occurredAt);
+          }),
+        );
+        yield* notifyTopicStoreSubscribers(state, store, subscribers);
+      }),
+    ),
   );
 });
 

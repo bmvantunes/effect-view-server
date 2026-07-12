@@ -12,7 +12,7 @@ import type {
   TopicRow,
   ValidateLiveQuery,
 } from "@effect-view-server/config";
-import { Effect } from "effect";
+import { Effect, Latch, Semaphore } from "effect";
 import type {
   ColumnLiveViewEngine,
   ColumnLiveViewEngineConfig,
@@ -64,15 +64,82 @@ const invalidRow = (topic: string, message: string) =>
     message,
   });
 
+const runEngineLifecycleTransaction = Effect.fn("ColumnLiveViewEngine.lifecycle.transaction")(
+  function* <Success, Error, Requirements>(
+    lifecycleSemaphore: Semaphore.Semaphore,
+    admissionGate: Latch.Latch,
+    idle: Latch.Latch,
+    transaction: Effect.Effect<Success, Error, Requirements>,
+  ): Effect.fn.Return<Success, Error, Requirements> {
+    return yield* lifecycleSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        yield* admissionGate.close;
+        yield* idle.await;
+        return yield* Effect.uninterruptible(transaction);
+      }).pipe(Effect.ensuring(admissionGate.open)),
+    );
+  },
+);
+
+class EngineMutationBarrier {
+  private readonly lifecycleSemaphore = Semaphore.makeUnsafe(1);
+  private readonly admissionGate = Latch.makeUnsafe(true);
+  private readonly idle = Latch.makeUnsafe(true);
+  private activeTransactions = 0;
+  private readonly tryAcquire = Effect.sync(() => {
+    if (!this.admissionGate.isOpen()) {
+      return false;
+    }
+    if (this.activeTransactions === 0) {
+      this.idle.closeUnsafe();
+    }
+    this.activeTransactions += 1;
+    return true;
+  });
+  private readonly release = Effect.sync(() => {
+    this.activeTransactions -= 1;
+    if (this.activeTransactions === 0) {
+      this.idle.openUnsafe();
+    }
+  });
+
+  readonly withMutation = <Success, Error, Requirements>(
+    transaction: Effect.Effect<Success, Error, Requirements>,
+  ): Effect.Effect<Success, Error, Requirements> =>
+    Effect.acquireUseRelease(
+      this.tryAcquire,
+      (acquired) =>
+        acquired
+          ? Effect.uninterruptible(transaction)
+          : this.admissionGate.await.pipe(Effect.flatMap(() => this.withMutation(transaction))),
+      (acquired) => (acquired ? this.release : Effect.void),
+    );
+
+  readonly withLifecycle = <Success, Error, Requirements>(
+    transaction: Effect.Effect<Success, Error, Requirements>,
+  ): Effect.Effect<Success, Error, Requirements> =>
+    runEngineLifecycleTransaction(
+      this.lifecycleSemaphore,
+      this.admissionGate,
+      this.idle,
+      transaction,
+    );
+}
+
 class InMemoryColumnLiveViewEngine<
   Topics extends DecodableTopicDefinitions,
 > implements ColumnLiveViewEngine<Topics> {
   private readonly stores = new Map<string, TopicStore>();
   private readonly groupedIncrementalAdmissionLimits: GroupedIncrementalAdmissionLimits;
   private readonly subscriptionQueueCapacity: number;
+  private readonly mutationBarrier = new EngineMutationBarrier();
+  private readonly withMutationAdmission = <Success, Error, Requirements>(
+    transaction: Effect.Effect<Success, Error, Requirements>,
+  ): Effect.Effect<Success, Error, Requirements> => this.mutationBarrier.withMutation(transaction);
   private engineVersion = 0;
   private nextQueryId = 0;
   private closed = false;
+  private readonly mutationsAllowed = (): boolean => !this.closed;
 
   constructor(config: ColumnLiveViewEngineInternalConfig<Topics>) {
     const configuredCapacity = config.subscriptionQueueCapacity ?? defaultSubscriptionQueueCapacity;
@@ -86,9 +153,16 @@ class InMemoryColumnLiveViewEngine<
     for (const [topic, definition] of Object.entries(config.topics)) {
       this.stores.set(
         topic,
-        new TopicStore(topic, definition.schema, definition.key, () => {
-          this.engineVersion += 1;
-        }),
+        new TopicStore(
+          topic,
+          definition.schema,
+          definition.key,
+          () => {
+            this.engineVersion += 1;
+          },
+          this.mutationsAllowed,
+          this.withMutationAdmission,
+        ),
       );
     }
   }
@@ -439,9 +513,9 @@ class InMemoryColumnLiveViewEngine<
   readonly reset: ColumnLiveViewEngine<Topics>["reset"] = Effect.fn("ColumnLiveViewEngine.reset")(
     { self: this },
     function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-      yield* this.ensureOpen();
-      yield* Effect.uninterruptible(
+      yield* this.mutationBarrier.withLifecycle(
         Effect.gen({ self: this }, function* () {
+          yield* this.ensureOpen();
           for (const store of this.stores.values()) {
             yield* resetTopicStore(store);
           }
@@ -454,7 +528,7 @@ class InMemoryColumnLiveViewEngine<
   readonly close: ColumnLiveViewEngine<Topics>["close"] = Effect.fn("ColumnLiveViewEngine.close")(
     { self: this },
     function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-      yield* Effect.uninterruptible(
+      yield* this.mutationBarrier.withLifecycle(
         Effect.gen({ self: this }, function* () {
           this.closed = true;
           for (const store of this.stores.values()) {

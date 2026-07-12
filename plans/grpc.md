@@ -44,7 +44,7 @@ Validation result:
   runtime. Declarative `grpc.clients` and Topic-owned `grpcSource` bindings can remain in the shared
   typed config without teaching React hooks about gRPC.
 - Compatible with the React/provider model because `useLiveQuery` does not learn about gRPC. The server resolves leased feeds behind the same Live Query contract.
-- Compatible with the health cadence rule because gRPC health is a ledger/cached snapshot, not a full per-message health rebuild.
+- Compatible with the health cadence rule because gRPC updates cheap Health Ledger state and does not rebuild full health per message.
 - Compatible with the transport policy because browser live data continues over Effect RPC WebSocket with NDJSON. gRPC is ingress only.
 - Compatible with the one-engine rule because leased-feed row isolation is an internal partitioning concern before a query reaches the existing engine. The engine still executes the same query semantics; the runtime only narrows the retained row universe to the single resolved feed instance.
 
@@ -55,7 +55,7 @@ Important boundaries carried forward from the v2 plan:
   runtime API remains the typed React provider/hooks.
 - In-memory testing must continue to use the same runtime-core and engine. gRPC leased/materialized feeds are server runtime Adapters, not a special test engine.
 - Production browser live traffic stays on Effect RPC WebSocket + NDJSON until a separate transport decision changes that. gRPC is not a browser transport.
-- Runtime health must remain cached/coalesced. gRPC message ingestion may update cheap counters, but it must not rebuild full health per upstream event.
+- Runtime health reads must remain coalesced, and pushed health must remain cadence-controlled. gRPC message ingestion may update cheap counters, but it must not rebuild full health per upstream event.
 - Topic ownership must stay explicit. One public View Server topic cannot be silently populated by Kafka and gRPC, or by multiple gRPC feed definitions, unless a future multi-source contract defines ordering, dedupe, health, and restart semantics.
 
 ## Core Vocabulary
@@ -615,8 +615,8 @@ Health cadence rules from the v2 plan still apply:
 
 - hot paths may update cheap counters
 - do not rebuild full health per message
-- `/health` returns a cached snapshot
-- health updates should be around once per second by default
+- `/health` performs a fresh runtime health read; overlapping concurrent reads are coalesced
+- pushed health updates should be around once per second by default
 
 ## Lifecycle And Resource Ownership
 
@@ -899,7 +899,7 @@ Implement in slices that keep `vp run -w ready`, strict Effect LSP, package seam
 
 5. Health and lifecycle hardening
    - Expose gRPC client/feed health separately from engine topic health.
-   - Keep health cached/coalesced.
+   - Keep runtime health reads coalesced and pushed health cadence-controlled.
    - Handle stream defects with degraded health and deterministic cleanup.
    - Avoid detached fibers for stream ownership.
 

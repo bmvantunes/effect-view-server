@@ -638,23 +638,24 @@ Kafka health should always include `viewServerTopic`, so source-topic lag can be
 Kafka lag policy:
 
 - Include Kafka consumer lag when it is cheap/native from the Kafka client or already available from consumed high-watermark metadata.
-- Sample lag on the same cached health cadence, around once per second.
+- Sample lag on the same bounded pushed-health cadence, around once per second.
 - Do not add per-message or per-batch broker round trips just to compute lag.
 - If precise lag is expensive, expose the best cheap approximation and mark the sample time with `lagSampledAt`.
 - If lag cannot be obtained cheaply, return `consumerLagMessages: null` rather than harming ingest throughput.
 - Lag should never be computed in the row ingestion hot loop.
 
-Health snapshot cadence:
+Health read and push cadence:
 
-- `/health` should return a cached snapshot refreshed at most once per second by default.
+- `client.health()`, `/health`, and `/metrics` initiate fresh runtime health reads on demand. Overlapping concurrent reads are coalesced.
+- Pushed provider health uses cached/coalesced refreshes on a bounded cadence, around once per second by default.
 - Hot paths may increment cheap counters, but they must not rebuild the full health object per message.
-- A topic receiving 1M messages/sec should still update the exported health JSON around 1 time/sec, not 1M times/sec.
-- `/metrics` can expose monotonic counters/histograms suitable for Prometheus-style scraping.
-- Tests should assert health eventually reflects row counts/lag, not that it updates synchronously after every mutation.
+- A topic receiving 1M messages/sec should still update pushed health around 1 time/sec, not 1M times/sec.
+- `/metrics` renders monotonic counters and gauges from its fresh runtime health read for Prometheus-style scraping.
+- Tests should assert pushed health eventually reflects row counts/lag, while explicit runtime and HTTP reads observe a fresh snapshot.
 
 Health endpoint shape:
 
-- `GET /health` returns one full cached runtime snapshot.
+- `GET /health` returns one full fresh runtime snapshot; overlapping concurrent reads are coalesced.
 - There is no `GET /health/stream` endpoint.
 - If a client needs streaming health, it should subscribe through the normal WebSocket/live-query path.
 
@@ -680,9 +681,9 @@ Streaming health should use the same WebSocket transport as everything else, but
 const health = useViewServerHealth();
 ```
 
-`useViewServerHealth()` should return detailed live health rows for all topics, plus runtime, connection, and merged status fields. The full cached runtime health document remains available from `/health` for deployment checks and admin integrations. The common operator question is overall runtime health, not a single topic's health. Topic filtering can be derived by the UI from the returned rows if needed.
+`useViewServerHealth()` should return detailed live health rows for all topics, plus runtime, connection, and merged status fields. The hook consumes cadence-controlled pushed health, while the full fresh runtime health document remains available from `/health` for deployment checks and admin integrations. The common operator question is overall runtime health, not a single topic's health. Topic filtering can be derived by the UI from the returned rows if needed.
 
-Kubernetes/readiness/liveness should use the full cached `/health` document. Dashboards that need live health should use WebSockets through `useViewServerHealth()`. Do not add HTTP streaming for health.
+Kubernetes/readiness/liveness should use the full fresh `/health` document. Dashboards that need cadence-controlled live health should use WebSockets through `useViewServerHealth()`. Do not add HTTP streaming for health.
 
 Health degradation rules:
 

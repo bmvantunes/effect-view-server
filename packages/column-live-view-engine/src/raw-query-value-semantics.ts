@@ -61,14 +61,6 @@ const materializeSchemaQueryValue = (
   value: unknown,
   schemaRequired = false,
 ): unknown => {
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.getPrototypeOf(value) === null
-  ) {
-    return unsupportedQueryValue();
-  }
   const materialized = materializedValue(semantics, value);
   if (Result.isSuccess(materialized)) {
     return materialized.success;

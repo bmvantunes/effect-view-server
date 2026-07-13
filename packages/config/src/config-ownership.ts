@@ -11,6 +11,8 @@ type TopicRegistry = Record<
   }
 >;
 
+type GrpcClientRegistry = Record<string, object>;
+
 const schemaSnapshots = new WeakMap<RowSchema, RowSchema>();
 
 export function snapshotViewServerRowSchema<const S extends RowSchema>(schema: S): S;
@@ -93,6 +95,22 @@ const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } =
   }
   return copied;
 };
+
+export function snapshotViewServerGrpcClients<const Clients extends GrpcClientRegistry>(
+  clients: Clients,
+): Clients;
+export function snapshotViewServerGrpcClients(clients: GrpcClientRegistry): GrpcClientRegistry {
+  const snapshot: GrpcClientRegistry = {};
+  for (const clientName of Object.keys(clients)) {
+    Object.defineProperty(snapshot, clientName, {
+      configurable: false,
+      enumerable: true,
+      value: Object.freeze(snapshotOwnProperties(clients[clientName]!)),
+      writable: false,
+    });
+  }
+  return Object.freeze(snapshot);
+}
 
 const snapshotSource = (source: unknown): unknown => {
   if (typeof source !== "object" || source === null) {

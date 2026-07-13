@@ -123,6 +123,60 @@ describe("ColumnLiveViewEngine validation", () => {
     }),
   );
 
+  it.effect("matches schema-backed record filters with a null prototype", () =>
+    Effect.gen(function* () {
+      const WithPayload = Schema.Struct({
+        id: Schema.String,
+        payload: Schema.Record(Schema.String, Schema.String),
+      });
+      const engine = yield* createColumnLiveViewEngine({
+        topics: {
+          payloads: {
+            schema: WithPayload,
+            key: "id",
+          },
+        },
+      });
+      yield* engine.publish("payloads", {
+        id: "1",
+        payload: { venue: "xnys" },
+      });
+      yield* engine.publish("payloads", {
+        id: "2",
+        payload: { venue: "xlon" },
+      });
+
+      const filter: Record<string, string> = Object.create(null);
+      filter["venue"] = "xnys";
+      const snapshot = yield* engine.snapshot("payloads", {
+        select: ["id", "payload"],
+        where: { payload: filter },
+      });
+      const grouped = yield* engine.snapshot("payloads", {
+        groupBy: ["payload"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        where: { payload: filter },
+      });
+
+      expect({ grouped, snapshot }).toStrictEqual({
+        grouped: {
+          rows: [{ payload: { venue: "xnys" }, rowCount: 1n }],
+          status: "ready",
+          statusCode: "Ready",
+          totalRows: 1,
+          version: 2,
+        },
+        snapshot: {
+          rows: [{ id: "1", payload: { venue: "xnys" } }],
+          status: "ready",
+          statusCode: "Ready",
+          totalRows: 1,
+          version: 2,
+        },
+      });
+    }),
+  );
+
   it.effect("keeps a runtime guard for unsafely cast invalid key configs", () =>
     Effect.gen(function* () {
       const invalidKeyConfig = {

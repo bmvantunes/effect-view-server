@@ -9,6 +9,7 @@ import {
 import { grpcTopicSourceDefinitionKey, grpcTopicSourceDefinitionSchema } from "./grpc-contract";
 import {
   isViewServerRowSchema,
+  snapshotViewServerGrpcClients,
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
   viewServerRowSchemasShareOrigin,
@@ -678,7 +679,7 @@ export function defineViewServerConfig(
     inputGrpc === undefined
       ? undefined
       : Object.freeze({
-          clients: Object.freeze({ ...inputGrpc.clients }),
+          clients: snapshotViewServerGrpcClients(inputGrpc.clients),
         });
 
   for (const topic of Object.keys(topics)) {

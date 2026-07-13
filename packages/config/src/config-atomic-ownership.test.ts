@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { snapshotViewServerTopics } from "./config-ownership";
-import { defineViewServerConfig } from "./index";
+import { defineViewServerConfig, grpc } from "./index";
+import { ordersService } from "../test-harness/protobuf";
 
 describe("View Server config atomic ownership", () => {
   it("snapshots changing topic definitions once before validating the owned graph", () => {
@@ -95,6 +96,39 @@ describe("View Server config atomic ownership", () => {
       regions: ["usa"],
       sourceFrozen: true,
       regionsFrozen: true,
+    });
+  });
+
+  it("captures and freezes each gRPC client definition", () => {
+    const client = grpc.connectClient({
+      service: ordersService,
+      baseUrl: "https://captured.example.test",
+    });
+    const clients = { orders: client };
+    const config = defineViewServerConfig({ grpc: { clients }, topics: {} });
+
+    expect(Reflect.set(client, "baseUrl", "https://mutated.example.test")).toBe(true);
+    expect(
+      Reflect.set(
+        clients,
+        "orders",
+        grpc.connectClient({
+          service: ordersService,
+          baseUrl: "https://replaced.example.test",
+        }),
+      ),
+    ).toBe(true);
+
+    expect({
+      baseUrl: config.grpc?.clients.orders.baseUrl,
+      clientCaptured: config.grpc?.clients.orders === client,
+      clientFrozen: Object.isFrozen(config.grpc?.clients.orders),
+      clientsFrozen: Object.isFrozen(config.grpc?.clients),
+    }).toStrictEqual({
+      baseUrl: "https://captured.example.test",
+      clientCaptured: false,
+      clientFrozen: true,
+      clientsFrozen: true,
     });
   });
 

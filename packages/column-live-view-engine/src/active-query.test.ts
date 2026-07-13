@@ -10,6 +10,7 @@ import {
   releaseRawQueryExecution,
 } from "./active-query";
 import { replaceRetainedMatchingEntryAtIndex } from "./active-raw-query";
+import { prepareGroupedQuery } from "./grouped-query-compiler";
 import { prepareRawQuery } from "./raw-query-compiler";
 import { makeQueryResultSemantics } from "./query-result-semantics";
 import {
@@ -3313,36 +3314,64 @@ describe("column-live-view-engine active query execution", () => {
     }),
   );
 
-  it.effect("rejects non-plain object filter values before cache-keying", () =>
+  it.effect("canonicalizes schema-backed null-prototype filter values before cache-keying", () =>
     Effect.gen(function* () {
       const store = new TopicStore(
         "special",
         Schema.Struct({
           id: Schema.String,
-          payload: Schema.Struct({
-            value: Schema.BigInt,
-            label: Schema.String,
-          }),
+          payload: Schema.Record(Schema.String, Schema.String),
         }),
         "id",
         () => {},
       );
-      const queryPayload: Record<string, unknown> = Object.create(null);
-      queryPayload["value"] = 1n;
-      queryPayload["label"] = "special";
+      const queryPayload: Record<string, string> = Object.create(null);
+      queryPayload["venue"] = "xnys";
 
-      const invalidPayload = yield* Effect.flip(
-        prepareRawQuery("special", topicStoreRawQueryMetadata(store), {
+      const nullPrototypeQuery = yield* prepareRawQuery(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
           select: ["id", "payload"],
           where: {
             payload: queryPayload,
           },
-        }),
+        },
       );
-      expect(invalidPayload).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported query value"),
+      const plainRecordQuery = yield* prepareRawQuery(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
+          select: ["id", "payload"],
+          where: {
+            payload: { venue: "xnys" },
+          },
+        },
+      );
+      const nullPrototypeGrouped = yield* prepareGroupedQuery<object, object>(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
+          groupBy: ["payload"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: { payload: queryPayload },
+        },
+      );
+      const plainRecordGrouped = yield* prepareGroupedQuery<object, object>(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
+          groupBy: ["payload"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: { payload: { venue: "xnys" } },
+        },
+      );
+
+      expect(nullPrototypeQuery.query.where).toStrictEqual({
+        payload: { venue: "xnys" },
       });
+      expect(nullPrototypeQuery.plan.queryCacheKey).toBe(plainRecordQuery.plan.queryCacheKey);
+      expect(nullPrototypeGrouped.cacheKey).toBe(plainRecordGrouped.cacheKey);
     }),
   );
 

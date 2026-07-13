@@ -1,6 +1,13 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import * as BigDecimal from "effect/BigDecimal";
-import { type ExactGroupedQuery, type ValidateLiveQuery } from "./index";
+import {
+  type ExactGroupedQuery,
+  type GroupedQuery,
+  type GroupedResult,
+  type PickRawFields,
+  type RawQuery,
+  type ValidateLiveQuery,
+} from "./index";
 
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -8,8 +15,96 @@ import { Order } from "../test-harness/schemas";
 import type { LiveQueryCall } from "../test-harness/live-query";
 
 declare const decimal: (value: string) => BigDecimal.BigDecimal;
+declare const conditionalGroupBy: readonly ["status"] | readonly ["region"];
+declare const conditionalUnequalGroupBy: readonly ["status"] | readonly ["status", "region"];
+declare const conditionalCommonGroupBy: readonly ["status", "region"] | readonly ["status", "id"];
+declare const conditionalUnequalSelect: readonly ["id"] | readonly ["id", "price"];
+declare const conditionalCommonSelect: readonly ["id", "price"] | readonly ["id", "status"];
+declare const conditionalAggregates:
+  | { readonly rowCount: { readonly aggFunc: "count" } }
+  | { readonly totalPrice: { readonly aggFunc: "sum"; readonly field: "price" } };
 
 describe("Query result contracts", () => {
+  it("keeps common raw fields required and conditional fields optional", () => {
+    const unequalQuery = {
+      select: conditionalUnequalSelect,
+    } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<PickRawFields<typeof Order.Type, typeof unequalQuery>>().toEqualTypeOf<{
+      readonly id: string;
+      readonly price?: number;
+    }>();
+
+    const commonQuery = {
+      select: conditionalCommonSelect,
+    } satisfies RawQuery<typeof Order.Type>;
+    expectTypeOf<PickRawFields<typeof Order.Type, typeof commonQuery>>().toEqualTypeOf<{
+      readonly id: string;
+      readonly price?: number;
+      readonly status?: "open" | "closed" | "cancelled";
+    }>();
+  });
+
+  it("keeps conditional grouped fields optional", () => {
+    const query = {
+      groupBy: conditionalGroupBy,
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+      },
+    } satisfies GroupedQuery<typeof Order.Type>;
+
+    expectTypeOf<GroupedResult<typeof Order.Type, typeof query>>().toEqualTypeOf<{
+      readonly region?: string;
+      readonly status?: "open" | "closed" | "cancelled";
+      readonly rowCount: bigint;
+    }>();
+
+    const unequalQuery = {
+      groupBy: conditionalUnequalGroupBy,
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+      },
+    } satisfies GroupedQuery<typeof Order.Type>;
+    expectTypeOf<GroupedResult<typeof Order.Type, typeof unequalQuery>>().toEqualTypeOf<{
+      readonly status: "open" | "closed" | "cancelled";
+      readonly region?: string;
+      readonly rowCount: bigint;
+    }>();
+
+    const commonQuery = {
+      groupBy: conditionalCommonGroupBy,
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+      },
+    } satisfies GroupedQuery<typeof Order.Type>;
+    expectTypeOf<GroupedResult<typeof Order.Type, typeof commonQuery>>().toEqualTypeOf<{
+      readonly status: "open" | "closed" | "cancelled";
+      readonly region?: string;
+      readonly id?: string;
+      readonly rowCount: bigint;
+    }>();
+  });
+
+  it("keeps conditional aggregate aliases optional", () => {
+    const query = {
+      groupBy: ["status"],
+      aggregates: conditionalAggregates,
+    } satisfies {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: typeof conditionalAggregates;
+    };
+
+    expectTypeOf<GroupedResult<typeof Order.Type, typeof query>>().toEqualTypeOf<
+      | {
+          readonly status: "open" | "closed" | "cancelled";
+          readonly rowCount: bigint;
+        }
+      | {
+          readonly status: "open" | "closed" | "cancelled";
+          readonly totalPrice: BigDecimal.BigDecimal;
+        }
+    >();
+  });
+
   it("derives query result rows from select and grouped aggregates", () => {
     const assertQueryTypes = (useLiveQuery: LiveQueryCall<typeof viewServer.topics>) => {
       const selectedRawResult = useLiveQuery("orders", {

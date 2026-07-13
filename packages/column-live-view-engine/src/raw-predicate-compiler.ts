@@ -1,4 +1,4 @@
-import { isBigDecimal } from "effect/BigDecimal";
+import { isBigDecimal, make as makeBigDecimal } from "effect/BigDecimal";
 import { compareFilterValue } from "./query-value";
 import { isDenseArray, type RuntimeRawQuery } from "./raw-query-decoder";
 import { isOperatorFilterObject } from "./raw-query-filter";
@@ -23,6 +23,28 @@ type CompiledRawPredicateClause = {
 type CompiledRawPredicateParts = {
   readonly clauses: ReadonlyArray<CompiledRawPredicateClause>;
   readonly plan: TopicRawPredicatePlan;
+};
+
+const clonePredicateFilter = (value: unknown): unknown => {
+  if (isBigDecimal(value)) {
+    return makeBigDecimal(value.value, value.scale);
+  }
+  if (Array.isArray(value)) {
+    return value.map(clonePredicateFilter);
+  }
+  if (!isPlainRecord(value)) {
+    return value;
+  }
+  const cloned: Record<string, unknown> = {};
+  for (const [key, fieldValue] of Object.entries(value)) {
+    Object.defineProperty(cloned, key, {
+      configurable: true,
+      enumerable: true,
+      value: clonePredicateFilter(fieldValue),
+      writable: true,
+    });
+  }
+  return cloned;
 };
 
 const isStructuredQueryValue = (value: unknown): boolean =>
@@ -198,14 +220,14 @@ const compilePredicateParts = (
   where: RuntimeRawQuery["where"],
 ): CompiledRawPredicateParts => {
   if (where === undefined) {
-    return {
-      clauses: [],
-      plan: {
-        filters: [],
+    return Object.freeze({
+      clauses: Object.freeze([]),
+      plan: Object.freeze({
+        filters: Object.freeze([]),
         callbackRequired: false,
         callbackSkippable: true,
-      },
-    };
+      }),
+    });
   }
 
   const filters: Array<TopicRawPredicatePlan["filters"][number]> = [];
@@ -215,19 +237,24 @@ const compilePredicateParts = (
     const fieldPlan = predicateFilterPlans(field, filter, metadata);
     filters.push(...fieldPlan.filters);
     callbackRequired ||= fieldPlan.callbackRequired;
-    clauses.push({
-      field,
-      matches: compileFilterMatcher(filter, metadata.valueSemantics.field(field)),
-    });
+    clauses.push(
+      Object.freeze({
+        field,
+        matches: compileFilterMatcher(
+          clonePredicateFilter(filter),
+          metadata.valueSemantics.field(field),
+        ),
+      }),
+    );
   }
-  return {
-    clauses,
-    plan: {
-      filters,
+  return Object.freeze({
+    clauses: Object.freeze(clauses),
+    plan: Object.freeze({
+      filters: Object.freeze(filters),
       callbackRequired,
       callbackSkippable: !callbackRequired,
-    },
-  };
+    }),
+  });
 };
 
 export const compileRawPredicate = <Row extends RowObject>(
@@ -236,13 +263,13 @@ export const compileRawPredicate = <Row extends RowObject>(
 ): CompiledRawPredicate<Row> => {
   const parts = compilePredicateParts(metadata, where);
   if (parts.clauses.length === 0) {
-    return {
+    return Object.freeze({
       plan: parts.plan,
       matches: () => true,
-    };
+    });
   }
 
-  return {
+  return Object.freeze({
     plan: parts.plan,
     matches: (row) => {
       for (const clause of parts.clauses) {
@@ -252,5 +279,5 @@ export const compileRawPredicate = <Row extends RowObject>(
       }
       return true;
     },
-  };
+  });
 };

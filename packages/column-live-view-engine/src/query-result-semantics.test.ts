@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   groupedResultAggregateSemantics,
   makeQueryResultSemantics,
+  runtimeRawQueryResultSemantics,
 } from "./query-result-semantics";
 import { makeTopicRowValueSemantics } from "./topic-row-value-semantics";
 
@@ -37,6 +38,11 @@ describe("query result semantics", () => {
     const result = semantics.materializeRow({ value: structured });
     expect(result).toStrictEqual({ value: structured });
     expect(Reflect.get(result, "value")).not.toBe(structured);
+
+    const owned = { value: structured };
+    const ownedResult = semantics.materializeOwnedRow(owned);
+    expect(ownedResult).toBe(owned);
+    expect(Reflect.get(ownedResult, "value")).not.toBe(structured);
   });
 
   it("keeps an undefined min/max result outside the optional field codec", () => {
@@ -58,6 +64,36 @@ describe("query result semantics", () => {
     expect(optionalMinimumSemantics.canonicalKey(undefined)).toBe("undefined:");
     expect(optionalMinimumSemantics.canonicalKey(1)).toBe(
       `value:${topicSemantics.field("value").canonicalKey(1)}`,
+    );
+  });
+
+  it("rejects projected rows that do not satisfy the compiled field proof", () => {
+    const semantics = runtimeRawQueryResultSemantics(topicSemantics, ["id", "value"]);
+    const accessorRow = {};
+    Object.defineProperty(accessorRow, "id", {
+      enumerable: true,
+      get: () => "a",
+    });
+    const hiddenRow = {};
+    Object.defineProperty(hiddenRow, "id", {
+      enumerable: false,
+      value: "a",
+    });
+
+    expect(() => semantics.narrowProjectedRow({ id: "a", extra: true })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow({ value: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow(accessorRow)).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow(hiddenRow)).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
     );
   });
 });

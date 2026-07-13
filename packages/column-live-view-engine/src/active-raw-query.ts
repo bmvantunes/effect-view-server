@@ -393,18 +393,14 @@ export const evaluateRawQuery = <Row extends RowObject, ResultRow extends RowObj
 ): QueryEvaluation<ResultRow> =>
   projectBaseEvaluation(store, compiled, evaluateBaseQuery(store, compiled));
 
-function projectStoreSlot<Row extends RowObject, ResultRow extends RowObject>(
+const projectStoreSlot = <Row extends RowObject, ResultRow extends RowObject>(
   projectRawRow: (slot: number, selectedFields: ReadonlyArray<string>) => RowObject,
   compiled: CompiledRawQuery<Row, ResultRow>,
   slot: number,
-): ResultRow;
-function projectStoreSlot(
-  projectRawRow: (slot: number, selectedFields: ReadonlyArray<string>) => RowObject,
-  compiled: CompiledRawQuery<RowObject, RowObject>,
-  slot: number,
-): RowObject {
-  return projectRawRow(slot, compiled.plan.selectedFields);
-}
+): ResultRow =>
+  compiled.plan.resultSemantics.narrowProjectedRow(
+    projectRawRow(slot, compiled.plan.selectedFields),
+  );
 
 const projectRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
@@ -429,7 +425,7 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
 ): RawQueryExecution<ResultRow> => {
   const latestEvaluation = () => projectWindowEvaluation(store, compiled, execution.latest());
 
-  return {
+  return Object.freeze({
     initial: (queryId) =>
       snapshotEvent(store, queryId, latestEvaluation(), compiled.plan.resultSemantics),
     createCursor: () => ({
@@ -455,7 +451,7 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
           ),
         );
       }),
-  };
+  });
 };
 
 const baseWindowForActiveWindows = (

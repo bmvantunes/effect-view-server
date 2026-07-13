@@ -7,19 +7,25 @@ import { compareQueryValue } from "./query-value";
 type RowObject = object;
 type ValueSchema = Schema.Codec<unknown, unknown, never, never>;
 type TopicRowSchema = Schema.Codec<object, unknown, never, never>;
+const topicRowValueSemanticsSchema: unique symbol = Symbol("TopicRowValueSemantics.schema");
+const topicRowValueSemanticsSchemas = new WeakMap<object, TopicRowSchema>();
 
 export type SchemaValueSemantics = {
   readonly canonicalKey: (value: unknown) => string;
   readonly compare: (left: unknown, right: unknown) => number;
   readonly decodeEncoded: (value: unknown) => unknown;
   readonly equivalent: (left: unknown, right: unknown) => boolean;
+  readonly is: (value: unknown) => boolean;
   readonly materialize: (value: unknown) => unknown;
+  readonly schema: Schema.Codec<unknown, unknown, never, never>;
 };
 
-export type TopicRowValueSemantics = {
+export type TopicRowValueSemantics<Row extends RowObject = RowObject> = {
+  readonly [topicRowValueSemanticsSchema]: Schema.Codec<Row, unknown, never, never>;
   readonly equivalentField: (field: string, left: unknown, right: unknown) => boolean;
   readonly equivalentRows: (left: RowObject, right: RowObject) => boolean;
   readonly field: (field: string) => SchemaValueSemantics;
+  readonly fieldRequired: (field: string) => boolean;
   readonly fieldNames: ReadonlyArray<string>;
   readonly materializeRow: (row: RowObject) => RowObject;
   readonly materializeValidatedRowFields: (row: RowObject) => RowObject;
@@ -94,11 +100,12 @@ export const makeSchemaValueSemantics = (schema: ValueSchema): SchemaValueSemant
   };
 
   const schemaEquivalent = Schema.toEquivalence(schema);
+  const is = Schema.is(schema);
   const equivalent = schemaContainsUnorderedEffectCollection(schema.ast, new Set())
     ? (left: unknown, right: unknown): boolean => canonicalKey(left) === canonicalKey(right)
     : schemaEquivalent;
 
-  return {
+  return Object.freeze({
     canonicalKey,
     compare: (left, right) => {
       if (scalarComparable(left) && scalarComparable(right)) {
@@ -110,8 +117,10 @@ export const makeSchemaValueSemantics = (schema: ValueSchema): SchemaValueSemant
     },
     decodeEncoded: identity.decodeEncoded,
     equivalent,
+    is,
     materialize: identity.materializeDecoded,
-  };
+    schema,
+  });
 };
 
 type TopicRowSchemaSemantics = {
@@ -155,9 +164,11 @@ const validateRowFieldDescriptors = (row: RowObject, fieldNames: ReadonlyArray<s
   }
 };
 
-export const makeTopicRowValueSemantics = (schema: TopicRowSchema): TopicRowValueSemantics => {
+export const makeTopicRowValueSemantics = <SchemaValue extends TopicRowSchema>(
+  schema: SchemaValue,
+): TopicRowValueSemantics<SchemaValue["Type"]> => {
   const fields = schemaFieldSemantics(schema);
-  const fieldNames = [...fields.keys()];
+  const fieldNames = Object.freeze([...fields.keys()]);
   let cachedRowSemantics: TopicRowSchemaSemantics | undefined;
   const rowSemantics = (): TopicRowSchemaSemantics => {
     cachedRowSemantics ??= makeTopicRowSchemaSemantics(schema);
@@ -171,7 +182,8 @@ export const makeTopicRowValueSemantics = (schema: TopicRowSchema): TopicRowValu
     return semantics;
   };
 
-  return {
+  const semantics: TopicRowValueSemantics<SchemaValue["Type"]> = Object.freeze({
+    [topicRowValueSemanticsSchema]: schema,
     equivalentField: (name, left, right) => field(name).equivalent(left, right),
     equivalentRows: (left, right) => {
       for (const name of fieldNames) {
@@ -189,6 +201,7 @@ export const makeTopicRowValueSemantics = (schema: TopicRowSchema): TopicRowValu
       return true;
     },
     field,
+    fieldRequired: (name) => !SchemaAST.isOptional(field(name).schema.ast),
     fieldNames,
     materializeRow: (row) => {
       validateRowFieldDescriptors(row, fieldNames);
@@ -213,5 +226,14 @@ export const makeTopicRowValueSemantics = (schema: TopicRowSchema): TopicRowValu
       }
       return row;
     },
-  };
+  });
+  topicRowValueSemanticsSchemas.set(semantics, schema);
+  return semantics;
 };
+
+export const topicRowValueSemanticsMatchesSchema = <SchemaValue extends TopicRowSchema>(
+  semantics: TopicRowValueSemantics,
+  schema: SchemaValue,
+): semantics is TopicRowValueSemantics<SchemaValue["Type"]> =>
+  semantics[topicRowValueSemanticsSchema] === schema &&
+  topicRowValueSemanticsSchemas.get(semantics) === schema;

@@ -1,18 +1,27 @@
 import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
 import { Schema, SchemaAST } from "effect";
+import { immutableReadonlyMap, immutableReadonlySet } from "./immutable-readonly-collection";
 import { isRecord } from "./row-values";
 import {
   makeTopicRowValueSemantics,
+  topicRowValueSemanticsMatchesSchema,
   type TopicRowValueSemantics,
 } from "./topic-row-value-semantics";
 
 type SchemaWithFields = Schema.Codec<object, unknown, never, never> & {
   readonly fields: Record<string, unknown>;
 };
+const rawQueryCompilerMetadataSchema: unique symbol = Symbol("RawQueryCompilerMetadata.schema");
+const rawQueryCompilerMetadataSchemas = new WeakMap<
+  object,
+  Schema.Codec<object, unknown, never, never>
+>();
 
 export type RangeValueKind = "number" | "bigint" | "bigDecimal";
 
-export type RawQueryCompilerMetadata = {
+export type RawQueryCompilerMetadata<Row extends object = object> = {
+  readonly [rawQueryCompilerMetadataSchema]: Schema.Codec<Row, unknown, never, never>;
+  readonly schema: Schema.Codec<Row, unknown, never, never>;
   readonly fieldNames: ReadonlySet<string>;
   readonly fieldOrder: ReadonlyArray<string>;
   readonly fieldMetadata: ReadonlyMap<string, ReturnType<typeof viewServerSchemaFieldMetadata>>;
@@ -25,7 +34,7 @@ export type RawQueryCompilerMetadata = {
   readonly bigDecimalFieldNames: ReadonlySet<string>;
   readonly exactScalarEqualityFieldNames: ReadonlySet<string>;
   readonly rangeValueKinds: ReadonlyMap<string, ReadonlySet<RangeValueKind>>;
-  readonly valueSemantics: TopicRowValueSemantics;
+  readonly valueSemantics: TopicRowValueSemantics<Row>;
 };
 
 const isSchemaWithFields = (
@@ -127,7 +136,7 @@ const schemaFieldMetadata = (
 
   const fields = new Map<string, ReturnType<typeof viewServerSchemaFieldMetadata>>();
   for (const [field, fieldSchema] of Object.entries(schema.fields)) {
-    fields.set(field, viewServerSchemaFieldMetadata(fieldSchema));
+    fields.set(field, Object.freeze(viewServerSchemaFieldMetadata(fieldSchema)));
   }
   return fields;
 };
@@ -287,20 +296,51 @@ const schemaStructuredObjectFieldNames = (
   return fields;
 };
 
-export const rawQueryCompilerMetadata = (
-  schema: Schema.Codec<object, unknown, never, never>,
-): RawQueryCompilerMetadata => ({
-  fieldNames: schemaFieldNames(schema),
-  fieldOrder: schemaFieldOrder(schema),
-  fieldMetadata: schemaFieldMetadata(schema),
-  structuredFieldNames: schemaStructuredFieldNames(schema),
-  structuredObjectFieldNames: schemaStructuredObjectFieldNames(schema),
-  stringFieldNames: schemaStringFieldNames(schema),
-  numericFieldNames: schemaNumericFieldNames(schema),
-  numberFieldNames: schemaNumberFieldNames(schema),
-  bigintFieldNames: schemaBigintFieldNames(schema),
-  bigDecimalFieldNames: schemaBigDecimalFieldNames(schema),
-  exactScalarEqualityFieldNames: schemaExactScalarEqualityFieldNames(schema),
-  rangeValueKinds: schemaRangeValueKinds(schema),
-  valueSemantics: makeTopicRowValueSemantics(schema),
-});
+const immutableRangeValueKinds = (
+  fields: ReadonlyMap<string, ReadonlySet<RangeValueKind>>,
+): ReadonlyMap<string, ReadonlySet<RangeValueKind>> => {
+  const entries: Array<readonly [string, ReadonlySet<RangeValueKind>]> = [];
+  for (const [field, kinds] of fields) {
+    entries.push([field, immutableReadonlySet(kinds)]);
+  }
+  return immutableReadonlyMap(entries);
+};
+
+export const rawQueryCompilerMetadata = <
+  SchemaValue extends Schema.Codec<object, unknown, never, never>,
+>(
+  schema: SchemaValue,
+): RawQueryCompilerMetadata<SchemaValue["Type"]> => {
+  const metadata: RawQueryCompilerMetadata<SchemaValue["Type"]> = Object.freeze({
+    [rawQueryCompilerMetadataSchema]: schema,
+    schema,
+    fieldNames: immutableReadonlySet(schemaFieldNames(schema)),
+    fieldOrder: Object.freeze([...schemaFieldOrder(schema)]),
+    fieldMetadata: immutableReadonlyMap(schemaFieldMetadata(schema)),
+    structuredFieldNames: immutableReadonlySet(schemaStructuredFieldNames(schema)),
+    structuredObjectFieldNames: immutableReadonlySet(schemaStructuredObjectFieldNames(schema)),
+    stringFieldNames: immutableReadonlySet(schemaStringFieldNames(schema)),
+    numericFieldNames: immutableReadonlySet(schemaNumericFieldNames(schema)),
+    numberFieldNames: immutableReadonlySet(schemaNumberFieldNames(schema)),
+    bigintFieldNames: immutableReadonlySet(schemaBigintFieldNames(schema)),
+    bigDecimalFieldNames: immutableReadonlySet(schemaBigDecimalFieldNames(schema)),
+    exactScalarEqualityFieldNames: immutableReadonlySet(
+      schemaExactScalarEqualityFieldNames(schema),
+    ),
+    rangeValueKinds: immutableRangeValueKinds(schemaRangeValueKinds(schema)),
+    valueSemantics: makeTopicRowValueSemantics(schema),
+  });
+  rawQueryCompilerMetadataSchemas.set(metadata, schema);
+  return metadata;
+};
+
+export const rawQueryCompilerMetadataMatchesSchema = <
+  SchemaValue extends Schema.Codec<object, unknown, never, never>,
+>(
+  metadata: RawQueryCompilerMetadata,
+  schema: SchemaValue,
+): metadata is RawQueryCompilerMetadata<SchemaValue["Type"]> =>
+  metadata.schema === schema &&
+  metadata[rawQueryCompilerMetadataSchema] === schema &&
+  rawQueryCompilerMetadataSchemas.get(metadata) === schema &&
+  topicRowValueSemanticsMatchesSchema(metadata.valueSemantics, schema);

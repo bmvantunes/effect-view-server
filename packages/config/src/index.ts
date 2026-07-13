@@ -69,6 +69,7 @@ export type {
   RowFromSchema,
   RowSchema,
   SchemaType,
+  Simplify,
   SortDirection,
   StringFieldKey,
   StringFilter,

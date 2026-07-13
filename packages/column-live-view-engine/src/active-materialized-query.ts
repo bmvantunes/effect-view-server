@@ -8,20 +8,14 @@ import type { QueryResultSemantics } from "./query-result-semantics";
 
 type RowObject = object;
 
-type ActiveMaterializedQueryExecution = {
+export type MaterializedQueryExecution = {
   readonly diagnostics: () => GroupedIncrementalExecutionDiagnosticCounts;
   readonly incremental: boolean;
   readonly latest: () => QueryEvaluation<object>;
 };
 
-export type MaterializedQueryExecution<ResultRow extends RowObject> = {
-  readonly diagnostics: () => GroupedIncrementalExecutionDiagnosticCounts;
-  readonly incremental: boolean;
-  readonly latest: () => QueryEvaluation<ResultRow>;
-};
-
 export type MaterializedQueryExecutionSlot = {
-  readonly execution: ActiveMaterializedQueryExecution;
+  readonly execution: MaterializedQueryExecution;
   readonly releaseRetainedChanges: () => void;
   refs: number;
 };
@@ -42,12 +36,12 @@ const getActiveMaterializedQueryMap = (
 
 const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
-  execution: ActiveMaterializedQueryExecution,
-  resultSemantics: QueryResultSemantics,
+  execution: MaterializedQueryExecution,
+  resultSemantics: QueryResultSemantics<ResultRow>,
 ): LiveQueryExecution<ResultRow> => {
-  const latestEvaluation = () => typedQueryEvaluation<ResultRow>(execution.latest());
+  const latestEvaluation = execution.latest;
 
-  return {
+  return Object.freeze({
     initial: (queryId): SnapshotEvent<ResultRow> =>
       snapshotEvent(store, queryId, latestEvaluation(), resultSemantics),
     createCursor: () => ({
@@ -66,23 +60,16 @@ const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
           deltaEvent(store, queryId, previous.version, next, operations, resultSemantics),
         );
       }),
-  };
+  });
 };
-
-function typedQueryEvaluation<ResultRow extends RowObject>(
-  evaluation: QueryEvaluation<object>,
-): QueryEvaluation<ResultRow>;
-function typedQueryEvaluation(evaluation: QueryEvaluation<object>): QueryEvaluation<object> {
-  return evaluation;
-}
 
 export const acquireMaterializedQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.acquire",
 )(function <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   cacheKey: string,
-  resultSemantics: QueryResultSemantics,
-  makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution<ResultRow>,
+  resultSemantics: QueryResultSemantics<ResultRow>,
+  makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution,
 ) {
   return Effect.sync(() => {
     const map = getActiveMaterializedQueryMap(store);

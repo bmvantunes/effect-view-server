@@ -10,18 +10,9 @@ import type { TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 
-export function typedGroupedEvaluation<ResultRow extends RowObject>(
-  evaluation: QueryEvaluation<RowObject>,
-): QueryEvaluation<ResultRow>;
-export function typedGroupedEvaluation(
-  evaluation: QueryEvaluation<RowObject>,
-): QueryEvaluation<RowObject> {
-  return evaluation;
-}
-
-const evaluateZeroLimitGroupedRows = <Row extends RowObject>(
+const evaluateZeroLimitGroupedRows = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRowScan<Row>,
-  plan: GroupedQueryPlan<Row>,
+  plan: GroupedQueryPlan<Row, ResultRow>,
   matches: (row: Row) => boolean,
 ): QueryEvaluation<RowObject> => {
   const groupKeys = new Set<string>();
@@ -33,9 +24,9 @@ const evaluateZeroLimitGroupedRows = <Row extends RowObject>(
   return emptyGroupedEvaluation(groupKeys.size, store.version());
 };
 
-export const evaluateGroupedRows = <Row extends RowObject>(
+export const evaluateGroupedRows = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRowScan<Row>,
-  plan: GroupedQueryPlan<Row>,
+  plan: GroupedQueryPlan<Row, ResultRow>,
   matches: (row: Row) => boolean,
 ): QueryEvaluation<RowObject> => {
   if (plan.zeroLimit) {

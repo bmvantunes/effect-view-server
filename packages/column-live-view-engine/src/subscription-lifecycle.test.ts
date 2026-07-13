@@ -15,8 +15,8 @@ import {
   acquireSubscriptionHandoff,
   closeInterruptedAcquiredSubscription,
 } from "./subscription-handoff";
-import { prepareRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
-import { prepareGroupedQuery } from "./grouped-query-compiler";
+import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
+import { prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
 import { makeQueryResultSemantics } from "./query-result-semantics";
 import {
@@ -346,7 +346,7 @@ describe("Subscription lifecycle ownership", () => {
       );
       expect(readModel.changesSince(0)).toBeUndefined();
 
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -405,7 +405,7 @@ describe("Subscription lifecycle ownership", () => {
       });
       const invalidRow = (topic: string, message: string) =>
         InvalidRowError.make({ topic, message });
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -512,7 +512,7 @@ describe("Subscription lifecycle ownership", () => {
       });
       const invalidRow = (topic: string, message: string) =>
         InvalidRowError.make({ topic, message });
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -634,7 +634,7 @@ describe("Subscription lifecycle ownership", () => {
   it.effect("interrupted topic-store close still releases subscribers and active queries", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
-      const compiled = yield* prepareRawQuery("orders", topicStoreRawQueryMetadata(store), {
+      const compiled = yield* prepareRuntimeRawQuery("orders", topicStoreRawQueryMetadata(store), {
         select: ["id"],
       });
       yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
@@ -671,7 +671,7 @@ describe("Subscription lifecycle ownership", () => {
   it.effect("interrupted topic-store reset still releases subscribers and active queries", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
-      const compiled = yield* prepareRawQuery("orders", topicStoreRawQueryMetadata(store), {
+      const compiled = yield* prepareRuntimeRawQuery("orders", topicStoreRawQueryMetadata(store), {
         select: ["id"],
       });
       yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);

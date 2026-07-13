@@ -21,10 +21,10 @@ export type QueryEvaluation<ResultRow extends RowObject> = {
   readonly version: number;
 };
 
-export const liveQueryResult = <Row extends RowObject>(
-  evaluation: QueryEvaluation<Row>,
-  semantics: QueryResultSemantics,
-): LiveQueryResult<Row> => ({
+export const liveQueryResult = <ResultRow extends RowObject>(
+  evaluation: QueryEvaluation<RowObject>,
+  semantics: QueryResultSemantics<ResultRow>,
+): LiveQueryResult<ResultRow> => ({
   rows: evaluation.rows.map((row) => semantics.materializeRow(row)),
   totalRows: evaluation.totalRows,
   version: evaluation.version,
@@ -32,10 +32,10 @@ export const liveQueryResult = <Row extends RowObject>(
   statusCode: "Ready",
 });
 
-export const liveQueryResultFromOwnedEvaluation = <Row extends RowObject>(
-  evaluation: QueryEvaluation<Row>,
-  semantics: QueryResultSemantics,
-): LiveQueryResult<Row> => ({
+export const liveQueryResultFromOwnedEvaluation = <ResultRow extends RowObject>(
+  evaluation: QueryEvaluation<RowObject>,
+  semantics: QueryResultSemantics<ResultRow>,
+): LiveQueryResult<ResultRow> => ({
   rows: evaluation.rows.map((row) => semantics.materializeOwnedRow(row)),
   totalRows: evaluation.totalRows,
   version: evaluation.version,
@@ -43,12 +43,12 @@ export const liveQueryResultFromOwnedEvaluation = <Row extends RowObject>(
   statusCode: "Ready",
 });
 
-export const snapshotEvent = <Row extends RowObject>(
+export const snapshotEvent = <ResultRow extends RowObject>(
   store: { readonly topic: string },
   queryId: string,
-  evaluation: QueryEvaluation<Row>,
-  semantics: QueryResultSemantics,
-): SnapshotEvent<Row> => ({
+  evaluation: QueryEvaluation<RowObject>,
+  semantics: QueryResultSemantics<ResultRow>,
+): SnapshotEvent<ResultRow> => ({
   type: "snapshot",
   topic: store.topic,
   queryId,
@@ -351,10 +351,10 @@ export const deltaOperations = <Row extends RowObject>(
   return operations;
 };
 
-const materializeDeltaOperations = <Row extends RowObject>(
-  operations: ReadonlyArray<DeltaOperation<Row>>,
-  semantics: QueryResultSemantics,
-): ReadonlyArray<DeltaOperation<Row>> =>
+const materializeDeltaOperations = <ResultRow extends RowObject>(
+  operations: ReadonlyArray<DeltaOperation<RowObject>>,
+  semantics: QueryResultSemantics<ResultRow>,
+): ReadonlyArray<DeltaOperation<ResultRow>> =>
   operations.map((operation) => {
     if (operation.type === "insert" || operation.type === "update") {
       return {
@@ -365,14 +365,14 @@ const materializeDeltaOperations = <Row extends RowObject>(
     return operation;
   });
 
-export const deltaEvent = <Row extends RowObject>(
+export const deltaEvent = <ResultRow extends RowObject>(
   store: { readonly topic: string },
   queryId: string,
   fromVersion: number,
-  next: QueryEvaluation<Row>,
-  operations: ReadonlyArray<DeltaOperation<Row>>,
-  semantics: QueryResultSemantics,
-): DeltaEvent<Row> => ({
+  next: QueryEvaluation<RowObject>,
+  operations: ReadonlyArray<DeltaOperation<RowObject>>,
+  semantics: QueryResultSemantics<ResultRow>,
+): DeltaEvent<ResultRow> => ({
   type: "delta",
   topic: store.topic,
   queryId,

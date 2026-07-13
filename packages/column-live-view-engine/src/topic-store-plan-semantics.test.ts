@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Equivalence, Schema } from "effect";
 import { evaluateRawQuery } from "./active-query";
 import { InvalidRowError } from "./index";
-import { prepareRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
+import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { publishTopicStoreRows, TopicStore } from "./topic-store";
 import { topicStoreReadModel } from "./topic-store-state";
 import { position, Position } from "../test-harness/public-engine";
@@ -46,7 +46,7 @@ describe("Topic Store plan semantics", () => {
         label: CaseInsensitiveString,
         suspendedLabel: Schema.suspend(() => Schema.String),
       });
-      const compiled = yield* prepareRawQuery<object, object>(
+      const compiled = yield* prepareRuntimeRawQuery(
         "caseInsensitiveRows",
         rawQueryCompilerMetadata(CaseInsensitiveRows),
         {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { InvalidQueryError } from "./index";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
-import { evaluateCompiledGroupedQuery, prepareGroupedQuery } from "./grouped-query-compiler";
-import { makeEngine, Order, position, Position } from "../test-harness/public-engine";
+import { evaluateCompiledGroupedQuery, prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
+import { makeEngine, position, Position } from "../test-harness/public-engine";
 import { normalizeDecimalAndBigIntFields } from "../test-harness/rows";
 
 describe("Grouped query compilation and evaluation", () => {
@@ -14,7 +15,7 @@ describe("Grouped query compilation and evaluation", () => {
           position(`row-${index}`, `symbol-${index}`, BigInt(index), "1"),
         ]),
       );
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -69,7 +70,7 @@ describe("Grouped query compilation and evaluation", () => {
         ["1", position("1", "AAPL", 10n, "1")],
         ["2", position("2", "MSFT", 20n, "1")],
       ]);
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -113,7 +114,7 @@ describe("Grouped query compilation and evaluation", () => {
         ["m-2", position("m-2", "MSFT", 15n, "1")],
         ["z-1", position("z-1", "ZZZZ", 1n, "1")],
       ]);
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -160,7 +161,7 @@ describe("Grouped query compilation and evaluation", () => {
         },
       ]);
 
-      const tiedCount = yield* prepareGroupedQuery<object, object>(
+      const tiedCount = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -194,7 +195,7 @@ describe("Grouped query compilation and evaluation", () => {
         },
       ]);
 
-      const tiedSingleCount = yield* prepareGroupedQuery<object, object>(
+      const tiedSingleCount = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -224,7 +225,7 @@ describe("Grouped query compilation and evaluation", () => {
         },
       ]);
 
-      const distinctCount = yield* prepareGroupedQuery<object, object>(
+      const distinctCount = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -255,7 +256,7 @@ describe("Grouped query compilation and evaluation", () => {
         },
       ]);
 
-      const fieldOrder = yield* prepareGroupedQuery<object, object>(
+      const fieldOrder = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -285,7 +286,7 @@ describe("Grouped query compilation and evaluation", () => {
         },
       ]);
 
-      const defaultOrder = yield* prepareGroupedQuery<object, object>(
+      const defaultOrder = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -319,7 +320,7 @@ describe("Grouped query compilation and evaluation", () => {
         quantity: Schema.BigInt,
         symbol: Schema.String,
       });
-      const zeroAverage = yield* prepareGroupedQuery<object, object>(
+      const zeroAverage = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(PositionForCompiler),
         {
@@ -359,7 +360,7 @@ describe("Grouped query compilation and evaluation", () => {
           position(`row-${index}`, `symbol-${index}`, BigInt(index), "1"),
         ]),
       );
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -410,7 +411,7 @@ describe("Grouped query compilation and evaluation", () => {
         ["bad", { id: "bad", symbol: "AAPL", quantity: "not-a-bigint" }],
         ["good", { id: "good", symbol: "AAPL", quantity: 3n }],
       ]);
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(PositionForCompiler),
         {
@@ -625,21 +626,35 @@ describe("Grouped query compilation and evaluation", () => {
         expect(error.message).toContain(invalidCase.message);
       }
 
-      const orderMetadata = rawQueryCompilerMetadata(Order);
-      const inconsistentMetadata = {
-        ...orderMetadata,
-        fieldMetadata: new Map(),
+      const nonNumericSumQuery: unknown = {
+        groupBy: ["status"],
+        aggregates: { total: { aggFunc: "sum", field: "status" } },
       };
-      const missingSumResultKind = yield* Effect.flip(
-        prepareGroupedQuery<typeof Order.Type, object>("orders", inconsistentMetadata, {
-          groupBy: ["status"],
-          aggregates: { totalPrice: { aggFunc: "sum", field: "price" } },
+      const nonNumericSum = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime grouped query is still handled by runtime guards.
+        engine.snapshot("orders", nonNumericSumQuery),
+      );
+      expect(nonNumericSum).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Grouped query aggregate total must reference a numeric field.",
         }),
       );
-      expect(missingSumResultKind).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("must reference a numeric field"),
-      });
+
+      const nonNumericAverageQuery: unknown = {
+        groupBy: ["status"],
+        aggregates: { average: { aggFunc: "avg", field: "status" } },
+      };
+      const nonNumericAverage = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime grouped query is still handled by runtime guards.
+        engine.snapshot("orders", nonNumericAverageQuery),
+      );
+      expect(nonNumericAverage).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Grouped query aggregate average must reference a numeric field.",
+        }),
+      );
     }),
   );
 });

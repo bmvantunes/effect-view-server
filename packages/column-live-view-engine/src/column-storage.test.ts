@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
-import { prepareRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
+import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
 import type { TopicRowEntry } from "./row-scan";
 import type { TopicRawOrderByPlan } from "./raw-window-scan";
 import {
@@ -230,7 +230,7 @@ it("keeps schema field order for aligned column writes", () => {
 
 it.effect("uses compiled raw row comparators for schema scalar fields and stable key ties", () =>
   Effect.gen(function* () {
-    const compiled = yield* prepareRawQuery<PositionRow, object>(
+    const compiled = yield* prepareRuntimeRawQuery(
       "positions",
       rawQueryCompilerMetadata(Position),
       {
@@ -312,17 +312,13 @@ it.effect("uses compiled raw row comparators for schema scalar fields and stable
 
 it.effect("falls back to stable raw row comparison for abnormal scalar order values", () =>
   Effect.gen(function* () {
-    const compiled = yield* prepareRawQuery<object, object>(
-      "orders",
-      rawQueryCompilerMetadata(Order),
-      {
-        select: ["id", "price", "note", "updatedAt"],
-        orderBy: [
-          { field: "updatedAt", direction: "asc" },
-          { field: "note", direction: "asc" },
-        ],
-      },
-    );
+    const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+      select: ["id", "price", "note", "updatedAt"],
+      orderBy: [
+        { field: "updatedAt", direction: "asc" },
+        { field: "note", direction: "asc" },
+      ],
+    });
     const rows: ReadonlyArray<TopicRowEntry<object>> = [
       { key: "nan", row: { id: "nan", price: 1, note: "b", updatedAt: Number.NaN } },
       { key: "finite-b", row: { id: "finite-b", price: 1, note: "b", updatedAt: 1 } },
@@ -345,7 +341,7 @@ it.effect(
   "falls back to stable raw row comparison for abnormal bigint and BigDecimal order values",
   () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRawQuery<object, object>(
+      const compiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {

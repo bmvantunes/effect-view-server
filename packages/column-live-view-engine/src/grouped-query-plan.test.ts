@@ -1,7 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Option, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
-import { makeGroupedQueryPlan } from "./grouped-query-plan";
+import type { RuntimeGroupedAggregate } from "./grouped-aggregate-state";
+import {
+  makeRuntimeGroupedQueryPlan,
+  type GroupedQueryPlanInput,
+  type RuntimeGroupedOrderBy,
+} from "./grouped-query-plan";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
 
 const GroupKeyRow = Schema.Struct({
@@ -22,8 +27,98 @@ const GroupKeyRow = Schema.Struct({
 const valueSemantics = rawQueryCompilerMetadata(GroupKeyRow).valueSemantics;
 
 describe("Grouped query planning", () => {
+  it("owns an immutable compiled proof graph independent from its source query", () => {
+    const groupBy = ["status"];
+    const rowCountAggregate: RuntimeGroupedAggregate = { aggFunc: "count" };
+    const totalAggregate: RuntimeGroupedAggregate = {
+      aggFunc: "sum",
+      field: "price",
+      resultKind: "bigDecimal",
+    };
+    const aggregates: Record<string, RuntimeGroupedAggregate> = {
+      rowCount: rowCountAggregate,
+      total: totalAggregate,
+    };
+    const orderBy: Array<RuntimeGroupedOrderBy> = [
+      { aggregate: "total", direction: "desc" },
+      { field: "status", direction: "asc" },
+    ];
+    const where: Record<string, unknown> = { status: "open" };
+    const query: GroupedQueryPlanInput = {
+      groupBy,
+      aggregates,
+      where,
+      orderBy,
+      offset: 1,
+      limit: 2,
+    };
+    const plan = makeRuntimeGroupedQueryPlan<object>(query, valueSemantics, "immutable-predicate");
+    const countPlan = Option.getOrThrow(
+      Option.fromNullishOr(plan.aggregatePlans.find((candidate) => candidate.kind === "count")),
+    );
+    const fieldPlan = Option.getOrThrow(
+      Option.fromNullishOr(plan.aggregatePlans.find((candidate) => candidate.kind === "field")),
+    );
+    const planTotalAggregate = Option.getOrThrow(Option.fromNullishOr(plan.aggregates["total"]));
+    const firstOrderBy = Option.getOrThrow(Option.fromNullishOr(plan.orderBy[0]));
+    const secondOrderBy = Option.getOrThrow(Option.fromNullishOr(plan.orderBy[1]));
+    const firstCompiledOrderBy = Option.getOrThrow(Option.fromNullishOr(plan.compiledOrderBy[0]));
+    const secondCompiledOrderBy = Option.getOrThrow(Option.fromNullishOr(plan.compiledOrderBy[1]));
+    const cacheKey = plan.cacheKey;
+
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.groupBy)).toBe(true);
+    expect(Object.isFrozen(planTotalAggregate)).toBe(true);
+    expect(Object.isFrozen(plan.aggregatePlans)).toBe(true);
+    expect(Object.isFrozen(countPlan)).toBe(true);
+    expect(Object.isFrozen(countPlan.aggregate)).toBe(true);
+    expect(Object.isFrozen(fieldPlan)).toBe(true);
+    expect(Object.isFrozen(fieldPlan.aggregate)).toBe(true);
+    expect(Object.isFrozen(fieldPlan.input)).toBe(true);
+    expect(Object.isFrozen(plan.orderBy)).toBe(true);
+    expect(Object.isFrozen(firstOrderBy)).toBe(true);
+    expect(Object.isFrozen(secondOrderBy)).toBe(true);
+    expect(Object.isFrozen(plan.compiledOrderBy)).toBe(true);
+    expect(Object.isFrozen(firstCompiledOrderBy)).toBe(true);
+    expect(Object.isFrozen(secondCompiledOrderBy)).toBe(true);
+    expect(Object.isFrozen(plan.resultSemantics)).toBe(true);
+    expect(plan.groupBy).not.toBe(groupBy);
+    expect(plan.aggregates).not.toBe(aggregates);
+    expect(plan.orderBy).not.toBe(orderBy);
+    expect(() => Array.prototype.push.call(plan.groupBy, "venue")).toThrowError(TypeError);
+    expect(() => Object.assign(planTotalAggregate, { field: "quantity" })).toThrowError(TypeError);
+    expect(() => Object.assign(fieldPlan.input, { field: "quantity" })).toThrowError(TypeError);
+    expect(() => Object.assign(firstOrderBy, { direction: "asc" })).toThrowError(TypeError);
+    expect(() => Object.assign(firstCompiledOrderBy, { direction: "asc" })).toThrowError(TypeError);
+    expect(() => Object.assign(plan, { offset: 10, limit: 20 })).toThrowError(TypeError);
+
+    groupBy.push("venue");
+    Object.assign(rowCountAggregate, { aggFunc: "avg", field: "price" });
+    Object.assign(totalAggregate, { field: "quantity", resultKind: "bigint" });
+    Reflect.deleteProperty(aggregates, "total");
+    Object.assign(Option.getOrThrow(Option.fromNullishOr(orderBy[0])), {
+      aggregate: "rowCount",
+      direction: "asc",
+    });
+    where["status"] = "closed";
+    Object.assign(query, { offset: 20, limit: 30 });
+
+    expect(plan.cacheKey).toBe(cacheKey);
+    expect(plan.groupBy).toStrictEqual(["status"]);
+    expect(plan.aggregates).toStrictEqual({
+      rowCount: { aggFunc: "count" },
+      total: { aggFunc: "sum", field: "price", resultKind: "bigDecimal" },
+    });
+    expect(plan.orderBy).toStrictEqual([
+      { aggregate: "total", direction: "desc" },
+      { field: "status", direction: "asc" },
+    ]);
+    expect(plan.offset).toBe(1);
+    expect(plan.limit).toBe(2);
+  });
+
   it("uses canonical field tokens for scalar grouped keys", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: [
           "status",
@@ -58,7 +153,7 @@ describe("Grouped query planning", () => {
   });
 
   it("normalizes BigDecimal grouped key identity through its canonical codec", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: ["status", "decimalPrice", "venue"],
         aggregates: {
@@ -85,7 +180,7 @@ describe("Grouped query planning", () => {
   });
 
   it("uses key-order-neutral canonical tokens for structured grouped values", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: ["status", "payload", "venue"],
         aggregates: {
@@ -112,7 +207,7 @@ describe("Grouped query planning", () => {
   });
 
   it("reads each grouped key field once", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: ["status", "payload", "venue"],
         aggregates: {
@@ -160,7 +255,7 @@ describe("Grouped query planning", () => {
   });
 
   it("caches canonical tokens for engine-owned structured values", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: ["status", "payload"],
         aggregates: {
@@ -194,7 +289,7 @@ describe("Grouped query planning", () => {
   });
 
   it("distinguishes a missing aggregate input from a present undefined value", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: ["status"],
         aggregates: {
@@ -219,6 +314,7 @@ describe("Grouped query planning", () => {
     );
     expect(aggregatePlan.input.equivalent(missing, presentUndefined)).toBe(false);
     expect(aggregatePlan.input.equivalent(presentUndefined, secondPresentUndefined)).toBe(true);
+    expect(aggregatePlan.input.compare(missing, missing)).toBe(0);
     expect(aggregatePlan.input.compare(missing, presentUndefined)).toBe(-1);
     expect(aggregatePlan.input.compare(presentUndefined, missing)).toBe(1);
     expect(aggregatePlan.input.compare(presentUndefined, secondPresentUndefined)).toBe(0);
@@ -226,7 +322,7 @@ describe("Grouped query planning", () => {
   });
 
   it("distinguishes a missing grouped field from a present value shaped like the token", () => {
-    const plan = makeGroupedQueryPlan<object>(
+    const plan = makeRuntimeGroupedQueryPlan<object>(
       {
         groupBy: ["collision"],
         aggregates: {

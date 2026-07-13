@@ -7,7 +7,7 @@ import {
   releaseMaterializedQueryExecution,
 } from "./active-query";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
-import { prepareGroupedQuery } from "./grouped-query-compiler";
+import { prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
 import type { TopicRowChangeBatch } from "./row-scan";
 import { publishTopicStoreRow, TopicStore } from "./topic-store";
@@ -179,7 +179,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -276,7 +276,7 @@ describe("Grouped incremental query execution", () => {
       };
       let fullEvaluationCount = 0;
       let patchedEvaluationCount = 0;
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -464,7 +464,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -540,7 +540,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -625,7 +625,7 @@ describe("Grouped incremental query execution", () => {
       };
       let fullEvaluationCount = 0;
       let patchedEvaluationCount = 0;
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -719,7 +719,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -930,7 +930,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -1007,7 +1007,7 @@ describe("Grouped incremental query execution", () => {
           { aggFunc: "max", field: "updatedAt" },
         ]),
       );
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -1040,7 +1040,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => 0,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -1075,7 +1075,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => 0,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -1121,7 +1121,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -1161,7 +1161,7 @@ describe("Grouped incremental query execution", () => {
           },
           version: () => version,
         };
-        const compiled = yield* prepareGroupedQuery<object, object>(
+        const compiled = yield* prepareRuntimeGroupedQuery(
           "orders",
           rawQueryCompilerMetadata(Order),
           {
@@ -1216,7 +1216,7 @@ describe("Grouped incremental query execution", () => {
           },
           version: () => version,
         };
-        const compiled = yield* prepareGroupedQuery<object, object>(
+        const compiled = yield* prepareRuntimeGroupedQuery(
           "positions",
           rawQueryCompilerMetadata(Position),
           {
@@ -1264,7 +1264,7 @@ describe("Grouped incremental query execution", () => {
           },
           version: () => version,
         };
-        const compiled = yield* prepareGroupedQuery<object, object>(
+        const compiled = yield* prepareRuntimeGroupedQuery(
           "positions",
           rawQueryCompilerMetadata(Position),
           {
@@ -1309,7 +1309,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -1355,7 +1355,7 @@ describe("Grouped incremental query execution", () => {
         },
         version: () => version,
       };
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -1407,7 +1407,7 @@ describe("Grouped incremental query execution", () => {
         InvalidRowError.make({ topic, message }),
       );
       const readModel = topicStoreReadModel(store);
-      const compiled = yield* prepareGroupedQuery<object, object>(
+      const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {

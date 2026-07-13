@@ -1,10 +1,21 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { format, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
-import { InvalidRowError } from "./index";
+import {
+  defaultGroupedIncrementalAdmissionLimits,
+  InvalidQueryError,
+  InvalidRowError,
+} from "./index";
 import { TopicRowStorage } from "./topic-row-storage";
 import { evaluateRawQuery } from "./active-query";
-import { prepareRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
+import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
+import { subscribeGroupedExecutableQuery, subscribeRawExecutableQuery } from "./query-execution";
+import {
+  collectTopicStoreActiveQueryCounts,
+  makeTopicStoreSubscriptionPermit,
+  TopicStore,
+  topicStoreState,
+} from "./topic-store-state";
 import {
   instrument,
   Instrument,
@@ -15,6 +26,91 @@ import {
 } from "../test-harness/public-engine";
 
 describe("Topic Store query execution", () => {
+  it.effect("rejects unrelated authentic raw metadata before subscription state acquisition", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      const error = yield* Effect.flip(
+        subscribeRawExecutableQuery(
+          rawQueryCompilerMetadata(Position),
+          {
+            select: ["symbol"],
+          },
+          {
+            groupedIncrementalAdmissionLimits: defaultGroupedIncrementalAdmissionLimits,
+            permit: makeTopicStoreSubscriptionPermit(store),
+            queryId: "unrelated-raw-proof",
+            queueCapacity: 8,
+            terminalObserver: {
+              onQueryRegistered: () => Effect.void,
+              onTerminalOccurrence: () => Effect.void,
+              onTerminalReady: () => Effect.void,
+            },
+          },
+        ),
+      );
+
+      expect(error).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Topic Store schema does not match the compiled query proof schema.",
+        }),
+      );
+      expect(yield* collectTopicStoreActiveQueryCounts(store)).toStrictEqual({
+        activeFallbackGroupedViews: 0,
+        activeIncrementalGroupedViews: 0,
+        activeViews: 0,
+        groupedFullEvaluationCount: 0,
+        groupedPatchedEvaluationCount: 0,
+      });
+      expect(topicStoreState(store).subscribers.size).toBe(0);
+    }),
+  );
+
+  it.effect(
+    "rejects unrelated authentic grouped metadata before subscription state acquisition",
+    () =>
+      Effect.gen(function* () {
+        const store = new TopicStore("orders", Order, "id", () => {});
+        const error = yield* Effect.flip(
+          subscribeGroupedExecutableQuery(
+            rawQueryCompilerMetadata(Position),
+            {
+              groupBy: ["symbol"],
+              aggregates: {
+                rowCount: { aggFunc: "count" },
+              },
+            },
+            {
+              groupedIncrementalAdmissionLimits: defaultGroupedIncrementalAdmissionLimits,
+              permit: makeTopicStoreSubscriptionPermit(store),
+              queryId: "unrelated-grouped-proof",
+              queueCapacity: 8,
+              terminalObserver: {
+                onQueryRegistered: () => Effect.void,
+                onTerminalOccurrence: () => Effect.void,
+                onTerminalReady: () => Effect.void,
+              },
+            },
+          ),
+        );
+
+        expect(error).toStrictEqual(
+          InvalidQueryError.make({
+            topic: "orders",
+            message: "Topic Store schema does not match the compiled query proof schema.",
+          }),
+        );
+        expect(yield* collectTopicStoreActiveQueryCounts(store)).toStrictEqual({
+          activeFallbackGroupedViews: 0,
+          activeIncrementalGroupedViews: 0,
+          activeViews: 0,
+          groupedFullEvaluationCount: 0,
+          groupedPatchedEvaluationCount: 0,
+        });
+        expect(topicStoreState(store).subscribers.size).toBe(0);
+      }),
+  );
+
   it.effect("evaluates raw queries through the storage scan interface", () =>
     Effect.gen(function* () {
       const rows = [
@@ -23,22 +119,18 @@ describe("Topic Store query execution", () => {
         { key: "open-a", row: order("open-a", "open", 20, 4) },
         { key: "open-low", row: order("open-low", "open", 10, 2) },
       ];
-      const compiled = yield* prepareRawQuery<object, object>(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
-          select: ["id", "price"],
-          where: {
-            status: "open",
-          },
-          orderBy: [
-            {
-              field: "price",
-              direction: "desc",
-            },
-          ],
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id", "price"],
+        where: {
+          status: "open",
         },
-      );
+        orderBy: [
+          {
+            field: "price",
+            direction: "desc",
+          },
+        ],
+      });
       const evaluation = evaluateRawQuery(
         {
           scanRawWindow: (plan) => {
@@ -98,21 +190,18 @@ describe("Topic Store query execution", () => {
 
   it.effect("projects raw snapshots from carried storage slots", () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRawQuery<object, object>(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
-          select: ["id", "price"],
-        },
-      );
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id", "price"],
+      });
       let slotForKeyCalls = 0;
+      const projectedRow = {
+        id: "projected-from-slot-2",
+        price: 20,
+      };
       const evaluation = evaluateRawQuery(
         {
           keyAtSlot: (slot) => `key-at-slot-${slot}`,
-          projectRawRow: (slot) => ({
-            id: `projected-from-slot-${slot}`,
-            price: slot * 10,
-          }),
+          projectRawRow: () => projectedRow,
           scanRawWindow: () => ({
             keys: ["key-at-slot-2"],
             window: [
@@ -153,19 +242,16 @@ describe("Topic Store query execution", () => {
           },
         ],
       });
+      expect(evaluation.rows[0]).toBe(projectedRow);
       expect(slotForKeyCalls).toBe(0);
     }),
   );
 
   it.effect("falls back to key lookup when a carried storage slot is stale", () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRawQuery<object, object>(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
-          select: ["id", "price"],
-        },
-      );
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id", "price"],
+      });
       let slotForKeyCalls = 0;
       const slotsByKey = new Map([["moved-row", 3]]);
       const evaluation = evaluateRawQuery(
@@ -234,15 +320,11 @@ describe("Topic Store query execution", () => {
       storage.delete("retained");
       storage.advanceVersion();
 
-      const compiled = yield* prepareRawQuery<object, object>(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
-          select: ["id", "price", "updatedAt"],
-          orderBy: [{ field: "price", direction: "desc" }],
-          limit: 2,
-        },
-      );
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id", "price", "updatedAt"],
+        orderBy: [{ field: "price", direction: "desc" }],
+        limit: 2,
+      });
       const evaluation = evaluateRawQuery(storage.readModel, compiled);
 
       expect(evaluation).toStrictEqual({
@@ -293,7 +375,7 @@ describe("Topic Store query execution", () => {
         { key: "open-high", row: order("open-high", "open", 20, 2) },
         { key: "open-low", row: order("open-low", "open", 10, 3) },
       ];
-      const booleanCompiled = yield* prepareRawQuery<object, object>(
+      const booleanCompiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -301,7 +383,7 @@ describe("Topic Store query execution", () => {
           orderBy: [{ field: "active", direction: "asc" }],
         },
       );
-      const orderCompiled = yield* prepareRawQuery<object, object>(
+      const orderCompiled = yield* prepareRuntimeRawQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -353,44 +435,50 @@ describe("Topic Store query execution", () => {
 
   it.effect("passes typed scalar predicate plans to the storage scan interface", () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRawQuery<object, object>(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
-          select: ["id"],
-          where: {
-            status: {
-              neq: "cancelled",
-              in: ["open", "closed"],
-            },
-            price: {
-              neq: 50,
-              gt: 1,
-              gte: 2,
-              lt: 100,
-              lte: 99,
-            },
-            customerId: {
-              startsWith: "customer-",
-            },
-            region: "emea",
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id"],
+        where: {
+          status: {
+            neq: "cancelled",
+            in: ["open", "closed"],
           },
-          orderBy: [
-            {
-              field: "region",
-              direction: "asc",
-            },
-            {
-              field: "price",
-              direction: "desc",
-            },
-          ],
+          price: {
+            neq: 50,
+            gt: 1,
+            gte: 2,
+            lt: 100,
+            lte: 99,
+          },
+          customerId: {
+            startsWith: "customer-",
+          },
+          region: "emea",
         },
-      );
+        orderBy: [
+          {
+            field: "region",
+            direction: "asc",
+          },
+          {
+            field: "price",
+            direction: "desc",
+          },
+        ],
+      });
       const evaluation = evaluateRawQuery(
         {
           scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
+            expect({
+              ...plan.predicate,
+              filters: plan.predicate.filters.map((filter) =>
+                filter.operator === "in"
+                  ? {
+                      ...filter,
+                      valueKeys: [...(filter.valueKeys ?? [])],
+                    }
+                  : filter,
+              ),
+            }).toStrictEqual({
               filters: [
                 {
                   field: "status",
@@ -401,7 +489,7 @@ describe("Topic Store query execution", () => {
                   field: "status",
                   operator: "in",
                   values: ["open", "closed"],
-                  valueKeys: new Set(["string:4:open", "string:6:closed"]),
+                  valueKeys: ["string:4:open", "string:6:closed"],
                 },
                 {
                   field: "price",
@@ -475,7 +563,7 @@ describe("Topic Store query execution", () => {
   it.effect("passes indexed scalar in predicate keys to the storage scan interface", () =>
     Effect.gen(function* () {
       const matchedPrice = fromStringUnsafe("1.0");
-      const positionCompiled = yield* prepareRawQuery<object, object>(
+      const positionCompiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -506,6 +594,7 @@ describe("Topic Store query execution", () => {
                       values: filter.values.map((value) =>
                         isBigDecimal(value) ? format(value) : value,
                       ),
+                      valueKeys: [...(filter.valueKeys ?? [])],
                     }
                   : filter,
               ),
@@ -515,19 +604,19 @@ describe("Topic Store query execution", () => {
                   field: "active",
                   operator: "in",
                   values: [true],
-                  valueKeys: new Set(["boolean:true"]),
+                  valueKeys: ["boolean:true"],
                 },
                 {
                   field: "quantity",
                   operator: "in",
                   values: [20n],
-                  valueKeys: new Set(["bigint:20"]),
+                  valueKeys: ["bigint:20"],
                 },
                 {
                   field: "price",
                   operator: "in",
                   values: ["1"],
-                  valueKeys: new Set(["bigDecimal:1"]),
+                  valueKeys: ["bigDecimal:1"],
                 },
               ],
               callbackRequired: false,
@@ -557,7 +646,7 @@ describe("Topic Store query execution", () => {
         id: Schema.String,
         note: Schema.NullOr(Schema.String),
       });
-      const nullableCompiled = yield* prepareRawQuery<object, object>(
+      const nullableCompiled = yield* prepareRuntimeRawQuery(
         "nullableMetrics",
         rawQueryCompilerMetadata(NullableMetric),
         {
@@ -573,13 +662,23 @@ describe("Topic Store query execution", () => {
       const nullableEvaluation = evaluateRawQuery(
         {
           scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
+            expect({
+              ...plan.predicate,
+              filters: plan.predicate.filters.map((filter) =>
+                filter.operator === "in"
+                  ? {
+                      ...filter,
+                      valueKeys: [...(filter.valueKeys ?? [])],
+                    }
+                  : filter,
+              ),
+            }).toStrictEqual({
               filters: [
                 {
                   field: "note",
                   operator: "in",
                   values: [null, "x"],
-                  valueKeys: new Set(["null", "string:1:x"]),
+                  valueKeys: ["null", "string:1:x"],
                 },
               ],
               callbackRequired: false,
@@ -610,7 +709,7 @@ describe("Topic Store query execution", () => {
     Effect.gen(function* () {
       const excludedPrice = fromStringUnsafe("0");
       const maxPrice = fromStringUnsafe("100");
-      const compiled = yield* prepareRawQuery<object, object>(
+      const compiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -629,7 +728,17 @@ describe("Topic Store query execution", () => {
       const evaluation = evaluateRawQuery(
         {
           scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
+            expect({
+              ...plan.predicate,
+              filters: plan.predicate.filters.map((filter) =>
+                "value" in filter && isBigDecimal(filter.value)
+                  ? {
+                      ...filter,
+                      value: format(filter.value),
+                    }
+                  : filter,
+              ),
+            }).toStrictEqual({
               filters: [
                 {
                   field: "quantity",
@@ -639,12 +748,12 @@ describe("Topic Store query execution", () => {
                 {
                   field: "price",
                   operator: "neq",
-                  value: excludedPrice,
+                  value: "0",
                 },
                 {
                   field: "price",
                   operator: "lt",
-                  value: maxPrice,
+                  value: "100",
                 },
               ],
               callbackRequired: false,
@@ -677,7 +786,7 @@ describe("Topic Store query execution", () => {
         score: Schema.Literal(1),
         bucket: Schema.Literal(1n),
       });
-      const compiled = yield* prepareRawQuery<object, object>(
+      const compiled = yield* prepareRuntimeRawQuery(
         "literalMetrics",
         rawQueryCompilerMetadata(LiteralMetrics),
         {
@@ -731,29 +840,25 @@ describe("Topic Store query execution", () => {
 
   it.effect("keeps malformed scalar operators callback-only in the storage scan plan", () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRawQuery<object, object>(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
-          select: ["id"],
-          where: {
-            status: {
-              eq: undefined,
-              in: [undefined],
-            },
-            price: {
-              gt: undefined,
-              gte: "9",
-              lt: Number.NaN,
-              lte: fromStringUnsafe("50"),
-            },
-            customerId: {
-              startsWith: 1,
-            },
-            note: undefined,
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id"],
+        where: {
+          status: {
+            eq: undefined,
+            in: [undefined],
           },
+          price: {
+            gt: undefined,
+            gte: "9",
+            lt: Number.NaN,
+            lte: fromStringUnsafe("50"),
+          },
+          customerId: {
+            startsWith: 1,
+          },
+          note: undefined,
         },
-      );
+      });
       const evaluation = evaluateRawQuery(
         {
           scanRawWindow: (plan) => {
@@ -779,7 +884,7 @@ describe("Topic Store query execution", () => {
       expect(evaluation.totalRows).toBe(0);
       expect(evaluation.version).toBe(14);
 
-      const structuredScalarCompiled = yield* prepareRawQuery<object, object>(
+      const structuredScalarCompiled = yield* prepareRuntimeRawQuery(
         "orders",
         rawQueryCompilerMetadata(Order),
         {
@@ -821,7 +926,7 @@ describe("Topic Store query execution", () => {
       expect(structuredScalarEvaluation.totalRows).toBe(0);
       expect(structuredScalarEvaluation.version).toBe(17);
 
-      const bigintCompiled = yield* prepareRawQuery<object, object>(
+      const bigintCompiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -858,7 +963,7 @@ describe("Topic Store query execution", () => {
       expect(bigintEvaluation.totalRows).toBe(0);
       expect(bigintEvaluation.version).toBe(15);
 
-      const bigDecimalCompiled = yield* prepareRawQuery<object, object>(
+      const bigDecimalCompiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -895,7 +1000,7 @@ describe("Topic Store query execution", () => {
       expect(bigDecimalEvaluation.totalRows).toBe(0);
       expect(bigDecimalEvaluation.version).toBe(16);
 
-      const booleanCompiled = yield* prepareRawQuery<object, object>(
+      const booleanCompiled = yield* prepareRuntimeRawQuery(
         "positions",
         rawQueryCompilerMetadata(Position),
         {
@@ -938,7 +1043,7 @@ describe("Topic Store query execution", () => {
         amount: Schema.Union([Schema.Number, Schema.BigInt, Schema.BigDecimal]),
       });
       const mixedNumericRangeError = yield* Effect.flip(
-        prepareRawQuery<object, object>("mixedNumeric", rawQueryCompilerMetadata(MixedNumeric), {
+        prepareRuntimeRawQuery("mixedNumeric", rawQueryCompilerMetadata(MixedNumeric), {
           select: ["id"],
           where: {
             amount: {
@@ -955,7 +1060,7 @@ describe("Topic Store query execution", () => {
 
   it.effect("keeps structured object predicates callback-only in the storage scan plan", () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRawQuery<object, object>(
+      const compiled = yield* prepareRuntimeRawQuery(
         "instruments",
         rawQueryCompilerMetadata(Instrument),
         {

@@ -73,6 +73,64 @@ export const viewServerReact = createViewServerReact(viewServer);
 export const { ViewServerProvider, useLiveQuery, useViewServerHealthSummary } = viewServerReact;
 ```
 
+### Schema value admission
+
+Topic values must have one canonical identity across the in-memory engine, gRPC,
+and the NDJSON Wire Protocol. Use ordinary Effect Schema constructors for
+JSON-faithful primitives and structural composition. Use `viewSchema` for the
+supported Effect values whose runtime equality or codec requires an explicit
+View Server identity witness:
+
+- `viewSchema.BigDecimal`
+- `viewSchema.Option(value)`
+- `viewSchema.Chunk(value)`
+- `viewSchema.HashMap(key, value)`
+- `viewSchema.HashSet(value)`
+
+Define a concrete `Schema.Class` normally, then admit that exact class before
+using it in a Topic schema:
+
+```ts
+import { defineViewServerConfig, viewSchema } from "effect-view-server/config";
+import { Schema } from "effect";
+
+class Profile extends Schema.Class<Profile>("Profile")(
+  {
+    id: Schema.String,
+    score: Schema.NumberFromString,
+    backup: viewSchema.Option(Schema.String),
+  },
+  { title: "Profile" },
+) {
+  label(): string {
+    return `${this.id}:${this.score}`;
+  }
+}
+
+viewSchema.admitClass(Profile);
+
+export const profiles = defineViewServerConfig({
+  topics: {
+    profiles: {
+      schema: Profile,
+      key: "id",
+    },
+  },
+});
+```
+
+Admission is attached to the exact schema declaration and is idempotent, so the
+same concrete class may be admitted more than once and independent classes are
+admitted separately. Supply class annotations in the `Schema.Class` definition
+before admission. Derived codecs produced by operations such as
+`Profile.annotate(...)` are distinct schemas and do not inherit admission or the
+root Class field Interface.
+
+The Topic Row type is derived from `Profile.fields`. Class methods remain
+available on decoded `Profile` instances, but they are not Topic columns and
+cannot appear in keys, source mappings, `select`, `where`, `orderBy`, `groupBy`,
+aggregates, or patches.
+
 Topics without `kafkaSource` or `grpcSource` are externally/manual published
 topics, for example through TCP publish or an in-memory test client. A topic can
 only have one source owner.

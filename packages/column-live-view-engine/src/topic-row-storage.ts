@@ -1,4 +1,5 @@
-import { Effect, Schema } from "effect";
+import type { RowSchema } from "@effect-view-server/config";
+import { Effect } from "effect";
 import { createActiveQueryRegistry, type ActiveQueryStoreState } from "./active-query";
 import type {
   TopicRowChange,
@@ -16,7 +17,7 @@ import type {
 import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { OrderedSlotIndex, RawStorageOrderColumn } from "./topic-ordered-window";
 import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
-import { cloneUnknown, rowsEqual, trustedFieldValue } from "./row-values";
+import { trustedFieldValue } from "./row-values";
 import {
   columnValue,
   createTopicColumnValues,
@@ -56,13 +57,13 @@ import {
   compareSlotsByStorageOrder,
   compiledRawStorageOrder,
 } from "./topic-raw-ordered-window-index";
+import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
 
 type RowObject = object;
 
 type RawProjectionColumn = {
   readonly column: MutableTopicColumnValues;
   readonly field: string;
-  readonly shouldClone: boolean;
 };
 
 type AppendBatchReservation = {
@@ -81,6 +82,7 @@ const noopAppendBatchReservation: AppendBatchReservation = {
 export class TopicRowStorage {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
   readonly readModel: ActiveQueryStoreState;
+  readonly valueSemantics: TopicRowValueSemantics;
 
   private readonly slots: Array<TopicRowEntry<object>> = [];
   private readonly keyToSlot = new Map<string, number>();
@@ -109,12 +111,13 @@ export class TopicRowStorage {
 
   constructor(
     readonly topic: string,
-    schema: Schema.Codec<object, unknown, never, unknown>,
+    schema: RowSchema,
     keyField: string,
     rowChangeJournalLimits?: TopicRowChangeJournalLimits,
   ) {
     this.rowChangeJournal = new TopicRowChangeJournal<object>(rowChangeJournalLimits);
     this.rawQueryMetadata = rawQueryCompilerMetadata(schema);
+    this.valueSemantics = this.rawQueryMetadata.valueSemantics;
     this.rawWindowScanState = {
       columns: this.columns,
       orderedSlotIndexes: this.orderedSlotIndexes,
@@ -127,6 +130,7 @@ export class TopicRowStorage {
       fieldNames: this.rawQueryMetadata.fieldNames,
       keyField,
       schema,
+      semantics: this.valueSemantics,
       topic,
     };
     for (const field of this.rawQueryMetadata.fieldNames) {
@@ -293,9 +297,18 @@ export class TopicRowStorage {
 
   private projectRawRow(slot: number, selectedFields: ReadonlyArray<string>): RowObject {
     const projected: Record<string, unknown> = {};
+    const row = this.slots[slot]!.row;
     for (const projection of this.rawProjectionPlan(selectedFields)) {
+      if (!Object.prototype.propertyIsEnumerable.call(row, projection.field)) {
+        continue;
+      }
       const value = columnValue(projection.column, slot);
-      projected[projection.field] = projection.shouldClone ? cloneUnknown(value) : value;
+      Object.defineProperty(projected, projection.field, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true,
+      });
     }
     return projected;
   }
@@ -425,7 +438,6 @@ export class TopicRowStorage {
       return {
         column,
         field,
-        shouldClone: column.kind === "generic",
       };
     });
     this.rawProjectionPlans.set(selectedFields, plan);
@@ -583,7 +595,7 @@ export class TopicRowStorage {
     slot: number,
   ): PreparedTopicRowReplacement | undefined {
     const previous = this.slots[slot]!.row;
-    if (rowsEqual(previous, prepared.row)) {
+    if (this.valueSemantics.equivalentRows(previous, prepared.row)) {
       return undefined;
     }
     if (prepared.source === "row") {
@@ -597,6 +609,7 @@ export class TopicRowStorage {
         previous,
         prepared.row,
         this.rawQueryMetadata.fieldNames,
+        (field, left, right) => this.valueSemantics.equivalentField(field, left, right),
       ),
       previous,
     };

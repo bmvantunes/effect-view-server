@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { Effect, Schema, SchemaGetter } from "effect";
+import { Effect, Schema } from "effect";
 import { defineViewServerConfig, kafka, kafkaErrorIsMapping } from "./index";
 import { decodeKafkaTopicMessage, isKafkaResolvedSourceTopicDefinition } from "./kafka-contract";
 import { isKafkaTopicSourceDefinition, makeKafkaSourceTopicsForConfig } from "./internal";
@@ -322,29 +322,30 @@ describe("Kafka source contracts", () => {
         message: "Failed to map Kafka payload",
       });
 
+      const nonStringRowKeySource = kafka.source({
+        topic: "orders-non-string-row-key-source",
+        regions: ["usa"],
+        value: ordersValueKafkaCodec,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      forceKafkaSourceRowKeyForRuntimeGuard(nonStringRowKeySource, () => 123);
       const nonStringRowKeyViewServer = defineViewServerConfig({
         kafka: kafkaRegions,
         topics: {
           orders: {
             schema: Order,
             key: "id",
-            kafkaSource: kafka.source({
-              topic: "orders-non-string-row-key-source",
-              regions: ["usa"],
-              value: ordersValueKafkaCodec,
-              rowKey: ({ key }) => key,
-              map: ({ value, region }) => ({
-                customerId: value.customerId,
-                status: value.status,
-                price: value.price,
-                region,
-                updatedAt: value.updatedAt,
-              }),
-            }),
+            kafkaSource: nonStringRowKeySource,
           },
         },
       });
-      forceKafkaSourceRowKeyForRuntimeGuard(nonStringRowKeyViewServer, () => 123);
       const nonStringRowKeySourceTopic =
         makeKafkaSourceTopicsForConfig(nonStringRowKeyViewServer)[0]!;
       const nonStringRowKeyFailure = yield* Effect.flip(
@@ -368,34 +369,35 @@ describe("Kafka source contracts", () => {
       );
       expect(kafkaErrorIsMapping(nonStringRowKeyFailure)).toBe(true);
 
+      const schemaInvalidMappedRowSource = kafka.source({
+        topic: "orders-schema-invalid-mapped-row-source",
+        regions: ["usa"],
+        value: ordersValueKafkaCodec,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      forceKafkaSourceMapForRuntimeGuard(schemaInvalidMappedRowSource, () => ({
+        customerId: "customer-schema-invalid-mapped-row",
+        price: 1,
+        region: "usa",
+        updatedAt: 1,
+      }));
       const schemaInvalidMappedRowViewServer = defineViewServerConfig({
         kafka: kafkaRegions,
         topics: {
           orders: {
             schema: Order,
             key: "id",
-            kafkaSource: kafka.source({
-              topic: "orders-schema-invalid-mapped-row-source",
-              regions: ["usa"],
-              value: ordersValueKafkaCodec,
-              rowKey: ({ key }) => key,
-              map: ({ value, region }) => ({
-                customerId: value.customerId,
-                status: value.status,
-                price: value.price,
-                region,
-                updatedAt: value.updatedAt,
-              }),
-            }),
+            kafkaSource: schemaInvalidMappedRowSource,
           },
         },
       });
-      forceKafkaSourceMapForRuntimeGuard(schemaInvalidMappedRowViewServer, () => ({
-        customerId: "customer-schema-invalid-mapped-row",
-        price: 1,
-        region: "usa",
-        updatedAt: 1,
-      }));
       const schemaInvalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
         schemaInvalidMappedRowViewServer,
       )[0]!;
@@ -426,35 +428,36 @@ describe("Kafka source contracts", () => {
         message: "Kafka mapped row failed topic schema",
       });
 
-      const invalidMappedRowViewServer = defineViewServerConfig({
-        kafka: kafkaRegions,
-        topics: {
-          orders: {
-            schema: Order,
-            key: "id",
-            kafkaSource: kafka.source({
-              topic: "orders-invalid-mapped-row-source",
-              regions: ["usa"],
-              value: ordersValueKafkaCodec,
-              rowKey: ({ key }) => key,
-              map: ({ value, region }) => ({
-                customerId: value.customerId,
-                status: value.status,
-                price: value.price,
-                region,
-                updatedAt: value.updatedAt,
-              }),
-            }),
-          },
-        },
+      const invalidMappedRowSource = kafka.source({
+        topic: "orders-invalid-mapped-row-source",
+        regions: ["usa"],
+        value: ordersValueKafkaCodec,
+        rowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region,
+          updatedAt: value.updatedAt,
+        }),
       });
-      forceKafkaSourceMapForRuntimeGuard(invalidMappedRowViewServer, () => ({
+      forceKafkaSourceMapForRuntimeGuard(invalidMappedRowSource, () => ({
         id: "order-invalid-mapped-row",
         customerId: "customer-invalid-mapped-row",
         price: 1,
         region: "usa",
         updatedAt: 1,
       }));
+      const invalidMappedRowViewServer = defineViewServerConfig({
+        kafka: kafkaRegions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: invalidMappedRowSource,
+          },
+        },
+      });
       const invalidMappedRowSourceTopic = makeKafkaSourceTopicsForConfig(
         invalidMappedRowViewServer,
       )[0]!;
@@ -485,14 +488,7 @@ describe("Kafka source contracts", () => {
         message: "Kafka mapped row must not include the configured row key field",
       });
 
-      const KeyTransformId = Schema.String.pipe(
-        Schema.decodeTo(Schema.String, {
-          decode: SchemaGetter.transform((value) => `decoded-${value}`),
-          encode: SchemaGetter.transform((value) =>
-            value.startsWith("decoded-") ? value.slice("decoded-".length) : value,
-          ),
-        }),
-      );
+      const KeyTransformId = Schema.StringFromUriComponent;
       const KeyTransformOrder = Schema.Struct({
         id: KeyTransformId,
         customerId: Schema.String,
@@ -826,7 +822,7 @@ describe("Kafka source contracts", () => {
       "View Server topic orders has an invalid Kafka source.",
     );
 
-    const erasedPrimitiveSourceViewServer = defineViewServerConfig({
+    const erasedPrimitiveSourceViewServer = {
       kafka: kafkaRegions,
       topics: {
         orders: {
@@ -848,7 +844,7 @@ describe("Kafka source contracts", () => {
           }),
         },
       },
-    });
+    };
     Object.defineProperty(erasedPrimitiveSourceViewServer.topics.orders, "kafkaSource", {
       value: "not-a-source",
     });

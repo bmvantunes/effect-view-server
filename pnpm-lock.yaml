@@ -811,6 +811,9 @@ importers:
       '@effect-view-server/config':
         specifier: workspace:*
         version: link:../config
+      '@effect-view-server/effect-utils':
+        specifier: workspace:*
+        version: link:../effect-utils
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.91
@@ -993,6 +996,9 @@ importers:
       '@effect-view-server/config':
         specifier: workspace:*
         version: link:../config
+      '@effect-view-server/effect-utils':
+        specifier: workspace:*
+        version: link:../effect-utils
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.91

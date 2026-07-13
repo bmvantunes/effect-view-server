@@ -10,7 +10,9 @@ import {
   releaseRawQueryExecution,
 } from "./active-query";
 import { replaceRetainedMatchingEntryAtIndex } from "./active-raw-query";
+import { prepareGroupedQuery } from "./grouped-query-compiler";
 import { prepareRawQuery } from "./raw-query-compiler";
+import { makeQueryResultSemantics } from "./query-result-semantics";
 import {
   deleteTopicStoreRow,
   patchTopicStoreRow,
@@ -22,6 +24,7 @@ import {
 import { topicStoreRawQueryMetadata, topicStoreReadModel } from "./topic-store-state";
 
 const invalidRow = (_topic: string, message: string): Error => new Error(message);
+const emptyResultSemantics = makeQueryResultSemantics([]);
 
 describe("column-live-view-engine active query execution", () => {
   it("falls back when an indexed retained replacement points at a different key", () => {
@@ -221,16 +224,21 @@ describe("column-live-view-engine active query execution", () => {
         patchedEvaluationCount: 0,
       });
 
-      yield* acquireMaterializedQueryExecution(readModel, "grouped", () => ({
+      yield* acquireMaterializedQueryExecution(readModel, "grouped", emptyResultSemantics, () => ({
         diagnostics: emptyDiagnostics,
         incremental: false,
         latest: () => emptyEvaluation(readModel.version()),
       }));
-      yield* acquireMaterializedQueryExecution(isolatedReadModel, "grouped", () => ({
-        diagnostics: emptyDiagnostics,
-        incremental: false,
-        latest: () => emptyEvaluation(isolatedReadModel.version()),
-      }));
+      yield* acquireMaterializedQueryExecution(
+        isolatedReadModel,
+        "grouped",
+        emptyResultSemantics,
+        () => ({
+          diagnostics: emptyDiagnostics,
+          incremental: false,
+          latest: () => emptyEvaluation(isolatedReadModel.version()),
+        }),
+      );
 
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);
       expect(yield* activeStoreRawQueryExecutionCount(isolatedReadModel)).toBe(1);
@@ -3094,7 +3102,7 @@ describe("column-live-view-engine active query execution", () => {
         decimalFilter,
       );
 
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(numericStore))).toBe(6);
+      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(numericStore))).toBe(5);
       expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(bigintStore))).toBe(1);
       expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(decimalStore))).toBe(1);
 
@@ -3306,36 +3314,64 @@ describe("column-live-view-engine active query execution", () => {
     }),
   );
 
-  it.effect("rejects non-plain object filter values before cache-keying", () =>
+  it.effect("canonicalizes schema-backed null-prototype filter values before cache-keying", () =>
     Effect.gen(function* () {
       const store = new TopicStore(
         "special",
         Schema.Struct({
           id: Schema.String,
-          payload: Schema.Struct({
-            value: Schema.BigInt,
-            label: Schema.String,
-          }),
+          payload: Schema.Record(Schema.String, Schema.String),
         }),
         "id",
         () => {},
       );
-      const queryPayload: Record<string, unknown> = Object.create(null);
-      queryPayload["value"] = 1n;
-      queryPayload["label"] = "special";
+      const queryPayload: Record<string, string> = Object.create(null);
+      queryPayload["venue"] = "xnys";
 
-      const invalidPayload = yield* Effect.flip(
-        prepareRawQuery("special", topicStoreRawQueryMetadata(store), {
+      const nullPrototypeQuery = yield* prepareRawQuery(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
           select: ["id", "payload"],
           where: {
             payload: queryPayload,
           },
-        }),
+        },
       );
-      expect(invalidPayload).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported query value"),
+      const plainRecordQuery = yield* prepareRawQuery(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
+          select: ["id", "payload"],
+          where: {
+            payload: { venue: "xnys" },
+          },
+        },
+      );
+      const nullPrototypeGrouped = yield* prepareGroupedQuery<object, object>(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
+          groupBy: ["payload"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: { payload: queryPayload },
+        },
+      );
+      const plainRecordGrouped = yield* prepareGroupedQuery<object, object>(
+        "special",
+        topicStoreRawQueryMetadata(store),
+        {
+          groupBy: ["payload"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: { payload: { venue: "xnys" } },
+        },
+      );
+
+      expect(nullPrototypeQuery.query.where).toStrictEqual({
+        payload: { venue: "xnys" },
       });
+      expect(nullPrototypeQuery.plan.queryCacheKey).toBe(plainRecordQuery.plan.queryCacheKey);
+      expect(nullPrototypeGrouped.cacheKey).toBe(plainRecordGrouped.cacheKey);
     }),
   );
 

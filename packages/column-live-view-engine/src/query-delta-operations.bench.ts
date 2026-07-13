@@ -1,12 +1,15 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, bench, describe, expect } from "vitest";
+import { Schema } from "effect";
 import {
   benchmarkOutputJsonPath,
   memorySnapshot,
   writeBenchmarkArtifact,
 } from "./benchmark-artifact";
 import { deltaOperations, type QueryEvaluation } from "./query-result";
+import { makeQueryResultSemantics } from "./query-result-semantics";
+import { makeSchemaValueSemantics } from "./topic-row-value-semantics";
 import type { DeltaOperation } from "@effect-view-server/config";
 
 declare const process: {
@@ -17,6 +20,11 @@ type Row = {
   readonly id: string;
   readonly score: number;
 };
+
+const benchmarkResultSemantics = makeQueryResultSemantics([
+  { field: "id", semantics: makeSchemaValueSemantics(Schema.String) },
+  { field: "score", semantics: makeSchemaValueSemantics(Schema.Number) },
+]);
 
 type DeltaOperationCaseName =
   | "head-replacement-batch"
@@ -225,10 +233,14 @@ const validateCase = (operations: ReturnType<typeof deltaOperations<Row>>): void
   expect(operations).toStrictEqual(benchmarkCase.expectedOperations);
 };
 
-validateCase(deltaOperations(benchmarkCase.previous, benchmarkCase.next));
+validateCase(deltaOperations(benchmarkCase.previous, benchmarkCase.next, benchmarkResultSemantics));
 
 const runCase = (): void => {
-  const operations = deltaOperations(benchmarkCase.previous, benchmarkCase.next);
+  const operations = deltaOperations(
+    benchmarkCase.previous,
+    benchmarkCase.next,
+    benchmarkResultSemantics,
+  );
   expect(operations.length).toBe(benchmarkCase.expectedOperationCount);
 };
 

@@ -1,7 +1,10 @@
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { isBigDecimal } from "effect/BigDecimal";
+import { isRawQueryRangeFilterOperatorKey } from "@effect-view-server/config/internal";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
-import { cloneRecord, isPlainRecord } from "./row-values";
+import { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
+import { materializeRawQueryFilter, RawQuerySchemaValueError } from "./raw-query-value-semantics";
+import { isPlainRecord } from "./row-values";
 
 export class InvalidQueryError extends Schema.TaggedErrorClass<InvalidQueryError>()(
   "InvalidQueryError",
@@ -23,62 +26,10 @@ export type RuntimeRawQuery = {
 };
 
 const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "select"]);
-export const filterOperatorKeys = new Set([
-  "eq",
-  "neq",
-  "in",
-  "gt",
-  "gte",
-  "lt",
-  "lte",
-  "startsWith",
-]);
-const rangeFilterOperatorKeys = new Set(["gt", "gte", "lt", "lte"]);
-
-export const isDenseArray = (value: ReadonlyArray<unknown>): boolean => {
-  for (let index = 0; index < value.length; index += 1) {
-    if (!(index in value)) {
-      return false;
-    }
-  }
-  return true;
-};
+export { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
 
 const isValidWindowNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-
-const isQueryValueSafe = (value: unknown, active: WeakSet<object> = new WeakSet()): boolean => {
-  if (
-    value === null ||
-    value === undefined ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "bigint" ||
-    typeof value === "boolean" ||
-    isBigDecimal(value)
-  ) {
-    return true;
-  }
-  if (Array.isArray(value)) {
-    if (active.has(value)) {
-      return false;
-    }
-    active.add(value);
-    const safe = isDenseArray(value) && value.every((entry) => isQueryValueSafe(entry, active));
-    active.delete(value);
-    return safe;
-  }
-  if (isPlainRecord(value)) {
-    if (active.has(value)) {
-      return false;
-    }
-    active.add(value);
-    const safe = Object.values(value).every((entry) => isQueryValueSafe(entry, active));
-    active.delete(value);
-    return safe;
-  }
-  return false;
-};
 
 export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")((
   topic: string,
@@ -113,7 +64,9 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
       message: "Raw query where must be a plain object.",
     });
   }
+  let normalizedWhere: Record<string, unknown> | undefined;
   if (where !== undefined) {
+    const candidate: Record<string, unknown> = {};
     for (const field of Object.keys(where)) {
       if (!metadata.fieldNames.has(field)) {
         return InvalidQueryError.make({
@@ -121,13 +74,30 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
           message: `Raw query where contains unknown field: ${field}.`,
         });
       }
-      if (!isQueryValueSafe(where[field])) {
+      const materialized = Result.try(() =>
+        materializeRawQueryFilter(
+          metadata.valueSemantics.field(field),
+          metadata.structuredFieldNames.has(field),
+          where[field],
+        ),
+      );
+      if (Result.isFailure(materialized)) {
         return InvalidQueryError.make({
           topic,
-          message: `Raw query where field ${field} contains unsupported query value.`,
+          message:
+            materialized.failure instanceof RawQuerySchemaValueError
+              ? `Raw query where field ${field} does not satisfy its configured schema.`
+              : `Raw query where field ${field} contains unsupported query value.`,
         });
       }
+      Object.defineProperty(candidate, field, {
+        configurable: true,
+        enumerable: true,
+        value: materialized.success,
+        writable: true,
+      });
     }
+    normalizedWhere = candidate;
   }
 
   const orderBy = query["orderBy"];
@@ -194,17 +164,8 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
     select: selectedFields,
   };
 
-  if (where !== undefined) {
-    let clonedWhere: Record<string, unknown>;
-    try {
-      clonedWhere = cloneRecord(where);
-    } catch (cause) {
-      return InvalidQueryError.make({
-        topic,
-        message: `Raw query where could not be cloned: ${String(cause)}`,
-      });
-    }
-    decoded.where = clonedWhere;
+  if (normalizedWhere !== undefined) {
+    decoded.where = normalizedWhere;
   }
   if (offset !== undefined) {
     decoded.offset = offset;
@@ -294,7 +255,7 @@ export const validateRuntimeQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.val
         });
       }
       if (
-        keys.some((key) => rangeFilterOperatorKeys.has(key)) &&
+        keys.some(isRawQueryRangeFilterOperatorKey) &&
         (!metadata.numericFieldNames.has(field) || metadata.rangeValueKinds.get(field)?.size !== 1)
       ) {
         return yield* InvalidQueryError.make({

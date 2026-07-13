@@ -1,4 +1,8 @@
-import { type GroupState, newGroupState, updateAggregateState } from "./grouped-aggregate-state";
+import {
+  type GroupState,
+  newGroupState,
+  updateGroupAggregateState,
+} from "./grouped-aggregate-state";
 import type { GroupedQueryPlan } from "./grouped-query-plan";
 import { emptyGroupedEvaluation, groupedEvaluationFromGroups } from "./grouped-window-evaluation";
 import type { QueryEvaluation } from "./query-result";
@@ -48,8 +52,8 @@ export const evaluateGroupedRows = <Row extends RowObject>(
       group = newGroupState(key, plan.groupBy, plan.aggregatePlans, row);
       groups.set(key, group);
     }
-    for (const { alias, aggregate } of plan.aggregatePlans) {
-      updateAggregateState(group.aggregates[alias]!, aggregate, row);
+    for (const aggregateState of group.aggregates) {
+      updateGroupAggregateState(aggregateState, row);
     }
   });
   return groupedEvaluationFromGroups(groups.values(), plan, store.version());

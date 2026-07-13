@@ -4,7 +4,7 @@ import type {
   LiveQueryResult,
   SnapshotEvent,
 } from "@effect-view-server/config";
-import { cloneRow, rowsEqual } from "./row-values";
+import type { QueryResultSemantics } from "./query-result-semantics";
 
 type RowObject = object;
 
@@ -23,8 +23,20 @@ export type QueryEvaluation<ResultRow extends RowObject> = {
 
 export const liveQueryResult = <Row extends RowObject>(
   evaluation: QueryEvaluation<Row>,
+  semantics: QueryResultSemantics,
 ): LiveQueryResult<Row> => ({
-  rows: evaluation.rows,
+  rows: evaluation.rows.map((row) => semantics.materializeRow(row)),
+  totalRows: evaluation.totalRows,
+  version: evaluation.version,
+  status: "ready",
+  statusCode: "Ready",
+});
+
+export const liveQueryResultFromOwnedEvaluation = <Row extends RowObject>(
+  evaluation: QueryEvaluation<Row>,
+  semantics: QueryResultSemantics,
+): LiveQueryResult<Row> => ({
+  rows: evaluation.rows.map((row) => semantics.materializeOwnedRow(row)),
   totalRows: evaluation.totalRows,
   version: evaluation.version,
   status: "ready",
@@ -35,13 +47,14 @@ export const snapshotEvent = <Row extends RowObject>(
   store: { readonly topic: string },
   queryId: string,
   evaluation: QueryEvaluation<Row>,
+  semantics: QueryResultSemantics,
 ): SnapshotEvent<Row> => ({
   type: "snapshot",
   topic: store.topic,
   queryId,
   version: evaluation.version,
   keys: [...evaluation.keys],
-  rows: evaluation.rows.map(cloneRow),
+  rows: evaluation.rows.map((row) => semantics.materializeRow(row)),
   totalRows: evaluation.totalRows,
 });
 
@@ -64,6 +77,7 @@ type SingleMovedKey = {
 const singleMovedKey = (
   previous: QueryEvaluation<RowObject>,
   next: QueryEvaluation<RowObject>,
+  semantics: QueryResultSemantics,
 ): SingleMovedKey | undefined => {
   const previousKeys = previous.keys;
   const nextKeys = next.keys;
@@ -131,11 +145,11 @@ const singleMovedKey = (
     return movedDown;
   }
 
-  const movedDownRowChanged = !rowsEqual(
+  const movedDownRowChanged = !semantics.equivalentRows(
     previous.rows[movedDown.fromIndex]!,
     next.rows[movedDown.toIndex]!,
   );
-  const movedUpRowChanged = !rowsEqual(
+  const movedUpRowChanged = !semantics.equivalentRows(
     previous.rows[movedUp.fromIndex]!,
     next.rows[movedUp.toIndex]!,
   );
@@ -145,8 +159,9 @@ const singleMovedKey = (
 const singleMoveDeltaOperations = <Row extends RowObject>(
   previous: QueryEvaluation<Row>,
   next: QueryEvaluation<Row>,
+  semantics: QueryResultSemantics,
 ): ReadonlyArray<DeltaOperation<Row>> | undefined => {
-  const moved = singleMovedKey(previous, next);
+  const moved = singleMovedKey(previous, next, semantics);
   if (moved === undefined) {
     return undefined;
   }
@@ -165,7 +180,7 @@ const singleMoveDeltaOperations = <Row extends RowObject>(
   movedRows.splice(moved.toIndex, 0, ...movedRow);
   for (const [index, { key, row }] of next.window.entries()) {
     const currentRow = movedRows[index];
-    if (currentRow === undefined || !rowsEqual(currentRow, row)) {
+    if (currentRow === undefined || !semantics.equivalentRows(currentRow, row)) {
       operations.push({
         type: "update",
         key,
@@ -183,6 +198,7 @@ const replacementDeltaOperations = <Row extends RowObject>(
   previous: QueryEvaluation<Row>,
   next: QueryEvaluation<Row>,
   nextKeys: ReadonlySet<string>,
+  semantics: QueryResultSemantics,
 ): ReadonlyArray<DeltaOperation<Row>> | undefined => {
   const previousKeys = previous.keys;
   const nextWindow = next.window;
@@ -228,7 +244,7 @@ const replacementDeltaOperations = <Row extends RowObject>(
     }
 
     const previousRow = previous.rows[previousSharedIndex];
-    if (previousRow === undefined || !rowsEqual(previousRow, row)) {
+    if (previousRow === undefined || !semantics.equivalentRows(previousRow, row)) {
       return undefined;
     }
     previousSharedIndex += 1;
@@ -259,15 +275,16 @@ const replacementDeltaOperations = <Row extends RowObject>(
 export const deltaOperations = <Row extends RowObject>(
   previous: QueryEvaluation<Row>,
   next: QueryEvaluation<Row>,
+  semantics: QueryResultSemantics,
 ): ReadonlyArray<DeltaOperation<Row>> => {
-  const singleMoveOperations = singleMoveDeltaOperations(previous, next);
+  const singleMoveOperations = singleMoveDeltaOperations(previous, next, semantics);
   if (singleMoveOperations !== undefined) {
     return singleMoveOperations;
   }
 
   const operations: Array<DeltaOperation<Row>> = [];
   const nextKeys = new Set(next.keys);
-  const replacementOperations = replacementDeltaOperations(previous, next, nextKeys);
+  const replacementOperations = replacementDeltaOperations(previous, next, nextKeys, semantics);
   if (replacementOperations !== undefined) {
     return replacementOperations;
   }
@@ -320,7 +337,7 @@ export const deltaOperations = <Row extends RowObject>(
     }
 
     const currentRow = currentRows[index];
-    if (currentRow === undefined || !rowsEqual(currentRow, row)) {
+    if (currentRow === undefined || !semantics.equivalentRows(currentRow, row)) {
       currentRows[index] = row;
       operations.push({
         type: "update",
@@ -334,14 +351,15 @@ export const deltaOperations = <Row extends RowObject>(
   return operations;
 };
 
-const cloneDeltaOperations = <Row extends RowObject>(
+const materializeDeltaOperations = <Row extends RowObject>(
   operations: ReadonlyArray<DeltaOperation<Row>>,
+  semantics: QueryResultSemantics,
 ): ReadonlyArray<DeltaOperation<Row>> =>
   operations.map((operation) => {
     if (operation.type === "insert" || operation.type === "update") {
       return {
         ...operation,
-        row: cloneRow(operation.row),
+        row: semantics.materializeRow(operation.row),
       };
     }
     return operation;
@@ -353,12 +371,13 @@ export const deltaEvent = <Row extends RowObject>(
   fromVersion: number,
   next: QueryEvaluation<Row>,
   operations: ReadonlyArray<DeltaOperation<Row>>,
+  semantics: QueryResultSemantics,
 ): DeltaEvent<Row> => ({
   type: "delta",
   topic: store.topic,
   queryId,
   fromVersion,
   toVersion: next.version,
-  operations: cloneDeltaOperations(operations),
+  operations: materializeDeltaOperations(operations, semantics),
   totalRows: next.totalRows,
 });

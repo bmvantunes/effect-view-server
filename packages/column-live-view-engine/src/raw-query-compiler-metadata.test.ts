@@ -1,10 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { createColumnLiveViewEngine } from "./index";
+import { createColumnLiveViewEngine, InvalidRowError } from "./index";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
 
 describe("Raw query compiler metadata", () => {
-  it.effect("keeps runtime guards for malformed schema field metadata", () =>
+  it.effect("rejects malformed engine schemas while metadata inspection remains defensive", () =>
     Effect.gen(function* () {
       const malformedFieldSchemaConfig = {
         topics: {
@@ -19,50 +19,48 @@ describe("Raw query compiler metadata", () => {
           },
         },
       };
-      // @ts-expect-error invalid configs can still reach runtime through untyped callers.
-      const engine = yield* createColumnLiveViewEngine(malformedFieldSchemaConfig);
-      const query: object = { select: ["id"] };
-
-      const snapshot = yield* engine.snapshot(
-        "loose",
-        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
-        query,
+      const configError = yield* Effect.flip(
+        // @ts-expect-error invalid configs can still reach runtime through untyped callers.
+        createColumnLiveViewEngine(malformedFieldSchemaConfig),
       );
 
-      expect(snapshot).toMatchObject({
-        rows: [],
-        totalRows: 0,
+      expect(configError).toBeInstanceOf(InvalidRowError);
+      expect(configError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "loose",
+        message: "Topic row schema must be an Effect Schema Struct.",
       });
 
       const metadata = rawQueryCompilerMetadata({
         // @ts-expect-error hostile schema metadata can contain malformed field entries.
         fields: {
           id: "not-a-schema",
+          invalidAst: { ast: "not-an-effect-ast" },
+          plainAst: { ast: Schema.String.ast },
           price: Schema.Number,
         },
       });
-      expect(metadata.fieldOrder).toStrictEqual(["id", "price"]);
+      expect(metadata.fieldOrder).toStrictEqual(["id", "invalidAst", "plainAst", "price"]);
       expect(metadata.fieldNames.has("id")).toBe(true);
+      expect(metadata.exactScalarEqualityFieldNames.has("invalidAst")).toBe(false);
+      expect(metadata.exactScalarEqualityFieldNames.has("plainAst")).toBe(true);
       expect(metadata.numericFieldNames.has("id")).toBe(false);
       expect(metadata.numericFieldNames.has("price")).toBe(true);
 
-      const invalidNumericAggregateQuery: object = {
-        groupBy: ["label"],
-        aggregates: {
-          totalId: { aggFunc: "sum", field: "id" },
-        },
-      };
-      const invalidNumericAggregate = yield* Effect.flip(
-        engine.snapshot(
-          "loose",
-          // @ts-expect-error malformed schema metadata makes the query shape untyped.
-          invalidNumericAggregateQuery,
-        ),
-      );
-      expect(invalidNumericAggregate).toMatchObject({
-        _tag: "InvalidQueryError",
-        topic: "loose",
-        message: "Grouped query aggregate totalId must reference a numeric field.",
+      // @ts-expect-error hostile callers can still pass a non-Struct schema.
+      const nonStructMetadata = rawQueryCompilerMetadata(Schema.String);
+      expect({
+        fields: [...nonStructMetadata.fieldNames],
+        ranges: [...nonStructMetadata.rangeValueKinds],
+        strings: [...nonStructMetadata.stringFieldNames],
+        structured: [...nonStructMetadata.structuredFieldNames],
+        structuredObjects: [...nonStructMetadata.structuredObjectFieldNames],
+      }).toStrictEqual({
+        fields: [],
+        ranges: [],
+        strings: [],
+        structured: [],
+        structuredObjects: [],
       });
     }),
   );

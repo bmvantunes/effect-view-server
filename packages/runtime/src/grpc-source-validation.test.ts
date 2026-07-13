@@ -21,10 +21,42 @@ import {
 } from "../test-harness/grpc-materialized";
 import { grpcLeasedViewServer, leasedGrpcViewServer } from "../test-harness/grpc-leased";
 
+const cloneWithMutableTopics = <
+  const Config extends {
+    readonly topics: object;
+  },
+>(
+  config: Config,
+) => ({
+  ...config,
+  topics: { ...config.topics },
+});
+
+const cloneWithMutableOrdersGrpcSource = <
+  const Config extends {
+    readonly topics: {
+      readonly orders: {
+        readonly grpcSource: object;
+      };
+    };
+  },
+>(
+  config: Config,
+) => ({
+  ...config,
+  topics: {
+    ...config.topics,
+    orders: {
+      ...config.topics.orders,
+      grpcSource: { ...config.topics.orders.grpcSource },
+    },
+  },
+});
+
 describe("Runtime source composition and options", () => {
   it.live("rejects topic-owned gRPC feeds without config-owned clients", () =>
     Effect.gen(function* () {
-      const config = grpcMaterializedViewServer(Stream.never);
+      const config = { ...grpcMaterializedViewServer(Stream.never) };
       Reflect.deleteProperty(config, "grpc");
       const error = yield* resolveViewServerRuntimeOptions(config).pipe(Effect.flip);
       const grpcError = yield* Schema.decodeUnknownEffect(ViewServerGrpcIngressError)(error);
@@ -46,71 +78,77 @@ describe("Runtime source composition and options", () => {
 
   it.live("rejects malformed topic-owned gRPC bindings during runtime option derivation", () =>
     Effect.gen(function* () {
-      const invalidLifecycleViewServer = defineViewServerConfig({
-        grpc: {
-          clients: grpcClients,
-        },
-        topics: {
-          orders: grpcTopicSources.materialized({
-            schema: GrpcOrder,
-            key: "id",
-            client: "orders",
-            method: "streamOrders",
-            request: () => ({ orderId: "all" }),
-            acquire: () => Stream.never,
-            map: ({ value }) => ({
-              id: value.customerId,
-              customerId: value.customerId,
-              status: value.status,
-              price: value.price,
-              region: "usa",
-              updatedAt: value.updatedAt,
+      const invalidLifecycleViewServer = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          grpc: {
+            clients: grpcClients,
+          },
+          topics: {
+            orders: grpcTopicSources.materialized({
+              schema: GrpcOrder,
+              key: "id",
+              client: "orders",
+              method: "streamOrders",
+              request: () => ({ orderId: "all" }),
+              acquire: () => Stream.never,
+              map: ({ value }) => ({
+                id: value.customerId,
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region: "usa",
+                updatedAt: value.updatedAt,
+              }),
             }),
-          }),
-        },
-      });
+          },
+        }),
+      );
       Object.defineProperty(invalidLifecycleViewServer.topics.orders.grpcSource, "lifecycle", {
         value: "invalid-lifecycle",
       });
-      const invalidRouteByViewServer = defineViewServerConfig({
-        grpc: {
-          clients: grpcClients,
-        },
-        topics: {
-          orders: grpcTopicSources.leased({
-            schema: GrpcOrder,
-            key: "id",
-            client: "orders",
-            method: "streamOrders",
-            routeBy: ["region"],
-            request: ({ region }) => ({ orderId: region }),
-            acquire: () => Stream.never,
-            map: ({ value, route }) => ({
-              id: `${route.region}:${value.customerId}`,
-              customerId: value.customerId,
-              status: value.status,
-              price: value.price,
-              region: route.region,
-              updatedAt: value.updatedAt,
+      const invalidRouteByViewServer = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          grpc: {
+            clients: grpcClients,
+          },
+          topics: {
+            orders: grpcTopicSources.leased({
+              schema: GrpcOrder,
+              key: "id",
+              client: "orders",
+              method: "streamOrders",
+              routeBy: ["region"],
+              request: ({ region }) => ({ orderId: region }),
+              acquire: () => Stream.never,
+              map: ({ value, route }) => ({
+                id: `${route.region}:${value.customerId}`,
+                customerId: value.customerId,
+                status: value.status,
+                price: value.price,
+                region: route.region,
+                updatedAt: value.updatedAt,
+              }),
             }),
-          }),
-        },
-      });
+          },
+        }),
+      );
       Object.defineProperty(invalidRouteByViewServer.topics.orders.grpcSource, "routeBy", {
         value: [],
       });
-      const partialConcreteBindingViewServer = defineViewServerConfig({
-        grpc: {
-          clients: grpcClients,
-        },
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const partialConcreteBindingViewServer = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          grpc: {
+            clients: grpcClients,
           },
-        },
-      });
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
+          },
+        }),
+      );
       Object.defineProperty(partialConcreteBindingViewServer.topics.orders.grpcSource, "client", {
         enumerable: true,
         value: "orders",
@@ -203,7 +241,7 @@ describe("Runtime source composition and options", () => {
 
   it.live("rejects resolved gRPC feeds that reference non-server-streaming methods", () =>
     Effect.gen(function* () {
-      const config = grpcMaterializedViewServer(Stream.never);
+      const config = cloneWithMutableOrdersGrpcSource(grpcMaterializedViewServer(Stream.never));
       Object.defineProperty(config.topics.orders.grpcSource, "method", {
         enumerable: true,
         value: "getOrder",
@@ -353,8 +391,12 @@ describe("Runtime source composition and options", () => {
 
   it.live("rejects resolved gRPC feeds that reference missing clients or methods", () =>
     Effect.gen(function* () {
-      const missingClientConfig = grpcMaterializedViewServer(Stream.never);
-      const missingMethodConfig = grpcMaterializedViewServer(Stream.never);
+      const missingClientConfig = cloneWithMutableOrdersGrpcSource(
+        grpcMaterializedViewServer(Stream.never),
+      );
+      const missingMethodConfig = cloneWithMutableOrdersGrpcSource(
+        grpcMaterializedViewServer(Stream.never),
+      );
       Object.defineProperty(missingClientConfig.topics.orders.grpcSource, "client", {
         value: "missing",
       });
@@ -430,7 +472,8 @@ describe("Runtime source composition and options", () => {
         });
       const localViewServer = makeLocalViewServer();
       const invalidFeedRouteByViewServer = makeLocalViewServer();
-      const invalidSourceRouteByViewServer = makeLocalViewServer();
+      const invalidSourceRouteByViewServer =
+        cloneWithMutableOrdersGrpcSource(makeLocalViewServer());
       const resolvedGrpcOptions = yield* resolveGrpcRuntimeOptions(localViewServer);
       const invalidFeedRouteByOptions = yield* resolveGrpcRuntimeOptions(
         invalidFeedRouteByViewServer,
@@ -477,114 +520,132 @@ describe("Runtime source composition and options", () => {
 
   it.live("rejects gRPC feeds when topic source metadata is malformed", () =>
     Effect.gen(function* () {
-      const nullTopicConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const nullTopicConfig = cloneWithMutableTopics(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(nullTopicConfig.topics, "orders", { value: null });
-      const nonGrpcKindConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const nonGrpcKindConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(nonGrpcKindConfig.topics.orders.grpcSource, "kind", {
         value: "not-grpc",
       });
-      const invalidLifecycleConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const invalidLifecycleConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(invalidLifecycleConfig.topics.orders.grpcSource, "lifecycle", {
         value: "invalid-lifecycle",
       });
-      const rawGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const rawGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(rawGrpcSourceConfig.topics.orders, "grpcSource", {
         value: {
           kind: "grpc",
           lifecycle: "materialized",
         },
       });
-      const mismatchedGrpcSourceTagConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const mismatchedGrpcSourceTagConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(mismatchedGrpcSourceTagConfig.topics.orders.grpcSource, "_tag", {
         value: "GrpcLeasedTopicSource",
       });
-      const mismatchedGrpcLeasedSourceTagConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
+      const mismatchedGrpcLeasedSourceTagConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.leased({
+                routeBy: ["region"],
+              }),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(mismatchedGrpcLeasedSourceTagConfig.topics.orders.grpcSource, "_tag", {
         value: "GrpcMaterializedTopicSource",
       });
-      const malformedGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const malformedGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(malformedGrpcSourceConfig.topics.orders, "grpcSource", {
         value: "not-grpc",
       });
-      const extraGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const extraGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(extraGrpcSourceConfig.topics.orders.grpcSource, "extra", {
         value: true,
       });
-      const materializedRouteByGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.materialized(),
+      const materializedRouteByGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.materialized(),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(
         materializedRouteByGrpcSourceConfig.topics.orders.grpcSource,
         "routeBy",
@@ -592,31 +653,35 @@ describe("Runtime source composition and options", () => {
           value: ["region"],
         },
       );
-      const emptyRouteByGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
+      const emptyRouteByGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.leased({
+                routeBy: ["region"],
+              }),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(emptyRouteByGrpcSourceConfig.topics.orders.grpcSource, "routeBy", {
         value: [],
       });
-      const partialLeasedGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
+      const partialLeasedGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.leased({
+                routeBy: ["region"],
+              }),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(partialLeasedGrpcSourceConfig.topics.orders.grpcSource, "client", {
         enumerable: true,
         value: "orders",
@@ -625,17 +690,19 @@ describe("Runtime source composition and options", () => {
         enumerable: true,
         value: "streamOrders",
       });
-      const extraLeasedGrpcSourceConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-            grpcSource: grpcSourceMarkers.leased({
-              routeBy: ["region"],
-            }),
+      const extraLeasedGrpcSourceConfig = cloneWithMutableOrdersGrpcSource(
+        defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: GrpcOrder,
+              key: "id",
+              grpcSource: grpcSourceMarkers.leased({
+                routeBy: ["region"],
+              }),
+            },
           },
-        },
-      });
+        }),
+      );
       Object.defineProperty(extraLeasedGrpcSourceConfig.topics.orders.grpcSource, "extra", {
         value: true,
       });

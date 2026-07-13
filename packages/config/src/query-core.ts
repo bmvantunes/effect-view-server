@@ -7,11 +7,9 @@ export type SortDirection = "asc" | "desc";
 
 export type SchemaType<S> = Schema.Schema.Type<S>;
 export type RowSchema = Schema.Codec<object, unknown, never, never> & {
-  readonly fields: Readonly<
-    Record<string, Schema.Codec<unknown, unknown, never, never> | undefined>
-  >;
+  readonly fields: Readonly<Record<string, Schema.Codec<unknown, unknown, never, never>>>;
 };
-export type RowFromSchema<S extends RowSchema> = S["Type"];
+export type RowFromSchema<S extends RowSchema> = Schema.Struct.Type<S["fields"]>;
 
 export type StringFieldKey<Row> = Extract<
   {

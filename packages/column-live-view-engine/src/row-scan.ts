@@ -1,4 +1,4 @@
-import { fieldValue, valuesEqual } from "./row-values";
+import { fieldValue } from "./row-values";
 
 type RowObject = object;
 
@@ -41,10 +41,15 @@ export const topicRowChangedFieldsFromRows = (
   previous: RowObject,
   next: RowObject,
   fields: Iterable<string>,
+  equivalent: (field: string, left: unknown, right: unknown) => boolean,
 ): TopicRowChangedFields | undefined => {
   const changedFields = new Set<string>();
   for (const field of fields) {
-    if (!valuesEqual(fieldValue(previous, field), fieldValue(next, field))) {
+    if (
+      Object.prototype.propertyIsEnumerable.call(previous, field) !==
+        Object.prototype.propertyIsEnumerable.call(next, field) ||
+      !equivalent(field, fieldValue(previous, field), fieldValue(next, field))
+    ) {
       changedFields.add(field);
     }
   }

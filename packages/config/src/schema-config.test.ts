@@ -1,15 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Duration, Schema, SchemaGetter } from "effect";
-import {
-  defineViewServerConfig,
-  kafka,
-  viewServerSchemaFieldMetadata,
-  viewServerUnsupportedRuntimeFieldDomain,
-} from "./index";
+import { Schema, SchemaAST } from "effect";
+import { defineViewServerConfig, kafka, viewSchema, viewServerSchemaFieldMetadata } from "./index";
+import { snapshotViewServerTopics, viewServerRowSchemaFieldsMatchAst } from "./config-ownership";
 import { isKafkaTopicSourceDefinition, makeKafkaSourceTopicsForConfig } from "./internal";
 
 import { viewServer } from "../test-harness/live-query";
-import { Order } from "../test-harness/schemas";
+import { Order, StructuredProfile } from "../test-harness/schemas";
 
 describe("Topic schema configuration", () => {
   it("derives schema field metadata for query validation", () => {
@@ -169,6 +165,13 @@ describe("Topic schema configuration", () => {
       isStructured: true,
       isStructuredObject: true,
     });
+    expect(viewServerSchemaFieldMetadata(StructuredProfile)).toStrictEqual({
+      isNumeric: false,
+      isPureBigInt: false,
+      isString: false,
+      isStructured: true,
+      isStructuredObject: true,
+    });
     expect(viewServerSchemaFieldMetadata(Schema.Array(Schema.String))).toStrictEqual({
       isNumeric: false,
       isPureBigInt: false,
@@ -176,373 +179,138 @@ describe("Topic schema configuration", () => {
       isStructured: true,
       isStructuredObject: false,
     });
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Date)).toBe("Date");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.DateTimeUtc)).toBe("DateTimeUtc");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.DateTimeUtcFromString)).toBe(
-      "DateTimeUtc",
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.DateTimeZoned)).toBe("DateTimeZoned");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.DateTimeZonedFromString)).toBe(
-      "DateTimeZoned",
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Duration)).toBe("Duration");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error())).toBe("Error");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error({ includeStack: true }))).toBe(
-      "ErrorWithStack",
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Error({ excludeCause: true }))).toBe(
-      "ErrorWithoutCause",
-    );
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Error({ includeStack: true, excludeCause: true }),
-      ),
-    ).toBe("ErrorWithStackWithoutCause");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Symbol)).toBe("Symbol");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZone)).toBe("TimeZone");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZoneFromString)).toBe("TimeZone");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZoneNamed)).toBe("TimeZoneNamed");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZoneNamedFromString)).toBe(
-      "TimeZoneNamed",
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.TimeZoneOffset)).toBe("TimeZoneOffset");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Trim)).toBe(undefined);
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Uint8Array)).toBe("Uint8Array");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Uint8ArrayFromBase64)).toBe("Uint8Array");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Uint8ArrayFromBase64Url)).toBe(
-      "Uint8Array",
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Uint8ArrayFromHex)).toBe("Uint8Array");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.suspend(() => Schema.Date))).toBe("Date");
-    const recursiveSuspend: Schema.Schema<string> = Schema.suspend(() => recursiveSuspend);
-    expect(viewServerUnsupportedRuntimeFieldDomain(recursiveSuspend)).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.String.pipe(
-          Schema.decodeTo(Schema.Duration, {
-            decode: SchemaGetter.transform(() => Duration.millis(1)),
-            encode: SchemaGetter.transform(() => "1"),
-          }),
-        ),
-      ),
-    ).toBe("Duration");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.String.pipe(
-          Schema.encodeTo(Schema.Duration, {
-            decode: SchemaGetter.transform(() => "1"),
-            encode: SchemaGetter.transform(() => Duration.millis(1)),
-          }),
-        ),
-      ),
-    ).toBe("Duration");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Array(Schema.RegExp))).toBe("RegExp");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Tuple([Schema.RegExp]))).toBe("RegExp");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.Date]),
-      ),
-    ).toBe("Date");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(Schema.Record(Schema.Symbol, Schema.String)),
-    ).toBe("Symbol");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(Schema.Record(Schema.String, Schema.String)),
-    ).toBe(undefined);
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Record(Schema.String, Schema.URL))).toBe(
-      "URL",
-    );
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(Schema.Union([Schema.BigInt, Schema.Number])),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(Schema.Union([Schema.BigDecimal, Schema.Number])),
-    ).toBe("mixed numeric domain: bigDecimal, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Literal(1), Schema.Literal(2n)]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(Schema.Union([Schema.String, Schema.File])),
-    ).toBe("File");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.String.pipe(
-          Schema.decodeTo(Schema.Union([Schema.Number, Schema.BigInt]), {
-            decode: SchemaGetter.transform(() => 1n),
-            encode: SchemaGetter.transform(() => "1"),
-          }),
-        ),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.String.pipe(
-          Schema.encodeTo(Schema.Union([Schema.Number, Schema.BigInt]), {
-            decode: SchemaGetter.transform(() => "1"),
-            encode: SchemaGetter.transform(() => 1n),
-          }),
-        ),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Struct({
-          nested: Schema.Struct({
-            href: Schema.URL,
-          }),
-        }),
-      ),
-    ).toBe("URL");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Option(Schema.Date))).toBe("Date");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Option(Schema.Union([Schema.Number, Schema.BigInt])),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Option(Schema.String))).toBe(undefined);
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Redacted(Schema.Duration))).toBe(
-      "Duration",
-    );
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Struct({
-          nested: Schema.Struct({
-            amount: Schema.Union([Schema.Number, Schema.BigInt]),
-          }),
-        }),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Record(Schema.String, Schema.Union([Schema.Number, Schema.BigInt])),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Tuple([Schema.Union([Schema.Number, Schema.BigInt])]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.TupleWithRest(Schema.Tuple([Schema.String]), [
-          Schema.Union([Schema.Number, Schema.BigInt]),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.String,
-          Schema.Struct({
-            amount: Schema.Union([Schema.Number, Schema.BigInt]),
-          }),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Array(Schema.Number), Schema.Array(Schema.BigInt)]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Tuple([Schema.Number]), Schema.Tuple([Schema.BigInt])]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Array(Schema.Number), Schema.Tuple([Schema.BigInt])]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Struct({
-            amount: Schema.Number,
-          }),
-          Schema.Struct({
-            amount: Schema.BigInt,
-          }),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Struct({
-            payload: Schema.Array(Schema.Number),
-          }),
-          Schema.Struct({
-            payload: Schema.Tuple([Schema.BigInt]),
-          }),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Record(Schema.String, Schema.Number),
-          Schema.Struct({
-            amount: Schema.BigInt,
-          }),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Struct({
-            amount: Schema.Number,
-          }),
-          Schema.Record(Schema.String, Schema.BigInt),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Tuple([Schema.Number]), Schema.Array(Schema.BigInt)]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.Number]),
-          Schema.Tuple([Schema.BigInt]),
-        ]),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.Number]),
-          Schema.Tuple([Schema.String, Schema.BigInt]),
-        ]),
-      ),
-    ).toBe("mixed numeric domain: bigint, number");
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Number, Schema.Array(Schema.BigInt)]),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([Schema.Tuple([Schema.Number]), Schema.Record(Schema.String, Schema.BigInt)]),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Struct({
-            amount: Schema.Number,
-          }),
-          Schema.Tuple([Schema.BigInt]),
-        ]),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Struct({
-            amount: Schema.Number,
-          }),
-          Schema.Array(Schema.BigInt),
-        ]),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Union([
-          Schema.Struct({
-            price: Schema.Number,
-          }),
-          Schema.Struct({
-            quantity: Schema.BigInt,
-          }),
-        ]),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.Struct({
-          quantity: Schema.BigInt,
-          price: Schema.Number,
-        }),
-      ),
-    ).toBe(undefined);
-    expect(
-      viewServerUnsupportedRuntimeFieldDomain(
-        Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.String]),
-      ),
-    ).toBe(undefined);
-    expect(viewServerUnsupportedRuntimeFieldDomain(Schema.Struct({ id: Schema.String }))).toBe(
-      undefined,
-    );
-    expect(viewServerUnsupportedRuntimeFieldDomain({})).toBe(undefined);
   });
 
-  it("rejects topic fields with unsupported runtime value domains", () => {
-    expect(() =>
-      defineViewServerConfig({
-        topics: {
-          dated: {
-            schema: Schema.Struct({
-              id: Schema.String,
-              createdAt: Schema.Date,
-            }),
-            key: "id",
-          },
-        },
-      }),
-    ).toThrow("View Server topic dated field createdAt uses unsupported runtime domain: Date");
-    expect(() =>
-      defineViewServerConfig({
-        topics: {
-          nested: {
-            schema: Schema.Struct({
-              id: Schema.String,
-              metadata: Schema.Struct({
-                latency: Schema.Duration,
-              }),
-            }),
-            key: "id",
-          },
-        },
-      }),
-    ).toThrow("View Server topic nested field metadata uses unsupported runtime domain: Duration");
-    expect(() =>
-      defineViewServerConfig({
-        topics: {
-          mixedNumeric: {
-            schema: Schema.Struct({
-              id: Schema.String,
-              amount: Schema.Union([Schema.BigInt, Schema.Number]),
-            }),
-            key: "id",
-          },
-        },
-      }),
-    ).toThrow(
-      "View Server topic mixedNumeric field amount uses unsupported runtime domain: mixed numeric domain: bigint, number",
+  it("snapshots caller-owned config state while preserving Class construction", () => {
+    class OwnedProfile extends Schema.Class<OwnedProfile>("OwnedProfile")({
+      id: Schema.String,
+      code: Schema.String,
+    }) {}
+    viewSchema.admitClass(OwnedProfile);
+
+    const topic: {
+      schema: typeof OwnedProfile;
+      key: "id" | "code";
+    } = {
+      schema: OwnedProfile,
+      key: "id",
+    };
+    const topics = { profiles: topic };
+    const input = { topics };
+    const originalAst = OwnedProfile.ast;
+    const originalFields = OwnedProfile.fields;
+    const config = defineViewServerConfig(input);
+    const made = config.topics.profiles.schema.make({ id: "made", code: "alpha" });
+    const constructed = new config.topics.profiles.schema({
+      id: "constructed",
+      code: "beta",
+    });
+
+    expect(made).toBeInstanceOf(OwnedProfile);
+    expect(constructed).toBeInstanceOf(OwnedProfile);
+    expect(Object.isFrozen(config)).toBe(true);
+    expect(Object.isFrozen(config.topics)).toBe(true);
+    expect(Object.isFrozen(config.topics.profiles)).toBe(true);
+    expect(Object.isFrozen(config.topics.profiles.schema.fields)).toBe(true);
+    expect(Object.isFrozen(input)).toBe(false);
+    expect(Object.isFrozen(topics)).toBe(false);
+    expect(Object.isFrozen(topic)).toBe(false);
+    expect(Object.isFrozen(OwnedProfile)).toBe(false);
+    expect(Object.isFrozen(originalFields)).toBe(false);
+
+    const regions = ["usa"];
+    const routeBy = ["id"];
+    const sourceTopics = {
+      profiles: {
+        schema: OwnedProfile,
+        key: "id",
+        kafkaSource: { regions },
+        grpcSource: { routeBy },
+      },
+    };
+    const sourceSnapshot = snapshotViewServerTopics(sourceTopics);
+
+    expect(Object.isFrozen(sourceSnapshot.profiles.kafkaSource)).toBe(true);
+    expect(Object.isFrozen(sourceSnapshot.profiles.kafkaSource.regions)).toBe(true);
+    expect(Object.isFrozen(sourceSnapshot.profiles.grpcSource)).toBe(true);
+    expect(Object.isFrozen(sourceSnapshot.profiles.grpcSource.routeBy)).toBe(true);
+    expect(Object.isFrozen(sourceTopics.profiles.kafkaSource)).toBe(false);
+    expect(Object.isFrozen(sourceTopics.profiles.grpcSource)).toBe(false);
+    expect(Object.isFrozen(regions)).toBe(false);
+    expect(Object.isFrozen(routeBy)).toBe(false);
+
+    topic.key = "code";
+    Object.defineProperty(topics, "secondary", {
+      configurable: true,
+      enumerable: true,
+      value: { schema: OwnedProfile, key: "id" },
+    });
+    Object.defineProperty(OwnedProfile, "ast", {
+      configurable: true,
+      value: Schema.Struct({ id: Schema.String, code: Schema.Number }).ast,
+    });
+    Object.defineProperty(originalFields, "code", {
+      configurable: true,
+      enumerable: true,
+      value: Schema.Number,
+      writable: true,
+    });
+    regions.push("london");
+    routeBy.push("code");
+
+    expect(config.topics.profiles.key).toBe("id");
+    expect(Object.keys(config.topics)).toStrictEqual(["profiles"]);
+    expect(config.topics.profiles.schema.ast).toBe(originalAst);
+    expect(config.topics.profiles.schema.fields.code).toBe(Schema.String);
+    expect(sourceSnapshot.profiles.kafkaSource.regions).toStrictEqual(["usa"]);
+    expect(sourceSnapshot.profiles.grpcSource.routeBy).toStrictEqual(["id"]);
+    expect(Reflect.set(config.topics.profiles.schema, "extra", true)).toBe(false);
+    expect(Reflect.defineProperty(config.topics.profiles.schema, "extra", { value: true })).toBe(
+      false,
     );
-    expect(() =>
-      defineViewServerConfig({
-        topics: {
-          nestedMixedNumeric: {
-            schema: Schema.Struct({
-              id: Schema.String,
-              payload: Schema.Struct({
-                amount: Schema.Union([Schema.BigInt, Schema.Number]),
-              }),
-            }),
-            key: "id",
-          },
-        },
-      }),
-    ).toThrow(
-      "View Server topic nestedMixedNumeric field payload uses unsupported runtime domain: mixed numeric domain: bigint, number",
+    expect(Reflect.deleteProperty(config.topics.profiles.schema, "fields")).toBe(false);
+    expect(Reflect.setPrototypeOf(config.topics.profiles.schema, OwnedProfile)).toBe(false);
+    expect(Reflect.preventExtensions(config.topics.profiles.schema)).toBe(false);
+    expect(config.topics.profiles.schema.make({ id: "isolated", code: "gamma" })).toBeInstanceOf(
+      OwnedProfile,
     );
+  });
+
+  it("defensively rejects malformed row field and AST relationships", () => {
+    const plainAst = Schema.String.ast;
+    const indexedAst = Schema.Record(Schema.String, Schema.String).ast;
+    const symbolAst = new SchemaAST.Objects(
+      [new SchemaAST.PropertySignature(Symbol.for("field"), Schema.String.ast)],
+      [],
+    );
+    const duplicateProperties = [new SchemaAST.PropertySignature("id", Schema.String.ast)];
+    const duplicateAst = new SchemaAST.Objects(duplicateProperties, []);
+    duplicateProperties.push(new SchemaAST.PropertySignature("id", Schema.String.ast));
+    class Profile extends Schema.Class<Profile>("MalformedProfile")({
+      id: Schema.String,
+    }) {}
+    viewSchema.admitClass(Profile);
+    const missingTypeParameter = new Proxy(Profile.ast, {
+      get(target, property) {
+        return property === "typeParameters" ? [undefined] : Reflect.get(target, property, target);
+      },
+    });
+    const missingField = Schema.Struct({ id: Schema.String });
+    expect(Reflect.deleteProperty(missingField.fields, "id")).toBe(true);
+
+    expect([
+      // @ts-expect-error hostile callers can supply non-Schema row metadata.
+      viewServerRowSchemaFieldsMatchAst({ ast: plainAst, fields: {} }),
+      // @ts-expect-error hostile callers can supply indexed row metadata.
+      viewServerRowSchemaFieldsMatchAst({ ast: indexedAst, fields: {} }),
+      // @ts-expect-error hostile callers can supply symbol field metadata.
+      viewServerRowSchemaFieldsMatchAst({ ast: symbolAst, fields: {} }),
+      // @ts-expect-error hostile callers can supply duplicate AST fields.
+      viewServerRowSchemaFieldsMatchAst({ ast: duplicateAst, fields: { id: Schema.String } }),
+      // @ts-expect-error hostile callers can supply malformed declarations.
+      viewServerRowSchemaFieldsMatchAst({ ast: missingTypeParameter, fields: {} }),
+      viewServerRowSchemaFieldsMatchAst(missingField),
+    ]).toStrictEqual([false, false, false, false, false, false]);
   });
 
   it("does not expose executable React or runtime placeholders from config", () => {

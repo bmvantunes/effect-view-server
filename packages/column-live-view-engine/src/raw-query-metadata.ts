@@ -1,8 +1,12 @@
 import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
 import { Schema, SchemaAST } from "effect";
 import { isRecord } from "./row-values";
+import {
+  makeTopicRowValueSemantics,
+  type TopicRowValueSemantics,
+} from "./topic-row-value-semantics";
 
-type SchemaWithFields = Schema.Codec<object, unknown, never, unknown> & {
+type SchemaWithFields = Schema.Codec<object, unknown, never, never> & {
   readonly fields: Record<string, unknown>;
 };
 
@@ -19,11 +23,13 @@ export type RawQueryCompilerMetadata = {
   readonly numberFieldNames: ReadonlySet<string>;
   readonly bigintFieldNames: ReadonlySet<string>;
   readonly bigDecimalFieldNames: ReadonlySet<string>;
+  readonly exactScalarEqualityFieldNames: ReadonlySet<string>;
   readonly rangeValueKinds: ReadonlyMap<string, ReadonlySet<RangeValueKind>>;
+  readonly valueSemantics: TopicRowValueSemantics;
 };
 
 const isSchemaWithFields = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): schema is SchemaWithFields => "fields" in schema && isRecord(schema.fields);
 
 const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
@@ -38,6 +44,22 @@ const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
   SchemaAST.isDeclaration(ast) &&
   isRecord(ast.annotations?.["typeConstructor"]) &&
   ast.annotations["typeConstructor"]["_tag"] === "effect/BigDecimal";
+
+const builtInBigDecimalEquivalence = SchemaAST.resolve(Schema.BigDecimal.ast)?.["toEquivalence"];
+
+const astHasExactScalarEquality = (ast: SchemaAST.AST): boolean => {
+  const equivalence = SchemaAST.resolve(ast)?.["toEquivalence"];
+  if (equivalence !== undefined) {
+    return isBigDecimalAst(ast) && equivalence === builtInBigDecimalEquivalence;
+  }
+  if (SchemaAST.isUnion(ast)) {
+    return ast.types.length > 0 && ast.types.every((member) => astHasExactScalarEquality(member));
+  }
+  if (SchemaAST.isSuspend(ast)) {
+    return false;
+  }
+  return !SchemaAST.isArrays(ast) && !SchemaAST.isObjects(ast);
+};
 
 const rangeValueKindsAst = (ast: SchemaAST.AST): ReadonlySet<RangeValueKind> => {
   if (SchemaAST.isNumber(ast)) {
@@ -88,16 +110,16 @@ const isPureBigDecimalAst = (ast: SchemaAST.AST): boolean => {
 };
 
 const schemaFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> =>
   isSchemaWithFields(schema) ? new Set(Object.keys(schema.fields)) : new Set();
 
 const schemaFieldOrder = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlyArray<string> => (isSchemaWithFields(schema) ? Object.keys(schema.fields) : []);
 
 const schemaFieldMetadata = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlyMap<string, ReturnType<typeof viewServerSchemaFieldMetadata>> => {
   if (!isSchemaWithFields(schema)) {
     return new Map();
@@ -111,7 +133,7 @@ const schemaFieldMetadata = (
 };
 
 const schemaNumericFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -128,7 +150,7 @@ const schemaNumericFieldNames = (
 };
 
 const schemaNumberFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -146,7 +168,7 @@ const schemaNumberFieldNames = (
 };
 
 const schemaBigintFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -162,7 +184,7 @@ const schemaBigintFieldNames = (
 };
 
 const schemaBigDecimalFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -179,8 +201,25 @@ const schemaBigDecimalFieldNames = (
   return fields;
 };
 
+const schemaExactScalarEqualityFieldNames = (
+  schema: Schema.Codec<object, unknown, never, never>,
+): ReadonlySet<string> => {
+  if (!isSchemaWithFields(schema)) {
+    return new Set();
+  }
+
+  const fields = new Set<string>();
+  for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+    const ast = schemaAst(fieldSchema);
+    if (ast !== undefined && astHasExactScalarEquality(ast)) {
+      fields.add(field);
+    }
+  }
+  return fields;
+};
+
 const schemaRangeValueKinds = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlyMap<string, ReadonlySet<RangeValueKind>> => {
   if (!isSchemaWithFields(schema)) {
     return new Map();
@@ -201,7 +240,7 @@ const schemaRangeValueKinds = (
 };
 
 const schemaStringFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -217,7 +256,7 @@ const schemaStringFieldNames = (
 };
 
 const schemaStructuredFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -233,7 +272,7 @@ const schemaStructuredFieldNames = (
 };
 
 const schemaStructuredObjectFieldNames = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): ReadonlySet<string> => {
   if (!isSchemaWithFields(schema)) {
     return new Set();
@@ -249,7 +288,7 @@ const schemaStructuredObjectFieldNames = (
 };
 
 export const rawQueryCompilerMetadata = (
-  schema: Schema.Codec<object, unknown, never, unknown>,
+  schema: Schema.Codec<object, unknown, never, never>,
 ): RawQueryCompilerMetadata => ({
   fieldNames: schemaFieldNames(schema),
   fieldOrder: schemaFieldOrder(schema),
@@ -261,5 +300,7 @@ export const rawQueryCompilerMetadata = (
   numberFieldNames: schemaNumberFieldNames(schema),
   bigintFieldNames: schemaBigintFieldNames(schema),
   bigDecimalFieldNames: schemaBigDecimalFieldNames(schema),
+  exactScalarEqualityFieldNames: schemaExactScalarEqualityFieldNames(schema),
   rangeValueKinds: schemaRangeValueKinds(schema),
+  valueSemantics: makeTopicRowValueSemantics(schema),
 });

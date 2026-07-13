@@ -97,17 +97,21 @@ describe("source binding resolution", () => {
   });
 
   it("keeps malformed gRPC source metadata local to the binding", () => {
+    const malformedOrders: {
+      schema: typeof Row;
+      key: "id";
+    } = {
+      schema: Row,
+      key: "id",
+    };
+    const malformedSource = { kind: "grpc", lifecycle: "wat" };
+    Object.defineProperty(malformedOrders, "grpcSource", {
+      value: malformedSource,
+    });
     const malformedViewServer = defineViewServerConfig({
       topics: {
-        malformedOrders: {
-          schema: Row,
-          key: "id",
-        },
+        malformedOrders,
       },
-    });
-    const malformedSource = { kind: "grpc", lifecycle: "wat" };
-    Object.defineProperty(malformedViewServer.topics.malformedOrders, "grpcSource", {
-      value: malformedSource,
     });
 
     expect(
@@ -128,71 +132,35 @@ describe("source binding resolution", () => {
   });
 
   it("classifies hostile gRPC source shapes without caller reflection", () => {
-    const hostileViewServer = defineViewServerConfig({
-      topics: {
-        incompleteConcreteLeased: {
-          schema: Row,
-          key: "id",
-        },
-        incompleteConcreteMaterialized: {
-          schema: Row,
-          key: "id",
-        },
-        invalidKind: {
-          schema: Row,
-          key: "id",
-        },
-        invalidLeasedRouteBy: {
-          schema: Row,
-          key: "id",
-        },
-        invalidLifecycle: {
-          schema: Row,
-          key: "id",
-        },
-        materializedExtraKey: {
-          schema: Row,
-          key: "id",
-        },
-        materializedWrongTag: {
-          schema: Row,
-          key: "id",
-        },
-        nonStringLeasedRouteBy: {
-          schema: Row,
-          key: "id",
-        },
-        primitiveSource: {
-          schema: Row,
-          key: "id",
-        },
-        validConcreteLeased: {
-          schema: Row,
-          key: "id",
-        },
-        validConcreteMaterialized: {
-          schema: Row,
-          key: "id",
-        },
-        leasedExtraKey: {
-          schema: Row,
-          key: "id",
-        },
-        leasedWrongTag: {
-          schema: Row,
-          key: "id",
-        },
-        releaseIsNotCallable: {
-          schema: Row,
-          key: "id",
-        },
-      },
+    const topicDefinition = (): {
+      schema: typeof Row;
+      key: "id";
+    } => ({
+      schema: Row,
+      key: "id",
     });
+    const topicDefinitions = () => ({
+      incompleteConcreteLeased: topicDefinition(),
+      incompleteConcreteMaterialized: topicDefinition(),
+      invalidKind: topicDefinition(),
+      invalidLeasedRouteBy: topicDefinition(),
+      invalidLifecycle: topicDefinition(),
+      materializedExtraKey: topicDefinition(),
+      materializedWrongTag: topicDefinition(),
+      nonStringLeasedRouteBy: topicDefinition(),
+      primitiveSource: topicDefinition(),
+      validConcreteLeased: topicDefinition(),
+      validConcreteMaterialized: topicDefinition(),
+      leasedExtraKey: topicDefinition(),
+      leasedWrongTag: topicDefinition(),
+      releaseIsNotCallable: topicDefinition(),
+    });
+    const hostileTopics = topicDefinitions();
     const request = () => undefined;
     const acquire = () => undefined;
     const release = () => undefined;
     const map = () => undefined;
-    Object.defineProperty(hostileViewServer.topics.incompleteConcreteLeased, "grpcSource", {
+    Object.defineProperty(hostileTopics.incompleteConcreteLeased, "grpcSource", {
       value: {
         _tag: "GrpcLeasedTopicSource",
         kind: "grpc",
@@ -201,7 +169,7 @@ describe("source binding resolution", () => {
         client: "orders",
       },
     });
-    Object.defineProperty(hostileViewServer.topics.incompleteConcreteMaterialized, "grpcSource", {
+    Object.defineProperty(hostileTopics.incompleteConcreteMaterialized, "grpcSource", {
       value: {
         _tag: "GrpcMaterializedTopicSource",
         kind: "grpc",
@@ -209,10 +177,10 @@ describe("source binding resolution", () => {
         client: "orders",
       },
     });
-    Object.defineProperty(hostileViewServer.topics.invalidKind, "grpcSource", {
+    Object.defineProperty(hostileTopics.invalidKind, "grpcSource", {
       value: { kind: "not-grpc", lifecycle: "leased" },
     });
-    Object.defineProperty(hostileViewServer.topics.invalidLeasedRouteBy, "grpcSource", {
+    Object.defineProperty(hostileTopics.invalidLeasedRouteBy, "grpcSource", {
       value: {
         _tag: "GrpcLeasedTopicSource",
         kind: "grpc",
@@ -220,10 +188,10 @@ describe("source binding resolution", () => {
         routeBy: [],
       },
     });
-    Object.defineProperty(hostileViewServer.topics.invalidLifecycle, "grpcSource", {
+    Object.defineProperty(hostileTopics.invalidLifecycle, "grpcSource", {
       value: { kind: "grpc", lifecycle: "wat" },
     });
-    Object.defineProperty(hostileViewServer.topics.materializedExtraKey, "grpcSource", {
+    Object.defineProperty(hostileTopics.materializedExtraKey, "grpcSource", {
       value: {
         _tag: "GrpcMaterializedTopicSource",
         extra: true,
@@ -231,10 +199,10 @@ describe("source binding resolution", () => {
         lifecycle: "materialized",
       },
     });
-    Object.defineProperty(hostileViewServer.topics.materializedWrongTag, "grpcSource", {
+    Object.defineProperty(hostileTopics.materializedWrongTag, "grpcSource", {
       value: { _tag: "Wrong", kind: "grpc", lifecycle: "materialized" },
     });
-    Object.defineProperty(hostileViewServer.topics.nonStringLeasedRouteBy, "grpcSource", {
+    Object.defineProperty(hostileTopics.nonStringLeasedRouteBy, "grpcSource", {
       value: {
         _tag: "GrpcLeasedTopicSource",
         kind: "grpc",
@@ -242,10 +210,10 @@ describe("source binding resolution", () => {
         routeBy: ["region", 1],
       },
     });
-    Object.defineProperty(hostileViewServer.topics.primitiveSource, "grpcSource", {
+    Object.defineProperty(hostileTopics.primitiveSource, "grpcSource", {
       value: "not-an-object",
     });
-    Object.defineProperty(hostileViewServer.topics.validConcreteLeased, "grpcSource", {
+    Object.defineProperty(hostileTopics.validConcreteLeased, "grpcSource", {
       value: {
         _tag: "GrpcLeasedTopicSource",
         kind: "grpc",
@@ -259,7 +227,7 @@ describe("source binding resolution", () => {
         map,
       },
     });
-    Object.defineProperty(hostileViewServer.topics.validConcreteMaterialized, "grpcSource", {
+    Object.defineProperty(hostileTopics.validConcreteMaterialized, "grpcSource", {
       value: {
         _tag: "GrpcMaterializedTopicSource",
         kind: "grpc",
@@ -271,7 +239,7 @@ describe("source binding resolution", () => {
         map,
       },
     });
-    Object.defineProperty(hostileViewServer.topics.leasedExtraKey, "grpcSource", {
+    Object.defineProperty(hostileTopics.leasedExtraKey, "grpcSource", {
       value: {
         _tag: "GrpcLeasedTopicSource",
         extra: true,
@@ -280,7 +248,7 @@ describe("source binding resolution", () => {
         routeBy: ["region"],
       },
     });
-    Object.defineProperty(hostileViewServer.topics.leasedWrongTag, "grpcSource", {
+    Object.defineProperty(hostileTopics.leasedWrongTag, "grpcSource", {
       value: {
         _tag: "Wrong",
         kind: "grpc",
@@ -288,7 +256,7 @@ describe("source binding resolution", () => {
         routeBy: ["region"],
       },
     });
-    Object.defineProperty(hostileViewServer.topics.releaseIsNotCallable, "grpcSource", {
+    Object.defineProperty(hostileTopics.releaseIsNotCallable, "grpcSource", {
       value: {
         _tag: "GrpcMaterializedTopicSource",
         kind: "grpc",
@@ -301,13 +269,24 @@ describe("source binding resolution", () => {
         map,
       },
     });
-    Object.defineProperty(hostileViewServer.topics, "primitiveTopic", {
+    const hostileViewServer = defineViewServerConfig({
+      topics: topicDefinitions(),
+    });
+    const hostileTopicsWithPrimitive = {
+      ...hostileTopics,
+    };
+    Object.defineProperty(hostileTopicsWithPrimitive, "primitiveTopic", {
       enumerable: true,
       value: null,
     });
 
     expect(
-      [...makeTopicSourceBindings(hostileViewServer)].map(([topic, binding]) => ({
+      [
+        ...makeTopicSourceBindings({
+          ...hostileViewServer,
+          topics: hostileTopicsWithPrimitive,
+        }),
+      ].map(([topic, binding]) => ({
         grpcMetadataTag: binding.grpcMetadata._tag,
         owners: binding.owners,
         topic,

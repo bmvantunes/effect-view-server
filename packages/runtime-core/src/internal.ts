@@ -29,6 +29,7 @@ import type {
 } from "./public-client";
 import { makeRuntimeCoreClient } from "./runtime-client";
 import type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
+import { engineErrorToRuntimeError } from "./runtime-error";
 import type { ViewServerRuntimeCoreInstance } from "./index";
 export {
   collectSourceOwnershipConflicts,
@@ -110,7 +111,9 @@ export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableT
         : { subscriptionQueueCapacity: input.subscriptionQueueCapacity }),
       topics: config.topics,
     };
-    const engine = yield* createColumnLiveViewEngineInternal<Topics>(engineConfig);
+    const engine = yield* createColumnLiveViewEngineInternal<Topics>(engineConfig).pipe(
+      Effect.mapError(engineErrorToRuntimeError),
+    );
     const engineHealth = yield* engine.health();
     const runtimeStartedAtMillis = yield* Clock.currentTimeMillis;
     const runtimeStartedAtNanos = yield* Clock.currentTimeNanos;

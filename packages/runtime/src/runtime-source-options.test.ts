@@ -264,18 +264,11 @@ describe("Runtime source composition and options", () => {
 
   it.live("ignores inherited topic-owned gRPC bindings during runtime option derivation", () =>
     Effect.gen(function* () {
-      const viewServerWithInheritedSource = defineViewServerConfig({
-        grpc: {
-          clients: grpcClients,
-        },
-        topics: {
-          orders: {
-            schema: GrpcOrder,
-            key: "id",
-          },
-        },
-      });
-      Object.setPrototypeOf(viewServerWithInheritedSource.topics.orders, {
+      const inheritedOrders = {
+        schema: GrpcOrder,
+        key: "id" as const,
+      };
+      Object.setPrototypeOf(inheritedOrders, {
         grpcSource: grpcTopicSources.materialized({
           schema: GrpcOrder,
           key: "id",
@@ -292,6 +285,14 @@ describe("Runtime source composition and options", () => {
             updatedAt: value.updatedAt,
           }),
         }).grpcSource,
+      });
+      const viewServerWithInheritedSource = defineViewServerConfig({
+        grpc: {
+          clients: grpcClients,
+        },
+        topics: {
+          orders: inheritedOrders,
+        },
       });
 
       const options = yield* resolveViewServerRuntimeOptions(viewServerWithInheritedSource);

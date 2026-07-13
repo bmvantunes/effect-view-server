@@ -3,9 +3,7 @@ import { fromStringUnsafe } from "effect/BigDecimal";
 import { stableQueryValueString } from "./raw-query-compiler";
 import {
   cloneRecord,
-  cloneRow,
   fieldValue,
-  rowsEqual,
   scalarEqualityKey,
   trustedFieldValue,
   valuesEqual,
@@ -18,7 +16,7 @@ describe("Row value semantics", () => {
     expect(scalarEqualityKey(false)).toBe("boolean:false");
     expect(scalarEqualityKey(true)).toBe("boolean:true");
     expect(scalarEqualityKey(1n)).toBe("bigint:1");
-    expect(scalarEqualityKey(-0)).toBe("number:-0");
+    expect(scalarEqualityKey(-0)).toBe("number:0");
     expect(scalarEqualityKey(Number.NaN)).toBe("number:NaN");
     expect(scalarEqualityKey(Number.POSITIVE_INFINITY)).toBe("number:Infinity");
     expect(scalarEqualityKey(fromStringUnsafe("1.0"))).toBe("bigDecimal:1");
@@ -141,33 +139,23 @@ describe("Row value semantics", () => {
     expect(stableQueryValueString(left)).not.toBe(stableQueryValueString(right));
   });
 
-  it("treats rows with different selected column counts as different", () => {
-    expect(rowsEqual({ id: "1" }, { id: "1", note: "new" })).toBe(false);
-  });
-
-  it("treats identical row references as equal without structural comparison", () => {
-    let getterReads = 0;
-    const row = {
-      id: "1",
-      get status() {
-        getterReads += 1;
-        return "open";
-      },
-    };
-
-    expect(rowsEqual(row, row)).toBe(true);
-    expect(getterReads).toBe(0);
-  });
-
-  it("does not structurally compare map and set values on row hot paths", () => {
+  it("does not structurally compare map and set values", () => {
     expect(valuesEqual(new Map([["venue", "xnys"]]), new Map([["venue", "xnys"]]))).toBe(false);
     expect(valuesEqual(new Set(["xnys"]), new Set(["xnys"]))).toBe(false);
-    expect(
-      rowsEqual(
-        { id: "1", payload: new Map([["venue", "xnys"]]) },
-        { id: "1", payload: new Map([["venue", "xnys"]]) },
-      ),
-    ).toBe(false);
+    expect(cloneRecord({ payload: new Map([["venue", "xnys"]]) })).toStrictEqual({
+      payload: new Map([["venue", "xnys"]]),
+    });
+  });
+
+  it("compares array and plain-record values structurally", () => {
+    expect(valuesEqual([1, { nested: "same" }], [1, { nested: "same" }])).toBe(true);
+    expect(valuesEqual([1], [1, 2])).toBe(false);
+    expect(valuesEqual([1], [2])).toBe(false);
+
+    expect(valuesEqual({ left: 1, right: 2 }, { right: 2, left: 1 })).toBe(true);
+    expect(valuesEqual({ missing: true }, {})).toBe(false);
+    expect(valuesEqual({ changed: 1 }, { changed: 2 })).toBe(false);
+    expect(valuesEqual({}, { extra: true })).toBe(false);
   });
 
   it("ignores inherited row properties", () => {
@@ -175,18 +163,12 @@ describe("Row value semantics", () => {
     inheritedRecord["id"] = "1";
     inheritedRecord["status"] = "open";
 
-    const inheritedRow = Object.create({ inherited: "hidden" });
-    inheritedRow["id"] = "1";
-    inheritedRow["status"] = "open";
-
     expect(cloneRecord(inheritedRecord)).toStrictEqual({ id: "1", status: "open" });
-    expect(cloneRow(inheritedRow)).toStrictEqual({ id: "1", status: "open" });
-    expect(fieldValue(inheritedRow, "inherited")).toBeUndefined();
-    expect(trustedFieldValue(inheritedRow, "inherited")).toBe("hidden");
-    expect(rowsEqual(inheritedRow, { id: "1", status: "open" })).toBe(true);
+    expect(fieldValue(inheritedRecord, "inherited")).toBeUndefined();
+    expect(trustedFieldValue(inheritedRecord, "inherited")).toBe("hidden");
   });
 
-  it("preserves own __proto__ data fields while cloning rows and records", () => {
+  it("preserves own __proto__ data fields while cloning records", () => {
     const dangerousRecord = { id: "1" };
     Object.defineProperty(dangerousRecord, "__proto__", {
       configurable: true,
@@ -195,20 +177,9 @@ describe("Row value semantics", () => {
       writable: true,
     });
 
-    const dangerousRow = { id: "1" };
-    Object.defineProperty(dangerousRow, "__proto__", {
-      configurable: true,
-      enumerable: true,
-      value: "visible-row-data",
-      writable: true,
-    });
-
     const clonedRecord = cloneRecord(dangerousRecord);
-    const clonedRow = cloneRow(dangerousRow);
 
     expect(clonedRecord).toStrictEqual(dangerousRecord);
-    expect(clonedRow).toStrictEqual(dangerousRow);
     expect(Object.hasOwn(clonedRecord, "__proto__")).toBe(true);
-    expect(Object.hasOwn(clonedRow, "__proto__")).toBe(true);
   });
 });

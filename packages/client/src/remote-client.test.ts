@@ -48,7 +48,7 @@ const BadJsonField = Schema.String.pipe(
 );
 
 const BadJsonRow = Schema.Struct({
-  id: BadJsonField,
+  id: Schema.String,
 });
 
 const viewServer = defineViewServerConfig({
@@ -60,7 +60,7 @@ const viewServer = defineViewServerConfig({
   },
 });
 
-const edgeViewServer = defineViewServerConfig({
+const safeEdgeViewServer = defineViewServerConfig({
   topics: {
     badjson: {
       schema: BadJsonRow,
@@ -68,6 +68,21 @@ const edgeViewServer = defineViewServerConfig({
     },
   },
 });
+Object.defineProperty(BadJsonRow.fields, "id", {
+  configurable: true,
+  enumerable: true,
+  value: BadJsonField,
+  writable: true,
+});
+const edgeViewServer = {
+  ...safeEdgeViewServer,
+  topics: {
+    badjson: {
+      ...safeEdgeViewServer.topics.badjson,
+      schema: BadJsonRow,
+    },
+  },
+};
 
 type OrderRow = typeof Order.Type;
 

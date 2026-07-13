@@ -10,7 +10,7 @@ import {
   viewServerEncodeRawQuery,
 } from "./index";
 
-import { viewServer } from "../test-harness/protocol";
+import { BadJsonField, viewServer } from "../test-harness/protocol";
 
 describe("Invalid query wire inputs", () => {
   it.effect("rejects invalid topics, query shapes, and filters", () =>
@@ -485,15 +485,39 @@ describe("Invalid query wire inputs", () => {
 
       expect(invalidRangeOperator.message).toBe("Filter id does not support range operators");
 
+      const hostileFilterSchema = Schema.Struct({ id: Schema.String });
+      const hostileFilterViewServer = defineViewServerConfig({
+        topics: {
+          badjson: {
+            schema: hostileFilterSchema,
+            key: "id",
+          },
+        },
+      });
+      Object.defineProperty(hostileFilterSchema.fields, "id", {
+        configurable: true,
+        enumerable: true,
+        value: BadJsonField,
+        writable: true,
+      });
+      const unsafeHostileFilterViewServer = {
+        ...hostileFilterViewServer,
+        topics: {
+          badjson: {
+            ...hostileFilterViewServer.topics.badjson,
+            schema: hostileFilterSchema,
+          },
+        },
+      };
       const nonJsonFilter = yield* Effect.flip(
-        viewServerEncodeRawQuery(viewServer, "badjson", {
+        viewServerEncodeRawQuery(unsafeHostileFilterViewServer, "badjson", {
           select: ["id"],
           where: { id: { eq: "x" } },
         }),
       );
 
       expect(nonJsonFilter.message).toBe(
-        "Filter id is not JSON-safe: Expected JSON value, got Symbol(not-json)",
+        'Filter id is not JSON-safe: Unsupported JSON value type "symbol" at $.',
       );
 
       const badDecodedField = yield* Effect.flip(

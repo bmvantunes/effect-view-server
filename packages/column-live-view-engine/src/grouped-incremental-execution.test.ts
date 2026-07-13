@@ -1421,6 +1421,7 @@ describe("Grouped incremental query execution", () => {
       const execution = yield* acquireMaterializedQueryExecution(
         readModel,
         "missed-real-journal",
+        compiled.plan.resultSemantics,
         () => makeIncrementalGroupedQueryExecution(readModel, compiled, () => {}),
       );
       const cursor = execution.createCursor();

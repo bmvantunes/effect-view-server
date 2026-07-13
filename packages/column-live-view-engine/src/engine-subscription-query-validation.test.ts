@@ -142,8 +142,8 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
       });
 
       let getterReads = 0;
-      const throwingWhere = {};
-      Object.defineProperty(throwingWhere, "status", {
+      const singleReadWhere = {};
+      Object.defineProperty(singleReadWhere, "status", {
         enumerable: true,
         get() {
           getterReads += 1;
@@ -156,18 +156,23 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
           };
         },
       });
-      const throwingWhereQuery: object = {
+      const singleReadWhereQuery: object = {
         select: ["id"],
-        where: throwingWhere,
+        where: singleReadWhere,
       };
-      const throwingWhereResult = yield* Effect.flip(
-        // @ts-expect-error hostile runtime query getters must be rejected at the boundary.
-        engine.snapshot("orders", throwingWhereQuery),
+      const singleReadWhereResult = yield* engine.snapshot(
+        "orders",
+        // @ts-expect-error runtime query accessors are observed exactly once at the boundary.
+        singleReadWhereQuery,
       );
-      expect(throwingWhereResult).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("where could not be cloned"),
+      expect(singleReadWhereResult).toStrictEqual({
+        rows: [{ id: "1" }],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 1,
+        version: 1,
       });
+      expect(getterReads).toBe(1);
 
       const stringRangeQuery: object = {
         select: ["id"],

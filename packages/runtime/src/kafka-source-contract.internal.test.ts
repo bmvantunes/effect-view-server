@@ -64,10 +64,15 @@ describe("Kafka source mapping contracts", () => {
         },
       });
 
-      Reflect.deleteProperty(corruptedViewServer.topics, "ghost");
+      const missingGhostTopics = { ...corruptedViewServer.topics };
+      Reflect.deleteProperty(missingGhostTopics, "ghost");
+      const missingGhostViewServer = {
+        ...corruptedViewServer,
+        topics: missingGhostTopics,
+      };
       const error = yield* Effect.flip(
         processKafkaMessage(
-          corruptedViewServer,
+          missingGhostViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,
@@ -545,16 +550,26 @@ describe("Kafka source mapping contracts", () => {
           },
         },
       });
-      Object.defineProperty(kafkaBackedViewServer.topics.orders.kafkaSource, "map", {
-        value: () => invalidOrder,
-      });
-      const resolved = yield* resolveViewServerRuntimeOptions(kafkaBackedViewServer, {
+      const invalidMappingViewServer = {
+        ...kafkaBackedViewServer,
+        topics: {
+          ...kafkaBackedViewServer.topics,
+          orders: {
+            ...kafkaBackedViewServer.topics.orders,
+            kafkaSource: {
+              ...kafkaBackedViewServer.topics.orders.kafkaSource,
+              map: () => invalidOrder,
+            },
+          },
+        },
+      };
+      const resolved = yield* resolveViewServerRuntimeOptions(invalidMappingViewServer, {
         kafka: {
           consumerGroupId: "view-server-direct-invalid-mapped-row",
         },
       });
       const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(invalidMappingViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
         regions: kafkaOptions.regions,
         startFrom: kafkaOptions.consume,
@@ -568,7 +583,7 @@ describe("Kafka source mapping contracts", () => {
 
       const error = yield* Effect.flip(
         processKafkaMessage(
-          kafkaBackedViewServer,
+          invalidMappingViewServer,
           runtimeCore.internalClient,
           runtimeCore.requestHealthRefresh,
           kafkaOptions,

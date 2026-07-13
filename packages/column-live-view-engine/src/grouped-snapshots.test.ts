@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig, type GroupedQuery } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
-import { createColumnLiveViewEngine, InvalidQueryError } from "./index";
+import { createColumnLiveViewEngine, InvalidQueryError, InvalidRowError } from "./index";
 import { makeEngine, order, position } from "../test-harness/public-engine";
 import { normalizeDecimalAndBigIntFields, normalizeDecimalFields } from "../test-harness/rows";
 
@@ -296,7 +296,7 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
     }),
   );
 
-  it.effect("keeps non-plain object grouped keys distinct by stable value", () =>
+  it.effect("rejects non-JSON grouped keys and groups plain records by value", () =>
     Effect.gen(function* () {
       const Payload = Schema.Struct({
         id: Schema.String,
@@ -313,10 +313,22 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
       const payloadEngine = yield* createColumnLiveViewEngine({
         topics: payloadViewServer.topics,
       });
+      const mapError = yield* Effect.flip(
+        payloadEngine.publish("payloads", {
+          id: "map-a-1",
+          payload: new Map([["venue", "xnys"]]),
+        }),
+      );
+      expect(mapError).toBeInstanceOf(InvalidRowError);
+      expect(mapError).toMatchObject({
+        _tag: "InvalidRowError",
+        topic: "payloads",
+      });
+
       yield* payloadEngine.publishMany("payloads", [
-        { id: "map-a-1", payload: new Map([["venue", "xnys"]]) },
-        { id: "map-b", payload: new Map([["venue", "xlon"]]) },
-        { id: "map-a-2", payload: new Map([["venue", "xnys"]]) },
+        { id: "record-a-1", payload: { venue: "xnys" } },
+        { id: "record-b", payload: { venue: "xlon" } },
+        { id: "record-a-2", payload: { venue: "xnys" } },
       ]);
 
       const snapshot = yield* payloadEngine.snapshot("payloads", {
@@ -330,11 +342,11 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
       expect(snapshot.totalRows).toBe(2);
       expect(snapshot.rows).toStrictEqual([
         {
-          payload: new Map([["venue", "xnys"]]),
+          payload: { venue: "xnys" },
           rowCount: 2n,
         },
         {
-          payload: new Map([["venue", "xlon"]]),
+          payload: { venue: "xlon" },
           rowCount: 1n,
         },
       ]);

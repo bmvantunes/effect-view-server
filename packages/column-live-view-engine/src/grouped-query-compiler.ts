@@ -29,7 +29,11 @@ export const prepareGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.
       ...(decoded.where === undefined ? {} : { where: decoded.where }),
     });
     const { matches } = rawFilter.plan.predicate;
-    const plan = makeGroupedQueryPlan<Row>(decoded);
+    const plan = makeGroupedQueryPlan<Row>(
+      decoded,
+      metadata.valueSemantics,
+      rawFilter.plan.queryCacheKey,
+    );
     return {
       plan,
       cacheKey: plan.cacheKey,

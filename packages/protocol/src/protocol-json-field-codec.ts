@@ -1,4 +1,5 @@
-import { Effect, Schema } from "effect";
+import { materializeStrictJson } from "@effect-view-server/effect-utils";
+import { Effect, Result, Schema } from "effect";
 
 export type JsonFieldSchema = Schema.Codec<unknown, unknown, never, never>;
 
@@ -36,27 +37,72 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
   readonly notJsonSafePrefix: string;
 };
 
+type CompiledJsonFieldCodec<Row> = {
+  readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
+  readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
+};
+
+const compiledJsonFieldCodecCache = new WeakMap<JsonFieldSchema, CompiledJsonFieldCodec<unknown>>();
+
+function compiledJsonFieldCodec<Row>(
+  schema: Schema.Codec<Row, unknown, never, never>,
+): CompiledJsonFieldCodec<Row>;
+function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec<unknown> {
+  const cached = compiledJsonFieldCodecCache.get(schema);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const codec = Schema.toCodecJson(schema);
+  const compiled: CompiledJsonFieldCodec<unknown> = {
+    decode: Schema.decodeUnknownEffect(codec),
+    encode: Schema.encodeUnknownEffect(codec),
+  };
+  compiledJsonFieldCodecCache.set(schema, compiled);
+  return compiled;
+}
+
+export const materializeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.materialize")(
+  function* <E>(value: unknown, invalid: (message: string) => E) {
+    return yield* Result.match(materializeStrictJson(value), {
+      onSuccess: Effect.succeed,
+      onFailure: (error) => Effect.fail(invalid(error.message)),
+    });
+  },
+);
+
 export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.encode")(function* <E>(
   schema: JsonFieldSchema,
   value: unknown,
   errors: JsonFieldCodecErrors<E>,
 ) {
-  const encoded = yield* Schema.encodeUnknownEffect(Schema.toCodecJson(schema))(value).pipe(
-    Effect.mapError((error) => errors.invalid(error.message)),
-  );
-  return yield* Schema.decodeUnknownEffect(Schema.Json)(encoded).pipe(
-    Effect.mapError((error) => errors.notJsonSafe(error.message)),
-  );
+  const encoded = yield* compiledJsonFieldCodec(schema)
+    .encode(value)
+    .pipe(Effect.mapError((error) => errors.invalid(error.message)));
+  return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
 });
 
-export const decodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.decode")(function* <E>(
-  schema: JsonFieldSchema,
+export const decodeMaterializedJsonFieldValue = Effect.fn(
+  "ViewServerProtocol.jsonField.decodeMaterialized",
+)(function* <Row, E>(
+  schema: Schema.Codec<Row, unknown, never, never>,
+  value: Schema.Json,
+  errors: Pick<JsonFieldCodecErrors<E>, "invalid">,
+) {
+  return yield* compiledJsonFieldCodec(schema)
+    .decode(value)
+    .pipe(Effect.mapError((error) => errors.invalid(error.message)));
+});
+
+export const decodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.decode")(function* <
+  Row,
+  E,
+>(
+  schema: Schema.Codec<Row, unknown, never, never>,
   value: unknown,
   errors: Pick<JsonFieldCodecErrors<E>, "invalid">,
 ) {
-  return yield* Schema.decodeUnknownEffect(Schema.toCodecJson(schema))(value).pipe(
-    Effect.mapError((error) => errors.invalid(error.message)),
-  );
+  const materialized = yield* materializeJsonFieldValue(value, errors.invalid);
+  return yield* decodeMaterializedJsonFieldValue(schema, materialized, errors);
 });
 
 export const encodeContextualJsonFieldValue = Effect.fn(
@@ -70,7 +116,11 @@ export const encodeContextualJsonFieldValue = Effect.fn(
 
 export const decodeContextualJsonFieldValue = Effect.fn(
   "ViewServerProtocol.jsonField.contextual.decode",
-)(function* <E>(schema: JsonFieldSchema, value: unknown, context: JsonFieldCodecContext<E>) {
+)(function* <Row, E>(
+  schema: Schema.Codec<Row, unknown, never, never>,
+  value: unknown,
+  context: JsonFieldCodecContext<E>,
+) {
   return yield* decodeJsonFieldValue(schema, value, {
     invalid: (message) => context.invalid(context.invalidMessage(message)),
   });
@@ -92,8 +142,8 @@ export const encodeNamedJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField
 );
 
 export const decodeNamedJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.named.decode")(
-  function* <E>(
-    schema: JsonFieldSchema,
+  function* <Row, E>(
+    schema: Schema.Codec<Row, unknown, never, never>,
     value: unknown,
     { field, invalid, invalidPrefix }: NamedJsonFieldCodecContext<E>,
   ) {
@@ -123,10 +173,10 @@ export const encodeTopicNamedJsonFieldValue = Effect.fn(
 
 export const decodeTopicNamedJsonFieldValue = Effect.fn(
   "ViewServerProtocol.jsonField.topicNamed.decode",
-)(function* <E>(
+)(function* <Row, E>(
   topic: string,
   field: string,
-  schema: JsonFieldSchema,
+  schema: Schema.Codec<Row, unknown, never, never>,
   value: unknown,
   context: TopicNamedJsonFieldCodecContext<E>,
 ) {

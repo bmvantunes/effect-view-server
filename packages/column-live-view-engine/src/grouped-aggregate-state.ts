@@ -7,9 +7,10 @@ import {
   sum as sumBigDecimal,
   type BigDecimal,
 } from "effect/BigDecimal";
-import { compareQueryValue, stableQueryValueString } from "./raw-query-compiler";
+import * as Arr from "effect/Array";
 import type { StoredRowOf } from "./query-result";
-import { cloneUnknown, trustedFieldValue } from "./row-values";
+import { trustedFieldValue } from "./row-values";
+import type { SchemaValueSemantics } from "./topic-row-value-semantics";
 
 type RowObject = object;
 
@@ -27,49 +28,103 @@ export type RuntimeGroupedAggregate =
       readonly resultKind: "bigint" | "bigDecimal";
     };
 
-export type GroupedAggregatePlan = {
-  readonly alias: string;
-  readonly aggregate: RuntimeGroupedAggregate;
+export type MissingGroupedAggregateInput = {
+  readonly _tag: "Missing";
 };
 
+export type PresentGroupedAggregateInput = {
+  readonly _tag: "Present";
+  readonly value: unknown;
+};
+
+export type GroupedAggregateInput = MissingGroupedAggregateInput | PresentGroupedAggregateInput;
+
+export type GroupedAggregateInputSemantics = {
+  readonly field: string;
+  readonly canonicalKey: (input: GroupedAggregateInput) => string;
+  readonly compare: (left: GroupedAggregateInput, right: GroupedAggregateInput) => number;
+  readonly equivalent: (left: GroupedAggregateInput, right: GroupedAggregateInput) => boolean;
+  readonly read: (row: RowObject) => GroupedAggregateInput;
+};
+
+type RuntimeFieldGroupedAggregate = Exclude<RuntimeGroupedAggregate, { readonly aggFunc: "count" }>;
+
+type CountGroupedAggregatePlan = {
+  readonly kind: "count";
+  readonly alias: string;
+  readonly aggregate: Extract<RuntimeGroupedAggregate, { readonly aggFunc: "count" }>;
+  readonly resultSemantics: SchemaValueSemantics;
+  readonly stateIndex: number;
+};
+
+export type FieldGroupedAggregatePlan = {
+  readonly kind: "field";
+  readonly alias: string;
+  readonly aggregate: RuntimeFieldGroupedAggregate;
+  readonly input: GroupedAggregateInputSemantics;
+  readonly resultSemantics: SchemaValueSemantics;
+  readonly stateIndex: number;
+};
+
+export type GroupedAggregatePlan = CountGroupedAggregatePlan | FieldGroupedAggregatePlan;
+
 type CountAggregateState = {
+  readonly alias: string;
   readonly aggFunc: "count";
   count: bigint;
 };
 
 type CountDistinctAggregateState = {
+  readonly alias: string;
   readonly aggFunc: "countDistinct";
+  readonly inputSemantics: GroupedAggregateInputSemantics;
   readonly values: Map<string, number>;
   count: bigint;
 };
 
 type BigIntSumAggregateState = {
+  readonly alias: string;
   readonly aggFunc: "sum";
+  readonly inputSemantics: GroupedAggregateInputSemantics;
   readonly resultKind: "bigint";
   bigintTotal: bigint;
 };
 
 type BigDecimalSumAggregateState = {
+  readonly alias: string;
   readonly aggFunc: "sum";
+  readonly inputSemantics: GroupedAggregateInputSemantics;
   readonly resultKind: "bigDecimal";
   decimalTotal: BigDecimal;
 };
 
 type AverageAggregateState = {
+  readonly alias: string;
   readonly aggFunc: "avg";
+  readonly inputSemantics: GroupedAggregateInputSemantics;
   count: bigint;
   total: BigDecimal;
 };
 
 type MinMaxAggregateValueState = {
   count: number;
-  value: unknown;
+  readonly input: GroupedAggregateInput;
 };
 
+type MinMaxAggregateSelection =
+  | {
+      readonly _tag: "Empty";
+    }
+  | {
+      readonly _tag: "Selected";
+      readonly input: GroupedAggregateInput;
+    };
+
 type BaseMinMaxAggregateState = {
+  readonly alias: string;
   readonly aggFunc: "min" | "max";
-  value: unknown;
-  hasValue: boolean;
+  readonly inputSemantics: GroupedAggregateInputSemantics;
+  selection: MinMaxAggregateSelection;
 };
 
 export type RetainedMinMaxAggregateState = BaseMinMaxAggregateState & {
@@ -93,11 +148,11 @@ export type ReversibleAggregateState = NonMinMaxAggregateState | RetainedMinMaxA
 export type GroupState = {
   readonly key: string;
   readonly row: Record<string, unknown>;
-  readonly aggregates: Record<string, AggregateState>;
+  readonly aggregates: ReadonlyArray<AggregateState>;
 };
 
 export type MaterializedIncrementalGroupState = Omit<GroupState, "aggregates"> & {
-  readonly aggregates: Record<string, ReversibleAggregateState>;
+  readonly aggregates: ReadonlyArray<ReversibleAggregateState>;
   readonly members: Map<string, RowObject>;
 };
 
@@ -118,16 +173,20 @@ const runtimeValueToDecimal = (value: unknown): BigDecimal | undefined => {
   return undefined;
 };
 
-const emptyAggregateState = (aggregate: RuntimeGroupedAggregate): AggregateState => {
-  if (aggregate.aggFunc === "count") {
+const emptyAggregateState = (plan: GroupedAggregatePlan): AggregateState => {
+  if (plan.kind === "count") {
     return {
+      alias: plan.alias,
       aggFunc: "count",
       count: 0n,
     };
   }
+  const aggregate = plan.aggregate;
   if (aggregate.aggFunc === "countDistinct") {
     return {
+      alias: plan.alias,
       aggFunc: "countDistinct",
+      inputSemantics: plan.input,
       values: new Map<string, number>(),
       count: 0n,
     };
@@ -135,42 +194,51 @@ const emptyAggregateState = (aggregate: RuntimeGroupedAggregate): AggregateState
   if (aggregate.aggFunc === "sum") {
     return aggregate.resultKind === "bigint"
       ? {
+          alias: plan.alias,
           aggFunc: "sum",
+          inputSemantics: plan.input,
           resultKind: "bigint",
           bigintTotal: 0n,
         }
       : {
+          alias: plan.alias,
           aggFunc: "sum",
+          inputSemantics: plan.input,
           resultKind: "bigDecimal",
           decimalTotal: fromBigInt(0n),
         };
   }
   if (aggregate.aggFunc === "avg") {
     return {
+      alias: plan.alias,
       aggFunc: "avg",
+      inputSemantics: plan.input,
       count: 0n,
       total: fromBigInt(0n),
     };
   }
   return {
+    alias: plan.alias,
     aggFunc: aggregate.aggFunc,
-    value: undefined,
-    hasValue: false,
+    inputSemantics: plan.input,
+    selection: { _tag: "Empty" },
   };
 };
 
-const emptyReversibleAggregateState = (
-  aggregate: RuntimeGroupedAggregate,
-): ReversibleAggregateState => {
-  if (aggregate.aggFunc === "count") {
+const emptyReversibleAggregateState = (plan: GroupedAggregatePlan): ReversibleAggregateState => {
+  if (plan.kind === "count") {
     return {
+      alias: plan.alias,
       aggFunc: "count",
       count: 0n,
     };
   }
+  const aggregate = plan.aggregate;
   if (aggregate.aggFunc === "countDistinct") {
     return {
+      alias: plan.alias,
       aggFunc: "countDistinct",
+      inputSemantics: plan.input,
       values: new Map<string, number>(),
       count: 0n,
     };
@@ -178,48 +246,68 @@ const emptyReversibleAggregateState = (
   if (aggregate.aggFunc === "sum") {
     return aggregate.resultKind === "bigint"
       ? {
+          alias: plan.alias,
           aggFunc: "sum",
+          inputSemantics: plan.input,
           resultKind: "bigint",
           bigintTotal: 0n,
         }
       : {
+          alias: plan.alias,
           aggFunc: "sum",
+          inputSemantics: plan.input,
           resultKind: "bigDecimal",
           decimalTotal: fromBigInt(0n),
         };
   }
   if (aggregate.aggFunc === "avg") {
     return {
+      alias: plan.alias,
       aggFunc: "avg",
+      inputSemantics: plan.input,
       count: 0n,
       total: fromBigInt(0n),
     };
   }
   return {
+    alias: plan.alias,
     aggFunc: aggregate.aggFunc,
+    inputSemantics: plan.input,
     values: new Map<string, MinMaxAggregateValueState>(),
-    value: undefined,
-    hasValue: false,
+    selection: { _tag: "Empty" },
   };
 };
 
-const aggregateFieldValue = (row: RowObject, aggregate: RuntimeGroupedAggregate): unknown =>
-  "field" in aggregate ? trustedFieldValue(row, aggregate.field) : undefined;
+const mapValueOr = <Key, Value>(
+  values: ReadonlyMap<Key, Value>,
+  key: Key,
+  fallback: Value,
+): Value => {
+  const value = values.get(key);
+  return value === undefined ? fallback : value;
+};
 
-export const updateAggregateState = (
-  state: AggregateState,
-  aggregate: RuntimeGroupedAggregate,
-  row: RowObject,
-): void => {
-  const value = aggregateFieldValue(row, aggregate);
+const minMaxAggregateValueOr = (
+  values: ReadonlyMap<string, MinMaxAggregateValueState>,
+  key: string,
+  input: GroupedAggregateInput,
+  missingCount: number,
+): MinMaxAggregateValueState => {
+  const value = values.get(key);
+  return value === undefined ? { count: missingCount, input } : value;
+};
+
+const updateAggregateState = (state: AggregateState, row: RowObject): void => {
   if (state.aggFunc === "count") {
     state.count += 1n;
     return;
   }
+  const input = state.inputSemantics.read(row);
+  const value = input._tag === "Missing" ? undefined : input.value;
   if (state.aggFunc === "countDistinct") {
-    const key = stableQueryValueString(value);
-    const count = state.values.get(key);
-    if (count === undefined) {
+    const key = state.inputSemantics.canonicalKey(input);
+    const count = mapValueOr(state.values, key, 0);
+    if (count === 0) {
       state.values.set(key, 1);
       state.count += 1n;
     } else {
@@ -250,63 +338,69 @@ export const updateAggregateState = (
   }
   if ("values" in state) {
     const values = state.values;
-    const key = stableQueryValueString(value);
-    const entry = values.get(key);
-    if (entry === undefined) {
-      values.set(key, {
-        count: 1,
-        value: cloneUnknown(value),
-      });
+    const key = state.inputSemantics.canonicalKey(input);
+    const entry = minMaxAggregateValueOr(values, key, input, 0);
+    if (entry.count === 0) {
+      entry.count = 1;
+      values.set(key, entry);
     } else {
       entry.count += 1;
     }
   }
-  if (!state.hasValue) {
-    state.value = cloneUnknown(value);
-    state.hasValue = true;
+  if (state.selection._tag === "Empty") {
+    state.selection = {
+      _tag: "Selected",
+      input,
+    };
     return;
   }
-  const comparison = compareQueryValue(value, state.value);
+  const comparison = state.inputSemantics.compare(input, state.selection.input);
   if (comparison === 0) {
     return;
   }
   if ((state.aggFunc === "min" && comparison < 0) || (state.aggFunc === "max" && comparison > 0)) {
-    state.value = cloneUnknown(value);
+    state.selection = {
+      _tag: "Selected",
+      input,
+    };
   }
 };
 
 const recomputeMinMaxAggregateState = (state: RetainedMinMaxAggregateState): void => {
-  let nextValue: unknown;
-  let hasValue = false;
+  let nextSelection: MinMaxAggregateSelection = { _tag: "Empty" };
   for (const entry of state.values.values()) {
-    if (!hasValue) {
-      nextValue = cloneUnknown(entry.value);
-      hasValue = true;
+    if (nextSelection._tag === "Empty") {
+      nextSelection = {
+        _tag: "Selected",
+        input: entry.input,
+      };
       continue;
     }
-    const comparison = compareQueryValue(entry.value, nextValue);
+    const comparison = state.inputSemantics.compare(entry.input, nextSelection.input);
     const isBetterValue = state.aggFunc === "min" ? comparison < 0 : comparison > 0;
     if (isBetterValue) {
-      nextValue = cloneUnknown(entry.value);
+      nextSelection = {
+        _tag: "Selected",
+        input: entry.input,
+      };
     }
   }
-  state.value = nextValue;
-  state.hasValue = hasValue;
+  state.selection = nextSelection;
 };
 
-export const removeAggregateState = (
+const removeAggregateState = (
   state: ReversibleAggregateState,
-  aggregate: RuntimeGroupedAggregate,
   row: RowObject,
 ): RetainedMinMaxAggregateState | undefined => {
-  const value = aggregateFieldValue(row, aggregate);
   if (state.aggFunc === "count") {
     state.count -= 1n;
     return undefined;
   }
+  const input = state.inputSemantics.read(row);
+  const value = input._tag === "Missing" ? undefined : input.value;
   if (state.aggFunc === "countDistinct") {
-    const key = stableQueryValueString(value);
-    const count = state.values.get(key)!;
+    const key = state.inputSemantics.canonicalKey(input);
+    const count = mapValueOr(state.values, key, 1);
     if (count === 1) {
       state.values.delete(key);
       state.count -= 1n;
@@ -336,15 +430,18 @@ export const removeAggregateState = (
     }
     return undefined;
   }
-  const key = stableQueryValueString(value);
+  const key = state.inputSemantics.canonicalKey(input);
   const values = state.values;
-  const entry = values.get(key)!;
+  const entry = minMaxAggregateValueOr(values, key, input, 1);
   if (entry.count > 1) {
     entry.count -= 1;
     return undefined;
   }
   values.delete(key);
-  if (state.hasValue && stableQueryValueString(state.value) === key) {
+  if (
+    state.selection._tag === "Selected" &&
+    state.inputSemantics.canonicalKey(state.selection.input) === key
+  ) {
     return state;
   }
   return undefined;
@@ -356,7 +453,7 @@ export const recomputeRetainedMinMaxAggregateState = (
   recomputeMinMaxAggregateState(state);
 };
 
-const aggregateStateValue = (state: AggregateState): unknown => {
+const aggregateStateResultValue = (state: AggregateState): unknown => {
   if (state.aggFunc === "count") {
     return state.count;
   }
@@ -369,23 +466,40 @@ const aggregateStateValue = (state: AggregateState): unknown => {
   if (state.aggFunc === "avg") {
     return state.count === 0n ? fromBigInt(0n) : divideUnsafe(state.total, fromBigInt(state.count));
   }
-  return cloneUnknown(state.value);
+  return state.selection._tag === "Selected" && state.selection.input._tag === "Present"
+    ? state.selection.input.value
+    : undefined;
 };
 
-export const aggregateStateCompareValue = (state: AggregateState): unknown => {
-  if (state.aggFunc === "count") {
-    return state.count;
+export const groupAggregateStateCompareValue = (group: GroupState, stateIndex: number): unknown =>
+  aggregateStateResultValue(Arr.getUnsafe(group.aggregates, stateIndex));
+
+export const updateGroupAggregateState = (state: AggregateState, row: RowObject): void => {
+  updateAggregateState(state, row);
+};
+
+export const removeGroupAggregateState = (
+  state: ReversibleAggregateState,
+  row: RowObject,
+): RetainedMinMaxAggregateState | undefined => removeAggregateState(state, row);
+
+const projectGroupFields = (
+  groupBy: ReadonlyArray<string>,
+  row: RowObject,
+): Record<string, unknown> => {
+  const projected: Record<string, unknown> = {};
+  for (const field of groupBy) {
+    if (!Object.prototype.propertyIsEnumerable.call(row, field)) {
+      continue;
+    }
+    Object.defineProperty(projected, field, {
+      configurable: true,
+      enumerable: true,
+      value: trustedFieldValue(row, field),
+      writable: true,
+    });
   }
-  if (state.aggFunc === "countDistinct") {
-    return state.count;
-  }
-  if (state.aggFunc === "sum") {
-    return state.resultKind === "bigint" ? state.bigintTotal : state.decimalTotal;
-  }
-  if (state.aggFunc === "avg") {
-    return state.count === 0n ? fromBigInt(0n) : divideUnsafe(state.total, fromBigInt(state.count));
-  }
-  return state.value;
+  return projected;
 };
 
 export const newGroupState = (
@@ -394,14 +508,8 @@ export const newGroupState = (
   aggregates: ReadonlyArray<GroupedAggregatePlan>,
   row: RowObject,
 ): GroupState => {
-  const resultRow: Record<string, unknown> = {};
-  for (const field of groupBy) {
-    resultRow[field] = cloneUnknown(trustedFieldValue(row, field));
-  }
-  const aggregateStates: Record<string, AggregateState> = {};
-  for (const { alias, aggregate } of aggregates) {
-    aggregateStates[alias] = emptyAggregateState(aggregate);
-  }
+  const resultRow = projectGroupFields(groupBy, row);
+  const aggregateStates = aggregates.map(emptyAggregateState);
   return {
     key,
     row: resultRow,
@@ -415,14 +523,8 @@ export const newIncrementalGroupState = (
   aggregates: ReadonlyArray<GroupedAggregatePlan>,
   row: RowObject,
 ): MaterializedIncrementalGroupState => {
-  const resultRow: Record<string, unknown> = {};
-  for (const field of groupBy) {
-    resultRow[field] = cloneUnknown(trustedFieldValue(row, field));
-  }
-  const aggregateStates: Record<string, ReversibleAggregateState> = {};
-  for (const { alias, aggregate } of aggregates) {
-    aggregateStates[alias] = emptyReversibleAggregateState(aggregate);
-  }
+  const resultRow = projectGroupFields(groupBy, row);
+  const aggregateStates = aggregates.map(emptyReversibleAggregateState);
   return {
     key,
     row: resultRow,
@@ -432,9 +534,22 @@ export const newIncrementalGroupState = (
 };
 
 export const finalizeGroup = (group: GroupState): StoredRowOf<RowObject> => {
-  const row: Record<string, unknown> = { ...group.row };
-  for (const [alias, state] of Object.entries(group.aggregates)) {
-    row[alias] = aggregateStateValue(state);
+  const row: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(group.row)) {
+    Object.defineProperty(row, field, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+  }
+  for (const state of group.aggregates) {
+    Object.defineProperty(row, state.alias, {
+      configurable: true,
+      enumerable: true,
+      value: aggregateStateResultValue(state),
+      writable: true,
+    });
   }
   return {
     key: group.key,

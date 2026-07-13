@@ -1,0 +1,5 @@
+---
+"effect-view-server": major
+---
+
+Preserve schema-decoded values and optional-field presence across Live Query results, normalize order-insensitive persistent-collection identity, apply configured field semantics to equality filters and ordering, and reject opaque, non-injective, unrecognized, or equivalence-incongruent value domains that cannot retain one meaning across local, gRPC, and NDJSON boundaries. Topic schemas using `Option`, `Chunk`, `HashMap`, or `HashSet` must use the corresponding `viewSchema` factory; `viewSchema.BigDecimal` is the admitted `Schema.BigDecimal` declaration, so either spelling remains valid. A concrete `Schema.Class` must be registered with `viewSchema.admitClass(Profile)` before it is used by a Topic. Topic row, query, source, and mutation types now contain schema fields only; class methods are not data columns. Direct `createColumnLiveViewEngine` consumers must now handle `InvalidRowError` in the constructor Effect error channel when configured schema semantics cannot be compiled.

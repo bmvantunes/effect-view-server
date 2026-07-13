@@ -1,38 +1,18 @@
 import { isBigDecimal } from "effect/BigDecimal";
 import { compareFilterValue } from "./query-value";
 import { isDenseArray, type RuntimeRawQuery } from "./raw-query-decoder";
-import {
-  isOperatorFilterObject,
-  predicateFilterPlans,
-  type TopicRawPredicatePlan,
-} from "./raw-predicate-plan";
+import { isOperatorFilterObject } from "./raw-query-filter";
+import { compileSchemaEquality } from "./raw-query-value-semantics";
+import { predicateFilterPlans, type TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
-import { isPlainRecord, trustedFieldValue, valuesEqual } from "./row-values";
+import { isPlainRecord, trustedFieldValue } from "./row-values";
+import type { SchemaValueSemantics } from "./topic-row-value-semantics";
 
 type RowObject = object;
 
 export type CompiledRawPredicate<Row extends RowObject> = {
   readonly plan: TopicRawPredicatePlan;
   readonly matches: (row: Row) => boolean;
-};
-
-const isEqualityComparable = (left: unknown, right: unknown): boolean => {
-  if (isBigDecimal(left) || isBigDecimal(right)) {
-    return isBigDecimal(left) && isBigDecimal(right);
-  }
-  if (typeof left === "number" || typeof right === "number") {
-    return typeof left === "number" && typeof right === "number" && Number.isFinite(right);
-  }
-  return typeof left === typeof right;
-};
-
-const includesValue = (values: ReadonlyArray<unknown>, value: unknown): boolean => {
-  for (const candidate of values) {
-    if (valuesEqual(value, candidate)) {
-      return true;
-    }
-  }
-  return false;
 };
 
 type CompiledRawPredicateClause = {
@@ -50,7 +30,9 @@ const isStructuredQueryValue = (value: unknown): boolean =>
 
 const compileStructuredFilterMatcher = (
   filter: Readonly<Record<string, unknown>>,
+  semantics: SchemaValueSemantics,
 ): ((value: unknown) => boolean) => {
+  const literalMatcher = compileSchemaEquality(semantics, filter);
   const oneOf = filter["in"];
   const oneOfMatcher =
     oneOf === undefined
@@ -58,22 +40,34 @@ const compileStructuredFilterMatcher = (
       : Array.isArray(oneOf) &&
           isDenseArray(oneOf) &&
           !oneOf.some((candidate) => candidate === undefined)
-        ? (value: unknown) => includesValue(oneOf, value)
+        ? (() => {
+            const candidates = oneOf.map((candidate) =>
+              compileSchemaEquality(semantics, candidate),
+            );
+            return candidates.every((candidate) => candidate.valid)
+              ? (value: unknown) => candidates.some((candidate) => candidate.matches(value))
+              : () => false;
+          })()
         : () => false;
   const eq = filter["eq"];
   const neq = filter["neq"];
+  const eqMatcher = eq === undefined ? undefined : compileSchemaEquality(semantics, eq);
+  const neqMatcher = neq === undefined ? undefined : compileSchemaEquality(semantics, neq);
 
   return (value) => {
-    if (valuesEqual(value, filter)) {
+    if (literalMatcher.valid && literalMatcher.matches(value)) {
       return true;
+    }
+    if (eqMatcher?.valid === false || neqMatcher?.valid === false) {
+      return false;
     }
     if (oneOfMatcher !== undefined && !oneOfMatcher(value)) {
       return false;
     }
-    if (eq !== undefined && !valuesEqual(value, eq)) {
+    if (eqMatcher !== undefined && !eqMatcher.matches(value)) {
       return false;
     }
-    if (neq !== undefined && valuesEqual(value, neq)) {
+    if (neqMatcher !== undefined && neqMatcher.matches(value)) {
       return false;
     }
     return eq !== undefined || oneOfMatcher !== undefined || neq !== undefined;
@@ -82,6 +76,7 @@ const compileStructuredFilterMatcher = (
 
 const compileScalarOperatorFilterMatcher = (
   filter: Readonly<Record<string, unknown>>,
+  semantics: SchemaValueSemantics,
 ): ((value: unknown) => boolean) => {
   if (
     ("eq" in filter && filter["eq"] === undefined) ||
@@ -104,23 +99,34 @@ const compileScalarOperatorFilterMatcher = (
   const gte = filter["gte"];
   const lt = filter["lt"];
   const lte = filter["lte"];
+  const eqMatcher = eq === undefined ? undefined : compileSchemaEquality(semantics, eq);
+  const neqMatcher = neq === undefined ? undefined : compileSchemaEquality(semantics, neq);
   const oneOfMatcher =
     oneOf === undefined
       ? undefined
       : Array.isArray(oneOf) &&
           isDenseArray(oneOf) &&
           !oneOf.some((candidate) => candidate === undefined)
-        ? (value: unknown) => includesValue(oneOf, value)
+        ? (() => {
+            const candidates = oneOf.map((candidate) =>
+              compileSchemaEquality(semantics, candidate),
+            );
+            return candidates.every((candidate) => candidate.valid)
+              ? (value: unknown) => candidates.some((candidate) => candidate.matches(value))
+              : () => false;
+          })()
         : () => false;
 
+  if (eqMatcher?.valid === false || neqMatcher?.valid === false) {
+    return () => false;
+  }
+
   return (value) => {
-    if (eq !== undefined && !valuesEqual(value, eq)) {
+    if (eqMatcher !== undefined && !eqMatcher.matches(value)) {
       return false;
     }
-    if (neq !== undefined) {
-      if (!isEqualityComparable(value, neq) || valuesEqual(value, neq)) {
-        return false;
-      }
+    if (neqMatcher !== undefined && neqMatcher.matches(value)) {
+      return false;
     }
     if (oneOfMatcher !== undefined && !oneOfMatcher(value)) {
       return false;
@@ -164,21 +170,25 @@ const compileScalarOperatorFilterMatcher = (
   };
 };
 
-const compileFilterMatcher = (filter: unknown): ((value: unknown) => boolean) => {
+const compileFilterMatcher = (
+  filter: unknown,
+  semantics: SchemaValueSemantics,
+): ((value: unknown) => boolean) => {
   if (filter === undefined) {
     return () => false;
   }
   if (!isPlainRecord(filter) || isBigDecimal(filter)) {
-    return (value) => valuesEqual(value, filter);
+    return compileSchemaEquality(semantics, filter).matches;
   }
 
-  const structuredMatcher = compileStructuredFilterMatcher(filter);
+  const structuredMatcher = compileStructuredFilterMatcher(filter, semantics);
   if (!isOperatorFilterObject(filter)) {
+    const literalMatcher = compileSchemaEquality(semantics, filter);
     return (value) =>
-      isStructuredQueryValue(value) ? structuredMatcher(value) : valuesEqual(value, filter);
+      isStructuredQueryValue(value) ? structuredMatcher(value) : literalMatcher.matches(value);
   }
 
-  const scalarMatcher = compileScalarOperatorFilterMatcher(filter);
+  const scalarMatcher = compileScalarOperatorFilterMatcher(filter, semantics);
   return (value) =>
     isStructuredQueryValue(value) ? structuredMatcher(value) : scalarMatcher(value);
 };
@@ -207,7 +217,7 @@ const compilePredicateParts = (
     callbackRequired ||= fieldPlan.callbackRequired;
     clauses.push({
       field,
-      matches: compileFilterMatcher(filter),
+      matches: compileFilterMatcher(filter, metadata.valueSemantics.field(field)),
     });
   }
   return {

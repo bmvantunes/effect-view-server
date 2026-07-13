@@ -1,4 +1,8 @@
 import { Schema, SchemaAST } from "effect";
+import { schemaHasUnrecognizedCanonicalCodec } from "./schema-canonical-codec";
+import { schemaAstIsClass } from "./schema-ast-children";
+import { schemaHasCustomEquivalence } from "./schema-custom-equivalence";
+import { schemaHasAmbiguousJsonUnion } from "./schema-json-injectivity";
 
 export type ViewServerSchemaFieldMetadata = {
   readonly isNumeric: boolean;
@@ -31,10 +35,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
-  if (!isRecord(schema)) {
+  if ((typeof schema !== "object" || schema === null) && typeof schema !== "function") {
     return undefined;
   }
-  const ast = schema["ast"];
+  const ast = Reflect.get(schema, "ast");
   return SchemaAST.isAST(ast) ? ast : undefined;
 };
 
@@ -86,6 +90,15 @@ const unsupportedRuntimeDeclarationName = (ast: SchemaAST.AST): string | undefin
   }
   if (!SchemaAST.isDeclaration(ast)) {
     return undefined;
+  }
+  const typeConstructor = ast.annotations?.["typeConstructor"];
+  if (isRecord(typeConstructor)) {
+    if (typeConstructor["_tag"] === "ReadonlyMap") {
+      return "ReadonlyMap";
+    }
+    if (typeConstructor["_tag"] === "ReadonlySet") {
+      return "ReadonlySet";
+    }
   }
   const run = Reflect.get(ast, "run");
   const link = declarationLink(ast);
@@ -210,8 +223,13 @@ const collectNumericRuntimeDomainsByPath = (
     }
   }
   if (SchemaAST.isDeclaration(ast)) {
-    for (const typeParameter of ast.typeParameters) {
-      collectNumericRuntimeDomainsByPath(typeParameter, path, entries, active);
+    for (const [index, typeParameter] of ast.typeParameters.entries()) {
+      collectNumericRuntimeDomainsByPath(
+        typeParameter,
+        [...path, ["index", index]],
+        entries,
+        active,
+      );
     }
   }
   if (SchemaAST.isObjects(ast)) {
@@ -278,14 +296,19 @@ const isStringAst = (ast: SchemaAST.AST): boolean => {
 };
 
 const isStructuredAst = (ast: SchemaAST.AST): boolean => {
-  if (SchemaAST.isObjects(ast) || SchemaAST.isArrays(ast) || SchemaAST.isObjectKeyword(ast)) {
+  if (
+    SchemaAST.isObjects(ast) ||
+    SchemaAST.isArrays(ast) ||
+    SchemaAST.isObjectKeyword(ast) ||
+    schemaAstIsClass(ast)
+  ) {
     return true;
   }
   return SchemaAST.isUnion(ast) && ast.types.length > 0 && ast.types.every(isStructuredAst);
 };
 
 const isStructuredObjectAst = (ast: SchemaAST.AST): boolean => {
-  if (SchemaAST.isObjects(ast) || SchemaAST.isObjectKeyword(ast)) {
+  if (SchemaAST.isObjects(ast) || SchemaAST.isObjectKeyword(ast) || schemaAstIsClass(ast)) {
     return true;
   }
   return SchemaAST.isUnion(ast) && ast.types.length > 0 && ast.types.every(isStructuredObjectAst);
@@ -323,6 +346,9 @@ const unsupportedRuntimeDomainAst = (
     return undefined;
   }
   seen.add(ast);
+  if (SchemaAST.isLiteral(ast) && Reflect.get(ast, "literal") === undefined) {
+    return "non-JSON literal: undefined";
+  }
   const unsupportedDeclaration = unsupportedRuntimeDeclarationName(ast);
   if (unsupportedDeclaration !== undefined) {
     return unsupportedDeclaration;
@@ -394,5 +420,22 @@ export const viewServerUnsupportedRuntimeFieldDomain = (schema: unknown): string
   if (ast === undefined) {
     return undefined;
   }
-  return unsupportedRuntimeDomainAst(ast, new Set()) ?? nestedMixedNumericRuntimeDomainAst(ast);
+  const unsupported =
+    unsupportedRuntimeDomainAst(ast, new Set()) ?? nestedMixedNumericRuntimeDomainAst(ast);
+  if (unsupported !== undefined) {
+    return unsupported;
+  }
+  if (schemaHasCustomEquivalence(ast)) {
+    return "custom equivalence without canonical identity witness";
+  }
+  if (schemaHasUnrecognizedCanonicalCodec(ast)) {
+    return "custom codec transformation without canonical identity witness";
+  }
+  if (Schema.isSchema(schema)) {
+    const jsonCodec = Schema.toCodecJson(schema);
+    if (schemaHasAmbiguousJsonUnion(jsonCodec.ast)) {
+      return "ambiguous JSON codec union";
+    }
+  }
+  return undefined;
 };

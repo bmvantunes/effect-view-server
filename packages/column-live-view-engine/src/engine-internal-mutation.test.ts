@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig, type StatusEvent } from "@effect-view-server/config";
-import { Effect, Schema, SchemaGetter, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import { createColumnLiveViewEngine, InvalidRowError } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
 import { expectSnapshotEvent, firstEvent, makeEventReader } from "../test-harness/events";
@@ -209,14 +209,7 @@ describe("ColumnLiveViewEngine internal mutation", () => {
 
   it.effect("does not decode internal decoded runtime rows twice", () =>
     Effect.gen(function* () {
-      const TransformId = Schema.String.pipe(
-        Schema.decodeTo(Schema.String, {
-          decode: SchemaGetter.transform((value) => `decoded-${value}`),
-          encode: SchemaGetter.transform((value) =>
-            value.startsWith("decoded-") ? value.slice("decoded-".length) : value,
-          ),
-        }),
-      );
+      const TransformId = Schema.StringFromUriComponent;
       const TransformOrder = Schema.Struct({
         id: TransformId,
         price: Schema.Number,
@@ -235,7 +228,7 @@ describe("ColumnLiveViewEngine internal mutation", () => {
 
       yield* engine.publishManyDecodedRows("orders", [
         {
-          id: "decoded-1",
+          id: "decoded%2D1",
           price: 42,
         },
       ]);
@@ -247,7 +240,7 @@ describe("ColumnLiveViewEngine internal mutation", () => {
       expect(snapshot).toStrictEqual({
         rows: [
           {
-            id: "decoded-1",
+            id: "decoded%2D1",
             price: 42,
           },
         ],
@@ -259,16 +252,110 @@ describe("ColumnLiveViewEngine internal mutation", () => {
     }),
   );
 
+  it.effect("rejects encoded values at every decoded runtime mutation boundary", () =>
+    Effect.gen(function* () {
+      const DecodedOrder = Schema.Struct({
+        id: Schema.String,
+        amount: Schema.BigIntFromString,
+      });
+      const decodedViewServer = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: DecodedOrder,
+            key: "id",
+          },
+        },
+      });
+      const engine = yield* createColumnLiveViewEngineInternal({
+        topics: decodedViewServer.topics,
+      });
+      yield* engine.publishManyDecodedRows("orders", [{ id: "stable", amount: 1n }]);
+
+      const publishError = yield* Effect.flip(
+        engine.publishManyDecodedRows("orders", [
+          {
+            id: "encoded-publish",
+            // This internal source boundary is intentionally object-typed and must reject at runtime.
+            amount: "42",
+          },
+        ]),
+      );
+      const storageKeyError = yield* Effect.flip(
+        engine.publishManyDecodedRowsWithStorageKeys("orders", [
+          {
+            storageKey: "encoded-storage-key",
+            row: {
+              id: "encoded-storage",
+              // This internal source boundary is intentionally object-typed and must reject at runtime.
+              amount: "43",
+            },
+          },
+        ]),
+      );
+      const patchError = yield* Effect.flip(
+        engine.patchDecodedFields("orders", "stable", {
+          // This internal source boundary is intentionally object-typed and must reject at runtime.
+          amount: "44",
+        }),
+      );
+      const snapshot = yield* engine.snapshot("orders", {
+        select: ["id", "amount"],
+        limit: 10,
+      });
+
+      expect(publishError).toBeInstanceOf(InvalidRowError);
+      expect(storageKeyError).toBeInstanceOf(InvalidRowError);
+      expect(patchError).toBeInstanceOf(InvalidRowError);
+      expect({
+        publishError,
+        storageKeyError,
+        patchError,
+        snapshot,
+      }).toStrictEqual({
+        publishError: InvalidRowError.make({
+          topic: "orders",
+          message: 'SchemaError(Expected bigint, got "42"\n  at ["amount"])',
+        }),
+        storageKeyError: InvalidRowError.make({
+          topic: "orders",
+          message: 'SchemaError(Expected bigint, got "43"\n  at ["amount"])',
+        }),
+        patchError: InvalidRowError.make({
+          topic: "orders",
+          message: 'SchemaError(Expected bigint, got "44"\n  at ["amount"])',
+        }),
+        snapshot: {
+          rows: [{ id: "stable", amount: 1n }],
+          status: "ready",
+          statusCode: "Ready",
+          totalRows: 1,
+          version: 1,
+        },
+      });
+    }),
+  );
+
   it.effect("fails decoded runtime rows when normalization throws", () =>
     Effect.gen(function* () {
       const engine = yield* createColumnLiveViewEngineInternal({
         topics: viewServer.topics,
       });
-      const brokenRow = {};
-      Object.defineProperty(brokenRow, "id", {
+      let accessorReads = 0;
+      let descriptorReads = 0;
+      const accessorRow = {};
+      Object.defineProperty(accessorRow, "id", {
         enumerable: true,
         get: () => {
+          accessorReads += 1;
           throw new Error("decoded row getter failed");
+        },
+      });
+      const brokenRow = new Proxy(accessorRow, {
+        getOwnPropertyDescriptor(target, property) {
+          if (property === "id") {
+            descriptorReads += 1;
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
         },
       });
 
@@ -277,9 +364,11 @@ describe("ColumnLiveViewEngine internal mutation", () => {
       expect(error).toMatchObject({
         _tag: "InvalidRowError",
         topic: "orders",
-        message: expect.stringContaining("decoded row getter failed"),
+        message: "TypeError: Topic Row field id must be an own data property.",
       });
       expect(error).toBeInstanceOf(InvalidRowError);
+      expect(accessorReads).toBe(0);
+      expect(descriptorReads).toBe(1);
     }),
   );
 

@@ -152,8 +152,32 @@ describe("Invalid raw row wire inputs", () => {
         'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN", got "nope"',
       );
 
+      const hostileRowSchema = Schema.Struct({ id: Schema.String });
+      const hostileRowViewServer = defineViewServerConfig({
+        topics: {
+          badjson: {
+            schema: hostileRowSchema,
+            key: "id",
+          },
+        },
+      });
+      Object.defineProperty(hostileRowSchema.fields, "id", {
+        configurable: true,
+        enumerable: true,
+        value: BadJsonField,
+        writable: true,
+      });
+      const unsafeHostileRowViewServer = {
+        ...hostileRowViewServer,
+        topics: {
+          badjson: {
+            ...hostileRowViewServer.topics.badjson,
+            schema: hostileRowSchema,
+          },
+        },
+      };
       const nonJsonRow = yield* Effect.flip(
-        viewServerEncodeLiveEvent(viewServer, "badjson", idQuery, {
+        viewServerEncodeLiveEvent(unsafeHostileRowViewServer, "badjson", idQuery, {
           type: "snapshot",
           topic: "badjson",
           queryId: "query-0",
@@ -165,12 +189,12 @@ describe("Invalid raw row wire inputs", () => {
       );
 
       expect(nonJsonRow.message).toBe(
-        "Field id is not JSON-safe: Expected JSON value, got Symbol(not-json)",
+        'Field id is not JSON-safe: Unsupported JSON value type "symbol" at $.',
       );
 
       const BadJsonAggregateRow = Schema.Struct({
         id: Schema.String,
-        value: BadJsonField,
+        value: Schema.Number,
       });
 
       const badJsonAggregateViewServer = defineViewServerConfig({
@@ -192,10 +216,25 @@ describe("Invalid raw row wire inputs", () => {
           },
         },
       );
+      Object.defineProperty(BadJsonAggregateRow.fields, "value", {
+        configurable: true,
+        enumerable: true,
+        value: BadJsonField,
+        writable: true,
+      });
+      const unsafeBadJsonAggregateViewServer = {
+        ...badJsonAggregateViewServer,
+        topics: {
+          badAggregate: {
+            ...badJsonAggregateViewServer.topics.badAggregate,
+            schema: BadJsonAggregateRow,
+          },
+        },
+      };
 
       const nonJsonAggregate = yield* Effect.flip(
         viewServerEncodeLiveEvent(
-          badJsonAggregateViewServer,
+          unsafeBadJsonAggregateViewServer,
           "badAggregate",
           badJsonAggregateQuery,
           {
@@ -213,7 +252,7 @@ describe("Invalid raw row wire inputs", () => {
       expect(nonJsonAggregate.code).toBe("InvalidRow");
 
       expect(nonJsonAggregate.message).toBe(
-        "Field badValue is not JSON-safe: Expected JSON value, got Symbol(not-json)",
+        'Field badValue is not JSON-safe: Unsupported JSON value type "symbol" at $.',
       );
     }),
   );

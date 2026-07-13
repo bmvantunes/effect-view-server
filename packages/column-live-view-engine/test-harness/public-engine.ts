@@ -1,7 +1,11 @@
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
-import { createColumnLiveViewEngine, type ColumnLiveViewEngine } from "../src/index";
+import {
+  createColumnLiveViewEngine,
+  type ColumnLiveViewEngine,
+  type InvalidRowError,
+} from "../src/index";
 
 export const Order = Schema.Struct({
   id: Schema.String,
@@ -131,7 +135,7 @@ export const instrument = (
   tags: [...tags],
 });
 
-export const makeEngine = (): Effect.Effect<Engine> =>
+export const makeEngine = (): Effect.Effect<Engine, InvalidRowError> =>
   createColumnLiveViewEngine({ topics: viewServer.topics });
 
 export const withObjectPrototypeValue = <Value, Error, Requirements>(

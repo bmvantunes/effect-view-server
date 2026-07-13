@@ -13,9 +13,12 @@ import type {
   ViewServerTransportError,
 } from "@effect-view-server/config";
 import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
+import { validateDecodedRow } from "@effect-view-server/config/internal";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
+  makeSchemaJsonIdentity,
   runAllFinalizers,
+  type SchemaJsonIdentity,
 } from "@effect-view-server/effect-utils";
 import type {
   ViewServerLiveEvent,
@@ -29,18 +32,19 @@ import {
   Effect,
   Exit,
   Option,
+  Result,
   Schema,
   Scope,
   Semaphore,
   Stream,
 } from "effect";
-import * as BigDecimal from "effect/BigDecimal";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import {
   makeGrpcGroupedKeyTranslations,
   type GrpcGroupedKeyTranslations,
   type GrpcGroupedKeyRetentionObserver,
 } from "./grpc-grouped-key-translations";
+import { compileGrpcGroupedPublicKey } from "./grpc-grouped-public-key";
 import {
   callLeasedGrpcSourceAcquire,
   callLeasedGrpcSourceRelease,
@@ -55,6 +59,7 @@ import {
 } from "./grpc-source-lifecycle";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
+import { snapshotLeasedGrpcQuery } from "./grpc-leased-query-snapshot";
 import {
   makeSourceOwnershipPolicy,
   type ViewServerRuntimeCoreInternalClient,
@@ -86,17 +91,28 @@ type RuntimeTopicDefinition = {
   readonly key: string;
 };
 
-type CanonicalRouteValue =
-  | BigDecimal.BigDecimal
-  | bigint
-  | string
-  | number
-  | boolean
-  | null
-  | ReadonlyArray<CanonicalRouteValue>
-  | { readonly [key: string]: CanonicalRouteValue };
+type LeasedFeedRoute = Readonly<Record<string, unknown>>;
 
-type LeasedFeedRoute = Readonly<Record<string, CanonicalRouteValue>>;
+type LeasedRouteFieldIdentity = {
+  readonly canonicalKey: string;
+  readonly identity: SchemaJsonIdentity;
+};
+
+type ExtractedLeasedFeedRoute = {
+  readonly values: LeasedFeedRoute;
+  readonly fields: ReadonlyMap<string, LeasedRouteFieldIdentity>;
+};
+
+const materializeLeasedRouteView = (
+  route: LeasedFeedRoute,
+  fields: ReadonlyMap<string, LeasedRouteFieldIdentity>,
+): LeasedFeedRoute => {
+  const view: Record<string, unknown> = Object.create(null);
+  for (const [field, routeField] of fields) {
+    view[field] = routeField.identity.materializeDecoded(route[field]);
+  }
+  return view;
+};
 
 type LeasedFeedRuntimeInput = ViewServerGrpcSourceInput<LeasedFeedRoute>;
 
@@ -143,6 +159,7 @@ type LeaseRowOwner = {
 type ActiveLease = LeaseRowOwner & {
   readonly feedKey: string;
   readonly route: LeasedFeedRoute;
+  readonly routeFields: ReadonlyMap<string, LeasedRouteFieldIdentity>;
   readonly scope: Scope.Scope;
   readonly publicToInternalKeys: Map<string, string>;
   readonly cleanupRows: Effect.Effect<void, ViewServerGrpcIngressError, never>;
@@ -225,42 +242,6 @@ const grpcLeaseError = (input: {
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isPlainRouteRecord = (value: unknown): value is Readonly<Record<string, unknown>> => {
-  if (!isRecord(value)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return (
-    (prototype === null || prototype === Object.prototype) &&
-    Object.getOwnPropertySymbols(value).length === 0 &&
-    Object.getOwnPropertyNames(value).length === Object.keys(value).length
-  );
-};
-
-const isCanonicalRouteValue = (value: unknown): value is CanonicalRouteValue => {
-  if (BigDecimal.isBigDecimal(value)) {
-    return true;
-  }
-  if (
-    typeof value === "bigint" ||
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    value === null
-  ) {
-    return true;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value);
-  }
-  if (Array.isArray(value)) {
-    return value.every(isCanonicalRouteValue);
-  }
-  if (isPlainRouteRecord(value)) {
-    return Object.keys(value).every((key) => isCanonicalRouteValue(value[key]));
-  }
-  return false;
-};
-
 const exactEqValue = (value: unknown): Option.Option<unknown> => {
   if (!isRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "eq")) {
     return Option.none();
@@ -297,7 +278,8 @@ const extractRoute = Effect.fn("ViewServerRuntime.grpc.leased.route.extract")(fu
     );
   }
   const topicDefinition = yield* topicDefinitionFor(config, topic, feed.topic);
-  const route: Record<string, CanonicalRouteValue> = Object.create(null);
+  const route: Record<string, unknown> = Object.create(null);
+  const fields = new Map<string, LeasedRouteFieldIdentity>();
   for (const field of feed.routeBy) {
     const value = exactEqValue(query["where"][field]);
     if (Option.isNone(value)) {
@@ -319,96 +301,52 @@ const extractRoute = Effect.fn("ViewServerRuntime.grpc.leased.route.extract")(fu
         }),
       );
     }
-    yield* Schema.encodeUnknownEffect(fieldSchema)(value.value).pipe(
-      Effect.mapError(() =>
+    const identity = makeSchemaJsonIdentity(fieldSchema);
+    const routeField = yield* Effect.try({
+      try: () => {
+        const routeValue = identity.materializeDecoded(value.value);
+        return {
+          canonicalKey: identity.canonicalKey(routeValue),
+          routeValue,
+        };
+      },
+      catch: () =>
         runtimeError({
           code: "InvalidQuery",
           topic,
-          message: `Leased topic ${topic} route field ${field} value does not match the topic schema.`,
+          message: `Leased topic ${topic} route field ${field} value does not match the topic schema or cannot be used as a stable leased gRPC route key.`,
         }),
-      ),
-      Effect.asVoid,
-    );
-    const routeValue = value.value;
-    if (!isCanonicalRouteValue(routeValue)) {
-      return yield* Effect.fail(
-        runtimeError({
-          code: "InvalidQuery",
-          topic,
-          message: `Leased topic ${topic} route field ${field} value cannot be used as a stable leased gRPC route key.`,
-        }),
-      );
-    }
-    route[field] = routeValue;
+    });
+    route[field] = routeField.routeValue;
+    fields.set(field, { canonicalKey: routeField.canonicalKey, identity });
   }
-  return route;
+  return {
+    values: route,
+    fields,
+  } satisfies ExtractedLeasedFeedRoute;
 });
-
-const encodeFrame = (tag: string, payload: string): string => `${tag}:${payload.length}:${payload}`;
-
-const isCanonicalRouteArray = (
-  value: CanonicalRouteValue,
-): value is ReadonlyArray<CanonicalRouteValue> => Array.isArray(value);
-
-const encodeRouteRecord = (value: Readonly<Record<string, CanonicalRouteValue>>): string => {
-  const entries: Array<string> = [];
-  for (const [key, routeValue] of Object.entries(value).sort(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
-    const encodedValue = encodeRouteValue(routeValue);
-    const encodedKey = JSON.stringify(key);
-    entries.push(`${encodedKey.length}:${encodedKey}${encodedValue.length}:${encodedValue}`);
-  }
-  return entries.join("");
-};
-
-const encodeRouteValue = (value: CanonicalRouteValue): string => {
-  if (BigDecimal.isBigDecimal(value)) {
-    return encodeFrame("bigDecimal", BigDecimal.format(BigDecimal.normalize(value)));
-  }
-  if (typeof value === "bigint") {
-    return encodeFrame("bigint", value.toString());
-  }
-  if (typeof value === "string") {
-    return encodeFrame("string", value);
-  }
-  if (typeof value === "number") {
-    return encodeFrame("number", Object.is(value, -0) ? "-0" : value.toString());
-  }
-  if (typeof value === "boolean") {
-    return encodeFrame("boolean", value ? "true" : "false");
-  }
-  if (value === null) {
-    return encodeFrame("null", "null");
-  }
-  if (isCanonicalRouteArray(value)) {
-    const entries: Array<string> = [];
-    for (const entry of value) {
-      const encodedEntry = encodeRouteValue(entry);
-      entries.push(`${encodedEntry.length}:${encodedEntry}`);
-    }
-    return encodeFrame("array", entries.join(""));
-  }
-  return encodeFrame("object", encodeRouteRecord(value));
-};
 
 const routeFeedKey = Effect.fn("ViewServerRuntime.grpc.leased.route.feedKey")(function* <
   Topic extends string,
->(topic: Topic, feedName: string, feed: RuntimeLeasedFeedDefinition, route: LeasedFeedRoute) {
+>(
+  topic: Topic,
+  feedName: string,
+  feed: RuntimeLeasedFeedDefinition,
+  route: ExtractedLeasedFeedRoute,
+) {
   const parts: Array<string> = [];
   for (const field of feed.routeBy) {
-    const routeValue = route[field];
-    if (routeValue === undefined) {
+    const routeField = route.fields.get(field);
+    if (routeField === undefined) {
       return yield* grpcLeaseError({
         message: `Leased gRPC route is missing configured field ${field}`,
-        cause: route,
+        cause: route.values,
         phase: "request",
         feedName,
         topic,
       });
     }
-    const encodedValue = encodeRouteValue(routeValue);
-    parts.push(`${encodeURIComponent(field)}=${encodeURIComponent(encodedValue)}`);
+    parts.push(`${encodeURIComponent(field)}=${encodeURIComponent(routeField.canonicalKey)}`);
   }
   return `${topic}/${feedName}/leased/${parts.join("&")}`;
 });
@@ -504,7 +442,7 @@ const mapLeasedValue = Effect.fn("ViewServerRuntime.grpc.leased.map")(function* 
         topic: feed.topic,
       }),
   });
-  const decoded = yield* Schema.decodeUnknownEffect(topicDefinition.schema)(row).pipe(
+  const decoded = yield* validateDecodedRow(topicDefinition.schema, row).pipe(
     Effect.mapError((cause) =>
       grpcLeaseError({
         message: `gRPC leased feed mapping produced an invalid row for ${feedName}`,
@@ -540,13 +478,6 @@ const rowKey = <const Topics extends ViewServerRuntimeTopicDefinitions>(
     });
   });
 
-const topicKeyField = Effect.fn("ViewServerRuntime.grpc.leased.topicKeyField")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(config: ViewServerTopicConfig<Topics>, topic: string, feedName: string) {
-  const topicDefinition = yield* topicDefinitionFor(config, topic, feedName);
-  return topicDefinition.key;
-});
-
 type LeasedRowWithStorageKey = {
   readonly storageKey: string;
   readonly row: object;
@@ -567,14 +498,25 @@ const internalizeLeasedRow = Effect.fn("ViewServerRuntime.grpc.leased.row.intern
 
 const validateLeasedRowRoute = Effect.fn("ViewServerRuntime.grpc.leased.row.validateRoute")(
   function* (lease: ActiveLease, route: LeasedFeedRoute, row: object) {
-    for (const field of lease.feed.routeBy) {
+    for (const [field, routeField] of lease.routeFields) {
       const routeValue = route[field];
       const rowValue = Reflect.get(row, field);
-      if (
-        routeValue === undefined ||
-        !isCanonicalRouteValue(rowValue) ||
-        encodeRouteValue(rowValue) !== encodeRouteValue(routeValue)
-      ) {
+      const rowCanonicalKey = yield* Effect.try({
+        try: () => routeField.identity.canonicalKey(rowValue),
+        catch: () =>
+          grpcLeaseError({
+            message: `gRPC leased feed ${lease.feedName} mapped row field ${field} outside the acquired route.`,
+            cause: {
+              field,
+              rowValue,
+              routeValue,
+            },
+            phase: "mapping",
+            feedName: lease.feedName,
+            topic: lease.feed.topic,
+          }),
+      });
+      if (rowCanonicalKey !== routeField.canonicalKey) {
         return yield* grpcLeaseError({
           message: `gRPC leased feed ${lease.feedName} mapped row field ${field} outside the acquired route.`,
           cause: {
@@ -615,57 +557,6 @@ const isGroupedRuntimeQuery = (query: unknown): query is Pick<GroupedQuery<objec
 const groupedKeyEncodingErrorPrefix =
   "Leased gRPC grouped key value cannot be encoded as a stable public key";
 
-const stableGroupedKeyValueTokenString = (value: unknown): string | undefined => {
-  if (BigDecimal.isBigDecimal(value)) {
-    return `["bigDecimal",${JSON.stringify(BigDecimal.format(BigDecimal.normalize(value)))}]`;
-  }
-  if (value === null) {
-    return `["null"]`;
-  }
-  if (typeof value === "bigint") {
-    return `["bigint",${JSON.stringify(value.toString())}]`;
-  }
-  if (typeof value === "number") {
-    return `["number",${JSON.stringify(Object.is(value, -0) ? "-0" : String(value))}]`;
-  }
-  if (typeof value === "string") {
-    return `["string",${JSON.stringify(value)}]`;
-  }
-  if (typeof value === "boolean") {
-    return `["boolean",${value ? "true" : "false"}]`;
-  }
-  if (value === undefined) {
-    return `["undefined"]`;
-  }
-  if (isCanonicalRouteValue(value)) {
-    return `["canonical",${JSON.stringify(encodeRouteValue(value))}]`;
-  }
-  return undefined;
-};
-
-const stableGroupedKeyFieldTokenString = (field: string, value: unknown): string | undefined => {
-  const valueToken = stableGroupedKeyValueTokenString(value);
-  if (valueToken === undefined) {
-    return undefined;
-  }
-  return `["array",[["string",${JSON.stringify(field)}],${valueToken}]]`;
-};
-
-const groupedKeyFromExternalizedRow = (
-  query: Pick<GroupedQuery<object>, "groupBy">,
-  row: object,
-): string | undefined => {
-  const tokens: Array<string> = [];
-  for (const field of query.groupBy) {
-    const token = stableGroupedKeyFieldTokenString(field, Reflect.get(row, field));
-    if (token === undefined) {
-      return undefined;
-    }
-    tokens.push(token);
-  }
-  return `["array",[${tokens.join(",")}]]`;
-};
-
 const groupedKeyEncodingErrorStatus = (lease: ActiveLease, queryId: string): StatusEvent => ({
   type: "status",
   topic: lease.feed.topic,
@@ -705,17 +596,6 @@ const makeLeaseTerminalRegistration = Effect.fn(
     queryId,
   } satisfies LeaseTerminalRegistration;
 });
-
-const internalizeLeasedQuery = <Query extends Readonly<Record<string, unknown>>>(
-  query: Query,
-): Query => {
-  const currentWhere: Record<string, unknown> = Object(query["where"]);
-  const where: Record<string, unknown> = { ...currentWhere };
-  return {
-    ...query,
-    where,
-  };
-};
 
 const notifyLeaseSubscribers = Effect.fn("ViewServerRuntime.grpc.leased.subscribers.notify")(
   function* (lease: ActiveLease, message: string) {
@@ -885,12 +765,17 @@ const publishLeasedBatch = Effect.fn("ViewServerRuntime.grpc.leased.publishBatch
   requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
   health: ViewServerGrpcHealthLedger<Topics>,
   lease: ActiveLease,
-  route: LeasedFeedRoute,
   values: ReadonlyArray<unknown>,
 ) {
   const rows = yield* Effect.forEach(values, (value) =>
-    mapLeasedValue(config, lease.feedName, lease.feed, route, value).pipe(
-      Effect.flatMap((row) => validateLeasedRowRoute(lease, route, row)),
+    mapLeasedValue(
+      config,
+      lease.feedName,
+      lease.feed,
+      materializeLeasedRouteView(lease.route, lease.routeFields),
+      value,
+    ).pipe(
+      Effect.flatMap((row) => validateLeasedRowRoute(lease, lease.route, row)),
       Effect.tapError((error) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((nowMillis) =>
@@ -941,16 +826,35 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
   health: ViewServerGrpcHealthLedger<Topics>,
   lease: ActiveLease,
   lock: Semaphore.Semaphore,
-  route: LeasedFeedRoute,
-  input: LeasedFeedRuntimeInput,
+  grpcClient: unknown,
+  request: unknown,
 ) {
   const releaseResources = (yield* Effect.cached(
-    ignoreGrpcFeedReleaseFailure(callFeedRelease(lease.feedName, lease.feed, input)).pipe(
+    Effect.suspend(() =>
+      callFeedRelease(
+        lease.feedName,
+        lease.feed,
+        makeGrpcSourceInput(
+          grpcClient,
+          request,
+          materializeLeasedRouteView(lease.route, lease.routeFields),
+        ),
+      ),
+    ).pipe(
+      ignoreGrpcFeedReleaseFailure,
       Effect.withSpan("ViewServerRuntime.grpc.leased.resources.release"),
     ),
   )).pipe(Effect.uninterruptible);
   yield* Scope.addFinalizer(lease.scope, releaseResources);
-  const stream = yield* callFeedAcquire(lease.feedName, lease.feed, input);
+  const stream = yield* callFeedAcquire(
+    lease.feedName,
+    lease.feed,
+    makeGrpcSourceInput(
+      grpcClient,
+      request,
+      materializeLeasedRouteView(lease.route, lease.routeFields),
+    ),
+  );
   const degradeInactiveLease = (input: {
     readonly publicMessage: string;
     readonly healthMessage: string;
@@ -988,7 +892,7 @@ const startLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.start")
     ),
     Stream.groupedWithin(grpcMessageBatchSize, grpcMessageBatchFlushInterval),
     Stream.runForEach((values) =>
-      publishLeasedBatch(config, runtimeClient, requestHealthRefresh, health, lease, route, values),
+      publishLeasedBatch(config, runtimeClient, requestHealthRefresh, health, lease, values),
     ),
     Effect.exit,
     Effect.flatMap((exit) => {
@@ -1091,6 +995,30 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
   const subscriptionScope = yield* Scope.make("parallel");
   let closed = false;
 
+  const captureLeasedQuery = <
+    const Topic extends Extract<keyof Topics, string>,
+    Query extends Readonly<Record<string, unknown>>,
+  >(
+    topic: Topic,
+    query: Query,
+  ) =>
+    Result.try(() => {
+      if (!feedsByTopic.has(topic)) {
+        return query;
+      }
+      const topicDefinition = config.topics[topic];
+      return topicDefinition === undefined
+        ? query
+        : snapshotLeasedGrpcQuery(topicDefinition.schema, query);
+    });
+
+  const leasedQuerySnapshotError = (topic: string, cause: unknown): ViewServerRuntimeError =>
+    runtimeError({
+      code: "InvalidQuery",
+      topic,
+      message: `Leased gRPC query could not be snapshotted before acquisition: ${String(cause)}`,
+    });
+
   const acquireLease = Effect.fn("ViewServerRuntime.grpc.leased.acquireLease")(function* <
     const Topic extends Extract<keyof Topics, string>,
   >(topic: Topic, query: unknown) {
@@ -1108,8 +1036,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       return Option.none<AcquiredLease>();
     }
     const [feedName, feed] = configuredFeed;
-    const route = yield* extractRoute(config, topic, feed, query);
-    const feedKey = yield* routeFeedKey(topic, feedName, feed, route).pipe(
+    const extractedRoute = yield* extractRoute(config, topic, feed, query);
+    const route = extractedRoute.values;
+    const feedKey = yield* routeFeedKey(topic, feedName, feed, extractedRoute).pipe(
       Effect.mapError((error) =>
         runtimeError({
           code: "RuntimeUnavailable",
@@ -1192,7 +1121,11 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
         }),
       ),
     );
-    const request = yield* callFeedRequest(feedName, feed, route).pipe(
+    const request = yield* callFeedRequest(
+      feedName,
+      feed,
+      materializeLeasedRouteView(route, extractedRoute.fields),
+    ).pipe(
       Effect.mapError((error) =>
         runtimeError({
           code: "RuntimeUnavailable",
@@ -1214,6 +1147,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       ...rowOwner,
       feedKey,
       route,
+      routeFields: extractedRoute.fields,
       scope,
       publicToInternalKeys: new Map<string, string>(),
       cleanupRows,
@@ -1225,7 +1159,6 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         leases.set(feedKey, lease);
-        const input: LeasedFeedRuntimeInput = makeGrpcSourceInput(grpcClient, request, route);
         const startedAt = yield* Clock.currentTimeMillis;
         yield* health.clientConnected(feed.client, startedAt);
         yield* health.leasedFeedStarting({
@@ -1245,8 +1178,8 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
             health,
             lease,
             lock,
-            route,
-            input,
+            grpcClient,
+            request,
           ),
         ).pipe(Effect.exit);
         if (Exit.isFailure(startExit)) {
@@ -1342,6 +1275,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     readonly lease: ActiveLease;
     readonly keyField: string;
     readonly query: unknown;
+    readonly schema: RowSchema;
     readonly terminalSignal: Deferred.Deferred<LeaseTerminal>;
     readonly terminalRegistration: LeaseTerminalRegistration;
   }): Effect.Effect<ViewServerLiveSubscription<Row>, never, never> =>
@@ -1349,10 +1283,10 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       const groupedQuery = isGroupedRuntimeQuery(input.query) ? input.query : undefined;
       let groupedKeyTranslations: GrpcGroupedKeyTranslations<Row> | undefined;
       if (groupedQuery !== undefined) {
+        const groupedPublicKey = compileGrpcGroupedPublicKey(input.schema, groupedQuery.groupBy);
         const externalizeRow = (row: Row): Row =>
           externalizeLeasedRow(input.lease, input.keyField, row);
-        const publicKeyFromRow = (row: Row): string | undefined =>
-          groupedKeyFromExternalizedRow(groupedQuery, row);
+        const publicKeyFromRow = (row: Row): string | undefined => groupedPublicKey?.key(row);
         groupedKeyTranslations =
           groupedKeyRetentionObserver === undefined
             ? makeGrpcGroupedKeyTranslations({ externalizeRow, publicKeyFromRow })
@@ -1502,19 +1436,28 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
   > {
+    const capturedQuery = captureLeasedQuery(topic, query);
     return Effect.gen(function* () {
+      if (Result.isFailure(capturedQuery)) {
+        return yield* Effect.fail(leasedQuerySnapshotError(topic, capturedQuery.failure));
+      }
+      const ownedQuery = capturedQuery.success;
       const lease = yield* lock
-        .withPermit(acquireLease(topic, query))
+        .withPermit(acquireLease(topic, ownedQuery))
         .pipe(
           Effect.catchCause((cause) => Effect.failCause(normalizeAcquireLeaseCause(topic)(cause))),
         );
       if (Option.isNone(lease)) {
-        return yield* internalLiveClient.subscribeInternal<Topic, Query>(topic, query);
+        return yield* internalLiveClient.subscribeInternal<Topic, Query>(topic, ownedQuery);
       }
       const acquired = lease.value;
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const keyField = yield* topicKeyField(config, topic, acquired.lease.feedName).pipe(
+          const topicDefinition = yield* topicDefinitionFor(
+            config,
+            topic,
+            acquired.lease.feedName,
+          ).pipe(
             Effect.mapError((error) =>
               runtimeError({
                 code: "RuntimeUnavailable",
@@ -1523,22 +1466,22 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
               }),
             ),
           );
-          const internalQuery = internalizeLeasedQuery(query);
           const terminalRegistration = yield* makeLeaseTerminalRegistration(
             acquired.terminalSignal,
           );
           const subscription = yield* restore(
             internalLiveClient.subscribeObservedInternal<Topic, Query>(
               topic,
-              internalQuery,
+              ownedQuery,
               terminalRegistration.observer,
             ),
           );
           return yield* withLeaseClose({
             subscription,
             lease: acquired.lease,
-            keyField,
-            query,
+            keyField: topicDefinition.key,
+            query: ownedQuery,
+            schema: topicDefinition.schema,
             terminalSignal: acquired.terminalSignal,
             terminalRegistration,
           });
@@ -1550,20 +1493,29 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
   const subscribeRuntime: ViewServerRuntimeLiveClient<Topics>["subscribeRuntime"] = (
     topic,
     query,
-  ) =>
-    Effect.gen(function* () {
+  ) => {
+    const capturedQuery = captureLeasedQuery(topic, query);
+    return Effect.gen(function* () {
+      if (Result.isFailure(capturedQuery)) {
+        return yield* Effect.fail(leasedQuerySnapshotError(topic, capturedQuery.failure));
+      }
+      const ownedQuery = capturedQuery.success;
       const lease = yield* lock
-        .withPermit(acquireLease(topic, query))
+        .withPermit(acquireLease(topic, ownedQuery))
         .pipe(
           Effect.catchCause((cause) => Effect.failCause(normalizeAcquireLeaseCause(topic)(cause))),
         );
       if (Option.isNone(lease)) {
-        return yield* internalLiveClient.subscribeRuntimeInternal(topic, query);
+        return yield* internalLiveClient.subscribeRuntimeInternal(topic, ownedQuery);
       }
       const acquired = lease.value;
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const keyField = yield* topicKeyField(config, topic, acquired.lease.feedName).pipe(
+          const topicDefinition = yield* topicDefinitionFor(
+            config,
+            topic,
+            acquired.lease.feedName,
+          ).pipe(
             Effect.mapError((error) =>
               runtimeError({
                 code: "RuntimeUnavailable",
@@ -1572,28 +1524,29 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
               }),
             ),
           );
-          const internalQuery = internalizeLeasedQuery(query);
           const terminalRegistration = yield* makeLeaseTerminalRegistration(
             acquired.terminalSignal,
           );
           const subscription = yield* restore(
             internalLiveClient.subscribeRuntimeObservedInternal(
               topic,
-              internalQuery,
+              ownedQuery,
               terminalRegistration.observer,
             ),
           );
           return yield* withLeaseClose({
             subscription,
             lease: acquired.lease,
-            keyField,
-            query,
+            keyField: topicDefinition.key,
+            query: ownedQuery,
+            schema: topicDefinition.schema,
             terminalSignal: acquired.terminalSignal,
             terminalRegistration,
           });
         }),
       ).pipe(Effect.onError(() => releaseAcquiredLease(acquired)));
     });
+  };
 
   const snapshot: ViewServerRuntimeClient<Topics>["snapshot"] = (topic, query) =>
     sourceOwnership

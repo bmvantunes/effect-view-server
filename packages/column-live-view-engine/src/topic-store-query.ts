@@ -78,6 +78,7 @@ export const acquireTopicStoreMaterializedQueryExecution = Effect.fn(
   return yield* acquireMaterializedQueryExecution(
     readModel,
     compiled.cacheKey,
+    compiled.plan.resultSemantics,
     (releaseRetainedChanges) =>
       makeIncrementalGroupedQueryExecution(
         readModel,

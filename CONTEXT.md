@@ -26,6 +26,10 @@ _Avoid_: Kafka topic, channel, collection
 A schema-decoded object stored in a View Server Topic.
 _Avoid_: Record, document, message
 
+**Topic Row Value Semantics**:
+The schema-derived ownership, equivalence, canonical JSON representation, and ordering rules for every configured Topic Row field. The Column Live View Engine compiles these rules once per View Server Topic and reuses them at ingestion, projection, grouping, comparison, Snapshot, and Delta boundaries. Canonical identity normalizes order-insensitive persistent collections while preserving ordinary sequence order. Topic configuration rejects non-injective or unrecognized codec transformations and equality domains without a congruent canonical identity/order witness.
+_Avoid_: Deep clone helper, generic object equality, JSON stringify semantics
+
 **Row Key**:
 The configured string field that uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker.
 _Avoid_: Primary key when discussing external databases, id unless the configured field is actually named id
@@ -98,6 +102,10 @@ _Avoid_: Sort cache, ordered array helper, top-k shortcut
 The compiled internal representation of a Grouped Query, including group key calculation, aggregate definitions, ordering, window settings, and cache keys.
 _Avoid_: Grouped query object, aggregate config, groupBy helper
 
+**Query Result Semantics**:
+The compiled projection witness that owns and compares one Raw or Grouped Query result shape. It materializes consumer-owned semantic values without exposing authoritative Topic Row or Active Query state.
+_Avoid_: Result cast, structured clone, caller-selected result generic
+
 **Health Ledger**:
 The owner of counters and sampled health state for mutations, subscriptions, queues, backpressure, ingestion, and transport pressure.
 _Avoid_: Health object builder, metrics dump
@@ -123,6 +131,10 @@ _Avoid_: Runtime client, publishing client
 **Wire Protocol**:
 The Effect RPC WebSocket protocol using NDJSON serialization and schema-aware JSON-safe encoding for configured topic rows and query values.
 _Avoid_: Raw WebSocket protocol, HTTP stream, SSE, MessagePack protocol
+
+**Strict JSON Materializer**:
+The neutral Effect utility that turns an already schema-encoded value into a fresh canonical JSON tree or a path-aware typed error. It rejects opaque prototypes, cycles, accessors, sparse arrays, symbols, functions, non-finite numbers, and other values that NDJSON would silently erase or change.
+_Avoid_: JSON clone, Schema.Json validator, serializer
 
 **Field Filter Codec**:
 The Wire Protocol module that encodes and decodes schema-aware JSON-safe Raw Query filter values, including operator filters and structured-value fallback.
@@ -218,6 +230,7 @@ _Avoid_: Browser write, send, emit
 - A **View Server** owns one or more **View Server Topics**.
 - A **View Server Topic** has exactly one configured **Row Key**.
 - A **Topic Row** belongs to exactly one **View Server Topic**.
+- **Topic Row Value Semantics** are derived from that Topic Row's configured schema and are shared by local and Wire Protocol ownership boundaries.
 - A **Live Query** targets exactly one **View Server Topic**.
 - A **Raw Query** returns selected Topic Row fields.
 - A **Grouped Query** returns group fields plus aggregate aliases.
@@ -231,10 +244,12 @@ _Avoid_: Browser write, send, emit
 - A **Raw Predicate Plan** is part of a **Raw Query Plan** and lets storage narrow scans without replacing the correctness callback unless it is proven exact.
 - A **Topic Store Module** may maintain **Raw Ordered Window Indexes** to accelerate bounded **Raw Query** windows.
 - A **Grouped Query Plan** is compiled once from a **Grouped Query** before grouped full-scan or incremental execution.
+- Every compiled Raw or Grouped Query carries **Query Result Semantics** determined by its selected fields, group fields, and aggregate definitions.
 - An **Active Query** may serve many equivalent **Subscriptions**.
 - A **Live Client** can subscribe to **Live Queries** but cannot publish mutations.
 - A **Runtime Client** can publish mutations but is not exposed to browsers by the Real View Server.
 - A **Remote Browser Client** is a **Live Client** adapter for the **Wire Protocol**.
+- The **Strict JSON Materializer** makes local semantic materialization and NDJSON acceptance agree; explicit schema codecs restore semantic runtime values after the strict JSON boundary.
 - A **Field Filter Codec** protects the **Wire Protocol** from unsafe or incorrectly typed filter values.
 - A **Raw Query Codec** protects Raw Query wire payloads from unknown fields, unsafe filters, and invalid windows.
 - A **Grouped Query Codec** protects Grouped Query wire payloads from invalid group fields, aggregate aliases, aggregate fields, grouped ordering, and invalid windows.

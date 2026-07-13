@@ -123,8 +123,13 @@ export const packageSurfacePolicy = {
     },
     {
       architecture: {
-        allowedWorkspaceSpecifiers: ["@effect-view-server/config"],
-        message: "The engine must stay transport/runtime independent.",
+        allowedWorkspaceSpecifiers: [
+          "@effect-view-server/config",
+          "@effect-view-server/config/internal",
+          "@effect-view-server/effect-utils",
+        ],
+        message:
+          "The engine may use neutral Effect utilities but must stay transport/runtime independent.",
         relativeOverrides: [],
       },
       directory: "column-live-view-engine",
@@ -273,8 +278,12 @@ export const packageSurfacePolicy = {
     },
     {
       architecture: {
-        allowedWorkspaceSpecifiers: ["@effect-view-server/config"],
-        message: "Protocol may depend on config contracts only.",
+        allowedWorkspaceSpecifiers: [
+          "@effect-view-server/config",
+          "@effect-view-server/config/internal",
+          "@effect-view-server/effect-utils",
+        ],
+        message: "Protocol may depend on config contracts and neutral Effect utilities only.",
         relativeOverrides: [],
       },
       directory: "protocol",

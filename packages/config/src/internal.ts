@@ -7,6 +7,8 @@ import {
 } from "./kafka-contract";
 import type { RowSchema } from "./topic-contract";
 
+export { validateDecodedRow } from "./decoded-row-validation";
+
 type KafkaSourceTopicRegistry = Record<
   string,
   {
@@ -35,3 +37,16 @@ export type {
 } from "./kafka-contract";
 
 export { grpcSourceMarkers } from "./grpc-contract";
+export {
+  isRawQueryFilterOperatorKey,
+  isRawQueryRangeFilterOperatorKey,
+  rawQueryFilterOperatorKeys,
+  rawQueryRangeFilterOperatorKeys,
+} from "./raw-query-filter-operators";
+export { schemaAstChildren } from "./schema-ast-children";
+export {
+  snapshotViewServerRowSchema,
+  snapshotViewServerTopics,
+  viewServerRowSchemaFieldsMatchAst,
+  viewServerRowSchemasShareOrigin,
+} from "./config-ownership";

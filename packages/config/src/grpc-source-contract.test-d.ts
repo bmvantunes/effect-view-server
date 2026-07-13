@@ -12,6 +12,8 @@ import { ordersService, tradesOnlyService } from "../test-harness/protobuf";
 import type { OrdersValueMessage, TradesValueMessage } from "../test-harness/protobuf";
 import { Order, Position, Trade } from "../test-harness/schemas";
 
+const openOrderStatus: (typeof Order.Type)["status"] = "open";
+
 describe("gRPC source generic contracts", () => {
   it("types gRPC clients and feed mapping contracts", () => {
     defineViewServerConfig({
@@ -278,7 +280,7 @@ describe("gRPC source generic contracts", () => {
       map: () => ({
         id: "customer-1",
         customerId: "customer-1",
-        status: "open",
+        status: openOrderStatus,
         price: 10,
         region: "usa",
         updatedAt: 1,
@@ -378,7 +380,7 @@ describe("gRPC source generic contracts", () => {
       map: () => ({
         id: "customer-1",
         customerId: "customer-1",
-        status: "open",
+        status: openOrderStatus,
         price: 10,
         region: "usa",
         updatedAt: 1,

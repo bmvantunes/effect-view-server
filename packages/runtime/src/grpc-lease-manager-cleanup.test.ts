@@ -19,6 +19,27 @@ import {
 
 import type { GrpcOrderValueMessage } from "../test-harness/grpc-config";
 
+const cloneWithMutableOrdersGrpcSource = <
+  const Config extends {
+    readonly topics: {
+      readonly orders: {
+        readonly grpcSource: object;
+      };
+    };
+  },
+>(
+  config: Config,
+) => ({
+  ...config,
+  topics: {
+    ...config.topics,
+    orders: {
+      ...config.topics.orders,
+      grpcSource: { ...config.topics.orders.grpcSource },
+    },
+  },
+});
+
 describe("gRPC lease manager cleanup", () => {
   it.live(
     "rolls back a failed leased acquire when release defects and allows a fresh acquire",
@@ -91,9 +112,8 @@ describe("gRPC lease manager cleanup", () => {
           releaseCountAfterFreshClose,
           failedLeaseKeys: Object.keys(afterFailedAcquire.grpc?.feeds.orders?.leased ?? {}),
           freshSubscriberCount:
-            afterFreshAcquire.grpc?.feeds.orders?.leased[
-              "orders/orders/leased/region=string%3A3%3Ausa"
-            ]?.subscriberCount,
+            afterFreshAcquire.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
+              ?.subscriberCount,
           freshCloseSucceeded: Exit.isSuccess(freshCloseExit),
           managerCloseSucceeded: Exit.isSuccess(managerCloseExit),
         }).toStrictEqual({
@@ -114,12 +134,14 @@ describe("gRPC lease manager cleanup", () => {
     () =>
       Effect.gen(function* () {
         let released = 0;
-        const localViewServer = grpcLeasedViewServer({
-          streamForRegion: () => Stream.never,
-          release: Effect.sync(() => {
-            released += 1;
+        const localViewServer = cloneWithMutableOrdersGrpcSource(
+          grpcLeasedViewServer({
+            streamForRegion: () => Stream.never,
+            release: Effect.sync(() => {
+              released += 1;
+            }),
           }),
-        });
+        );
         Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
           value: ({ region }: { readonly region: string }) => {
             Object.defineProperty(localViewServer.topics, "orders", {
@@ -173,12 +195,14 @@ describe("gRPC lease manager cleanup", () => {
     () =>
       Effect.gen(function* () {
         let released = 0;
-        const localViewServer = grpcLeasedViewServer({
-          streamForRegion: () => Stream.never,
-          release: Effect.sync(() => {
-            released += 1;
+        const localViewServer = cloneWithMutableOrdersGrpcSource(
+          grpcLeasedViewServer({
+            streamForRegion: () => Stream.never,
+            release: Effect.sync(() => {
+              released += 1;
+            }),
           }),
-        });
+        );
         Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
           value: ({ region }: { readonly region: string }) => {
             Object.defineProperty(localViewServer.topics, "orders", {
@@ -229,10 +253,12 @@ describe("gRPC lease manager cleanup", () => {
 
   it.live("marks leased gRPC cleanup degraded when runtime topic disappears before close", () =>
     Effect.gen(function* () {
-      const localViewServer = grpcLeasedViewServer({
-        streamForRegion: (region) =>
-          longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
-      });
+      const localViewServer = cloneWithMutableOrdersGrpcSource(
+        grpcLeasedViewServer({
+          streamForRegion: (region) =>
+            longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
+        }),
+      );
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
@@ -256,7 +282,7 @@ describe("gRPC lease manager cleanup", () => {
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect(
-        currentHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+        currentHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
           ?.lastError,
       ).toBe("gRPC leased feed row cleanup failed for orders");
       yield* manager.close;
@@ -409,14 +435,14 @@ describe("gRPC lease manager cleanup", () => {
       expect({
         released,
         leasedFeed:
-          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"],
+          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"],
       }).toStrictEqual({
         released: 1,
         leasedFeed: {
           status: "degraded",
           lifecycle: "leased",
           feedName: "orders",
-          feedKey: "orders/orders/leased/region=string%3A3%3Ausa",
+          feedKey: "orders/orders/leased/region=%22usa%22",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 1,
@@ -427,7 +453,7 @@ describe("gRPC lease manager cleanup", () => {
           publishFailuresPerSecond: 0,
           reconnects: 0,
           lastMessageAt:
-            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
               ?.lastMessageAt,
           lastError: "gRPC leased feed row cleanup failed for orders",
         },
@@ -476,14 +502,14 @@ describe("gRPC lease manager cleanup", () => {
       expect({
         released,
         leasedFeed:
-          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"],
+          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"],
       }).toStrictEqual({
         released: 1,
         leasedFeed: {
           status: "degraded",
           lifecycle: "leased",
           feedName: "orders",
-          feedKey: "orders/orders/leased/region=string%3A3%3Ausa",
+          feedKey: "orders/orders/leased/region=%22usa%22",
           topic: "orders",
           subscriberCount: 0,
           rowCount: 1,
@@ -494,7 +520,7 @@ describe("gRPC lease manager cleanup", () => {
           publishFailuresPerSecond: 0,
           reconnects: 0,
           lastMessageAt:
-            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
               ?.lastMessageAt,
           lastError: "gRPC leased feed row cleanup failed for orders",
         },
@@ -507,10 +533,12 @@ describe("gRPC lease manager cleanup", () => {
   it.live("cleans a leased gRPC feed when mapped rows have a non-string row key", () =>
     Effect.gen(function* () {
       const firstValue = yield* Deferred.make<GrpcOrderValueMessage>();
-      const localViewServer = grpcLeasedViewServer({
-        streamForRegion: () =>
-          Stream.fromEffect(Deferred.await(firstValue)).pipe(Stream.concat(Stream.never)),
-      });
+      const localViewServer = cloneWithMutableOrdersGrpcSource(
+        grpcLeasedViewServer({
+          streamForRegion: () =>
+            Stream.fromEffect(Deferred.await(firstValue)).pipe(Stream.concat(Stream.never)),
+        }),
+      );
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const degradationMessages: Array<string> = [];
@@ -727,10 +755,12 @@ describe("gRPC lease manager cleanup", () => {
 
   it.live("closes leased gRPC feeds when release callback returns a non-Effect", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedViewServer({
-        streamForRegion: (region) =>
-          longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
-      });
+      const feed = cloneWithMutableOrdersGrpcSource(
+        grpcLeasedViewServer({
+          streamForRegion: (region) =>
+            longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
+        }),
+      );
       Object.defineProperty(feed.topics.orders.grpcSource, "release", {
         value: () => "not-an-effect",
       });
@@ -1123,13 +1153,12 @@ describe("gRPC lease manager cleanup", () => {
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) =>
-            currentHealth.grpc?.feeds["orders"]?.leased[
-              "orders/orders/leased/region=string%3A3%3Ausa"
-            ]?.rowCount === 1,
+            currentHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
+              ?.rowCount === 1,
         }),
       );
       expect(
-        degradedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=string%3A3%3Ausa"]
+        degradedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
           ?.lastError,
       ).toContain("gRPC leased feed row cleanup failed for orders");
 

@@ -12,7 +12,12 @@ import type {
   TopicRow,
   ValidateLiveQuery,
 } from "@effect-view-server/config";
-import { Effect, Latch, Semaphore } from "effect";
+import { viewServerUnsupportedRuntimeFieldDomain } from "@effect-view-server/config";
+import {
+  snapshotViewServerTopics,
+  viewServerRowSchemaFieldsMatchAst,
+} from "@effect-view-server/config/internal";
+import { Effect, Latch, Schema, Semaphore } from "effect";
 import type {
   ColumnLiveViewEngine,
   ColumnLiveViewEngineConfig,
@@ -63,6 +68,89 @@ const invalidRow = (topic: string, message: string) =>
     topic,
     message,
   });
+
+type EngineTopicsInspection<Topics extends DecodableTopicDefinitions> =
+  | {
+      readonly _tag: "Invalid";
+      readonly error: InvalidRowError;
+    }
+  | {
+      readonly _tag: "Valid";
+      readonly topics: Topics;
+    };
+
+const inspectEngineTopics = <Topics extends DecodableTopicDefinitions>(
+  topics: Topics,
+): EngineTopicsInspection<Topics> => {
+  const snapshot = snapshotViewServerTopics(topics);
+  for (const [topic, definition] of Object.entries(snapshot)) {
+    const schema = definition.schema;
+    if (!Schema.isSchema(schema) || !("fields" in schema)) {
+      return {
+        _tag: "Invalid",
+        error: invalidRow(topic, "Topic row schema must be an Effect Schema Struct."),
+      };
+    }
+    for (const [field, fieldSchema] of Object.entries(schema.fields)) {
+      if (!Schema.isSchema(fieldSchema)) {
+        return {
+          _tag: "Invalid",
+          error: invalidRow(topic, `Topic field ${field} must be an Effect Schema.`),
+        };
+      }
+      const unsupportedRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(fieldSchema);
+      if (unsupportedRuntimeDomain !== undefined) {
+        return {
+          _tag: "Invalid",
+          error: invalidRow(
+            topic,
+            `Topic field ${field} uses unsupported runtime domain: ${unsupportedRuntimeDomain}`,
+          ),
+        };
+      }
+    }
+    const unsupportedRowRuntimeDomain = viewServerUnsupportedRuntimeFieldDomain(schema);
+    if (unsupportedRowRuntimeDomain !== undefined) {
+      return {
+        _tag: "Invalid",
+        error: invalidRow(
+          topic,
+          `Topic row schema uses unsupported runtime domain: ${unsupportedRowRuntimeDomain}`,
+        ),
+      };
+    }
+    if (!viewServerRowSchemaFieldsMatchAst(schema)) {
+      return {
+        _tag: "Invalid",
+        error: invalidRow(topic, "Topic exposed row fields do not match the row schema AST."),
+      };
+    }
+  }
+  return {
+    _tag: "Valid",
+    topics: snapshot,
+  };
+};
+
+const snapshotAndValidateEngineTopics = Effect.fn("ColumnLiveViewEngine.topics.snapshot")(
+  <Topics extends DecodableTopicDefinitions>(
+    topics: Topics,
+  ): Effect.Effect<Topics, InvalidRowError> =>
+    Effect.try({
+      try: () => inspectEngineTopics(topics),
+      catch: () =>
+        invalidRow(
+          "<engine-config>",
+          "Topic schemas could not be safely inspected during engine construction.",
+        ),
+    }).pipe(
+      Effect.flatMap((inspection) =>
+        inspection._tag === "Invalid"
+          ? Effect.fail(inspection.error)
+          : Effect.succeed(inspection.topics),
+      ),
+    ),
+);
 
 const runEngineLifecycleTransaction = Effect.fn("ColumnLiveViewEngine.lifecycle.transaction")(
   function* <Success, Error, Requirements>(
@@ -141,7 +229,7 @@ class InMemoryColumnLiveViewEngine<
   private closed = false;
   private readonly mutationsAllowed = (): boolean => !this.closed;
 
-  constructor(config: ColumnLiveViewEngineInternalConfig<Topics>) {
+  constructor(config: ColumnLiveViewEngineInternalConfig<Topics>, topics: Topics) {
     const configuredCapacity = config.subscriptionQueueCapacity ?? defaultSubscriptionQueueCapacity;
     this.subscriptionQueueCapacity =
       Number.isSafeInteger(configuredCapacity) && configuredCapacity > 0
@@ -150,7 +238,7 @@ class InMemoryColumnLiveViewEngine<
     this.groupedIncrementalAdmissionLimits = groupedIncrementalAdmissionLimitsFromConfig(
       config.groupedIncrementalAdmissionLimits,
     );
-    for (const [topic, definition] of Object.entries(config.topics)) {
+    for (const [topic, definition] of Object.entries(topics)) {
       this.stores.set(
         topic,
         new TopicStore(
@@ -558,13 +646,19 @@ const publicColumnLiveViewEngine = <Topics extends DecodableTopicDefinitions>(
 export const createColumnLiveViewEngine = Effect.fn("ColumnLiveViewEngine.make")(
   <const Topics extends DecodableTopicDefinitions>(
     config: ColumnLiveViewEngineConfig<Topics>,
-  ): Effect.Effect<ColumnLiveViewEngine<Topics>> =>
-    Effect.sync(() => publicColumnLiveViewEngine(new InMemoryColumnLiveViewEngine(config))),
+  ): Effect.Effect<ColumnLiveViewEngine<Topics>, InvalidRowError> =>
+    Effect.gen(function* () {
+      const topics = yield* snapshotAndValidateEngineTopics(config.topics);
+      return publicColumnLiveViewEngine(new InMemoryColumnLiveViewEngine(config, topics));
+    }),
 );
 
 export const createColumnLiveViewEngineInternal = Effect.fn("ColumnLiveViewEngine.internal.make")(
   <const Topics extends DecodableTopicDefinitions>(
     config: ColumnLiveViewEngineInternalConfig<Topics>,
-  ): Effect.Effect<ColumnLiveViewEngineInternal<Topics>> =>
-    Effect.sync(() => new InMemoryColumnLiveViewEngine(config)),
+  ): Effect.Effect<ColumnLiveViewEngineInternal<Topics>, InvalidRowError> =>
+    Effect.gen(function* () {
+      const topics = yield* snapshotAndValidateEngineTopics(config.topics);
+      return new InMemoryColumnLiveViewEngine(config, topics);
+    }),
 );

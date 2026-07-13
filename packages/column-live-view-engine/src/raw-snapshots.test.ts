@@ -119,7 +119,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         {
           active: false,
           id: "kept",
-          price: fromStringUnsafe("2.50"),
+          price: fromStringUnsafe("2.5"),
           quantity: 2n,
           symbol: "MSFT",
         },
@@ -1381,7 +1381,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         });
 
         expect(projected.rows).toStrictEqual([
-          { id: "missing-note", note: undefined },
+          { id: "missing-note" },
           { id: "own-note", note: "polluted" },
         ]);
         expect(rowIds(polluted.rows)).toStrictEqual(["own-note"]);

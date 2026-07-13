@@ -1,6 +1,10 @@
-import { defineViewServerConfig, type ViewServerRuntimeClient } from "@effect-view-server/config";
+import {
+  defineViewServerConfig,
+  type ViewServerRuntimeClient,
+  viewSchema,
+} from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
-import { Effect, Schedule, Schema, Stream } from "effect";
+import { Effect, HashMap, Option, Schedule, Schema, Stream } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import { type ViewServerGrpcHealthLedger } from "../src/grpc-health";
 import type { ViewServerRuntimeTopicDefinitions } from "../src/runtime-types";
@@ -48,6 +52,11 @@ export const RouteEncodingOrder = Schema.Struct({
   }),
   weird: Schema.Unknown,
 });
+
+export class SemanticRouteClass extends Schema.Class<SemanticRouteClass>("SemanticRouteClass")({
+  value: Schema.String,
+}) {}
+viewSchema.admitClass(SemanticRouteClass);
 
 export const grpcLeasedViewServer = (input: {
   readonly streamForRegion: (
@@ -218,22 +227,31 @@ export const grpcRouteEncodingLeasedViewServer = () =>
     },
   });
 
-export const grpcGroupedKeyEncodingLeasedViewServer = (input: {
-  readonly acquire: () => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
-  readonly map: (value: GrpcOrderValueMessage) => typeof RouteEncodingOrder.Type;
-}) =>
+export const SemanticRouteOrder = Schema.Struct({
+  id: Schema.String,
+  routeClass: SemanticRouteClass,
+  routeOption: viewSchema.Option(Schema.String),
+  routeHashMap: viewSchema.HashMap(Schema.String, Schema.String),
+});
+
+export const grpcSemanticRouteLeasedViewServer = () =>
   defineViewServerConfig({
     grpc: { clients: grpcClients },
     topics: {
       orders: grpcTopicSources.leased({
-        schema: RouteEncodingOrder,
+        schema: SemanticRouteOrder,
         key: "id",
         client: "orders",
         method: "streamOrders",
-        routeBy: ["text"],
-        request: ({ text }) => ({ orderId: text }),
-        acquire: input.acquire,
-        map: ({ value }) => input.map(value),
+        routeBy: ["routeClass", "routeOption", "routeHashMap"],
+        request: () => ({ orderId: "semantic-route" }),
+        acquire: () => Stream.never,
+        map: () => ({
+          id: "semantic-route",
+          routeClass: SemanticRouteClass.make({ value: "route" }),
+          routeOption: Option.none(),
+          routeHashMap: HashMap.empty(),
+        }),
       }),
     },
   });

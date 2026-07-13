@@ -1,5 +1,5 @@
 import { isBigDecimal } from "effect/BigDecimal";
-import { filterOperatorKeys, isDenseArray } from "./raw-query-decoder";
+import { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
 import type { RangeValueKind, RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { isPlainRecord, scalarEqualityKey, type ScalarEqualityKeyValue } from "./row-values";
 
@@ -38,17 +38,6 @@ export type TopicRawPredicatePlan = {
 export type PredicateFieldPlan = {
   readonly filters: TopicRawPredicatePlan["filters"];
   readonly callbackRequired: boolean;
-};
-
-type FilterObject = {
-  readonly eq?: unknown;
-  readonly neq?: unknown;
-  readonly in?: ReadonlyArray<unknown>;
-  readonly gt?: unknown;
-  readonly gte?: unknown;
-  readonly lt?: unknown;
-  readonly lte?: unknown;
-  readonly startsWith?: string;
 };
 
 const rangeValueKind = (value: unknown): RangeValueKind | undefined => {
@@ -115,17 +104,16 @@ const scalarEqualityKeys = (values: ReadonlyArray<ScalarEqualityKeyValue>): Read
   return keys;
 };
 
-export const isOperatorFilterObject = (filter: Record<string, unknown>): filter is FilterObject => {
-  const keys = Object.keys(filter);
-  return keys.length > 0 && keys.every((key) => filterOperatorKeys.has(key));
-};
-
 export const predicateFilterPlans = (
   field: string,
   filter: unknown,
   metadata: RawQueryCompilerMetadata,
 ): PredicateFieldPlan => {
-  if (metadata.structuredFieldNames.has(field) || filter === undefined) {
+  if (
+    metadata.structuredFieldNames.has(field) ||
+    !metadata.exactScalarEqualityFieldNames.has(field) ||
+    filter === undefined
+  ) {
     return {
       filters: [],
       callbackRequired: true,

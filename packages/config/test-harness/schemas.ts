@@ -1,4 +1,10 @@
 import { Schema } from "effect";
+import { viewSchema } from "../src/index";
+
+export class StructuredProfile extends Schema.Class<StructuredProfile>("StructuredProfile")({
+  code: Schema.String,
+}) {}
+viewSchema.admitClass(StructuredProfile);
 
 export const Order = Schema.Struct({
   id: Schema.String,

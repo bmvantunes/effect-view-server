@@ -1,5 +1,5 @@
 import { defineViewServerConfig } from "@effect-view-server/config";
-import { Effect, Schema, SchemaGetter } from "effect";
+import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 
 export const NestedTcpOrder = Schema.Struct({
@@ -32,14 +32,7 @@ export const transformTcpViewServer = defineViewServerConfig({
   },
 });
 
-export const KeyTransformTcpId = Schema.String.pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value) => `decoded-${value}`),
-    encode: SchemaGetter.transform((value) =>
-      value.startsWith("decoded-") ? value.slice("decoded-".length) : value,
-    ),
-  }),
-);
+export const KeyTransformTcpId = Schema.StringFromUriComponent;
 
 export const KeyTransformTcpOrder = Schema.Struct({
   id: KeyTransformTcpId,

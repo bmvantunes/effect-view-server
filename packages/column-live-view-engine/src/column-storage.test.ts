@@ -115,7 +115,7 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
 
   expect(columnScalarEqualityKey(optionalPrice, 0)).toBe("number:1");
   expect(columnScalarEqualityKey(optionalPrice, 1)).toBeUndefined();
-  expect(columnScalarEqualityKey(numberKeys, 0)).toBe("number:-0");
+  expect(columnScalarEqualityKey(numberKeys, 0)).toBe("number:0");
   expect(columnScalarEqualityKey(numberKeys, 1)).toBe("number:NaN");
   expect(columnScalarEqualityKey(numberKeys, 2)).toBe("number:Infinity");
   expect(columnScalarEqualityKey(numberKeys, 3)).toBe("number:-Infinity");

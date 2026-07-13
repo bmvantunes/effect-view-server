@@ -56,17 +56,6 @@ export const cloneRecord = (value: Record<string, unknown>): Record<string, unkn
   return cloned;
 };
 
-export function cloneRow<Row extends RowObject>(row: Row): Row;
-export function cloneRow(row: RowObject): RowObject {
-  const cloned: Record<string, unknown> = {};
-  for (const key in row) {
-    if (Object.hasOwn(row, key)) {
-      setClonedField(cloned, key, cloneUnknown(Reflect.get(row, key)));
-    }
-  }
-  return cloned;
-}
-
 export const fieldValue = (row: RowObject, field: string): unknown => {
   if (!Object.hasOwn(row, field)) {
     return undefined;
@@ -118,27 +107,10 @@ export function scalarEqualityKey(value: unknown): string | undefined {
     return `bigint:${value.toString()}`;
   }
   if (typeof value === "number") {
-    return `number:${Object.is(value, -0) ? "-0" : value.toString()}`;
+    return `number:${value.toString()}`;
   }
   if (isBigDecimal(value)) {
     return `bigDecimal:${formatBigDecimal(normalize(value))}`;
   }
   return undefined;
 }
-
-export const rowsEqual = <Row extends RowObject>(left: Row, right: Row): boolean => {
-  if (Object.is(left, right)) {
-    return true;
-  }
-  const rightKeys = new Set(Object.keys(right));
-  const leftKeys = Object.keys(left);
-  if (leftKeys.length !== rightKeys.size) {
-    return false;
-  }
-  for (const key of leftKeys) {
-    if (!rightKeys.delete(key) || !valuesEqual(Reflect.get(left, key), fieldValue(right, key))) {
-      return false;
-    }
-  }
-  return true;
-};

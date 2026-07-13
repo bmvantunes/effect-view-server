@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { fromStringUnsafe } from "effect/BigDecimal";
+import { format, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
 import { InvalidRowError } from "./index";
 import { TopicRowStorage } from "./topic-row-storage";
 import { evaluateRawQuery } from "./active-query";
@@ -497,7 +497,19 @@ describe("Topic Store query execution", () => {
       const positionEvaluation = evaluateRawQuery(
         {
           scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
+            expect({
+              ...plan.predicate,
+              filters: plan.predicate.filters.map((filter) =>
+                filter.operator === "in"
+                  ? {
+                      ...filter,
+                      values: filter.values.map((value) =>
+                        isBigDecimal(value) ? format(value) : value,
+                      ),
+                    }
+                  : filter,
+              ),
+            }).toStrictEqual({
               filters: [
                 {
                   field: "active",
@@ -514,7 +526,7 @@ describe("Topic Store query execution", () => {
                 {
                   field: "price",
                   operator: "in",
-                  values: [matchedPrice],
+                  values: ["1"],
                   valueKeys: new Set(["bigDecimal:1"]),
                 },
               ],

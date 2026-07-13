@@ -537,11 +537,16 @@ describe("Kafka microbatch failure recovery internals", () => {
             ),
           ),
       };
-      Reflect.deleteProperty(multiSourceViewServer.topics, "payments");
+      const missingPaymentsTopics = { ...multiSourceViewServer.topics };
+      Reflect.deleteProperty(missingPaymentsTopics, "payments");
+      const missingPaymentsViewServer = {
+        ...multiSourceViewServer,
+        topics: missingPaymentsTopics,
+      };
 
       const error = yield* Effect.flip(
         processKafkaMessageBatch(
-          multiSourceViewServer,
+          missingPaymentsViewServer,
           batchingClient,
           runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
@@ -688,11 +693,16 @@ describe("Kafka microbatch failure recovery internals", () => {
             operations.push(`publishMany:${topic}:${rows.length}`);
           }).pipe(Effect.andThen(Effect.fail(runtimeUnavailable))),
       };
-      Reflect.deleteProperty(multiSourceViewServer.topics, "payments");
+      const missingPaymentsTopics = { ...multiSourceViewServer.topics };
+      Reflect.deleteProperty(missingPaymentsTopics, "payments");
+      const missingPaymentsViewServer = {
+        ...multiSourceViewServer,
+        topics: missingPaymentsTopics,
+      };
 
       const exit = yield* Effect.exit(
         processKafkaMessageBatch(
-          multiSourceViewServer,
+          missingPaymentsViewServer,
           publishManyFailingClient,
           runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,

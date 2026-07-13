@@ -10,6 +10,15 @@ class Profile extends Schema.Class<Profile>("Profile")({
 }) {}
 
 describe("Schema JSON identity", () => {
+  it("keeps the direct string key path byte-identical and validates invalid inputs", () => {
+    const identity = makeSchemaJsonIdentity(Schema.String);
+
+    expect(identity.canonicalKey('route\\"north')).toBe('"route\\\\\\"north"');
+    expect(identity.canonicalJson('route\\"north')).toBe('route\\"north');
+    expect(() => identity.canonicalKey(1)).toThrow();
+    expect(() => makeSchemaJsonIdentity(Schema.NonEmptyString).canonicalKey("")).toThrow();
+  });
+
   it("canonicalizes collision-node HashMap and HashSet values independent of insertion order", () => {
     const mapIdentity = makeSchemaJsonIdentity(Schema.HashMap(Schema.String, Schema.String));
     const setIdentity = makeSchemaJsonIdentity(Schema.HashSet(Schema.String));

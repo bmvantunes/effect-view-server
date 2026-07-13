@@ -185,6 +185,15 @@ export const makeSchemaJsonIdentity = <Type>(
   const normalize = makeSchemaJsonNormalizer(codec.ast);
   const strictEncoded = (value: unknown): Schema.Json => strictJson(encode(value));
   const canonicalJson = (value: unknown): Schema.Json => normalize(strictEncoded(value));
+  const canonicalKey =
+    SchemaAST.isString(codec.ast) &&
+    codec.ast.encoding === undefined &&
+    (codec.ast.checks?.length ?? 0) === 0
+      ? (value: unknown): string =>
+          typeof value === "string"
+            ? canonicalJsonString(value)
+            : canonicalJsonString(canonicalJson(value))
+      : (value: unknown): string => canonicalJsonString(canonicalJson(value));
   const materializeDecoded = (value: unknown): Type => decode(strictEncoded(value));
   const decodeEncoded = (value: unknown): Type => {
     const decoded = decode(strictJson(value));
@@ -192,7 +201,7 @@ export const makeSchemaJsonIdentity = <Type>(
   };
   return {
     canonicalJson,
-    canonicalKey: (value) => canonicalJsonString(canonicalJson(value)),
+    canonicalKey,
     decodeEncoded,
     materializeDecoded,
   };

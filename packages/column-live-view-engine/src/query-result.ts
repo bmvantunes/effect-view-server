@@ -32,6 +32,17 @@ export const liveQueryResult = <Row extends RowObject>(
   statusCode: "Ready",
 });
 
+export const liveQueryResultFromOwnedEvaluation = <Row extends RowObject>(
+  evaluation: QueryEvaluation<Row>,
+  semantics: QueryResultSemantics,
+): LiveQueryResult<Row> => ({
+  rows: evaluation.rows.map((row) => semantics.materializeOwnedRow(row)),
+  totalRows: evaluation.totalRows,
+  version: evaluation.version,
+  status: "ready",
+  statusCode: "Ready",
+});
+
 export const snapshotEvent = <Row extends RowObject>(
   store: { readonly topic: string },
   queryId: string,

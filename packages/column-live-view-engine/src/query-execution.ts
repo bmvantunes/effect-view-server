@@ -4,7 +4,7 @@ import { makeLiveSubscription } from "./live-subscription";
 import type { CompiledGroupedQuery } from "./grouped-query-compiler";
 import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
 import type { CompiledRawQuery } from "./raw-query-compiler";
-import { liveQueryResult, type QueryEvaluation } from "./query-result";
+import { liveQueryResultFromOwnedEvaluation, type QueryEvaluation } from "./query-result";
 import {
   acquireTopicStoreMaterializedQueryExecution,
   acquireTopicStoreRawQueryExecution,
@@ -64,7 +64,7 @@ export const evaluateExecutableQuery = <ResultRow extends RowObject>(
 export const snapshotExecutableQuery = Effect.fn("ColumnLiveViewEngine.queryExecution.snapshot")(
   function* <ResultRow extends RowObject>(store: TopicStore, query: unknown) {
     const executable = yield* prepareExecutableQuery<ResultRow>(store, query);
-    return liveQueryResult(
+    return liveQueryResultFromOwnedEvaluation(
       evaluateExecutableQuery(store, executable),
       executable.compiled.plan.resultSemantics,
     );

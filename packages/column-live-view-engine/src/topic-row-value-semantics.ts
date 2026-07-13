@@ -22,6 +22,7 @@ export type TopicRowValueSemantics = {
   readonly field: (field: string) => SchemaValueSemantics;
   readonly fieldNames: ReadonlyArray<string>;
   readonly materializeRow: (row: RowObject) => RowObject;
+  readonly materializeValidatedRowFields: (row: RowObject) => RowObject;
 };
 
 type SchemaWithFields = TopicRowSchema & {
@@ -44,6 +45,14 @@ const scalarComparable = (value: unknown): boolean =>
   typeof value === "boolean" ||
   value === undefined ||
   isBigDecimal(value);
+
+const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
+  value === null ||
+  value === undefined ||
+  typeof value === "string" ||
+  (typeof value === "number" && !Object.is(value, -0)) ||
+  typeof value === "bigint" ||
+  typeof value === "boolean";
 
 const unorderedEffectCollectionTags = new Set(["effect/HashMap", "effect/HashSet"]);
 
@@ -184,6 +193,25 @@ export const makeTopicRowValueSemantics = (schema: TopicRowSchema): TopicRowValu
     materializeRow: (row) => {
       validateRowFieldDescriptors(row, fieldNames);
       return rowSemantics().materialize(row);
+    },
+    materializeValidatedRowFields: (row) => {
+      validateRowFieldDescriptors(row, fieldNames);
+      for (const name of fieldNames) {
+        if (!Object.prototype.propertyIsEnumerable.call(row, name)) {
+          continue;
+        }
+        const value = Reflect.get(row, name);
+        if (isBorrowableImmutablePrimitive(value)) {
+          continue;
+        }
+        Object.defineProperty(row, name, {
+          configurable: true,
+          enumerable: true,
+          value: field(name).materialize(value),
+          writable: true,
+        });
+      }
+      return row;
     },
   };
 };

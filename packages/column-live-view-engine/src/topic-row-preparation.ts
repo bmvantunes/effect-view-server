@@ -24,14 +24,13 @@ export type TopicRowPreparationContext = {
   readonly topic: string;
 };
 
-const normalizedDecodedTopicRow = (
+const completeDecodedTopicRow = (
   context: TopicRowPreparationContext,
-  decoded: RowObject,
+  row: RowObject,
 ): RowObject => {
-  const cloned = context.semantics.materializeRow(decoded);
   for (const field of context.fieldNames) {
-    if (!Object.hasOwn(cloned, field)) {
-      Object.defineProperty(cloned, field, {
+    if (!Object.hasOwn(row, field)) {
+      Object.defineProperty(row, field, {
         configurable: true,
         enumerable: false,
         value: undefined,
@@ -39,7 +38,14 @@ const normalizedDecodedTopicRow = (
       });
     }
   }
-  return cloned;
+  return row;
+};
+
+const normalizedDecodedTopicRow = (
+  context: TopicRowPreparationContext,
+  decoded: RowObject,
+): RowObject => {
+  return completeDecodedTopicRow(context, context.semantics.materializeRow(decoded));
 };
 
 const normalizeDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.normalize")(
@@ -64,7 +70,11 @@ const validateDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded
     const decoded = yield* validateDecodedRow(context.schema, row).pipe(
       Effect.mapError((cause) => invalidRow(context.topic, String(cause))),
     );
-    return yield* normalizeDecodedTopicRow(context, decoded, invalidRow);
+    return yield* Effect.try({
+      try: () =>
+        completeDecodedTopicRow(context, context.semantics.materializeValidatedRowFields(decoded)),
+      catch: (cause) => invalidRow(context.topic, String(cause)),
+    });
   },
 );
 

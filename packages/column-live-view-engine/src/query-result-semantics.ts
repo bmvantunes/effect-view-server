@@ -14,6 +14,7 @@ export type QueryResultFieldSemantics = {
 
 export type QueryResultSemantics = {
   readonly equivalentRows: (left: RowObject, right: RowObject) => boolean;
+  readonly materializeOwnedRow: <Row extends RowObject>(row: Row) => Row;
   readonly materializeRow: <Row extends RowObject>(row: Row) => Row;
   readonly projectRow: (row: RowObject) => RowObject;
 };
@@ -36,7 +37,7 @@ const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
   value === null ||
   value === undefined ||
   typeof value === "string" ||
-  typeof value === "number" ||
+  (typeof value === "number" && !Object.is(value, -0)) ||
   typeof value === "bigint" ||
   typeof value === "boolean";
 
@@ -64,6 +65,26 @@ export const makeQueryResultSemantics = (
     return projectRow(row, materializeValue);
   }
 
+  function materializeOwnedRow<Row extends RowObject>(row: Row): Row;
+  function materializeOwnedRow(row: RowObject): RowObject {
+    for (const { field, semantics } of fields) {
+      if (!hasEnumerableField(row, field)) {
+        continue;
+      }
+      const value = Reflect.get(row, field);
+      if (isBorrowableImmutablePrimitive(value)) {
+        continue;
+      }
+      Object.defineProperty(row, field, {
+        configurable: true,
+        enumerable: true,
+        value: semantics.materialize(value),
+        writable: true,
+      });
+    }
+    return row;
+  }
+
   return {
     equivalentRows: (left, right) => {
       for (const { field, semantics } of fields) {
@@ -80,6 +101,7 @@ export const makeQueryResultSemantics = (
       }
       return true;
     },
+    materializeOwnedRow,
     materializeRow,
     projectRow: (row) => projectRow(row, borrowValue),
   };

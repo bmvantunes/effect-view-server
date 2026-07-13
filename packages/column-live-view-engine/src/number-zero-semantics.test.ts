@@ -39,6 +39,30 @@ const makeNumberEngine = () =>
   });
 
 describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
+  it.effect("canonicalizes selected negative zero in one-shot and subscription snapshots", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeNumberEngine();
+      yield* engine.publish("numberRows", { id: "negative-zero", value: -0 });
+
+      const query = {
+        select: ["id", "value"],
+      } as const;
+      const oneShot = yield* engine.snapshot("numberRows", query);
+      const subscription = yield* engine.subscribe("numberRows", query);
+      const read = yield* makeEventReader(subscription);
+      const initial = firstEvent(yield* read(1));
+      expectSnapshotEvent(initial);
+
+      expect(oneShot.rows).toStrictEqual([{ id: "negative-zero", value: 0 }]);
+      expect(initial.rows).toStrictEqual([{ id: "negative-zero", value: 0 }]);
+      expect(Object.is(oneShot.rows[0]?.value, -0)).toBe(false);
+      expect(Object.is(initial.rows[0]?.value, -0)).toBe(false);
+
+      yield* subscription.close();
+      yield* engine.close();
+    }),
+  );
+
   it.effect("normalizes positive and negative zero across indexed eq, neq, and in snapshots", () =>
     Effect.gen(function* () {
       const engine = yield* makeNumberEngine();

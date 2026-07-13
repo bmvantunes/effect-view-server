@@ -247,6 +247,27 @@ describe("ColumnLiveViewEngine raw projection value semantics", () => {
     }),
   );
 
+  it.effect("does not retain structured publish input references", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeSemanticEngine();
+      const source = semanticRow("row-1", 1);
+      const sourceBackup = Option.getOrThrow(source.backupProfile);
+      yield* engine.publish("semanticRows", source);
+
+      source.profile.aliases.push("mutated-source");
+      sourceBackup.aliases.push("mutated-source-backup");
+
+      const snapshot = yield* engine.snapshot("semanticRows", semanticQuery);
+      const projected = expectSemanticProjection(snapshot.rows[0], "row-1", 1);
+      const projectedBackup = Option.getOrThrow(projected.backupProfile);
+
+      expect(projected.profile === source.profile).toBe(false);
+      expect(projected.profile.aliases === source.profile.aliases).toBe(false);
+      expect(projectedBackup === sourceBackup).toBe(false);
+      expect(projectedBackup.aliases === sourceBackup.aliases).toBe(false);
+    }),
+  );
+
   it.effect("isolates subscription snapshots plus insert and update delta rows", () =>
     Effect.gen(function* () {
       const engine = yield* makeSemanticEngine();

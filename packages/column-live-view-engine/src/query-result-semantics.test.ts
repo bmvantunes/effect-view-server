@@ -95,5 +95,26 @@ describe("query result semantics", () => {
     expect(() => semantics.narrowProjectedRow({ id: 1 })).toThrowError(
       "Projected Query Result Row does not satisfy its compiled proof.",
     );
+    expect(() => semantics.projectRow({ value: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.projectRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    const ownedProjection = semantics.projectRow({ id: "a", extra: true });
+    expect(ownedProjection).toStrictEqual({ id: "a" });
+    expect(semantics.materializeOwnedRow(ownedProjection)).toBe(ownedProjection);
+    expect(semantics.materializeRow(ownedProjection)).toStrictEqual({ id: "a" });
+    const mutatedProjection = semantics.projectRow({ id: "mutable" });
+    Reflect.set(mutatedProjection, "id", 1);
+    expect(() => semantics.materializeOwnedRow(mutatedProjection)).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.materializeOwnedRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.materializeRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
   });
 });

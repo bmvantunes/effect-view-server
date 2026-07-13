@@ -6,7 +6,7 @@ import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { canonicalRawQueryFilterKey } from "./raw-query-value-semantics";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
-import type { QueryResultSemantics } from "./query-result-semantics";
+import type { TopicStorageProjectableQueryResultSemantics } from "./query-result-semantics";
 import { trustedFieldValue } from "./row-values";
 
 type RowObject = object;
@@ -28,7 +28,7 @@ export type RawQueryPlan<Row extends RowObject, ResultRow extends RowObject> = {
   readonly storageOrderBy?: ReadonlyArray<TopicRawOrderByPlan>;
   readonly compare: (left: TopicRowEntry<Row>, right: TopicRowEntry<Row>) => number;
   readonly project: (row: Row) => ResultRow;
-  readonly resultSemantics: QueryResultSemantics<ResultRow>;
+  readonly resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>;
   readonly window: RawQueryPlanWindow;
 };
 
@@ -213,7 +213,7 @@ export const makeRawQueryPlan = <
 >(
   metadata: RawQueryCompilerMetadata<SchemaRow>,
   query: RuntimeRawQuery,
-  resultSemantics: QueryResultSemantics<ResultRow>,
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
 ): RawQueryPlan<Row, ResultRow> => {
   const orderBy = Object.freeze(
     (query.orderBy ?? []).map((order) =>

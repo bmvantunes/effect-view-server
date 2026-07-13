@@ -445,6 +445,7 @@ describe("ColumnLiveViewEngine query result proof", () => {
       expect(rawSelectReads).toBe(1);
       expect(raw.plan.selectedFields).toStrictEqual(["id"]);
       expect(raw.plan.project(order("a", "open", 10, 1))).toStrictEqual({ id: "a" });
+      expect(raw.plan.resultSemantics.narrowProjectedRow({ id: "a" })).toStrictEqual({ id: "a" });
 
       let groupedKeyReads = 0;
       const groupedQuery = {
@@ -519,6 +520,15 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
     expect(Object.isFrozen(stringGrouped)).toBe(true);
     expect(Object.isFrozen(stringRaw.plan.resultSemantics)).toBe(true);
     expect(Object.isFrozen(stringGrouped.plan.resultSemantics)).toBe(true);
+    expect(Object.isFrozen(stringRaw.plan.resultSemantics.topicStorageProjectionProof)).toBe(true);
+    expect(
+      Object.isFrozen(stringRaw.plan.resultSemantics.topicStorageProjectionProof.selectedFields),
+    ).toBe(true);
+    expect(
+      Object.isFrozen(
+        Object.getPrototypeOf(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
+      ),
+    ).toBe(true);
     expect(Object.isFrozen(stringRawExecutable)).toBe(true);
     expect(Object.isFrozen(stringGroupedExecutable)).toBe(true);
     expect(() => Object.assign(stringRaw.plan, numberRaw.plan)).toThrowError(TypeError);
@@ -531,6 +541,29 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
     expect(() =>
       Object.assign(stringGrouped.plan.resultSemantics, numberGrouped.plan.resultSemantics),
     ).toThrowError(TypeError);
+    expect(() =>
+      Object.assign(
+        stringRaw.plan.resultSemantics.topicStorageProjectionProof,
+        numberRaw.plan.resultSemantics.topicStorageProjectionProof,
+      ),
+    ).toThrowError(TypeError);
+    expect(() =>
+      Object.assign(
+        Object.getPrototypeOf(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
+        {
+          matchesValueSemantics: () => true,
+        },
+      ),
+    ).toThrowError(TypeError);
+    expect(() =>
+      Reflect.construct(
+        Reflect.get(
+          Object.getPrototypeOf(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
+          "constructor",
+        ),
+        [],
+      ),
+    ).toThrowError("Query Result Topic Storage projection proof construction is private.");
     expect(() => Object.assign(stringRawExecutable, numberRawExecutable)).toThrowError(TypeError);
     expect(() => Object.assign(stringGroupedExecutable, numberGroupedExecutable)).toThrowError(
       TypeError,

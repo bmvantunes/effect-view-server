@@ -237,3 +237,11 @@ export const topicRowValueSemanticsMatchesSchema = <SchemaValue extends TopicRow
 ): semantics is TopicRowValueSemantics<SchemaValue["Type"]> =>
   semantics[topicRowValueSemanticsSchema] === schema &&
   topicRowValueSemanticsSchemas.get(semantics) === schema;
+
+export const topicRowValueSemanticsShareSchema = (
+  left: TopicRowValueSemantics,
+  right: TopicRowValueSemantics,
+): boolean => {
+  const schema = topicRowValueSemanticsSchemas.get(left);
+  return schema !== undefined && topicRowValueSemanticsSchemas.get(right) === schema;
+};

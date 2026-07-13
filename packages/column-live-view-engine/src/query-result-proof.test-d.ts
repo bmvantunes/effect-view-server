@@ -21,8 +21,10 @@ import type { QueryEvaluation } from "./query-result";
 import {
   groupedQueryResultSemantics,
   rawQueryResultSemantics,
+  type QueryResultTopicStorageProjectionProof,
   type QueryResultSemantics,
 } from "./query-result-semantics";
+import type { TopicStorageProjectionCapability } from "./topic-row-storage";
 import {
   type ExecutableQuery,
   prepareRuntimeExecutableQuery,
@@ -110,9 +112,24 @@ declare const commonSelect: readonly ["id", "price"] | readonly ["id", "status"]
 declare const dynamicGroupBy: readonly ["status"] | readonly ["id"];
 declare const unequalGroupBy: readonly ["status"] | readonly ["status", "id"];
 declare const commonGroupBy: readonly ["status", "id"] | readonly ["status", "price"];
+declare const stringProjectionProof: QueryResultTopicStorageProjectionProof<{
+  readonly id: string;
+}>;
 
 describe("compiled Query Result Semantics", () => {
   it("keeps schema provenance nominal across metadata and result proofs", () => {
+    // @ts-expect-error only the concrete Topic Row Storage can construct its projection capability.
+    const invalidStorageCapability: TopicStorageProjectionCapability = {};
+    // @ts-expect-error structural fields cannot forge the private projection-proof brand.
+    const invalidStructuralProjectionProof: QueryResultTopicStorageProjectionProof<{
+      readonly id: string;
+    }> = {
+      matchesValueSemantics: () => true,
+      selectedFields: ["id"],
+    };
+    // @ts-expect-error a query result projection proof cannot be changed to another result row.
+    const invalidProjectionProof: QueryResultTopicStorageProjectionProof<{ readonly id: number }> =
+      stringProjectionProof;
     const invalidMetadata = {
       ...numericMetadata,
       schema: StringId,
@@ -154,6 +171,9 @@ describe("compiled Query Result Semantics", () => {
     );
 
     void invalidMetadata;
+    void invalidStorageCapability;
+    void invalidStructuralProjectionProof;
+    void invalidProjectionProof;
     void invalidRawProof;
     void invalidGroupedProof;
     void invalidStructuralRawProof;
@@ -215,6 +235,12 @@ describe("compiled Query Result Semantics", () => {
     expectTypeOf<
       SemanticsRow<Compiled["plan"]["resultSemantics"]>
     >().toEqualTypeOf<GroupedResultRow>();
+    const groupedStorageProofMustStayUnavailable = (
+      semantics: Compiled["plan"]["resultSemantics"],
+    ) => {
+      // @ts-expect-error grouped results cannot be projected directly from raw Topic Storage rows.
+      return semantics.topicStorageProjectionProof;
+    };
 
     // @ts-expect-error the second generic is a query witness, not a caller-selected result row.
     const invalidForgedGrouped = prepareGroupedQuery<OrderRow, ForgedResult>(
@@ -227,6 +253,7 @@ describe("compiled Query Result Semantics", () => {
 
     void invalidForgedGrouped;
     void invalidUnknownGrouped;
+    void groupedStorageProofMustStayUnavailable;
   });
 
   it("keeps conditional grouped fields optional in the proven result", () => {

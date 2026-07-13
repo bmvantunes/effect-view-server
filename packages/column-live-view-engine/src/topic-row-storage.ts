@@ -16,7 +16,7 @@ import type {
 } from "./raw-window-scan";
 import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { OrderedSlotIndex, RawStorageOrderColumn } from "./topic-ordered-window";
-import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
+import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { trustedFieldValue } from "./row-values";
 import {
   columnValue,
@@ -34,6 +34,7 @@ import {
 } from "./topic-row-change-journal";
 import { deleteCompactingTopicRowSlot } from "./topic-row-storage-lifecycle";
 import {
+  assertAuthenticPreparedTopicRow,
   prepareDecodedTopicPatch,
   prepareDecodedTopicRow,
   prepareDecodedTopicRowWithStorageKey,
@@ -58,12 +59,15 @@ import {
   compiledRawStorageOrder,
 } from "./topic-raw-ordered-window-index";
 import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
+import type { QueryResultTopicStorageProjectionProof } from "./query-result-semantics";
 
 type RowObject = object;
 
 type RawProjectionColumn = {
   readonly column: MutableTopicColumnValues;
   readonly field: string;
+  readonly required: boolean;
+  readonly validateValue: ((value: unknown) => boolean) | undefined;
 };
 
 type AppendBatchReservation = {
@@ -79,9 +83,170 @@ const noopAppendBatchReservation: AppendBatchReservation = {
   reserveFrom: () => {},
 };
 
+const topicRowStorageProjectionConstructionToken = Object.freeze({});
+const topicStorageResultProjectionBrand: unique symbol = Symbol("TopicStorageResultProjection");
+
+const assertTopicRowStorageProjectionConstruction = (constructionToken: object): void => {
+  if (constructionToken !== topicRowStorageProjectionConstructionToken) {
+    throw new TypeError("Topic Storage projection construction is private.");
+  }
+};
+
+class TopicStorageResultProjectionMarker {
+  declare private readonly authentic: true;
+}
+
+export type TopicStorageResultProjection = {
+  readonly [topicStorageResultProjectionBrand]: TopicStorageResultProjectionMarker;
+};
+
+class TopicRowStorageResultProjection implements TopicStorageResultProjection {
+  declare readonly [topicStorageResultProjectionBrand]: TopicStorageResultProjectionMarker;
+  #consumed = false;
+  readonly #proof: object;
+  readonly #row: Record<string, unknown> = {};
+  #shapeValid = true;
+  #valuesValid = true;
+
+  constructor(constructionToken: object, proof: object) {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    this.#proof = proof;
+    Object.freeze(this);
+  }
+
+  define(constructionToken: object, field: string, value: unknown): void {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    Object.defineProperty(this.#row, field, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+  }
+
+  invalidateShape(constructionToken: object): void {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    this.#shapeValid = false;
+  }
+
+  invalidateValues(constructionToken: object): void {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    this.#valuesValid = false;
+  }
+
+  consume(constructionToken: object, proof: object): RowObject {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    if (this.#consumed || proof !== this.#proof) {
+      throw new TypeError(
+        "Topic Storage projection is not authentic or has already been consumed.",
+      );
+    }
+    this.#consumed = true;
+    if (!this.#shapeValid) {
+      throw new TypeError("Topic Storage projection does not satisfy its compiled shape proof.");
+    }
+    if (!this.#valuesValid) {
+      throw new TypeError("Topic Storage projection does not satisfy its compiled value proof.");
+    }
+    return this.#row;
+  }
+}
+
+Object.freeze(TopicRowStorageResultProjection.prototype);
+
+export const consumeTopicStorageResultProjection = (
+  projection: TopicStorageResultProjection,
+  proof: object,
+): RowObject => {
+  if (!(projection instanceof TopicRowStorageResultProjection)) {
+    throw new TypeError("Topic Storage projection is not authentic or has already been consumed.");
+  }
+  return projection.consume(topicRowStorageProjectionConstructionToken, proof);
+};
+
+type TopicRowStorageProjector = (
+  slot: number,
+  selectedFields: ReadonlyArray<string>,
+  projection: TopicRowStorageResultProjection,
+) => void;
+
+class TopicRowStorageProjectionCapability {
+  readonly #projectRow: TopicRowStorageProjector;
+  readonly #valueSemantics: TopicRowValueSemantics;
+
+  constructor(
+    constructionToken: object,
+    valueSemantics: TopicRowValueSemantics,
+    projectRow: TopicRowStorageProjector,
+  ) {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    this.#projectRow = projectRow;
+    this.#valueSemantics = valueSemantics;
+    Object.freeze(this);
+  }
+
+  bind<ResultRow extends RowObject>(
+    proof: QueryResultTopicStorageProjectionProof<ResultRow>,
+  ): TopicStorageProjectionSession {
+    if (!proof.matchesValueSemantics(this.#valueSemantics)) {
+      throw new TypeError("Topic Storage projection schema does not match its compiled proof.");
+    }
+    return new TopicRowStorageProjectionSession(
+      topicRowStorageProjectionConstructionToken,
+      proof,
+      this.#projectRow,
+    );
+  }
+}
+
+Object.freeze(TopicRowStorageProjectionCapability.prototype);
+
+export type TopicStorageProjectionCapability = TopicRowStorageProjectionCapability;
+
+export const bindTopicStorageProjection = <ResultRow extends RowObject>(
+  capability: TopicStorageProjectionCapability,
+  proof: QueryResultTopicStorageProjectionProof<ResultRow>,
+): TopicStorageProjectionSession => {
+  if (!(capability instanceof TopicRowStorageProjectionCapability)) {
+    throw new TypeError("Topic Storage projection capability is not authentic.");
+  }
+  return capability.bind(proof);
+};
+
+class TopicRowStorageProjectionSession {
+  readonly #proof: QueryResultTopicStorageProjectionProof<RowObject>;
+  readonly #projectRow: TopicRowStorageProjector;
+
+  constructor(
+    constructionToken: object,
+    proof: QueryResultTopicStorageProjectionProof<RowObject>,
+    projectRow: TopicRowStorageProjector,
+  ) {
+    assertTopicRowStorageProjectionConstruction(constructionToken);
+    this.#projectRow = projectRow;
+    this.#proof = proof;
+    Object.freeze(this);
+  }
+
+  project(slot: number): TopicStorageResultProjection {
+    const projection = new TopicRowStorageResultProjection(
+      topicRowStorageProjectionConstructionToken,
+      this.#proof,
+    );
+    this.#projectRow(slot, this.#proof.selectedFields, projection);
+    return projection;
+  }
+}
+
+Object.freeze(TopicRowStorageProjectionSession.prototype);
+
+export type TopicStorageProjectionSession = TopicRowStorageProjectionSession;
+
 export class TopicRowStorage {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
-  readonly readModel: ActiveQueryStoreState;
+  readonly readModel: ActiveQueryStoreState & {
+    readonly storageProjection: TopicStorageProjectionCapability;
+  };
   readonly valueSemantics: TopicRowValueSemantics;
 
   private readonly slots: Array<TopicRowEntry<object>> = [];
@@ -126,13 +291,13 @@ export class TopicRowStorage {
       scalarPredicateIndexes: this.scalarPredicateIndexes,
       slots: this.slots,
     };
-    this.rowPreparation = {
+    this.rowPreparation = Object.freeze({
       fieldNames: this.rawQueryMetadata.fieldNames,
       keyField,
       schema,
       semantics: this.valueSemantics,
       topic,
-    };
+    });
     for (const field of this.rawQueryMetadata.fieldNames) {
       const column = createTopicColumnValues(field, this.rawQueryMetadata);
       this.columns.set(field, column);
@@ -151,7 +316,11 @@ export class TopicRowStorage {
       changesSince: (version) => this.changesSince(version),
       compareRawSlots: (plan) => this.compareRawSlots(plan),
       keyAtSlot: (slot) => this.keyAtSlot(slot),
-      projectRawRow: (slot, selectedFields) => this.projectRawRow(slot, selectedFields),
+      storageProjection: new TopicRowStorageProjectionCapability(
+        topicRowStorageProjectionConstructionToken,
+        this.valueSemantics,
+        (slot, selectedFields, projection) => this.#projectRawRow(slot, selectedFields, projection),
+      ),
       releaseChanges: () => this.releaseChanges(),
       retainChanges: () => this.retainChanges(),
       scanRows: (visitor) => this.scanRows(visitor),
@@ -188,6 +357,7 @@ export class TopicRowStorage {
   }
 
   setPrepared(prepared: PreparedTopicRow): number {
+    assertAuthenticPreparedTopicRow(prepared, this.rowPreparation);
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
       const replacement = this.preparedReplacementForCurrentSlot(prepared, existingSlot);
@@ -217,6 +387,9 @@ export class TopicRowStorage {
   }
 
   setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>): number {
+    for (const prepared of preparedRows) {
+      assertAuthenticPreparedTopicRow(prepared, this.rowPreparation);
+    }
     const appendReservation = this.createAppendBatchReservation(preparedRows);
     if (preparedRows.length > 1 && this.orderedSlotIndexes.size > 0) {
       this.orderedSlotIndexes.clear();
@@ -295,22 +468,26 @@ export class TopicRowStorage {
       compareSlotsByStorageOrder(this.rawWindowScanState, left, right, orderColumns);
   }
 
-  private projectRawRow(slot: number, selectedFields: ReadonlyArray<string>): RowObject {
-    const projected: Record<string, unknown> = {};
+  #projectRawRow(
+    slot: number,
+    selectedFields: ReadonlyArray<string>,
+    projected: TopicRowStorageResultProjection,
+  ): void {
     const row = this.slots[slot]!.row;
-    for (const projection of this.rawProjectionPlan(selectedFields)) {
+    for (const projection of this.#rawProjectionPlan(selectedFields)) {
       if (!Object.prototype.propertyIsEnumerable.call(row, projection.field)) {
+        if (projection.required) {
+          projected.invalidateShape(topicRowStorageProjectionConstructionToken);
+        }
         continue;
       }
       const value = columnValue(projection.column, slot);
-      Object.defineProperty(projected, projection.field, {
-        configurable: true,
-        enumerable: true,
-        value,
-        writable: true,
-      });
+      if (projection.validateValue !== undefined && !projection.validateValue(value)) {
+        projected.invalidateValues(topicRowStorageProjectionConstructionToken);
+        continue;
+      }
+      projected.define(topicRowStorageProjectionConstructionToken, projection.field, value);
     }
-    return projected;
   }
 
   slotForKey(key: string): number | undefined {
@@ -413,21 +590,20 @@ export class TopicRowStorage {
   );
 
   private writeSlot(slot: number, prepared: PreparedTopicRow): void {
+    const row = prepared.row;
     this.slots[slot] = {
       key: prepared.key,
-      row: prepared.row,
+      row,
     };
     for (let index = 0; index < this.columnWritePlan.length; index += 1) {
       this.columnWritePlan[index]!.set(
         slot,
-        trustedFieldValue(prepared.row, this.columnWriteFields[index]!),
+        trustedFieldValue(row, this.columnWriteFields[index]!),
       );
     }
   }
 
-  private rawProjectionPlan(
-    selectedFields: ReadonlyArray<string>,
-  ): ReadonlyArray<RawProjectionColumn> {
+  #rawProjectionPlan(selectedFields: ReadonlyArray<string>): ReadonlyArray<RawProjectionColumn> {
     const cached = this.rawProjectionPlans.get(selectedFields);
     if (cached !== undefined) {
       return cached;
@@ -435,9 +611,15 @@ export class TopicRowStorage {
 
     const plan = selectedFields.map((field) => {
       const column = this.columns.get(field)!;
+      const validateValue =
+        column.kind === "generic" || column.kind === "bigDecimal"
+          ? this.valueSemantics.field(field).is
+          : undefined;
       return {
         column,
         field,
+        required: this.valueSemantics.fieldRequired(field),
+        validateValue,
       };
     });
     this.rawProjectionPlans.set(selectedFields, plan);

@@ -19,7 +19,7 @@ import {
 import {
   rawQueryResultSemantics,
   runtimeRawQueryResultSemantics,
-  type QueryResultSemantics,
+  type TopicStorageProjectableQueryResultSemantics,
 } from "./query-result-semantics";
 
 type RowObject = object;
@@ -53,7 +53,7 @@ export const ensureRawQueryCompilerMetadata = Effect.fn(
 const compileRawQuery = <SchemaRow extends RowObject, ResultRow extends RowObject>(
   metadata: RawQueryCompilerMetadata<SchemaRow>,
   query: RuntimeRawQuery,
-  resultSemantics: QueryResultSemantics<ResultRow>,
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
 ): CompiledRawQuery<RowObject, ResultRow> => {
   const plan = makeRawQueryPlan<RowObject, ResultRow, SchemaRow>(metadata, query, resultSemantics);
   return Object.freeze({

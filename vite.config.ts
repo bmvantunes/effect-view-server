@@ -6,11 +6,13 @@ export default defineConfig({
     coverage: {
       provider: "istanbul",
       include: [
+        "scripts/benchmark-artifact-mechanics.mjs",
         "scripts/benchmark-baseline.mjs",
         "scripts/benchmark-baseline-cli.mjs",
         "scripts/benchmark-baseline-runner.mjs",
         "scripts/bench-runtime-kafka-ingest.mjs",
         "scripts/check-internal-seams.ts",
+        "scripts/grpc-leased-benchmark-policy.mjs",
         "scripts/package-surface-policy.ts",
         "scripts/release-publish-orchestration.mjs",
         "scripts/release-publish-policy.mjs",

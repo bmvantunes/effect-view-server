@@ -685,7 +685,7 @@ describe("benchmark baseline runner", () => {
         {
           artifactKind: "runtime-benchmark-summary",
           benchmarkScope: "runtime-grpc-leased",
-          iterations: "3",
+          iterations: "5",
           outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-500retained.json",
           retainedRows: "500",
           routeCount: "25",
@@ -698,7 +698,7 @@ describe("benchmark baseline runner", () => {
         {
           artifactKind: "runtime-benchmark-summary",
           benchmarkScope: "runtime-grpc-leased",
-          iterations: "3",
+          iterations: "5",
           outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-50000retained.json",
           retainedRows: "50000",
           routeCount: "25",

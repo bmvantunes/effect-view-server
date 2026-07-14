@@ -68,3 +68,31 @@ export type TopicRow<Topics, Topic extends keyof Topics> = Topics[Topic] extends
   : never;
 
 export type Simplify<T> = { readonly [Key in keyof T]: T[Key] };
+
+type TupleIndexKeys<Tuple extends ReadonlyArray<unknown>> = Exclude<
+  keyof Tuple,
+  keyof ReadonlyArray<unknown>
+>;
+
+type TupleMemberRequiresElement<Tuple extends ReadonlyArray<unknown>, Element> = true extends {
+  readonly [Index in TupleIndexKeys<Tuple>]: [Tuple[Index]] extends [Element] ? true : false;
+}[TupleIndexKeys<Tuple>]
+  ? true
+  : false;
+
+type TupleMembersRequireElement<Tuple extends ReadonlyArray<unknown>, Element> =
+  Tuple extends ReadonlyArray<unknown> ? TupleMemberRequiresElement<Tuple, Element> : never;
+
+type TupleRequiredElements<
+  Tuple extends ReadonlyArray<unknown>,
+  Elements = Tuple[number],
+> = Elements extends unknown
+  ? false extends TupleMembersRequireElement<Tuple, Elements>
+    ? never
+    : Elements
+  : never;
+
+export type PickTupleFields<Row, Tuple extends ReadonlyArray<unknown>> = Simplify<
+  Pick<Row, Extract<TupleRequiredElements<Tuple>, keyof Row>> &
+    Partial<Pick<Row, Extract<Exclude<Tuple[number], TupleRequiredElements<Tuple>>, keyof Row>>>
+>;

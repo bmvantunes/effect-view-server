@@ -65,4 +65,4 @@ The Column Live View Engine and Wire Protocol may depend on the neutral `@effect
 
 Canonical encode/decode adds work at ownership boundaries. Compiled codecs, equivalence functions, field plans, and structured canonical tokens must be reused. Performance gates must cover both Raw read/write and grouped admission/order-neutral behavior so semantic correctness cannot hide an unacceptable ingestion or subscription cost.
 
-Issue #325 may replace caller-selected result generics and identity overloads with the runtime projection witnesses introduced here. This ADR does not preserve those overloads as compatibility APIs.
+Issue #325 replaces caller-selected result generics and identity overloads with the runtime projection witnesses introduced here. This ADR does not preserve those overloads as compatibility APIs.

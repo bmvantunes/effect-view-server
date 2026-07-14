@@ -17,6 +17,7 @@ import {
 export {
   acquireRawQueryExecution,
   evaluateRawQuery,
+  evaluateRawQueryResult,
   releaseRawQueryExecution,
 } from "./active-raw-query";
 export {
@@ -35,8 +36,8 @@ export type ActiveQueryStoreState = TopicRowScan<object> &
     readonly topic: string;
   };
 
-export type LiveQueryExecutionCursor<ResultRow extends RowObject> = {
-  evaluation: QueryEvaluation<ResultRow>;
+export type LiveQueryExecutionCursor = {
+  evaluation: QueryEvaluation<RowObject>;
 };
 
 type RawQueryExecutionUpdate<ResultRow extends RowObject> = Effect.Effect<
@@ -47,10 +48,10 @@ type RawQueryExecutionUpdate<ResultRow extends RowObject> = Effect.Effect<
 
 export type LiveQueryExecution<ResultRow extends RowObject> = {
   readonly initial: (queryId: string) => SnapshotEvent<ResultRow>;
-  readonly createCursor: () => LiveQueryExecutionCursor<ResultRow>;
+  readonly createCursor: () => LiveQueryExecutionCursor;
   readonly next: (
     queryId: string,
-    cursor: LiveQueryExecutionCursor<ResultRow>,
+    cursor: LiveQueryExecutionCursor,
   ) => RawQueryExecutionUpdate<ResultRow>;
 };
 

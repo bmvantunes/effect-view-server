@@ -8,7 +8,7 @@ import type {
   CountDistinctAggregate,
   SumAggregate,
 } from "./query-aggregate";
-import type { FieldKey, Simplify } from "./query-core";
+import type { FieldKey, PickTupleFields, Simplify } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
 import type { ExactWhere, Where } from "./query-filter";
 import type { ExactGroupedOrderByEntry, GroupedOrderBy } from "./query-sort";
@@ -88,13 +88,15 @@ export type ExactGroupedQuery<Row, Query> = Query &
         readonly aggregates: Aggregates<Row>;
       });
 
+type GroupedAggregateResultFields<Row, AggregateSet> = AggregateSet extends unknown
+  ? {
+      readonly [Alias in keyof AggregateSet]: AggregateResultValue<Row, AggregateSet[Alias]>;
+    }
+  : never;
+
 export type GroupedResult<Row, Query> = Query extends {
-  readonly groupBy: ReadonlyArray<infer GroupField>;
+  readonly groupBy: infer GroupBy extends ReadonlyArray<unknown>;
   readonly aggregates: infer Aggs;
 }
-  ? Simplify<
-      Pick<Row, Extract<GroupField, keyof Row>> & {
-        readonly [Alias in keyof Aggs]: AggregateResultValue<Row, Aggs[Alias]>;
-      }
-    >
+  ? Simplify<PickTupleFields<Row, GroupBy> & GroupedAggregateResultFields<Row, Aggs>>
   : never;

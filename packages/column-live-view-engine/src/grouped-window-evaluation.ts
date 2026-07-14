@@ -26,8 +26,8 @@ const compareGroupedRows = (
   return Number(left.key > right.key) - Number(left.key < right.key);
 };
 
-const groupedWindowEnd = <Row extends RowObject>(
-  plan: GroupedQueryPlan<Row>,
+const groupedWindowEnd = <Row extends RowObject, ResultRow extends RowObject>(
+  plan: GroupedQueryPlan<Row, ResultRow>,
 ): number | undefined => {
   if (plan.limit === undefined) {
     return undefined;
@@ -187,9 +187,9 @@ const retainBoundedGroup = (
   return nextScratchOrderValues;
 };
 
-const boundedGroupedEvaluationFromGroups = <Row extends RowObject>(
+const boundedGroupedEvaluationFromGroups = <Row extends RowObject, ResultRow extends RowObject>(
   groups: Iterable<GroupState>,
-  plan: GroupedQueryPlan<Row>,
+  plan: GroupedQueryPlan<Row, ResultRow>,
   version: number,
   windowEnd: number,
 ): QueryEvaluation<RowObject> => {
@@ -231,9 +231,9 @@ export const emptyGroupedEvaluation = (
   version,
 });
 
-export const groupedEvaluationFromGroups = <Row extends RowObject>(
+export const groupedEvaluationFromGroups = <Row extends RowObject, ResultRow extends RowObject>(
   groups: Iterable<GroupState>,
-  plan: GroupedQueryPlan<Row>,
+  plan: GroupedQueryPlan<Row, ResultRow>,
   version: number,
 ): QueryEvaluation<RowObject> => {
   const windowEnd = groupedWindowEnd(plan);
@@ -243,9 +243,9 @@ export const groupedEvaluationFromGroups = <Row extends RowObject>(
   return groupedEvaluationFromEntries(Array.from(groups, finalizeGroup), plan, version);
 };
 
-export const groupedEvaluationFromEntries = <Row extends RowObject>(
+export const groupedEvaluationFromEntries = <Row extends RowObject, ResultRow extends RowObject>(
   entries: ReadonlyArray<StoredRowOf<RowObject>>,
-  plan: GroupedQueryPlan<Row>,
+  plan: GroupedQueryPlan<Row, ResultRow>,
   version: number,
 ): QueryEvaluation<RowObject> => {
   const ordered = entries.toSorted((left, right) =>

@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   groupedResultAggregateSemantics,
   makeQueryResultSemantics,
+  runtimeRawQueryResultSemantics,
 } from "./query-result-semantics";
 import { makeTopicRowValueSemantics } from "./topic-row-value-semantics";
 
@@ -37,6 +38,70 @@ describe("query result semantics", () => {
     const result = semantics.materializeRow({ value: structured });
     expect(result).toStrictEqual({ value: structured });
     expect(Reflect.get(result, "value")).not.toBe(structured);
+
+    const owned = { value: structured };
+    const ownedResult = semantics.materializeOwnedRow(owned);
+    expect(ownedResult).toBe(owned);
+    expect(Reflect.get(ownedResult, "value")).not.toBe(structured);
+
+    const projectedOwned = semantics.projectOwnedRow({ value: structured });
+    expect(projectedOwned).toStrictEqual({ value: structured });
+    expect(Reflect.get(projectedOwned, "value")).not.toBe(structured);
+    expect(semantics.projectOwnedRow({ value: 1 })).toStrictEqual({ value: 1 });
+
+    const numberSemantics = makeQueryResultSemantics([
+      {
+        field: "value",
+        semantics: makeTopicRowValueSemantics(Schema.Struct({ value: Schema.Number })).field(
+          "value",
+        ),
+      },
+    ]);
+    const normalizedNegativeZero = numberSemantics.projectOwnedRow({ value: -0 });
+    expect(Object.is(Reflect.get(normalizedNegativeZero, "value"), 0)).toBe(true);
+    expect(Object.is(Reflect.get(normalizedNegativeZero, "value"), -0)).toBe(false);
+  });
+
+  it("distinguishes invalid projected values from materializer defects", () => {
+    const structuredSemantics = makeTopicRowValueSemantics(
+      Schema.Struct({ value: Schema.Struct({ count: Schema.Number }) }),
+    ).field("value");
+    const semantics = makeQueryResultSemantics([
+      {
+        field: "value",
+        semantics: structuredSemantics,
+      },
+    ]);
+    const unknownSemantics = makeQueryResultSemantics([
+      {
+        field: "value",
+        semantics: makeTopicRowValueSemantics(Schema.Struct({ value: Schema.Unknown })).field(
+          "value",
+        ),
+      },
+    ]);
+    const defect = new Error("sentinel materializer defect");
+    const defectSemantics = makeQueryResultSemantics([
+      {
+        field: "value",
+        semantics: Object.freeze({
+          ...structuredSemantics,
+          materialize: (_value: unknown): never => {
+            throw defect;
+          },
+        }),
+      },
+    ]);
+
+    expect(() => semantics.projectOwnedRow({ value: { count: "invalid" } })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => unknownSemantics.projectOwnedRow({ value: new Map() })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => defectSemantics.projectOwnedRow({ value: { count: 1 } })).toThrowError(
+      expect.toSatisfy((error: unknown) => error === defect),
+    );
   });
 
   it("keeps an undefined min/max result outside the optional field codec", () => {
@@ -58,6 +123,57 @@ describe("query result semantics", () => {
     expect(optionalMinimumSemantics.canonicalKey(undefined)).toBe("undefined:");
     expect(optionalMinimumSemantics.canonicalKey(1)).toBe(
       `value:${topicSemantics.field("value").canonicalKey(1)}`,
+    );
+  });
+
+  it("rejects projected rows that do not satisfy the compiled field proof", () => {
+    const semantics = runtimeRawQueryResultSemantics(topicSemantics, ["id", "value"]);
+    const accessorRow = {};
+    Object.defineProperty(accessorRow, "id", {
+      enumerable: true,
+      get: () => "a",
+    });
+    const hiddenRow = {};
+    Object.defineProperty(hiddenRow, "id", {
+      enumerable: false,
+      value: "a",
+    });
+
+    expect(() => semantics.narrowProjectedRow({ id: "a", extra: true })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow({ value: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow(accessorRow)).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow(hiddenRow)).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.narrowProjectedRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.projectRow({ value: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.projectRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    const ownedProjection = semantics.projectRow({ id: "a", extra: true });
+    expect(ownedProjection).toStrictEqual({ id: "a" });
+    expect(semantics.materializeOwnedRow(ownedProjection)).toBe(ownedProjection);
+    expect(semantics.materializeRow(ownedProjection)).toStrictEqual({ id: "a" });
+    const mutatedProjection = semantics.projectRow({ id: "mutable" });
+    Reflect.set(mutatedProjection, "id", 1);
+    expect(() => semantics.materializeOwnedRow(mutatedProjection)).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.materializeOwnedRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
+    );
+    expect(() => semantics.materializeRow({ id: 1 })).toThrowError(
+      "Projected Query Result Row does not satisfy its compiled proof.",
     );
   });
 });

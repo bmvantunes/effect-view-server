@@ -1,4 +1,10 @@
-import { isBigDecimal } from "effect/BigDecimal";
+import {
+  isBigDecimal,
+  make as makeBigDecimal,
+  normalize as normalizeBigDecimal,
+  type BigDecimal,
+} from "effect/BigDecimal";
+import { immutableReadonlySet } from "./immutable-readonly-collection";
 import { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
 import type { RangeValueKind, RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { isPlainRecord, scalarEqualityKey, type ScalarEqualityKeyValue } from "./row-values";
@@ -65,7 +71,7 @@ export const isRangePlanValue = (
   field: string,
   value: unknown,
   metadata: RawQueryCompilerMetadata,
-): boolean => {
+): value is number | bigint | BigDecimal => {
   const kind = rangeValueKind(value);
   const fieldKinds = metadata.rangeValueKinds.get(field);
   return kind !== undefined && fieldKinds?.size === 1 && fieldKinds.has(kind);
@@ -74,11 +80,37 @@ export const isRangePlanValue = (
 const isEqualityPlanValue = (value: unknown): value is ScalarEqualityKeyValue =>
   isScalarPlanValue(value);
 
+const immutableBigDecimal = (value: BigDecimal): BigDecimal => {
+  const owned = makeBigDecimal(value.value, value.scale);
+  const normalized = normalizeBigDecimal(makeBigDecimal(value.value, value.scale));
+  const normalizedOwned = makeBigDecimal(normalized.value, normalized.scale);
+  Object.defineProperty(normalizedOwned, "normalized", {
+    configurable: false,
+    enumerable: false,
+    value: normalizedOwned,
+    writable: false,
+  });
+  Object.freeze(normalizedOwned);
+  Object.defineProperty(owned, "normalized", {
+    configurable: false,
+    enumerable: false,
+    value:
+      owned.value === normalizedOwned.value && owned.scale === normalizedOwned.scale
+        ? owned
+        : normalizedOwned,
+    writable: false,
+  });
+  return Object.freeze(owned);
+};
+
+const immutableScalarPlanValue = (value: ScalarEqualityKeyValue): ScalarEqualityKeyValue =>
+  isBigDecimal(value) ? immutableBigDecimal(value) : value;
+
 const isNotEqualPlanValue = (
   field: string,
   value: unknown,
   metadata: RawQueryCompilerMetadata,
-): boolean => {
+): value is ScalarEqualityKeyValue => {
   if (!isEqualityPlanValue(value)) {
     return false;
   }
@@ -101,7 +133,7 @@ const scalarEqualityKeys = (values: ReadonlyArray<ScalarEqualityKeyValue>): Read
   for (const value of values) {
     keys.add(scalarEqualityKey(value));
   }
-  return keys;
+  return immutableReadonlySet(keys);
 };
 
 export const predicateFilterPlans = (
@@ -114,28 +146,28 @@ export const predicateFilterPlans = (
     !metadata.exactScalarEqualityFieldNames.has(field) ||
     filter === undefined
   ) {
-    return {
-      filters: [],
+    return Object.freeze({
+      filters: Object.freeze([]),
       callbackRequired: true,
-    };
+    });
   }
   if (!isPlainRecord(filter) || isBigDecimal(filter)) {
     if (!isScalarPlanValue(filter)) {
-      return {
-        filters: [],
+      return Object.freeze({
+        filters: Object.freeze([]),
         callbackRequired: true,
-      };
+      });
     }
-    return {
-      filters: [
-        {
+    return Object.freeze({
+      filters: Object.freeze([
+        Object.freeze({
           field,
           operator: "eq",
-          value: filter,
-        },
-      ],
+          value: immutableScalarPlanValue(filter),
+        }),
+      ]),
       callbackRequired: false,
-    };
+    });
   }
 
   const operatorKeys = Object.keys(filter).filter((key) => filterOperatorKeys.has(key));
@@ -143,96 +175,112 @@ export const predicateFilterPlans = (
   const plans: Array<TopicRawPredicatePlan["filters"][number]> = [];
   if ("eq" in filter) {
     if (isEqualityPlanValue(filter["eq"])) {
-      plans.push({
-        field,
-        operator: "eq",
-        value: filter["eq"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "eq",
+          value: immutableScalarPlanValue(filter["eq"]),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("neq" in filter) {
     if (isNotEqualPlanValue(field, filter["neq"], metadata)) {
-      plans.push({
-        field,
-        operator: "neq",
-        value: filter["neq"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "neq",
+          value: immutableScalarPlanValue(filter["neq"]),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("in" in filter) {
     if (isInPlanValues(filter["in"])) {
-      const values = [...filter["in"]];
-      plans.push({
-        field,
-        operator: "in",
-        values,
-        valueKeys: scalarEqualityKeys(values),
-      });
+      const values = Object.freeze(filter["in"].map(immutableScalarPlanValue));
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "in",
+          values,
+          valueKeys: scalarEqualityKeys(values),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("gt" in filter) {
     if (isRangePlanValue(field, filter["gt"], metadata)) {
-      plans.push({
-        field,
-        operator: "gt",
-        value: filter["gt"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "gt",
+          value: immutableScalarPlanValue(filter["gt"]),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("gte" in filter) {
     if (isRangePlanValue(field, filter["gte"], metadata)) {
-      plans.push({
-        field,
-        operator: "gte",
-        value: filter["gte"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "gte",
+          value: immutableScalarPlanValue(filter["gte"]),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("lt" in filter) {
     if (isRangePlanValue(field, filter["lt"], metadata)) {
-      plans.push({
-        field,
-        operator: "lt",
-        value: filter["lt"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "lt",
+          value: immutableScalarPlanValue(filter["lt"]),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("lte" in filter) {
     if (isRangePlanValue(field, filter["lte"], metadata)) {
-      plans.push({
-        field,
-        operator: "lte",
-        value: filter["lte"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "lte",
+          value: immutableScalarPlanValue(filter["lte"]),
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
   if ("startsWith" in filter) {
     if (typeof filter["startsWith"] === "string") {
-      plans.push({
-        field,
-        operator: "startsWith",
-        value: filter["startsWith"],
-      });
+      plans.push(
+        Object.freeze({
+          field,
+          operator: "startsWith",
+          value: filter["startsWith"],
+        }),
+      );
     } else {
       callbackRequired = true;
     }
   }
-  return {
-    filters: plans,
+  return Object.freeze({
+    filters: Object.freeze(plans),
     callbackRequired,
-  };
+  });
 };

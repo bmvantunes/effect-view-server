@@ -1,11 +1,50 @@
 import { Effect } from "effect";
+import type { GroupedQuery } from "@effect-view-server/config";
 import type { RuntimeGroupedAggregate } from "./grouped-aggregate-state";
-import type { GroupedQueryPlanInput, RuntimeGroupedOrderBy } from "./grouped-query-plan";
 import { InvalidQueryError, isDenseArray } from "./raw-query-decoder";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { isPlainRecord } from "./row-values";
 
-export type RuntimeGroupedQuery = GroupedQueryPlanInput;
+export type RuntimeGroupedOrderBy =
+  | {
+      readonly field: string;
+      readonly direction: "asc" | "desc";
+    }
+  | {
+      readonly aggregate: string;
+      readonly direction: "asc" | "desc";
+    };
+
+export type RuntimeGroupedQuery = {
+  readonly groupBy: ReadonlyArray<string>;
+  readonly aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>;
+  readonly where?: Record<string, unknown>;
+  readonly orderBy?: ReadonlyArray<RuntimeGroupedOrderBy>;
+  readonly offset?: number;
+  readonly limit?: number;
+};
+
+const typedRuntimeGroupedQueryBrand: unique symbol = Symbol("TypedRuntimeGroupedQuery");
+const typedRuntimeGroupedQueryMetadata = new WeakMap<object, RawQueryCompilerMetadata>();
+
+class TypedRuntimeGroupedQueryInvariant<Row, Query> {
+  declare private readonly input: (value: { readonly query: Query; readonly row: Row }) => {
+    readonly query: Query;
+    readonly row: Row;
+  };
+}
+
+export type TypedRuntimeGroupedQuery<
+  Row extends object,
+  Query extends GroupedQuery<Row>,
+> = RuntimeGroupedQuery & {
+  readonly [typedRuntimeGroupedQueryBrand]: TypedRuntimeGroupedQueryInvariant<Row, Query>;
+};
+
+export const typedRuntimeGroupedQueryMatchesSemantics = (
+  query: object,
+  valueSemantics: object,
+): boolean => typedRuntimeGroupedQueryMetadata.get(query)?.valueSemantics === valueSemantics;
 
 const groupedQueryKeys = new Set([
   "groupBy",
@@ -123,7 +162,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
           message: `Grouped query count aggregate ${alias} must not include a field.`,
         });
       }
-      decodedAggregates[alias] = { aggFunc };
+      decodedAggregates[alias] = Object.freeze({ aggFunc });
       continue;
     }
     for (const key of aggregateKeys) {
@@ -147,30 +186,30 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
         message: `Grouped query aggregate ${alias} contains unknown field: ${field}.`,
       });
     }
-    if ((aggFunc === "sum" || aggFunc === "avg") && !metadata.numericFieldNames.has(field)) {
-      return InvalidQueryError.make({
-        topic,
-        message: `Grouped query aggregate ${alias} must reference a numeric field.`,
-      });
-    }
+    const sumResultKind = metadata.fieldMetadata.get(field)?.sumResultKind;
     if (aggFunc === "sum") {
-      const resultKind = metadata.fieldMetadata.get(field)?.sumResultKind;
-      if (resultKind === undefined) {
+      if (sumResultKind === undefined) {
         return InvalidQueryError.make({
           topic,
           message: `Grouped query aggregate ${alias} must reference a numeric field.`,
         });
       }
-      decodedAggregates[alias] = {
+      decodedAggregates[alias] = Object.freeze({
         aggFunc,
         field,
-        resultKind,
-      };
+        resultKind: sumResultKind,
+      });
     } else {
-      decodedAggregates[alias] = {
+      if (aggFunc === "avg" && sumResultKind === undefined) {
+        return InvalidQueryError.make({
+          topic,
+          message: `Grouped query aggregate ${alias} must reference a numeric field.`,
+        });
+      }
+      decodedAggregates[alias] = Object.freeze({
         aggFunc,
         field,
-      };
+      });
     }
   }
 
@@ -229,7 +268,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
             message: "Grouped query orderBy field must be present in groupBy.",
           });
         }
-        decodedOrderBy.push({ field, direction });
+        decodedOrderBy.push(Object.freeze({ field, direction }));
       } else {
         const aggregate = entry["aggregate"];
         if (typeof aggregate !== "string" || !aggregateAliases.has(aggregate)) {
@@ -238,7 +277,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
             message: "Grouped query orderBy aggregate must reference an aggregate alias.",
           });
         }
-        decodedOrderBy.push({ aggregate, direction });
+        decodedOrderBy.push(Object.freeze({ aggregate, direction }));
       }
     }
   }
@@ -259,12 +298,30 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
     });
   }
 
-  return Effect.succeed({
-    groupBy: decodedGroupBy,
-    aggregates: decodedAggregates,
-    ...(where === undefined ? {} : { where }),
-    ...(decodedOrderBy.length === 0 ? {} : { orderBy: decodedOrderBy }),
-    ...(offset === undefined ? {} : { offset }),
-    ...(limit === undefined ? {} : { limit }),
-  });
+  return Effect.succeed(
+    Object.freeze({
+      groupBy: Object.freeze(decodedGroupBy),
+      aggregates: Object.freeze(decodedAggregates),
+      ...(where === undefined ? {} : { where }),
+      ...(decodedOrderBy.length === 0 ? {} : { orderBy: Object.freeze(decodedOrderBy) }),
+      ...(offset === undefined ? {} : { offset }),
+      ...(limit === undefined ? {} : { limit }),
+    }),
+  );
 });
+
+export const decodeTypedGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.decodeTyped")(
+  function* <Row extends object, const Query extends GroupedQuery<NoInfer<Row>>>(
+    topic: string,
+    metadata: RawQueryCompilerMetadata<Row>,
+    query: Query,
+  ) {
+    const decoded = yield* decodeGroupedQuery(topic, metadata, query);
+    const typed = Object.freeze({
+      ...decoded,
+      [typedRuntimeGroupedQueryBrand]: new TypedRuntimeGroupedQueryInvariant<Row, Query>(),
+    } satisfies TypedRuntimeGroupedQuery<Row, Query>);
+    typedRuntimeGroupedQueryMetadata.set(typed, metadata);
+    return typed;
+  },
+);

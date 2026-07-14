@@ -1,19 +1,28 @@
-import { Effect } from "effect";
+import type { GroupedQuery, LiveQueryResult, RawQuery } from "@effect-view-server/config";
+import { Effect, type Schema } from "effect";
 import {
   acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
-  evaluateRawQuery,
+  evaluateRawQueryResult,
   releaseMaterializedQueryExecution,
   releaseRawQueryExecution,
 } from "./active-query";
 import {
   evaluateCompiledGroupedQuery,
   prepareGroupedQuery,
+  prepareRuntimeGroupedQuery,
   type CompiledGroupedQuery,
 } from "./grouped-query-compiler";
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
 import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
-import { prepareRawQuery, type CompiledRawQuery } from "./raw-query-compiler";
+import {
+  prepareRawQuery,
+  prepareRuntimeRawQuery,
+  rawQueryCompilerMetadataMatchesSchema,
+  type CompiledRawQuery,
+  type RawQueryCompilerMetadata,
+} from "./raw-query-compiler";
+import { InvalidQueryError } from "./raw-query-decoder";
 import type { QueryEvaluation } from "./query-result";
 import {
   topicStoreRawQueryMetadata,
@@ -23,35 +32,65 @@ import {
 
 type RowObject = object;
 
+export const topicStoreQueryMetadata = Effect.fn("ColumnLiveViewEngine.topicStore.query.metadata")(
+  function* <SchemaValue extends Schema.Codec<RowObject, unknown, never, never>>(
+    store: TopicStore,
+    schema: SchemaValue,
+  ) {
+    const metadata = topicStoreRawQueryMetadata(store);
+    if (!rawQueryCompilerMetadataMatchesSchema(metadata, schema)) {
+      return yield* InvalidQueryError.make({
+        topic: store.topic,
+        message: "Topic Store schema does not match the compiled query proof schema.",
+      });
+    }
+    return metadata;
+  },
+);
+
 export const prepareTopicStoreRawQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.prepare",
-)(function* <ResultRow extends RowObject>(store: TopicStore, query: unknown) {
-  return yield* prepareRawQuery<object, ResultRow>(
-    store.topic,
-    topicStoreRawQueryMetadata(store),
-    query,
-  );
+)(function* <Row extends RowObject, const Query extends RawQuery<NoInfer<Row>>>(
+  store: TopicStore,
+  metadata: RawQueryCompilerMetadata<Row>,
+  query: Query,
+) {
+  yield* topicStoreQueryMetadata(store, metadata.schema);
+  return yield* prepareRawQuery(store.topic, metadata, query);
+});
+
+export const prepareTopicStoreRuntimeRawQuery = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.query.raw.prepareRuntime",
+)(function* (store: TopicStore, query: unknown) {
+  return yield* prepareRuntimeRawQuery(store.topic, topicStoreRawQueryMetadata(store), query);
 });
 
 export const prepareTopicStoreGroupedQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.grouped.prepare",
-)(function* <ResultRow extends RowObject>(store: TopicStore, query: unknown) {
-  return yield* prepareGroupedQuery<object, ResultRow>(
-    store.topic,
-    topicStoreRawQueryMetadata(store),
-    query,
-  );
+)(function* <Row extends RowObject, const Query extends GroupedQuery<NoInfer<Row>>>(
+  store: TopicStore,
+  metadata: RawQueryCompilerMetadata<Row>,
+  query: Query,
+) {
+  yield* topicStoreQueryMetadata(store, metadata.schema);
+  return yield* prepareGroupedQuery(store.topic, metadata, query);
 });
 
-export const evaluateTopicStoreRawQuery = <ResultRow extends RowObject>(
+export const prepareTopicStoreRuntimeGroupedQuery = Effect.fn(
+  "ColumnLiveViewEngine.topicStore.query.grouped.prepareRuntime",
+)(function* (store: TopicStore, query: unknown) {
+  return yield* prepareRuntimeGroupedQuery(store.topic, topicStoreRawQueryMetadata(store), query);
+});
+
+export const evaluateTopicStoreRawQueryResult = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledRawQuery<object, ResultRow>,
-): QueryEvaluation<ResultRow> => evaluateRawQuery(topicStoreReadModel(store), compiled);
+): LiveQueryResult<ResultRow> => evaluateRawQueryResult(topicStoreReadModel(store), compiled);
 
 export const evaluateTopicStoreGroupedQuery = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledGroupedQuery<object, ResultRow>,
-): QueryEvaluation<ResultRow> => evaluateCompiledGroupedQuery(topicStoreReadModel(store), compiled);
+): QueryEvaluation<RowObject> => evaluateCompiledGroupedQuery(topicStoreReadModel(store), compiled);
 
 export const acquireTopicStoreRawQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.acquire",

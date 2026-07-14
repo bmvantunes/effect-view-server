@@ -7,13 +7,51 @@ import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
 
 type RowObject = object;
 
+const preparedTopicRowBrand: unique symbol = Symbol("PreparedTopicRow");
+const preparedTopicRowContexts = new WeakMap<object, TopicRowPreparationContext>();
+
+class PreparedTopicRowMarker {
+  declare private readonly authentic: true;
+}
+
+const preparedTopicRowMarker = new PreparedTopicRowMarker();
+
 export type InvalidRowErrorFactory<Error> = (topic: string, message: string) => Error;
 
 export type PreparedTopicRow = {
+  readonly [preparedTopicRowBrand]: PreparedTopicRowMarker;
   readonly changedFields?: TopicRowChangedFields;
   readonly key: string;
   readonly row: object;
   readonly source: "patch" | "row";
+};
+
+const makePreparedTopicRow = (
+  context: TopicRowPreparationContext,
+  key: string,
+  row: RowObject,
+  source: "patch" | "row",
+  changedFields?: TopicRowChangedFields,
+): PreparedTopicRow => {
+  const base = {
+    [preparedTopicRowBrand]: preparedTopicRowMarker,
+    key,
+    row: Object.freeze(row),
+    source,
+  };
+  const prepared: PreparedTopicRow =
+    changedFields === undefined ? base : { ...base, changedFields };
+  preparedTopicRowContexts.set(prepared, context);
+  return Object.freeze(prepared);
+};
+
+export const assertAuthenticPreparedTopicRow = (
+  prepared: PreparedTopicRow,
+  context: TopicRowPreparationContext,
+): void => {
+  if (preparedTopicRowContexts.get(prepared) !== context) {
+    throw new TypeError("Prepared Topic Row is not authentic.");
+  }
 };
 
 export type TopicRowPreparationContext = {
@@ -143,11 +181,7 @@ export const prepareTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.prepare"
 >(context: TopicRowPreparationContext, row: Row, invalidRow: InvalidRowErrorFactory<Error>) {
   const decoded = yield* validateDecodedTopicRow(context, row, invalidRow);
   const key = yield* topicRowKey(context, decoded, invalidRow);
-  return {
-    key,
-    row: decoded,
-    source: "row",
-  } satisfies PreparedTopicRow;
+  return makePreparedTopicRow(context, key, decoded, "row");
 });
 
 export const prepareTopicRowWithStorageKey = Effect.fn(
@@ -160,11 +194,7 @@ export const prepareTopicRowWithStorageKey = Effect.fn(
 ) {
   const decoded = yield* validateDecodedTopicRow(context, row, invalidRow);
   yield* topicRowKey(context, decoded, invalidRow);
-  return {
-    key: storageKey,
-    row: decoded,
-    source: "row",
-  } satisfies PreparedTopicRow;
+  return makePreparedTopicRow(context, storageKey, decoded, "row");
 });
 
 export const prepareDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.decoded.prepare")(
@@ -175,11 +205,7 @@ export const prepareDecodedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.d
   ) {
     const decoded = yield* normalizeDecodedTopicRow(context, row, invalidRow);
     const key = yield* topicRowKey(context, decoded, invalidRow);
-    return {
-      key,
-      row: decoded,
-      source: "row",
-    } satisfies PreparedTopicRow;
+    return makePreparedTopicRow(context, key, decoded, "row");
   },
 );
 
@@ -193,11 +219,7 @@ export const prepareDecodedTopicRowWithStorageKey = Effect.fn(
 ) {
   const decoded = yield* normalizeDecodedTopicRow(context, row, invalidRow);
   yield* topicRowKey(context, decoded, invalidRow);
-  return {
-    key: storageKey,
-    row: decoded,
-    source: "row",
-  } satisfies PreparedTopicRow;
+  return makePreparedTopicRow(context, storageKey, decoded, "row");
 });
 
 const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.preparePatched")(
@@ -226,18 +248,9 @@ const preparePatchedTopicRow = Effect.fn("ColumnLiveViewEngine.topicRow.patch.pr
       (field, left, right) => context.semantics.equivalentField(field, left, right),
     );
     if (topicRowChangedFields === undefined) {
-      return {
-        key,
-        row: decoded,
-        source: "patch",
-      } satisfies PreparedTopicRow;
+      return makePreparedTopicRow(context, key, decoded, "patch");
     }
-    return {
-      changedFields: topicRowChangedFields,
-      key,
-      row: decoded,
-      source: "patch",
-    } satisfies PreparedTopicRow;
+    return makePreparedTopicRow(context, key, decoded, "patch", topicRowChangedFields);
   },
 );
 

@@ -1,5 +1,6 @@
 import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { TopicRowEntry } from "./row-scan";
+import type { TopicStorageProjectionCapability } from "./topic-storage-projection";
 
 type RowObject = object;
 
@@ -37,7 +38,7 @@ export type TopicRawWindowScan<Row extends RowObject> = {
     plan: TopicRawWindowScanPlan<Row>,
   ) => ((leftSlot: number, rightSlot: number) => number) | undefined;
   readonly keyAtSlot?: (slot: number) => string | undefined;
-  readonly projectRawRow?: (slot: number, selectedFields: ReadonlyArray<string>) => RowObject;
+  readonly storageProjection?: TopicStorageProjectionCapability;
   readonly scanRawWindow: (plan: TopicRawWindowScanPlan<Row>) => TopicRawWindowScanResult<Row>;
   readonly slotForKey?: (key: string) => number | undefined;
 };

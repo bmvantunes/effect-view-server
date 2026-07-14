@@ -6,7 +6,7 @@ import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { canonicalRawQueryFilterKey } from "./raw-query-value-semantics";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
-import { rawQueryResultSemantics, type QueryResultSemantics } from "./query-result-semantics";
+import type { TopicStorageProjectableQueryResultSemantics } from "./query-result-semantics";
 import { trustedFieldValue } from "./row-values";
 
 type RowObject = object;
@@ -28,7 +28,7 @@ export type RawQueryPlan<Row extends RowObject, ResultRow extends RowObject> = {
   readonly storageOrderBy?: ReadonlyArray<TopicRawOrderByPlan>;
   readonly compare: (left: TopicRowEntry<Row>, right: TopicRowEntry<Row>) => number;
   readonly project: (row: Row) => ResultRow;
-  readonly resultSemantics: QueryResultSemantics;
+  readonly resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>;
   readonly window: RawQueryPlanWindow;
 };
 
@@ -73,14 +73,12 @@ const rawQueryWindowCacheKey = (offset: number, limit: number | undefined): stri
   return JSON.stringify(token);
 };
 
-export const rawQueryPlanWindow = (
-  offset: number,
-  limit: number | undefined,
-): RawQueryPlanWindow => ({
-  cacheKey: rawQueryWindowCacheKey(offset, limit),
-  offset,
-  limit,
-});
+export const rawQueryPlanWindow = (offset: number, limit: number | undefined): RawQueryPlanWindow =>
+  Object.freeze({
+    cacheKey: rawQueryWindowCacheKey(offset, limit),
+    offset,
+    limit,
+  });
 
 const rawQueryPlanWindowFromQuery = (query: RuntimeRawQuery): RawQueryPlanWindow =>
   rawQueryPlanWindow(query.offset ?? 0, query.limit);
@@ -185,10 +183,14 @@ const compiledRawRowOrder = <Row extends RowObject>(
   metadata: RawQueryCompilerMetadata,
   orderBy: ReadonlyArray<TopicRawOrderByPlan>,
 ): ReadonlyArray<RawRowOrderColumn<Row>> =>
-  orderBy.map((order) => ({
-    compareRows: rawRowOrderColumnComparator<Row>(metadata, order.field),
-    direction: order.direction,
-  }));
+  Object.freeze(
+    orderBy.map((order) =>
+      Object.freeze({
+        compareRows: rawRowOrderColumnComparator<Row>(metadata, order.field),
+        direction: order.direction,
+      }),
+    ),
+  );
 
 const compareRows = <Row extends RowObject>(
   left: TopicRowEntry<Row>,
@@ -204,38 +206,38 @@ const compareRows = <Row extends RowObject>(
   return Number(left.key > right.key) - Number(left.key < right.key);
 };
 
-const projectRow = (row: RowObject, semantics: QueryResultSemantics): RowObject =>
-  semantics.projectRow(row);
-
-function projectCompiledRow<ResultRow extends RowObject>(
-  row: RowObject,
-  semantics: QueryResultSemantics,
-): ResultRow;
-function projectCompiledRow(row: RowObject, semantics: QueryResultSemantics): RowObject {
-  return projectRow(row, semantics);
-}
-
-export const makeRawQueryPlan = <Row extends RowObject, ResultRow extends RowObject>(
-  metadata: RawQueryCompilerMetadata,
+export const makeRawQueryPlan = <
+  Row extends RowObject,
+  ResultRow extends RowObject,
+  SchemaRow extends RowObject = RowObject,
+>(
+  metadata: RawQueryCompilerMetadata<SchemaRow>,
   query: RuntimeRawQuery,
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
 ): RawQueryPlan<Row, ResultRow> => {
-  const orderBy = query.orderBy ?? [];
+  const orderBy = Object.freeze(
+    (query.orderBy ?? []).map((order) =>
+      Object.freeze({
+        field: order.field,
+        direction: order.direction,
+      }),
+    ),
+  );
   const rowOrderBy = compiledRawRowOrder<Row>(metadata, orderBy);
-  const selectedFields = [...query.select];
-  const resultSemantics = rawQueryResultSemantics(metadata.valueSemantics, selectedFields);
+  const selectedFields = Object.freeze([...query.select]);
   const predicate = compileRawPredicate<Row>(metadata, query.where);
   const storageOrder = storageOrderBy(metadata, orderBy);
-  return {
+  return Object.freeze({
     queryCacheKey: rawQueryShapeCacheKey(metadata, query),
     selectedFields,
     predicate,
     orderBy,
     ...(storageOrder === undefined ? {} : { storageOrderBy: storageOrder }),
     compare: (left, right) => compareRows(left, right, rowOrderBy),
-    project: (row) => projectCompiledRow(row, resultSemantics),
+    project: resultSemantics.projectRow,
     resultSemantics,
     window: rawQueryPlanWindowFromQuery(query),
-  };
+  });
 };
 
 export const rawQueryWindowScanPlan = <Row extends RowObject, ResultRow extends RowObject>(

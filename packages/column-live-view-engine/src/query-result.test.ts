@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { deltaOperations, liveQueryResult, type QueryEvaluation } from "./query-result";
 import { makeQueryResultSemantics } from "./query-result-semantics";
@@ -39,7 +39,6 @@ describe("query results", () => {
 
     const result = liveQueryResult(evaluation([row], 1), testResultSemantics);
 
-    expectTypeOf(result.rows).toEqualTypeOf<ReadonlyArray<TestRow>>();
     expect(result.rows).toStrictEqual([{ id: "row-1", value: 1 }]);
     expect(Object.is(result.rows[0], row)).toBe(false);
     expect(unrelatedReads).toBe(0);

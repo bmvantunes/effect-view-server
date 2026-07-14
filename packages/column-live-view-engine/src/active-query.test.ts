@@ -1,6 +1,6 @@
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Option, Result, Schema } from "effect";
 import {
   acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
@@ -10,8 +10,8 @@ import {
   releaseRawQueryExecution,
 } from "./active-query";
 import { replaceRetainedMatchingEntryAtIndex } from "./active-raw-query";
-import { prepareGroupedQuery } from "./grouped-query-compiler";
-import { prepareRawQuery } from "./raw-query-compiler";
+import { prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
+import { prepareRuntimeRawQuery } from "./raw-query-compiler";
 import { makeQueryResultSemantics } from "./query-result-semantics";
 import {
   deleteTopicStoreRow,
@@ -82,7 +82,7 @@ describe("column-live-view-engine active query execution", () => {
         invalidRow,
       );
 
-      const compiled = yield* prepareRawQuery("scores", topicStoreRawQueryMetadata(store), {
+      const compiled = yield* prepareRuntimeRawQuery("scores", topicStoreRawQueryMetadata(store), {
         select: ["id", "score", "count", "value"],
         where: {
           status: "open",
@@ -97,6 +97,8 @@ describe("column-live-view-engine active query execution", () => {
 
       const firstExecution = yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
       const secondExecution = yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
+      expect(Object.isFrozen(firstExecution)).toBe(true);
+      expect(() => Object.assign(firstExecution, secondExecution)).toThrowError(TypeError);
       expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store))).toBe(1);
 
       const firstCursor = firstExecution.createCursor();
@@ -153,6 +155,121 @@ describe("column-live-view-engine active query execution", () => {
     }),
   );
 
+  it.effect("binds a storage projection once per raw execution lease", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore(
+        "projection-bind-frequency",
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.Number,
+        }),
+        "id",
+        () => {},
+      );
+      yield* publishTopicStoreRow(store, { id: "a", score: 1 }, invalidRow);
+      const readModel = topicStoreReadModel(store);
+      const storageProjection = Option.getOrThrow(
+        Option.fromUndefinedOr(readModel.storageProjection),
+      );
+      let projectionReads = 0;
+      const observedReadModel = {
+        ...readModel,
+        get storageProjection() {
+          projectionReads += 1;
+          return storageProjection;
+        },
+      };
+      const compiled = yield* prepareRuntimeRawQuery(
+        "projection-bind-frequency",
+        topicStoreRawQueryMetadata(store),
+        { select: ["id", "score"] },
+      );
+
+      const execution = yield* acquireRawQueryExecution(observedReadModel, compiled);
+      const cursor = execution.createCursor();
+      expect(execution.initial("query").rows).toStrictEqual([{ id: "a", score: 1 }]);
+      expect((yield* execution.next("query", cursor))._tag).toBe("None");
+      yield* publishTopicStoreRow(store, { id: "b", score: 2 }, invalidRow);
+      expect((yield* execution.next("query", cursor))._tag).toBe("Some");
+      expect(projectionReads).toBe(1);
+
+      yield* releaseRawQueryExecution(observedReadModel, compiled);
+    }),
+  );
+
+  it.effect("rejects incompatible projection proofs before acquiring raw execution ownership", () =>
+    Effect.gen(function* () {
+      const target = new TopicStore(
+        "projection-ownership-target",
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.Number,
+        }),
+        "id",
+        () => {},
+      );
+      const incompatible = new TopicStore(
+        "projection-ownership-incompatible",
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.String,
+        }),
+        "id",
+        () => {},
+      );
+      const targetReadModel = topicStoreReadModel(target);
+      const targetCompiled = yield* prepareRuntimeRawQuery(
+        "projection-ownership-target",
+        topicStoreRawQueryMetadata(target),
+        { select: ["id"] },
+      );
+      const incompatibleCompiled = yield* prepareRuntimeRawQuery(
+        "projection-ownership-incompatible",
+        topicStoreRawQueryMetadata(incompatible),
+        { select: ["id"] },
+      );
+
+      const emptyRegistryExit = yield* Effect.exit(
+        acquireRawQueryExecution(targetReadModel, incompatibleCompiled),
+      );
+      const emptyRegistryError = Exit.match(emptyRegistryExit, {
+        onFailure: (cause) =>
+          Result.match(Cause.findDefect(cause), {
+            onFailure: () => "missing projection binding error",
+            onSuccess: (defect) =>
+              defect instanceof Error ? defect.message : "unexpected non-error defect",
+          }),
+        onSuccess: () => "unexpected projection binding success",
+      });
+      expect(emptyRegistryError).toBe(
+        "Topic Storage projection schema does not match its compiled proof.",
+      );
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(0);
+
+      yield* acquireRawQueryExecution(targetReadModel, targetCompiled);
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(1);
+      const existingEntryExit = yield* Effect.exit(
+        acquireRawQueryExecution(targetReadModel, incompatibleCompiled),
+      );
+      const existingEntryError = Exit.match(existingEntryExit, {
+        onFailure: (cause) =>
+          Result.match(Cause.findDefect(cause), {
+            onFailure: () => "missing projection binding error",
+            onSuccess: (defect) =>
+              defect instanceof Error ? defect.message : "unexpected non-error defect",
+          }),
+        onSuccess: () => "unexpected projection binding success",
+      });
+      expect(existingEntryError).toBe(
+        "Topic Storage projection schema does not match its compiled proof.",
+      );
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(1);
+
+      yield* releaseRawQueryExecution(targetReadModel, targetCompiled);
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(0);
+    }),
+  );
+
   it.effect("keeps execution caches local to the active query registry", () =>
     Effect.gen(function* () {
       const store = new TopicStore(
@@ -166,7 +283,7 @@ describe("column-live-view-engine active query execution", () => {
       );
       yield* publishTopicStoreRow(store, { id: "a", score: 1 }, invalidRow);
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "registry-isolation",
         topicStoreRawQueryMetadata(store),
         {
@@ -224,12 +341,17 @@ describe("column-live-view-engine active query execution", () => {
         patchedEvaluationCount: 0,
       });
 
-      yield* acquireMaterializedQueryExecution(readModel, "grouped", emptyResultSemantics, () => ({
-        diagnostics: emptyDiagnostics,
-        incremental: false,
-        latest: () => emptyEvaluation(readModel.version()),
-      }));
-      yield* acquireMaterializedQueryExecution(
+      const firstExecution = yield* acquireMaterializedQueryExecution(
+        readModel,
+        "grouped",
+        emptyResultSemantics,
+        () => ({
+          diagnostics: emptyDiagnostics,
+          incremental: false,
+          latest: () => emptyEvaluation(readModel.version()),
+        }),
+      );
+      const secondExecution = yield* acquireMaterializedQueryExecution(
         isolatedReadModel,
         "grouped",
         emptyResultSemantics,
@@ -240,6 +362,8 @@ describe("column-live-view-engine active query execution", () => {
         }),
       );
 
+      expect(Object.isFrozen(firstExecution)).toBe(true);
+      expect(() => Object.assign(firstExecution, secondExecution)).toThrowError(TypeError);
       expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);
       expect(yield* activeStoreRawQueryExecutionCount(isolatedReadModel)).toBe(1);
 
@@ -267,7 +391,7 @@ describe("column-live-view-engine active query execution", () => {
       yield* publishTopicStoreRow(store, { id: "a", status: "open", score: 1 }, invalidRow);
       yield* publishTopicStoreRow(store, { id: "b", status: "open", score: 2 }, invalidRow);
 
-      const idOnly = yield* prepareRawQuery(
+      const idOnly = yield* prepareRuntimeRawQuery(
         "projection-sharing",
         topicStoreRawQueryMetadata(store),
         {
@@ -278,7 +402,7 @@ describe("column-live-view-engine active query execution", () => {
           orderBy: [{ field: "score", direction: "desc" }],
         },
       );
-      const idAndScore = yield* prepareRawQuery(
+      const idAndScore = yield* prepareRuntimeRawQuery(
         "projection-sharing",
         topicStoreRawQueryMetadata(store),
         {
@@ -325,7 +449,7 @@ describe("column-live-view-engine active query execution", () => {
       yield* publishTopicStoreRow(store, { id: "b", status: "open", score: 2 }, invalidRow);
       yield* publishTopicStoreRow(store, { id: "c", status: "open", score: 3 }, invalidRow);
 
-      const firstWindow = yield* prepareRawQuery(
+      const firstWindow = yield* prepareRuntimeRawQuery(
         "window-sharing",
         topicStoreRawQueryMetadata(store),
         {
@@ -338,7 +462,7 @@ describe("column-live-view-engine active query execution", () => {
           limit: 1,
         },
       );
-      const secondWindow = yield* prepareRawQuery(
+      const secondWindow = yield* prepareRuntimeRawQuery(
         "window-sharing",
         topicStoreRawQueryMetadata(store),
         {
@@ -461,7 +585,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-insert-incremental",
         topicStoreRawQueryMetadata(store),
         {
@@ -537,7 +661,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-insert-incremental-count-only",
         topicStoreRawQueryMetadata(store),
         {
@@ -589,7 +713,7 @@ describe("column-live-view-engine active query execution", () => {
       yield* publishTopicStoreRow(store, { id: "c", status: "open", score: 3 }, invalidRow);
 
       const readModel = topicStoreReadModel(store);
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-insert-reset-release",
         topicStoreRawQueryMetadata(store),
         {
@@ -640,7 +764,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-match-update-move-up",
         topicStoreRawQueryMetadata(store),
         {
@@ -717,7 +841,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-match-update-move-down-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -792,7 +916,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-match-update-unlimited-move-down",
         topicStoreRawQueryMetadata(store),
         {
@@ -870,7 +994,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         };
 
-        const compiled = yield* prepareRawQuery(
+        const compiled = yield* prepareRuntimeRawQuery(
           "raw-match-update-batched-replacements",
           topicStoreRawQueryMetadata(store),
           {
@@ -963,7 +1087,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-match-update-remove-before-replace",
         topicStoreRawQueryMetadata(store),
         {
@@ -1055,7 +1179,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-match-update-outside-lookahead-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -1131,7 +1255,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-match-update-tail-worsens-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -1209,7 +1333,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-pending-insert-match-update",
         topicStoreRawQueryMetadata(store),
         {
@@ -1285,7 +1409,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-unavailable-changes-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -1351,7 +1475,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-mixed-insert-incremental",
         topicStoreRawQueryMetadata(store),
         {
@@ -1425,7 +1549,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         };
 
-        const compiled = yield* prepareRawQuery(
+        const compiled = yield* prepareRuntimeRawQuery(
           "raw-zero-limit-incremental",
           topicStoreRawQueryMetadata(store),
           {
@@ -1494,7 +1618,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-non-matching-change-incremental",
         topicStoreRawQueryMetadata(store),
         {
@@ -1560,7 +1684,7 @@ describe("column-live-view-engine active query execution", () => {
       yield* publishTopicStoreRow(store, { id: "a", status: "open", score: 1 }, invalidRow);
       yield* publishTopicStoreRow(store, { id: "b", status: "open", score: 2 }, invalidRow);
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-retained-insert-slot-sort",
         topicStoreRawQueryMetadata(store),
         {
@@ -1621,7 +1745,7 @@ describe("column-live-view-engine active query execution", () => {
       yield* publishTopicStoreRow(store, { id: "a", status: "open", score: 1 }, invalidRow);
       yield* publishTopicStoreRow(store, { id: "b", status: "open", score: 2 }, invalidRow);
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-retained-insert-row-sort-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -1684,7 +1808,7 @@ describe("column-live-view-engine active query execution", () => {
       yield* publishTopicStoreRow(store, { id: "a", status: "open", score: 1 }, invalidRow);
       yield* publishTopicStoreRow(store, { id: "b", status: "open", score: 2 }, invalidRow);
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-retained-insert-missing-slot-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -1755,7 +1879,7 @@ describe("column-live-view-engine active query execution", () => {
         );
 
         const readModel = topicStoreReadModel(store);
-        const compiled = yield* prepareRawQuery(
+        const compiled = yield* prepareRuntimeRawQuery(
           "raw-noop-then-visible-version",
           topicStoreRawQueryMetadata(store),
           {
@@ -1842,7 +1966,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-retained-update-enters-predicate",
         topicStoreRawQueryMetadata(store),
         {
@@ -1917,7 +2041,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-same-key-pending-insert-removed",
         topicStoreRawQueryMetadata(store),
         {
@@ -1972,7 +2096,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-retained-removal-consumes-lookahead",
         topicStoreRawQueryMetadata(store),
         {
@@ -2079,7 +2203,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         };
 
-        const compiled = yield* prepareRawQuery(
+        const compiled = yield* prepareRuntimeRawQuery(
           "raw-retained-exhausted-lookahead-rejects-later-insert",
           topicStoreRawQueryMetadata(store),
           {
@@ -2199,7 +2323,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         };
 
-        const compiled = yield* prepareRawQuery(
+        const compiled = yield* prepareRuntimeRawQuery(
           "raw-delete-outside-retained-window",
           topicStoreRawQueryMetadata(store),
           {
@@ -2263,7 +2387,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         };
 
-        const compiled = yield* prepareRawQuery(
+        const compiled = yield* prepareRuntimeRawQuery(
           "raw-zero-limit-mixed-incremental",
           topicStoreRawQueryMetadata(store),
           {
@@ -2333,7 +2457,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-visible-delete-fallback",
         topicStoreRawQueryMetadata(store),
         {
@@ -2409,7 +2533,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const compiled = yield* prepareRawQuery(
+      const compiled = yield* prepareRuntimeRawQuery(
         "raw-visible-delete-exhausted-lookahead",
         topicStoreRawQueryMetadata(store),
         {
@@ -2501,7 +2625,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const wideCompiled = yield* prepareRawQuery(
+      const wideCompiled = yield* prepareRuntimeRawQuery(
         "raw-visible-delete-shared-wide-lookahead",
         topicStoreRawQueryMetadata(store),
         {
@@ -2513,7 +2637,7 @@ describe("column-live-view-engine active query execution", () => {
           limit: 128,
         },
       );
-      const narrowCompiled = yield* prepareRawQuery(
+      const narrowCompiled = yield* prepareRuntimeRawQuery(
         "raw-visible-delete-shared-wide-lookahead",
         topicStoreRawQueryMetadata(store),
         {
@@ -2620,7 +2744,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         };
 
-        const wideCompiled = yield* prepareRawQuery(
+        const wideCompiled = yield* prepareRuntimeRawQuery(
           "raw-visible-delete-insert-preserves-lookahead",
           topicStoreRawQueryMetadata(store),
           {
@@ -2632,7 +2756,7 @@ describe("column-live-view-engine active query execution", () => {
             limit: 128,
           },
         );
-        const narrowCompiled = yield* prepareRawQuery(
+        const narrowCompiled = yield* prepareRuntimeRawQuery(
           "raw-visible-delete-insert-preserves-lookahead",
           topicStoreRawQueryMetadata(store),
           {
@@ -2789,7 +2913,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const wideWindow = yield* prepareRawQuery(
+      const wideWindow = yield* prepareRuntimeRawQuery(
         "window-shrink",
         topicStoreRawQueryMetadata(store),
         {
@@ -2802,7 +2926,7 @@ describe("column-live-view-engine active query execution", () => {
           limit: 3,
         },
       );
-      const narrowWindow = yield* prepareRawQuery(
+      const narrowWindow = yield* prepareRuntimeRawQuery(
         "window-shrink",
         topicStoreRawQueryMetadata(store),
         {
@@ -2856,7 +2980,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const boundedWindow = yield* prepareRawQuery(
+      const boundedWindow = yield* prepareRuntimeRawQuery(
         "window-unbounded",
         topicStoreRawQueryMetadata(store),
         {
@@ -2869,7 +2993,7 @@ describe("column-live-view-engine active query execution", () => {
           limit: 1,
         },
       );
-      const unboundedWindow = yield* prepareRawQuery(
+      const unboundedWindow = yield* prepareRuntimeRawQuery(
         "window-unbounded",
         topicStoreRawQueryMetadata(store),
         {
@@ -2923,7 +3047,7 @@ describe("column-live-view-engine active query execution", () => {
         },
       };
 
-      const zeroWindow = yield* prepareRawQuery(
+      const zeroWindow = yield* prepareRuntimeRawQuery(
         "window-zero-limit",
         topicStoreRawQueryMetadata(store),
         {
@@ -2956,7 +3080,7 @@ describe("column-live-view-engine active query execution", () => {
         "id",
         () => {},
       );
-      const compiled = yield* prepareRawQuery("numbers", topicStoreRawQueryMetadata(store), {
+      const compiled = yield* prepareRuntimeRawQuery("numbers", topicStoreRawQueryMetadata(store), {
         select: ["id"],
         where: {
           score: 1,
@@ -2996,7 +3120,7 @@ describe("column-live-view-engine active query execution", () => {
         invalidRow,
       );
 
-      const infFilter = yield* prepareRawQuery(
+      const infFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         topicStoreRawQueryMetadata(numericStore),
         {
@@ -3006,7 +3130,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const nanFilter = yield* prepareRawQuery(
+      const nanFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         topicStoreRawQueryMetadata(numericStore),
         {
@@ -3016,7 +3140,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const zeroFilter = yield* prepareRawQuery(
+      const zeroFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         topicStoreRawQueryMetadata(numericStore),
         {
@@ -3026,7 +3150,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const positiveZeroFilter = yield* prepareRawQuery(
+      const positiveZeroFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         topicStoreRawQueryMetadata(numericStore),
         {
@@ -3036,7 +3160,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const negativeZeroFilter = yield* prepareRawQuery(
+      const negativeZeroFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         topicStoreRawQueryMetadata(numericStore),
         {
@@ -3046,7 +3170,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const offsetFilter = yield* prepareRawQuery(
+      const offsetFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         topicStoreRawQueryMetadata(numericStore),
         {
@@ -3054,7 +3178,7 @@ describe("column-live-view-engine active query execution", () => {
           offset: 1,
         },
       );
-      const bigIntFilter = yield* prepareRawQuery(
+      const bigIntFilter = yield* prepareRuntimeRawQuery(
         "bigints",
         topicStoreRawQueryMetadata(bigintStore),
         {
@@ -3064,7 +3188,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const decimalFilter = yield* prepareRawQuery(
+      const decimalFilter = yield* prepareRuntimeRawQuery(
         "decimals",
         topicStoreRawQueryMetadata(decimalStore),
         {
@@ -3168,7 +3292,7 @@ describe("column-live-view-engine active query execution", () => {
         invalidRow,
       );
 
-      const undefinedFilter = yield* prepareRawQuery(
+      const undefinedFilter = yield* prepareRuntimeRawQuery(
         "events",
         topicStoreRawQueryMetadata(eventStore),
         {
@@ -3178,19 +3302,27 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const nullFilter = yield* prepareRawQuery("events", topicStoreRawQueryMetadata(eventStore), {
-        select: ["id", "label"],
-        where: {
-          label: null,
+      const nullFilter = yield* prepareRuntimeRawQuery(
+        "events",
+        topicStoreRawQueryMetadata(eventStore),
+        {
+          select: ["id", "label"],
+          where: {
+            label: null,
+          },
         },
-      });
-      const arrayFilter = yield* prepareRawQuery("events", topicStoreRawQueryMetadata(eventStore), {
-        select: ["id", "tags"],
-        where: {
-          tags: ["open", "closed"],
+      );
+      const arrayFilter = yield* prepareRuntimeRawQuery(
+        "events",
+        topicStoreRawQueryMetadata(eventStore),
+        {
+          select: ["id", "tags"],
+          where: {
+            tags: ["open", "closed"],
+          },
         },
-      });
-      const objectFilter = yield* prepareRawQuery(
+      );
+      const objectFilter = yield* prepareRuntimeRawQuery(
         "events",
         topicStoreRawQueryMetadata(eventStore),
         {
@@ -3200,7 +3332,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const booleanFilter = yield* prepareRawQuery(
+      const booleanFilter = yield* prepareRuntimeRawQuery(
         "events",
         topicStoreRawQueryMetadata(eventStore),
         {
@@ -3273,7 +3405,7 @@ describe("column-live-view-engine active query execution", () => {
         "id",
         () => {},
       );
-      const splitFieldsQuery = yield* prepareRawQuery(
+      const splitFieldsQuery = yield* prepareRuntimeRawQuery(
         "delimiter-fields",
         topicStoreRawQueryMetadata(store),
         {
@@ -3290,7 +3422,7 @@ describe("column-live-view-engine active query execution", () => {
           ],
         },
       );
-      const delimiterFieldQuery = yield* prepareRawQuery(
+      const delimiterFieldQuery = yield* prepareRuntimeRawQuery(
         "delimiter-fields",
         topicStoreRawQueryMetadata(store),
         {
@@ -3328,7 +3460,7 @@ describe("column-live-view-engine active query execution", () => {
       const queryPayload: Record<string, string> = Object.create(null);
       queryPayload["venue"] = "xnys";
 
-      const nullPrototypeQuery = yield* prepareRawQuery(
+      const nullPrototypeQuery = yield* prepareRuntimeRawQuery(
         "special",
         topicStoreRawQueryMetadata(store),
         {
@@ -3338,7 +3470,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const plainRecordQuery = yield* prepareRawQuery(
+      const plainRecordQuery = yield* prepareRuntimeRawQuery(
         "special",
         topicStoreRawQueryMetadata(store),
         {
@@ -3348,7 +3480,7 @@ describe("column-live-view-engine active query execution", () => {
           },
         },
       );
-      const nullPrototypeGrouped = yield* prepareGroupedQuery<object, object>(
+      const nullPrototypeGrouped = yield* prepareRuntimeGroupedQuery(
         "special",
         topicStoreRawQueryMetadata(store),
         {
@@ -3357,7 +3489,7 @@ describe("column-live-view-engine active query execution", () => {
           where: { payload: queryPayload },
         },
       );
-      const plainRecordGrouped = yield* prepareGroupedQuery<object, object>(
+      const plainRecordGrouped = yield* prepareRuntimeGroupedQuery(
         "special",
         topicStoreRawQueryMetadata(store),
         {
@@ -3367,9 +3499,6 @@ describe("column-live-view-engine active query execution", () => {
         },
       );
 
-      expect(nullPrototypeQuery.query.where).toStrictEqual({
-        payload: { venue: "xnys" },
-      });
       expect(nullPrototypeQuery.plan.queryCacheKey).toBe(plainRecordQuery.plan.queryCacheKey);
       expect(nullPrototypeGrouped.cacheKey).toBe(plainRecordGrouped.cacheKey);
     }),
@@ -3391,7 +3520,7 @@ describe("column-live-view-engine active query execution", () => {
       );
 
       const functionFilter = yield* Effect.flip(
-        prepareRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
+        prepareRuntimeRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
           select: ["id", "marker"],
           where: {
             marker: firstFunction,
@@ -3404,7 +3533,7 @@ describe("column-live-view-engine active query execution", () => {
       });
 
       const symbolFilter = yield* Effect.flip(
-        prepareRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
+        prepareRuntimeRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
           select: ["id", "marker"],
           where: {
             marker: firstSymbol,
@@ -3417,7 +3546,7 @@ describe("column-live-view-engine active query execution", () => {
       });
 
       const mapFilter = yield* Effect.flip(
-        prepareRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
+        prepareRuntimeRawQuery("special-non-serializable", topicStoreRawQueryMetadata(store), {
           select: ["id", "marker"],
           where: {
             marker: firstMap,

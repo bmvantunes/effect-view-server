@@ -1,5 +1,6 @@
 import { Effect, Result, Schema } from "effect";
 import { isBigDecimal } from "effect/BigDecimal";
+import type { RawQuery } from "@effect-view-server/config";
 import { isRawQueryRangeFilterOperatorKey } from "@effect-view-server/config/internal";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
@@ -24,6 +25,28 @@ export type RuntimeRawQuery = {
   readonly offset?: number;
   readonly limit?: number;
 };
+
+const typedRuntimeRawQueryBrand: unique symbol = Symbol("TypedRuntimeRawQuery");
+const typedRuntimeRawQueryMetadata = new WeakMap<object, RawQueryCompilerMetadata>();
+
+class TypedRuntimeRawQueryInvariant<Row, Query> {
+  declare private readonly input: (value: { readonly query: Query; readonly row: Row }) => {
+    readonly query: Query;
+    readonly row: Row;
+  };
+}
+
+export type TypedRuntimeRawQuery<
+  Row extends object,
+  Query extends RawQuery<Row>,
+> = RuntimeRawQuery & {
+  readonly [typedRuntimeRawQueryBrand]: TypedRuntimeRawQueryInvariant<Row, Query>;
+};
+
+export const typedRuntimeRawQueryMatchesSemantics = (
+  query: object,
+  valueSemantics: object,
+): boolean => typedRuntimeRawQueryMetadata.get(query)?.valueSemantics === valueSemantics;
 
 const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "select"]);
 export { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
@@ -97,7 +120,7 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
         writable: true,
       });
     }
-    normalizedWhere = candidate;
+    normalizedWhere = Object.freeze(candidate);
   }
 
   const orderBy = query["orderBy"];
@@ -155,13 +178,13 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
   }
 
   const decoded: {
-    select: Array<string>;
+    select: ReadonlyArray<string>;
     where?: Record<string, unknown>;
-    orderBy?: Array<{ readonly field: string; readonly direction: "asc" | "desc" }>;
+    orderBy?: ReadonlyArray<{ readonly field: string; readonly direction: "asc" | "desc" }>;
     offset?: number;
     limit?: number;
   } = {
-    select: selectedFields,
+    select: Object.freeze(selectedFields),
   };
 
   if (normalizedWhere !== undefined) {
@@ -210,18 +233,31 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
           message: "Raw query orderBy direction must be asc or desc.",
         });
       }
-      clonedOrderBy.push({
-        field,
-        direction,
-      });
+      clonedOrderBy.push(Object.freeze({ field, direction }));
     }
   }
   if (clonedOrderBy.length > 0) {
-    decoded.orderBy = clonedOrderBy;
+    decoded.orderBy = Object.freeze(clonedOrderBy);
   }
 
-  return Effect.succeed(decoded);
+  return Effect.succeed(Object.freeze(decoded));
 });
+
+export const decodeTypedRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decodeTyped")(
+  function* <Row extends object, const Query extends RawQuery<NoInfer<Row>>>(
+    topic: string,
+    metadata: RawQueryCompilerMetadata<Row>,
+    query: Query,
+  ) {
+    const decoded = yield* decodeRawQuery(topic, metadata, query);
+    const typed = Object.freeze({
+      ...decoded,
+      [typedRuntimeRawQueryBrand]: new TypedRuntimeRawQueryInvariant<Row, Query>(),
+    } satisfies TypedRuntimeRawQuery<Row, Query>);
+    typedRuntimeRawQueryMetadata.set(typed, metadata);
+    return typed;
+  },
+);
 
 export const validateRuntimeQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.validate")(function* (
   topic: string,

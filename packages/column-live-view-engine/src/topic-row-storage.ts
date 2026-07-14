@@ -16,7 +16,7 @@ import type {
 } from "./raw-window-scan";
 import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { OrderedSlotIndex, RawStorageOrderColumn } from "./topic-ordered-window";
-import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-compiler";
+import { rawQueryCompilerMetadata, type RawQueryCompilerMetadata } from "./raw-query-metadata";
 import { trustedFieldValue } from "./row-values";
 import {
   columnValue,
@@ -34,6 +34,7 @@ import {
 } from "./topic-row-change-journal";
 import { deleteCompactingTopicRowSlot } from "./topic-row-storage-lifecycle";
 import {
+  assertAuthenticPreparedTopicRow,
   prepareDecodedTopicPatch,
   prepareDecodedTopicRow,
   prepareDecodedTopicRowWithStorageKey,
@@ -58,6 +59,10 @@ import {
   compiledRawStorageOrder,
 } from "./topic-raw-ordered-window-index";
 import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
+import {
+  makeTopicStorageProjectionCapability,
+  type TopicStorageProjectionCapability,
+} from "./topic-storage-projection";
 
 type RowObject = object;
 
@@ -81,7 +86,9 @@ const noopAppendBatchReservation: AppendBatchReservation = {
 
 export class TopicRowStorage {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
-  readonly readModel: ActiveQueryStoreState;
+  readonly readModel: ActiveQueryStoreState & {
+    readonly storageProjection: TopicStorageProjectionCapability;
+  };
   readonly valueSemantics: TopicRowValueSemantics;
 
   private readonly slots: Array<TopicRowEntry<object>> = [];
@@ -126,13 +133,13 @@ export class TopicRowStorage {
       scalarPredicateIndexes: this.scalarPredicateIndexes,
       slots: this.slots,
     };
-    this.rowPreparation = {
+    this.rowPreparation = Object.freeze({
       fieldNames: this.rawQueryMetadata.fieldNames,
       keyField,
       schema,
       semantics: this.valueSemantics,
       topic,
-    };
+    });
     for (const field of this.rawQueryMetadata.fieldNames) {
       const column = createTopicColumnValues(field, this.rawQueryMetadata);
       this.columns.set(field, column);
@@ -151,7 +158,13 @@ export class TopicRowStorage {
       changesSince: (version) => this.changesSince(version),
       compareRawSlots: (plan) => this.compareRawSlots(plan),
       keyAtSlot: (slot) => this.keyAtSlot(slot),
-      projectRawRow: (slot, selectedFields) => this.projectRawRow(slot, selectedFields),
+      storageProjection: makeTopicStorageProjectionCapability(
+        this.valueSemantics,
+        (selectedFields) => {
+          const projectionPlan = this.#rawProjectionPlan(selectedFields);
+          return (slot) => this.#projectRawRow(slot, projectionPlan);
+        },
+      ),
       releaseChanges: () => this.releaseChanges(),
       retainChanges: () => this.retainChanges(),
       scanRows: (visitor) => this.scanRows(visitor),
@@ -188,6 +201,7 @@ export class TopicRowStorage {
   }
 
   setPrepared(prepared: PreparedTopicRow): number {
+    assertAuthenticPreparedTopicRow(prepared, this.rowPreparation);
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
       const replacement = this.preparedReplacementForCurrentSlot(prepared, existingSlot);
@@ -217,6 +231,9 @@ export class TopicRowStorage {
   }
 
   setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>): number {
+    for (const prepared of preparedRows) {
+      assertAuthenticPreparedTopicRow(prepared, this.rowPreparation);
+    }
     const appendReservation = this.createAppendBatchReservation(preparedRows);
     if (preparedRows.length > 1 && this.orderedSlotIndexes.size > 0) {
       this.orderedSlotIndexes.clear();
@@ -295,20 +312,24 @@ export class TopicRowStorage {
       compareSlotsByStorageOrder(this.rawWindowScanState, left, right, orderColumns);
   }
 
-  private projectRawRow(slot: number, selectedFields: ReadonlyArray<string>): RowObject {
+  #projectRawRow(slot: number, projectionPlan: ReadonlyArray<RawProjectionColumn>): RowObject {
     const projected: Record<string, unknown> = {};
     const row = this.slots[slot]!.row;
-    for (const projection of this.rawProjectionPlan(selectedFields)) {
+    for (const projection of projectionPlan) {
       if (!Object.prototype.propertyIsEnumerable.call(row, projection.field)) {
         continue;
       }
       const value = columnValue(projection.column, slot);
-      Object.defineProperty(projected, projection.field, {
-        configurable: true,
-        enumerable: true,
-        value,
-        writable: true,
-      });
+      if (projection.field === "__proto__") {
+        Object.defineProperty(projected, projection.field, {
+          configurable: true,
+          enumerable: true,
+          value,
+          writable: true,
+        });
+      } else {
+        projected[projection.field] = value;
+      }
     }
     return projected;
   }
@@ -413,21 +434,20 @@ export class TopicRowStorage {
   );
 
   private writeSlot(slot: number, prepared: PreparedTopicRow): void {
+    const row = prepared.row;
     this.slots[slot] = {
       key: prepared.key,
-      row: prepared.row,
+      row,
     };
     for (let index = 0; index < this.columnWritePlan.length; index += 1) {
       this.columnWritePlan[index]!.set(
         slot,
-        trustedFieldValue(prepared.row, this.columnWriteFields[index]!),
+        trustedFieldValue(row, this.columnWriteFields[index]!),
       );
     }
   }
 
-  private rawProjectionPlan(
-    selectedFields: ReadonlyArray<string>,
-  ): ReadonlyArray<RawProjectionColumn> {
+  #rawProjectionPlan(selectedFields: ReadonlyArray<string>): ReadonlyArray<RawProjectionColumn> {
     const cached = this.rawProjectionPlans.get(selectedFields);
     if (cached !== undefined) {
       return cached;

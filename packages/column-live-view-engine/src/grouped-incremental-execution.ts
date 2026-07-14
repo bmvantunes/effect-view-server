@@ -8,7 +8,6 @@ import {
   removeGroupAggregateState,
   updateGroupAggregateState,
 } from "./grouped-aggregate-state";
-import { typedGroupedEvaluation } from "./grouped-query-evaluation";
 import type { GroupedQueryPlan } from "./grouped-query-plan";
 import {
   emptyGroupedEvaluation,
@@ -35,10 +34,10 @@ type CountOnlyIncrementalGroupState = {
   count: number;
 };
 
-export type IncrementalGroupedQueryExecution<ResultRow extends RowObject> = {
+export type IncrementalGroupedQueryExecution = {
   readonly diagnostics: () => GroupedIncrementalExecutionDiagnosticCounts;
   readonly incremental: boolean;
-  readonly latest: () => QueryEvaluation<ResultRow>;
+  readonly latest: () => QueryEvaluation<RowObject>;
 };
 
 export type GroupedIncrementalExecutionDiagnosticCounts = {
@@ -749,7 +748,7 @@ const makeFallbackGroupedQueryExecution = <Row extends RowObject, ResultRow exte
   compiled: CompiledGroupedQuery<Row, ResultRow>,
   counts: () => GroupedIncrementalExecutionDiagnosticCounts,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
-): IncrementalGroupedQueryExecution<ResultRow> => {
+): IncrementalGroupedQueryExecution => {
   diagnostics.onFullEvaluation();
   let snapshot = {
     evaluation: compiled.evaluate(store),
@@ -781,7 +780,7 @@ export const makeIncrementalGroupedQueryExecution = <
   releaseRetainedChanges: () => void,
   limits: GroupedIncrementalAdmissionLimits = defaultGroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics = noopGroupedIncrementalExecutionDiagnostics,
-): IncrementalGroupedQueryExecution<ResultRow> => {
+): IncrementalGroupedQueryExecution => {
   const localDiagnostics = newGroupedIncrementalExecutionDiagnostics();
   const combinedDiagnostics = combineGroupedIncrementalExecutionDiagnostics(
     localDiagnostics.diagnostics,
@@ -797,8 +796,8 @@ export const makeIncrementalGroupedQueryExecution = <
     );
   }
   let state = build.state;
-  let fallback: IncrementalGroupedQueryExecution<ResultRow> | undefined;
-  const activateFallback = (): IncrementalGroupedQueryExecution<ResultRow> => {
+  let fallback: IncrementalGroupedQueryExecution | undefined;
+  const activateFallback = (): IncrementalGroupedQueryExecution => {
     clearIncrementalGroupedQueryState(state, compiled.plan, store.version());
     const nextFallback = makeFallbackGroupedQueryExecution(
       store,
@@ -821,7 +820,7 @@ export const makeIncrementalGroupedQueryExecution = <
       }
       const storeVersion = store.version();
       if (state.version === storeVersion) {
-        return typedGroupedEvaluation<ResultRow>(state.evaluation);
+        return state.evaluation;
       }
       const batches = store.changesSince(state.version);
       if (batches === undefined) {
@@ -831,7 +830,7 @@ export const makeIncrementalGroupedQueryExecution = <
         }
         combinedDiagnostics.onFullEvaluation();
         state = build.state;
-        return typedGroupedEvaluation<ResultRow>(state.evaluation);
+        return state.evaluation;
       }
       if (
         !applyIncrementalGroupedQueryBatches(
@@ -845,7 +844,7 @@ export const makeIncrementalGroupedQueryExecution = <
       ) {
         return activateFallback().latest();
       }
-      return typedGroupedEvaluation<ResultRow>(state.evaluation);
+      return state.evaluation;
     },
   };
 };

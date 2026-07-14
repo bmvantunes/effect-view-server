@@ -14,11 +14,12 @@ import {
   type GroupedKeyIdentityField,
 } from "@effect-view-server/effect-utils";
 import { Option } from "effect";
+import type { RuntimeGroupedOrderBy, RuntimeGroupedQuery } from "./grouped-query-decoder";
 import { stableQueryValueString } from "./query-value";
 import type { StoredRowOf } from "./query-result";
 import {
-  groupedQueryResultSemantics,
   groupedResultAggregateSemantics,
+  runtimeGroupedQueryResultSemantics,
   type QueryResultSemantics,
 } from "./query-result-semantics";
 import { trustedFieldValue } from "./row-values";
@@ -26,24 +27,8 @@ import type { SchemaValueSemantics, TopicRowValueSemantics } from "./topic-row-v
 
 type RowObject = object;
 
-export type RuntimeGroupedOrderBy =
-  | {
-      readonly field: string;
-      readonly direction: "asc" | "desc";
-    }
-  | {
-      readonly aggregate: string;
-      readonly direction: "asc" | "desc";
-    };
-
-export type GroupedQueryPlanInput = {
-  readonly groupBy: ReadonlyArray<string>;
-  readonly aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>;
-  readonly where?: Record<string, unknown>;
-  readonly orderBy?: ReadonlyArray<RuntimeGroupedOrderBy>;
-  readonly offset?: number;
-  readonly limit?: number;
-};
+export type GroupedQueryPlanInput = RuntimeGroupedQuery;
+export type { RuntimeGroupedOrderBy };
 
 export type CompiledGroupedOrderBy = {
   readonly compare: (left: unknown, right: unknown) => number;
@@ -54,8 +39,7 @@ export type CompiledGroupedOrderBy = {
 
 const missingGroupedValueKey = schemaValuePresenceKey(missingSchemaValuePresenceToken);
 
-export type GroupedQueryPlan<Row extends RowObject> = {
-  readonly query: GroupedQueryPlanInput;
+export type GroupedQueryPlan<Row extends RowObject, ResultRow extends RowObject = RowObject> = {
   readonly cacheKey: string;
   readonly groupBy: ReadonlyArray<string>;
   readonly aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>;
@@ -64,7 +48,7 @@ export type GroupedQueryPlan<Row extends RowObject> = {
   readonly compiledOrderBy: ReadonlyArray<CompiledGroupedOrderBy>;
   readonly offset: number;
   readonly limit: number | undefined;
-  readonly resultSemantics: QueryResultSemantics;
+  readonly resultSemantics: QueryResultSemantics<ResultRow>;
   readonly zeroLimit: boolean;
   readonly groupKey: (row: Row) => string;
 };
@@ -85,142 +69,219 @@ const groupedQueryPlanCacheKey = (
     query.limit ?? null,
   ]);
 
+const immutableGroupedAggregate = (aggregate: RuntimeGroupedAggregate): RuntimeGroupedAggregate => {
+  const aggFunc = aggregate.aggFunc;
+  if (aggFunc === "count") {
+    return Object.freeze({ aggFunc });
+  }
+  const field = aggregate.field;
+  if (aggFunc === "sum") {
+    return Object.freeze({
+      aggFunc,
+      field,
+      resultKind: aggregate.resultKind,
+    });
+  }
+  return Object.freeze({ aggFunc, field });
+};
+
+const immutableGroupedAggregates = (
+  aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>,
+): Readonly<Record<string, RuntimeGroupedAggregate>> =>
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(aggregates).map(([alias, aggregate]) => [
+        alias,
+        immutableGroupedAggregate(aggregate),
+      ]),
+    ),
+  );
+
+const immutableGroupedOrderBy = (
+  orderBy: ReadonlyArray<RuntimeGroupedOrderBy> | undefined,
+): ReadonlyArray<RuntimeGroupedOrderBy> =>
+  Object.freeze(
+    (orderBy ?? []).map((order) =>
+      "field" in order
+        ? Object.freeze({ field: order.field, direction: order.direction })
+        : Object.freeze({ aggregate: order.aggregate, direction: order.direction }),
+    ),
+  );
+
+const immutableGroupedQuery = (query: GroupedQueryPlanInput): GroupedQueryPlanInput => {
+  const groupBy = Object.freeze([...query.groupBy]);
+  const aggregates = immutableGroupedAggregates(query.aggregates);
+  const orderBy = immutableGroupedOrderBy(query.orderBy);
+  const offset = query.offset;
+  const limit = query.limit;
+  return Object.freeze({
+    groupBy,
+    aggregates,
+    ...(orderBy.length === 0 ? {} : { orderBy }),
+    ...(offset === undefined ? {} : { offset }),
+    ...(limit === undefined ? {} : { limit }),
+  });
+};
+
 const compileGroupedKeyFields = (
   valueSemantics: TopicRowValueSemantics,
   groupBy: ReadonlyArray<string>,
 ): ReadonlyArray<GroupedKeyIdentityField> =>
-  groupBy.map((field) => {
-    const semantics = valueSemantics.field(field);
-    return {
-      field,
-      canonicalKey: semantics.canonicalKey,
-    };
-  });
+  Object.freeze(
+    groupBy.map((field) => {
+      const semantics = valueSemantics.field(field);
+      return Object.freeze({
+        field,
+        canonicalKey: semantics.canonicalKey,
+      });
+    }),
+  );
 
 const compileGroupedAggregates = (
   valueSemantics: TopicRowValueSemantics,
   aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>,
 ): ReadonlyArray<GroupedAggregatePlan> =>
-  Object.entries(aggregates).map(([alias, aggregate], stateIndex) => {
-    const resultSemantics = groupedResultAggregateSemantics(valueSemantics, aggregate);
-    if (aggregate.aggFunc === "count") {
-      return {
-        kind: "count",
+  Object.freeze(
+    Object.entries(aggregates).map(([alias, aggregate], stateIndex) => {
+      const resultSemantics = groupedResultAggregateSemantics(valueSemantics, aggregate);
+      if (aggregate.aggFunc === "count") {
+        return Object.freeze({
+          kind: "count",
+          alias,
+          aggregate,
+          resultSemantics,
+          stateIndex,
+        });
+      }
+      const field = aggregate.field;
+      const fieldSemantics = valueSemantics.field(field);
+      const input: GroupedAggregateInputSemantics = Object.freeze({
+        field,
+        canonicalKey: (aggregateInput) =>
+          aggregateInput._tag === "Missing"
+            ? missingGroupedValueKey
+            : schemaValuePresenceKey(
+                presentSchemaValuePresenceToken(fieldSemantics.canonicalKey(aggregateInput.value)),
+              ),
+        compare: (left, right) => {
+          if (left._tag === "Missing") {
+            return right._tag === "Missing" ? 0 : -1;
+          }
+          if (right._tag === "Missing") {
+            return 1;
+          }
+          return fieldSemantics.compare(left.value, right.value);
+        },
+        equivalent: (left, right) => {
+          if (left._tag === "Missing") {
+            return right._tag === "Missing";
+          }
+          return right._tag === "Present" && fieldSemantics.equivalent(left.value, right.value);
+        },
+        read: (row) =>
+          Object.prototype.propertyIsEnumerable.call(row, field)
+            ? {
+                _tag: "Present",
+                value: trustedFieldValue(row, field),
+              }
+            : missingGroupedAggregateInput,
+      });
+      return Object.freeze({
+        kind: "field",
         alias,
         aggregate,
+        input,
         resultSemantics,
         stateIndex,
-      };
-    }
-    const fieldSemantics = valueSemantics.field(aggregate.field);
-    const input: GroupedAggregateInputSemantics = {
-      field: aggregate.field,
-      canonicalKey: (aggregateInput) =>
-        aggregateInput._tag === "Missing"
-          ? missingGroupedValueKey
-          : schemaValuePresenceKey(
-              presentSchemaValuePresenceToken(fieldSemantics.canonicalKey(aggregateInput.value)),
-            ),
-      compare: (left, right) => {
-        if (left._tag === "Missing") {
-          return right._tag === "Missing" ? 0 : -1;
-        }
-        if (right._tag === "Missing") {
-          return 1;
-        }
-        return fieldSemantics.compare(left.value, right.value);
-      },
-      equivalent: (left, right) => {
-        if (left._tag === "Missing") {
-          return right._tag === "Missing";
-        }
-        return right._tag === "Present" && fieldSemantics.equivalent(left.value, right.value);
-      },
-      read: (row) =>
-        Object.prototype.propertyIsEnumerable.call(row, aggregate.field)
-          ? {
-              _tag: "Present",
-              value: trustedFieldValue(row, aggregate.field),
-            }
-          : missingGroupedAggregateInput,
-    };
-    return {
-      kind: "field",
-      alias,
-      aggregate,
-      input,
-      resultSemantics,
-      stateIndex,
-    };
-  });
+      });
+    }),
+  );
 
-const missingGroupedAggregateInput: GroupedAggregateInput = {
+const missingGroupedAggregateInput: GroupedAggregateInput = Object.freeze({
   _tag: "Missing",
-};
+});
 
 const groupedFieldOrderColumn = (
   field: string,
   direction: "asc" | "desc",
   semantics: SchemaValueSemantics,
-): CompiledGroupedOrderBy => ({
-  compare: semantics.compare,
-  direction,
-  groupValue: (group) => trustedFieldValue(group.row, field),
-  rowValue: (entry) => trustedFieldValue(entry.row, field),
-});
+): CompiledGroupedOrderBy =>
+  Object.freeze({
+    compare: semantics.compare,
+    direction,
+    groupValue: (group) => trustedFieldValue(group.row, field),
+    rowValue: (entry) => trustedFieldValue(entry.row, field),
+  });
 
 const groupedAggregateOrderColumn = (
   aggregatePlan: GroupedAggregatePlan,
   direction: "asc" | "desc",
-): CompiledGroupedOrderBy => ({
-  compare: aggregatePlan.resultSemantics.compare,
-  direction,
-  groupValue: (group) => groupAggregateStateCompareValue(group, aggregatePlan.stateIndex),
-  rowValue: (entry) => trustedFieldValue(entry.row, aggregatePlan.alias),
-});
+): CompiledGroupedOrderBy =>
+  Object.freeze({
+    compare: aggregatePlan.resultSemantics.compare,
+    direction,
+    groupValue: (group) => groupAggregateStateCompareValue(group, aggregatePlan.stateIndex),
+    rowValue: (entry) => trustedFieldValue(entry.row, aggregatePlan.alias),
+  });
 
 const compileGroupedOrderBy = (
   orderBy: ReadonlyArray<RuntimeGroupedOrderBy>,
   valueSemantics: TopicRowValueSemantics,
   aggregatePlans: ReadonlyArray<GroupedAggregatePlan>,
 ): ReadonlyArray<CompiledGroupedOrderBy> =>
-  orderBy.map((order) =>
-    "field" in order
-      ? groupedFieldOrderColumn(order.field, order.direction, valueSemantics.field(order.field))
-      : groupedAggregateOrderColumn(
-          Option.getOrThrow(
-            Option.fromNullishOr(
-              aggregatePlans.find((aggregatePlan) => aggregatePlan.alias === order.aggregate),
+  Object.freeze(
+    orderBy.map((order) =>
+      "field" in order
+        ? groupedFieldOrderColumn(order.field, order.direction, valueSemantics.field(order.field))
+        : groupedAggregateOrderColumn(
+            Option.getOrThrow(
+              Option.fromNullishOr(
+                aggregatePlans.find((aggregatePlan) => aggregatePlan.alias === order.aggregate),
+              ),
             ),
+            order.direction,
           ),
-          order.direction,
-        ),
+    ),
   );
 
-export const makeGroupedQueryPlan = <Row extends RowObject>(
+export const makeGroupedQueryPlan = <Row extends RowObject, ResultRow extends RowObject>(
   query: GroupedQueryPlanInput,
   valueSemantics: TopicRowValueSemantics,
   rawPredicateCacheKey: string,
-): GroupedQueryPlan<Row> => {
-  const groupBy = [...query.groupBy];
+  makeResultSemantics: (
+    groupBy: ReadonlyArray<string>,
+    aggregatePlans: ReadonlyArray<GroupedAggregatePlan>,
+  ) => QueryResultSemantics<ResultRow>,
+): GroupedQueryPlan<Row, ResultRow> => {
+  const immutableQuery = immutableGroupedQuery(query);
+  const groupBy = immutableQuery.groupBy;
   const groupedKeyIdentity = compileGroupedKeyIdentity<Row>(
     compileGroupedKeyFields(valueSemantics, groupBy),
     "throw",
   );
-  const aggregatePlans = compileGroupedAggregates(valueSemantics, query.aggregates);
-  const orderBy = query.orderBy === undefined ? [] : [...query.orderBy];
-  return {
-    query,
-    cacheKey: groupedQueryPlanCacheKey(query, rawPredicateCacheKey),
+  const aggregatePlans = compileGroupedAggregates(valueSemantics, immutableQuery.aggregates);
+  const resultSemantics = Object.freeze(makeResultSemantics(groupBy, aggregatePlans));
+  const orderBy = immutableQuery.orderBy ?? Object.freeze([]);
+  return Object.freeze({
+    cacheKey: groupedQueryPlanCacheKey(immutableQuery, rawPredicateCacheKey),
     groupBy,
-    aggregates: query.aggregates,
+    aggregates: immutableQuery.aggregates,
     aggregatePlans,
     orderBy,
     compiledOrderBy: compileGroupedOrderBy(orderBy, valueSemantics, aggregatePlans),
-    offset: query.offset ?? 0,
-    limit: query.limit,
-    resultSemantics: groupedQueryResultSemantics(valueSemantics, groupBy, aggregatePlans),
-    zeroLimit: query.limit === 0,
+    offset: immutableQuery.offset ?? 0,
+    limit: immutableQuery.limit,
+    resultSemantics,
+    zeroLimit: immutableQuery.limit === 0,
     groupKey: groupedKeyIdentity.key,
-  };
+  });
 };
+
+export const makeRuntimeGroupedQueryPlan = <Row extends RowObject = RowObject>(
+  query: GroupedQueryPlanInput,
+  valueSemantics: TopicRowValueSemantics,
+  rawPredicateCacheKey: string,
+): GroupedQueryPlan<Row, RowObject> =>
+  makeGroupedQueryPlan(query, valueSemantics, rawPredicateCacheKey, (groupBy, aggregatePlans) =>
+    runtimeGroupedQueryResultSemantics(valueSemantics, groupBy, aggregatePlans),
+  );

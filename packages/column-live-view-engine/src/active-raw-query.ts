@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import type { DeltaEvent } from "@effect-view-server/config";
+import type { DeltaEvent, LiveQueryResult } from "@effect-view-server/config";
 import type { ActiveQueryStoreState, RawQueryExecution } from "./active-query";
 import type { CompiledRawQuery } from "./raw-query-compiler";
 import {
@@ -11,6 +11,10 @@ import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation } from "./query-result";
 import type { TopicRawWindowScan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
+import {
+  bindTopicStorageProjection,
+  type TopicStorageProjectionSession,
+} from "./topic-storage-projection";
 
 type RowObject = object;
 
@@ -349,9 +353,10 @@ const projectBaseEvaluation = <Row extends RowObject, ResultRow extends RowObjec
   compiled: CompiledRawQuery<Row, ResultRow>,
   evaluation: ActiveQueryBaseEvaluation<Row>,
 ): QueryEvaluation<ResultRow> => {
+  const storageProjection = bindStoreProjection(store, compiled);
   const window = evaluation.window.map((entry) => ({
     key: entry.key,
-    row: projectRetainedEntry(store, compiled, entry),
+    row: projectRetainedEntry(store, compiled, entry, storageProjection),
   }));
 
   return {
@@ -367,6 +372,7 @@ const projectWindowEvaluation = <Row extends RowObject, ResultRow extends RowObj
   store: TopicRawWindowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
   evaluation: ActiveQueryBaseEvaluation<Row>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): QueryEvaluation<ResultRow> => {
   const end =
     compiled.plan.window.limit === undefined
@@ -375,7 +381,7 @@ const projectWindowEvaluation = <Row extends RowObject, ResultRow extends RowObj
   const sourceWindow = evaluation.window.slice(compiled.plan.window.offset, end);
   const window = sourceWindow.map((entry) => ({
     key: entry.key,
-    row: projectRetainedEntry(store, compiled, entry),
+    row: projectRetainedEntry(store, compiled, entry, storageProjection),
   }));
 
   return {
@@ -393,43 +399,84 @@ export const evaluateRawQuery = <Row extends RowObject, ResultRow extends RowObj
 ): QueryEvaluation<ResultRow> =>
   projectBaseEvaluation(store, compiled, evaluateBaseQuery(store, compiled));
 
-function projectStoreSlot<Row extends RowObject, ResultRow extends RowObject>(
-  projectRawRow: (slot: number, selectedFields: ReadonlyArray<string>) => RowObject,
+const bindStoreProjection = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicRawWindowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
-  slot: number,
-): ResultRow;
-function projectStoreSlot(
-  projectRawRow: (slot: number, selectedFields: ReadonlyArray<string>) => RowObject,
-  compiled: CompiledRawQuery<RowObject, RowObject>,
-  slot: number,
-): RowObject {
-  return projectRawRow(slot, compiled.plan.selectedFields);
-}
+): TopicStorageProjectionSession<ResultRow> | undefined => {
+  const storageProjection = store.storageProjection;
+  return storageProjection === undefined
+    ? undefined
+    : bindTopicStorageProjection(
+        storageProjection,
+        compiled.plan.resultSemantics.topicStorageProjectionProof,
+      );
+};
 
 const projectRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
   entry: RetainedWindowEntry<Row>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): ResultRow => {
+  const slot = retainedEntrySlot(store, entry);
+  return storageProjection === undefined || slot === undefined
+    ? compiled.plan.project(entry.row)
+    : storageProjection.projectResultRow(slot);
+};
+
+const retainedEntrySlot = <Row extends RowObject>(
+  store: TopicRawWindowScan<Row>,
+  entry: RetainedWindowEntry<Row>,
+): number | undefined => {
   const carriedSlot =
     entry.slot !== undefined && store.keyAtSlot?.(entry.slot) === entry.key
       ? entry.slot
       : undefined;
-  const slot = carriedSlot ?? store.slotForKey?.(entry.key);
-  const projectRawRow = store.projectRawRow;
-  return slot === undefined || projectRawRow === undefined
-    ? compiled.plan.project(entry.row)
-    : projectStoreSlot(projectRawRow, compiled, slot);
+  return carriedSlot ?? store.slotForKey?.(entry.key);
+};
+
+const projectOwnedRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicRawWindowScan<Row>,
+  compiled: CompiledRawQuery<Row, ResultRow>,
+  entry: RetainedWindowEntry<Row>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
+): ResultRow => {
+  const slot = retainedEntrySlot(store, entry);
+  return storageProjection === undefined || slot === undefined
+    ? compiled.plan.resultSemantics.projectOwnedRow(entry.row)
+    : storageProjection.projectOwnedResultRow(slot);
+};
+
+export const evaluateRawQueryResult = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicRawWindowScan<Row> & { readonly version: () => number },
+  compiled: CompiledRawQuery<Row, ResultRow>,
+): LiveQueryResult<ResultRow> => {
+  const version = store.version();
+  const scanResult = store.scanRawWindow(
+    rawQueryWindowScanPlan(compiled.plan, compiled.plan.window),
+  );
+  const storageProjection = bindStoreProjection(store, compiled);
+  return {
+    rows: scanResult.window.map((entry) =>
+      projectOwnedRetainedEntry(store, compiled, entry, storageProjection),
+    ),
+    totalRows: scanResult.totalRows,
+    version,
+    status: "ready",
+    statusCode: "Ready",
+  };
 };
 
 const leaseRawQueryExecution = <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   execution: ActiveQueryBaseExecution,
   compiled: CompiledRawQuery<object, ResultRow>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): RawQueryExecution<ResultRow> => {
-  const latestEvaluation = () => projectWindowEvaluation(store, compiled, execution.latest());
+  const latestEvaluation = () =>
+    projectWindowEvaluation(store, compiled, execution.latest(), storageProjection);
 
-  return {
+  return Object.freeze({
     initial: (queryId) =>
       snapshotEvent(store, queryId, latestEvaluation(), compiled.plan.resultSemantics),
     createCursor: () => ({
@@ -455,7 +502,7 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
           ),
         );
       }),
-  };
+  });
 };
 
 const baseWindowForActiveWindows = (
@@ -568,13 +615,14 @@ export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
     store: ActiveQueryStoreState,
     compiled: CompiledRawQuery<object, ResultRow>,
   ) {
+    const storageProjection = bindStoreProjection(store, compiled);
     const { map, key } = getActiveRawQueryEntry(store, compiled);
     const existing = map.get(key);
     if (existing !== undefined) {
       const entry = existing;
       entry.refs += 1;
       acquireRawQueryWindow(entry.windows, compiled.plan.window);
-      return leaseRawQueryExecution(store, entry.execution, compiled);
+      return leaseRawQueryExecution(store, entry.execution, compiled, storageProjection);
     }
 
     const windows = new Map<string, RawQueryExecutionWindowSlot>();
@@ -588,7 +636,7 @@ export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
         windows,
         refs: 1,
       });
-      return leaseRawQueryExecution(store, execution, compiled);
+      return leaseRawQueryExecution(store, execution, compiled, storageProjection);
     });
   },
 );

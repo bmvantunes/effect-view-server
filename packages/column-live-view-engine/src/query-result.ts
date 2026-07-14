@@ -5,18 +5,14 @@ import type {
   SnapshotEvent,
 } from "@effect-view-server/config";
 import type { QueryResultSemantics } from "./query-result-semantics";
+import type { TopicRowEntry } from "./row-scan";
 
 type RowObject = object;
-
-export type StoredRowOf<Row extends RowObject> = {
-  readonly key: string;
-  readonly row: Row;
-};
 
 export type QueryEvaluation<ResultRow extends RowObject> = {
   readonly rows: ReadonlyArray<ResultRow>;
   readonly keys: ReadonlyArray<string>;
-  readonly window: ReadonlyArray<StoredRowOf<ResultRow>>;
+  readonly window: ReadonlyArray<TopicRowEntry<ResultRow>>;
   readonly totalRows: number;
   readonly version: number;
 };

@@ -1,6 +1,7 @@
 import { finalizeGroup, type GroupState } from "./grouped-aggregate-state";
 import type { CompiledGroupedOrderBy, GroupedQueryPlan } from "./grouped-query-plan";
-import type { QueryEvaluation, StoredRowOf } from "./query-result";
+import type { QueryEvaluation } from "./query-result";
+import type { TopicRowEntry } from "./row-scan";
 
 type RowObject = object;
 
@@ -13,8 +14,8 @@ const maxBoundedGroupedWindowEnd = 1_024;
 const emptyBoundedGroupOrderValues: Array<unknown> = [];
 
 const compareGroupedRows = (
-  left: StoredRowOf<RowObject>,
-  right: StoredRowOf<RowObject>,
+  left: TopicRowEntry<RowObject>,
+  right: TopicRowEntry<RowObject>,
   orderBy: ReadonlyArray<CompiledGroupedOrderBy>,
 ): number => {
   for (const order of orderBy) {
@@ -244,7 +245,7 @@ export const groupedEvaluationFromGroups = <Row extends RowObject, ResultRow ext
 };
 
 export const groupedEvaluationFromEntries = <Row extends RowObject, ResultRow extends RowObject>(
-  entries: ReadonlyArray<StoredRowOf<RowObject>>,
+  entries: ReadonlyArray<TopicRowEntry<RowObject>>,
   plan: GroupedQueryPlan<Row, ResultRow>,
   version: number,
 ): QueryEvaluation<RowObject> => {

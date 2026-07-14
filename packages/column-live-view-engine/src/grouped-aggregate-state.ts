@@ -8,7 +8,6 @@ import {
   type BigDecimal,
 } from "effect/BigDecimal";
 import * as Arr from "effect/Array";
-import type { TopicRowEntry } from "./row-scan";
 import { trustedFieldValue } from "./row-values";
 import type { SchemaValueSemantics } from "./topic-row-value-semantics";
 
@@ -533,7 +532,7 @@ export const newIncrementalGroupState = (
   };
 };
 
-export const finalizeGroup = (group: GroupState): TopicRowEntry<RowObject> => {
+export const finalizeGroup = (group: GroupState) => {
   const row: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(group.row)) {
     Object.defineProperty(row, field, {

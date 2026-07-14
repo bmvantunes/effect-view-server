@@ -16,12 +16,12 @@ import {
 import { Option } from "effect";
 import type { RuntimeGroupedOrderBy, RuntimeGroupedQuery } from "./grouped-query-decoder";
 import { stableQueryValueString } from "./query-value";
+import type { StoredRowOf } from "./query-result";
 import {
   groupedResultAggregateSemantics,
   runtimeGroupedQueryResultSemantics,
   type QueryResultSemantics,
 } from "./query-result-semantics";
-import type { TopicRowEntry } from "./row-scan";
 import { trustedFieldValue } from "./row-values";
 import type { SchemaValueSemantics, TopicRowValueSemantics } from "./topic-row-value-semantics";
 
@@ -34,7 +34,7 @@ export type CompiledGroupedOrderBy = {
   readonly compare: (left: unknown, right: unknown) => number;
   readonly direction: "asc" | "desc";
   readonly groupValue: (group: GroupState) => unknown;
-  readonly rowValue: (entry: TopicRowEntry<RowObject>) => unknown;
+  readonly rowValue: (entry: StoredRowOf<RowObject>) => unknown;
 };
 
 const missingGroupedValueKey = schemaValuePresenceKey(missingSchemaValuePresenceToken);

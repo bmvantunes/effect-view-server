@@ -293,15 +293,9 @@ describe("Topic Storage projection proof", () => {
       );
       expect(Object.isFrozen(session)).toBe(true);
       expect(Object.isFrozen(Object.getPrototypeOf(session))).toBe(true);
+      expect(session.projectResultRow(0)).toStrictEqual({ id: "stored", price: 10 });
       expect(Object.isFrozen(projection)).toBe(true);
       expect(Object.isFrozen(Object.getPrototypeOf(projection))).toBe(true);
-      expect(() =>
-        Reflect.apply(Reflect.get(projection, "define"), projection, [
-          Object.freeze({}),
-          "price",
-          "wrong",
-        ]),
-      ).toThrowError("Topic Storage projection construction is private.");
       expect(Reflect.get(projection, "missingRequiredField")).toBeUndefined();
       expect(() =>
         Reflect.construct(
@@ -417,6 +411,31 @@ describe("Topic Storage projection proof", () => {
       );
 
       expect(evaluateRawQuery(storage.readModel, compiled).rows).toStrictEqual([{ id: "stored" }]);
+    }),
+  );
+
+  it.effect("projects a __proto__ field as owned row data", () =>
+    Effect.gen(function* () {
+      const PrototypeFieldOrder = Schema.Struct({
+        id: Schema.String,
+        ["__proto__"]: Schema.String,
+      });
+      const storage = new TopicRowStorage("prototype-field-orders", PrototypeFieldOrder, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      storage.setPrepared(
+        yield* storage.prepareRow({ id: "stored", ["__proto__"]: "plain-data" }, invalidRow),
+      );
+      const compiled = yield* prepareRuntimeRawQuery(
+        "prototype-field-orders",
+        rawQueryCompilerMetadata(PrototypeFieldOrder),
+        { select: ["id", "__proto__"] },
+      );
+
+      const projected = evaluateRawQuery(storage.readModel, compiled).rows[0]!;
+      expect(Object.getPrototypeOf(projected)).toBe(Object.prototype);
+      expect(Object.prototype.propertyIsEnumerable.call(projected, "__proto__")).toBe(true);
+      expect(projected).toStrictEqual({ id: "stored", ["__proto__"]: "plain-data" });
     }),
   );
 

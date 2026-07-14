@@ -24,7 +24,10 @@ import {
   type QueryResultTopicStorageProjectionProof,
   type QueryResultSemantics,
 } from "./query-result-semantics";
-import type { TopicStorageProjectionCapability } from "./topic-row-storage";
+import {
+  bindTopicStorageProjection,
+  type TopicStorageProjectionCapability,
+} from "./topic-row-storage";
 import {
   type ExecutableQuery,
   prepareRuntimeExecutableQuery,
@@ -112,12 +115,20 @@ declare const commonSelect: readonly ["id", "price"] | readonly ["id", "status"]
 declare const dynamicGroupBy: readonly ["status"] | readonly ["id"];
 declare const unequalGroupBy: readonly ["status"] | readonly ["status", "id"];
 declare const commonGroupBy: readonly ["status", "id"] | readonly ["status", "price"];
+declare const storageProjectionCapability: TopicStorageProjectionCapability;
 declare const stringProjectionProof: QueryResultTopicStorageProjectionProof<{
   readonly id: string;
 }>;
 
 describe("compiled Query Result Semantics", () => {
   it("keeps schema provenance nominal across metadata and result proofs", () => {
+    const stringProjectionSession = bindTopicStorageProjection(
+      storageProjectionCapability,
+      stringProjectionProof,
+    );
+    expectTypeOf(stringProjectionSession.projectResultRow(0)).toEqualTypeOf<{
+      readonly id: string;
+    }>();
     // @ts-expect-error only the concrete Topic Row Storage can construct its projection capability.
     const invalidStorageCapability: TopicStorageProjectionCapability = {};
     // @ts-expect-error structural fields cannot forge the private projection-proof brand.

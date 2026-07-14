@@ -402,7 +402,7 @@ export const evaluateRawQuery = <Row extends RowObject, ResultRow extends RowObj
 const bindStoreProjection = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
-): TopicStorageProjectionSession | undefined =>
+): TopicStorageProjectionSession<ResultRow> | undefined =>
   store.storageProjection === undefined
     ? undefined
     : bindTopicStorageProjection(
@@ -410,17 +410,16 @@ const bindStoreProjection = <Row extends RowObject, ResultRow extends RowObject>
         compiled.plan.resultSemantics.topicStorageProjectionProof,
       );
 
-const projectStoreSlot = <Row extends RowObject, ResultRow extends RowObject>(
-  projection: TopicStorageProjectionSession,
-  compiled: CompiledRawQuery<Row, ResultRow>,
+const projectStoreSlot = <ResultRow extends RowObject>(
+  projection: TopicStorageProjectionSession<ResultRow>,
   slot: number,
-): ResultRow => compiled.plan.resultSemantics.projectTopicStorageRow(projection.project(slot));
+): ResultRow => projection.projectResultRow(slot);
 
 const projectRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
   entry: RetainedWindowEntry<Row>,
-  storageProjection: TopicStorageProjectionSession | undefined,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): ResultRow => {
   if (storageProjection === undefined) {
     return compiled.plan.project(entry.row);
@@ -432,7 +431,7 @@ const projectRetainedEntry = <Row extends RowObject, ResultRow extends RowObject
   const slot = carriedSlot ?? store.slotForKey?.(entry.key);
   return slot === undefined
     ? compiled.plan.project(entry.row)
-    : projectStoreSlot(storageProjection, compiled, slot);
+    : projectStoreSlot(storageProjection, slot);
 };
 
 const leaseRawQueryExecution = <ResultRow extends RowObject>(

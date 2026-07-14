@@ -60,9 +60,9 @@ import {
 } from "./topic-raw-ordered-window-index";
 import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
 import {
-  bindQueryResultTopicStorageProjectionProof,
-  type QueryResultTopicStorageProjectionProof,
-} from "./query-result-topic-storage-proof";
+  makeTopicStorageProjectionCapability,
+  type TopicStorageProjectionCapability,
+} from "./topic-storage-projection";
 
 type RowObject = object;
 
@@ -83,82 +83,6 @@ type PreparedTopicRowReplacement = {
 const noopAppendBatchReservation: AppendBatchReservation = {
   reserveFrom: () => {},
 };
-
-const topicRowStorageProjectionConstructionToken = Object.freeze({});
-
-const assertTopicRowStorageProjectionConstruction = (constructionToken: object): void => {
-  if (constructionToken !== topicRowStorageProjectionConstructionToken) {
-    throw new TypeError("Topic Storage projection construction is private.");
-  }
-};
-
-type TopicRowStorageProjector = (slot: number) => RowObject;
-
-type TopicRowStorageProjectionBinder = (
-  selectedFields: ReadonlyArray<string>,
-) => TopicRowStorageProjector;
-
-class TopicRowStorageProjectionCapability {
-  readonly #bindProjectRow: TopicRowStorageProjectionBinder;
-  readonly #valueSemantics: TopicRowValueSemantics;
-
-  constructor(
-    constructionToken: object,
-    valueSemantics: TopicRowValueSemantics,
-    bindProjectRow: TopicRowStorageProjectionBinder,
-  ) {
-    assertTopicRowStorageProjectionConstruction(constructionToken);
-    this.#bindProjectRow = bindProjectRow;
-    this.#valueSemantics = valueSemantics;
-    Object.freeze(this);
-  }
-
-  bind<ResultRow extends RowObject>(
-    proof: QueryResultTopicStorageProjectionProof<ResultRow>,
-  ): TopicStorageProjectionSession<ResultRow> {
-    const boundProof = bindQueryResultTopicStorageProjectionProof(proof, this.#valueSemantics);
-    return new TopicRowStorageProjectionSession<ResultRow>(
-      topicRowStorageProjectionConstructionToken,
-      this.#bindProjectRow(boundProof.selectedFields),
-      boundProof.narrowProjectedRow,
-    );
-  }
-}
-
-Object.freeze(TopicRowStorageProjectionCapability.prototype);
-
-export type TopicStorageProjectionCapability = TopicRowStorageProjectionCapability;
-
-export const bindTopicStorageProjection = <ResultRow extends RowObject>(
-  capability: TopicStorageProjectionCapability,
-  proof: QueryResultTopicStorageProjectionProof<ResultRow>,
-): TopicStorageProjectionSession<ResultRow> => {
-  if (!(capability instanceof TopicRowStorageProjectionCapability)) {
-    throw new TypeError("Topic Storage projection capability is not authentic.");
-  }
-  return capability.bind(proof);
-};
-
-class TopicRowStorageProjectionSession<ResultRow extends RowObject> {
-  readonly #projectRow: TopicRowStorageProjector;
-  readonly projectResultRow: (slot: number) => ResultRow;
-
-  constructor(
-    constructionToken: object,
-    projectRow: TopicRowStorageProjector,
-    narrowProjectedRow: (row: RowObject) => ResultRow,
-  ) {
-    assertTopicRowStorageProjectionConstruction(constructionToken);
-    this.#projectRow = projectRow;
-    this.projectResultRow = (slot) => narrowProjectedRow(this.#projectRow(slot));
-    Object.freeze(this);
-  }
-}
-
-Object.freeze(TopicRowStorageProjectionSession.prototype);
-
-export type TopicStorageProjectionSession<ResultRow extends RowObject = RowObject> =
-  TopicRowStorageProjectionSession<ResultRow>;
 
 export class TopicRowStorage {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
@@ -234,8 +158,7 @@ export class TopicRowStorage {
       changesSince: (version) => this.changesSince(version),
       compareRawSlots: (plan) => this.compareRawSlots(plan),
       keyAtSlot: (slot) => this.keyAtSlot(slot),
-      storageProjection: new TopicRowStorageProjectionCapability(
-        topicRowStorageProjectionConstructionToken,
+      storageProjection: makeTopicStorageProjectionCapability(
         this.valueSemantics,
         (selectedFields) => {
           const projectionPlan = this.#rawProjectionPlan(selectedFields);

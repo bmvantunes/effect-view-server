@@ -28,7 +28,7 @@ import { makeQueryResultTopicStorageProjectionProof } from "./query-result-topic
 import {
   bindTopicStorageProjection,
   type TopicStorageProjectionCapability,
-} from "./topic-row-storage";
+} from "./topic-storage-projection";
 import {
   type ExecutableQuery,
   prepareRuntimeExecutableQuery,

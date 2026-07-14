@@ -1,6 +1,6 @@
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Option, Result, Schema } from "effect";
 import {
   acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
@@ -194,6 +194,79 @@ describe("column-live-view-engine active query execution", () => {
       expect(projectionReads).toBe(1);
 
       yield* releaseRawQueryExecution(observedReadModel, compiled);
+    }),
+  );
+
+  it.effect("rejects incompatible projection proofs before acquiring raw execution ownership", () =>
+    Effect.gen(function* () {
+      const target = new TopicStore(
+        "projection-ownership-target",
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.Number,
+        }),
+        "id",
+        () => {},
+      );
+      const incompatible = new TopicStore(
+        "projection-ownership-incompatible",
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.String,
+        }),
+        "id",
+        () => {},
+      );
+      const targetReadModel = topicStoreReadModel(target);
+      const targetCompiled = yield* prepareRuntimeRawQuery(
+        "projection-ownership-target",
+        topicStoreRawQueryMetadata(target),
+        { select: ["id"] },
+      );
+      const incompatibleCompiled = yield* prepareRuntimeRawQuery(
+        "projection-ownership-incompatible",
+        topicStoreRawQueryMetadata(incompatible),
+        { select: ["id"] },
+      );
+
+      const emptyRegistryExit = yield* Effect.exit(
+        acquireRawQueryExecution(targetReadModel, incompatibleCompiled),
+      );
+      const emptyRegistryError = Exit.match(emptyRegistryExit, {
+        onFailure: (cause) =>
+          Result.match(Cause.findDefect(cause), {
+            onFailure: () => "missing projection binding error",
+            onSuccess: (defect) =>
+              defect instanceof Error ? defect.message : "unexpected non-error defect",
+          }),
+        onSuccess: () => "unexpected projection binding success",
+      });
+      expect(emptyRegistryError).toBe(
+        "Topic Storage projection schema does not match its compiled proof.",
+      );
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(0);
+
+      yield* acquireRawQueryExecution(targetReadModel, targetCompiled);
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(1);
+      const existingEntryExit = yield* Effect.exit(
+        acquireRawQueryExecution(targetReadModel, incompatibleCompiled),
+      );
+      const existingEntryError = Exit.match(existingEntryExit, {
+        onFailure: (cause) =>
+          Result.match(Cause.findDefect(cause), {
+            onFailure: () => "missing projection binding error",
+            onSuccess: (defect) =>
+              defect instanceof Error ? defect.message : "unexpected non-error defect",
+          }),
+        onSuccess: () => "unexpected projection binding success",
+      });
+      expect(existingEntryError).toBe(
+        "Topic Storage projection schema does not match its compiled proof.",
+      );
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(1);
+
+      yield* releaseRawQueryExecution(targetReadModel, targetCompiled);
+      expect(yield* activeStoreRawQueryExecutionCount(targetReadModel)).toBe(0);
     }),
   );
 

@@ -14,7 +14,7 @@ import type { TopicRowEntry } from "./row-scan";
 import {
   bindTopicStorageProjection,
   type TopicStorageProjectionSession,
-} from "./topic-row-storage";
+} from "./topic-storage-projection";
 
 type RowObject = object;
 
@@ -435,8 +435,8 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
   store: ActiveQueryStoreState,
   execution: ActiveQueryBaseExecution,
   compiled: CompiledRawQuery<object, ResultRow>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): RawQueryExecution<ResultRow> => {
-  const storageProjection = bindStoreProjection(store, compiled);
   const latestEvaluation = () =>
     projectWindowEvaluation(store, compiled, execution.latest(), storageProjection);
 
@@ -579,13 +579,14 @@ export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
     store: ActiveQueryStoreState,
     compiled: CompiledRawQuery<object, ResultRow>,
   ) {
+    const storageProjection = bindStoreProjection(store, compiled);
     const { map, key } = getActiveRawQueryEntry(store, compiled);
     const existing = map.get(key);
     if (existing !== undefined) {
       const entry = existing;
       entry.refs += 1;
       acquireRawQueryWindow(entry.windows, compiled.plan.window);
-      return leaseRawQueryExecution(store, entry.execution, compiled);
+      return leaseRawQueryExecution(store, entry.execution, compiled, storageProjection);
     }
 
     const windows = new Map<string, RawQueryExecutionWindowSlot>();
@@ -599,7 +600,7 @@ export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
         windows,
         refs: 1,
       });
-      return leaseRawQueryExecution(store, execution, compiled);
+      return leaseRawQueryExecution(store, execution, compiled, storageProjection);
     });
   },
 );

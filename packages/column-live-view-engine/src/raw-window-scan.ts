@@ -1,6 +1,6 @@
 import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { TopicRowEntry } from "./row-scan";
-import type { TopicStorageProjectionCapability } from "./topic-row-storage";
+import type { TopicStorageProjectionCapability } from "./topic-storage-projection";
 
 type RowObject = object;
 

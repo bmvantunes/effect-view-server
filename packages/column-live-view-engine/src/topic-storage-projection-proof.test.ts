@@ -5,7 +5,8 @@ import { evaluateRawQuery } from "./active-query";
 import { prepareGroupedQuery } from "./grouped-query-compiler";
 import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { makeQueryResultSemantics } from "./query-result-semantics";
-import { bindTopicStorageProjection, TopicRowStorage } from "./topic-row-storage";
+import { TopicRowStorage } from "./topic-row-storage";
+import { bindTopicStorageProjection } from "./topic-storage-projection";
 import { order, Order } from "../test-harness/public-engine";
 
 describe("Topic Storage projection proof", () => {

@@ -288,7 +288,9 @@ describe("Topic Storage projection proof", () => {
       expect(Object.isFrozen(proof)).toBe(true);
       expect(Object.isFrozen(Object.getPrototypeOf(proof))).toBe(true);
       expect(Reflect.ownKeys(proof)).toStrictEqual([]);
-      expect(session.projectResultRow(0)).toStrictEqual({ id: "stored", price: 10 });
+      const projected = session.projectResultRow(0);
+      expect(Object.keys(projected)).toStrictEqual(["id", "price"]);
+      expect(projected).toStrictEqual({ id: "stored", price: 10 });
       expect(Reflect.apply(session.projectResultRow, Object.freeze({}), [0])).toStrictEqual({
         id: "stored",
         price: 10,

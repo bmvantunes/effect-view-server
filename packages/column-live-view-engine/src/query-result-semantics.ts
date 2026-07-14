@@ -167,61 +167,73 @@ const runtimeResultProof = (
   return (row): row is RowObject => check(row);
 };
 
-const makeProjectedQueryResultSemantics = <ResultRow extends RowObject>(
-  fields: ReadonlyArray<QueryResultFieldSemantics>,
-  isResultRow: QueryResultProof<ResultRow>,
-  validateProjectedValues: boolean,
-): QueryResultSemantics<ResultRow> => {
-  const narrowProjectedRow = (row: RowObject): ResultRow => {
+const narrowResultRow =
+  <ResultRow extends RowObject>(isResultRow: QueryResultProof<ResultRow>) =>
+  (row: RowObject): ResultRow => {
     if (!isResultRow(row)) {
       throw new TypeError("Projected Query Result Row does not satisfy its compiled proof.");
     }
     return row;
   };
-  const isConstructedProjection = constructedProjectionProof<ResultRow>(
-    fields,
-    validateProjectedValues,
-  );
-  const narrowConstructedProjection = (row: RowObject): ResultRow => {
-    if (!isConstructedProjection(row)) {
-      throw new TypeError("Projected Query Result Row does not satisfy its compiled proof.");
-    }
-    return row;
-  };
-  return Object.freeze({
-    equivalentRows: (left, right) => {
-      for (const { field, semantics } of fields) {
-        const leftHasField = hasEnumerableField(left, field);
-        if (leftHasField !== hasEnumerableField(right, field)) {
-          return false;
-        }
-        if (
-          leftHasField &&
-          !semantics.equivalent(Reflect.get(left, field), Reflect.get(right, field))
-        ) {
-          return false;
-        }
-      }
-      return true;
-    },
-    materializeOwnedRow: (row) => {
-      for (const { field, semantics } of fields) {
-        if (!hasEnumerableField(row, field)) {
-          continue;
-        }
-        const value = Reflect.get(row, field);
-        if (isBorrowableImmutablePrimitive(value)) {
-          continue;
-        }
-        defineResultField(row, field, semantics.materialize(value));
-      }
-      return narrowProjectedRow(row);
-    },
-    materializeRow: (row) => narrowProjectedRow(projectFields(fields, row, materializeValue)),
-    narrowProjectedRow,
-    projectRow: (row) => narrowConstructedProjection(projectFields(fields, row, borrowValue)),
-  });
+
+type ProjectedQueryResultSemanticsConstruction<ResultRow extends RowObject> = {
+  readonly narrowConstructedProjection: (row: RowObject) => ResultRow;
+  readonly semantics: QueryResultSemantics<ResultRow>;
 };
+
+const constructProjectedQueryResultSemantics = <ResultRow extends RowObject>(
+  fields: ReadonlyArray<QueryResultFieldSemantics>,
+  isResultRow: QueryResultProof<ResultRow>,
+  validateProjectedValues: boolean,
+): ProjectedQueryResultSemanticsConstruction<ResultRow> => {
+  const narrowProjectedRow = narrowResultRow(isResultRow);
+  const narrowConstructedProjection = narrowResultRow(
+    constructedProjectionProof<ResultRow>(fields, validateProjectedValues),
+  );
+  return {
+    narrowConstructedProjection,
+    semantics: Object.freeze({
+      equivalentRows: (left, right) => {
+        for (const { field, semantics } of fields) {
+          const leftHasField = hasEnumerableField(left, field);
+          if (leftHasField !== hasEnumerableField(right, field)) {
+            return false;
+          }
+          if (
+            leftHasField &&
+            !semantics.equivalent(Reflect.get(left, field), Reflect.get(right, field))
+          ) {
+            return false;
+          }
+        }
+        return true;
+      },
+      materializeOwnedRow: (row) => {
+        for (const { field, semantics } of fields) {
+          if (!hasEnumerableField(row, field)) {
+            continue;
+          }
+          const value = Reflect.get(row, field);
+          if (isBorrowableImmutablePrimitive(value)) {
+            continue;
+          }
+          defineResultField(row, field, semantics.materialize(value));
+        }
+        return narrowProjectedRow(row);
+      },
+      materializeRow: (row) => narrowProjectedRow(projectFields(fields, row, materializeValue)),
+      narrowProjectedRow,
+      projectRow: (row) => narrowConstructedProjection(projectFields(fields, row, borrowValue)),
+    }),
+  };
+};
+
+const makeProjectedQueryResultSemantics = <ResultRow extends RowObject>(
+  fields: ReadonlyArray<QueryResultFieldSemantics>,
+  isResultRow: QueryResultProof<ResultRow>,
+  validateProjectedValues: boolean,
+): QueryResultSemantics<ResultRow> =>
+  constructProjectedQueryResultSemantics(fields, isResultRow, validateProjectedValues).semantics;
 
 const makeTopicStorageProjectableQueryResultSemantics = <ResultRow extends RowObject>(
   fields: ReadonlyArray<QueryResultFieldSemantics>,
@@ -229,11 +241,15 @@ const makeTopicStorageProjectableQueryResultSemantics = <ResultRow extends RowOb
   validateProjectedValues: boolean,
   topicRow: TopicRowValueSemantics,
 ): TopicStorageProjectableQueryResultSemantics<ResultRow> => {
-  const semantics = makeProjectedQueryResultSemantics(fields, isResultRow, validateProjectedValues);
+  const { narrowConstructedProjection, semantics } = constructProjectedQueryResultSemantics(
+    fields,
+    isResultRow,
+    validateProjectedValues,
+  );
   const topicStorageProjectionProof = makeQueryResultTopicStorageProjectionProof(
     topicRow,
     fields.map(({ field }) => field),
-    semantics.narrowProjectedRow,
+    narrowConstructedProjection,
   );
   return Object.freeze({
     ...semantics,
@@ -244,7 +260,7 @@ const makeTopicStorageProjectableQueryResultSemantics = <ResultRow extends RowOb
 export const makeQueryResultSemantics = (
   fields: ReadonlyArray<QueryResultFieldSemantics>,
 ): QueryResultSemantics<RowObject> =>
-  makeProjectedQueryResultSemantics(fields, untypedResultProof(fields), false);
+  constructProjectedQueryResultSemantics(fields, untypedResultProof(fields), false).semantics;
 
 const rawResultFields = (
   topicRow: TopicRowValueSemantics,

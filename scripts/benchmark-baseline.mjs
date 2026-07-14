@@ -33,6 +33,13 @@ import {
   decodeGrpcLeasedSeedMutationCount,
   validateGrpcLeasedOperationAccounting,
 } from "./grpc-leased-benchmark-policy.mjs";
+import {
+  decodeBenchmarkMemoryRssTotalDeltaBytes,
+  decodeBenchmarkSamplingPolicy,
+  samplingPolicyRequiresExactMutationCount,
+  validateBenchmarkSamplingPolicy,
+  validateBenchmarkSamplingPolicyMemoryRssTotalDeltaBytes,
+} from "./benchmark-sampling-policy.mjs";
 
 export const defaultBenchmarkThresholds = {
   latencyMean: {
@@ -800,15 +807,24 @@ export const readBenchmarkObservation = (task) => {
     );
   }
   const latencySource = stringValue(latency.source, `${task.summaryPath}.latency.source`);
+  const expectedSamplingPolicy = decodeBenchmarkSamplingPolicy(
+    task.samplingPolicy,
+    `${task.label}.samplingPolicy`,
+  );
+  const artifactSamplingPolicy = decodeBenchmarkSamplingPolicy(
+    summary.samplingPolicy,
+    `${task.summaryPath}.samplingPolicy`,
+  );
+  if (JSON.stringify(artifactSamplingPolicy) !== JSON.stringify(expectedSamplingPolicy)) {
+    throw new Error(`${task.label}: benchmark samplingPolicy did not match the runner policy.`);
+  }
+  const samplingPolicy = artifactSamplingPolicy;
   const memory = objectValue(summary.memory, `${task.summaryPath}.memory`);
-  const totalDelta =
-    "totalDelta" in memory
-      ? objectValue(memory.totalDelta, `${task.summaryPath}.memory.totalDelta`)
-      : undefined;
-  const rssBytes =
-    totalDelta === undefined
-      ? undefined
-      : optionalFiniteNumber(totalDelta.rssBytes, `${task.summaryPath}.memory.totalDelta.rssBytes`);
+  const rssBytes = decodeBenchmarkMemoryRssTotalDeltaBytes(
+    memory,
+    `${task.summaryPath}.memory`,
+    samplingPolicy,
+  );
   if (
     (artifactKind === "engine-benchmark-summary" ||
       artifactKind === "runtime-benchmark-summary") &&
@@ -845,9 +861,19 @@ export const readBenchmarkObservation = (task) => {
       );
     }
   }
+  validateBenchmarkSamplingPolicy(samplingPolicy, benchmarks, minimumSampleCount, task.label);
 
   const benchmarkCases = stringArrayValue(summary.benchmarkCases, `${task.summaryPath}.benchmarkCases`);
   const mutationCount = nonNegativeInteger(summary.mutationCount, `${task.summaryPath}.mutationCount`);
+  const expectedMutationCount =
+    task.expectedMutationCount === undefined
+      ? undefined
+      : nonNegativeInteger(task.expectedMutationCount, `${task.label}.expectedMutationCount`);
+  if (expectedMutationCount !== undefined && mutationCount !== expectedMutationCount) {
+    throw new Error(
+      `${task.label}: mutationCount must be exactly ${expectedMutationCount} but was ${mutationCount}.`,
+    );
+  }
   const seedMutationCount = grpcSeedMutationCountValue(
     summary.seedMutationCount,
     `${task.summaryPath}.seedMutationCount`,
@@ -977,6 +1003,7 @@ export const readBenchmarkObservation = (task) => {
     ...(seedMutationCount === undefined ? {} : { seedMutationCount }),
     subscriberCount: finiteNumber(summary.subscriberCount, `${task.summaryPath}.subscriberCount`),
     summaryPath: task.summaryPath,
+    ...(samplingPolicy === undefined ? {} : { samplingPolicy }),
     taskLabel: task.label,
     throughputCases,
     topics,
@@ -1113,6 +1140,7 @@ const validateBenchmark = (benchmark, path) => ({
 const validateTask = (task, path) => {
   const artifactKind = summaryArtifactKind(task.artifactKind, `${path}.artifactKind`);
   const benchmarkScope = stringValue(task.benchmarkScope, `${path}.benchmarkScope`);
+  const taskLabel = stringValue(task.taskLabel, `${path}.taskLabel`);
   const mutationCount = nonNegativeInteger(task.mutationCount, `${path}.mutationCount`);
   const seedMutationCount = grpcSeedMutationCountValue(
     task.seedMutationCount,
@@ -1194,6 +1222,16 @@ const validateTask = (task, path) => {
   }
   const benchmarkCases = stringArrayValue(task.benchmarkCases, `${path}.benchmarkCases`);
   const minimumSampleCount = positiveInteger(task.minimumSampleCount, `${path}.minimumSampleCount`);
+  const samplingPolicy = decodeBenchmarkSamplingPolicy(
+    task.samplingPolicy,
+    `${path}.samplingPolicy`,
+  );
+  validateBenchmarkSamplingPolicy(samplingPolicy, benchmarks, minimumSampleCount, taskLabel);
+  validateBenchmarkSamplingPolicyMemoryRssTotalDeltaBytes(
+    samplingPolicy,
+    memoryRssTotalDeltaBytes,
+    `${path}.memoryRssTotalDeltaBytes`,
+  );
   if (requiresGrpcOperationCases) {
     validateBenchmarkCasesMatchBenchmarks(benchmarkCases, benchmarks, `${path}.benchmarkCases`);
   }
@@ -1259,7 +1297,8 @@ const validateTask = (task, path) => {
     ...(seedMutationCount === undefined ? {} : { seedMutationCount }),
     subscriberCount: finiteNumber(task.subscriberCount, `${path}.subscriberCount`),
     summaryPath: stringValue(task.summaryPath, `${path}.summaryPath`),
-    taskLabel: stringValue(task.taskLabel, `${path}.taskLabel`),
+    ...(samplingPolicy === undefined ? {} : { samplingPolicy }),
+    taskLabel,
     throughputCases,
     topics: stringArrayValue(task.topics, `${path}.topics`),
   };
@@ -1461,6 +1500,10 @@ const benchmarkScopeRequiresExactMutationCount = (benchmarkScope) =>
   benchmarkScope === "runtime-kafka-ingest" ||
   benchmarkScope === "runtime-websocket-firehose";
 
+const benchmarkTaskRequiresExactMutationCount = (task) =>
+  benchmarkScopeRequiresExactMutationCount(task.benchmarkScope) ||
+  samplingPolicyRequiresExactMutationCount(task.samplingPolicy);
+
 const benchmarkScopeRequiresExactSampleCount = (benchmarkScope) =>
   benchmarkScope === "engine-raw-write";
 
@@ -1541,7 +1584,7 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
       actualTask.benchmarkCases,
     );
     compareExact(regressions, taskLabel, "rowCount", baselineTask.rowCount, actualTask.rowCount);
-    if (benchmarkScopeRequiresExactMutationCount(baselineTask.benchmarkScope)) {
+    if (benchmarkTaskRequiresExactMutationCount(baselineTask)) {
       compareExact(
         regressions,
         taskLabel,
@@ -1647,6 +1690,13 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
       "minimumSampleCount",
       baselineTask.minimumSampleCount,
       actualTask.minimumSampleCount,
+    );
+    compareExactJson(
+      regressions,
+      taskLabel,
+      "samplingPolicy",
+      baselineTask.samplingPolicy,
+      actualTask.samplingPolicy,
     );
     compareExact(
       regressions,

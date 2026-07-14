@@ -2,12 +2,9 @@
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
 import { Schema } from "effect";
-import {
-  benchmarkOutputJsonPath,
-  memorySnapshot,
-  writeBenchmarkArtifact,
-  type BenchmarkMemorySnapshot,
-} from "./benchmark-artifact";
+import { benchmarkOutputJsonPath, writeBenchmarkArtifact } from "./benchmark-artifact";
+import { makeBenchmarkMemoryRecorder } from "./benchmark-memory-recorder";
+import { parseBenchmarkMemoryRssMetric, timedReadSamplingPolicy } from "./benchmark-sampling";
 import { compareQueryValue } from "./query-value";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { fieldValue, scalarEqualityKey } from "./row-values";
@@ -114,8 +111,7 @@ const rowCountFromEnv = (): number => {
 
 const rowCount = rowCountFromEnv();
 const outputJsonPath = benchmarkOutputJsonPath(`raw-predicate-index-${rowCount}rows.json`);
-const memoryBefore = memorySnapshot();
-let memoryAfterSetup: BenchmarkMemorySnapshot = memoryBefore;
+const benchmarkMemory = makeBenchmarkMemoryRecorder();
 const benchOptions = {
   iterations: positiveIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_ITERATIONS", defaultIterations),
   time: positiveIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_TIME_MS", defaultBenchmarkTimeMs),
@@ -128,6 +124,22 @@ const benchOptions = {
     defaultWarmupTimeMs,
   ),
 };
+const timedReadMinimumSampleCount =
+  process.env["VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES"] === undefined
+    ? undefined
+    : positiveIntegerFromEnv(
+        "VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES",
+        benchOptions.iterations,
+      );
+const memoryRssMetric = parseBenchmarkMemoryRssMetric(
+  process.env["VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC"],
+);
+const samplingPolicy = timedReadSamplingPolicy({
+  iterationBoundCases: [],
+  memoryRssMetric,
+  measuredMinimumSampleCount: timedReadMinimumSampleCount,
+  measuredOptions: benchOptions,
+});
 
 let profile: PredicateBenchState | undefined;
 const targetCustomerIndex = Math.floor(rowCount / 2);
@@ -596,13 +608,13 @@ beforeAll(() => {
   for (const benchmarkCase of benchmarkCases()) {
     runBenchmarkCase(benchmarkCase);
   }
-  memoryAfterSetup = memorySnapshot();
+  benchmarkMemory.captureAfterSetup();
 }, 0);
 
 afterAll(() => {
   const benchmarkCaseNames = benchmarkCases().map((benchmarkCase) => benchmarkCase.name);
   profile = undefined;
-  const memoryAfterBenchmark = memorySnapshot();
+  const benchmarkMemoryInput = benchmarkMemory.captureAfterBenchmark(samplingPolicy);
   writeBenchmarkArtifact({
     artifactKind: "engine-benchmark-summary",
     backpressureCount: 0,
@@ -618,9 +630,7 @@ afterAll(() => {
       outputJsonPath,
       source: "vitest-output-json",
     },
-    memoryAfterBenchmark,
-    memoryAfterSetup,
-    memoryBefore,
+    ...benchmarkMemoryInput,
     mutationCount: 0,
     notes: [
       "Latency percentiles are emitted by Vitest in outputJsonPath.",

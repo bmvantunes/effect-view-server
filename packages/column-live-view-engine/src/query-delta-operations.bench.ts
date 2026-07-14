@@ -2,11 +2,8 @@
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, bench, describe, expect } from "vitest";
 import { Schema } from "effect";
-import {
-  benchmarkOutputJsonPath,
-  memorySnapshot,
-  writeBenchmarkArtifact,
-} from "./benchmark-artifact";
+import { benchmarkOutputJsonPath, writeBenchmarkArtifact } from "./benchmark-artifact";
+import { memorySnapshot } from "./benchmark-memory-recorder";
 import { deltaOperations, type QueryEvaluation } from "./query-result";
 import { makeQueryResultSemantics } from "./query-result-semantics";
 import { makeSchemaValueSemantics } from "./topic-row-value-semantics";

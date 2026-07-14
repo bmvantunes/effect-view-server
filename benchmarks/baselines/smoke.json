@@ -8,119 +8,119 @@
       "benchmarks": [
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.45800000000002683,
-          "meanMs": 0.25992500000000973,
-          "minMs": 0.19700000000000273,
+          "maxMs": 0.9524999999999864,
+          "meanMs": 0.2267492783318247,
+          "minMs": 0.16499999999996362,
           "name": "equality filter + top-k sort",
-          "p99Ms": 0.45800000000002683,
-          "sampleCount": 5
+          "p99Ms": 0.42745800000000145,
+          "sampleCount": 1103
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.5310829999999669,
-          "meanMs": 0.22164999999998827,
-          "minMs": 0.11833400000000438,
+          "maxMs": 0.959374999999909,
+          "meanMs": 0.12395357610312233,
+          "minMs": 0.10300000000006548,
           "name": "selective equality filter + fallback top-k sort",
-          "p99Ms": 0.5310829999999669,
-          "sampleCount": 5
+          "p99Ms": 0.1962079999998423,
+          "sampleCount": 2017
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.5086670000000026,
-          "meanMs": 0.1675696666666795,
-          "minMs": 0.08704199999999673,
+          "maxMs": 0.9626670000000104,
+          "meanMs": 0.11933685727923943,
+          "minMs": 0.0955829999998059,
           "name": "ordered equality filter + indexed seek",
-          "p99Ms": 0.5086670000000026,
-          "sampleCount": 6
+          "p99Ms": 0.2081660000001193,
+          "sampleCount": 2095
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.28624999999999545,
-          "meanMs": 0.15575599999999667,
-          "minMs": 0.10116699999997536,
+          "maxMs": 1.1011670000000322,
+          "meanMs": 0.14300346369353326,
+          "minMs": 0.11329099999966274,
           "name": "ordered in filter + indexed seek",
-          "p99Ms": 0.28624999999999545,
-          "sampleCount": 7
+          "p99Ms": 0.28770899999972244,
+          "sampleCount": 1749
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.4065830000000119,
-          "meanMs": 0.1291823750000134,
-          "minMs": 0.07741700000002538,
+          "maxMs": 1.7670830000001843,
+          "meanMs": 0.11015952334801794,
+          "minMs": 0.08966599999985192,
           "name": "range filter + top-k sort",
-          "p99Ms": 0.4065830000000119,
-          "sampleCount": 8
+          "p99Ms": 0.21075000000018917,
+          "sampleCount": 2270
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.35454200000003766,
-          "meanMs": 0.1038374000000033,
-          "minMs": 0.06545799999997826,
+          "maxMs": 0.9111669999997503,
+          "meanMs": 0.11202553181003842,
+          "minMs": 0.09304099999963,
           "name": "bigint range filter + indexed seek",
-          "p99Ms": 0.35454200000003766,
-          "sampleCount": 10
+          "p99Ms": 0.21149999999988722,
+          "sampleCount": 2232
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.5293749999999591,
-          "meanMs": 0.14897628571428154,
-          "minMs": 0.06574999999997999,
+          "maxMs": 1.0734590000001845,
+          "meanMs": 0.12285286093367168,
+          "minMs": 0.0946670000002996,
           "name": "BigDecimal range filter + indexed seek",
-          "p99Ms": 0.5293749999999591,
-          "sampleCount": 7
+          "p99Ms": 0.2482919999997648,
+          "sampleCount": 2035
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.3442919999999958,
-          "meanMs": 0.21321679999999787,
-          "minMs": 0.1430000000000291,
+          "maxMs": 1.6518329999998969,
+          "meanMs": 0.23093722160664493,
+          "minMs": 0.18079200000011042,
           "name": "selective range filter + fallback top-k sort",
-          "p99Ms": 0.3442919999999958,
-          "sampleCount": 5
+          "p99Ms": 0.5279999999997926,
+          "sampleCount": 1083
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.4652080000000183,
-          "meanMs": 0.1515417142857213,
-          "minMs": 0.09329200000001947,
+          "maxMs": 0.8584590000000389,
+          "meanMs": 0.16853660849056476,
+          "minMs": 0.14049999999997453,
           "name": "compound filter + top-k sort",
-          "p99Ms": 0.4652080000000183,
-          "sampleCount": 7
+          "p99Ms": 0.31579099999999016,
+          "sampleCount": 1484
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.3406669999999963,
-          "meanMs": 0.2907917999999768,
-          "minMs": 0.25562499999995225,
+          "maxMs": 0.7947500000000218,
+          "meanMs": 0.36397866400001294,
+          "minMs": 0.3271249999997963,
           "name": "narrow scalar projection + top-k sort",
-          "p99Ms": 0.3406669999999963,
-          "sampleCount": 5
+          "p99Ms": 0.6945839999998498,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.374416999999994,
-          "meanMs": 0.2566752000000065,
-          "minMs": 0.21029199999998127,
+          "maxMs": 1.6526249999997162,
+          "meanMs": 1.1790035749999879,
+          "minMs": 0.9720829999996567,
           "name": "wide scalar projection + top-k sort",
-          "p99Ms": 0.374416999999994,
-          "sampleCount": 5
+          "p99Ms": 1.4924590000000535,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.242999999999995,
-          "meanMs": 0.07921469230769144,
-          "minMs": 0.061958000000004176,
+          "maxMs": 0.8593329999994239,
+          "meanMs": 0.14212024602273604,
+          "minMs": 0.11650000000008731,
           "name": "filtered totalRows via zero-row window",
-          "p99Ms": 0.242999999999995,
-          "sampleCount": 13
+          "p99Ms": 0.26924999999937427,
+          "sampleCount": 1760
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 1.350541000000021,
-          "meanMs": 0.47325819999999796,
-          "minMs": 0.22670800000003055,
+          "maxMs": 3.118540999999823,
+          "meanMs": 1.2843996000001425,
+          "minMs": 0.7327080000004571,
           "name": "live subscription delta after publish",
-          "p99Ms": 1.350541000000021,
+          "p99Ms": 3.118540999999823,
           "sampleCount": 5
         }
       ],
@@ -143,7 +143,7 @@
       "benchmarkScope": "engine-raw-snapshot",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 43581440,
+      "memoryRssTotalDeltaBytes": 123060224,
       "minimumSampleCount": 5,
       "mutationCount": 1005,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/raw-snapshot-1000rows.json",
@@ -151,6 +151,24 @@
       "rowCount": 1000,
       "subscriberCount": 1,
       "summaryPath": "packages/column-live-view-engine/.artifacts/raw-snapshot-1000rows.summary.json",
+      "samplingPolicy": {
+        "iterationBoundCases": [
+          {
+            "name": "live subscription delta after publish",
+            "sampleCount": 5,
+            "timeMs": 0,
+            "warmupIterations": 0,
+            "warmupTimeMs": 0
+          }
+        ],
+        "memoryRssMetric": "process-peak-over-initial-current",
+        "measured": {
+          "minimumSampleCount": 1000,
+          "timeMs": 250,
+          "warmupIterations": 5,
+          "warmupTimeMs": 100
+        }
+      },
       "taskLabel": "raw snapshot 1000 rows",
       "topics": ["orders"]
     },
@@ -160,75 +178,75 @@
       "benchmarks": [
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.07158300000003237,
-          "meanMs": 0.0631432500000102,
-          "minMs": 0.058417000000019925,
+          "maxMs": 1.8468749999999545,
+          "meanMs": 0.07098862947189132,
+          "minMs": 0.05812500000001819,
           "name": "full scan callback baseline: selective customer + fallback sort",
-          "p99Ms": 0.07158300000003237,
-          "sampleCount": 16
+          "p99Ms": 0.13904200000001765,
+          "sampleCount": 3522
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.04579099999995151,
-          "meanMs": 0.030317441176469416,
-          "minMs": 0.024707999999975527,
+          "maxMs": 0.2655000000000882,
+          "meanMs": 0.025133407560067524,
+          "minMs": 0.022000000000048203,
           "name": "exact scalar candidate: selective customer + fallback sort",
-          "p99Ms": 0.04579099999995151,
-          "sampleCount": 34
+          "p99Ms": 0.05633299999999508,
+          "sampleCount": 9947
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.03758299999998371,
-          "meanMs": 0.028713257142854737,
-          "minMs": 0.02370899999999665,
+          "maxMs": 0.23891600000001745,
+          "meanMs": 0.024764407884310027,
+          "minMs": 0.021915999999919222,
           "name": "exact scalar candidate: selective customer without callback",
-          "p99Ms": 0.03758299999998371,
-          "sampleCount": 35
+          "p99Ms": 0.051791999999977634,
+          "sampleCount": 10096
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.04475000000002183,
-          "meanMs": 0.031651062500001714,
-          "minMs": 0.026583000000016455,
+          "maxMs": 0.28891699999985576,
+          "meanMs": 0.029364675945502516,
+          "minMs": 0.02391699999998309,
           "name": "exact multi-key in candidate: three customers + fallback sort",
-          "p99Ms": 0.04475000000002183,
-          "sampleCount": 32
+          "p99Ms": 0.07466700000009041,
+          "sampleCount": 8514
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.14408400000002075,
-          "meanMs": 0.10749589999999784,
-          "minMs": 0.0887920000000122,
+          "maxMs": 0.3269999999999982,
+          "meanMs": 0.0876114842326562,
+          "minMs": 0.07891700000027413,
           "name": "exact range candidate: upper price tail + fallback sort",
-          "p99Ms": 0.14408400000002075,
-          "sampleCount": 10
+          "p99Ms": 0.1350840000000062,
+          "sampleCount": 2854
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.080208999999968,
-          "meanMs": 0.07349692857141983,
-          "minMs": 0.07095800000001873,
+          "maxMs": 13.257958000000144,
+          "meanMs": 0.11179182521233774,
+          "minMs": 0.08216700000002675,
           "name": "full scan callback baseline: upper price tail + fallback sort",
-          "p99Ms": 0.080208999999968,
-          "sampleCount": 14
+          "p99Ms": 0.2183749999999236,
+          "sampleCount": 2237
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.03999999999996362,
-          "meanMs": 0.027176837837837534,
-          "minMs": 0.022041999999999007,
+          "maxMs": 0.31141699999989214,
+          "meanMs": 0.02472172045881496,
+          "minMs": 0.021040999999968335,
           "name": "ordered equality seek: customer storage order",
-          "p99Ms": 0.03999999999996362,
-          "sampleCount": 37
+          "p99Ms": 0.06062500000007276,
+          "sampleCount": 10113
         },
         {
           "groupName": "src/raw-predicate-index.bench.ts > raw predicate candidate index benchmark: 1000 rows",
-          "maxMs": 0.403458999999998,
-          "meanMs": 0.3793920000000071,
-          "minMs": 0.3659589999999753,
+          "maxMs": 0.58462499999996,
+          "meanMs": 0.3567783359999944,
+          "minMs": 0.32758300000023155,
           "name": "failed broad scalar candidate build + full scan",
-          "p99Ms": 0.403458999999998,
-          "sampleCount": 5
+          "p99Ms": 0.5034169999998994,
+          "sampleCount": 1000
         }
       ],
       "benchmarkCases": [
@@ -245,14 +263,24 @@
       "benchmarkScope": "engine-raw-predicate-index",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 12926976,
-      "minimumSampleCount": 5,
+      "memoryRssTotalDeltaBytes": 47300608,
+      "minimumSampleCount": 1000,
       "mutationCount": 0,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/raw-predicate-index-1000rows.json",
       "queuedEventCount": 0,
       "rowCount": 1000,
       "subscriberCount": 0,
       "summaryPath": "packages/column-live-view-engine/.artifacts/raw-predicate-index-1000rows.summary.json",
+      "samplingPolicy": {
+        "iterationBoundCases": [],
+        "memoryRssMetric": "process-peak-over-initial-current",
+        "measured": {
+          "minimumSampleCount": 1000,
+          "timeMs": 250,
+          "warmupIterations": 5,
+          "warmupTimeMs": 100
+        }
+      },
       "taskLabel": "raw predicate index 1000 rows",
       "topics": ["orders"]
     },
@@ -488,56 +516,56 @@
       "benchmarks": [
         {
           "groupName": "src/grouped-aggregate.bench.ts > grouped aggregate engine benchmark: 1000 rows",
-          "maxMs": 2.0125830000000065,
-          "meanMs": 1.946691599999997,
-          "minMs": 1.8797089999999912,
+          "maxMs": 8.838999999999942,
+          "meanMs": 3.8377452950000035,
+          "minMs": 3.287207999999737,
           "name": "status grouped count/sum/min/max/avg",
-          "p99Ms": 2.0125830000000065,
-          "sampleCount": 5
+          "p99Ms": 5.403959000000214,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-aggregate.bench.ts > grouped aggregate engine benchmark: 1000 rows",
-          "maxMs": 2.7408340000000635,
-          "meanMs": 1.474558600000023,
-          "minMs": 1.025624999999991,
+          "maxMs": 5.994457999999213,
+          "meanMs": 2.8181954149999964,
+          "minMs": 2.6408339999998134,
           "name": "region+status grouped count/sum/min/max/avg",
-          "p99Ms": 2.7408340000000635,
-          "sampleCount": 5
+          "p99Ms": 3.124916000000667,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-aggregate.bench.ts > grouped aggregate engine benchmark: 1000 rows",
-          "maxMs": 3.0313750000000255,
-          "meanMs": 1.7923583999999892,
-          "minMs": 1.2290420000000495,
+          "maxMs": 17.77904099999978,
+          "meanMs": 2.6155050320000117,
+          "minMs": 1.8775409999998374,
           "name": "high-cardinality desk grouped aggregates",
-          "p99Ms": 3.0313750000000255,
-          "sampleCount": 5
+          "p99Ms": 5.790291999999681,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-aggregate.bench.ts > grouped aggregate engine benchmark: 1000 rows",
-          "maxMs": 0.5928330000000415,
-          "meanMs": 0.41990840000003116,
-          "minMs": 0.3435420000000704,
+          "maxMs": 3.248374999999214,
+          "meanMs": 0.628317881999974,
+          "minMs": 0.5511669999996229,
           "name": "high-cardinality desk group count via zero-row window",
-          "p99Ms": 0.5928330000000415,
-          "sampleCount": 5
+          "p99Ms": 0.8754580000004353,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-aggregate.bench.ts > grouped aggregate engine benchmark: 1000 rows",
-          "maxMs": 1.2276669999999967,
-          "meanMs": 0.8155085999999983,
-          "minMs": 0.6132089999999835,
+          "maxMs": 2.7309580000001006,
+          "meanMs": 1.8202042550000042,
+          "minMs": 1.476209000000381,
           "name": "filtered status grouped aggregates",
-          "p99Ms": 1.2276669999999967,
-          "sampleCount": 5
+          "p99Ms": 2.33429199999955,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-aggregate.bench.ts > grouped aggregate engine benchmark: 1000 rows",
-          "maxMs": 1.1585420000000113,
-          "meanMs": 0.40116680000005545,
-          "minMs": 0.19000000000005457,
+          "maxMs": 2.3298329999997804,
+          "meanMs": 0.7006829999998445,
+          "minMs": 0.2715829999997368,
           "name": "live grouped aggregate delta after publish",
-          "p99Ms": 1.1585420000000113,
+          "p99Ms": 2.3298329999997804,
           "sampleCount": 5
         }
       ],
@@ -553,7 +581,7 @@
       "benchmarkScope": "engine-grouped-aggregate",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 55246848,
+      "memoryRssTotalDeltaBytes": 213221376,
       "minimumSampleCount": 5,
       "mutationCount": 1005,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/grouped-aggregate-1000rows.json",
@@ -561,6 +589,24 @@
       "rowCount": 1000,
       "subscriberCount": 1,
       "summaryPath": "packages/column-live-view-engine/.artifacts/grouped-aggregate-1000rows.summary.json",
+      "samplingPolicy": {
+        "iterationBoundCases": [
+          {
+            "name": "live grouped aggregate delta after publish",
+            "sampleCount": 5,
+            "timeMs": 0,
+            "warmupIterations": 0,
+            "warmupTimeMs": 0
+          }
+        ],
+        "memoryRssMetric": "process-peak-over-initial-current",
+        "measured": {
+          "minimumSampleCount": 1000,
+          "timeMs": 250,
+          "warmupIterations": 5,
+          "warmupTimeMs": 100
+        }
+      },
       "taskLabel": "grouped aggregate 1000 rows",
       "topics": ["orders"]
     },
@@ -570,48 +616,48 @@
       "benchmarks": [
         {
           "groupName": "src/grouped-key-width.bench.ts > grouped key width engine benchmark: 1000 rows",
-          "maxMs": 0.7927920000000199,
-          "meanMs": 0.6422918000000095,
-          "minMs": 0.5906669999999963,
+          "maxMs": 1.8470829999998841,
+          "meanMs": 1.0371854670000014,
+          "minMs": 0.875583000000006,
           "name": "groupBy one key",
-          "p99Ms": 0.7927920000000199,
-          "sampleCount": 5
+          "p99Ms": 1.4681249999998727,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-key-width.bench.ts > grouped key width engine benchmark: 1000 rows",
-          "maxMs": 0.9958750000000123,
-          "meanMs": 0.8350836000000073,
-          "minMs": 0.700333999999998,
+          "maxMs": 9.303249999999935,
+          "meanMs": 1.6430239730000034,
+          "minMs": 1.3456249999999272,
           "name": "groupBy two keys",
-          "p99Ms": 0.9958750000000123,
-          "sampleCount": 5
+          "p99Ms": 2.626666000000114,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-key-width.bench.ts > grouped key width engine benchmark: 1000 rows",
-          "maxMs": 1.2871250000000032,
-          "meanMs": 1.1036417999999912,
-          "minMs": 0.916499999999985,
+          "maxMs": 3.4199579999999514,
+          "meanMs": 2.4600841180000073,
+          "minMs": 2.082166999999572,
           "name": "groupBy four keys",
-          "p99Ms": 1.2871250000000032,
-          "sampleCount": 5
+          "p99Ms": 3.0296669999997903,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-key-width.bench.ts > grouped key width engine benchmark: 1000 rows",
-          "maxMs": 1.551541000000043,
-          "meanMs": 1.4268414000000007,
-          "minMs": 1.3614579999999705,
+          "maxMs": 13.266458000000057,
+          "meanMs": 4.540985707999989,
+          "minMs": 3.911833000000115,
           "name": "groupBy eight keys",
-          "p99Ms": 1.551541000000043,
-          "sampleCount": 5
+          "p99Ms": 6.274374999999964,
+          "sampleCount": 1000
         },
         {
           "groupName": "src/grouped-key-width.bench.ts > grouped key width engine benchmark: 1000 rows",
-          "maxMs": 1.9940829999999892,
-          "meanMs": 1.6581997999999998,
-          "minMs": 1.485666999999978,
+          "maxMs": 14.887500000000728,
+          "meanMs": 4.7975195500000005,
+          "minMs": 3.861417000000074,
           "name": "groupBy eight ordered keys",
-          "p99Ms": 1.9940829999999892,
-          "sampleCount": 5
+          "p99Ms": 6.660375000001295,
+          "sampleCount": 1000
         }
       ],
       "benchmarkCases": [
@@ -643,14 +689,24 @@
         "windowLimit": 250
       },
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 57245696,
-      "minimumSampleCount": 5,
+      "memoryRssTotalDeltaBytes": 58621952,
+      "minimumSampleCount": 1000,
       "mutationCount": 1000,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/grouped-key-width-1000rows.json",
       "queuedEventCount": 0,
       "rowCount": 1000,
       "subscriberCount": 0,
       "summaryPath": "packages/column-live-view-engine/.artifacts/grouped-key-width-1000rows.summary.json",
+      "samplingPolicy": {
+        "iterationBoundCases": [],
+        "memoryRssMetric": "process-peak-over-initial-current",
+        "measured": {
+          "minimumSampleCount": 1000,
+          "timeMs": 250,
+          "warmupIterations": 5,
+          "warmupTimeMs": 100
+        }
+      },
       "taskLabel": "grouped key width 1000 rows",
       "topics": ["orders"]
     },

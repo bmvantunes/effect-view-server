@@ -12,12 +12,12 @@ import {
   groupedFullEvaluationCountFromEngineHealth,
   groupedPatchedEvaluationCountFromEngineHealth,
   isBenchmarkEngineHealth,
-  memoryDelta,
-  memorySnapshot,
   queuedEventCountFromEngineHealth,
   writeBenchmarkArtifact,
-  type BenchmarkMemorySnapshot,
+  type BenchmarkArtifactInput,
 } from "./benchmark-artifact";
+import { memoryDelta, type BenchmarkMemorySnapshot } from "./benchmark-memory-recorder";
+import type { BenchmarkSamplingPolicy } from "./benchmark-sampling";
 
 const memory = (value: number): BenchmarkMemorySnapshot => ({
   arrayBuffersBytes: value,
@@ -26,6 +26,17 @@ const memory = (value: number): BenchmarkMemorySnapshot => ({
   heapUsedBytes: value + 3,
   rssBytes: value + 4,
 });
+
+const samplingPolicy: BenchmarkSamplingPolicy = {
+  iterationBoundCases: [],
+  memoryRssMetric: "process-peak-over-initial-current",
+  measured: {
+    minimumSampleCount: 1_000,
+    timeMs: 250,
+    warmupIterations: 5,
+    warmupTimeMs: 100,
+  },
+};
 
 describe("benchmark artifact helpers", () => {
   afterEach(() => {
@@ -52,17 +63,6 @@ describe("benchmark artifact helpers", () => {
   });
 
   it("computes memory and health counters", () => {
-    const currentMemory = memorySnapshot();
-    expect(typeof currentMemory.rssBytes).toBe("number");
-
-    expect(memoryDelta(memory(1), memory(3))).toStrictEqual({
-      arrayBuffersBytes: 2,
-      externalBytes: 2,
-      heapTotalBytes: 2,
-      heapUsedBytes: 2,
-      rssBytes: 2,
-    });
-
     const health = {
       activeSubscriptions: 2,
       backpressureEvents: 5,
@@ -289,7 +289,7 @@ describe("benchmark artifact helpers", () => {
 
   it("writes benchmark summary artifacts", () => {
     const outputJsonPath = ".artifacts/benchmark-artifact-test.json";
-    writeBenchmarkArtifact({
+    const artifactInput: BenchmarkArtifactInput = {
       artifactKind: "engine-benchmark-summary",
       backpressureCount: 0,
       benchmarkCases: ["case-a"],
@@ -330,6 +330,12 @@ describe("benchmark artifact helpers", () => {
       memoryAfterBenchmark: memory(5),
       memoryAfterSetup: memory(3),
       memoryBefore: memory(1),
+      processPeakRss: {
+        afterBenchmarkBytes: 40,
+        afterSetupBytes: 30,
+        beforeBytes: 20,
+      },
+      samplingPolicy,
       mutationCount: 10,
       notes: ["test artifact"],
       outputJsonPath,
@@ -340,7 +346,8 @@ describe("benchmark artifact helpers", () => {
       rowCount: 100,
       subscriberCount: 1,
       topics: ["orders"],
-    });
+    };
+    writeBenchmarkArtifact(artifactInput);
 
     expect(readFileSync(".artifacts/benchmark-artifact-test.summary.json", "utf8")).toBe(
       `${JSON.stringify(
@@ -387,6 +394,14 @@ describe("benchmark artifact helpers", () => {
             afterSetup: memory(3),
             before: memory(1),
             benchmarkDelta: memoryDelta(memory(3), memory(5)),
+            processPeakRss: {
+              afterBenchmarkBytes: 40,
+              afterSetupBytes: 30,
+              beforeBytes: 20,
+              benchmarkDeltaBytes: 10,
+              setupDeltaBytes: 25,
+              totalDeltaBytes: 35,
+            },
             setupDelta: memoryDelta(memory(1), memory(3)),
             totalDelta: memoryDelta(memory(1), memory(5)),
           },
@@ -398,6 +413,7 @@ describe("benchmark artifact helpers", () => {
           },
           queuedEventCount: 0,
           rowCount: 100,
+          samplingPolicy,
           subscriberCount: 1,
           topics: ["orders"],
         },
@@ -405,5 +421,58 @@ describe("benchmark artifact helpers", () => {
         2,
       )}\n`,
     );
+
+    expect(() =>
+      writeBenchmarkArtifact({
+        ...artifactInput,
+        processPeakRss: {
+          afterBenchmarkBytes: 40,
+          afterSetupBytes: 30,
+          beforeBytes: 4,
+        },
+      }),
+    ).toThrow("Process peak RSS checkpoints must be monotonic.");
+    expect(() =>
+      writeBenchmarkArtifact({
+        ...artifactInput,
+        processPeakRss: {
+          afterBenchmarkBytes: 40,
+          afterSetupBytes: 19,
+          beforeBytes: 20,
+        },
+      }),
+    ).toThrow("Process peak RSS checkpoints must be monotonic.");
+    expect(() =>
+      writeBenchmarkArtifact({
+        ...artifactInput,
+        processPeakRss: {
+          afterBenchmarkBytes: 29,
+          afterSetupBytes: 30,
+          beforeBytes: 20,
+        },
+      }),
+    ).toThrow("Process peak RSS checkpoints must be monotonic.");
+
+    const endpointOnlyOutputJsonPath = ".artifacts/benchmark-artifact-endpoint-only-test.json";
+    const {
+      processPeakRss: configuredProcessPeakRss,
+      samplingPolicy: configuredSamplingPolicy,
+      ...endpointOnlyArtifactInput
+    } = artifactInput;
+    expect(configuredProcessPeakRss).toStrictEqual({
+      afterBenchmarkBytes: 40,
+      afterSetupBytes: 30,
+      beforeBytes: 20,
+    });
+    expect(configuredSamplingPolicy).toStrictEqual(samplingPolicy);
+    writeBenchmarkArtifact({
+      ...endpointOnlyArtifactInput,
+      outputJsonPath: endpointOnlyOutputJsonPath,
+    });
+    expect(
+      JSON.parse(
+        readFileSync(".artifacts/benchmark-artifact-endpoint-only-test.summary.json", "utf8"),
+      ).memory,
+    ).not.toHaveProperty("processPeakRss");
   });
 });

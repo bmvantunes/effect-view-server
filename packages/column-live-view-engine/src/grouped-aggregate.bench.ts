@@ -16,11 +16,15 @@ import {
   cleanupLeakCountFromEngineHealth,
   failOnBenchmarkCleanupLeaks,
   isBenchmarkEngineHealth,
-  memorySnapshot,
   queuedEventCountFromEngineHealth,
   writeBenchmarkArtifact,
-  type BenchmarkMemorySnapshot,
 } from "./benchmark-artifact";
+import { makeBenchmarkMemoryRecorder } from "./benchmark-memory-recorder";
+import {
+  iterationBoundBenchmarkOptions,
+  parseBenchmarkMemoryRssMetric,
+  timedReadSamplingPolicy,
+} from "./benchmark-sampling";
 import { fieldValue } from "./row-values";
 
 declare const process: {
@@ -109,7 +113,6 @@ type BenchmarkProfile = {
   eventReader: StatusAggregateEventReader | undefined;
   liveDeltaValidations: Array<LiveDeltaValidation>;
   liveInitialVersion: number | undefined;
-  memoryAfterSetup: BenchmarkMemorySnapshot | undefined;
   nextLiveIndex: number;
   scope: Scope.Closeable | undefined;
   subscription: StatusAggregateSubscription | undefined;
@@ -177,7 +180,7 @@ const rowCountFromEnv = (): number => {
 const benchmarkRowCount = rowCountFromEnv();
 const batchSize = positiveIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE", defaultBatchSize);
 const outputJsonPath = benchmarkOutputJsonPath(`grouped-aggregate-${benchmarkRowCount}rows.json`);
-const memoryBefore = memorySnapshot();
+const benchmarkMemory = makeBenchmarkMemoryRecorder();
 const benchOptions = {
   iterations: positiveIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_ITERATIONS", defaultIterations),
   time: nonNegativeIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_TIME_MS", defaultBenchmarkTimeMs),
@@ -190,12 +193,43 @@ const benchOptions = {
     defaultWarmupTimeMs,
   ),
 };
-const liveBenchOptions = {
+const timedReadMinimumSampleCount =
+  process.env["VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES"] === undefined
+    ? undefined
+    : positiveIntegerFromEnv(
+        "VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES",
+        benchOptions.iterations,
+      );
+const memoryRssMetric = parseBenchmarkMemoryRssMetric(
+  process.env["VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC"],
+);
+const legacyLiveBenchOptions = {
   iterations: benchOptions.iterations,
   time: 0,
   warmupIterations: 0,
   warmupTime: 0,
 };
+const liveBenchOptions = iterationBoundBenchmarkOptions({
+  fallbackOptions: legacyLiveBenchOptions,
+  iterationCount:
+    timedReadMinimumSampleCount === undefined
+      ? undefined
+      : positiveIntegerFromEnv(
+          "VIEW_SERVER_ENGINE_BENCH_MUTATION_ITERATIONS",
+          benchOptions.iterations,
+        ),
+});
+const samplingPolicy = timedReadSamplingPolicy({
+  iterationBoundCases: [
+    {
+      name: "live grouped aggregate delta after publish",
+      options: liveBenchOptions,
+    },
+  ],
+  memoryRssMetric,
+  measuredMinimumSampleCount: timedReadMinimumSampleCount,
+  measuredOptions: benchOptions,
+});
 
 const profile: BenchmarkProfile = {
   rowCount: benchmarkRowCount,
@@ -203,7 +237,6 @@ const profile: BenchmarkProfile = {
   eventReader: undefined,
   liveDeltaValidations: [],
   liveInitialVersion: undefined,
-  memoryAfterSetup: undefined,
   nextLiveIndex: benchmarkRowCount,
   scope: undefined,
   subscription: undefined,
@@ -552,7 +585,7 @@ beforeAll(async () => {
   profile.engine = engine;
   profile.eventReader = eventReader;
   profile.liveInitialVersion = initialValidation.version;
-  profile.memoryAfterSetup = memorySnapshot();
+  benchmarkMemory.captureAfterSetup();
   profile.scope = scope;
   profile.subscription = subscription;
   profile.validation = {
@@ -583,11 +616,10 @@ beforeAll(async () => {
 }, 0);
 
 afterAll(async () => {
-  const memoryAfterSetup = profile.memoryAfterSetup ?? memoryBefore;
   const validation = profile.validation;
   const expectedDeskGroupCount = deskGroupCount(profile.rowCount);
   const expectedLiveVersions = Array.from(
-    { length: benchOptions.iterations },
+    { length: liveBenchOptions.iterations },
     (_value, index) => (profile.liveInitialVersion ?? 0) + index,
   );
   const initialOpenRowCount = BigInt(validation?.liveInitialOpenRowCount ?? "0");
@@ -657,9 +689,8 @@ afterAll(async () => {
   profile.eventReader = undefined;
   profile.liveDeltaValidations = [];
   profile.liveInitialVersion = undefined;
-  profile.memoryAfterSetup = undefined;
   profile.validation = undefined;
-  const memoryAfterBenchmark = memorySnapshot();
+  const benchmarkMemoryInput = benchmarkMemory.captureAfterBenchmark(samplingPolicy);
   const liveDeltaMutationCount = profile.nextLiveIndex - profile.rowCount;
   const cleanupLeakCount = cleanupLeakCountFromEngineHealth(health);
   writeBenchmarkArtifact({
@@ -681,9 +712,7 @@ afterAll(async () => {
       outputJsonPath,
       source: "vitest-output-json",
     },
-    memoryAfterBenchmark,
-    memoryAfterSetup,
-    memoryBefore,
+    ...benchmarkMemoryInput,
     mutationCount: profile.rowCount + liveDeltaMutationCount,
     notes: [
       "Latency percentiles are emitted by Vitest in outputJsonPath.",

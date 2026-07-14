@@ -23,11 +23,10 @@ import {
   groupedFullEvaluationCountFromEngineHealth,
   groupedPatchedEvaluationCountFromEngineHealth,
   isBenchmarkEngineHealth,
-  memorySnapshot,
   queuedEventCountFromEngineHealth,
   writeBenchmarkArtifact,
-  type BenchmarkMemorySnapshot,
 } from "./benchmark-artifact";
+import { memorySnapshot, type BenchmarkMemorySnapshot } from "./benchmark-memory-recorder";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;

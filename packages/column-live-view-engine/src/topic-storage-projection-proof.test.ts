@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { InvalidRowError } from "./index";
-import { evaluateRawQuery } from "./active-query";
+import { evaluateRawQuery, evaluateRawQueryResult } from "./active-query";
 import { prepareGroupedQuery } from "./grouped-query-compiler";
 import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { makeQueryResultSemantics } from "./query-result-semantics";
@@ -165,6 +165,19 @@ describe("Topic Storage projection proof", () => {
       expect(() => evaluateHostileRow(missingRequired)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
+      expect(() =>
+        evaluateRawQueryResult(
+          {
+            scanRawWindow: () => ({
+              keys: ["hostile"],
+              window: [{ key: "hostile", row: wrongType, slot: 0 }],
+              totalRows: 1,
+            }),
+            version: () => 1,
+          },
+          compiled,
+        ),
+      ).toThrowError("Projected Query Result Row does not satisfy its compiled proof.");
     }),
   );
 
@@ -400,6 +413,12 @@ describe("Topic Storage projection proof", () => {
           compiled.plan.resultSemantics.topicStorageProjectionProof,
         ).projectResultRow(0),
       ).toThrowError("Projected Query Result Row does not satisfy its compiled proof.");
+      expect(() =>
+        bindTopicStorageProjection(
+          storage.readModel.storageProjection,
+          compiled.plan.resultSemantics.topicStorageProjectionProof,
+        ).projectOwnedResultRow(0),
+      ).toThrowError("Projected Query Result Row does not satisfy its compiled proof.");
     }),
   );
 
@@ -421,6 +440,9 @@ describe("Topic Storage projection proof", () => {
       });
 
       expect(() => evaluateRawQuery(storage.readModel, compiled)).toThrowError(
+        "Projected Query Result Row does not satisfy its compiled proof.",
+      );
+      expect(() => evaluateRawQueryResult(storage.readModel, compiled)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
     }),
@@ -536,14 +558,23 @@ describe("Topic Storage projection proof", () => {
         invalidRow,
       );
       storage.setPrepared(prepared);
-      expect(Reflect.set(Reflect.get(prepared.row, "payload"), "count", "wrong")).toBe(true);
       const compiled = yield* prepareRuntimeRawQuery(
         "structured-orders",
         rawQueryCompilerMetadata(StructuredOrder),
         { select: ["id", "payload"] },
       );
+      const ownedResult = evaluateRawQueryResult(storage.readModel, compiled);
+      expect(ownedResult.rows).toStrictEqual([{ id: "stored", payload: { count: 1 } }]);
+      expect(Reflect.get(ownedResult.rows[0]!, "payload")).not.toBe(
+        Reflect.get(prepared.row, "payload"),
+      );
+
+      expect(Reflect.set(Reflect.get(prepared.row, "payload"), "count", "wrong")).toBe(true);
 
       expect(() => evaluateRawQuery(storage.readModel, compiled)).toThrowError(
+        "Projected Query Result Row does not satisfy its compiled proof.",
+      );
+      expect(() => evaluateRawQueryResult(storage.readModel, compiled)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
     }),

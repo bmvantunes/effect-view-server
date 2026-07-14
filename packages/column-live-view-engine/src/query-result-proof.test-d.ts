@@ -17,7 +17,7 @@ import {
   type RawQueryCompilerMetadata,
 } from "./raw-query-compiler";
 import { decodeTypedRawQuery } from "./raw-query-decoder";
-import { liveQueryResultFromOwnedResultEvaluation, type QueryEvaluation } from "./query-result";
+import type { QueryEvaluation } from "./query-result";
 import {
   groupedQueryResultSemantics,
   rawQueryResultSemantics,
@@ -124,8 +124,6 @@ declare const storageProjectionCapability: TopicStorageProjectionCapability;
 declare const stringProjectionProof: QueryResultTopicStorageProjectionProof<{
   readonly id: string;
 }>;
-declare const priceEvaluation: QueryEvaluation<{ readonly price: number }>;
-declare const idResultSemantics: QueryResultSemantics<{ readonly id: string }>;
 
 describe("compiled Query Result Semantics", () => {
   it("keeps schema provenance nominal across metadata and result proofs", () => {
@@ -134,12 +132,16 @@ describe("compiled Query Result Semantics", () => {
       ["id"],
       // @ts-expect-error proof output requires a real narrower for the selected result row.
       (row: object) => row,
+      () => ({ forged: true }),
     );
     const stringProjectionSession = bindTopicStorageProjection(
       storageProjectionCapability,
       stringProjectionProof,
     );
     expectTypeOf(stringProjectionSession.projectResultRow(0)).toEqualTypeOf<{
+      readonly id: string;
+    }>();
+    expectTypeOf(stringProjectionSession.projectOwnedResultRow(0)).toEqualTypeOf<{
       readonly id: string;
     }>();
     // @ts-expect-error only the concrete Topic Row Storage can construct its projection capability.
@@ -199,12 +201,6 @@ describe("compiled Query Result Semantics", () => {
       // @ts-expect-error a count-only witness cannot prove a query with totalPrice.
       decodedCountOnlyGrouped,
     );
-    const invalidEvaluationSemanticsPair = liveQueryResultFromOwnedResultEvaluation(
-      // @ts-expect-error an evaluation cannot be paired with semantics for another result row.
-      priceEvaluation,
-      idResultSemantics,
-    );
-
     void invalidMetadata;
     void invalidStorageCapability;
     void invalidStructuralProjectionProof;
@@ -215,7 +211,6 @@ describe("compiled Query Result Semantics", () => {
     void invalidStructuralGroupedProof;
     void invalidRawQueryRebrand;
     void invalidGroupedQueryRebrand;
-    void invalidEvaluationSemanticsPair;
   });
 
   it("derives raw plan projection and ownership from schema metadata plus the query", () => {

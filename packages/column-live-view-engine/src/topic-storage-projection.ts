@@ -1,5 +1,6 @@
 import {
   bindQueryResultTopicStorageProjectionProof,
+  type BoundQueryResultTopicStorageProjectionProof,
   type QueryResultTopicStorageProjectionProof,
 } from "./query-result-topic-storage-proof";
 import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
@@ -42,7 +43,7 @@ class AuthenticTopicStorageProjectionCapability {
     return new AuthenticTopicStorageProjectionSession<ResultRow>(
       topicStorageProjectionConstructionToken,
       this.#bindProjectRow(boundProof.selectedFields),
-      boundProof.narrowProjectedRow,
+      boundProof,
     );
   }
 }
@@ -73,16 +74,18 @@ export const bindTopicStorageProjection = <ResultRow extends RowObject>(
 
 class AuthenticTopicStorageProjectionSession<ResultRow extends RowObject> {
   readonly #projectRow: TopicStorageProjector;
+  readonly projectOwnedResultRow: (slot: number) => ResultRow;
   readonly projectResultRow: (slot: number) => ResultRow;
 
   constructor(
     constructionToken: object,
     projectRow: TopicStorageProjector,
-    narrowProjectedRow: (row: RowObject) => ResultRow,
+    proof: BoundQueryResultTopicStorageProjectionProof<ResultRow>,
   ) {
     assertTopicStorageProjectionConstruction(constructionToken);
     this.#projectRow = projectRow;
-    this.projectResultRow = (slot) => narrowProjectedRow(this.#projectRow(slot));
+    this.projectOwnedResultRow = (slot) => proof.ownProjectedRow(this.#projectRow(slot));
+    this.projectResultRow = (slot) => proof.narrowProjectedRow(this.#projectRow(slot));
     Object.freeze(this);
   }
 }

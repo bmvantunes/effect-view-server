@@ -9,6 +9,7 @@ type QueryResultRowNarrower<ResultRow extends RowObject> = (row: RowObject) => R
 
 export type BoundQueryResultTopicStorageProjectionProof<ResultRow extends RowObject> = {
   readonly narrowProjectedRow: QueryResultRowNarrower<ResultRow>;
+  readonly ownProjectedRow: QueryResultRowNarrower<ResultRow>;
   readonly selectedFields: ReadonlyArray<string>;
 };
 
@@ -26,6 +27,7 @@ const queryResultTopicStorageProjectionProofMetadata = new WeakMap<
 
 class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObject> {
   readonly #narrowProjectedRow: QueryResultRowNarrower<ResultRow>;
+  readonly #ownProjectedRow: QueryResultRowNarrower<ResultRow>;
 
   declare private readonly output: ResultRow;
 
@@ -34,6 +36,7 @@ class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObjec
     topicRow: TopicRowValueSemantics,
     selectedFields: ReadonlyArray<string>,
     narrowProjectedRow: QueryResultRowNarrower<ResultRow>,
+    ownProjectedRow: QueryResultRowNarrower<ResultRow>,
   ) {
     if (constructionToken !== queryResultTopicStorageProjectionProofConstructionToken) {
       throw new TypeError("Query Result Topic Storage projection proof construction is private.");
@@ -43,6 +46,7 @@ class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObjec
       topicRow,
     });
     this.#narrowProjectedRow = narrowProjectedRow;
+    this.#ownProjectedRow = ownProjectedRow;
     Object.freeze(this);
   }
 
@@ -55,6 +59,7 @@ class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObjec
     }
     return Object.freeze({
       narrowProjectedRow: (row) => this.#narrowProjectedRow(row),
+      ownProjectedRow: (row) => this.#ownProjectedRow(row),
       selectedFields,
     });
   }
@@ -69,12 +74,14 @@ export const makeQueryResultTopicStorageProjectionProof = <ResultRow extends Row
   topicRow: TopicRowValueSemantics,
   selectedFields: ReadonlyArray<string>,
   narrowProjectedRow: QueryResultRowNarrower<ResultRow>,
+  ownProjectedRow: QueryResultRowNarrower<ResultRow>,
 ): QueryResultTopicStorageProjectionProof<ResultRow> =>
   new AuthenticQueryResultTopicStorageProjectionProof(
     queryResultTopicStorageProjectionProofConstructionToken,
     topicRow,
     selectedFields,
     narrowProjectedRow,
+    ownProjectedRow,
   );
 
 export const bindQueryResultTopicStorageProjectionProof = <ResultRow extends RowObject>(

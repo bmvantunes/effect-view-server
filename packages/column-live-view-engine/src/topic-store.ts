@@ -24,7 +24,7 @@ export {
   acquireTopicStoreMaterializedQueryExecution,
   acquireTopicStoreRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
-  evaluateTopicStoreRawQuery,
+  evaluateTopicStoreRawQueryResult,
   prepareTopicStoreGroupedQuery,
   prepareTopicStoreRawQuery,
   prepareTopicStoreRuntimeGroupedQuery,

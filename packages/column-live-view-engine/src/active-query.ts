@@ -17,6 +17,7 @@ import {
 export {
   acquireRawQueryExecution,
   evaluateRawQuery,
+  evaluateRawQueryResult,
   releaseRawQueryExecution,
 } from "./active-raw-query";
 export {

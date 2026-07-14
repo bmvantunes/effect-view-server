@@ -5,15 +5,12 @@ import { makeLiveSubscription } from "./live-subscription";
 import type { CompiledGroupedQuery } from "./grouped-query-compiler";
 import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
 import type { CompiledRawQuery } from "./raw-query-compiler";
-import {
-  liveQueryResultFromOwnedEvaluation,
-  liveQueryResultFromOwnedResultEvaluation,
-} from "./query-result";
+import { liveQueryResultFromOwnedEvaluation } from "./query-result";
 import {
   acquireTopicStoreMaterializedQueryExecution,
   acquireTopicStoreRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
-  evaluateTopicStoreRawQuery,
+  evaluateTopicStoreRawQueryResult,
   prepareTopicStoreGroupedQuery,
   prepareTopicStoreRawQuery,
   prepareTopicStoreRuntimeGroupedQuery,
@@ -98,10 +95,7 @@ export const snapshotRawExecutableQuery = Effect.fn(
   query: Query,
 ) {
   const executable = yield* prepareRawExecutableQuery(store, metadata, query);
-  return liveQueryResultFromOwnedResultEvaluation(
-    evaluateTopicStoreRawQuery(store, executable.compiled),
-    executable.compiled.plan.resultSemantics,
-  );
+  return evaluateTopicStoreRawQueryResult(store, executable.compiled);
 });
 
 export const snapshotGroupedExecutableQuery = Effect.fn(

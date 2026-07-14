@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import type { DeltaEvent } from "@effect-view-server/config";
+import type { DeltaEvent, LiveQueryResult } from "@effect-view-server/config";
 import type { ActiveQueryStoreState, RawQueryExecution } from "./active-query";
 import type { CompiledRawQuery } from "./raw-query-compiler";
 import {
@@ -418,17 +418,53 @@ const projectRetainedEntry = <Row extends RowObject, ResultRow extends RowObject
   entry: RetainedWindowEntry<Row>,
   storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): ResultRow => {
-  if (storageProjection === undefined) {
-    return compiled.plan.project(entry.row);
-  }
+  const slot = retainedEntrySlot(store, entry);
+  return storageProjection === undefined || slot === undefined
+    ? compiled.plan.project(entry.row)
+    : storageProjection.projectResultRow(slot);
+};
+
+const retainedEntrySlot = <Row extends RowObject>(
+  store: TopicRawWindowScan<Row>,
+  entry: RetainedWindowEntry<Row>,
+): number | undefined => {
   const carriedSlot =
     entry.slot !== undefined && store.keyAtSlot?.(entry.slot) === entry.key
       ? entry.slot
       : undefined;
-  const slot = carriedSlot ?? store.slotForKey?.(entry.key);
-  return slot === undefined
-    ? compiled.plan.project(entry.row)
-    : storageProjection.projectResultRow(slot);
+  return carriedSlot ?? store.slotForKey?.(entry.key);
+};
+
+const projectOwnedRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicRawWindowScan<Row>,
+  compiled: CompiledRawQuery<Row, ResultRow>,
+  entry: RetainedWindowEntry<Row>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
+): ResultRow => {
+  const slot = retainedEntrySlot(store, entry);
+  return storageProjection === undefined || slot === undefined
+    ? compiled.plan.resultSemantics.projectOwnedRow(entry.row)
+    : storageProjection.projectOwnedResultRow(slot);
+};
+
+export const evaluateRawQueryResult = <Row extends RowObject, ResultRow extends RowObject>(
+  store: TopicRawWindowScan<Row> & { readonly version: () => number },
+  compiled: CompiledRawQuery<Row, ResultRow>,
+): LiveQueryResult<ResultRow> => {
+  const version = store.version();
+  const scanResult = store.scanRawWindow(
+    rawQueryWindowScanPlan(compiled.plan, compiled.plan.window),
+  );
+  const storageProjection = bindStoreProjection(store, compiled);
+  return {
+    rows: scanResult.window.map((entry) =>
+      projectOwnedRetainedEntry(store, compiled, entry, storageProjection),
+    ),
+    totalRows: scanResult.totalRows,
+    version,
+    status: "ready",
+    statusCode: "Ready",
+  };
 };
 
 const leaseRawQueryExecution = <ResultRow extends RowObject>(

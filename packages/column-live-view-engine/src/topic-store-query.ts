@@ -1,9 +1,9 @@
-import type { GroupedQuery, RawQuery } from "@effect-view-server/config";
+import type { GroupedQuery, LiveQueryResult, RawQuery } from "@effect-view-server/config";
 import { Effect, type Schema } from "effect";
 import {
   acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
-  evaluateRawQuery,
+  evaluateRawQueryResult,
   releaseMaterializedQueryExecution,
   releaseRawQueryExecution,
 } from "./active-query";
@@ -82,10 +82,10 @@ export const prepareTopicStoreRuntimeGroupedQuery = Effect.fn(
   return yield* prepareRuntimeGroupedQuery(store.topic, topicStoreRawQueryMetadata(store), query);
 });
 
-export const evaluateTopicStoreRawQuery = <ResultRow extends RowObject>(
+export const evaluateTopicStoreRawQueryResult = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledRawQuery<object, ResultRow>,
-): QueryEvaluation<ResultRow> => evaluateRawQuery(topicStoreReadModel(store), compiled);
+): LiveQueryResult<ResultRow> => evaluateRawQueryResult(topicStoreReadModel(store), compiled);
 
 export const evaluateTopicStoreGroupedQuery = <ResultRow extends RowObject>(
   store: TopicStore,

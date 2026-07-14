@@ -4,6 +4,7 @@ import type {
   PickRawFields,
   RawQuery,
 } from "@effect-view-server/config";
+import { StrictJsonMaterializationError } from "@effect-view-server/effect-utils";
 import { Schema } from "effect";
 import {
   typedRuntimeGroupedQueryMatchesSemantics,
@@ -44,6 +45,7 @@ export type QueryResultSemantics<ResultRow extends RowObject = RowObject> = {
   readonly materializeOwnedRow: (row: RowObject) => ResultRow;
   readonly materializeRow: (row: RowObject) => ResultRow;
   readonly narrowProjectedRow: (row: RowObject) => ResultRow;
+  readonly projectOwnedRow: (row: RowObject) => ResultRow;
   readonly projectRow: (row: RowObject) => ResultRow;
 };
 
@@ -121,15 +123,27 @@ const projectedFieldsCheck = (
   };
 };
 
-const constructedProjectionProof = <ResultRow extends RowObject>(
+type ConstructedProjectionFieldProof = {
+  readonly field: string;
+  readonly isValue: ((value: unknown) => boolean) | undefined;
+  readonly materialize: (value: unknown) => unknown;
+  readonly required: boolean | undefined;
+};
+
+const constructedProjectionFieldProofs = (
   fields: ReadonlyArray<QueryResultFieldSemantics>,
   valueProof: ConstructedProjectionValueProof,
-): QueryResultProof<ResultRow> => {
-  const proofFields = fields.map(({ field, required, semantics }) => ({
+): ReadonlyArray<ConstructedProjectionFieldProof> =>
+  fields.map(({ field, required, semantics }) => ({
     field,
     isValue: valueProof === "none" ? undefined : semantics.is,
+    materialize: semantics.materialize,
     required,
   }));
+
+const constructedProjectionProof = <ResultRow extends RowObject>(
+  proofFields: ReadonlyArray<ConstructedProjectionFieldProof>,
+): QueryResultProof<ResultRow> => {
   return (row): row is ResultRow => {
     for (const { field, isValue, required } of proofFields) {
       if (!hasEnumerableField(row, field)) {
@@ -145,6 +159,64 @@ const constructedProjectionProof = <ResultRow extends RowObject>(
     return true;
   };
 };
+
+const invalidProjectedResultRow = (): never => {
+  throw new TypeError("Projected Query Result Row does not satisfy its compiled proof.");
+};
+
+const materializeConstructedValue = (
+  materialize: (value: unknown) => unknown,
+  value: unknown,
+): unknown => {
+  try {
+    return materialize(value);
+  } catch (error) {
+    if (Schema.isSchemaError(error) || error instanceof StrictJsonMaterializationError) {
+      return invalidProjectedResultRow();
+    }
+    throw error;
+  }
+};
+
+const ownConstructedProjectionProof =
+  <ResultRow extends RowObject>(
+    proofFields: ReadonlyArray<ConstructedProjectionFieldProof>,
+  ): QueryResultProof<ResultRow> =>
+  (row): row is ResultRow => {
+    let pendingMaterializations:
+      | Array<{
+          readonly field: string;
+          readonly materialize: (value: unknown) => unknown;
+          readonly value: unknown;
+        }>
+      | undefined;
+    for (const { field, isValue, materialize, required } of proofFields) {
+      if (!hasEnumerableField(row, field)) {
+        if (required === true) {
+          return false;
+        }
+        continue;
+      }
+      const value = Reflect.get(row, field);
+      if (isBorrowableImmutablePrimitive(value)) {
+        if (isValue !== undefined && !isValue(value)) {
+          return false;
+        }
+        continue;
+      }
+      pendingMaterializations ??= [];
+      pendingMaterializations.push({ field, materialize, value });
+    }
+    if (pendingMaterializations !== undefined) {
+      const materializedValues = pendingMaterializations.map(({ materialize, value }) =>
+        materializeConstructedValue(materialize, value),
+      );
+      for (let index = 0; index < pendingMaterializations.length; index += 1) {
+        defineResultField(row, pendingMaterializations[index]!.field, materializedValues[index]);
+      }
+    }
+    return true;
+  };
 
 const untypedResultProof = (
   fields: ReadonlyArray<QueryResultFieldSemantics>,
@@ -185,25 +257,8 @@ const narrowResultRow =
 
 type ProjectedQueryResultSemanticsConstruction<ResultRow extends RowObject> = {
   readonly narrowConstructedProjection: (row: RowObject) => ResultRow;
+  readonly ownConstructedProjection: (row: RowObject) => ResultRow;
   readonly semantics: QueryResultSemantics<ResultRow>;
-};
-
-const materializeOwnedResultRowFields = new WeakMap<
-  QueryResultSemantics,
-  (row: RowObject) => void
->();
-
-export const bindOwnedQueryResultRowMaterializer = <ResultRow extends RowObject>(
-  semantics: QueryResultSemantics<ResultRow>,
-): ((row: ResultRow) => ResultRow) => {
-  const materializeFields = materializeOwnedResultRowFields.get(semantics);
-  if (materializeFields === undefined) {
-    throw new TypeError("Query Result Semantics is not authentic.");
-  }
-  return (row) => {
-    materializeFields(row);
-    return row;
-  };
 };
 
 const constructProjectedQueryResultSemantics = <ResultRow extends RowObject>(
@@ -212,8 +267,12 @@ const constructProjectedQueryResultSemantics = <ResultRow extends RowObject>(
   valueProof: ConstructedProjectionValueProof,
 ): ProjectedQueryResultSemanticsConstruction<ResultRow> => {
   const narrowProjectedRow = narrowResultRow(isResultRow);
+  const constructedFieldProofs = constructedProjectionFieldProofs(fields, valueProof);
   const narrowConstructedProjection = narrowResultRow(
-    constructedProjectionProof<ResultRow>(fields, valueProof),
+    constructedProjectionProof<ResultRow>(constructedFieldProofs),
+  );
+  const ownProjectedRow = narrowResultRow(
+    ownConstructedProjectionProof<ResultRow>(constructedFieldProofs),
   );
   const materializeOwnedFields = (row: RowObject): void => {
     for (const { field, semantics } of fields) {
@@ -249,11 +308,12 @@ const constructProjectedQueryResultSemantics = <ResultRow extends RowObject>(
     },
     materializeRow: (row) => narrowProjectedRow(projectFields(fields, row, materializeValue)),
     narrowProjectedRow,
+    projectOwnedRow: (row) => ownProjectedRow(projectFields(fields, row, borrowValue)),
     projectRow: (row) => narrowConstructedProjection(projectFields(fields, row, borrowValue)),
   });
-  materializeOwnedResultRowFields.set(semantics, materializeOwnedFields);
   return {
     narrowConstructedProjection,
+    ownConstructedProjection: ownProjectedRow,
     semantics,
   };
 };
@@ -270,25 +330,18 @@ const makeTopicStorageProjectableQueryResultSemantics = <ResultRow extends RowOb
   isResultRow: QueryResultProof<ResultRow>,
   topicRow: TopicRowValueSemantics,
 ): TopicStorageProjectableQueryResultSemantics<ResultRow> => {
-  const { narrowConstructedProjection, semantics } = constructProjectedQueryResultSemantics(
-    fields,
-    isResultRow,
-    "all",
-  );
+  const { narrowConstructedProjection, ownConstructedProjection, semantics } =
+    constructProjectedQueryResultSemantics(fields, isResultRow, "all");
   const topicStorageProjectionProof = makeQueryResultTopicStorageProjectionProof(
     topicRow,
     fields.map(({ field }) => field),
     narrowConstructedProjection,
+    ownConstructedProjection,
   );
-  const projectableSemantics = Object.freeze({
+  return Object.freeze({
     ...semantics,
     topicStorageProjectionProof,
   });
-  materializeOwnedResultRowFields.set(
-    projectableSemantics,
-    materializeOwnedResultRowFields.get(semantics)!,
-  );
-  return projectableSemantics;
 };
 
 export const makeQueryResultSemantics = (

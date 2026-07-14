@@ -1,6 +1,32 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import {
+  arrayValue,
+  compareExact,
+  compareExactJson,
+  compareLatency,
+  compareThroughput,
+  exactObjectValue,
+  finiteNumber,
+  mapByUniqueKey,
+  nonEmptyArrayValue,
+  nonNegativeFiniteNumber,
+  nonNegativeInteger,
+  objectValue,
+  positiveFiniteNumber,
+  positiveInteger,
+  pushRegression,
+  stringValue,
+} from "./benchmark-artifact-mechanics.mjs";
+import {
+  compareGrpcLeasedBenchmarkTask,
+  decodeGrpcLeasedBenchmarkParameters,
+  decodeGrpcLeasedOperationCases,
+  decodeGrpcLeasedSeedMutationCount,
+  validateGrpcLeasedOperationAccounting,
+} from "./grpc-leased-benchmark-policy.mjs";
+
 export const defaultBenchmarkThresholds = {
   latencyMean: {
     maxAbsoluteDeltaMs: 5,
@@ -184,73 +210,14 @@ const writeJsonFile = (path, value) => {
   writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`);
 };
 
-const finiteNumber = (value, path) => {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`Benchmark artifact field ${path} must be a finite number.`);
-  }
-  return value;
-};
-
-const stringValue = (value, path) => {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`Benchmark artifact field ${path} must be a non-empty string.`);
-  }
-  return value;
-};
-
-const objectValue = (value, path) => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`Benchmark artifact field ${path} must be an object.`);
-  }
-  return value;
-};
-
-const exactObjectValue = (value, path, expectedKeys) => {
-  const object = objectValue(value, path);
-  const actualKeys = Object.keys(object).sort();
-  const sortedExpectedKeys = [...expectedKeys].sort();
-  if (JSON.stringify(actualKeys) !== JSON.stringify(sortedExpectedKeys)) {
-    throw new Error(
-      `Benchmark artifact field ${path} must contain exactly these keys: ${sortedExpectedKeys.join(", ")}.`,
-    );
-  }
-  return object;
-};
-
-const arrayValue = (value, path) => {
-  if (!Array.isArray(value)) {
-    throw new Error(`Benchmark artifact field ${path} must be an array.`);
-  }
-  return value;
-};
-
 const optionalObjectValue = (value, path) =>
   value === undefined ? undefined : objectValue(value, path);
 
 const optionalFiniteNumber = (value, path) =>
   value === undefined ? undefined : finiteNumber(value, path);
 
-const positiveFiniteNumber = (value, path) => {
-  const number = finiteNumber(value, path);
-  if (number <= 0) {
-    throw new Error(`Benchmark artifact field ${path} must be a positive finite number.`);
-  }
-  return number;
-};
-
-const nonNegativeFiniteNumber = (value, path) => {
-  const number = finiteNumber(value, path);
-  if (number < 0) {
-    throw new Error(`Benchmark artifact field ${path} must be a non-negative finite number.`);
-  }
-  return number;
-};
-
 const stringArrayValue = (value, path) =>
   arrayValue(value, path).map((item, index) => stringValue(item, `${path}[${index}]`));
-
-const metricLimit = (baseline, threshold) =>
-  Math.max(baseline * threshold.maxRatio, baseline + threshold.maxAbsoluteDeltaMs);
 
 const byteMetricLimit = (baseline, threshold) =>
   Math.min(baseline * threshold.maxRatio, baseline + threshold.maxAbsoluteDeltaBytes);
@@ -279,22 +246,6 @@ const summaryArtifactKind = (value, path) => {
   return artifactKind;
 };
 
-const positiveInteger = (value, path) => {
-  const number = finiteNumber(value, path);
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error(`Benchmark artifact field ${path} must be a positive integer.`);
-  }
-  return number;
-};
-
-const nonNegativeInteger = (value, path) => {
-  const number = finiteNumber(value, path);
-  if (!Number.isInteger(number) || number < 0) {
-    throw new Error(`Benchmark artifact field ${path} must be a non-negative integer.`);
-  }
-  return number;
-};
-
 const nonNegativeSafeInteger = (value, path) => {
   const number = nonNegativeInteger(value, path);
   if (!Number.isSafeInteger(number)) {
@@ -305,16 +256,7 @@ const nonNegativeSafeInteger = (value, path) => {
 
 const grpcBenchmarkParametersValue = (value, path, benchmarkScope) => {
   if (benchmarkScope === "runtime-grpc-leased") {
-    const parameters = exactObjectValue(value, path, [
-      "retainedRows",
-      "routeCount",
-      "rowsPerFeed",
-    ]);
-    return {
-      retainedRows: positiveInteger(parameters.retainedRows, `${path}.retainedRows`),
-      routeCount: positiveInteger(parameters.routeCount, `${path}.routeCount`),
-      rowsPerFeed: positiveInteger(parameters.rowsPerFeed, `${path}.rowsPerFeed`),
-    };
+    return decodeGrpcLeasedBenchmarkParameters(value, path);
   }
   if (benchmarkScope === "runtime-grpc-materialized") {
     const parameters = exactObjectValue(value, path, ["batchSize", "seedRows"]);
@@ -639,110 +581,19 @@ const grpcMaterializedOperationCaseValue = (value, path) => {
   return result;
 };
 
-const grpcLeasedOperationCaseValue = (value, path) => {
-  const operationCase = exactObjectValue(value, path, [
-    "maxActiveLeasedFeeds",
-    "maxCleanupActiveLeasedFeeds",
-    "maxCleanupMs",
-    "maxDeltaFanoutMs",
-    "maxHealthOverlayMs",
-    "maxSnapshotMs",
-    "maxSubscriptionMs",
-    "meanCleanupMs",
-    "meanDeltaFanoutMs",
-    "meanHealthOverlayMs",
-    "meanRowsPerSecond",
-    "meanSnapshotMs",
-    "meanSubscriptionMs",
-    "name",
-    "sampleCount",
-  ]);
-  const result = {
-    maxActiveLeasedFeeds: nonNegativeInteger(
-      operationCase.maxActiveLeasedFeeds,
-      `${path}.maxActiveLeasedFeeds`,
-    ),
-    maxCleanupActiveLeasedFeeds: nonNegativeInteger(
-      operationCase.maxCleanupActiveLeasedFeeds,
-      `${path}.maxCleanupActiveLeasedFeeds`,
-    ),
-    maxCleanupMs: nonNegativeFiniteNumber(operationCase.maxCleanupMs, `${path}.maxCleanupMs`),
-    maxDeltaFanoutMs: nonNegativeFiniteNumber(
-      operationCase.maxDeltaFanoutMs,
-      `${path}.maxDeltaFanoutMs`,
-    ),
-    maxHealthOverlayMs: nonNegativeFiniteNumber(
-      operationCase.maxHealthOverlayMs,
-      `${path}.maxHealthOverlayMs`,
-    ),
-    maxSnapshotMs: nonNegativeFiniteNumber(operationCase.maxSnapshotMs, `${path}.maxSnapshotMs`),
-    maxSubscriptionMs: nonNegativeFiniteNumber(
-      operationCase.maxSubscriptionMs,
-      `${path}.maxSubscriptionMs`,
-    ),
-    meanCleanupMs: nonNegativeFiniteNumber(operationCase.meanCleanupMs, `${path}.meanCleanupMs`),
-    meanDeltaFanoutMs: nonNegativeFiniteNumber(
-      operationCase.meanDeltaFanoutMs,
-      `${path}.meanDeltaFanoutMs`,
-    ),
-    meanHealthOverlayMs: nonNegativeFiniteNumber(
-      operationCase.meanHealthOverlayMs,
-      `${path}.meanHealthOverlayMs`,
-    ),
-    meanRowsPerSecond: nonNegativeFiniteNumber(
-      operationCase.meanRowsPerSecond,
-      `${path}.meanRowsPerSecond`,
-    ),
-    meanSnapshotMs: nonNegativeFiniteNumber(operationCase.meanSnapshotMs, `${path}.meanSnapshotMs`),
-    meanSubscriptionMs: nonNegativeFiniteNumber(
-      operationCase.meanSubscriptionMs,
-      `${path}.meanSubscriptionMs`,
-    ),
-    name: stringValue(operationCase.name, `${path}.name`),
-    sampleCount: positiveInteger(operationCase.sampleCount, `${path}.sampleCount`),
-  };
-  if (result.meanCleanupMs > result.maxCleanupMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanCleanupMs must be less than or equal to maxCleanupMs.`,
-    );
-  }
-  if (result.meanDeltaFanoutMs > result.maxDeltaFanoutMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanDeltaFanoutMs must be less than or equal to maxDeltaFanoutMs.`,
-    );
-  }
-  if (result.meanHealthOverlayMs > result.maxHealthOverlayMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanHealthOverlayMs must be less than or equal to maxHealthOverlayMs.`,
-    );
-  }
-  if (result.meanSnapshotMs > result.maxSnapshotMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanSnapshotMs must be less than or equal to maxSnapshotMs.`,
-    );
-  }
-  if (result.meanSubscriptionMs > result.maxSubscriptionMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanSubscriptionMs must be less than or equal to maxSubscriptionMs.`,
-    );
-  }
-  return result;
-};
-
 const runtimeOperationCaseValue = (value, path, benchmarkScope) => {
   if (benchmarkScope === "runtime-grpc-materialized") {
     return grpcMaterializedOperationCaseValue(value, path);
-  }
-  if (benchmarkScope === "runtime-grpc-leased") {
-    return grpcLeasedOperationCaseValue(value, path);
   }
   throw new Error(`Benchmark artifact field ${path} is only supported for gRPC runtime scopes.`);
 };
 
 const runtimeOperationCasesValue = (value, path, benchmarkScope) =>
-  nonEmptyArrayValue(value, path).map((operationCase, index) =>
-    runtimeOperationCaseValue(operationCase, `${path}[${index}]`, benchmarkScope),
-  );
+  benchmarkScope === "runtime-grpc-leased"
+    ? decodeGrpcLeasedOperationCases(value, path)
+    : nonEmptyArrayValue(value, path).map((operationCase, index) =>
+        runtimeOperationCaseValue(operationCase, `${path}[${index}]`, benchmarkScope),
+      );
 
 const validateBenchmarkCasesMatchBenchmarks = (benchmarkCases, benchmarks, path) => {
   const benchmarkNames = new Set(benchmarks.map((benchmark) => benchmark.name));
@@ -1019,6 +870,13 @@ export const readBenchmarkObservation = (task) => {
 
   const benchmarkCases = stringArrayValue(summary.benchmarkCases, `${task.summaryPath}.benchmarkCases`);
   const mutationCount = nonNegativeInteger(summary.mutationCount, `${task.summaryPath}.mutationCount`);
+  const seedMutationCount =
+    benchmarkScope === "runtime-grpc-leased"
+      ? decodeGrpcLeasedSeedMutationCount(
+          summary.seedMutationCount,
+          `${task.summaryPath}.seedMutationCount`,
+        )
+      : undefined;
   const topics = stringArrayValue(summary.topics, `${task.summaryPath}.topics`);
   const requiresKafkaThroughput =
     artifactKind === "runtime-benchmark-summary" && benchmarkScope.startsWith("runtime-kafka-");
@@ -1083,6 +941,15 @@ export const readBenchmarkObservation = (task) => {
       `${task.summaryPath}.cases`,
       `${task.summaryPath}.benchmarks`,
     );
+    if (benchmarkScope === "runtime-grpc-leased") {
+      validateGrpcLeasedOperationAccounting(
+        runtimeOperationCases,
+        grpcParameters,
+        mutationCount,
+        seedMutationCount,
+        `${task.summaryPath}.cases`,
+      );
+    }
   }
 
   return {
@@ -1132,6 +999,7 @@ export const readBenchmarkObservation = (task) => {
           ),
         }),
     seedBatchSize: optionalFiniteNumber(summary.seedBatchSize, `${task.summaryPath}.seedBatchSize`),
+    ...(seedMutationCount === undefined ? {} : { seedMutationCount }),
     subscriberCount: finiteNumber(summary.subscriberCount, `${task.summaryPath}.subscriberCount`),
     summaryPath: task.summaryPath,
     taskLabel: task.label,
@@ -1162,14 +1030,6 @@ export const readBenchmarkBaseline = (path) => writableBenchmarkBaseline(path, r
 
 export const writeBenchmarkBaseline = (path, baseline) => {
   writeJsonFile(path, writableBenchmarkBaseline(path, baseline));
-};
-
-const nonEmptyArrayValue = (value, path) => {
-  const array = arrayValue(value, path);
-  if (array.length === 0) {
-    throw new Error(`Benchmark artifact field ${path} must be a non-empty array.`);
-  }
-  return array;
 };
 
 const thresholdsValue = (value, path, expectedThresholds) => {
@@ -1279,6 +1139,10 @@ const validateTask = (task, path) => {
   const artifactKind = summaryArtifactKind(task.artifactKind, `${path}.artifactKind`);
   const benchmarkScope = stringValue(task.benchmarkScope, `${path}.benchmarkScope`);
   const mutationCount = nonNegativeInteger(task.mutationCount, `${path}.mutationCount`);
+  const seedMutationCount =
+    benchmarkScope === "runtime-grpc-leased"
+      ? decodeGrpcLeasedSeedMutationCount(task.seedMutationCount, `${path}.seedMutationCount`)
+      : undefined;
   const isKafkaScope = benchmarkScope.startsWith("runtime-kafka-");
   const requiresKafkaThroughput = artifactKind === "runtime-benchmark-summary" && isKafkaScope;
   const memoryRssTotalDeltaBytes = optionalFiniteNumber(
@@ -1366,6 +1230,15 @@ const validateTask = (task, path) => {
       `${path}.runtimeOperationCases`,
       `${path}.benchmarks`,
     );
+    if (benchmarkScope === "runtime-grpc-leased") {
+      validateGrpcLeasedOperationAccounting(
+        runtimeOperationCases,
+        grpcParameters,
+        mutationCount,
+        seedMutationCount,
+        `${path}.runtimeOperationCases`,
+      );
+    }
   }
   return {
     ...(task.activeViewCountBeforeCleanup === undefined
@@ -1408,6 +1281,7 @@ const validateTask = (task, path) => {
           runtimeMetrics: runtimeMetricsValue(task.runtimeMetrics, `${path}.runtimeMetrics`),
         }),
     seedBatchSize: optionalFiniteNumber(task.seedBatchSize, `${path}.seedBatchSize`),
+    ...(seedMutationCount === undefined ? {} : { seedMutationCount }),
     subscriberCount: finiteNumber(task.subscriberCount, `${path}.subscriberCount`),
     summaryPath: stringValue(task.summaryPath, `${path}.summaryPath`),
     taskLabel: stringValue(task.taskLabel, `${path}.taskLabel`),
@@ -1433,20 +1307,6 @@ export const validateBenchmarkBaseline = (baseline, path = "baseline") => {
   };
 };
 
-const mapByUniqueKey = (values, key, path, label) => {
-  const entries = [];
-  const seen = new Set();
-  for (const value of values) {
-    const valueKey = key(value);
-    if (seen.has(valueKey)) {
-      throw new Error(`Benchmark artifact field ${path} contains duplicate ${label}: ${valueKey}.`);
-    }
-    seen.add(valueKey);
-    entries.push([valueKey, value]);
-  }
-  return new Map(entries);
-};
-
 const taskByLabel = (tasks, path) =>
   mapByUniqueKey(tasks, (task) => task.taskLabel, path, "taskLabel");
 
@@ -1464,27 +1324,9 @@ const runtimeOperationCaseByName = (operationCases, path) =>
     "runtime operation case",
   );
 
-const pushRegression = (regressions, message) => {
-  regressions.push(message);
-};
-
 const compareZeroCounter = (regressions, taskLabel, name, actual) => {
   if (actual !== 0) {
     pushRegression(regressions, `${taskLabel}: ${name} must stay 0 but was ${actual}.`);
-  }
-};
-
-const compareExact = (regressions, taskLabel, name, baseline, actual) => {
-  if (actual !== baseline) {
-    pushRegression(regressions, `${taskLabel}: ${name} changed from ${baseline} to ${actual}.`);
-  }
-};
-
-const compareExactJson = (regressions, taskLabel, name, baseline, actual) => {
-  const baselineJson = JSON.stringify(baseline);
-  const actualJson = JSON.stringify(actual);
-  if (actualJson !== baselineJson) {
-    pushRegression(regressions, `${taskLabel}: ${name} changed from ${baselineJson} to ${actualJson}.`);
   }
 };
 
@@ -1499,18 +1341,6 @@ const compareMinimumCount = (regressions, taskLabel, name, baseline, actual) => 
   }
 };
 
-const compareLatency = (regressions, taskLabel, benchmarkName, metricName, threshold, baseline, actual) => {
-  const limit = metricLimit(baseline, threshold);
-  if (actual > limit) {
-    pushRegression(
-      regressions,
-      `${taskLabel} / ${benchmarkName}: ${metricName} regressed from ${baseline.toFixed(
-        3,
-      )}ms to ${actual.toFixed(3)}ms; allowed <= ${limit.toFixed(3)}ms.`,
-    );
-  }
-};
-
 const compareRss = (regressions, taskLabel, threshold, baseline, actual) => {
   const limit = byteMetricLimit(baseline, threshold);
   if (actual > limit) {
@@ -1519,30 +1349,6 @@ const compareRss = (regressions, taskLabel, threshold, baseline, actual) => {
       `${taskLabel}: total RSS delta regressed from ${baseline} bytes to ${actual} bytes; allowed <= ${Math.round(
         limit,
       )} bytes.`,
-    );
-  }
-};
-
-const compareThroughput = (
-  regressions,
-  taskLabel,
-  caseName,
-  metricName,
-  threshold,
-  baseline,
-  actual,
-) => {
-  if (baseline === 0) {
-    compareExact(regressions, taskLabel, `${caseName} ${metricName}`, baseline, actual);
-    return;
-  }
-  const minimum = baseline * threshold.minRatio;
-  if (actual < minimum) {
-    pushRegression(
-      regressions,
-      `${taskLabel} / ${caseName}: ${metricName} throughput regressed from ${baseline.toFixed(
-        3,
-      )} rows/sec to ${actual.toFixed(3)} rows/sec; allowed >= ${minimum.toFixed(3)} rows/sec.`,
     );
   }
 };
@@ -1766,78 +1572,10 @@ const compareGrpcMaterializedOperationCase = (
   );
 };
 
-const compareGrpcLeasedOperationCase = (
-  regressions,
-  taskLabel,
-  thresholds,
-  baselineCase,
-  actualCase,
-) => {
-  compareRuntimeOperationExactField(regressions, taskLabel, baselineCase, actualCase, "sampleCount");
-  compareRuntimeOperationExactField(
-    regressions,
-    taskLabel,
-    baselineCase,
-    actualCase,
-    "maxActiveLeasedFeeds",
-  );
-  compareRuntimeOperationExactField(
-    regressions,
-    taskLabel,
-    baselineCase,
-    actualCase,
-    "maxCleanupActiveLeasedFeeds",
-  );
-  for (const field of [
-    "meanCleanupMs",
-    "meanDeltaFanoutMs",
-    "meanHealthOverlayMs",
-    "meanSnapshotMs",
-    "meanSubscriptionMs",
-  ]) {
-    compareRuntimeOperationLatencyField(
-      regressions,
-      taskLabel,
-      thresholds,
-      baselineCase,
-      actualCase,
-      field,
-      "operationMean",
-    );
-  }
-  for (const field of [
-    "maxCleanupMs",
-    "maxDeltaFanoutMs",
-    "maxHealthOverlayMs",
-    "maxSnapshotMs",
-    "maxSubscriptionMs",
-  ]) {
-    compareRuntimeOperationLatencyField(
-      regressions,
-      taskLabel,
-      thresholds,
-      baselineCase,
-      actualCase,
-      field,
-      "operationMax",
-    );
-  }
-  compareThroughput(
-    regressions,
-    taskLabel,
-    baselineCase.name,
-    "meanRowsPerSecond",
-    thresholds.throughputAggregateRowsPerSecond,
-    baselineCase.meanRowsPerSecond,
-    actualCase.meanRowsPerSecond,
-  );
-};
-
 const compareRuntimeOperationCases = (
   regressions,
   taskLabel,
   thresholds,
-  benchmarkScope,
   baselineCases,
   actualCases,
 ) => {
@@ -1864,23 +1602,13 @@ const compareRuntimeOperationCases = (
       pushRegression(regressions, `${taskLabel}: missing runtime operation case ${baselineCase.name}.`);
       continue;
     }
-    if (benchmarkScope === "runtime-grpc-materialized") {
-      compareGrpcMaterializedOperationCase(
-        regressions,
-        taskLabel,
-        thresholds,
-        baselineCase,
-        actualCase,
-      );
-    } else {
-      compareGrpcLeasedOperationCase(
-        regressions,
-        taskLabel,
-        thresholds,
-        baselineCase,
-        actualCase,
-      );
-    }
+    compareGrpcMaterializedOperationCase(
+      regressions,
+      taskLabel,
+      thresholds,
+      baselineCase,
+      actualCase,
+    );
   }
 };
 
@@ -2062,14 +1790,19 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
       baselineTask.throughputCases,
       actualTask.throughputCases,
     );
-    compareRuntimeOperationCases(
-      regressions,
-      taskLabel,
-      thresholds,
-      baselineTask.benchmarkScope,
-      baselineTask.runtimeOperationCases,
-      actualTask.runtimeOperationCases,
-    );
+    if (baselineTask.benchmarkScope === "runtime-grpc-leased") {
+      regressions.push(
+        ...compareGrpcLeasedBenchmarkTask(taskLabel, thresholds, baselineTask, actualTask),
+      );
+    } else {
+      compareRuntimeOperationCases(
+        regressions,
+        taskLabel,
+        thresholds,
+        baselineTask.runtimeOperationCases,
+        actualTask.runtimeOperationCases,
+      );
+    }
     compareReportOnlyRuntimeMetricsPresence(regressions, taskLabel, baselineTask, actualTask);
     compareKafkaSustainedFirehoseFinalLag(regressions, taskLabel, actualTask);
     compareExact(

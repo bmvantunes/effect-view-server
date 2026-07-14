@@ -659,7 +659,7 @@ export const profiles = new Map([
     "grpc-leased",
     [
       runtimeGrpcLeasedTask(50, 25, 500, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "3",
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
@@ -670,7 +670,7 @@ export const profiles = new Map([
     "grpc-leased-retained",
     [
       runtimeGrpcLeasedTask(50, 25, 50_000, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "3",
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",

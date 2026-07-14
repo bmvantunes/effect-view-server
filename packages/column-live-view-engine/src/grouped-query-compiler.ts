@@ -6,17 +6,18 @@ import {
   type RuntimeGroupedQuery,
 } from "./grouped-query-decoder";
 import { evaluateGroupedRows } from "./grouped-query-evaluation";
-import { makeGroupedQueryPlan, type GroupedQueryPlan } from "./grouped-query-plan";
+import {
+  makeGroupedQueryPlan,
+  makeRuntimeGroupedQueryPlan,
+  type GroupedQueryPlan,
+} from "./grouped-query-plan";
 import {
   ensureRawQueryCompilerMetadata,
   type RawQueryCompilerMetadata,
   prepareRuntimeRawQuery,
 } from "./raw-query-compiler";
 import type { QueryEvaluation } from "./query-result";
-import {
-  groupedQueryResultSemantics,
-  runtimeGroupedQueryResultSemantics,
-} from "./query-result-semantics";
+import { groupedQueryResultSemantics } from "./query-result-semantics";
 import type { TopicRowScan } from "./row-scan";
 
 type RowObject = object;
@@ -72,12 +73,10 @@ export const prepareRuntimeGroupedQuery = Effect.fn(
     ...(decoded.where === undefined ? {} : { where: decoded.where }),
   });
   const { matches } = rawFilter.plan.predicate;
-  const plan = makeGroupedQueryPlan(
+  const plan = makeRuntimeGroupedQueryPlan(
     decoded,
     metadata.valueSemantics,
     rawFilter.plan.queryCacheKey,
-    (groupBy, aggregatePlans) =>
-      runtimeGroupedQueryResultSemantics(metadata.valueSemantics, groupBy, aggregatePlans),
   );
   return Object.freeze({
     plan,

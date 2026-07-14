@@ -230,9 +230,10 @@ const makeTopicStorageProjectableQueryResultSemantics = <ResultRow extends RowOb
   topicRow: TopicRowValueSemantics,
 ): TopicStorageProjectableQueryResultSemantics<ResultRow> => {
   const semantics = makeProjectedQueryResultSemantics(fields, isResultRow, validateProjectedValues);
-  const topicStorageProjectionProof = makeQueryResultTopicStorageProjectionProof<ResultRow>(
+  const topicStorageProjectionProof = makeQueryResultTopicStorageProjectionProof(
     topicRow,
     fields.map(({ field }) => field),
+    semantics.narrowProjectedRow,
   );
   return Object.freeze({
     ...semantics,

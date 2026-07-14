@@ -305,6 +305,12 @@ describe("Topic Storage projection proof", () => {
         Reflect.construct(Reflect.get(Object.getPrototypeOf(proof), "constructor"), []),
       ).toThrowError("Query Result Topic Storage projection proof construction is private.");
       expect(() =>
+        Reflect.apply(Reflect.get(Object.getPrototypeOf(proof), "bind"), proof, [
+          Object.freeze({}),
+          Object.freeze(["id", "price"]),
+        ]),
+      ).toThrowError("Query Result Topic Storage projection proof binding is private.");
+      expect(() =>
         Reflect.apply(
           Reflect.get(Object.getPrototypeOf(storage.readModel.storageProjection), "bind"),
           Object.freeze({}),
@@ -390,7 +396,7 @@ describe("Topic Storage projection proof", () => {
           storage.readModel.storageProjection,
           compiled.plan.resultSemantics.topicStorageProjectionProof,
         ).projectResultRow(0),
-      ).toThrowError("Topic Storage projection does not satisfy its compiled shape proof.");
+      ).toThrowError("Projected Query Result Row does not satisfy its compiled proof.");
     }),
   );
 
@@ -512,7 +518,7 @@ describe("Topic Storage projection proof", () => {
       );
 
       expect(() => evaluateRawQuery(storage.readModel, compiled)).toThrowError(
-        "Topic Storage projection does not satisfy its compiled value proof.",
+        "Projected Query Result Row does not satisfy its compiled proof.",
       );
     }),
   );

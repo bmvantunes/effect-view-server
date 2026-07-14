@@ -5,6 +5,13 @@ import {
 
 type RowObject = object;
 
+type QueryResultRowNarrower<ResultRow extends RowObject> = (row: RowObject) => ResultRow;
+
+export type BoundQueryResultTopicStorageProjectionProof<ResultRow extends RowObject> = {
+  readonly narrowProjectedRow: QueryResultRowNarrower<ResultRow>;
+  readonly selectedFields: ReadonlyArray<string>;
+};
+
 const queryResultTopicStorageProjectionProofConstructionToken = Object.freeze({});
 
 type QueryResultTopicStorageProjectionProofMetadata = {
@@ -18,12 +25,15 @@ const queryResultTopicStorageProjectionProofMetadata = new WeakMap<
 >();
 
 class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObject> {
+  readonly #narrowProjectedRow: QueryResultRowNarrower<ResultRow>;
+
   declare private readonly output: ResultRow;
 
   constructor(
     constructionToken: object,
     topicRow: TopicRowValueSemantics,
     selectedFields: ReadonlyArray<string>,
+    narrowProjectedRow: QueryResultRowNarrower<ResultRow>,
   ) {
     if (constructionToken !== queryResultTopicStorageProjectionProofConstructionToken) {
       throw new TypeError("Query Result Topic Storage projection proof construction is private.");
@@ -32,7 +42,21 @@ class AuthenticQueryResultTopicStorageProjectionProof<ResultRow extends RowObjec
       selectedFields: Object.freeze([...selectedFields]),
       topicRow,
     });
+    this.#narrowProjectedRow = narrowProjectedRow;
     Object.freeze(this);
+  }
+
+  bind(
+    constructionToken: object,
+    selectedFields: ReadonlyArray<string>,
+  ): BoundQueryResultTopicStorageProjectionProof<ResultRow> {
+    if (constructionToken !== queryResultTopicStorageProjectionProofConstructionToken) {
+      throw new TypeError("Query Result Topic Storage projection proof binding is private.");
+    }
+    return Object.freeze({
+      narrowProjectedRow: (row) => this.#narrowProjectedRow(row),
+      selectedFields,
+    });
   }
 }
 
@@ -44,17 +68,19 @@ export type QueryResultTopicStorageProjectionProof<ResultRow extends RowObject> 
 export const makeQueryResultTopicStorageProjectionProof = <ResultRow extends RowObject>(
   topicRow: TopicRowValueSemantics,
   selectedFields: ReadonlyArray<string>,
+  narrowProjectedRow: QueryResultRowNarrower<ResultRow>,
 ): QueryResultTopicStorageProjectionProof<ResultRow> =>
   new AuthenticQueryResultTopicStorageProjectionProof(
     queryResultTopicStorageProjectionProofConstructionToken,
     topicRow,
     selectedFields,
+    narrowProjectedRow,
   );
 
 export const bindQueryResultTopicStorageProjectionProof = <ResultRow extends RowObject>(
   proof: QueryResultTopicStorageProjectionProof<ResultRow>,
   valueSemantics: TopicRowValueSemantics,
-): ReadonlyArray<string> => {
+): BoundQueryResultTopicStorageProjectionProof<ResultRow> => {
   const metadata = queryResultTopicStorageProjectionProofMetadata.get(proof);
   if (metadata === undefined) {
     throw new TypeError("Query Result Topic Storage projection proof is not authentic.");
@@ -62,5 +88,8 @@ export const bindQueryResultTopicStorageProjectionProof = <ResultRow extends Row
   if (!topicRowValueSemanticsShareSchema(valueSemantics, metadata.topicRow)) {
     throw new TypeError("Topic Storage projection schema does not match its compiled proof.");
   }
-  return metadata.selectedFields;
+  return proof.bind(
+    queryResultTopicStorageProjectionProofConstructionToken,
+    metadata.selectedFields,
+  );
 };

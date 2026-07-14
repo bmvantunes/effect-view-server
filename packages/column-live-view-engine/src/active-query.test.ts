@@ -155,6 +155,48 @@ describe("column-live-view-engine active query execution", () => {
     }),
   );
 
+  it.effect("binds a storage projection once per raw execution lease", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore(
+        "projection-bind-frequency",
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.Number,
+        }),
+        "id",
+        () => {},
+      );
+      yield* publishTopicStoreRow(store, { id: "a", score: 1 }, invalidRow);
+      const readModel = topicStoreReadModel(store);
+      const storageProjection = Option.getOrThrow(
+        Option.fromUndefinedOr(readModel.storageProjection),
+      );
+      let projectionReads = 0;
+      const observedReadModel = {
+        ...readModel,
+        get storageProjection() {
+          projectionReads += 1;
+          return storageProjection;
+        },
+      };
+      const compiled = yield* prepareRuntimeRawQuery(
+        "projection-bind-frequency",
+        topicStoreRawQueryMetadata(store),
+        { select: ["id", "score"] },
+      );
+
+      const execution = yield* acquireRawQueryExecution(observedReadModel, compiled);
+      const cursor = execution.createCursor();
+      expect(execution.initial("query").rows).toStrictEqual([{ id: "a", score: 1 }]);
+      expect((yield* execution.next("query", cursor))._tag).toBe("None");
+      yield* publishTopicStoreRow(store, { id: "b", score: 2 }, invalidRow);
+      expect((yield* execution.next("query", cursor))._tag).toBe("Some");
+      expect(projectionReads).toBe(1);
+
+      yield* releaseRawQueryExecution(observedReadModel, compiled);
+    }),
+  );
+
   it.effect("keeps execution caches local to the active query registry", () =>
     Effect.gen(function* () {
       const store = new TopicStore(

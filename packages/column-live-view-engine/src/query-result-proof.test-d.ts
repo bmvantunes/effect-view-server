@@ -24,6 +24,7 @@ import {
   type QueryResultTopicStorageProjectionProof,
   type QueryResultSemantics,
 } from "./query-result-semantics";
+import { makeQueryResultTopicStorageProjectionProof } from "./query-result-topic-storage-proof";
 import {
   bindTopicStorageProjection,
   type TopicStorageProjectionCapability,
@@ -126,6 +127,12 @@ declare const stringProjectionProof: QueryResultTopicStorageProjectionProof<{
 
 describe("compiled Query Result Semantics", () => {
   it("keeps schema provenance nominal across metadata and result proofs", () => {
+    makeQueryResultTopicStorageProjectionProof<{ readonly forged: true }>(
+      stringMetadata.valueSemantics,
+      ["id"],
+      // @ts-expect-error proof output requires a real narrower for the selected result row.
+      (row: object) => row,
+    );
     const stringProjectionSession = bindTopicStorageProjection(
       storageProjectionCapability,
       stringProjectionProof,

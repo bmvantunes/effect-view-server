@@ -1,22 +1,15 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, beforeAll, bench, describe } from "vitest";
-import { create, toBinary } from "@bufbuild/protobuf";
-import type { Message } from "@bufbuild/protobuf";
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import { defineViewServerConfig, grpc, type ViewServerHealth } from "@effect-view-server/config";
+import { afterAll, bench, describe } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { Clock, Config, Effect, Queue, Schedule, Schema, Stream } from "effect";
+import { Effect } from "effect";
 import {
-  makeViewServerRuntimeCoreInternal,
-  type ViewServerRuntimeCoreInternalInstance,
-} from "@effect-view-server/runtime-core/internal";
-import { makeViewServerGrpcHealthLedger } from "./grpc-health";
-import { makeViewServerGrpcIngress, type ViewServerGrpcIngress } from "./grpc-ingress";
-import { makeDefaultRuntimeDependencies } from "./runtime-dependencies";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+  runGrpcMaterializedBenchmarkSample,
+  summarizeGrpcMaterializedBenchmarkSamples,
+  type GrpcMaterializedBenchmarkSample,
+  type GrpcMaterializedBenchmarkWorkload,
+} from "../test-harness/grpc-materialized-benchmark";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -37,58 +30,10 @@ type BenchmarkMemorySnapshot = {
   readonly rssBytes: number;
 };
 
-type GrpcOrderValueMessage = Message<"viewserver.runtime.bench.OrderValue"> & {
-  readonly customerId: string;
-  readonly status: "open" | "closed" | "cancelled";
-  readonly price: number;
-  readonly updatedAt: number;
-};
-
-type GrpcOrderKeyMessage = Message<"viewserver.runtime.bench.OrderKey"> & {
-  readonly orderId: string;
-};
-
-type BenchmarkProfile = {
-  readonly health: ReturnType<typeof makeViewServerGrpcHealthLedger<Topics>>;
-  readonly ingress: ViewServerGrpcIngress;
-  readonly memoryAfterSetup: BenchmarkMemorySnapshot;
-  readonly queue: Queue.Queue<GrpcOrderValueMessage>;
-  readonly runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>;
-};
-
 type BenchmarkCase = {
   readonly name: string;
-  readonly run: () => Promise<void>;
+  readonly workload: GrpcMaterializedBenchmarkWorkload;
 };
-
-type GrpcMaterializedSample = {
-  readonly healthOverlayMs: number;
-  readonly name: string;
-  readonly rows: number;
-  readonly rowsPerSecond: number;
-  readonly snapshotMs: number;
-  readonly streamConvergenceMs: number;
-  readonly totalRows: number;
-};
-
-class GrpcMaterializedBenchmarkConvergenceError extends Schema.TaggedErrorClass<GrpcMaterializedBenchmarkConvergenceError>()(
-  "GrpcMaterializedBenchmarkConvergenceError",
-  {
-    message: Schema.String,
-  },
-) {}
-
-const GrpcOrder = Schema.Struct({
-  id: Schema.String,
-  customerId: Schema.String,
-  status: Schema.Literals(["open", "closed", "cancelled"]),
-  price: Schema.Number,
-  region: Schema.String,
-  updatedAt: Schema.Number,
-});
-
-type OrderRow = typeof GrpcOrder.Type;
-type OrderStatus = OrderRow["status"];
 
 const defaultBatchSize = 256;
 const defaultBenchmarkTimeMs = 0;
@@ -156,120 +101,11 @@ const benchOptions = {
 };
 if (benchOptions.time > 0 || benchOptions.warmupIterations > 0 || benchOptions.warmupTime > 0) {
   throw new Error(
-    "gRPC materialized benchmark mutates shared runtime state; time and warmup must stay disabled.",
+    "gRPC materialized benchmark requires fixed independent samples; time and warmup must stay disabled.",
   );
 }
 
-let profile: BenchmarkProfile | undefined;
-const samples: Array<GrpcMaterializedSample> = [];
-let nextRowIndex = 0;
-let offeredRowCount = 0;
-
-const base64FromBytes = (bytes: Uint8Array) =>
-  globalThis.btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
-
-const runtimeGrpcProtoFile = fileDesc(
-  base64FromBytes(
-    toBinary(
-      FileDescriptorProtoSchema,
-      create(FileDescriptorProtoSchema, {
-        name: "viewserver/runtime-bench.proto",
-        package: "viewserver.runtime.bench",
-        syntax: "proto3",
-        messageType: [
-          {
-            name: "OrderValue",
-            field: [
-              { name: "customer_id", number: 1, type: FieldDescriptorProto_Type.STRING },
-              { name: "status", number: 2, type: FieldDescriptorProto_Type.STRING },
-              { name: "price", number: 3, type: FieldDescriptorProto_Type.DOUBLE },
-              { name: "updated_at", number: 4, type: FieldDescriptorProto_Type.DOUBLE },
-            ],
-          },
-          {
-            name: "OrderKey",
-            field: [{ name: "order_id", number: 1, type: FieldDescriptorProto_Type.STRING }],
-          },
-        ],
-        service: [
-          {
-            name: "OrdersService",
-            method: [
-              {
-                name: "StreamOrders",
-                inputType: ".viewserver.runtime.bench.OrderKey",
-                outputType: ".viewserver.runtime.bench.OrderValue",
-                serverStreaming: true,
-              },
-            ],
-          },
-        ],
-      }),
-    ),
-  ),
-);
-
-const grpcOrderValueSchema = messageDesc<GrpcOrderValueMessage>(runtimeGrpcProtoFile, 0);
-const grpcOrderKeySchema = messageDesc<GrpcOrderKeyMessage>(runtimeGrpcProtoFile, 1);
-const grpcOrdersService = serviceDesc<{
-  readonly streamOrders: {
-    readonly input: typeof grpcOrderKeySchema;
-    readonly output: typeof grpcOrderValueSchema;
-    readonly methodKind: "server_streaming";
-  };
-}>(runtimeGrpcProtoFile, 0);
-
-const grpcClients = {
-  orders: grpc.connectClient({
-    service: grpcOrdersService,
-    baseUrl: Config.succeed("https://orders.example.test"),
-  }),
-};
-
-const grpcTopicSources = grpc.topicSources(grpcClients);
-
-const orderStatus = (index: number): OrderStatus => {
-  if (index % 5 === 0) {
-    return "cancelled";
-  }
-  if (index % 3 === 0) {
-    return "closed";
-  }
-  return "open";
-};
-
-const grpcOrderValue = (index: number): GrpcOrderValueMessage => ({
-  $typeName: "viewserver.runtime.bench.OrderValue",
-  customerId: `order-${index}`,
-  status: orderStatus(index),
-  price: index % 10_000,
-  updatedAt: index,
-});
-
-const grpcMaterializedViewServer = (stream: Stream.Stream<GrpcOrderValueMessage, never, never>) =>
-  defineViewServerConfig({
-    grpc: { clients: grpcClients },
-    topics: {
-      orders: grpcTopicSources.materialized({
-        schema: GrpcOrder,
-        key: "id",
-        client: "orders",
-        method: "streamOrders",
-        request: () => ({ orderId: "all" }),
-        acquire: () => stream,
-        map: ({ value }) => ({
-          id: value.customerId,
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: "usa",
-          updatedAt: value.updatedAt,
-        }),
-      }),
-    },
-  });
-
-type Topics = ReturnType<typeof grpcMaterializedViewServer>["topics"];
+const samples: Array<GrpcMaterializedBenchmarkSample> = [];
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
   const memory = process.memoryUsage();
@@ -315,291 +151,55 @@ function writeJsonFile(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`);
 }
 
-const nextRows = (count: number): ReadonlyArray<GrpcOrderValueMessage> => {
-  const start = nextRowIndex;
-  nextRowIndex += count;
-  return Array.from({ length: count }, (_value, offset) => grpcOrderValue(start + offset));
-};
-
-const topicHealthValues = (health: ViewServerHealth<Topics>) => [health.engine.topics.orders];
-
-const cleanupLeakCountFromHealth = (health: ViewServerHealth<Topics>): number => {
-  let leakCount = 0;
-  for (const topicHealth of topicHealthValues(health)) {
-    leakCount +=
-      topicHealth.activeSubscriptions + topicHealth.activeViews + topicHealth.queuedEvents;
-  }
-  return leakCount;
-};
-
-const queuedEventCountFromHealth = (health: ViewServerHealth<Topics>): number => {
-  let queuedEventCount = 0;
-  for (const topicHealth of topicHealthValues(health)) {
-    queuedEventCount += topicHealth.queuedEvents;
-  }
-  return queuedEventCount;
-};
-
-const backpressureCountFromHealth = (health: ViewServerHealth<Topics>): number => {
-  let backpressureCount = 0;
-  for (const topicHealth of topicHealthValues(health)) {
-    backpressureCount += topicHealth.backpressureEvents;
-  }
-  return backpressureCount;
-};
-
-const offerRows = Effect.fn("ViewServerRuntime.grpc.bench.rows.offer")(function* (
-  queue: Queue.Queue<GrpcOrderValueMessage>,
-  rows: ReadonlyArray<GrpcOrderValueMessage>,
-) {
-  yield* Effect.forEach(rows, (row) => Queue.offer(queue, row), {
-    discard: true,
-  });
-  yield* Effect.sync(() => {
-    offeredRowCount += rows.length;
-  });
-});
-
-const waitForTotalRows = Effect.fn("ViewServerRuntime.grpc.bench.totalRows.wait")(function* (
-  runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>,
-  expectedTotalRows: number,
-) {
-  return yield* runtimeCore.client
-    .snapshot("orders", {
-      select: ["id", "price"],
-      orderBy: [{ field: "price", direction: "asc" }],
-      limit: 50,
-    })
-    .pipe(
-      Effect.repeat({
-        schedule: Schedule.addDelay(Schedule.recurs(200), () => Effect.succeed("1 millis")),
-        until: (snapshot) => snapshot.totalRows === expectedTotalRows,
+const runBenchmarkSample = async (workload: GrpcMaterializedBenchmarkWorkload): Promise<void> => {
+  samples.push(
+    await Effect.runPromise(
+      runGrpcMaterializedBenchmarkSample(workload, {
+        batchSize,
+        convergenceTimeout,
+        seedRows,
       }),
-      Effect.timeout(convergenceTimeout),
-      Effect.flatMap((snapshot) =>
-        snapshot === undefined
-          ? Effect.fail(
-              new GrpcMaterializedBenchmarkConvergenceError({
-                message: `gRPC materialized benchmark did not converge to ${expectedTotalRows} rows within ${convergenceTimeout}.`,
-              }),
-            )
-          : Effect.succeed(snapshot),
-      ),
-    );
-});
-
-const readHealthOverlay = Effect.fn("ViewServerRuntime.grpc.bench.healthOverlay.read")(function* (
-  runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>,
-  health: ReturnType<typeof makeViewServerGrpcHealthLedger<Topics>>,
-) {
-  const nowMillis = yield* Clock.currentTimeMillis;
-  return health.healthOverlay(yield* runtimeCore.client.health(), nowMillis);
-});
-
-const runGrpcBatch = Effect.fn("ViewServerRuntime.grpc.bench.batch.run")(function* (
-  name: string,
-  currentProfile: BenchmarkProfile,
-  rows: ReadonlyArray<GrpcOrderValueMessage>,
-) {
-  const before = performance.now();
-  yield* offerRows(currentProfile.queue, rows);
-  const snapshot = yield* waitForTotalRows(currentProfile.runtimeCore, nextRowIndex);
-  const afterConvergence = performance.now();
-  const healthBefore = performance.now();
-  const health = yield* readHealthOverlay(currentProfile.runtimeCore, currentProfile.health);
-  const healthAfter = performance.now();
-  const readBefore = performance.now();
-  yield* currentProfile.runtimeCore.client.snapshot("orders", {
-    select: ["id", "price", "status"],
-    where: {
-      status: { eq: "open" },
-      price: { gte: 10 },
-    },
-    orderBy: [{ field: "updatedAt", direction: "desc" }],
-    limit: 100,
-  });
-  const readAfter = performance.now();
-  const streamConvergenceMs = afterConvergence - before;
-  samples.push({
-    healthOverlayMs: healthAfter - healthBefore,
-    name,
-    rows: rows.length,
-    rowsPerSecond: (rows.length / streamConvergenceMs) * 1_000,
-    snapshotMs: readAfter - readBefore,
-    streamConvergenceMs,
-    totalRows: snapshot.totalRows,
-  });
-  if (health.status === "degraded") {
-    throw new Error("gRPC materialized benchmark health became degraded.");
-  }
-});
-
-const runHealthOverlayCase = Effect.fn("ViewServerRuntime.grpc.bench.healthOverlay.run")(function* (
-  name: string,
-  currentProfile: BenchmarkProfile,
-) {
-  const before = performance.now();
-  const health = yield* readHealthOverlay(currentProfile.runtimeCore, currentProfile.health);
-  const after = performance.now();
-  samples.push({
-    healthOverlayMs: after - before,
-    name,
-    rows: 0,
-    rowsPerSecond: 0,
-    snapshotMs: 0,
-    streamConvergenceMs: 0,
-    totalRows: health.engine.topics.orders.rowCount,
-  });
-  if (health.status === "degraded") {
-    throw new Error("gRPC materialized benchmark health became degraded.");
-  }
-});
-
-const currentBenchmarkProfile = (): BenchmarkProfile => {
-  const currentProfile = profile;
-  if (currentProfile === undefined) {
-    throw new Error("gRPC materialized benchmark setup did not create a profile.");
-  }
-  return currentProfile;
+    ),
+  );
 };
 
 const benchmarkCases: ReadonlyArray<BenchmarkCase> = [
   {
     name: "gRPC materialized stream batch",
-    run: () =>
-      Effect.runPromise(
-        runGrpcBatch(
-          "gRPC materialized stream batch",
-          currentBenchmarkProfile(),
-          nextRows(batchSize),
-        ),
-      ),
+    workload: "stream-batch",
   },
   {
     name: "gRPC materialized burst",
-    run: () =>
-      Effect.runPromise(
-        runGrpcBatch("gRPC materialized burst", currentBenchmarkProfile(), nextRows(batchSize * 4)),
-      ),
+    workload: "burst",
   },
   {
     name: "gRPC materialized health overlay",
-    run: () =>
-      Effect.runPromise(
-        runHealthOverlayCase("gRPC materialized health overlay", currentBenchmarkProfile()),
-      ),
+    workload: "health-overlay",
   },
 ];
 
-const summarizeSamples = (
-  name: string,
-): {
-  readonly maxHealthOverlayMs: number;
-  readonly maxSnapshotMs: number;
-  readonly maxStreamConvergenceMs: number;
-  readonly meanHealthOverlayMs: number;
-  readonly meanRowsPerSecond: number;
-  readonly meanSnapshotMs: number;
-  readonly meanStreamConvergenceMs: number;
-  readonly name: string;
-  readonly sampleCount: number;
-  readonly totalRows: number;
-} => {
-  const matching = samples.filter((sample) => sample.name === name);
-  // Vitest can probe async bench bodies before the reported samples; keep the reported window.
-  const reportedSamples = matching.slice(-benchOptions.iterations);
-  if (reportedSamples.length !== benchOptions.iterations) {
-    throw new Error(
-      `gRPC materialized benchmark case ${name} produced ${reportedSamples.length} reported sample(s), expected ${benchOptions.iterations}.`,
-    );
-  }
-  const totals = reportedSamples.reduce(
-    (accumulator, sample) => ({
-      healthOverlayMs: accumulator.healthOverlayMs + sample.healthOverlayMs,
-      rowsPerSecond: accumulator.rowsPerSecond + sample.rowsPerSecond,
-      snapshotMs: accumulator.snapshotMs + sample.snapshotMs,
-      streamConvergenceMs: accumulator.streamConvergenceMs + sample.streamConvergenceMs,
-    }),
-    {
-      healthOverlayMs: 0,
-      rowsPerSecond: 0,
-      snapshotMs: 0,
-      streamConvergenceMs: 0,
-    },
+afterAll(() => {
+  const cases = benchmarkCases.map((benchmarkCase) =>
+    summarizeGrpcMaterializedBenchmarkSamples(samples, benchmarkCase.name, benchOptions.iterations),
   );
-  const sampleCount = reportedSamples.length;
-  return {
-    maxHealthOverlayMs: Math.max(...reportedSamples.map((sample) => sample.healthOverlayMs)),
-    maxSnapshotMs: Math.max(...reportedSamples.map((sample) => sample.snapshotMs)),
-    maxStreamConvergenceMs: Math.max(
-      ...reportedSamples.map((sample) => sample.streamConvergenceMs),
-    ),
-    meanHealthOverlayMs: totals.healthOverlayMs / sampleCount,
-    meanRowsPerSecond: totals.rowsPerSecond / sampleCount,
-    meanSnapshotMs: totals.snapshotMs / sampleCount,
-    meanStreamConvergenceMs: totals.streamConvergenceMs / sampleCount,
-    name,
-    sampleCount,
-    totalRows: reportedSamples[reportedSamples.length - 1]?.totalRows ?? 0,
-  };
-};
-
-beforeAll(async () => {
-  profile = await Effect.runPromise(
-    Effect.gen(function* () {
-      const queue = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const viewServer = grpcMaterializedViewServer(Stream.fromQueue(queue));
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions(viewServer);
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-      const health = makeDefaultRuntimeDependencies<Topics>().makeGrpcHealthLedger(
-        viewServer,
-        grpcOptions,
-      );
-      const ingress = yield* makeViewServerGrpcIngress(
-        viewServer,
-        runtimeCore.internalClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-      yield* runGrpcBatch(
-        "setup seed",
-        {
-          health,
-          ingress,
-          memoryAfterSetup: memorySnapshot(),
-          queue,
-          runtimeCore,
-        },
-        nextRows(seedRows),
-      );
-      samples.length = 0;
-      return {
-        health,
-        ingress,
-        memoryAfterSetup: memorySnapshot(),
-        queue,
-        runtimeCore,
-      };
-    }),
-  );
-});
-
-afterAll(async () => {
-  const currentProfile = profile;
-  let health: ViewServerHealth<Topics> | undefined;
-  if (currentProfile !== undefined) {
-    await Effect.runPromise(currentProfile.ingress.close);
-    health = await Effect.runPromise(
-      readHealthOverlay(currentProfile.runtimeCore, currentProfile.health),
-    );
-    await Effect.runPromise(currentProfile.runtimeCore.close);
+  const reportedSamples = cases.flatMap((benchmarkCase) => benchmarkCase.samples);
+  const health = samples[samples.length - 1]?.health;
+  if (health === undefined) {
+    throw new Error("gRPC materialized benchmark did not record final health evidence.");
   }
+  const cleanupLeakCount = reportedSamples.reduce(
+    (total, sample) => total + sample.cleanupLeakCount,
+    0,
+  );
+  const backpressureCount = reportedSamples.reduce(
+    (total, sample) => total + sample.backpressureCount,
+    0,
+  );
+  const queuedEventCount = reportedSamples.reduce(
+    (total, sample) => total + sample.queuedEventCount,
+    0,
+  );
   const memoryAfterBenchmark = memorySnapshot();
-  const cleanupLeakCount = health === undefined ? 0 : cleanupLeakCountFromHealth(health);
-  const backpressureCount = health === undefined ? 0 : backpressureCountFromHealth(health);
-  const queuedEventCount = health === undefined ? 0 : queuedEventCountFromHealth(health);
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
     artifactKind: "runtime-benchmark-summary",
     backpressureCount,
@@ -607,7 +207,7 @@ afterAll(async () => {
     benchmarkCases: benchmarkCases.map((benchmarkCase) => benchmarkCase.name),
     benchmarkName: "gRPC materialized runtime benchmark",
     benchmarkScope: "runtime-grpc-materialized",
-    cases: benchmarkCases.map((benchmarkCase) => summarizeSamples(benchmarkCase.name)),
+    cases,
     cleanupLeakCount,
     health,
     latency: {
@@ -616,26 +216,25 @@ afterAll(async () => {
     },
     memory: {
       afterBenchmark: memoryAfterBenchmark,
-      afterSetup: currentProfile?.memoryAfterSetup,
       before: memoryBefore,
-      setupDelta:
-        currentProfile?.memoryAfterSetup === undefined
-          ? undefined
-          : memoryDelta(memoryBefore, currentProfile.memoryAfterSetup),
       totalDelta: memoryDelta(memoryBefore, memoryAfterBenchmark),
     },
     grpcParameters: {
       batchSize,
       seedRows,
     },
-    mutationCount: offeredRowCount,
+    mutationCount: cases.reduce((total, benchmarkCase) => total + benchmarkCase.mutationCount, 0),
     notes: [
-      "Latency percentiles are emitted by Vitest in outputJsonPath.",
-      "Benchmark uses the production materialized gRPC ingress with an in-memory Stream source.",
-      "Each timed sample writes through the gRPC ingress queue, waits for runtime-core convergence, then performs a filtered/sorted snapshot.",
+      "Vitest latency includes fresh Runtime Core, source, deterministic seed, measured operation, health audit, and cleanup for each sample.",
+      "Operation timers isolate the production materialized gRPC ingress, convergence, health-overlay, and snapshot work.",
+      "Every sample owns an independently seeded runtime and emits raw state, timing, and cleanup evidence.",
     ],
     queuedEventCount,
     rowCount: seedRows,
+    seedMutationCount: cases.reduce(
+      (total, benchmarkCase) => total + benchmarkCase.seedMutationCount,
+      0,
+    ),
     seedRows,
     subscriberCount: 0,
     topics: ["orders"],
@@ -649,6 +248,12 @@ afterAll(async () => {
 
 describe("runtime gRPC materialized benchmark", () => {
   for (const benchmarkCase of benchmarkCases) {
-    bench(benchmarkCase.name, benchmarkCase.run, benchOptions);
+    bench(
+      benchmarkCase.name,
+      async () => {
+        await runBenchmarkSample(benchmarkCase.workload);
+      },
+      benchOptions,
+    );
   }
 });

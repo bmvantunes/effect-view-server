@@ -389,18 +389,145 @@ const replaceGrpcLeasedOperationCase = (
     operationCase.name === replacement.name ? replacement : operationCase,
   );
 
-const runtimeGrpcMaterializedOperationCase = {
-  maxHealthOverlayMs: 2,
-  maxSnapshotMs: 8,
-  maxStreamConvergenceMs: 7,
-  meanHealthOverlayMs: 1,
-  meanRowsPerSecond: 1000,
-  meanSnapshotMs: 7,
-  meanStreamConvergenceMs: 6,
-  name: "case a",
-  sampleCount: 7,
-  totalRows: 100,
+const runtimeGrpcMaterializedParameters = {
+  batchSize: 100,
+  seedRows: 1000,
 };
+
+const runtimeGrpcMaterializedSampleCount = 7;
+
+const runtimeGrpcMaterializedSampleFor = (
+  parameters: typeof runtimeGrpcMaterializedParameters,
+  name: string,
+  rows: number,
+  resultRowId: string | null,
+) => ({
+  backpressureCount: 0,
+  cleanupLeakCount: 0,
+  cleanupMs: 2,
+  healthOverlayMs: 1,
+  name,
+  queuedEventCount: 0,
+  resultRowId,
+  rows,
+  rowsPerSecond: rows * 10,
+  seedRows: parameters.seedRows,
+  snapshotMs: rows === 0 ? 0 : 7,
+  startTotalRows: parameters.seedRows,
+  streamConvergenceMs: rows === 0 ? 0 : 100,
+  totalRows: parameters.seedRows + rows,
+});
+
+const runtimeGrpcMaterializedOperationCaseFor = (
+  sample: ReturnType<typeof runtimeGrpcMaterializedSampleFor>,
+  sampleCount = runtimeGrpcMaterializedSampleCount,
+) => ({
+  maxCleanupMs: sample.cleanupMs,
+  maxHealthOverlayMs: sample.healthOverlayMs,
+  maxSnapshotMs: sample.snapshotMs,
+  maxStreamConvergenceMs: sample.streamConvergenceMs,
+  meanCleanupMs: sample.cleanupMs,
+  meanHealthOverlayMs: sample.healthOverlayMs,
+  meanRowsPerSecond: sample.rowsPerSecond,
+  meanSnapshotMs: sample.snapshotMs,
+  meanStreamConvergenceMs: sample.streamConvergenceMs,
+  medianRowsPerSecond: sample.rowsPerSecond,
+  mutationCount: sample.rows * sampleCount,
+  name: sample.name,
+  pooledRowsPerSecond: sample.rowsPerSecond,
+  rowsPerSecondCoefficientOfVariation: 0,
+  sampleCount,
+  samples: Array.from({ length: sampleCount }, () => ({ ...sample })),
+  seedMutationCount: sample.seedRows * sampleCount,
+  startTotalRows: sample.startTotalRows,
+  totalRows: sample.totalRows,
+});
+
+const runtimeGrpcMaterializedOperationCasesFor = (
+  parameters: typeof runtimeGrpcMaterializedParameters,
+) => [
+  runtimeGrpcMaterializedOperationCaseFor(
+    runtimeGrpcMaterializedSampleFor(
+      parameters,
+      "gRPC materialized stream batch",
+      parameters.batchSize,
+      `order-${parameters.seedRows + parameters.batchSize - 1}`,
+    ),
+  ),
+  runtimeGrpcMaterializedOperationCaseFor(
+    runtimeGrpcMaterializedSampleFor(
+      parameters,
+      "gRPC materialized burst",
+      parameters.batchSize * 4,
+      `order-${parameters.seedRows + parameters.batchSize * 4 - 1}`,
+    ),
+  ),
+  runtimeGrpcMaterializedOperationCaseFor(
+    runtimeGrpcMaterializedSampleFor(
+      parameters,
+      "gRPC materialized health overlay",
+      0,
+      null,
+    ),
+  ),
+];
+
+const runtimeGrpcMaterializedStreamSample = runtimeGrpcMaterializedSampleFor(
+  runtimeGrpcMaterializedParameters,
+  "gRPC materialized stream batch",
+  runtimeGrpcMaterializedParameters.batchSize,
+  "order-1099",
+);
+
+const runtimeGrpcMaterializedHealthSample = runtimeGrpcMaterializedSampleFor(
+  runtimeGrpcMaterializedParameters,
+  "gRPC materialized health overlay",
+  0,
+  null,
+);
+
+const runtimeGrpcMaterializedOperationCase = runtimeGrpcMaterializedOperationCaseFor(
+  runtimeGrpcMaterializedStreamSample,
+);
+
+const runtimeGrpcMaterializedBurstOperationCase = runtimeGrpcMaterializedOperationCaseFor(
+  runtimeGrpcMaterializedSampleFor(
+    runtimeGrpcMaterializedParameters,
+    "gRPC materialized burst",
+    runtimeGrpcMaterializedParameters.batchSize * 4,
+    "order-1399",
+  ),
+);
+
+const runtimeGrpcMaterializedHealthOperationCase = runtimeGrpcMaterializedOperationCaseFor(
+  runtimeGrpcMaterializedHealthSample,
+);
+
+const runtimeGrpcMaterializedOperationCases = [
+  runtimeGrpcMaterializedOperationCase,
+  runtimeGrpcMaterializedBurstOperationCase,
+  runtimeGrpcMaterializedHealthOperationCase,
+];
+
+const runtimeGrpcMaterializedComparisonState = (
+  operationCases: ReadonlyArray<typeof runtimeGrpcMaterializedOperationCase>,
+  caseName: string,
+) =>
+  operationCases
+    .filter((operationCase) => operationCase.name === caseName)
+    .flatMap((operationCase) =>
+      operationCase.samples.map((sample) => ({
+        backpressureCount: sample.backpressureCount,
+        cleanupLeakCount: sample.cleanupLeakCount,
+        name: sample.name,
+        queuedEventCount: sample.queuedEventCount,
+        resultRowId: sample.resultRowId,
+        rows: sample.rows,
+        seedRows: sample.seedRows,
+        startTotalRows: sample.startTotalRows,
+        totalRows: sample.totalRows,
+      })),
+    );
 
 const observation = {
   artifactKind: "engine-benchmark-summary",
@@ -467,6 +594,58 @@ const grpcLeasedObservation = grpcLeasedObservationFor([runtimeGrpcLeasedOperati
 const completeGrpcLeasedObservation = grpcLeasedObservationFor(
   runtimeGrpcLeasedOperationCases,
 );
+
+const runtimeGrpcMaterializedObservationFor = (
+  operationCases: ReadonlyArray<typeof runtimeGrpcMaterializedOperationCase>,
+) => ({
+  ...observation,
+  benchmarks: operationCases.map((operationCase) => ({
+    ...observation.benchmarks[0],
+    name: operationCase.name,
+    sampleCount: operationCase.sampleCount,
+  })),
+  benchmarkCases: operationCases.map((operationCase) => operationCase.name),
+  benchmarkScope: "runtime-grpc-materialized",
+  mutationCount: operationCases.reduce(
+    (total, operationCase) => total + operationCase.mutationCount,
+    0,
+  ),
+  seedMutationCount: operationCases.reduce(
+    (total, operationCase) => total + operationCase.seedMutationCount,
+    0,
+  ),
+});
+
+const replaceGrpcMaterializedOperationCase = (
+  replacement: typeof runtimeGrpcMaterializedOperationCase,
+) =>
+  runtimeGrpcMaterializedOperationCases.map((operationCase) =>
+    operationCase.name === replacement.name ? replacement : operationCase,
+  );
+
+const runtimeGrpcMaterializedObservation = runtimeGrpcMaterializedObservationFor(
+  runtimeGrpcMaterializedOperationCases,
+);
+
+const runtimeGrpcMaterializedVitestOutput = {
+  files: [
+    {
+      groups: [
+        {
+          fullName: "src/example.bench.ts > example benchmark group",
+          benchmarks: runtimeGrpcMaterializedOperationCases.map((operationCase) => ({
+            max: 3,
+            mean: 2,
+            min: 1,
+            name: operationCase.name,
+            p99: 3,
+            sampleCount: operationCase.sampleCount,
+          })),
+        },
+      ],
+    },
+  ],
+};
 
 const taskPaths = (summaryPath: string, outputJsonPath: string) => ({
   expectedArtifactKind: "engine-benchmark-summary",
@@ -715,20 +894,20 @@ describe("benchmark baseline comparison", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
     const summaryPath = join(directory, "actual.summary.json");
     const outputJsonPath = join(directory, "actual.json");
-    const grpcParameters = {
-      batchSize: 256,
-      seedRows: 1000,
-    };
+    const grpcParameters = runtimeGrpcMaterializedParameters;
     writeFileSync(
       summaryPath,
       `${JSON.stringify({
         ...summary,
+        benchmarkCases: runtimeGrpcMaterializedObservation.benchmarkCases,
         benchmarkScope: "runtime-grpc-materialized",
-        cases: [runtimeGrpcMaterializedOperationCase],
+        cases: runtimeGrpcMaterializedOperationCases,
         grpcParameters,
+        mutationCount: runtimeGrpcMaterializedObservation.mutationCount,
+        seedMutationCount: runtimeGrpcMaterializedObservation.seedMutationCount,
       })}\n`,
     );
-    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+    writeFileSync(outputJsonPath, `${JSON.stringify(runtimeGrpcMaterializedVitestOutput)}\n`);
 
     expect(
       readBenchmarkObservation({
@@ -736,11 +915,11 @@ describe("benchmark baseline comparison", () => {
         expectedBenchmarkScope: "runtime-grpc-materialized",
       }),
     ).toStrictEqual({
-      ...observation,
+      ...runtimeGrpcMaterializedObservation,
       benchmarkScope: "runtime-grpc-materialized",
       grpcParameters,
       outputJsonPath,
-      runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+      runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
       summaryPath,
     });
   });
@@ -2093,33 +2272,37 @@ describe("benchmark baseline comparison", () => {
   });
 
   it("reports gRPC benchmark parameter drift", () => {
+    const changedParameters = {
+      ...runtimeGrpcMaterializedParameters,
+      batchSize: 200,
+    };
+    const changedOperationCases = runtimeGrpcMaterializedOperationCasesFor(changedParameters);
     const baseline = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 256,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+        ...runtimeGrpcMaterializedObservation,
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
       },
     ]);
     const actual = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 512,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+        ...runtimeGrpcMaterializedObservationFor(changedOperationCases),
+        grpcParameters: changedParameters,
+        runtimeOperationCases: changedOperationCases,
       },
     ]);
 
     expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
       ok: false,
       regressions: [
-        'task a: grpcParameters changed from {"batchSize":256,"seedRows":1000} to {"batchSize":512,"seedRows":1000}.',
+        "task a: mutationCount changed from 3500 to 7000.",
+        "task a: gRPC materialized stream batch runtime operation totalRows changed from 1100 to 1200.",
+        "task a: gRPC materialized stream batch runtime operation mutationCount changed from 700 to 1400.",
+        `task a: gRPC materialized stream batch runtime operation sample state changed from ${JSON.stringify(runtimeGrpcMaterializedComparisonState(runtimeGrpcMaterializedOperationCases, "gRPC materialized stream batch"))} to ${JSON.stringify(runtimeGrpcMaterializedComparisonState(changedOperationCases, "gRPC materialized stream batch"))}.`,
+        "task a: gRPC materialized burst runtime operation totalRows changed from 1400 to 1800.",
+        "task a: gRPC materialized burst runtime operation mutationCount changed from 2800 to 5600.",
+        `task a: gRPC materialized burst runtime operation sample state changed from ${JSON.stringify(runtimeGrpcMaterializedComparisonState(runtimeGrpcMaterializedOperationCases, "gRPC materialized burst"))} to ${JSON.stringify(runtimeGrpcMaterializedComparisonState(changedOperationCases, "gRPC materialized burst"))}.`,
+        'task a: grpcParameters changed from {"batchSize":100,"seedRows":1000} to {"batchSize":200,"seedRows":1000}.',
       ],
     });
   });
@@ -2167,91 +2350,96 @@ describe("benchmark baseline comparison", () => {
   it("reports materialized gRPC runtime operation regressions", () => {
     const baseline = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 256,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+        ...runtimeGrpcMaterializedObservation,
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
       },
     ]);
+    const regressedOperationCase = {
+      ...runtimeGrpcMaterializedOperationCase,
+      maxStreamConvergenceMs: 1500,
+      meanRowsPerSecond: (6000 + 1000 / 15) / 7,
+      meanStreamConvergenceMs: 300,
+      pooledRowsPerSecond: 1000 / 3,
+      rowsPerSecondCoefficientOfVariation:
+        Math.sqrt(
+          (6 * (1000 - (6000 + 1000 / 15) / 7) ** 2 +
+            (1000 / 15 - (6000 + 1000 / 15) / 7) ** 2) /
+            7,
+        ) /
+        ((6000 + 1000 / 15) / 7),
+      samples: [
+        ...runtimeGrpcMaterializedOperationCase.samples.slice(0, 6),
+        {
+          ...runtimeGrpcMaterializedStreamSample,
+          rowsPerSecond: 1000 / 15,
+          streamConvergenceMs: 1500,
+        },
+      ],
+    };
+    const regressedOperationCases = replaceGrpcMaterializedOperationCase(
+      regressedOperationCase,
+    );
     const actual = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 256,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [
-          {
-            ...runtimeGrpcMaterializedOperationCase,
-            maxStreamConvergenceMs: 1000,
-            meanRowsPerSecond: 400,
-            totalRows: 200,
-          },
-        ],
+        ...runtimeGrpcMaterializedObservationFor(regressedOperationCases),
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: regressedOperationCases,
       },
     ]);
 
     expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
       ok: false,
       regressions: [
-        "task a: case a runtime operation totalRows changed from 100 to 200.",
-        "task a / case a: maxStreamConvergenceMs regressed from 7.000ms to 1000.000ms; allowed <= 112.000ms.",
-        "task a / case a: meanRowsPerSecond throughput regressed from 1000.000 rows/sec to 400.000 rows/sec; allowed >= 500.000 rows/sec.",
+        "task a / gRPC materialized stream batch: pooledRowsPerSecond throughput regressed from 1000.000 rows/sec to 333.333 rows/sec; allowed >= 500.000 rows/sec.",
       ],
     });
   });
 
-  it("reports materialized gRPC runtime operation membership changes", () => {
-    const oneCase = {
-      ...observation,
-      benchmarkScope: "runtime-grpc-materialized",
-      grpcParameters: {
-        batchSize: 256,
-        seedRows: 1000,
+  it("rejects materialized gRPC runtime operation membership changes", () => {
+    const baseline = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...runtimeGrpcMaterializedObservation,
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
       },
-      runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
-    };
-    const twoCases = {
-      ...oneCase,
-      benchmarks: [
-        observation.benchmarks[0],
-        {
-          ...observation.benchmarks[0],
-          name: "case b",
-        },
-      ],
-      benchmarkCases: ["case a", "case b"],
-      runtimeOperationCases: [
-        runtimeGrpcMaterializedOperationCase,
-        {
-          ...runtimeGrpcMaterializedOperationCase,
-          name: "case b",
-        },
-      ],
-    };
-    const baselineOne = buildBenchmarkBaseline("grpc-materialized", [oneCase]);
-    const baselineTwo = buildBenchmarkBaseline("grpc-materialized", [twoCases]);
+    ]);
+    const incompleteOperationCases = runtimeGrpcMaterializedOperationCases.slice(0, -1);
+    const incomplete = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...runtimeGrpcMaterializedObservationFor(incompleteOperationCases),
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: incompleteOperationCases,
+      },
+    ]);
 
-    expect(compareBenchmarkBaseline(baselineOne, baselineTwo)).toStrictEqual({
-      ok: false,
-      regressions: [
-        'task a: benchmarkCases changed from ["case a"] to ["case a","case b"].',
-        "task a: unexpected runtime operation case case b.",
-        "task a: unexpected benchmark case src/example.bench.ts > example benchmark group / case b.",
-      ],
-    });
-    expect(compareBenchmarkBaseline(baselineTwo, baselineOne)).toStrictEqual({
-      ok: false,
-      regressions: [
-        'task a: benchmarkCases changed from ["case a","case b"] to ["case a"].',
-        "task a: missing runtime operation case case b.",
-        "task a: missing benchmark case src/example.bench.ts > example benchmark group / case b.",
-      ],
-    });
+    expect(() => compareBenchmarkBaseline(baseline, incomplete)).toThrow(
+      "Benchmark artifact field actual.tasks[0].runtimeOperationCases is missing gRPC materialized operation case: gRPC materialized health overlay.",
+    );
+
+    const unexpectedOperationCase = runtimeGrpcMaterializedOperationCaseFor(
+      runtimeGrpcMaterializedSampleFor(
+        runtimeGrpcMaterializedParameters,
+        "unexpected materialized case",
+        0,
+        null,
+      ),
+    );
+    const unexpectedOperationCases = [
+      ...runtimeGrpcMaterializedOperationCases,
+      unexpectedOperationCase,
+    ];
+    const unexpected = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...runtimeGrpcMaterializedObservationFor(unexpectedOperationCases),
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: unexpectedOperationCases,
+      },
+    ]);
+
+    expect(() => compareBenchmarkBaseline(baseline, unexpected)).toThrow(
+      "Benchmark artifact field actual.tasks[0].runtimeOperationCases[3].name must be one of: gRPC materialized stream batch, gRPC materialized burst, gRPC materialized health overlay.",
+    );
   });
 
   it("rejects missing canonical leased runtime operation cases", () => {
@@ -2326,18 +2514,14 @@ describe("benchmark baseline comparison", () => {
   it("reports runtime operation case presence changes without throwing", () => {
     const baseline = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 256,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+        ...runtimeGrpcMaterializedObservation,
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
       },
     ]);
     const actual = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
+        ...runtimeGrpcMaterializedObservation,
         benchmarkScope: "engine-raw-snapshot",
       },
     ]);
@@ -2346,59 +2530,92 @@ describe("benchmark baseline comparison", () => {
       ok: false,
       regressions: [
         "task a: benchmarkScope changed from runtime-grpc-materialized to engine-raw-snapshot.",
+        "task a: seedMutationCount changed from 21000 to undefined.",
         "task a: runtimeOperationCases presence changed.",
-        'task a: grpcParameters changed from {"batchSize":256,"seedRows":1000} to undefined.',
+        'task a: grpcParameters changed from {"batchSize":100,"seedRows":1000} to undefined.',
       ],
     });
   });
 
   it("treats zero baseline runtime operation metrics as exact invariants", () => {
+    const zeroHealthOverlayCase = {
+      ...runtimeGrpcMaterializedHealthOperationCase,
+      maxHealthOverlayMs: 0,
+      meanHealthOverlayMs: 0,
+      samples: runtimeGrpcMaterializedHealthOperationCase.samples.map((sample) => ({
+        ...sample,
+        healthOverlayMs: 0,
+      })),
+    };
+    const zeroHealthOverlayCases = replaceGrpcMaterializedOperationCase(
+      zeroHealthOverlayCase,
+    );
     const baseline = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 256,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [
-	          {
-	            ...runtimeGrpcMaterializedOperationCase,
-	            maxHealthOverlayMs: 0,
-	            meanRowsPerSecond: 0,
-	            meanHealthOverlayMs: 0,
-	          },
-        ],
+        ...runtimeGrpcMaterializedObservationFor(zeroHealthOverlayCases),
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: zeroHealthOverlayCases,
       },
     ]);
     const actual = buildBenchmarkBaseline("grpc-materialized", [
       {
-        ...observation,
-        benchmarkScope: "runtime-grpc-materialized",
-        grpcParameters: {
-          batchSize: 256,
-          seedRows: 1000,
-        },
-        runtimeOperationCases: [
-	          {
-	            ...runtimeGrpcMaterializedOperationCase,
-	            maxHealthOverlayMs: 1,
-	            meanRowsPerSecond: 1,
-	            meanHealthOverlayMs: 1,
-	          },
-        ],
+        ...runtimeGrpcMaterializedObservation,
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
       },
     ]);
 
     expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
       ok: false,
-	      regressions: [
-	        "task a: case a runtime operation meanHealthOverlayMs changed from 0 to 1.",
-	        "task a: case a runtime operation maxHealthOverlayMs changed from 0 to 1.",
-	        "task a: case a meanRowsPerSecond changed from 0 to 1.",
-	      ],
-	    });
-	  });
+      regressions: [
+        "task a: gRPC materialized health overlay runtime operation meanHealthOverlayMs changed from 0 to 1.",
+        "task a: gRPC materialized health overlay runtime operation maxHealthOverlayMs changed from 0 to 1.",
+      ],
+    });
+  });
+
+  it("treats zero leased operation latency as an exact invariant", () => {
+    const zeroCleanupCase = {
+      ...runtimeGrpcLeasedOperationCase,
+      maxCleanupMs: 0,
+      meanCleanupMs: 0,
+      samples: runtimeGrpcLeasedOperationCase.samples.map((sample) => ({
+        ...sample,
+        cleanupMs: 0,
+      })),
+    };
+    const zeroCleanupCases = replaceGrpcLeasedOperationCase(zeroCleanupCase);
+    const baseline = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...grpcLeasedObservationFor(zeroCleanupCases),
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: zeroCleanupCases,
+      },
+    ]);
+    const actual = buildBenchmarkBaseline("grpc-leased", [
+      {
+        ...completeGrpcLeasedObservation,
+        grpcParameters: {
+          retainedRows: 500,
+          routeCount: 25,
+          rowsPerFeed: 50,
+        },
+        runtimeOperationCases: runtimeGrpcLeasedOperationCases,
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: gRPC leased first subscriber runtime operation meanCleanupMs changed from 0 to 2.",
+        "task a: gRPC leased first subscriber runtime operation maxCleanupMs changed from 0 to 2.",
+      ],
+    });
+  });
 
   it("rejects runtime operation cases that do not match benchmark cases", () => {
     expect(() =>
@@ -2647,13 +2864,9 @@ describe("benchmark baseline comparison", () => {
       profile: "grpc-materialized",
       tasks: [
         {
-          ...observation,
-          benchmarkScope: "runtime-grpc-materialized",
-          grpcParameters: {
-            batchSize: 256,
-            seedRows: 1000,
-          },
-          runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+          ...runtimeGrpcMaterializedObservation,
+          grpcParameters: runtimeGrpcMaterializedParameters,
+          runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
         },
       ],
       thresholds: grpcRuntimeBenchmarkThresholds,
@@ -2665,13 +2878,13 @@ describe("benchmark baseline comparison", () => {
         tasks: [
           {
             ...baseline.tasks[0],
-            runtimeOperationCases: [
+            runtimeOperationCases: replaceGrpcMaterializedOperationCase(
               {
                 ...runtimeGrpcMaterializedOperationCase,
                 maxHealthOverlayMs: 1,
                 meanHealthOverlayMs: 2,
               },
-            ],
+            ),
           },
         ],
       }),
@@ -2684,13 +2897,13 @@ describe("benchmark baseline comparison", () => {
         tasks: [
           {
             ...baseline.tasks[0],
-            runtimeOperationCases: [
+            runtimeOperationCases: replaceGrpcMaterializedOperationCase(
               {
                 ...runtimeGrpcMaterializedOperationCase,
                 maxSnapshotMs: 1,
                 meanSnapshotMs: 2,
               },
-            ],
+            ),
           },
         ],
       }),
@@ -2703,19 +2916,39 @@ describe("benchmark baseline comparison", () => {
         tasks: [
           {
             ...baseline.tasks[0],
-            runtimeOperationCases: [
+            runtimeOperationCases: replaceGrpcMaterializedOperationCase(
               {
                 ...runtimeGrpcMaterializedOperationCase,
                 maxStreamConvergenceMs: 1,
                 meanStreamConvergenceMs: 2,
               },
-            ],
+            ),
           },
         ],
       }),
     ).toThrow(
       "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0].meanStreamConvergenceMs must be less than or equal to maxStreamConvergenceMs.",
     );
+  });
+
+  it("accepts independently seeded zero-row materialized samples and compares zero throughput exactly", () => {
+    const sixSampleHealthCase = runtimeGrpcMaterializedOperationCaseFor(
+      runtimeGrpcMaterializedHealthSample,
+      6,
+    );
+    const operationCases = replaceGrpcMaterializedOperationCase(sixSampleHealthCase);
+    const baseline = buildBenchmarkBaseline("grpc-materialized", [
+      {
+        ...runtimeGrpcMaterializedObservationFor(operationCases),
+        grpcParameters: runtimeGrpcMaterializedParameters,
+        runtimeOperationCases: operationCases,
+      },
+    ]);
+
+    expect(compareBenchmarkBaseline(baseline, baseline)).toStrictEqual({
+      ok: true,
+      regressions: [],
+    });
   });
 
   it("requires gRPC runtime operation cases in summaries and baselines", () => {
@@ -2781,7 +3014,7 @@ describe("benchmark baseline comparison", () => {
         thresholds: defaultBenchmarkThresholds,
       }),
     ).toThrow(
-      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases[0] is only supported for gRPC runtime scopes.",
+      "Benchmark artifact field baseline.tasks[0].runtimeOperationCases is only supported for gRPC runtime scopes.",
     );
   });
 
@@ -2823,13 +3056,9 @@ describe("benchmark baseline comparison", () => {
         profile: "grpc-materialized",
         tasks: [
           {
-            ...observation,
-            benchmarkScope: "runtime-grpc-materialized",
-            grpcParameters: {
-              batchSize: 256,
-              seedRows: 1000,
-            },
-            runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+            ...runtimeGrpcMaterializedObservation,
+            grpcParameters: runtimeGrpcMaterializedParameters,
+            runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
           },
         ],
         thresholds: grpcRuntimeBenchmarkThresholds,
@@ -2839,13 +3068,9 @@ describe("benchmark baseline comparison", () => {
       profile: "grpc-materialized",
       tasks: [
         {
-          ...observation,
-          benchmarkScope: "runtime-grpc-materialized",
-          grpcParameters: {
-            batchSize: 256,
-            seedRows: 1000,
-          },
-          runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+          ...runtimeGrpcMaterializedObservation,
+          grpcParameters: runtimeGrpcMaterializedParameters,
+          runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
         },
       ],
       thresholds: grpcRuntimeBenchmarkThresholds,
@@ -2857,14 +3082,13 @@ describe("benchmark baseline comparison", () => {
         profile: "grpc-materialized",
         tasks: [
           {
-            ...observation,
-            benchmarkScope: "runtime-grpc-materialized",
+            ...runtimeGrpcMaterializedObservation,
             grpcParameters: {
               retainedRows: 500,
               routeCount: 25,
               rowsPerFeed: 50,
             },
-            runtimeOperationCases: [runtimeGrpcMaterializedOperationCase],
+            runtimeOperationCases: runtimeGrpcMaterializedOperationCases,
           },
         ],
         thresholds: grpcRuntimeBenchmarkThresholds,

@@ -648,7 +648,7 @@ export const profiles = new Map([
     "grpc-materialized",
     [
       runtimeGrpcMaterializedTask(1_000, 256, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "3",
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",

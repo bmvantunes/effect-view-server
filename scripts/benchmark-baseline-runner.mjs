@@ -7,179 +7,25 @@ import {
   readBenchmarkObservation,
   writeBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
+import {
+  profiles,
+  repeatableReportOnlyProfiles,
+} from "./benchmark-baseline-profiles.mjs";
+import {
+  repeatArtifactPath,
+  summaryPath,
+  taskForRepeat,
+} from "./benchmark-baseline-task-catalog.mjs";
 
-const enginePackageDirectory = "packages/column-live-view-engine";
-const reactPackageDirectory = "packages/react";
-const runtimePackageDirectory = "packages/runtime";
+export {
+  profiles,
+  repeatableReportOnlyProfiles,
+  repeatArtifactPath,
+  summaryPath,
+  taskForRepeat,
+};
 
 export const baselinePath = (profile) => `benchmarks/baselines/${profile}.json`;
-
-export const summaryPath = (outputJsonPath) =>
-  outputJsonPath.endsWith(".json")
-    ? `${outputJsonPath.slice(0, -".json".length)}.summary.json`
-    : `${outputJsonPath}.summary.json`;
-
-export const repeatArtifactPath = (artifactPath, repeatIndex, repeatCount) => {
-  if (repeatCount === 1) {
-    return artifactPath;
-  }
-  const run = String(repeatIndex + 1).padStart(2, "0");
-  const total = String(repeatCount).padStart(2, "0");
-  const suffix = `.run-${run}-of-${total}`;
-  return artifactPath.endsWith(".json")
-    ? `${artifactPath.slice(0, -".json".length)}${suffix}.json`
-    : `${artifactPath}${suffix}`;
-};
-
-const packageArtifactPath = (packageDirectory, outputJsonPath) =>
-  `${packageDirectory}/${outputJsonPath}`;
-
-const engineArtifactName = (name) => `.artifacts/${name}`;
-
-const reactArtifactName = (name) => `.artifacts/${name}`;
-
-const commonEngineSmokeEnv = {
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "5",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "1",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const rawWriteSmokeEnv = {
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "5",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const rawReadWriteReadEnv = {
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "20",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "1",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const rawReadWriteWriteEnv = {
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "20",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const commonReactSmokeEnv = {
-  VIEW_SERVER_REACT_BENCH_ITERATIONS: "5",
-  VIEW_SERVER_REACT_BENCH_TIME_MS: "1",
-  VIEW_SERVER_REACT_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_REACT_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const commonRuntimeKafkaSmokeEnv = {
-  VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS: "localhost:9092",
-  VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "3",
-  VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "1",
-  VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const retainedDeltaSmokeEnv = {
-  ...commonEngineSmokeEnv,
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-};
-
-const retainedDeltaReleaseEnv = {
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "100",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const retainedDeltaNoopWideReleaseEnv = {
-  ...retainedDeltaReleaseEnv,
-  VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT: "1000",
-};
-
-const retainedDeltaMoveDownReleaseEnv = {
-  ...retainedDeltaReleaseEnv,
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "49",
-};
-
-const retainedDeltaReplacementBatchReleaseEnv = {
-  ...retainedDeltaReleaseEnv,
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "24",
-};
-
-const retainedDeltaReplacementBatchWideReleaseEnv = {
-  ...retainedDeltaReleaseEnv,
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "5",
-  VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE: "64",
-  VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT: "1000",
-};
-
-const retainedDeltaVisibleDeleteBatchWideReleaseEnv = {
-  ...retainedDeltaReleaseEnv,
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "4",
-  VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE: "16",
-  VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT: "1000",
-};
-
-const groupedReadReleaseEnv = {
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "3",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-};
-
-const groupedWriteReleaseEnv = {
-  VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_MODE: "incremental",
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "3",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
-};
-
-const groupedAdmissionReleaseEnv = {
-  VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_MODE: "incremental",
-  VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "3",
-  VIEW_SERVER_ENGINE_BENCH_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS: "0",
-  VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "32",
-};
-
-const forcedGroupedFallbackAdmissionEnv = {
-  VIEW_SERVER_ENGINE_BENCH_EXPECTED_GROUPED_ADMISSION: "fallback",
-  VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_GROUPS: "1",
-  VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_MEMBERS: "1",
-  VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_MEMBERS_PER_GROUP: "1",
-  VIEW_SERVER_ENGINE_BENCH_GROUPED_INCREMENTAL_MAX_RETAINED_VALUE_ENTRIES: "1",
-};
-
-const task = ({
-  artifactKind,
-  benchmarkScope,
-  env,
-  label,
-  minimumSampleCount,
-  outputJsonPath,
-  packageDirectory,
-  rowCount,
-  vpTask,
-}) => ({
-  args: ["run", "--no-cache", vpTask],
-  command: "vp",
-  env,
-  expectedArtifactKind: artifactKind,
-  expectedBenchmarkScope: benchmarkScope,
-  expectedRowCount: rowCount,
-  label,
-  minimumSampleCount,
-  outputJsonPath: packageArtifactPath(packageDirectory, outputJsonPath),
-  packageOutputJsonPath: outputJsonPath,
-  summaryPath: packageArtifactPath(packageDirectory, summaryPath(outputJsonPath)),
-});
-
-const minimumSampleCountFrom = (env, key) => Number.parseInt(env[key] ?? "5", 10);
 
 export const repeatCountFrom = (argv) => {
   if (argv.includes("--repeat")) {
@@ -200,639 +46,6 @@ export const repeatCountFrom = (argv) => {
   const repeatCount = Number.parseInt(repeatValue, 10);
   return Number.isSafeInteger(repeatCount) && repeatCount <= 20 ? repeatCount : undefined;
 };
-
-export const taskForRepeat = (currentTask, repeatIndex, repeatCount) => {
-  if (repeatCount === 1) {
-    return currentTask;
-  }
-  const packageOutputJsonPath = repeatArtifactPath(
-    currentTask.packageOutputJsonPath,
-    repeatIndex,
-    repeatCount,
-  );
-  const env = Object.fromEntries(
-    Object.entries(currentTask.env).map(([key, value]) => [
-      key,
-      value === currentTask.packageOutputJsonPath ? packageOutputJsonPath : value,
-    ]),
-  );
-  const outputJsonPath = repeatArtifactPath(currentTask.outputJsonPath, repeatIndex, repeatCount);
-  return {
-    ...currentTask,
-    env: {
-      ...env,
-      VIEW_SERVER_BENCH_REPEAT_INDEX: String(repeatIndex + 1),
-      VIEW_SERVER_BENCH_REPEAT_TOTAL: String(repeatCount),
-    },
-    label: `${currentTask.label} run ${repeatIndex + 1}/${repeatCount}`,
-    outputJsonPath,
-    packageOutputJsonPath,
-    summaryPath: summaryPath(outputJsonPath),
-  };
-};
-
-const rawSnapshotTask = (rowCount, env = {}) => {
-  const outputJsonPath = engineArtifactName(`raw-snapshot-${rowCount}rows.json`);
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-raw-snapshot",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `raw snapshot ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:raw-snapshot",
-  });
-};
-
-const rawPredicateIndexTask = (rowCount, env = {}) => {
-  const outputJsonPath = engineArtifactName(`raw-predicate-index-${rowCount}rows.json`);
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-raw-predicate-index",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `raw predicate index ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:raw-predicate-index",
-  });
-};
-
-const rawWriteTask = (writeMode, rowCount, env = {}) => {
-  const outputJsonPath = engineArtifactName(`raw-write-${writeMode}-${rowCount}rows.json`);
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-raw-write",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      VIEW_SERVER_ENGINE_BENCH_WRITE_MODE: writeMode,
-      ...env,
-    },
-    label: `raw write ${writeMode} ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:raw-write",
-  });
-};
-
-const rawLiveFanoutTask = (fanoutCase, rowCount, subscriberCount, env = {}) => {
-  const outputJsonPath = engineArtifactName(
-    `raw-live-fanout-${fanoutCase}-${rowCount}rows-${subscriberCount}subs.json`,
-  );
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-raw-live-fanout",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_FANOUT_CASE: fanoutCase,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      VIEW_SERVER_ENGINE_BENCH_SUBSCRIBERS: String(subscriberCount),
-      ...env,
-    },
-    label: `raw live fanout ${fanoutCase} ${rowCount} rows ${subscriberCount} subscribers`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:raw-live-fanout",
-  });
-};
-
-const groupedAggregateTask = (rowCount, env) => {
-  const outputJsonPath = engineArtifactName(`grouped-aggregate-${rowCount}rows.json`);
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-grouped-aggregate",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `grouped aggregate ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:grouped-aggregate",
-  });
-};
-
-const groupedKeyWidthTask = (rowCount, env) => {
-  const outputJsonPath = engineArtifactName(`grouped-key-width-${rowCount}rows.json`);
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-grouped-key-width",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `grouped key width ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:grouped-key-width",
-  });
-};
-
-const deltaOperationArtifactOperationCount = (_deltaCase, _rowCount, operationCount) =>
-  operationCount * 2;
-
-const queryDeltaOperationsTask = (deltaCase, rowCount, operationCount, env = {}) => {
-  const artifactOperationCount = deltaOperationArtifactOperationCount(
-    deltaCase,
-    rowCount,
-    operationCount,
-  );
-  const outputJsonPath = engineArtifactName(
-    `query-delta-operations-${deltaCase}-${rowCount}rows-${artifactOperationCount}ops.json`,
-  );
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-query-delta-operations",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_DELTA_OPERATION_CASE: deltaCase,
-      VIEW_SERVER_ENGINE_BENCH_DELTA_OPERATION_COUNT: String(operationCount),
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `query delta operations ${deltaCase} ${rowCount} rows ${artifactOperationCount} ops`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:query-delta-operations",
-  });
-};
-
-const groupedWriteTask = (mode, rowCount, env) => {
-  const writeBatchSize = env.VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE;
-  const readerProfile = env.VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE ?? "dual";
-  const readerProfileLabel = readerProfile === "dual" ? "" : ` ${readerProfile}`;
-  const readerProfileSegment = readerProfile === "dual" ? "" : `-${readerProfile}`;
-  const labelSuffix =
-    env.VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX === undefined
-      ? ""
-      : ` ${env.VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX}`;
-  const suffix =
-    env.VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX === undefined
-      ? ""
-      : `-${env.VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX}`;
-  const outputJsonPath = engineArtifactName(
-    `grouped-write-${mode}${readerProfileSegment}-${rowCount}rows-${writeBatchSize}mutations${suffix}.json`,
-  );
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-grouped-write",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_EXPECTED_GROUPED_ADMISSION: mode,
-      VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_MODE: mode,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `grouped write ${mode}${readerProfileLabel} ${rowCount} rows ${writeBatchSize} mutations${labelSuffix}`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:grouped-write",
-  });
-};
-
-const rawActiveRetainedDeltaTask = (retainedCase, rowCount, env) => {
-  const retainedWindowLimit = env["VIEW_SERVER_ENGINE_BENCH_RETAINED_WINDOW_LIMIT"];
-  const replacementBatchSize = env["VIEW_SERVER_ENGINE_BENCH_REPLACEMENT_BATCH_SIZE"];
-  const retainedWindowSuffix =
-    retainedWindowLimit !== undefined &&
-    (retainedCase === "noop" ||
-      retainedCase === "match-replacement-batch" ||
-      retainedCase === "visible-delete-batch");
-  const artifactSegment =
-    retainedWindowSuffix
-      ? `${retainedCase}-${rowCount}rows-${retainedWindowLimit}limit-${replacementBatchSize ?? "2"}batch`
-      : `${retainedCase}-${rowCount}rows`;
-  const outputJsonPath = engineArtifactName(
-    `raw-active-retained-delta-${artifactSegment}.json`,
-  );
-  return task({
-    artifactKind: "engine-benchmark-summary",
-    benchmarkScope: "engine-raw-active-retained-delta",
-    env: {
-      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_ENGINE_BENCH_RETAINED_CASE: retainedCase,
-      VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label:
-      retainedWindowLimit === undefined
-        ? `raw active retained delta ${retainedCase} ${rowCount} rows`
-        : `raw active retained delta ${retainedCase} ${rowCount} rows ${retainedWindowLimit} limit ${replacementBatchSize ?? "2"} batch`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: enginePackageDirectory,
-    rowCount,
-    vpTask: "column-live-view-engine#bench:raw-active-retained-delta",
-  });
-};
-
-const reactInMemoryTask = (browser, rowCount, env = {}) => {
-  const outputJsonPath = reactArtifactName(`in-memory-live-query-${rowCount}rows-${browser}.json`);
-  return task({
-    artifactKind: "react-browser-benchmark-summary",
-    benchmarkScope: "react-in-memory-live-query",
-    env: {
-      VIEW_SERVER_REACT_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_REACT_BENCH_BROWSER: browser,
-      VIEW_SERVER_REACT_BENCH_ROWS: String(rowCount),
-      ...env,
-    },
-    label: `React in-memory ${browser} ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_REACT_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: reactPackageDirectory,
-    rowCount,
-    vpTask: "react#bench:in-memory-live-query",
-  });
-};
-
-const runtimeKafkaIngestTask = (rowCount, env) => {
-  const outputJsonPath = `.artifacts/kafka-ingest-${rowCount}rows.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-kafka-ingest",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE: String(rowCount),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    label: `Kafka ingest ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount,
-    vpTask: "runtime#bench:kafka-ingest",
-  });
-};
-
-const runtimeKafkaSustainedFirehoseTask = (rowCount, sustainedBatchCount, env) => {
-  const outputJsonPath = `.artifacts/kafka-sustained-firehose-${rowCount}rows-${sustainedBatchCount}batches.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-kafka-sustained-firehose",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE: String(rowCount),
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_MODE: "sustained-firehose",
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_SUSTAINED_BATCHES: String(sustainedBatchCount),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    label: `Kafka sustained firehose ${rowCount} rows x ${sustainedBatchCount} batches`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount,
-    vpTask: "runtime#bench:kafka-ingest",
-  });
-};
-
-const runtimeGrpcMaterializedTask = (seedRows, batchSize, env) => {
-  const outputJsonPath = `.artifacts/grpc-materialized-${seedRows}seed-${batchSize}batch.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-grpc-materialized",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_BATCH_SIZE: String(batchSize),
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_SEED_ROWS: String(seedRows),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    label: `gRPC materialized ${seedRows} seed rows ${batchSize} batch`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount: seedRows,
-    vpTask: "runtime#bench:grpc-materialized",
-  });
-};
-
-const runtimeGrpcLeasedTask = (rowsPerFeed, routeCount, retainedRows, env) => {
-  const outputJsonPath = `.artifacts/grpc-leased-${rowsPerFeed}rows-${routeCount}routes-${retainedRows}retained.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-grpc-leased",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT: String(routeCount),
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROWS_PER_FEED: String(rowsPerFeed),
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS: String(retainedRows),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    label: `gRPC leased ${rowsPerFeed} rows per feed ${routeCount} routes ${retainedRows} retained rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount: rowsPerFeed,
-    vpTask: "runtime#bench:grpc-leased",
-  });
-};
-
-const runtimeWebSocketFirehoseTask = (firehoseCase, rowCount, subscriberCount, env) => {
-  const outputJsonPath = `.artifacts/websocket-firehose-${firehoseCase}-${rowCount}rows-${subscriberCount}subs.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-websocket-firehose",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_CASE: firehoseCase,
-      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_ROWS: String(rowCount),
-      VIEW_SERVER_RUNTIME_BENCH_WEBSOCKET_SUBSCRIBERS: String(subscriberCount),
-      ...env,
-    },
-    label: `WebSocket firehose ${firehoseCase} ${rowCount} rows ${subscriberCount} subscribers`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount,
-    vpTask: "runtime#bench:websocket-firehose",
-  });
-};
-
-export const profiles = new Map([
-  [
-    "smoke",
-    [
-      rawSnapshotTask(1_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
-        ...commonEngineSmokeEnv,
-      }),
-      rawPredicateIndexTask(1_000, commonEngineSmokeEnv),
-      rawWriteTask("base", 1_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "100",
-        ...rawWriteSmokeEnv,
-      }),
-      rawWriteTask("indexed", 1_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "100",
-        ...rawWriteSmokeEnv,
-      }),
-      rawLiveFanoutTask("same-window", 1_000, 5, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
-        ...commonEngineSmokeEnv,
-      }),
-      rawLiveFanoutTask("ten-window", 1_000, 5, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
-        ...commonEngineSmokeEnv,
-      }),
-      groupedAggregateTask(1_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
-        ...commonEngineSmokeEnv,
-      }),
-      groupedKeyWidthTask(1_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
-        ...commonEngineSmokeEnv,
-      }),
-      queryDeltaOperationsTask("head-replacement-batch", 1_000, 16, commonEngineSmokeEnv),
-      groupedWriteTask("incremental", 1_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "500",
-        VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
-        ...retainedDeltaSmokeEnv,
-      }),
-      rawActiveRetainedDeltaTask("noop", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("match-update", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("match-move-down", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("match-replacement-batch", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("predicate-enter", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("visible-delete", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("exhausted-lookahead", 101, retainedDeltaSmokeEnv),
-      rawActiveRetainedDeltaTask("count-only", 101, retainedDeltaSmokeEnv),
-      reactInMemoryTask("chromium", 20, {
-        VIEW_SERVER_REACT_BENCH_BATCH_SIZE: "10",
-        ...commonReactSmokeEnv,
-      }),
-    ],
-  ],
-  [
-    "kafka-ingest",
-    [
-      runtimeKafkaIngestTask(250, {
-        VIEW_SERVER_RUNTIME_BENCH_KAFKA_BURST_MULTIPLIER: "4",
-        ...commonRuntimeKafkaSmokeEnv,
-      }),
-    ],
-  ],
-  [
-    "kafka-sustained-firehose",
-    [
-      runtimeKafkaSustainedFirehoseTask(250, 4, {
-        ...commonRuntimeKafkaSmokeEnv,
-      }),
-    ],
-  ],
-  [
-    "grpc-materialized",
-    [
-      runtimeGrpcMaterializedTask(1_000, 256, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "grpc-leased",
-    [
-      runtimeGrpcLeasedTask(50, 25, 500, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "grpc-leased-retained",
-    [
-      runtimeGrpcLeasedTask(50, 25, 50_000, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "websocket-firehose",
-    [
-      runtimeWebSocketFirehoseTask("same-window", 1_000, 10, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "1",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-      runtimeWebSocketFirehoseTask("ten-window", 1_000, 10, {
-        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
-        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "1",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
-        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
-      }),
-    ],
-  ],
-  [
-    "active-query-sharing",
-    [
-      rawLiveFanoutTask("same-window", 10_000, 50, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
-        ...commonEngineSmokeEnv,
-      }),
-      rawLiveFanoutTask("ten-window", 10_000, 50, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
-        ...commonEngineSmokeEnv,
-      }),
-      rawLiveFanoutTask("unique-window", 10_000, 50, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
-        ...commonEngineSmokeEnv,
-      }),
-      rawLiveFanoutTask("unique-shape", 10_000, 50, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
-        ...commonEngineSmokeEnv,
-      }),
-    ],
-  ],
-  [
-    "raw-read-write",
-    [
-      rawSnapshotTask(100_000, rawReadWriteReadEnv),
-      rawPredicateIndexTask(100_000, rawReadWriteReadEnv),
-      rawWriteTask("base", 100_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
-        ...rawReadWriteWriteEnv,
-      }),
-      rawWriteTask("indexed", 100_000, {
-        VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
-        ...rawReadWriteWriteEnv,
-      }),
-    ],
-  ],
-  [
-    "grouped-admission",
-    [
-      groupedWriteTask("incremental", 100_000, groupedAdmissionReleaseEnv),
-      groupedWriteTask("incremental", 1_000_000, groupedAdmissionReleaseEnv),
-      groupedWriteTask("incremental", 1_000_000, {
-        ...groupedAdmissionReleaseEnv,
-        VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "128",
-      }),
-      groupedWriteTask("incremental", 100_000, {
-        ...groupedAdmissionReleaseEnv,
-        ...forcedGroupedFallbackAdmissionEnv,
-        VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX: "forced-fallback-admission",
-      }),
-      groupedWriteTask("fallback", 100_000, {
-        ...groupedAdmissionReleaseEnv,
-        VIEW_SERVER_ENGINE_BENCH_ARTIFACT_SUFFIX: "broad-fallback",
-        VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_MODE: "fallback",
-      }),
-    ],
-  ],
-  [
-    "grouped-order-neutral",
-    [
-      groupedWriteTask("incremental", 100_000, {
-        ...groupedWriteReleaseEnv,
-        VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE: "order-neutral",
-      }),
-      groupedWriteTask("incremental", 1_000_000, {
-        ...groupedWriteReleaseEnv,
-        VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE: "order-neutral",
-      }),
-      groupedWriteTask("incremental", 5_000_000, {
-        ...groupedWriteReleaseEnv,
-        VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE: "order-neutral",
-      }),
-    ],
-  ],
-  [
-    "release",
-    [
-      rawSnapshotTask(100_000),
-      rawSnapshotTask(1_000_000),
-      rawSnapshotTask(10_000_000),
-      rawPredicateIndexTask(100_000),
-      rawPredicateIndexTask(1_000_000),
-      rawPredicateIndexTask(10_000_000),
-      rawWriteTask("base", 100_000),
-      rawWriteTask("indexed", 100_000),
-      rawWriteTask("base", 1_000_000),
-      rawWriteTask("indexed", 1_000_000),
-      rawWriteTask("base", 10_000_000),
-      rawWriteTask("indexed", 10_000_000),
-      rawLiveFanoutTask("same-window", 100_000, 50),
-      rawLiveFanoutTask("ten-window", 100_000, 50),
-      rawLiveFanoutTask("same-window", 1_000_000, 250),
-      rawLiveFanoutTask("ten-window", 1_000_000, 250),
-      groupedAggregateTask(100_000, groupedReadReleaseEnv),
-      groupedAggregateTask(1_000_000, groupedReadReleaseEnv),
-      groupedAggregateTask(5_000_000, groupedReadReleaseEnv),
-      groupedKeyWidthTask(100_000, groupedReadReleaseEnv),
-      groupedKeyWidthTask(1_000_000, groupedReadReleaseEnv),
-      queryDeltaOperationsTask("head-replacement-batch", 10_000, 64),
-      queryDeltaOperationsTask("middle-replacement-batch", 10_000, 64),
-      queryDeltaOperationsTask("tail-replacement-batch", 10_000, 64),
-      groupedWriteTask("incremental", 100_000, groupedWriteReleaseEnv),
-      groupedWriteTask("incremental", 1_000_000, groupedWriteReleaseEnv),
-      groupedWriteTask("incremental", 5_000_000, groupedWriteReleaseEnv),
-      rawActiveRetainedDeltaTask("noop", 100_000, retainedDeltaReleaseEnv),
-      rawActiveRetainedDeltaTask("noop", 100_000, retainedDeltaNoopWideReleaseEnv),
-      rawActiveRetainedDeltaTask("match-update", 100_000, retainedDeltaReleaseEnv),
-      rawActiveRetainedDeltaTask(
-        "match-move-down",
-        100_000,
-        retainedDeltaMoveDownReleaseEnv,
-      ),
-      rawActiveRetainedDeltaTask(
-        "match-replacement-batch",
-        100_000,
-        retainedDeltaReplacementBatchReleaseEnv,
-      ),
-      rawActiveRetainedDeltaTask(
-        "match-replacement-batch",
-        100_000,
-        retainedDeltaReplacementBatchWideReleaseEnv,
-      ),
-      rawActiveRetainedDeltaTask(
-        "visible-delete-batch",
-        100_000,
-        retainedDeltaVisibleDeleteBatchWideReleaseEnv,
-      ),
-      rawActiveRetainedDeltaTask("predicate-enter", 100_000, retainedDeltaReleaseEnv),
-      rawActiveRetainedDeltaTask("visible-delete", 100_000, retainedDeltaReleaseEnv),
-      rawActiveRetainedDeltaTask("exhausted-lookahead", 100_000, retainedDeltaReleaseEnv),
-      rawActiveRetainedDeltaTask("count-only", 100_000, retainedDeltaReleaseEnv),
-      reactInMemoryTask("chromium", 10_000),
-      reactInMemoryTask("firefox", 10_000),
-      reactInMemoryTask("webkit", 10_000),
-    ],
-  ],
-]);
-
-export const repeatableReportOnlyProfiles = new Set(["grpc-leased-retained"]);
 
 export const isBenchmarkEnvironmentKey = (key) =>
   key === "VIEW_SERVER_BENCH_BASELINE_PROFILE" ||
@@ -877,6 +90,73 @@ const requestedProfileFrom = (argv, environment) => {
   );
 };
 
+const updateBaselineTaskArgument = "--update-baseline-task";
+const updateBaselineTaskArgumentPrefix = `${updateBaselineTaskArgument}=`;
+const scopedMutableTaskFields = new Set([
+  "benchmarks",
+  "memoryRssTotalDeltaBytes",
+  "minimumSampleCount",
+  "samplingPolicy",
+]);
+
+const updateBaselineTaskSelectionFrom = (argv) => {
+  const scopedArguments = argv.filter((argument) =>
+    argument.startsWith(updateBaselineTaskArgument),
+  );
+  const malformedArgument = scopedArguments.find(
+    (argument) =>
+      !argument.startsWith(updateBaselineTaskArgumentPrefix) ||
+      argument.slice(updateBaselineTaskArgumentPrefix.length).trim() === "",
+  );
+  return {
+    malformedArgument,
+    taskLabels: scopedArguments.map((argument) =>
+      argument.slice(updateBaselineTaskArgumentPrefix.length),
+    ),
+  };
+};
+
+const mergeSelectedBaselineTasks = (baseline, actualBaseline) => {
+  const actualTaskByLabel = new Map(
+    actualBaseline.tasks.map((task) => [task.taskLabel, task]),
+  );
+  for (const baselineTask of baseline.tasks) {
+    const actualTask = actualTaskByLabel.get(baselineTask.taskLabel);
+    if (actualTask === undefined) {
+      continue;
+    }
+    const immutableDriftFields = Object.keys({ ...baselineTask, ...actualTask }).filter(
+      (field) =>
+        !scopedMutableTaskFields.has(field) &&
+        JSON.stringify(baselineTask[field]) !== JSON.stringify(actualTask[field]),
+    );
+    const baselineBenchmarkIdentities = baselineTask.benchmarks.map(({ groupName, name }) => ({
+      groupName,
+      name,
+    }));
+    const actualBenchmarkIdentities = actualTask.benchmarks.map(({ groupName, name }) => ({
+      groupName,
+      name,
+    }));
+    if (
+      JSON.stringify(baselineBenchmarkIdentities) !== JSON.stringify(actualBenchmarkIdentities)
+    ) {
+      immutableDriftFields.push("benchmarks");
+    }
+    if (immutableDriftFields.length > 0) {
+      throw new Error(
+        `Scoped benchmark update changed immutable ${baselineTask.taskLabel} fields: ${immutableDriftFields.join(", ")}.`,
+      );
+    }
+  }
+  return {
+    ...baseline,
+    tasks: baseline.tasks.map((task) =>
+      actualTaskByLabel.get(task.taskLabel) ?? task,
+    ),
+  };
+};
+
 export const runBenchmarkBaseline = async ({
   argv,
   baselinePathForProfile = baselinePath,
@@ -888,6 +168,8 @@ export const runBenchmarkBaseline = async ({
 }) => {
   const compareBaseline = !argv.includes("--no-compare");
   const updateBaseline = argv.includes("--update-baseline");
+  const updateBaselineTaskSelection = updateBaselineTaskSelectionFrom(argv);
+  const updateBaselineTaskLabels = updateBaselineTaskSelection.taskLabels;
   const repeatCount = repeatCountFrom(argv);
   const requestedProfile = requestedProfileFrom(argv, environment);
   const tasks = profileMap.get(requestedProfile);
@@ -905,6 +187,16 @@ export const runBenchmarkBaseline = async ({
     logger.error("--repeat cannot be combined with --update-baseline.");
     return 1;
   }
+  if (updateBaselineTaskSelection.malformedArgument !== undefined) {
+    logger.error(
+      "--update-baseline-task must use --update-baseline-task=<task label> with a non-empty label.",
+    );
+    return 1;
+  }
+  if (updateBaselineTaskLabels.length > 0 && !updateBaseline) {
+    logger.error("--update-baseline-task requires --update-baseline.");
+    return 1;
+  }
 
   if (tasks === undefined) {
     logger.error(
@@ -919,18 +211,62 @@ export const runBenchmarkBaseline = async ({
     logger.error(`--repeat is not enabled for benchmark baseline profile: ${requestedProfile}`);
     return 1;
   }
+  const unknownUpdateTaskLabel = updateBaselineTaskLabels.find(
+    (taskLabel) => !tasks.some((task) => task.label === taskLabel),
+  );
+  if (unknownUpdateTaskLabel !== undefined) {
+    logger.error(`Unknown benchmark baseline task for ${requestedProfile}: ${unknownUpdateTaskLabel}`);
+    return 1;
+  }
+
+  const profileBaselinePath = baselinePathForProfile(requestedProfile);
+  const scopedBaseline =
+    updateBaselineTaskLabels.length === 0
+      ? undefined
+      : readBenchmarkBaseline(profileBaselinePath);
+  if (scopedBaseline !== undefined && scopedBaseline.profile !== requestedProfile) {
+    throw new Error(
+      `Cannot update benchmark profile ${requestedProfile} from committed profile ${scopedBaseline.profile}.`,
+    );
+  }
+  const missingBaselineTaskLabel =
+    scopedBaseline === undefined
+      ? undefined
+      : tasks.find(
+          (task) =>
+            !scopedBaseline.tasks.some((baselineTask) => baselineTask.taskLabel === task.label),
+        )?.label;
+  if (missingBaselineTaskLabel !== undefined) {
+    throw new Error(`Cannot update missing benchmark baseline task: ${missingBaselineTaskLabel}`);
+  }
+  const staleBaselineTaskLabel =
+    scopedBaseline === undefined
+      ? undefined
+      : scopedBaseline.tasks.find(
+          (baselineTask) => !tasks.some((task) => task.label === baselineTask.taskLabel),
+        )?.taskLabel;
+  if (staleBaselineTaskLabel !== undefined) {
+    throw new Error(
+      `Cannot update stale benchmark baseline task absent from current profile: ${staleBaselineTaskLabel}`,
+    );
+  }
+  const selectedTaskLabelSet = new Set(updateBaselineTaskLabels);
+  const tasksToRun =
+    updateBaselineTaskLabels.length === 0
+      ? tasks
+      : tasks.filter((task) => selectedTaskLabelSet.has(task.label));
 
   const runCountMessage =
     repeatCount === 1
-      ? `${tasks.length} tasks`
-      : `${tasks.length} tasks x ${repeatCount} runs`;
+      ? `${tasksToRun.length} tasks`
+      : `${tasksToRun.length} tasks x ${repeatCount} runs`;
   logger.log(`Running ${requestedProfile} benchmark baseline serially (${runCountMessage}).`);
 
   const completedTasks = [];
-  const totalTaskRuns = tasks.length * repeatCount;
+  const totalTaskRuns = tasksToRun.length * repeatCount;
   for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
-    for (const [index, baseTask] of tasks.entries()) {
-      const taskNumber = repeatIndex * tasks.length + index + 1;
+    for (const [index, baseTask] of tasksToRun.entries()) {
+      const taskNumber = repeatIndex * tasksToRun.length + index + 1;
       const currentTask = taskForRepeat(baseTask, repeatIndex, repeatCount);
       const startedAt = process.hrtime.bigint();
       logger.log(`\n[${taskNumber}/${totalTaskRuns}] ${currentTask.label}`);
@@ -954,10 +290,13 @@ export const runBenchmarkBaseline = async ({
 
   const observations = completedTasks.map(readBenchmarkObservation);
   const actualBaseline = buildBenchmarkBaseline(requestedProfile, observations);
-  const profileBaselinePath = baselinePathForProfile(requestedProfile);
 
   if (updateBaseline) {
-    writeBenchmarkBaseline(profileBaselinePath, actualBaseline);
+    const baselineToWrite =
+      scopedBaseline === undefined
+        ? actualBaseline
+        : mergeSelectedBaselineTasks(scopedBaseline, actualBaseline);
+    writeBenchmarkBaseline(profileBaselinePath, baselineToWrite);
     logger.log(`\nUpdated benchmark baseline: ${profileBaselinePath}`);
   } else if (compareBaseline) {
     const baseline = readBenchmarkBaseline(profileBaselinePath);

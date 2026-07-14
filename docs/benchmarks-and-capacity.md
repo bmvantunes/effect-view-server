@@ -39,6 +39,47 @@ The release profile runs 10M-row engine cases and sets
 `NODE_OPTIONS=--max-old-space-size=12288` so the benchmark process is not
 limited by Node's default old-space cap.
 
+## Sampling Policy
+
+The smoke profile gives its read-focused raw snapshot, raw predicate, grouped
+aggregate, and grouped key-width cases 1,000 minimum measured iterations, a
+250 ms measurement floor, five warmup iterations, and a 100 ms warmup floor.
+The focused raw read/write profile gives its two read tasks the same 1,000 minimum measured
+iterations and time/warmup floors. These are minimum sample
+counts: fast read cases continue until the time floor is satisfied. At the
+minimum population, roughly ten observations remain above the p99 rank, so a
+small pause cluster cannot both exhaust the time floor and define the tail.
+
+The live-delta cases in the affected mixed raw-snapshot and grouped-aggregate
+tasks remain iteration-bound with measurement time and warmup disabled so
+sample and mutation counts stay exact. The raw snapshot live-delta case uses
+exactly five smoke samples or 20 focused-profile samples even though the
+snapshot cases in the same benchmark process use read sampling floors. Fanout
+and other mutation tasks keep their existing sampling policy. Every affected
+benchmark emits this machine-readable policy; the runner rejects missing
+samples, non-exact mutation samples, total mutation drift, and policy drift.
+
+The same policy selects `process-peak-over-initial-current` for the RSS gate. Each fresh benchmark
+worker records monotonic process peak-RSS checkpoints before setup, after setup, and after benchmark
+cleanup. The compared delta is the final process-lifetime peak minus the initial current RSS, so
+module startup can only make the capacity signal more conservative and a lucky endpoint GC cannot
+make it disappear. Warmup, JIT, GC, and measured allocation are included by design. Ordinary
+`process.memoryUsage()` before/setup/after snapshots remain separate diagnostic fields.
+
+Sampling changes do not change performance thresholds. An explicitly accepted
+measurement-protocol migration permits refreshing only the affected read
+observations and associated policy metadata. Preserve reference values for
+unchanged mutation, fanout, retained-delta, write, and browser workloads.
+The comparator retains every sample and fails the first run; do not trim
+outliers, retry, or select a best result.
+The ordinary `--update-baseline` mode replaces the entire profile; use repeated
+`--update-baseline-task='<task label>'` arguments for a scoped protocol
+migration. A scoped update executes only those named tasks and merges their fresh observations into
+the existing baseline. It requires an unchanged task catalog and rejects selected-task workload or
+structural drift; only measurement samples, RSS, minimum sample counts, and sampling-policy metadata
+may change. The exact smoke and raw-read/write commands are documented in
+`benchmarks/README.md`.
+
 ## What To Measure
 
 Read optimizations must measure write cost. For example, adding a column vector

@@ -1,32 +1,14 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  memoryDelta,
+  type BenchmarkArtifactMemoryInput,
+  type BenchmarkProcessPeakRss,
+} from "./benchmark-memory-recorder";
 
 declare const process: {
   readonly cwd: () => string;
   readonly env: Record<string, string | undefined>;
-  readonly memoryUsage: () => {
-    readonly arrayBuffers: number;
-    readonly external: number;
-    readonly heapTotal: number;
-    readonly heapUsed: number;
-    readonly rss: number;
-  };
-};
-
-export type BenchmarkMemorySnapshot = {
-  readonly arrayBuffersBytes: number;
-  readonly externalBytes: number;
-  readonly heapTotalBytes: number;
-  readonly heapUsedBytes: number;
-  readonly rssBytes: number;
-};
-
-export type BenchmarkMemoryDelta = {
-  readonly arrayBuffersBytes: number;
-  readonly externalBytes: number;
-  readonly heapTotalBytes: number;
-  readonly heapUsedBytes: number;
-  readonly rssBytes: number;
 };
 
 export type BenchmarkEngineHealth = {
@@ -90,7 +72,7 @@ export type BenchmarkGroupedKeyWidthParameters = {
   readonly windowLimit: number;
 };
 
-export type BenchmarkArtifactInput = {
+type BenchmarkArtifactFields = {
   readonly activeViewCountBeforeCleanup?: number;
   readonly artifactKind: "engine-benchmark-summary";
   readonly benchmarkName: string;
@@ -110,9 +92,6 @@ export type BenchmarkArtifactInput = {
   readonly topics: ReadonlyArray<string>;
   readonly benchmarkCases: ReadonlyArray<string>;
   readonly outputJsonPath: string;
-  readonly memoryBefore: BenchmarkMemorySnapshot;
-  readonly memoryAfterSetup: BenchmarkMemorySnapshot;
-  readonly memoryAfterBenchmark: BenchmarkMemorySnapshot;
   readonly latency: {
     readonly source: "vitest-output-json";
     readonly outputJsonPath: string;
@@ -127,27 +106,23 @@ export type BenchmarkArtifactInput = {
   readonly preCleanupHealth?: unknown;
 };
 
-export const memorySnapshot = (): BenchmarkMemorySnapshot => {
-  const memory = process.memoryUsage();
+export type BenchmarkArtifactInput = BenchmarkArtifactFields & BenchmarkArtifactMemoryInput;
+
+const processPeakRssSummary = (initialCurrentRssBytes: number, peak: BenchmarkProcessPeakRss) => {
+  if (
+    peak.beforeBytes < initialCurrentRssBytes ||
+    peak.afterSetupBytes < peak.beforeBytes ||
+    peak.afterBenchmarkBytes < peak.afterSetupBytes
+  ) {
+    throw new Error("Process peak RSS checkpoints must be monotonic.");
+  }
   return {
-    arrayBuffersBytes: memory.arrayBuffers,
-    externalBytes: memory.external,
-    heapTotalBytes: memory.heapTotal,
-    heapUsedBytes: memory.heapUsed,
-    rssBytes: memory.rss,
+    ...peak,
+    benchmarkDeltaBytes: peak.afterBenchmarkBytes - peak.afterSetupBytes,
+    setupDeltaBytes: peak.afterSetupBytes - initialCurrentRssBytes,
+    totalDeltaBytes: peak.afterBenchmarkBytes - initialCurrentRssBytes,
   };
 };
-
-export const memoryDelta = (
-  before: BenchmarkMemorySnapshot,
-  after: BenchmarkMemorySnapshot,
-): BenchmarkMemoryDelta => ({
-  arrayBuffersBytes: after.arrayBuffersBytes - before.arrayBuffersBytes,
-  externalBytes: after.externalBytes - before.externalBytes,
-  heapTotalBytes: after.heapTotalBytes - before.heapTotalBytes,
-  heapUsedBytes: after.heapUsedBytes - before.heapUsedBytes,
-  rssBytes: after.rssBytes - before.rssBytes,
-});
 
 export const benchmarkOutputJsonPath = (fallbackName: string): string => {
   const configured = process.env["VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON"];
@@ -326,6 +301,10 @@ export const groupedPatchedEvaluationCountFromEngineHealth = (
 
 export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
   const summaryPath = benchmarkSummaryPath(input.outputJsonPath);
+  const processPeakRss =
+    input.processPeakRss === undefined
+      ? undefined
+      : processPeakRssSummary(input.memoryBefore.rssBytes, input.processPeakRss);
   mkdirSync(dirname(summaryPath), { recursive: true });
   writeFileSync(
     summaryPath,
@@ -347,6 +326,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
           afterSetup: input.memoryAfterSetup,
           before: input.memoryBefore,
           benchmarkDelta: memoryDelta(input.memoryAfterSetup, input.memoryAfterBenchmark),
+          ...(processPeakRss === undefined ? {} : { processPeakRss }),
           setupDelta: memoryDelta(input.memoryBefore, input.memoryAfterSetup),
           totalDelta: memoryDelta(input.memoryBefore, input.memoryAfterBenchmark),
         },
@@ -356,6 +336,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
         preCleanupHealth: input.preCleanupHealth,
         queuedEventCount: input.queuedEventCount,
         rowCount: input.rowCount,
+        samplingPolicy: input.samplingPolicy,
         subscriberCount: input.subscriberCount,
         topics: input.topics,
       },

@@ -10,11 +10,11 @@ import {
   cleanupLeakCountFromEngineHealth,
   failOnBenchmarkCleanupLeaks,
   isBenchmarkEngineHealth,
-  memorySnapshot,
   queuedEventCountFromEngineHealth,
   writeBenchmarkArtifact,
-  type BenchmarkMemorySnapshot,
 } from "./benchmark-artifact";
+import { makeBenchmarkMemoryRecorder } from "./benchmark-memory-recorder";
+import { parseBenchmarkMemoryRssMetric, timedReadSamplingPolicy } from "./benchmark-sampling";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -91,7 +91,6 @@ type GroupedKeyWidthValidation = {
 };
 type BenchmarkProfile = {
   engine: Engine | undefined;
-  memoryAfterSetup: BenchmarkMemorySnapshot | undefined;
   validation: GroupedKeyWidthValidation | undefined;
 };
 
@@ -152,7 +151,7 @@ const batchSize = positiveIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE", 
 const constantGroupCount = Math.min(benchmarkRowCount, 257);
 const benchmarkWindowLimit = 250;
 const outputJsonPath = benchmarkOutputJsonPath(`grouped-key-width-${benchmarkRowCount}rows.json`);
-const memoryBefore = memorySnapshot();
+const benchmarkMemory = makeBenchmarkMemoryRecorder();
 const benchOptions = {
   iterations: positiveIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_ITERATIONS", defaultIterations),
   time: nonNegativeIntegerFromEnv("VIEW_SERVER_ENGINE_BENCH_TIME_MS", defaultBenchmarkTimeMs),
@@ -165,9 +164,24 @@ const benchOptions = {
     defaultWarmupTimeMs,
   ),
 };
+const timedReadMinimumSampleCount =
+  process.env["VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES"] === undefined
+    ? undefined
+    : positiveIntegerFromEnv(
+        "VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES",
+        benchOptions.iterations,
+      );
+const memoryRssMetric = parseBenchmarkMemoryRssMetric(
+  process.env["VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC"],
+);
+const samplingPolicy = timedReadSamplingPolicy({
+  iterationBoundCases: [],
+  memoryRssMetric,
+  measuredMinimumSampleCount: timedReadMinimumSampleCount,
+  measuredOptions: benchOptions,
+});
 const profile: BenchmarkProfile = {
   engine: undefined,
-  memoryAfterSetup: undefined,
   validation: undefined,
 };
 
@@ -352,7 +366,7 @@ beforeAll(async () => {
     engine.snapshot("orders", groupByEightOrderedQuery()),
   );
 
-  profile.memoryAfterSetup = memorySnapshot();
+  benchmarkMemory.captureAfterSetup();
   profile.validation = {
     groupByEightFirstRow: groupByEightSnapshot.rows[0],
     groupByEightOrderedFirstRow: groupByEightOrderedSnapshot.rows[0],
@@ -374,7 +388,6 @@ beforeAll(async () => {
 }, 0);
 
 afterAll(async () => {
-  const memoryAfterSetup = profile.memoryAfterSetup ?? memoryBefore;
   const validation = profile.validation;
   let health: unknown = {
     status: "not-started",
@@ -384,10 +397,9 @@ afterAll(async () => {
     health = await Effect.runPromise(engine.health().pipe(Effect.ensuring(engine.close())));
     profile.engine = undefined;
   }
-  profile.memoryAfterSetup = undefined;
   profile.validation = undefined;
 
-  const memoryAfterBenchmark = memorySnapshot();
+  const benchmarkMemoryInput = benchmarkMemory.captureAfterBenchmark(samplingPolicy);
   const cleanupLeakCount = cleanupLeakCountFromEngineHealth(health);
   expect(isBenchmarkEngineHealth(health)).toBe(true);
   expect(validation).toStrictEqual({
@@ -427,9 +439,7 @@ afterAll(async () => {
       outputJsonPath,
       source: "vitest-output-json",
     },
-    memoryAfterBenchmark,
-    memoryAfterSetup,
-    memoryBefore,
+    ...benchmarkMemoryInput,
     mutationCount: benchmarkRowCount,
     notes: [
       "Latency percentiles are emitted by Vitest in outputJsonPath.",

@@ -1423,8 +1423,13 @@ vp run -w bench:baseline:release
 ```
 
 `bench:baseline` and `bench:baseline:smoke` run one small Chromium/browser profile plus small
-engine profiles with smoke-sized Vitest benchmark settings. Engine smoke tasks use five iterations
-to avoid one-sample write/read noise; browser smoke stays intentionally tiny so CI remains practical.
+engine profiles with smoke-sized Vitest benchmark settings. Read-focused raw snapshot, raw predicate,
+grouped aggregate, and grouped key-width smoke tasks use 1,000 minimum measured iterations, a 250ms
+measurement floor, five warmup iterations, and a 100ms warmup floor. The live-delta cases in the
+affected mixed raw-snapshot and grouped-aggregate tasks remain iteration-bound at exactly five
+samples with time and warmup disabled; fanout and other mutation tasks keep their existing policy.
+The emitted artifact policy keeps the affected mixed sampling modes independently enforceable.
+Browser smoke stays intentionally tiny so CI remains practical.
 The smoke profile is the committed performance-regression gate: it compares fresh Vitest benchmark
 artifacts against `benchmarks/baselines/smoke.json` and fails on cleanup, backpressure, queued-event,
 RSS, mean-latency, or p99-latency regressions beyond the configured thresholds. Refresh the smoke
@@ -1449,7 +1454,12 @@ profile they name. Use the environment variable only when invoking the Node scri
 runner scrubs benchmark-specific environment variables before each child process so stale local
 tuning cannot pollute baseline runs. Pass `--update-baseline` to write
 `benchmarks/baselines/<profile>.json` from the fresh artifacts, or `--no-compare` to run a profile as
-serial benchmarks only.
+serial benchmarks only. Full updates replace every task; repeat
+`--update-baseline-task='<task label>'` with `--update-baseline` when a measurement-protocol change
+must execute and replace only explicitly named tasks while preserving every other committed
+observation value. Scoped updates require identical committed/current task catalogs and reject
+selected-task workload or structural drift; only benchmark samples, RSS, minimum sample counts, and
+sampling-policy metadata may change.
 
 Current Kafka ingest benchmark harness:
 
@@ -1519,9 +1529,21 @@ Raw snapshot knobs:
 - `VIEW_SERVER_ENGINE_BENCH_ROWS`: row count for this benchmark process.
 - `VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE`: publish batch size while seeding.
 - `VIEW_SERVER_ENGINE_BENCH_ITERATIONS`: benchmark iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES`: opt-in policy sentinel and minimum
+  measured sample count; when absent, legacy sampling remains active and policy metadata is omitted.
+- `VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC`: required with timed-read sampling and fixed to
+  `process-peak-over-initial-current` for the policy-owned RSS comparison.
+- `VIEW_SERVER_ENGINE_BENCH_MUTATION_ITERATIONS`: exact live-delta iterations when the timed-read policy is enabled.
 - `VIEW_SERVER_ENGINE_BENCH_TIME_MS`: benchmark time budget per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
+
+The smoke raw snapshot cases use the read sampling policy above. Policy-owned read tasks compare the
+process-lifetime peak RSS reached by setup, warmup, JIT, GC, and measured work against the initial
+current RSS of the fresh benchmark worker; endpoint memory snapshots remain diagnostic-only. The live subscription delta case
+uses a separate five-iteration setting and disables time and warmup sampling so its publish count
+and summary `mutationCount` remain exact. The focused raw read/write profile uses 1,000 read samples
+and exactly 20 live-delta samples.
 
 Current broad-scan optimization signal:
 
@@ -1588,6 +1610,10 @@ Raw predicate index knobs:
 
 - `VIEW_SERVER_ENGINE_BENCH_ROWS`: row count for this benchmark process.
 - `VIEW_SERVER_ENGINE_BENCH_ITERATIONS`: benchmark iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES`: opt-in policy sentinel and minimum
+  measured sample count; when absent, legacy sampling remains active and policy metadata is omitted.
+- `VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC`: required with timed-read sampling and fixed to
+  `process-peak-over-initial-current` for the policy-owned RSS comparison.
 - `VIEW_SERVER_ENGINE_BENCH_TIME_MS`: benchmark time budget per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
@@ -1671,7 +1697,8 @@ VIEW_SERVER_ENGINE_BENCH_ROWS=5000000 vp run --no-cache column-live-view-engine#
 
 The release baseline runner includes those three grouped row counts with `iterations=3` and
 `time=0`, so the 5M profile is bounded by sample count instead of a time-budget loop. The smoke
-runner uses 1k rows with one iteration and small seed batches to verify wiring quickly.
+runner uses 1k rows with 1,000 minimum measured read iterations plus the 250ms measurement and
+five-iteration/100ms warmup floors. Its live grouped delta case remains exact at five samples and iteration-bound.
 
 Grouped aggregate benchmark cases:
 
@@ -1687,6 +1714,11 @@ Grouped aggregate knobs:
 - `VIEW_SERVER_ENGINE_BENCH_ROWS`: row count for this benchmark process.
 - `VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE`: publish batch size while seeding.
 - `VIEW_SERVER_ENGINE_BENCH_ITERATIONS`: benchmark iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES`: opt-in policy sentinel and minimum
+  measured sample count; when absent, legacy sampling remains active and policy metadata is omitted.
+- `VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC`: required with timed-read sampling and fixed to
+  `process-peak-over-initial-current` for the policy-owned RSS comparison.
+- `VIEW_SERVER_ENGINE_BENCH_MUTATION_ITERATIONS`: exact live-delta iterations when the timed-read policy is enabled.
 - `VIEW_SERVER_ENGINE_BENCH_TIME_MS`: benchmark time budget per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
 - `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
@@ -1724,7 +1756,8 @@ VIEW_SERVER_ENGINE_BENCH_ROWS=100000 vp run --no-cache column-live-view-engine#b
 VIEW_SERVER_ENGINE_BENCH_ROWS=1000000 vp run --no-cache column-live-view-engine#bench:grouped-key-width
 ```
 
-The smoke baseline runner includes the 1k-row profile. The release baseline runner includes 100k
+The smoke baseline runner includes the 1k-row profile with 1,000 minimum measured iterations plus the
+250ms measurement and five-iteration/100ms warmup floors. The release baseline runner includes 100k
 and 1M rows with the same bounded grouped read iteration/time settings as grouped aggregate.
 
 Grouped key width benchmark cases:
@@ -1734,6 +1767,19 @@ Grouped key width benchmark cases:
 - `groupBy four keys`
 - `groupBy eight keys`
 - `groupBy eight ordered keys`
+
+Grouped key width knobs:
+
+- `VIEW_SERVER_ENGINE_BENCH_ROWS`: row count for this benchmark process.
+- `VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE`: publish batch size while seeding.
+- `VIEW_SERVER_ENGINE_BENCH_ITERATIONS`: benchmark iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_TIMED_READ_MINIMUM_SAMPLES`: opt-in policy sentinel and minimum
+  measured sample count; when absent, legacy sampling remains active and policy metadata is omitted.
+- `VIEW_SERVER_ENGINE_BENCH_MEMORY_RSS_METRIC`: required with timed-read sampling and fixed to
+  `process-peak-over-initial-current` for the policy-owned RSS comparison.
+- `VIEW_SERVER_ENGINE_BENCH_TIME_MS`: benchmark time budget per case.
+- `VIEW_SERVER_ENGINE_BENCH_WARMUP_ITERATIONS`: warmup iterations per case.
+- `VIEW_SERVER_ENGINE_BENCH_WARMUP_TIME_MS`: warmup time budget per case.
 
 Interpretation notes:
 

@@ -2,15 +2,79 @@ import { describe, expect, it } from "@effect/vitest";
 import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import { Effect, Fiber, Stream } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Logger, Option, References, Stream } from "effect";
+import { HttpServerError } from "effect/unstable/http";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import { makeViewServerRuntime, runViewServerRuntime } from "./index";
 import { tcpPublishUrl } from "./tcp-publish-ingress";
-import { fetchHealth, fetchJson, fetchText, waitForTransportHealth } from "../test-harness/runtime";
+import {
+  closeTestTcpServer,
+  fetchHealth,
+  fetchJson,
+  fetchText,
+  reserveTcpPort,
+  RuntimeTestFailure,
+  waitForTransportHealth,
+} from "../test-harness/runtime";
 import { makeViewServerRuntimeTransportHealth } from "./transport-health";
 
 import { bearerAuth, order, viewServer } from "../test-harness/runtime-config";
+
+const healthStartedPrefix = "View Server health endpoint listening at ";
+const metricsStartedPrefix = "View Server metrics endpoint listening at ";
+const tcpPublishStartedPrefix = "View Server TCP publish endpoint listening at ";
+
+const makeRuntimeLaunchSignals = Effect.fn("ViewServerRuntime.test.launchSignals.make")(
+  function* () {
+    const healthUrl = yield* Deferred.make<string>();
+    const metricsUrl = yield* Deferred.make<string>();
+    const tcpPublishUrl = yield* Deferred.make<string>();
+    const logger = Logger.make<unknown, void>((options) => {
+      const message = Array.isArray(options.message) ? options.message[0] : undefined;
+      if (typeof message !== "string") {
+        return;
+      }
+      if (message.startsWith(healthStartedPrefix)) {
+        Deferred.doneUnsafe(healthUrl, Effect.succeed(message.slice(healthStartedPrefix.length)));
+      }
+      if (message.startsWith(metricsStartedPrefix)) {
+        Deferred.doneUnsafe(metricsUrl, Effect.succeed(message.slice(metricsStartedPrefix.length)));
+      }
+      if (message.startsWith(tcpPublishStartedPrefix)) {
+        Deferred.doneUnsafe(
+          tcpPublishUrl,
+          Effect.succeed(message.slice(tcpPublishStartedPrefix.length)),
+        );
+      }
+    });
+    return { healthUrl, logger, metricsUrl, tcpPublishUrl };
+  },
+);
+
+const stopRuntimeLaunch = Effect.fn("ViewServerRuntime.test.launch.stop")(function* <E>(
+  fiber: Fiber.Fiber<never, E>,
+) {
+  yield* Fiber.interrupt(fiber);
+  return yield* Fiber.await(fiber);
+});
+
+const listenerPort = Effect.fn("ViewServerRuntime.test.listenerPort")(function* (url: string) {
+  const parsedUrl = yield* Effect.try({
+    try: () => new URL(url),
+    catch: () =>
+      new RuntimeTestFailure({
+        message: "Runtime launch URL was not valid.",
+      }),
+  });
+  const port = Number(parsedUrl.port);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    return yield* new RuntimeTestFailure({
+      message: "Runtime launch URL did not include a valid listener port.",
+    });
+  }
+  return port;
+});
 
 describe("Runtime WebSocket and operational endpoints", () => {
   it.live("starts a websocket runtime with health endpoint and runtime-core mutation client", () =>
@@ -335,25 +399,134 @@ describe("Runtime WebSocket and operational endpoints", () => {
 
   it.live("public run helper starts a launchable websocket runtime", () =>
     Effect.gen(function* () {
-      const fiber = yield* runViewServerRuntime(viewServer, {
-        host: "127.0.0.1",
-        tcpPublishPort: 0,
-        websocketPort: 0,
-      }).pipe(Effect.forkChild({ startImmediately: true }));
+      const signals = yield* makeRuntimeLaunchSignals();
+      const result = yield* Effect.acquireUseRelease(
+        runViewServerRuntime(viewServer, {
+          host: "127.0.0.1",
+          tcpPublishHost: "127.0.0.1",
+          tcpPublishPort: 0,
+          websocketPort: 0,
+        }).pipe(
+          Effect.provide(Logger.layer([signals.logger])),
+          Effect.provideService(References.MinimumLogLevel, "Trace"),
+          Effect.forkChild({ startImmediately: true }),
+        ),
+        (fiber) =>
+          Effect.gen(function* () {
+            const readiness = yield* Effect.raceFirst(
+              Effect.gen(function* () {
+                const healthUrl = yield* Deferred.await(signals.healthUrl);
+                const tcpPublishUrl = yield* Deferred.await(signals.tcpPublishUrl);
+                const health = yield* fetchHealth(healthUrl);
+                expect({
+                  status: health.response.status,
+                  runtimeStatus: health.health.status,
+                }).toStrictEqual({
+                  status: 200,
+                  runtimeStatus: "ready",
+                });
+                return { healthUrl, tcpPublishUrl };
+              }),
+              Fiber.join(fiber),
+            );
+            const exit = yield* stopRuntimeLaunch(fiber);
+            return { ...readiness, exit };
+          }),
+        (fiber) => stopRuntimeLaunch(fiber).pipe(Effect.asVoid),
+      );
 
-      yield* Effect.sleep("20 millis");
-      yield* Fiber.interrupt(fiber);
+      expect(Exit.isFailure(result.exit) && Cause.hasInterruptsOnly(result.exit.cause)).toBe(true);
+
+      const tcpPublishPort = yield* listenerPort(result.tcpPublishUrl);
+      const websocketPort = yield* listenerPort(result.healthUrl);
+      yield* Effect.acquireUseRelease(
+        makeViewServerRuntime(viewServer, {
+          host: "127.0.0.1",
+          tcpPublishHost: "127.0.0.1",
+          tcpPublishPort,
+          websocketPort,
+        }),
+        () => Effect.void,
+        (runtime) => runtime.close,
+      );
     }),
   );
 
   it.live("public run helper supports default runtime options", () =>
     Effect.gen(function* () {
-      const fiber = yield* runViewServerRuntime(viewServer).pipe(
-        Effect.forkChild({ startImmediately: true }),
+      const signals = yield* makeRuntimeLaunchSignals();
+      const result = yield* Effect.acquireUseRelease(
+        runViewServerRuntime(viewServer).pipe(
+          Effect.provide(Logger.layer([signals.logger])),
+          Effect.provideService(References.MinimumLogLevel, "Trace"),
+          Effect.forkChild({ startImmediately: true }),
+        ),
+        (fiber) =>
+          Effect.gen(function* () {
+            const readiness = yield* Effect.raceFirst(
+              Effect.gen(function* () {
+                const healthUrl = yield* Deferred.await(signals.healthUrl);
+                const metricsUrl = yield* Deferred.await(signals.metricsUrl);
+                const health = yield* fetchHealth(healthUrl);
+                expect({
+                  status: health.response.status,
+                  runtimeStatus: health.health.status,
+                }).toStrictEqual({
+                  status: 200,
+                  runtimeStatus: "ready",
+                });
+                return { healthUrl, metricsUrl };
+              }),
+              Fiber.join(fiber),
+            );
+            const exit = yield* stopRuntimeLaunch(fiber);
+            return { ...readiness, exit };
+          }),
+        (fiber) => stopRuntimeLaunch(fiber).pipe(Effect.asVoid),
       );
 
-      yield* Effect.sleep("20 millis");
-      yield* Fiber.interrupt(fiber);
+      expect(Exit.isFailure(result.exit) && Cause.hasInterruptsOnly(result.exit.cause)).toBe(true);
+
+      const websocketPort = yield* listenerPort(result.healthUrl);
+      yield* Effect.acquireUseRelease(
+        makeViewServerRuntime(viewServer, {
+          host: "127.0.0.1",
+          websocketPort,
+        }),
+        () => Effect.void,
+        (runtime) => runtime.close,
+      );
     }),
+  );
+
+  it.live("public run helper reports an occupied websocket listener", () =>
+    Effect.acquireUseRelease(
+      reserveTcpPort(),
+      (reserved) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.acquireUseRelease(
+            runViewServerRuntime(viewServer, {
+              host: "127.0.0.1",
+              websocketPort: reserved.port,
+            }).pipe(Effect.forkChild({ startImmediately: true })),
+            (fiber) => Fiber.await(fiber).pipe(Effect.timeout("10 seconds")),
+            (fiber) => stopRuntimeLaunch(fiber).pipe(Effect.asVoid),
+          );
+          const error = Exit.isFailure(exit)
+            ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+            : undefined;
+          const lowLevelCauseCode =
+            error instanceof HttpServerError.ServeError &&
+            typeof error.cause === "object" &&
+            error.cause !== null &&
+            "code" in error.cause
+              ? error.cause.code
+              : undefined;
+          expect(Exit.isFailure(exit)).toBe(true);
+          expect(error).toBeInstanceOf(HttpServerError.ServeError);
+          expect(lowLevelCauseCode).toBe("EADDRINUSE");
+        }),
+      ({ server }) => closeTestTcpServer(server),
+    ),
   );
 });

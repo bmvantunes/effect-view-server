@@ -4,7 +4,7 @@ import type { Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { defineViewServerConfig, grpc, kafka } from "@effect-view-server/config";
-import { Config, Deferred, Effect, Exit, Fiber, Logger, Schema, Stream } from "effect";
+import { Cause, Config, Deferred, Effect, Exit, Fiber, Logger, Schema, Stream } from "effect";
 import {
   makeDefaultRuntimeDependencies,
   makeViewServerRuntimeWithDependencies,
@@ -671,6 +671,9 @@ describe("Real View Server composition lifecycle", () => {
         "acquire:tcpPublishIngress",
       ]);
       yield* Fiber.interrupt(runtimeFiber);
+      const runtimeExit = yield* Fiber.await(runtimeFiber);
+
+      expect(Exit.isFailure(runtimeExit) && Cause.hasInterruptsOnly(runtimeExit.cause)).toBe(true);
 
       expect(events).toStrictEqual([
         "acquire:runtimeCore",

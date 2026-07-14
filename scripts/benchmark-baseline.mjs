@@ -20,6 +20,13 @@ import {
   stringValue,
 } from "./benchmark-artifact-mechanics.mjs";
 import {
+  compareGrpcMaterializedBenchmarkTask,
+  decodeGrpcMaterializedBenchmarkParameters,
+  decodeGrpcMaterializedOperationCases,
+  decodeGrpcMaterializedSeedMutationCount,
+  validateGrpcMaterializedOperationAccounting,
+} from "./grpc-materialized-benchmark-policy.mjs";
+import {
   compareGrpcLeasedBenchmarkTask,
   decodeGrpcLeasedBenchmarkParameters,
   decodeGrpcLeasedOperationCases,
@@ -259,16 +266,22 @@ const grpcBenchmarkParametersValue = (value, path, benchmarkScope) => {
     return decodeGrpcLeasedBenchmarkParameters(value, path);
   }
   if (benchmarkScope === "runtime-grpc-materialized") {
-    const parameters = exactObjectValue(value, path, ["batchSize", "seedRows"]);
-    return {
-      batchSize: positiveInteger(parameters.batchSize, `${path}.batchSize`),
-      seedRows: positiveInteger(parameters.seedRows, `${path}.seedRows`),
-    };
+    return decodeGrpcMaterializedBenchmarkParameters(value, path);
   }
   if (value !== undefined) {
     throw new Error(
       `Benchmark artifact field ${path} is only supported for gRPC runtime benchmark scopes.`,
     );
+  }
+  return undefined;
+};
+
+const grpcSeedMutationCountValue = (value, path, benchmarkScope) => {
+  if (benchmarkScope === "runtime-grpc-leased") {
+    return decodeGrpcLeasedSeedMutationCount(value, path);
+  }
+  if (benchmarkScope === "runtime-grpc-materialized") {
+    return decodeGrpcMaterializedSeedMutationCount(value, path);
   }
   return undefined;
 };
@@ -523,77 +536,42 @@ const throughputCasesValue = (value, path, options) => {
   );
 };
 
-const grpcMaterializedOperationCaseValue = (value, path) => {
-  const operationCase = exactObjectValue(value, path, [
-    "maxHealthOverlayMs",
-    "maxSnapshotMs",
-    "maxStreamConvergenceMs",
-    "meanHealthOverlayMs",
-    "meanRowsPerSecond",
-    "meanSnapshotMs",
-    "meanStreamConvergenceMs",
-    "name",
-    "sampleCount",
-    "totalRows",
-  ]);
-  const result = {
-    maxHealthOverlayMs: nonNegativeFiniteNumber(
-      operationCase.maxHealthOverlayMs,
-      `${path}.maxHealthOverlayMs`,
-    ),
-    maxSnapshotMs: nonNegativeFiniteNumber(operationCase.maxSnapshotMs, `${path}.maxSnapshotMs`),
-    maxStreamConvergenceMs: nonNegativeFiniteNumber(
-      operationCase.maxStreamConvergenceMs,
-      `${path}.maxStreamConvergenceMs`,
-    ),
-    meanHealthOverlayMs: nonNegativeFiniteNumber(
-      operationCase.meanHealthOverlayMs,
-      `${path}.meanHealthOverlayMs`,
-    ),
-    meanRowsPerSecond: nonNegativeFiniteNumber(
-      operationCase.meanRowsPerSecond,
-      `${path}.meanRowsPerSecond`,
-    ),
-    meanSnapshotMs: nonNegativeFiniteNumber(operationCase.meanSnapshotMs, `${path}.meanSnapshotMs`),
-    meanStreamConvergenceMs: nonNegativeFiniteNumber(
-      operationCase.meanStreamConvergenceMs,
-      `${path}.meanStreamConvergenceMs`,
-    ),
-    name: stringValue(operationCase.name, `${path}.name`),
-    sampleCount: positiveInteger(operationCase.sampleCount, `${path}.sampleCount`),
-    totalRows: nonNegativeInteger(operationCase.totalRows, `${path}.totalRows`),
-  };
-  if (result.meanHealthOverlayMs > result.maxHealthOverlayMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanHealthOverlayMs must be less than or equal to maxHealthOverlayMs.`,
-    );
+const runtimeOperationCasesValue = (value, path, benchmarkScope) => {
+  if (benchmarkScope === "runtime-grpc-leased") {
+    return decodeGrpcLeasedOperationCases(value, path);
   }
-  if (result.meanSnapshotMs > result.maxSnapshotMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanSnapshotMs must be less than or equal to maxSnapshotMs.`,
-    );
-  }
-  if (result.meanStreamConvergenceMs > result.maxStreamConvergenceMs) {
-    throw new Error(
-      `Benchmark artifact field ${path}.meanStreamConvergenceMs must be less than or equal to maxStreamConvergenceMs.`,
-    );
-  }
-  return result;
-};
-
-const runtimeOperationCaseValue = (value, path, benchmarkScope) => {
   if (benchmarkScope === "runtime-grpc-materialized") {
-    return grpcMaterializedOperationCaseValue(value, path);
+    return decodeGrpcMaterializedOperationCases(value, path);
   }
   throw new Error(`Benchmark artifact field ${path} is only supported for gRPC runtime scopes.`);
 };
 
-const runtimeOperationCasesValue = (value, path, benchmarkScope) =>
-  benchmarkScope === "runtime-grpc-leased"
-    ? decodeGrpcLeasedOperationCases(value, path)
-    : nonEmptyArrayValue(value, path).map((operationCase, index) =>
-        runtimeOperationCaseValue(operationCase, `${path}[${index}]`, benchmarkScope),
-      );
+const validateGrpcOperationAccounting = (
+  operationCases,
+  grpcParameters,
+  mutationCount,
+  seedMutationCount,
+  path,
+  benchmarkScope,
+) => {
+  if (benchmarkScope === "runtime-grpc-leased") {
+    validateGrpcLeasedOperationAccounting(
+      operationCases,
+      grpcParameters,
+      mutationCount,
+      seedMutationCount,
+      path,
+    );
+    return;
+  }
+  validateGrpcMaterializedOperationAccounting(
+    operationCases,
+    grpcParameters,
+    mutationCount,
+    seedMutationCount,
+    path,
+  );
+};
 
 const validateBenchmarkCasesMatchBenchmarks = (benchmarkCases, benchmarks, path) => {
   const benchmarkNames = new Set(benchmarks.map((benchmark) => benchmark.name));
@@ -870,13 +848,11 @@ export const readBenchmarkObservation = (task) => {
 
   const benchmarkCases = stringArrayValue(summary.benchmarkCases, `${task.summaryPath}.benchmarkCases`);
   const mutationCount = nonNegativeInteger(summary.mutationCount, `${task.summaryPath}.mutationCount`);
-  const seedMutationCount =
-    benchmarkScope === "runtime-grpc-leased"
-      ? decodeGrpcLeasedSeedMutationCount(
-          summary.seedMutationCount,
-          `${task.summaryPath}.seedMutationCount`,
-        )
-      : undefined;
+  const seedMutationCount = grpcSeedMutationCountValue(
+    summary.seedMutationCount,
+    `${task.summaryPath}.seedMutationCount`,
+    benchmarkScope,
+  );
   const topics = stringArrayValue(summary.topics, `${task.summaryPath}.topics`);
   const requiresKafkaThroughput =
     artifactKind === "runtime-benchmark-summary" && benchmarkScope.startsWith("runtime-kafka-");
@@ -941,15 +917,14 @@ export const readBenchmarkObservation = (task) => {
       `${task.summaryPath}.cases`,
       `${task.summaryPath}.benchmarks`,
     );
-    if (benchmarkScope === "runtime-grpc-leased") {
-      validateGrpcLeasedOperationAccounting(
-        runtimeOperationCases,
-        grpcParameters,
-        mutationCount,
-        seedMutationCount,
-        `${task.summaryPath}.cases`,
-      );
-    }
+    validateGrpcOperationAccounting(
+      runtimeOperationCases,
+      grpcParameters,
+      mutationCount,
+      seedMutationCount,
+      `${task.summaryPath}.cases`,
+      benchmarkScope,
+    );
   }
 
   return {
@@ -1139,10 +1114,11 @@ const validateTask = (task, path) => {
   const artifactKind = summaryArtifactKind(task.artifactKind, `${path}.artifactKind`);
   const benchmarkScope = stringValue(task.benchmarkScope, `${path}.benchmarkScope`);
   const mutationCount = nonNegativeInteger(task.mutationCount, `${path}.mutationCount`);
-  const seedMutationCount =
-    benchmarkScope === "runtime-grpc-leased"
-      ? decodeGrpcLeasedSeedMutationCount(task.seedMutationCount, `${path}.seedMutationCount`)
-      : undefined;
+  const seedMutationCount = grpcSeedMutationCountValue(
+    task.seedMutationCount,
+    `${path}.seedMutationCount`,
+    benchmarkScope,
+  );
   const isKafkaScope = benchmarkScope.startsWith("runtime-kafka-");
   const requiresKafkaThroughput = artifactKind === "runtime-benchmark-summary" && isKafkaScope;
   const memoryRssTotalDeltaBytes = optionalFiniteNumber(
@@ -1230,15 +1206,14 @@ const validateTask = (task, path) => {
       `${path}.runtimeOperationCases`,
       `${path}.benchmarks`,
     );
-    if (benchmarkScope === "runtime-grpc-leased") {
-      validateGrpcLeasedOperationAccounting(
-        runtimeOperationCases,
-        grpcParameters,
-        mutationCount,
-        seedMutationCount,
-        `${path}.runtimeOperationCases`,
-      );
-    }
+    validateGrpcOperationAccounting(
+      runtimeOperationCases,
+      grpcParameters,
+      mutationCount,
+      seedMutationCount,
+      `${path}.runtimeOperationCases`,
+      benchmarkScope,
+    );
   }
   return {
     ...(task.activeViewCountBeforeCleanup === undefined
@@ -1315,14 +1290,6 @@ const benchmarkByName = (benchmarks, path) =>
 
 const throughputCaseByName = (throughputCases, path) =>
   mapByUniqueKey(throughputCases, (throughputCase) => throughputCase.name, path, "throughput case");
-
-const runtimeOperationCaseByName = (operationCases, path) =>
-  mapByUniqueKey(
-    operationCases,
-    (operationCase) => operationCase.name,
-    path,
-    "runtime operation case",
-  );
 
 const compareZeroCounter = (regressions, taskLabel, name, actual) => {
   if (actual !== 0) {
@@ -1449,166 +1416,6 @@ const compareThroughputCases = (regressions, taskLabel, threshold, baselineCases
         actualCase.maxReadSnapshotMs,
       );
     }
-  }
-};
-
-const compareRuntimeOperationLatencyField = (
-  regressions,
-  taskLabel,
-  thresholds,
-  baselineCase,
-  actualCase,
-  field,
-  thresholdName,
-) => {
-  if (baselineCase[field] === 0) {
-    compareExact(
-      regressions,
-      taskLabel,
-      `${baselineCase.name} runtime operation ${field}`,
-      baselineCase[field],
-      actualCase[field],
-    );
-    return;
-  }
-  compareLatency(
-    regressions,
-    taskLabel,
-    baselineCase.name,
-    field,
-    thresholds[thresholdName],
-    baselineCase[field],
-    actualCase[field],
-  );
-};
-
-const compareRuntimeOperationExactField = (
-  regressions,
-  taskLabel,
-  baselineCase,
-  actualCase,
-  field,
-) => {
-  compareExact(
-    regressions,
-    taskLabel,
-    `${baselineCase.name} runtime operation ${field}`,
-    baselineCase[field],
-    actualCase[field],
-  );
-};
-
-const compareGrpcMaterializedOperationCase = (
-  regressions,
-  taskLabel,
-  thresholds,
-  baselineCase,
-  actualCase,
-) => {
-  compareRuntimeOperationExactField(regressions, taskLabel, baselineCase, actualCase, "sampleCount");
-  compareRuntimeOperationExactField(regressions, taskLabel, baselineCase, actualCase, "totalRows");
-  compareRuntimeOperationLatencyField(
-    regressions,
-    taskLabel,
-    thresholds,
-    baselineCase,
-    actualCase,
-    "meanHealthOverlayMs",
-    "operationMean",
-  );
-  compareRuntimeOperationLatencyField(
-    regressions,
-    taskLabel,
-    thresholds,
-    baselineCase,
-    actualCase,
-    "meanSnapshotMs",
-    "operationMean",
-  );
-  compareRuntimeOperationLatencyField(
-    regressions,
-    taskLabel,
-    thresholds,
-    baselineCase,
-    actualCase,
-    "meanStreamConvergenceMs",
-    "operationMean",
-  );
-  compareRuntimeOperationLatencyField(
-    regressions,
-    taskLabel,
-    thresholds,
-    baselineCase,
-    actualCase,
-    "maxHealthOverlayMs",
-    "operationMax",
-  );
-  compareRuntimeOperationLatencyField(
-    regressions,
-    taskLabel,
-    thresholds,
-    baselineCase,
-    actualCase,
-    "maxSnapshotMs",
-    "operationMax",
-  );
-  compareRuntimeOperationLatencyField(
-    regressions,
-    taskLabel,
-    thresholds,
-    baselineCase,
-    actualCase,
-    "maxStreamConvergenceMs",
-    "operationMax",
-  );
-  compareThroughput(
-    regressions,
-    taskLabel,
-    baselineCase.name,
-    "meanRowsPerSecond",
-    thresholds.throughputAggregateRowsPerSecond,
-    baselineCase.meanRowsPerSecond,
-    actualCase.meanRowsPerSecond,
-  );
-};
-
-const compareRuntimeOperationCases = (
-  regressions,
-  taskLabel,
-  thresholds,
-  baselineCases,
-  actualCases,
-) => {
-  if (baselineCases === undefined && actualCases === undefined) {
-    return;
-  }
-  if (baselineCases === undefined || actualCases === undefined) {
-    pushRegression(regressions, `${taskLabel}: runtimeOperationCases presence changed.`);
-    return;
-  }
-  const baselineByName = runtimeOperationCaseByName(
-    baselineCases,
-    `baseline.tasks[${taskLabel}]`,
-  );
-  const actualByName = runtimeOperationCaseByName(actualCases, `actual.tasks[${taskLabel}]`);
-  for (const caseName of actualByName.keys()) {
-    if (!baselineByName.has(caseName)) {
-      pushRegression(regressions, `${taskLabel}: unexpected runtime operation case ${caseName}.`);
-    }
-  }
-  for (const baselineCase of baselineCases) {
-    const actualCase = actualByName.get(baselineCase.name);
-    if (actualCase === undefined) {
-      pushRegression(regressions, `${taskLabel}: missing runtime operation case ${baselineCase.name}.`);
-      continue;
-    }
-    compareGrpcMaterializedOperationCase(
-      regressions,
-      taskLabel,
-      thresholds,
-      baselineCase,
-      actualCase,
-    );
   }
 };
 
@@ -1794,13 +1601,14 @@ export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
       regressions.push(
         ...compareGrpcLeasedBenchmarkTask(taskLabel, thresholds, baselineTask, actualTask),
       );
-    } else {
-      compareRuntimeOperationCases(
-        regressions,
-        taskLabel,
-        thresholds,
-        baselineTask.runtimeOperationCases,
-        actualTask.runtimeOperationCases,
+    } else if (baselineTask.benchmarkScope === "runtime-grpc-materialized") {
+      regressions.push(
+        ...compareGrpcMaterializedBenchmarkTask(
+          taskLabel,
+          thresholds,
+          baselineTask,
+          actualTask,
+        ),
       );
     }
     compareReportOnlyRuntimeMetricsPresence(regressions, taskLabel, baselineTask, actualTask);

@@ -13,6 +13,7 @@ export default defineConfig({
         "scripts/bench-runtime-kafka-ingest.mjs",
         "scripts/check-internal-seams.ts",
         "scripts/grpc-leased-benchmark-policy.mjs",
+        "scripts/grpc-materialized-benchmark-policy.mjs",
         "scripts/package-surface-policy.ts",
         "scripts/release-publish-orchestration.mjs",
         "scripts/release-publish-policy.mjs",

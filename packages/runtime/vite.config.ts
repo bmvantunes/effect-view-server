@@ -13,7 +13,11 @@ export default defineConfig({
     },
     coverage: {
       provider: "istanbul",
-      include: ["src/**/*.ts", "test-harness/grpc-leased-benchmark*.ts"],
+      include: [
+        "src/**/*.ts",
+        "test-harness/grpc-materialized-benchmark.ts",
+        "test-harness/grpc-leased-benchmark*.ts",
+      ],
       exclude: ["**/*.bench.ts", "src/**/*.test.ts", "src/**/*.test-d.ts"],
       reporter: ["text"],
       thresholds: {

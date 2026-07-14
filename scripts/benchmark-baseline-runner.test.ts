@@ -712,7 +712,7 @@ describe("benchmark baseline runner", () => {
           artifactKind: "runtime-benchmark-summary",
           batchSize: "256",
           benchmarkScope: "runtime-grpc-materialized",
-          iterations: "3",
+          iterations: "5",
           outputJsonPath: ".artifacts/grpc-materialized-1000seed-256batch.json",
           rowCount: "1000",
           task: ["run", "--no-cache", "runtime#bench:grpc-materialized"],

@@ -5,7 +5,10 @@ import { makeLiveSubscription } from "./live-subscription";
 import type { CompiledGroupedQuery } from "./grouped-query-compiler";
 import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
 import type { CompiledRawQuery } from "./raw-query-compiler";
-import { liveQueryResultFromOwnedEvaluation, type QueryEvaluation } from "./query-result";
+import {
+  liveQueryResultFromOwnedEvaluation,
+  liveQueryResultFromOwnedResultEvaluation,
+} from "./query-result";
 import {
   acquireTopicStoreMaterializedQueryExecution,
   acquireTopicStoreRawQueryExecution,
@@ -87,14 +90,6 @@ export const prepareRuntimeExecutableQuery = Effect.fn(
   } satisfies ExecutableQuery<RowObject>);
 });
 
-export const evaluateExecutableQuery = <ResultRow extends RowObject>(
-  store: TopicStore,
-  executable: ExecutableQuery<ResultRow>,
-): QueryEvaluation<RowObject> =>
-  executable.kind === "raw"
-    ? evaluateTopicStoreRawQuery(store, executable.compiled)
-    : evaluateTopicStoreGroupedQuery(store, executable.compiled);
-
 export const snapshotRawExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.snapshotRaw",
 )(function* <Row extends RowObject, const Query extends RawQuery<NoInfer<Row>>>(
@@ -103,8 +98,8 @@ export const snapshotRawExecutableQuery = Effect.fn(
   query: Query,
 ) {
   const executable = yield* prepareRawExecutableQuery(store, metadata, query);
-  return liveQueryResultFromOwnedEvaluation(
-    evaluateExecutableQuery(store, executable),
+  return liveQueryResultFromOwnedResultEvaluation(
+    evaluateTopicStoreRawQuery(store, executable.compiled),
     executable.compiled.plan.resultSemantics,
   );
 });
@@ -118,7 +113,7 @@ export const snapshotGroupedExecutableQuery = Effect.fn(
 ) {
   const executable = yield* prepareGroupedExecutableQuery(store, metadata, query);
   return liveQueryResultFromOwnedEvaluation(
-    evaluateExecutableQuery(store, executable),
+    evaluateTopicStoreGroupedQuery(store, executable.compiled),
     executable.compiled.plan.resultSemantics,
   );
 });

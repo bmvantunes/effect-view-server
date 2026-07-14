@@ -85,7 +85,7 @@ export const prepareTopicStoreRuntimeGroupedQuery = Effect.fn(
 export const evaluateTopicStoreRawQuery = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledRawQuery<object, ResultRow>,
-): QueryEvaluation<RowObject> => evaluateRawQuery(topicStoreReadModel(store), compiled);
+): QueryEvaluation<ResultRow> => evaluateRawQuery(topicStoreReadModel(store), compiled);
 
 export const evaluateTopicStoreGroupedQuery = <ResultRow extends RowObject>(
   store: TopicStore,

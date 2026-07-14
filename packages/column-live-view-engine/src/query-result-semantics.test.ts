@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import {
+  bindOwnedQueryResultRowMaterializer,
   groupedResultAggregateSemantics,
   makeQueryResultSemantics,
   runtimeRawQueryResultSemantics,
@@ -43,6 +44,14 @@ describe("query result semantics", () => {
     const ownedResult = semantics.materializeOwnedRow(owned);
     expect(ownedResult).toBe(owned);
     expect(Reflect.get(ownedResult, "value")).not.toBe(structured);
+
+    const provenOwned = { value: structured };
+    const provenOwnedResult = bindOwnedQueryResultRowMaterializer(semantics)(provenOwned);
+    expect(provenOwnedResult).toBe(provenOwned);
+    expect(Reflect.get(provenOwnedResult, "value")).not.toBe(structured);
+    expect(() => bindOwnedQueryResultRowMaterializer(Object.create(semantics))).toThrowError(
+      "Query Result Semantics is not authentic.",
+    );
   });
 
   it("keeps an undefined min/max result outside the optional field codec", () => {

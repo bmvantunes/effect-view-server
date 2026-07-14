@@ -17,7 +17,7 @@ import {
   type RawQueryCompilerMetadata,
 } from "./raw-query-compiler";
 import { decodeTypedRawQuery } from "./raw-query-decoder";
-import type { QueryEvaluation } from "./query-result";
+import { liveQueryResultFromOwnedResultEvaluation, type QueryEvaluation } from "./query-result";
 import {
   groupedQueryResultSemantics,
   rawQueryResultSemantics,
@@ -124,6 +124,8 @@ declare const storageProjectionCapability: TopicStorageProjectionCapability;
 declare const stringProjectionProof: QueryResultTopicStorageProjectionProof<{
   readonly id: string;
 }>;
+declare const priceEvaluation: QueryEvaluation<{ readonly price: number }>;
+declare const idResultSemantics: QueryResultSemantics<{ readonly id: string }>;
 
 describe("compiled Query Result Semantics", () => {
   it("keeps schema provenance nominal across metadata and result proofs", () => {
@@ -197,6 +199,11 @@ describe("compiled Query Result Semantics", () => {
       // @ts-expect-error a count-only witness cannot prove a query with totalPrice.
       decodedCountOnlyGrouped,
     );
+    const invalidEvaluationSemanticsPair = liveQueryResultFromOwnedResultEvaluation(
+      // @ts-expect-error an evaluation cannot be paired with semantics for another result row.
+      priceEvaluation,
+      idResultSemantics,
+    );
 
     void invalidMetadata;
     void invalidStorageCapability;
@@ -208,6 +215,7 @@ describe("compiled Query Result Semantics", () => {
     void invalidStructuralGroupedProof;
     void invalidRawQueryRebrand;
     void invalidGroupedQueryRebrand;
+    void invalidEvaluationSemanticsPair;
   });
 
   it("derives raw plan projection and ownership from schema metadata plus the query", () => {

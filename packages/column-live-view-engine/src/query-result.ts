@@ -4,7 +4,10 @@ import type {
   LiveQueryResult,
   SnapshotEvent,
 } from "@effect-view-server/config";
-import type { QueryResultSemantics } from "./query-result-semantics";
+import {
+  bindOwnedQueryResultRowMaterializer,
+  type QueryResultSemantics,
+} from "./query-result-semantics";
 
 type RowObject = object;
 
@@ -42,6 +45,20 @@ export const liveQueryResultFromOwnedEvaluation = <ResultRow extends RowObject>(
   status: "ready",
   statusCode: "Ready",
 });
+
+export const liveQueryResultFromOwnedResultEvaluation = <ResultRow extends RowObject>(
+  evaluation: QueryEvaluation<NoInfer<ResultRow>>,
+  semantics: QueryResultSemantics<ResultRow>,
+): LiveQueryResult<ResultRow> => {
+  const materializeOwnedResultRow = bindOwnedQueryResultRowMaterializer(semantics);
+  return {
+    rows: evaluation.rows.map(materializeOwnedResultRow),
+    totalRows: evaluation.totalRows,
+    version: evaluation.version,
+    status: "ready",
+    statusCode: "Ready",
+  };
+};
 
 export const snapshotEvent = <ResultRow extends RowObject>(
   store: { readonly topic: string },

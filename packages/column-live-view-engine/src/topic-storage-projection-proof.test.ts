@@ -403,6 +403,29 @@ describe("Topic Storage projection proof", () => {
     }),
   );
 
+  it.effect("rejects schema-invalid scalar column values through the storage-owned proof", () =>
+    Effect.gen(function* () {
+      const storage = new TopicRowStorage("orders", Order, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      storage.setPrepared(yield* storage.prepareRow(order("stored", "open", 10, 1), invalidRow));
+      const columns = Reflect.get(storage, "columns");
+      const priceColumn = Reflect.apply(Reflect.get(columns, "get"), columns, ["price"]);
+      const priceColumnObject = Object(priceColumn);
+      Reflect.apply(Reflect.get(priceColumnObject, "set"), priceColumnObject, [
+        0,
+        Number.POSITIVE_INFINITY,
+      ]);
+      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id", "price"],
+      });
+
+      expect(() => evaluateRawQuery(storage.readModel, compiled)).toThrowError(
+        "Projected Query Result Row does not satisfy its compiled proof.",
+      );
+    }),
+  );
+
   it.effect("keeps stored optional-field presence immutable after preparation", () =>
     Effect.gen(function* () {
       const OptionalOrder = Schema.Struct({

@@ -59,7 +59,10 @@ import {
   compiledRawStorageOrder,
 } from "./topic-raw-ordered-window-index";
 import type { TopicRowValueSemantics } from "./topic-row-value-semantics";
-import type { QueryResultTopicStorageProjectionProof } from "./query-result-semantics";
+import {
+  bindQueryResultTopicStorageProjectionProof,
+  type QueryResultTopicStorageProjectionProof,
+} from "./query-result-topic-storage-proof";
 
 type RowObject = object;
 
@@ -84,20 +87,11 @@ const noopAppendBatchReservation: AppendBatchReservation = {
 };
 
 const topicRowStorageProjectionConstructionToken = Object.freeze({});
-const topicStorageResultProjectionBrand: unique symbol = Symbol("TopicStorageResultProjection");
 
 const assertTopicRowStorageProjectionConstruction = (constructionToken: object): void => {
   if (constructionToken !== topicRowStorageProjectionConstructionToken) {
     throw new TypeError("Topic Storage projection construction is private.");
   }
-};
-
-class TopicStorageResultProjectionMarker {
-  declare private readonly authentic: true;
-}
-
-export type TopicStorageResultProjection = {
-  readonly [topicStorageResultProjectionBrand]: TopicStorageResultProjectionMarker;
 };
 
 type TopicRowStorageProjectedRow = {
@@ -120,52 +114,9 @@ const validatedTopicStorageProjectedRow = (
   return row;
 };
 
-class TopicRowStorageResultProjection implements TopicStorageResultProjection {
-  declare readonly [topicStorageResultProjectionBrand]: TopicStorageResultProjectionMarker;
-  #consumed = false;
-  readonly #proof: object;
-  readonly #row: Record<string, unknown>;
-  #shapeValid: boolean;
-  #valuesValid: boolean;
-
-  constructor(
-    constructionToken: object,
-    proof: object,
-    row: Record<string, unknown>,
-    shapeValid: boolean,
-    valuesValid: boolean,
-  ) {
-    assertTopicRowStorageProjectionConstruction(constructionToken);
-    this.#proof = proof;
-    this.#row = row;
-    this.#shapeValid = shapeValid;
-    this.#valuesValid = valuesValid;
-    Object.freeze(this);
-  }
-
-  consume(constructionToken: object, proof: object): RowObject {
-    assertTopicRowStorageProjectionConstruction(constructionToken);
-    if (this.#consumed || proof !== this.#proof) {
-      throw new TypeError(
-        "Topic Storage projection is not authentic or has already been consumed.",
-      );
-    }
-    this.#consumed = true;
-    return validatedTopicStorageProjectedRow(this.#row, this.#shapeValid, this.#valuesValid);
-  }
-}
-
-Object.freeze(TopicRowStorageResultProjection.prototype);
-
-export const consumeTopicStorageResultProjection = (
-  projection: TopicStorageResultProjection,
-  proof: object,
-): RowObject => {
-  if (!(projection instanceof TopicRowStorageResultProjection)) {
-    throw new TypeError("Topic Storage projection is not authentic or has already been consumed.");
-  }
-  return projection.consume(topicRowStorageProjectionConstructionToken, proof);
-};
+function authenticateTopicStorageResultRow<ResultRow extends RowObject>(
+  _row: RowObject,
+): asserts _row is ResultRow {}
 
 type TopicRowStorageProjector = (slot: number) => TopicRowStorageProjectedRow;
 
@@ -191,13 +142,10 @@ class TopicRowStorageProjectionCapability {
   bind<ResultRow extends RowObject>(
     proof: QueryResultTopicStorageProjectionProof<ResultRow>,
   ): TopicStorageProjectionSession<ResultRow> {
-    if (!proof.matchesValueSemantics(this.#valueSemantics)) {
-      throw new TypeError("Topic Storage projection schema does not match its compiled proof.");
-    }
-    return new TopicRowStorageProjectionSession(
+    const selectedFields = bindQueryResultTopicStorageProjectionProof(proof, this.#valueSemantics);
+    return new TopicRowStorageProjectionSession<ResultRow>(
       topicRowStorageProjectionConstructionToken,
-      proof,
-      this.#bindProjectRow(proof.selectedFields),
+      this.#bindProjectRow(selectedFields),
     );
   }
 }
@@ -217,43 +165,23 @@ export const bindTopicStorageProjection = <ResultRow extends RowObject>(
 };
 
 class TopicRowStorageProjectionSession<ResultRow extends RowObject> {
-  readonly #proof: QueryResultTopicStorageProjectionProof<ResultRow>;
   readonly #projectRow: TopicRowStorageProjector;
+  readonly projectResultRow: (slot: number) => ResultRow;
 
-  constructor(
-    constructionToken: object,
-    proof: QueryResultTopicStorageProjectionProof<ResultRow>,
-    projectRow: TopicRowStorageProjector,
-  ) {
+  constructor(constructionToken: object, projectRow: TopicRowStorageProjector) {
     assertTopicRowStorageProjectionConstruction(constructionToken);
     this.#projectRow = projectRow;
-    this.#proof = proof;
+    this.projectResultRow = (slot) => {
+      const projected = this.#projectRow(slot);
+      const row = validatedTopicStorageProjectedRow(
+        projected.row,
+        projected.shapeValid,
+        projected.valuesValid,
+      );
+      authenticateTopicStorageResultRow<ResultRow>(row);
+      return row;
+    };
     Object.freeze(this);
-  }
-
-  project(slot: number): TopicStorageResultProjection {
-    const projected = this.#projectRow(slot);
-    return new TopicRowStorageResultProjection(
-      topicRowStorageProjectionConstructionToken,
-      this.#proof,
-      projected.row,
-      projected.shapeValid,
-      projected.valuesValid,
-    );
-  }
-
-  projectResultRow(slot: number): ResultRow {
-    const projected = this.#projectRow(slot);
-    const row = validatedTopicStorageProjectedRow(
-      projected.row,
-      projected.shapeValid,
-      projected.valuesValid,
-    );
-    // The session is constructible only by the concrete Topic Row Storage
-    // capability after it binds this exact result proof and schema identity.
-    const authenticate: (value: RowObject) => asserts value is ResultRow = () => {};
-    authenticate(row);
-    return row;
   }
 }
 

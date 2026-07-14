@@ -522,8 +522,8 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
     expect(Object.isFrozen(stringGrouped.plan.resultSemantics)).toBe(true);
     expect(Object.isFrozen(stringRaw.plan.resultSemantics.topicStorageProjectionProof)).toBe(true);
     expect(
-      Object.isFrozen(stringRaw.plan.resultSemantics.topicStorageProjectionProof.selectedFields),
-    ).toBe(true);
+      Reflect.ownKeys(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
+    ).toStrictEqual([]);
     expect(
       Object.isFrozen(
         Object.getPrototypeOf(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
@@ -541,12 +541,14 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
     expect(() =>
       Object.assign(stringGrouped.plan.resultSemantics, numberGrouped.plan.resultSemantics),
     ).toThrowError(TypeError);
-    expect(() =>
-      Object.assign(
-        stringRaw.plan.resultSemantics.topicStorageProjectionProof,
-        numberRaw.plan.resultSemantics.topicStorageProjectionProof,
-      ),
-    ).toThrowError(TypeError);
+    expect(
+      Reflect.defineProperty(stringRaw.plan.resultSemantics.topicStorageProjectionProof, "forged", {
+        configurable: true,
+        enumerable: true,
+        value: numberRaw.plan.resultSemantics.topicStorageProjectionProof,
+        writable: true,
+      }),
+    ).toBe(false);
     expect(() =>
       Object.assign(
         Object.getPrototypeOf(stringRaw.plan.resultSemantics.topicStorageProjectionProof),

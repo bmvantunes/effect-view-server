@@ -266,7 +266,7 @@ describe("Topic Storage projection proof", () => {
     }),
   );
 
-  it.effect("binds a concrete storage projection to one compiled proof and consumes it once", () =>
+  it.effect("binds a concrete storage projection to one authentic compiled proof", () =>
     Effect.gen(function* () {
       const storage = new TopicRowStorage("orders", Order, "id");
       const invalidRow = (topic: string, message: string) =>
@@ -275,17 +275,8 @@ describe("Topic Storage projection proof", () => {
       const first = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
         select: ["id", "price"],
       });
-      const second = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
-        select: ["id", "price"],
-      });
-      const projection = bindTopicStorageProjection(
-        storage.readModel.storageProjection,
-        first.plan.resultSemantics.topicStorageProjectionProof,
-      ).project(0);
-      const session = bindTopicStorageProjection(
-        storage.readModel.storageProjection,
-        first.plan.resultSemantics.topicStorageProjectionProof,
-      );
+      const proof = first.plan.resultSemantics.topicStorageProjectionProof;
+      const session = bindTopicStorageProjection(storage.readModel.storageProjection, proof);
 
       expect(Object.isFrozen(storage.readModel.storageProjection)).toBe(true);
       expect(Object.isFrozen(Object.getPrototypeOf(storage.readModel.storageProjection))).toBe(
@@ -293,10 +284,14 @@ describe("Topic Storage projection proof", () => {
       );
       expect(Object.isFrozen(session)).toBe(true);
       expect(Object.isFrozen(Object.getPrototypeOf(session))).toBe(true);
+      expect(Object.isFrozen(proof)).toBe(true);
+      expect(Object.isFrozen(Object.getPrototypeOf(proof))).toBe(true);
+      expect(Reflect.ownKeys(proof)).toStrictEqual([]);
       expect(session.projectResultRow(0)).toStrictEqual({ id: "stored", price: 10 });
-      expect(Object.isFrozen(projection)).toBe(true);
-      expect(Object.isFrozen(Object.getPrototypeOf(projection))).toBe(true);
-      expect(Reflect.get(projection, "missingRequiredField")).toBeUndefined();
+      expect(Reflect.apply(session.projectResultRow, Object.freeze({}), [0])).toStrictEqual({
+        id: "stored",
+        price: 10,
+      });
       expect(() =>
         Reflect.construct(
           Reflect.get(Object.getPrototypeOf(storage.readModel.storageProjection), "constructor"),
@@ -307,8 +302,8 @@ describe("Topic Storage projection proof", () => {
         Reflect.construct(Reflect.get(Object.getPrototypeOf(session), "constructor"), []),
       ).toThrowError("Topic Storage projection construction is private.");
       expect(() =>
-        Reflect.construct(Reflect.get(Object.getPrototypeOf(projection), "constructor"), []),
-      ).toThrowError("Topic Storage projection construction is private.");
+        Reflect.construct(Reflect.get(Object.getPrototypeOf(proof), "constructor"), []),
+      ).toThrowError("Query Result Topic Storage projection proof construction is private.");
       expect(() =>
         Reflect.apply(
           Reflect.get(Object.getPrototypeOf(storage.readModel.storageProjection), "bind"),
@@ -316,29 +311,45 @@ describe("Topic Storage projection proof", () => {
           [first.plan.resultSemantics.topicStorageProjectionProof],
         ),
       ).toThrowError(TypeError);
-      expect(() =>
-        Reflect.apply(
-          Reflect.get(Object.getPrototypeOf(session), "project"),
-          Object.freeze({}),
-          [0],
-        ),
-      ).toThrowError(TypeError);
-      expect(() =>
-        Reflect.apply(first.plan.resultSemantics.projectTopicStorageRow, undefined, [
-          Object.freeze({}),
-        ]),
-      ).toThrowError("Topic Storage projection is not authentic or has already been consumed.");
+    }),
+  );
 
-      expect(() => second.plan.resultSemantics.projectTopicStorageRow(projection)).toThrowError(
-        "Topic Storage projection is not authentic or has already been consumed.",
-      );
-      expect(first.plan.resultSemantics.projectTopicStorageRow(projection)).toStrictEqual({
-        id: "stored",
-        price: 10,
+  it.effect("rejects forged proofs and keeps result projectors owned by their session", () =>
+    Effect.gen(function* () {
+      const storage = new TopicRowStorage("orders", Order, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      storage.setPrepared(yield* storage.prepareRow(order("stored", "open", 10, 1), invalidRow));
+      const idQuery = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["id"],
       });
-      expect(() => first.plan.resultSemantics.projectTopicStorageRow(projection)).toThrowError(
-        "Topic Storage projection is not authentic or has already been consumed.",
+      const priceQuery = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
+        select: ["price"],
+      });
+      const idProof = idQuery.plan.resultSemantics.topicStorageProjectionProof;
+      const idSession = bindTopicStorageProjection(storage.readModel.storageProjection, idProof);
+      const priceSession = bindTopicStorageProjection(
+        storage.readModel.storageProjection,
+        priceQuery.plan.resultSemantics.topicStorageProjectionProof,
       );
+      const proxyProof = new Proxy(idProof, {});
+      const spreadProof = {
+        matchesValueSemantics: () => true,
+        selectedFields: Object.freeze(["price"]),
+      };
+
+      expect(() =>
+        bindTopicStorageProjection(storage.readModel.storageProjection, proxyProof),
+      ).toThrowError("Query Result Topic Storage projection proof is not authentic.");
+      expect(() =>
+        Reflect.apply(bindTopicStorageProjection, undefined, [
+          storage.readModel.storageProjection,
+          spreadProof,
+        ]),
+      ).toThrowError("Query Result Topic Storage projection proof is not authentic.");
+      expect(Reflect.apply(idSession.projectResultRow, priceSession, [0])).toStrictEqual({
+        id: "stored",
+      });
     }),
   );
 
@@ -374,12 +385,11 @@ describe("Topic Storage projection proof", () => {
       });
       const storedEntry = Reflect.get(storage, "slots")[0];
       Reflect.set(storedEntry, "row", Object.freeze({ price: 10 }));
-      const corruptedProjection = bindTopicStorageProjection(
-        storage.readModel.storageProjection,
-        compiled.plan.resultSemantics.topicStorageProjectionProof,
-      ).project(0);
       expect(() =>
-        compiled.plan.resultSemantics.projectTopicStorageRow(corruptedProjection),
+        bindTopicStorageProjection(
+          storage.readModel.storageProjection,
+          compiled.plan.resultSemantics.topicStorageProjectionProof,
+        ).projectResultRow(0),
       ).toThrowError("Topic Storage projection does not satisfy its compiled shape proof.");
     }),
   );

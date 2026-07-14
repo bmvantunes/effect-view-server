@@ -17,12 +17,13 @@ import {
   makeSchemaValueSemantics,
   type SchemaValueSemantics,
   type TopicRowValueSemantics,
-  topicRowValueSemanticsShareSchema,
 } from "./topic-row-value-semantics";
 import {
-  consumeTopicStorageResultProjection,
-  type TopicStorageResultProjection,
-} from "./topic-row-storage";
+  makeQueryResultTopicStorageProjectionProof,
+  type QueryResultTopicStorageProjectionProof,
+} from "./query-result-topic-storage-proof";
+
+export type { QueryResultTopicStorageProjectionProof } from "./query-result-topic-storage-proof";
 
 type RowObject = object;
 
@@ -36,54 +37,6 @@ type QueryResultProjectValue = (semantics: SchemaValueSemantics, value: unknown)
 
 type QueryResultProof<ResultRow extends RowObject> = (row: RowObject) => row is ResultRow;
 
-const queryResultTopicStorageProjectionProofBrand: unique symbol = Symbol(
-  "QueryResultTopicStorageProjectionProof",
-);
-const queryResultTopicStorageProjectionProofConstructionToken = Object.freeze({});
-
-class QueryResultTopicStorageProjectionProofMarker<ResultRow extends RowObject> {
-  declare private readonly output: ResultRow;
-}
-
-export type QueryResultTopicStorageProjectionProof<ResultRow extends RowObject> = {
-  readonly [queryResultTopicStorageProjectionProofBrand]: QueryResultTopicStorageProjectionProofMarker<ResultRow>;
-  readonly matchesValueSemantics: (valueSemantics: TopicRowValueSemantics) => boolean;
-  readonly selectedFields: ReadonlyArray<string>;
-};
-
-class TopicStorageResultProjectionProof<ResultRow extends RowObject> {
-  readonly [queryResultTopicStorageProjectionProofBrand] =
-    new QueryResultTopicStorageProjectionProofMarker<ResultRow>();
-  readonly selectedFields: ReadonlyArray<string>;
-
-  constructor(
-    constructionToken: object,
-    private readonly topicRow: TopicRowValueSemantics,
-    fields: ReadonlyArray<QueryResultFieldSemantics>,
-  ) {
-    if (constructionToken !== queryResultTopicStorageProjectionProofConstructionToken) {
-      throw new TypeError("Query Result Topic Storage projection proof construction is private.");
-    }
-    this.selectedFields = Object.freeze(fields.map(({ field }) => field));
-    Object.freeze(this);
-  }
-
-  matchesValueSemantics(valueSemantics: TopicRowValueSemantics): boolean {
-    return topicRowValueSemanticsShareSchema(valueSemantics, this.topicRow);
-  }
-
-  project(projection: TopicStorageResultProjection): ResultRow {
-    const row = consumeTopicStorageResultProjection(projection, this);
-    // The concrete Topic Row Storage capability has already proven schema
-    // identity, token-owned selected fields, and required-field presence.
-    const authenticate: (value: RowObject) => asserts value is ResultRow = () => {};
-    authenticate(row);
-    return row;
-  }
-}
-
-Object.freeze(TopicStorageResultProjectionProof.prototype);
-
 export type QueryResultSemantics<ResultRow extends RowObject = RowObject> = {
   readonly equivalentRows: (left: RowObject, right: RowObject) => boolean;
   readonly materializeOwnedRow: (row: RowObject) => ResultRow;
@@ -94,7 +47,6 @@ export type QueryResultSemantics<ResultRow extends RowObject = RowObject> = {
 
 export type TopicStorageProjectableQueryResultSemantics<ResultRow extends RowObject = RowObject> =
   QueryResultSemantics<ResultRow> & {
-    readonly projectTopicStorageRow: (projection: TopicStorageResultProjection) => ResultRow;
     readonly topicStorageProjectionProof: QueryResultTopicStorageProjectionProof<ResultRow>;
   };
 
@@ -278,14 +230,12 @@ const makeTopicStorageProjectableQueryResultSemantics = <ResultRow extends RowOb
   topicRow: TopicRowValueSemantics,
 ): TopicStorageProjectableQueryResultSemantics<ResultRow> => {
   const semantics = makeProjectedQueryResultSemantics(fields, isResultRow, validateProjectedValues);
-  const topicStorageProjectionProof = new TopicStorageResultProjectionProof<ResultRow>(
-    queryResultTopicStorageProjectionProofConstructionToken,
+  const topicStorageProjectionProof = makeQueryResultTopicStorageProjectionProof<ResultRow>(
     topicRow,
-    fields,
+    fields.map(({ field }) => field),
   );
   return Object.freeze({
     ...semantics,
-    projectTopicStorageRow: (projection) => topicStorageProjectionProof.project(projection),
     topicStorageProjectionProof,
   });
 };

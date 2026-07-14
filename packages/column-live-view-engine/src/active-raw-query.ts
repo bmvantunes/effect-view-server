@@ -372,8 +372,8 @@ const projectWindowEvaluation = <Row extends RowObject, ResultRow extends RowObj
   store: TopicRawWindowScan<Row>,
   compiled: CompiledRawQuery<Row, ResultRow>,
   evaluation: ActiveQueryBaseEvaluation<Row>,
+  storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): QueryEvaluation<ResultRow> => {
-  const storageProjection = bindStoreProjection(store, compiled);
   const end =
     compiled.plan.window.limit === undefined
       ? undefined
@@ -439,7 +439,9 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
   execution: ActiveQueryBaseExecution,
   compiled: CompiledRawQuery<object, ResultRow>,
 ): RawQueryExecution<ResultRow> => {
-  const latestEvaluation = () => projectWindowEvaluation(store, compiled, execution.latest());
+  const storageProjection = bindStoreProjection(store, compiled);
+  const latestEvaluation = () =>
+    projectWindowEvaluation(store, compiled, execution.latest(), storageProjection);
 
   return Object.freeze({
     initial: (queryId) =>

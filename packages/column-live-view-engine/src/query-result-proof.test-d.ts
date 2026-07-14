@@ -43,6 +43,10 @@ const Order = Schema.Struct({
 });
 
 type OrderRow = typeof Order.Type;
+
+const enumerableProperties = <Value extends object>(
+  value: Value,
+): { [Key in keyof Value]: Value[Key] } => ({ ...value });
 type EffectSuccess<Value> =
   Value extends Effect.Effect<infer Success, infer _Error, infer _Services> ? Success : never;
 type EvaluationRow<Value> = Value extends QueryEvaluation<infer Row> ? Row : never;
@@ -131,13 +135,19 @@ describe("compiled Query Result Semantics", () => {
     }>();
     // @ts-expect-error only the concrete Topic Row Storage can construct its projection capability.
     const invalidStorageCapability: TopicStorageProjectionCapability = {};
-    // @ts-expect-error structural fields cannot forge the private projection-proof brand.
-    const invalidStructuralProjectionProof: QueryResultTopicStorageProjectionProof<{
-      readonly id: string;
-    }> = {
+    const structuralProjectionProof = {
       matchesValueSemantics: () => true,
       selectedFields: ["id"],
     };
+    // @ts-expect-error structural fields cannot forge the private projection-proof provenance.
+    const invalidStructuralProjectionProof: QueryResultTopicStorageProjectionProof<{
+      readonly id: string;
+    }> = structuralProjectionProof;
+    const spreadProjectionProof = enumerableProperties(stringProjectionProof);
+    // @ts-expect-error spreading a compiled proof loses its nominal proof provenance.
+    const _invalidSpreadProjectionProof: QueryResultTopicStorageProjectionProof<{
+      readonly id: string;
+    }> = spreadProjectionProof;
     // @ts-expect-error a query result projection proof cannot be changed to another result row.
     const invalidProjectionProof: QueryResultTopicStorageProjectionProof<{ readonly id: number }> =
       stringProjectionProof;

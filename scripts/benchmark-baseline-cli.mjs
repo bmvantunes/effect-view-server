@@ -1,4 +1,9 @@
-import { exitCodeForSignal } from "./benchmark-baseline-runner.mjs";
+import { constants as osConstants } from "node:os";
+
+export const exitCodeForSignal = (signal) => {
+  const signalNumber = osConstants.signals[signal];
+  return typeof signalNumber === "number" ? 128 + signalNumber : 1;
+};
 
 export const childIsRunning = (child) => child.exitCode === null && child.signalCode === null;
 

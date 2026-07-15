@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { runBenchmarkBaselineCli } from "./benchmark-baseline-cli.mjs";
-import { runBenchmarkBaseline } from "./benchmark-baseline-runner.mjs";
+import { runBenchmarkBaseline } from "./benchmark-baseline-workflow.mjs";
 
 const exitCode = await runBenchmarkBaselineCli({
   argv: process.argv,

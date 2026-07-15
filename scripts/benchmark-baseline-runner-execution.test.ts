@@ -1,19 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
-import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultBenchmarkThresholds, writeBenchmarkBaseline } from "./benchmark-baseline.mjs";
 import {
-  assertTaskArtifactsWritten,
   baselinePath,
-  cleanBenchmarkEnvironment,
-  exitCodeForSignal,
-  removeTaskArtifacts,
-  repeatArtifactPath,
   repeatCountFrom,
   runBenchmarkBaseline,
+} from "./benchmark-baseline-workflow.mjs";
+import { exitCodeForSignal } from "./benchmark-baseline-cli.mjs";
+import {
+  repeatArtifactPath,
   summaryPath,
   taskForRepeat,
-} from "./benchmark-baseline-runner.mjs";
+} from "./benchmark-baseline-task-catalog.mjs";
 import {
   makeDirectory,
   makeTask,
@@ -21,7 +19,6 @@ import {
   observation,
   silentLogger,
   summary,
-  vitestOutput,
   writeArtifacts,
 } from "./benchmark-baseline-runner-test-support";
 
@@ -29,26 +26,12 @@ describe("benchmark baseline runner", () => {
   it("computes runner utility values", () => {
     expect({
       baseline: baselinePath("smoke"),
-      cleanedEnvironment: cleanBenchmarkEnvironment({
-        KEEP_ME: "yes",
-        VIEW_SERVER_BENCH_BASELINE_PROFILE: "smoke",
-        VIEW_SERVER_BENCH_REPEAT_INDEX: "2",
-        VIEW_SERVER_BENCH_REPEAT_TOTAL: "3",
-        VIEW_SERVER_ENGINE_BENCH_ROWS: "100",
-        VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS: "localhost:19092",
-        VIEW_SERVER_REACT_BENCH_ROWS: "100",
-        VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE: "100",
-        VITE_VIEW_SERVER_REACT_BENCH_ROWS: "100",
-      }),
       knownSignalExitCode: exitCodeForSignal("SIGTERM"),
       nonJsonSummary: summaryPath(".artifacts/result"),
       summary: summaryPath(".artifacts/result.json"),
       unknownSignalExitCode: exitCodeForSignal("NOT_A_SIGNAL"),
     }).toStrictEqual({
       baseline: "benchmarks/baselines/smoke.json",
-      cleanedEnvironment: {
-        KEEP_ME: "yes",
-      },
       knownSignalExitCode: 143,
       nonJsonSummary: ".artifacts/result.summary.json",
       summary: ".artifacts/result.summary.json",
@@ -142,6 +125,24 @@ describe("benchmark baseline runner", () => {
     });
 
     expect(exitCode).toBe(0);
+  });
+
+  it("forwards child task failures from profile execution", async () => {
+    const directory = makeDirectory();
+    const task = makeTask(directory);
+    const { logger } = silentLogger();
+
+    const exitCode = await runBenchmarkBaseline({
+      argv: ["node", "script", "--profile=tiny", "--no-compare"],
+      baselinePathForProfile: () => join(directory, "missing-baseline.json"),
+      environment: {},
+      logger,
+      profileMap: new Map([["tiny", [task]]]),
+      repeatableProfiles: new Set(["tiny"]),
+      runTask: async () => 42,
+    });
+
+    expect(exitCode).toBe(42);
   });
 
   it("runs repeated report-only profiles with isolated artifacts", async () => {
@@ -561,61 +562,6 @@ describe("benchmark baseline runner", () => {
   });
 
 
-  it("returns child task failures without reading stale artifacts", async () => {
-    const directory = makeDirectory();
-    const task = makeTask(directory);
-    const profileMap = new Map([["tiny", [task]]]);
-    const { logger } = silentLogger();
-
-    writeArtifacts(task);
-    const exitCode = await runBenchmarkBaseline({
-      argv: ["node", "script", "--profile=tiny"],
-      baselinePathForProfile: () => join(directory, "baseline.json"),
-      environment: {},
-      logger,
-      profileMap,
-      runTask: async () => 42,
-    });
-
-    expect({
-      exitCode,
-      outputStillExists: existsSync(task.outputJsonPath),
-      summaryStillExists: existsSync(task.summaryPath),
-    }).toStrictEqual({
-      exitCode: 42,
-      outputStillExists: false,
-      summaryStillExists: false,
-    });
-  });
-
-  it("rejects successful tasks that do not write expected artifacts", async () => {
-    const directory = makeDirectory();
-    const task = makeTask(directory);
-    const profileMap = new Map([["tiny", [task]]]);
-    const { logger } = silentLogger();
-
-    await expect(
-      runBenchmarkBaseline({
-        argv: ["node", "script", "--profile=tiny"],
-        baselinePathForProfile: () => join(directory, "baseline.json"),
-        environment: {},
-        logger,
-        profileMap,
-        runTask: async () => 0,
-      }),
-    ).rejects.toThrow(`${task.label}: missing benchmark output ${task.outputJsonPath}.`);
-  });
-
-  it("rejects missing summaries after output was written", () => {
-    const directory = makeDirectory();
-    const task = makeTask(directory);
-    writeFileSync(task.outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
-
-    expect(() => assertTaskArtifactsWritten(task)).toThrow(
-      `${task.label}: missing benchmark summary ${task.summaryPath}.`,
-    );
-  });
-
   it("returns comparison failures", async () => {
     const directory = makeDirectory();
     const task = makeTask(directory);
@@ -697,19 +643,4 @@ describe("benchmark baseline runner", () => {
     });
   });
 
-  it("removes expected artifacts before each run", () => {
-    const directory = makeDirectory();
-    const task = makeTask(directory);
-    writeArtifacts(task);
-
-    removeTaskArtifacts(task);
-
-    expect({
-      outputStillExists: existsSync(task.outputJsonPath),
-      summaryStillExists: existsSync(task.summaryPath),
-    }).toStrictEqual({
-      outputStillExists: false,
-      summaryStillExists: false,
-    });
-  });
 });

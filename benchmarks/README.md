@@ -43,6 +43,12 @@ latency regressions beyond the code-owned thresholds mirrored in the baseline ma
 thresholds intentionally use the wider of the ratio and absolute windows because CI smoke runs are
 small and noisy; structural metadata, counters, sample counts, and RSS remain strict.
 
+Every named profile execution also writes `profile-<name>.json` beside the first task's package-local
+artifacts. This validated `view-server-benchmark-profile-run` artifact identifies the profile and its
+fresh task observations without embedding baseline thresholds. The baseline workflow owns subsequent
+update or comparison behavior; the profile executor owns only serial process execution and artifact
+production.
+
 Do not run benchmark profiles in parallel when comparing results.
 
 Before starting the gRPC ingress adapter, run the serial pre-gRPC gate:

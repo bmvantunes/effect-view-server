@@ -6,7 +6,7 @@ import {
   readBenchmarkBaseline,
   writeBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
-import { runBenchmarkBaseline } from "./benchmark-baseline-runner.mjs";
+import { runBenchmarkBaseline } from "./benchmark-baseline-workflow.mjs";
 import {
   makeDirectory,
   makeTask,

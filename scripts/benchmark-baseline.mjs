@@ -792,9 +792,8 @@ export const comparableBenchmarksFromVitestOutput = (vitestOutput) =>
         }),
   );
 
-export const readBenchmarkObservation = (task) => {
-  const summary = objectValue(readJsonFile(task.summaryPath), task.summaryPath);
-  const vitestOutput = readJsonFile(task.outputJsonPath);
+export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) => {
+  const summary = objectValue(summaryArtifact, task.summaryPath);
   const artifactKind = summaryArtifactKind(summary.artifactKind, `${task.summaryPath}.artifactKind`);
   const latency = objectValue(summary.latency, `${task.summaryPath}.latency`);
   const latencyOutputJsonPath = stringValue(
@@ -1010,6 +1009,13 @@ export const readBenchmarkObservation = (task) => {
   };
 };
 
+export const readBenchmarkObservation = (task) =>
+  decodeBenchmarkObservation(
+    task,
+    readJsonFile(task.summaryPath),
+    readJsonFile(task.outputJsonPath),
+  );
+
 export const buildBenchmarkBaseline = (profile, observations) => ({
   artifactKind: "view-server-benchmark-baseline",
   profile,
@@ -1137,7 +1143,7 @@ const validateBenchmark = (benchmark, path) => ({
   sampleCount: positiveInteger(benchmark.sampleCount, `${path}.sampleCount`),
 });
 
-const validateTask = (task, path) => {
+export const validateBenchmarkObservation = (task, path) => {
   const artifactKind = summaryArtifactKind(task.artifactKind, `${path}.artifactKind`);
   const benchmarkScope = stringValue(task.benchmarkScope, `${path}.benchmarkScope`);
   const taskLabel = stringValue(task.taskLabel, `${path}.taskLabel`);
@@ -1311,7 +1317,7 @@ export const validateBenchmarkBaseline = (baseline, path = "baseline") => {
     artifactKind: baselineArtifactKind(baselineObject.artifactKind, `${path}.artifactKind`),
     profile,
     tasks: nonEmptyArrayValue(baselineObject.tasks, `${path}.tasks`).map((task, index) =>
-      validateTask(task, `${path}.tasks[${index}]`),
+      validateBenchmarkObservation(task, `${path}.tasks[${index}]`),
     ),
     thresholds: thresholdsValue(
       baselineObject.thresholds,

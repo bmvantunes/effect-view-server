@@ -2,7 +2,6 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   buildBenchmarkBaseline,
-  defaultBenchmarkThresholds,
   validateBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
 import {
@@ -39,6 +38,7 @@ import {
 import {
   benchmarkComparisonPolicyForProfile,
   compareBenchmarkArtifacts,
+  defaultBenchmarkThresholds,
 } from "./benchmark-comparison-policy.mjs";
 
 const simpleObservation = {

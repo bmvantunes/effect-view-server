@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { join } from "node:path";
-import { defaultBenchmarkThresholds, writeBenchmarkBaseline } from "./benchmark-baseline.mjs";
+import { writeBenchmarkBaseline } from "./benchmark-baseline.mjs";
+import { defaultBenchmarkThresholds } from "./benchmark-comparison-policy.mjs";
 import {
   baselinePath,
   repeatCountFrom,

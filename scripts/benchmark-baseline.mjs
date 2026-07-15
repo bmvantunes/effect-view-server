@@ -38,19 +38,6 @@ import {
   validateBenchmarkSamplingPolicyMemoryRssTotalDeltaBytes,
 } from "./benchmark-sampling-policy.mjs";
 
-export {
-  benchmarkThresholdsForProfile,
-  defaultBenchmarkThresholds,
-  grpcRetainedRuntimeBenchmarkThresholds,
-  grpcRuntimeBenchmarkThresholds,
-  groupedOrderNeutralBenchmarkThresholds,
-  kafkaIngestBenchmarkThresholds,
-  kafkaSustainedFirehoseBenchmarkThresholds,
-  rawReadWriteBenchmarkThresholds,
-  websocketFirehoseBenchmarkThresholds,
-} from "./benchmark-comparison-policy.mjs";
-
-
 const readJsonFile = (path) => JSON.parse(readFileSync(path, "utf8"));
 
 const writeJsonFile = (path, value) => {
@@ -859,7 +846,11 @@ export const buildBenchmarkBaseline = (profile, observations) => ({
 
 const writableBenchmarkBaseline = (path, baseline) => {
   const validated = validateBenchmarkBaseline(baseline, path);
-  const comparison = compareBenchmarkBaseline(validated, validated);
+  const comparison = compareBenchmarkArtifacts({
+    actual: validated,
+    baseline: validated,
+    policy: benchmarkComparisonPolicyForProfile(validated.profile),
+  });
   if (!comparison.ok) {
     throw new Error(
       [`Benchmark baseline ${path} is not writable:`, ...comparison.regressions].join("\n"),
@@ -1159,14 +1150,4 @@ export const validateBenchmarkBaseline = (baseline, path = "baseline") => {
       benchmarkThresholdsForProfile(profile),
     ),
   };
-};
-
-export const compareBenchmarkBaseline = (baseline, actualBaseline) => {
-  const validatedBaseline = validateBenchmarkBaseline(baseline, "baseline");
-  const validatedActual = validateBenchmarkBaseline(actualBaseline, "actual");
-  return compareBenchmarkArtifacts({
-    actual: validatedActual,
-    baseline: validatedBaseline,
-    policy: benchmarkComparisonPolicyForProfile(validatedBaseline.profile),
-  });
 };

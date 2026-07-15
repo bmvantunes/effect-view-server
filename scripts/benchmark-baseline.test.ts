@@ -3,22 +3,24 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  benchmarkThresholdsForProfile,
   buildBenchmarkBaseline,
   comparableBenchmarksFromVitestOutput,
+  readBenchmarkBaseline,
+  readBenchmarkObservation,
+  validateBenchmarkBaseline,
+  writeBenchmarkBaseline,
+} from "./benchmark-baseline.mjs";
+import {
+  benchmarkThresholdsForProfile,
   defaultBenchmarkThresholds,
-  grpcRuntimeBenchmarkThresholds,
   grpcRetainedRuntimeBenchmarkThresholds,
+  grpcRuntimeBenchmarkThresholds,
   groupedOrderNeutralBenchmarkThresholds,
   kafkaIngestBenchmarkThresholds,
   kafkaSustainedFirehoseBenchmarkThresholds,
   rawReadWriteBenchmarkThresholds,
-  readBenchmarkBaseline,
-  readBenchmarkObservation,
-  validateBenchmarkBaseline,
   websocketFirehoseBenchmarkThresholds,
-  writeBenchmarkBaseline,
-} from "./benchmark-baseline.mjs";
+} from "./benchmark-comparison-policy.mjs";
 
 import {
   vitestOutput,

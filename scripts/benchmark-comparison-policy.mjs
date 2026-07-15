@@ -229,6 +229,29 @@ const metricDefinitions = {
   },
 };
 
+const latencyToleranceDefinition = {
+  maxAbsoluteDeltaMs: "non-negative",
+  maxRatio: "positive",
+};
+
+const toleranceDefinitions = {
+  commitObservedMax: latencyToleranceDefinition,
+  commitObservedMean: latencyToleranceDefinition,
+  latencyMean: latencyToleranceDefinition,
+  latencyP99: latencyToleranceDefinition,
+  memoryRssTotalDelta: {
+    maxAbsoluteDeltaBytes: "non-negative",
+    maxRatio: "positive",
+  },
+  operationMax: latencyToleranceDefinition,
+  operationMean: latencyToleranceDefinition,
+  throughputAggregateRowsPerSecond: {
+    minRatio: "positive",
+  },
+  throughputReadSnapshotMax: latencyToleranceDefinition,
+  throughputReadSnapshotMean: latencyToleranceDefinition,
+};
+
 const comparisonPolicy = (profile, thresholds) => {
   const requiredMetrics = Object.keys(thresholds).sort();
   return {
@@ -257,24 +280,64 @@ export const thresholdsFromComparisonPolicy = (policy) =>
     ]),
   );
 
+const requiredMetricNamesForProfiles = (profiles) =>
+  [...new Set(profiles.flatMap((profile) => Object.keys(benchmarkThresholdsForProfile(profile))))].sort();
+
+const joinedFieldNames = (fieldNames) =>
+  fieldNames.length === 1
+    ? fieldNames[0]
+    : `${fieldNames.slice(0, -1).join(", ")} and ${fieldNames.at(-1)}`;
+
+const toleranceRegressions = (policyLabel, metricName, tolerance) => {
+  if (
+    tolerance === undefined ||
+    tolerance === null ||
+    typeof tolerance !== "object" ||
+    Array.isArray(tolerance)
+  ) {
+    return [
+      `Comparison policy ${policyLabel} metric ${metricName} must define a tolerance object.`,
+    ];
+  }
+  const definition = toleranceDefinitions[metricName];
+  const expectedFields = Object.keys(definition).sort();
+  const actualFields = Object.keys(tolerance).sort();
+  if (JSON.stringify(actualFields) !== JSON.stringify(expectedFields)) {
+    return [
+      `Comparison policy ${policyLabel} metric ${metricName} tolerance must contain exactly ${joinedFieldNames(expectedFields)}.`,
+    ];
+  }
+  const regressions = [];
+  for (const fieldName of expectedFields) {
+    const value = tolerance[fieldName];
+    const requirement = definition[fieldName];
+    if (
+      typeof value !== "number" ||
+      !Number.isFinite(value) ||
+      (requirement === "positive" ? value <= 0 : value < 0)
+    ) {
+      regressions.push(
+        `Comparison policy ${policyLabel} metric ${metricName} tolerance.${fieldName} must be a ${requirement} finite number.`,
+      );
+    }
+  }
+  return regressions;
+};
+
 const comparisonPolicyRegressions = (policy, baseline, actual) => {
   const regressions = [];
   const policyLabel = policy.applicableProfiles.join(", ");
-  for (const metricName of policy.requiredMetrics) {
+  const expectedMetricNames = requiredMetricNamesForProfiles(policy.applicableProfiles);
+  const declaredMetricNames = new Set(policy.requiredMetrics);
+  for (const metricName of expectedMetricNames) {
     const metric = policy.metrics[metricName];
-    if (metric === undefined) {
+    if (!declaredMetricNames.has(metricName) || metric === undefined) {
       regressions.push(
         `Comparison policy ${policyLabel} is missing required metric ${metricName}.`,
       );
       continue;
     }
     const definition = metricDefinitions[metricName];
-    if (definition === undefined) {
-      regressions.push(
-        `Comparison policy ${policyLabel} requires unknown metric ${metricName}.`,
-      );
-      continue;
-    }
     if (metric.direction !== definition.direction) {
       regressions.push(
         `Comparison policy ${policyLabel} metric ${metricName} direction must be ${definition.direction} but was ${metric.direction}.`,
@@ -285,16 +348,22 @@ const comparisonPolicyRegressions = (policy, baseline, actual) => {
         `Comparison policy ${policyLabel} metric ${metricName} applicability must be ${definition.applicability} but was ${metric.applicability}.`,
       );
     }
-    if (
-      metric.tolerance === undefined ||
-      metric.tolerance === null ||
-      typeof metric.tolerance !== "object" ||
-      Array.isArray(metric.tolerance)
-    ) {
-      regressions.push(
-        `Comparison policy ${policyLabel} metric ${metricName} must define a tolerance object.`,
-      );
+    regressions.push(...toleranceRegressions(policyLabel, metricName, metric.tolerance));
+  }
+  const expectedMetricNameSet = new Set(expectedMetricNames);
+  for (const metricName of declaredMetricNames) {
+    if (expectedMetricNameSet.has(metricName)) {
+      continue;
     }
+    if (metricDefinitions[metricName] === undefined) {
+      regressions.push(
+        `Comparison policy ${policyLabel} requires unknown metric ${metricName}.`,
+      );
+      continue;
+    }
+    regressions.push(
+      `Comparison policy ${policyLabel} requires metric ${metricName}, which does not apply to its profiles.`,
+    );
   }
   if (!policy.applicableProfiles.includes(baseline.profile)) {
     regressions.push(
@@ -525,9 +594,12 @@ export const compareBenchmarkArtifacts = ({
     ) &&
     (thresholds.operationMean === undefined || thresholds.operationMax === undefined)
   ) {
-    throw new Error(
-      `Benchmark baseline ${validatedBaseline.profile} contains gRPC runtime operation cases but does not define operationMean and operationMax thresholds.`,
-    );
+    return {
+      ok: false,
+      regressions: [
+        `Comparison policy ${validatedBaseline.profile} does not define operationMean and operationMax metrics required by its gRPC runtime operation cases.`,
+      ],
+    };
   }
   const baselineTasks = taskByLabel(validatedBaseline.tasks, "baseline.tasks");
   const actualTasks = taskByLabel(validatedActual.tasks, "actual.tasks");

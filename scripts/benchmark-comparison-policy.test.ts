@@ -134,6 +134,24 @@ describe("benchmark policy applicability", () => {
 });
 
 describe("benchmark policy completeness", () => {
+  it("returns a precise result when a mandatory metric is removed from the declaration and map", () => {
+    const policy = benchmarkComparisonPolicyForProfile("smoke");
+    const { latencyMean: _latencyMean, ...metrics } = policy.metrics;
+
+    expect(
+      compareWithPolicy({
+        ...policy,
+        metrics,
+        requiredMetrics: policy.requiredMetrics.filter(
+          (metricName) => metricName !== "latencyMean",
+        ),
+      }),
+    ).toStrictEqual({
+      ok: false,
+      regressions: ["Comparison policy smoke is missing required metric latencyMean."],
+    });
+  });
+
   it("returns a precise result when a required policy metric is missing", () => {
     const policy = benchmarkComparisonPolicyForProfile("smoke");
     const { latencyP99: _latencyP99, ...metrics } = policy.metrics;
@@ -163,6 +181,27 @@ describe("benchmark policy completeness", () => {
     ).toStrictEqual({
       ok: false,
       regressions: ["Comparison policy smoke requires unknown metric mysteryMetric."],
+    });
+  });
+
+  it("returns a precise result when a known metric does not apply to the policy profile", () => {
+    const policy = benchmarkComparisonPolicyForProfile("smoke");
+    const grpcPolicy = benchmarkComparisonPolicyForProfile("grpc-leased");
+
+    expect(
+      compareWithPolicy({
+        ...policy,
+        metrics: {
+          ...policy.metrics,
+          operationMean: grpcPolicy.metrics.operationMean,
+        },
+        requiredMetrics: [...policy.requiredMetrics, "operationMean"],
+      }),
+    ).toStrictEqual({
+      ok: false,
+      regressions: [
+        "Comparison policy smoke requires metric operationMean, which does not apply to its profiles.",
+      ],
     });
   });
 
@@ -294,6 +333,103 @@ describe("benchmark policy completeness", () => {
       ok: false,
       regressions: [
         "Comparison policy smoke metric latencyMean must define a tolerance object.",
+      ],
+    });
+  });
+
+  it("returns a precise result when a latency tolerance has missing fields", () => {
+    const policy = benchmarkComparisonPolicyForProfile("smoke");
+
+    expect(
+      compareWithPolicy({
+        ...policy,
+        metrics: {
+          ...policy.metrics,
+          latencyMean: {
+            ...policy.metrics.latencyMean,
+            tolerance: {},
+          },
+        },
+      }),
+    ).toStrictEqual({
+      ok: false,
+      regressions: [
+        "Comparison policy smoke metric latencyMean tolerance must contain exactly maxAbsoluteDeltaMs and maxRatio.",
+      ],
+    });
+  });
+
+  it("returns a precise result when a throughput tolerance has extra fields", () => {
+    const policy = benchmarkComparisonPolicyForProfile("smoke");
+
+    expect(
+      compareWithPolicy({
+        ...policy,
+        metrics: {
+          ...policy.metrics,
+          throughputAggregateRowsPerSecond: {
+            ...policy.metrics.throughputAggregateRowsPerSecond,
+            tolerance: {
+              minRatio: 0.5,
+              maxRatio: 2,
+            },
+          },
+        },
+      }),
+    ).toStrictEqual({
+      ok: false,
+      regressions: [
+        "Comparison policy smoke metric throughputAggregateRowsPerSecond tolerance must contain exactly minRatio.",
+      ],
+    });
+  });
+
+  it("returns a precise result when an absolute tolerance is negative", () => {
+    const policy = benchmarkComparisonPolicyForProfile("smoke");
+
+    expect(
+      compareWithPolicy({
+        ...policy,
+        metrics: {
+          ...policy.metrics,
+          memoryRssTotalDelta: {
+            ...policy.metrics.memoryRssTotalDelta,
+            tolerance: {
+              ...policy.metrics.memoryRssTotalDelta.tolerance,
+              maxAbsoluteDeltaBytes: -1,
+            },
+          },
+        },
+      }),
+    ).toStrictEqual({
+      ok: false,
+      regressions: [
+        "Comparison policy smoke metric memoryRssTotalDelta tolerance.maxAbsoluteDeltaBytes must be a non-negative finite number.",
+      ],
+    });
+  });
+
+  it("returns a precise result when a ratio tolerance is not positive and finite", () => {
+    const policy = benchmarkComparisonPolicyForProfile("smoke");
+
+    expect(
+      compareWithPolicy({
+        ...policy,
+        metrics: {
+          ...policy.metrics,
+          latencyMean: {
+            ...policy.metrics.latencyMean,
+            tolerance: {
+              ...policy.metrics.latencyMean.tolerance,
+              maxRatio: Number.NaN,
+            },
+          },
+        },
+      }),
+    ).toStrictEqual({
+      ok: false,
+      regressions: [
+        "Comparison policy smoke metric latencyMean tolerance.maxRatio must be a positive finite number.",
       ],
     });
   });

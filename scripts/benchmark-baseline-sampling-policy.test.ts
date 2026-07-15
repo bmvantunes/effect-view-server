@@ -4,10 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildBenchmarkBaseline,
-  compareBenchmarkBaseline,
   readBenchmarkObservation,
   validateBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
+import {
+  benchmarkComparisonPolicyForProfile,
+  compareBenchmarkArtifacts,
+} from "./benchmark-comparison-policy.mjs";
+
+const compareArtifacts = (
+  baseline: ReturnType<typeof buildBenchmarkBaseline>,
+  actual: ReturnType<typeof buildBenchmarkBaseline>,
+) =>
+  compareBenchmarkArtifacts({
+    actual,
+    baseline,
+    policy: benchmarkComparisonPolicyForProfile(baseline.profile),
+  });
 
 const samplingPolicy = {
   iterationBoundCases: [
@@ -357,7 +370,7 @@ describe("benchmark baseline sampling policy", () => {
       },
     ]);
 
-    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+    expect(compareArtifacts(baseline, actual)).toStrictEqual({
       ok: false,
       regressions: [
         'task a: samplingPolicy changed from {"iterationBoundCases":[{"name":"live case","sampleCount":5,"timeMs":0,"warmupIterations":0,"warmupTimeMs":0}],"memoryRssMetric":"process-peak-over-initial-current","measured":{"minimumSampleCount":200,"timeMs":250,"warmupIterations":5,"warmupTimeMs":100}} to {"iterationBoundCases":[{"name":"live case","sampleCount":5,"timeMs":0,"warmupIterations":0,"warmupTimeMs":0}],"memoryRssMetric":"process-peak-over-initial-current","measured":{"minimumSampleCount":200,"timeMs":500,"warmupIterations":5,"warmupTimeMs":100}}.',
@@ -404,7 +417,7 @@ describe("benchmark baseline sampling policy", () => {
       },
     ]);
 
-    expect(compareBenchmarkBaseline(baseline, actual)).toStrictEqual({
+    expect(compareArtifacts(baseline, actual)).toStrictEqual({
       ok: false,
       regressions: ["task a: mutationCount changed from 100 to 101."],
     });

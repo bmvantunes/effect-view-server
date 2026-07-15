@@ -61,11 +61,21 @@ describe("@effect-view-server/client", () => {
       operations: [{ type: "remove", key: "c" }],
     });
 
-    expect(liveQueryResult(snapshotState)).toMatchObject({
+    expect(snapshotState).toStrictEqual({
+      rows: [{ id: "a" }, { id: "b" }],
+      keys: ["a", "b"],
+      totalRows: 2,
+      version: 1,
       status: "ready",
+      statusCode: "Ready",
+    });
+    expect(liveQueryResult(snapshotState)).toStrictEqual({
       rows: [{ id: "a" }, { id: "b" }],
       totalRows: 2,
       version: 1,
+      status: "ready",
+      statusCode: "Ready",
+      message: undefined,
     });
     expect(inserted.rows).toStrictEqual([{ id: "a" }, { id: "c" }, { id: "b" }]);
     expect(updated.rows).toStrictEqual([{ id: "a" }, { id: "c-updated" }, { id: "b" }]);
@@ -81,8 +91,11 @@ describe("@effect-view-server/client", () => {
         code: "SnapshotStale",
         message: "refreshing",
       }),
-    ).toMatchObject({
-      rows: removed.rows,
+    ).toStrictEqual({
+      rows: [{ id: "b" }, { id: "a" }],
+      keys: ["b", "a"],
+      totalRows: 2,
+      version: 5,
       status: "stale",
       statusCode: "SnapshotStale",
       message: "refreshing",
@@ -95,10 +108,14 @@ describe("@effect-view-server/client", () => {
         status: "closed",
         code: "SubscriptionClosed",
       }),
-    ).toMatchObject({
+    ).toStrictEqual({
       rows: [],
+      keys: [],
+      totalRows: 0,
+      version: 0,
       status: "closed",
       statusCode: "SubscriptionClosed",
+      message: undefined,
     });
     expect(
       applyEvent(removed, {
@@ -108,12 +125,14 @@ describe("@effect-view-server/client", () => {
         status: "closed",
         code: "BackpressureExceeded",
       }),
-    ).toMatchObject({
+    ).toStrictEqual({
       rows: [],
       keys: [],
       totalRows: 0,
+      version: 0,
       status: "closed",
       statusCode: "BackpressureExceeded",
+      message: undefined,
     });
   });
 
@@ -182,53 +201,29 @@ describe("@effect-view-server/client", () => {
       totalRows: -1,
     });
 
-    expect(fractionalVersion).toMatchObject({
+    const initialStaleSnapshot = {
       rows: [],
       keys: [],
       totalRows: 0,
       version: 0,
       status: "stale",
       statusCode: "SnapshotStale",
-    });
-    expect(negativeTotalRows).toMatchObject({
-      rows: [],
-      keys: [],
-      totalRows: 0,
-      version: 0,
-      status: "stale",
-      statusCode: "SnapshotStale",
-    });
-    expect(totalRowsBelowWindow).toMatchObject({
-      rows: [],
-      keys: [],
-      totalRows: 0,
-      version: 0,
-      status: "stale",
-      statusCode: "SnapshotStale",
-    });
-    expect(mismatchedKeysAndRows).toMatchObject({
-      rows: [],
-      keys: [],
-      totalRows: 0,
-      version: 0,
-      status: "stale",
-      statusCode: "SnapshotStale",
-    });
-    expect(duplicateKeys).toMatchObject({
-      rows: [],
-      keys: [],
-      totalRows: 0,
-      version: 0,
-      status: "stale",
-      statusCode: "SnapshotStale",
-    });
-    expect(invalidRefresh).toMatchObject({
+      message: "Received an invalid snapshot; waiting for a fresh snapshot.",
+    } satisfies ClientState<{ readonly id: string }>;
+
+    expect(fractionalVersion).toStrictEqual(initialStaleSnapshot);
+    expect(negativeTotalRows).toStrictEqual(initialStaleSnapshot);
+    expect(totalRowsBelowWindow).toStrictEqual(initialStaleSnapshot);
+    expect(mismatchedKeysAndRows).toStrictEqual(initialStaleSnapshot);
+    expect(duplicateKeys).toStrictEqual(initialStaleSnapshot);
+    expect(invalidRefresh).toStrictEqual({
       rows: [{ id: "a" }],
       keys: ["a"],
       totalRows: 1,
       version: 1,
       status: "stale",
       statusCode: "SnapshotStale",
+      message: "Received an invalid snapshot; waiting for a fresh snapshot.",
     });
   });
 
@@ -540,138 +535,67 @@ describe("@effect-view-server/client", () => {
       operations: [{ type: "remove", key: "missing" }],
     });
 
-    expect(staleVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
+    const staleDelta = {
+      rows: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      keys: ["a", "b", "c"],
+      totalRows: 3,
       version: 1,
-    });
-    expect(equalToVersion).toMatchObject({
       status: "stale",
       statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(backwardToVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(fractionalToVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(infiniteToVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(nanFromVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(negativeFromVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(fractionalStateVersion).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
+      message: "Received an invalid delta; waiting for a fresh snapshot.",
+    } satisfies ClientState<{ readonly id: string }>;
+
+    expect(staleVersion).toStrictEqual(staleDelta);
+    expect(equalToVersion).toStrictEqual(staleDelta);
+    expect(backwardToVersion).toStrictEqual(staleDelta);
+    expect(fractionalToVersion).toStrictEqual(staleDelta);
+    expect(infiniteToVersion).toStrictEqual(staleDelta);
+    expect(nanFromVersion).toStrictEqual(staleDelta);
+    expect(negativeFromVersion).toStrictEqual(staleDelta);
+    expect(fractionalStateVersion).toStrictEqual({
+      rows: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      keys: ["a", "b", "c"],
+      totalRows: 3,
       version: 1.5,
-    });
-    expect(negativeDeltaTotalRows).toMatchObject({
       status: "stale",
       statusCode: "SnapshotStale",
-      version: 1,
+      message: "Received an invalid delta; waiting for a fresh snapshot.",
     });
-    expect(fractionalDeltaTotalRows).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(totalRowsBelowWindow).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(loadingStateDelta).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
+    expect(negativeDeltaTotalRows).toStrictEqual(staleDelta);
+    expect(fractionalDeltaTotalRows).toStrictEqual(staleDelta);
+    expect(totalRowsBelowWindow).toStrictEqual(staleDelta);
+    expect(loadingStateDelta).toStrictEqual({
+      rows: [],
+      keys: [],
+      totalRows: 0,
       version: 0,
-    });
-    expect(duplicateInsert).toMatchObject({
       status: "stale",
       statusCode: "SnapshotStale",
-      version: 1,
+      message: "Received an invalid delta; waiting for a fresh snapshot.",
     });
-    expect(negativeInsert).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(nanInsert).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(outOfRangeInsert).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(mismatchedUpdate).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(fractionalUpdate).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(missingMoveSource).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(mismatchedMoveKey).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(negativeMoveTarget).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(fractionalMoveSource).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(fractionalMoveTarget).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(outOfRangeMoveTarget).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
-    expect(missingRemove).toMatchObject({
-      status: "stale",
-      statusCode: "SnapshotStale",
-      version: 1,
-    });
+    expect(duplicateInsert).toStrictEqual(staleDelta);
+    expect(negativeInsert).toStrictEqual(staleDelta);
+    expect(nanInsert).toStrictEqual(staleDelta);
+    expect(outOfRangeInsert).toStrictEqual(staleDelta);
+    expect(mismatchedUpdate).toStrictEqual(staleDelta);
+    expect(fractionalUpdate).toStrictEqual(staleDelta);
+    expect(missingMoveSource).toStrictEqual(staleDelta);
+    expect(mismatchedMoveKey).toStrictEqual(staleDelta);
+    expect(negativeMoveTarget).toStrictEqual(staleDelta);
+    expect(fractionalMoveSource).toStrictEqual(staleDelta);
+    expect(fractionalMoveTarget).toStrictEqual(staleDelta);
+    expect(outOfRangeMoveTarget).toStrictEqual(staleDelta);
+    expect(missingRemove).toStrictEqual(staleDelta);
   });
 
   it("maps async atom lifecycle states into live query results", () => {
-    expect(liveQueryResultFromAsyncResult(AsyncResult.initial())).toMatchObject({
-      status: "loading",
+    expect(liveQueryResultFromAsyncResult(AsyncResult.initial())).toStrictEqual({
       rows: [],
       totalRows: 0,
+      version: 0,
+      status: "loading",
+      statusCode: undefined,
+      message: undefined,
     });
     expect(
       liveQueryResultFromAsyncResult(
@@ -684,16 +608,22 @@ describe("@effect-view-server/client", () => {
           status: "ready",
         }),
       ),
-    ).toMatchObject({
-      status: "ready",
+    ).toStrictEqual({
       rows: [{ id: "a" }],
       totalRows: 1,
+      version: 1,
+      status: "ready",
+      statusCode: undefined,
+      message: undefined,
     });
     expect(
       liveQueryResultFromAsyncResult(
         AsyncResult.failure<ClientState<{ readonly id: string }>, string>(Cause.fail("boom")),
       ),
-    ).toMatchObject({
+    ).toStrictEqual({
+      rows: [],
+      totalRows: 0,
+      version: 0,
       status: "error",
       statusCode: "TransportError",
       message: "boom",
@@ -722,7 +652,10 @@ describe("@effect-view-server/client", () => {
             message: code,
           }),
         ),
-      ).toMatchObject({
+      ).toStrictEqual({
+        rows: [],
+        totalRows: 0,
+        version: 0,
         status: "error",
         statusCode: code,
         message: code,
@@ -736,17 +669,26 @@ describe("@effect-view-server/client", () => {
           message: "unexpected",
         }),
       ),
-    ).toMatchObject({
+    ).toStrictEqual({
+      rows: [],
+      totalRows: 0,
+      version: 0,
       status: "error",
       statusCode: "TransportError",
       message: "unexpected",
     });
-    expect(liveQueryFailureResult<never>(Cause.fail("plain failure"))).toMatchObject({
+    expect(liveQueryFailureResult<never>(Cause.fail("plain failure"))).toStrictEqual({
+      rows: [],
+      totalRows: 0,
+      version: 0,
       status: "error",
       statusCode: "TransportError",
       message: "plain failure",
     });
-    expect(liveQueryFailureResult<never>(Cause.fail({ code: "InvalidRow" }))).toMatchObject({
+    expect(liveQueryFailureResult<never>(Cause.fail({ code: "InvalidRow" }))).toStrictEqual({
+      rows: [],
+      totalRows: 0,
+      version: 0,
       status: "error",
       statusCode: "TransportError",
       message: "[object Object]",

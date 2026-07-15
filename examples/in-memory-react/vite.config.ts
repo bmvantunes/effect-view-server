@@ -7,20 +7,5 @@ import { defineTanStackReactExampleConfig } from "../vite.config.shared";
 export default defineTanStackReactExampleConfig({
   plugins: [tailwindcss(), tanstackStart(), viteReact()],
   browserProvider: playwright(),
-  coverage: {
-    provider: "istanbul",
-    include: ["src/**/*.ts", "src/**/*.tsx"],
-    exclude: [
-      "src/router.tsx",
-      "src/routeTree.gen.ts",
-      "src/routes/**/*.tsx",
-      "src/**/*.test.ts",
-      "src/**/*.test.tsx",
-      "src/**/*.test-d.ts",
-    ],
-    reporter: ["text"],
-    thresholds: {
-      "100": true,
-    },
-  },
+  enforceAllSourceCoverage: true,
 });

@@ -7,4 +7,6 @@ import { defineTanStackReactExampleConfig } from "../vite.config.shared";
 export default defineTanStackReactExampleConfig({
   plugins: [tailwindcss(), tanstackStart(), viteReact()],
   browserProvider: playwright(),
+  enforceAllSourceCoverage: true,
+  optimizeDepsInclude: ["react-dom/server"],
 });

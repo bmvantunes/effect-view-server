@@ -4,17 +4,42 @@ import type { BrowserProviderOption } from "vite-plus/test/node";
 interface TanStackReactExampleConfigOptions {
   readonly plugins: Array<PluginOption>;
   readonly browserProvider: BrowserProviderOption;
-  readonly coverage?: NonNullable<TestUserConfig["coverage"]>;
+  readonly enforceAllSourceCoverage?: boolean;
+  readonly optimizeDepsInclude?: ReadonlyArray<string>;
 }
+
+const exactAllSourceCoverage = {
+  provider: "istanbul",
+  include: ["src/**/*.ts", "src/**/*.tsx"],
+  exclude: [
+    "src/router.tsx",
+    "src/routeTree.gen.ts",
+    "src/routes/**/*.tsx",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.test-d.ts",
+  ],
+  reporter: ["text"],
+  thresholds: {
+    "100": true,
+  },
+} satisfies NonNullable<TestUserConfig["coverage"]>;
 
 export const defineTanStackReactExampleConfig = ({
   plugins,
   browserProvider,
-  coverage,
+  enforceAllSourceCoverage,
+  optimizeDepsInclude,
 }: TanStackReactExampleConfigOptions) =>
   defineConfig({
     optimizeDeps: {
-      include: ["@effect/vitest", "effect/Array", "react-dom/client", "vitest-browser-react"],
+      include: [
+        "@effect/vitest",
+        "effect/Array",
+        "react-dom/client",
+        "vitest-browser-react",
+        ...(optimizeDepsInclude ?? []),
+      ],
       exclude: ["@tanstack/react-router", "@tanstack/react-start", "@tanstack/router-plugin"],
     },
     plugins,
@@ -48,7 +73,7 @@ export const defineTanStackReactExampleConfig = ({
           },
         ],
       },
-      ...(coverage === undefined ? {} : { coverage }),
+      ...(enforceAllSourceCoverage === true ? { coverage: exactAllSourceCoverage } : {}),
     },
     lint: {
       options: {

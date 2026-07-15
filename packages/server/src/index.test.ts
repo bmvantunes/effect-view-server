@@ -35,6 +35,7 @@ import {
   SchemaGetter,
   Scope,
   Stream,
+  SubscriptionRef,
 } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { AtomRef } from "effect/unstable/reactivity";
@@ -411,33 +412,72 @@ const openRawWebSocket = Effect.fn("ViewServerServer.test.websocket.raw.open")(f
   );
 });
 
+type ServerTransportLifecycleCounts = {
+  readonly openedClients: number;
+  readonly closedClients: number;
+  readonly openedStreams: number;
+  readonly closedStreams: number;
+};
+
+const awaitServerTransportLifecycleCount = Effect.fn("ViewServerServer.test.transport.awaitCount")(
+  function* (
+    counts: SubscriptionRef.SubscriptionRef<ServerTransportLifecycleCounts>,
+    field: keyof ServerTransportLifecycleCounts,
+    expected: number,
+  ) {
+    yield* SubscriptionRef.changes(counts).pipe(
+      Stream.filter((current) => current[field] === expected),
+      Stream.take(1),
+      Stream.runDrain,
+      Effect.timeout("1 second"),
+    );
+  },
+);
+
+const makeServerTransportLifecycleProbe = Effect.fn("ViewServerServer.test.transport.probe.make")(
+  function* () {
+    const counts = yield* SubscriptionRef.make<ServerTransportLifecycleCounts>({
+      openedClients: 0,
+      closedClients: 0,
+      openedStreams: 0,
+      closedStreams: 0,
+    });
+
+    return {
+      awaitCount: (field: keyof ServerTransportLifecycleCounts, expected: number) =>
+        awaitServerTransportLifecycleCount(counts, field, expected),
+      readCounts: SubscriptionRef.get(counts),
+      transport: {
+        clientOpened: SubscriptionRef.update(counts, (current) => ({
+          ...current,
+          openedClients: current.openedClients + 1,
+        })),
+        clientClosed: SubscriptionRef.update(counts, (current) => ({
+          ...current,
+          closedClients: current.closedClients + 1,
+        })),
+        streamOpened: SubscriptionRef.update(counts, (current) => ({
+          ...current,
+          openedStreams: current.openedStreams + 1,
+        })),
+        streamClosed: SubscriptionRef.update(counts, (current) => ({
+          ...current,
+          closedStreams: current.closedStreams + 1,
+        })),
+      },
+    };
+  },
+);
+
 describe("@effect-view-server/server", () => {
   it.live("serves an in-memory runtime through Effect RPC WebSocket", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
-      let openedClients = 0;
-      let closedClients = 0;
-      let openedStreams = 0;
-      let closedStreams = 0;
-      const clientClosedSignal = yield* Deferred.make<void>();
+      const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
-        transport: {
-          clientOpened: Effect.sync(() => {
-            openedClients += 1;
-          }),
-          clientClosed: Effect.gen(function* () {
-            closedClients += 1;
-            yield* Deferred.succeed(clientClosedSignal, void 0);
-          }),
-          streamOpened: Effect.sync(() => {
-            openedStreams += 1;
-          }),
-          streamClosed: Effect.sync(() => {
-            closedStreams += 1;
-          }),
-        },
+        transport: lifecycle.transport,
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("orders", {
@@ -445,12 +485,14 @@ describe("@effect-view-server/server", () => {
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
+      const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
         Stream.take(3),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
 
       yield* inMemory.client.publish("orders", order("b", 20));
       yield* inMemory.client.publishMany("orders", [order("a", 10)]);
@@ -505,16 +547,18 @@ describe("@effect-view-server/server", () => {
       yield* inMemory.client.reset();
       expect((yield* inMemory.client.health()).engine.topics.orders.rowCount).toBe(0);
 
-      yield* Effect.sleep("10 millis");
+      yield* lifecycle.awaitCount("closedStreams", 3);
       const afterClose = yield* inMemory.client.health();
       expect(afterClose.engine.topics.orders.activeSubscriptions).toBe(0);
 
       yield* client.close;
-      yield* Deferred.await(clientClosedSignal);
-      expect(openedClients).toBe(1);
-      expect(closedClients).toBe(1);
-      expect(openedStreams).toBe(3);
-      expect(closedStreams).toBe(3);
+      yield* lifecycle.awaitCount("closedClients", 1);
+      expect(yield* lifecycle.readCounts).toStrictEqual({
+        openedClients: 1,
+        closedClients: 1,
+        openedStreams: 3,
+        closedStreams: 3,
+      });
       yield* server.close;
       yield* inMemory.close;
     }),
@@ -1857,9 +1901,11 @@ describe("@effect-view-server/server", () => {
   it.live("round-trips BigInt rows and filters through the RPC NDJSON transport", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
+        transport: lifecycle.transport,
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("trades", {
@@ -1870,17 +1916,20 @@ describe("@effect-view-server/server", () => {
         orderBy: [{ field: "quantity", direction: "asc" }],
         limit: 10,
       });
+      const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
 
       yield* inMemory.client.publish("trades", trade("a", 5n));
       yield* inMemory.client.publish("trades", trade("b", 10n));
 
       const events = yield* Fiber.join(eventsFiber);
+      yield* lifecycle.awaitCount("closedStreams", 1);
       expect(events[0]).toStrictEqual({
         type: "snapshot",
         topic: "trades",
@@ -1900,7 +1949,6 @@ describe("@effect-view-server/server", () => {
         totalRows: 1,
       });
 
-      yield* Effect.sleep("10 millis");
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
@@ -1910,9 +1958,11 @@ describe("@effect-view-server/server", () => {
   it.live("round-trips BigDecimal rows and filters through the RPC NDJSON transport", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
+        transport: lifecycle.transport,
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("quotes", {
@@ -1923,17 +1973,20 @@ describe("@effect-view-server/server", () => {
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
+      const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
 
       yield* inMemory.client.publish("quotes", quote("a", "9.99"));
       yield* inMemory.client.publish("quotes", quote("b", "10.50"));
 
       const events = yield* Fiber.join(eventsFiber);
+      yield* lifecycle.awaitCount("closedStreams", 1);
       expect(events[0]).toStrictEqual({
         type: "snapshot",
         topic: "quotes",
@@ -1960,7 +2013,6 @@ describe("@effect-view-server/server", () => {
         totalRows: 1,
       });
 
-      yield* Effect.sleep("10 millis");
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
@@ -1970,9 +2022,11 @@ describe("@effect-view-server/server", () => {
   it.live("encodes snapshot rows, move/remove deltas, and close statuses", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
+        transport: lifecycle.transport,
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
 
@@ -1982,17 +2036,20 @@ describe("@effect-view-server/server", () => {
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
+      const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
         Stream.take(3),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
 
       yield* inMemory.client.patch("orders", "a", { price: 30 });
       yield* inMemory.client.delete("orders", "b");
 
       const events = yield* Fiber.join(eventsFiber);
+      yield* lifecycle.awaitCount("closedStreams", 1);
       expect(events[0]).toStrictEqual({
         type: "snapshot",
         topic: "orders",
@@ -2036,25 +2093,30 @@ describe("@effect-view-server/server", () => {
   it.live("encodes subscription closed status when the runtime closes", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
+        transport: lifecycle.transport,
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("orders", {
         select: ["id"],
         limit: 10,
       });
+      const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
 
       yield* inMemory.close;
 
       const events = yield* Fiber.join(eventsFiber);
+      yield* lifecycle.awaitCount("closedStreams", 1);
       expect(events[1]).toStrictEqual({
         type: "status",
         topic: "orders",
@@ -2548,23 +2610,31 @@ describe("@effect-view-server/server", () => {
   it.live("cleans up engine subscribers when the remote websocket disconnects", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
+        transport: lifecycle.transport,
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("orders", {
         select: ["id", "price"],
         limit: 10,
       });
-      const eventsFiber = yield* subscription.events.pipe(Stream.runDrain, Effect.forkChild);
+      const firstEventSeen = yield* Deferred.make<void>();
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
 
-      yield* Effect.sleep("10 millis");
+      yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
       const beforeDisconnect = yield* inMemory.client.health();
       expect(beforeDisconnect.engine.topics.orders.activeSubscriptions).toBe(1);
 
       yield* client.close;
-      yield* Effect.sleep("10 millis");
+      yield* lifecycle.awaitCount("closedStreams", 1);
+      yield* lifecycle.awaitCount("closedClients", 1);
 
       const afterDisconnect = yield* inMemory.client.health();
       expect(afterDisconnect.engine.topics.orders.activeSubscriptions).toBe(0);

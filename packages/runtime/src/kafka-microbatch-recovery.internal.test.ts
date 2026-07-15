@@ -260,6 +260,161 @@ describe("Kafka microbatch failure recovery internals", () => {
     }),
   );
 
+  it.effect("flushes and commits the valid Kafka microbatch prefix before Mapping failure", () =>
+    Effect.gen(function* () {
+      const mappingViewServer = defineViewServerConfig({
+        kafka: regions,
+        topics: {
+          orders: {
+            schema: Order,
+            key: "id",
+            kafkaSource: kafka.source({
+              topic: ordersSourceTopic,
+              regions: ["local"],
+              value: kafka.json(() => Schema.toCodecJson(IncomingOrder)),
+              key: kafka.stringKey(),
+              rowKey: ({ key }) => key,
+              map: ({ value }) => {
+                if (value.customerId === "customer-mapping-poison") {
+                  throw new Error("mapping failed");
+                }
+                return {
+                  customerId: value.customerId,
+                  price: value.price,
+                };
+              },
+            }),
+          },
+        },
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCore(mappingViewServer, {});
+      const mappingKafkaOptions = kafkaOptionsForConfig(
+        mappingViewServer,
+        "view-server-mapping-prefix-test",
+      );
+      const ledger = makeViewServerKafkaHealthLedger<typeof mappingViewServer.topics>({
+        regions: mappingKafkaOptions.regions,
+        startFrom: mappingKafkaOptions.consume,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      yield* ledger.regionConnected("local", 1_000);
+      yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
+      const operations: Array<string> = [];
+      const batchingClient: ViewServerRuntimeCoreInternalClient<typeof mappingViewServer.topics> = {
+        ...runtimeCore.internalClient,
+        publish: () => Effect.die("Kafka stream should publish batches with publishMany"),
+        publishManyDecodedRows: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(Effect.andThen(runtimeCore.internalClient.publishManyDecodedRows(topic, rows))),
+        publishManyDecodedRowsWithStorageKeys: (topic, rows) =>
+          Effect.sync(() => {
+            operations.push(`publishMany:${topic}:${rows.length}`);
+          }).pipe(
+            Effect.andThen(
+              runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(topic, rows),
+            ),
+          ),
+      };
+
+      const error = yield* Effect.flip(
+        processKafkaMessageBatch(
+          mappingViewServer,
+          batchingClient,
+          runtimeCore.requestHealthRefresh,
+          mappingKafkaOptions,
+          ledger,
+          "local",
+          [
+            kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mapping-prefix-1",
+              value: JSON.stringify({
+                customerId: "customer-mapping-prefix-1",
+                price: 10,
+              }),
+              offset: 1n,
+              onCommit: () => {
+                operations.push("commit:1");
+              },
+            }),
+            kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mapping-prefix-2",
+              value: JSON.stringify({
+                customerId: "customer-mapping-prefix-2",
+                price: 20,
+              }),
+              offset: 2n,
+              onCommit: () => {
+                operations.push("commit:2");
+              },
+            }),
+            kafkaMessage({
+              topic: ordersSourceTopic,
+              key: "mapping-poison",
+              value: JSON.stringify({
+                customerId: "customer-mapping-poison",
+                price: 30,
+              }),
+              offset: 3n,
+              onCommit: () => {
+                operations.push("commit:3");
+              },
+            }),
+          ],
+        ),
+      );
+      const snapshot = yield* runtimeCore.client.snapshot("orders", {
+        select: ["id", "customerId", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect({
+        error: {
+          message: error.message,
+          region: error.region,
+          sourceTopic: error.sourceTopic,
+        },
+        operations,
+        snapshot,
+      }).toStrictEqual({
+        error: {
+          message: `Failed to map Kafka message for source topic ${ordersSourceTopic}`,
+          region: "local",
+          sourceTopic: ordersSourceTopic,
+        },
+        operations: ["publishMany:orders:2", "commit:1", "commit:2"],
+        snapshot: {
+          status: "ready",
+          statusCode: "Ready",
+          rows: [
+            {
+              id: "mapping-prefix-1",
+              customerId: "customer-mapping-prefix-1",
+              price: 10,
+            },
+            {
+              id: "mapping-prefix-2",
+              customerId: "customer-mapping-prefix-2",
+              price: 20,
+            },
+          ],
+          totalRows: 2,
+          version: 1,
+        },
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("clears unaffected source topic errors during poison-message recovery flush", () =>
     Effect.gen(function* () {
       const multiSourceViewServer = defineViewServerConfig({

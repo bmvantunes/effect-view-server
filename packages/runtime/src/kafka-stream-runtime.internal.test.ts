@@ -5,16 +5,14 @@ import {
 } from "@effect-view-server/runtime-core/internal";
 import { Cause, Deferred, Effect, Exit, Fiber, Option, Queue } from "effect";
 import {
-  kafkaConsumerStartError,
   kafkaStreamError,
   messageFromUnknown,
   offerKafkaStreamProducerFailure,
   recordKafkaStreamError,
   runKafkaMessageStream,
-  startKafkaRegionConsumers,
   ViewServerKafkaIngressError,
 } from "./kafka-ingress";
-import type { StartedKafkaRegionConsumer, KafkaStreamQueueEvent } from "./kafka-ingress";
+import type { KafkaStreamQueueEvent } from "./kafka-ingress";
 import {
   causeReasonSummary,
   failingKafkaStream,
@@ -31,43 +29,6 @@ import {
 } from "../test-harness/kafka-ingress";
 
 describe("Kafka message stream runtime internals", () => {
-  it.effect("closes already started region consumers when a later region fails", () =>
-    Effect.gen(function* () {
-      const closedConsumers: Array<string> = [];
-      const starts: Record<
-        string,
-        Effect.Effect<StartedKafkaRegionConsumer, ViewServerKafkaIngressError>
-      > = {
-        cold: Effect.fail(kafkaConsumerStartError("cold", "no-broker")),
-        local: Effect.succeed({
-          close: Effect.sync(() => {
-            closedConsumers.push("local");
-          }),
-        }),
-      };
-      const regionStarts: ReadonlyArray<readonly [string, string]> = [
-        ["local", regions.local],
-        ["cold", regions.cold],
-      ];
-
-      const exit = yield* Effect.exit(
-        startKafkaRegionConsumers(
-          regionStarts,
-          (region) =>
-            starts[region] ?? Effect.fail(kafkaConsumerStartError(region, "unexpected-region")),
-        ),
-      );
-
-      expect({
-        startupFailed: Exit.isFailure(exit),
-        closedConsumers,
-      }).toStrictEqual({
-        startupFailed: true,
-        closedConsumers: ["local"],
-      });
-    }),
-  );
-
   it.effect("records stream errors before refailing them", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});

@@ -19,12 +19,10 @@ import {
   Duration,
   Effect,
   Exit,
-  Fiber,
   MutableRef,
   Option,
   Queue,
   Ref,
-  Semaphore,
   Scope,
 } from "effect";
 import type { ViewServerKafkaHealthLedger } from "./kafka-health";
@@ -38,6 +36,12 @@ import {
   type KafkaConsumerMessage,
   type KeyedKafkaConsumerMessage,
 } from "./kafka-delivery-contract";
+import {
+  acquireKafkaDeliveryResource,
+  makeScopedKafkaDelivery,
+  type KafkaDelivery,
+  type StartKafkaDeliveryWorker,
+} from "./kafka-delivery";
 import {
   kafkaConsumerCloseError,
   kafkaFailureCause,
@@ -72,13 +76,7 @@ export {
   ViewServerKafkaIngressError,
 } from "./kafka-ingress-error";
 
-export type ViewServerKafkaIngress = {
-  readonly close: Effect.Effect<void>;
-};
-
-export type StartedKafkaRegionConsumer = {
-  readonly close: Effect.Effect<void, ViewServerKafkaIngressError>;
-};
+export type ViewServerKafkaIngress = KafkaDelivery;
 
 type KafkaConsumer = Consumer<Buffer, Buffer, Buffer, Buffer>;
 type CloseableKafkaConsumer = {
@@ -91,11 +89,6 @@ type KafkaConsumerHealthListenerRegistration = {
   readonly close: Effect.Effect<void>;
   readonly processed: Effect.Effect<number>;
   readonly waitForProcessed: (expected: number) => Effect.Effect<void>;
-};
-export type StartedKafkaConsumerResources = {
-  readonly consumer: CloseableKafkaConsumer;
-  readonly stream: CloseableKafkaStream;
-  readonly healthListeners: () => KafkaConsumerHealthListenerRegistration | null;
 };
 export type KafkaStreamQueueEvent =
   | {
@@ -392,119 +385,17 @@ export const closeKafkaConsumer = Effect.fn("ViewServerRuntime.kafka.consumer.cl
   },
 );
 
-export const closeStartedKafkaConsumerResources = Effect.fn(
-  "ViewServerRuntime.kafka.consumer.closeStartedResources",
-)(function* (resources: StartedKafkaConsumerResources) {
-  const healthListeners = resources.healthListeners();
-  const closeConsumer = closeKafkaConsumer({
-    consumer: resources.consumer,
-    stream: resources.stream,
-  });
-  yield* runAllFinalizers(
-    healthListeners === null ? [closeConsumer] : [healthListeners.close, closeConsumer],
-  );
-});
-
-export const closeKafkaMessageStreamFiber = Effect.fn("ViewServerRuntime.kafka.stream.closeFiber")(
-  function* (
-    fiber: Fiber.Fiber<void, ViewServerKafkaIngressError>,
-    closeResources: Effect.Effect<void, ViewServerKafkaIngressError>,
-  ) {
-    const awaitTargetExit = Fiber.await(fiber).pipe(
-      Effect.andThen((exit) =>
-        Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
-          ? Effect.failCause(exit.cause)
-          : Effect.void,
-      ),
-    );
-    yield* Effect.uninterruptible(
-      Effect.gen(function* () {
-        yield* Effect.sync(() => {
-          fiber.interruptUnsafe();
-        });
-        yield* runAllFinalizers([closeResources, awaitTargetExit]);
-      }),
-    );
-  },
-);
-
-export const makeStartedKafkaConsumerResourcesFinalizer = Effect.fn(
-  "ViewServerRuntime.kafka.consumer.makeStartedResourcesFinalizer",
-)((resources: StartedKafkaConsumerResources) =>
-  Ref.make(false).pipe(
-    Effect.map((resourcesClosed) => {
-      const closeLock = Semaphore.makeUnsafe(1);
-      return Effect.uninterruptible(
-        closeLock.withPermits(1)(
-          Effect.gen(function* () {
-            const alreadyClosed = yield* Ref.get(resourcesClosed);
-            if (alreadyClosed) {
-              return;
-            }
-            yield* closeStartedKafkaConsumerResources(resources);
-            yield* Ref.set(resourcesClosed, true);
-          }),
-        ),
-      );
-    }),
-  ),
-);
-
-export const registerStartedKafkaConsumerResourcesFinalizer = Effect.fn(
-  "ViewServerRuntime.kafka.consumer.registerStartedResourcesFinalizer",
-)(function* (scope: Scope.Scope, closeResources: Effect.Effect<void, ViewServerKafkaIngressError>) {
-  yield* Scope.addFinalizer(scope, closeResources.pipe(ignoreKafkaStartedResourceCloseFailure));
-});
-
-export const closeStartedKafkaRegionConsumers = Effect.fn(
-  "ViewServerRuntime.kafka.regions.closeStartedConsumers",
-)(function* (consumers: ReadonlyArray<StartedKafkaRegionConsumer>) {
-  yield* runAllFinalizers(consumers.map((consumer) => consumer.close));
-});
-
-export const closeKafkaConsumerOnPostConsumeStartupFailure = Effect.fn(
-  "ViewServerRuntime.kafka.consumer.closeOnPostConsumeStartupFailure",
-)(function* <A, E, R>(
-  closeResources: Effect.Effect<void, ViewServerKafkaIngressError>,
-  startup: Effect.Effect<A, E, R>,
+const acquireKafkaConsumerResources = Effect.fn(
+  "ViewServerRuntime.kafka.consumer.acquireResources",
+)(function* (
+  region: string,
+  brokers: string,
+  topics: ReadonlyArray<string>,
+  consume: ResolvedViewServerKafkaRuntimeOptions<ViewServerRuntimeTopicDefinitions>["consume"],
 ) {
-  return yield* startup.pipe(
-    Effect.onExit((exit) => (Exit.isFailure(exit) ? closeResources : Effect.void)),
-  );
-});
-
-export const acquireStartedKafkaConsumerResources = Effect.fn(
-  "ViewServerRuntime.kafka.consumer.acquireStartedResources",
-)(function* <Consumer extends CloseableKafkaConsumer, Stream extends CloseableKafkaStream, E>(
-  scope: Scope.Scope,
-  acquire: Effect.Effect<
-    {
-      readonly consumer: Consumer;
-      readonly stream: Stream;
-    },
-    E
-  >,
-) {
-  return yield* Effect.uninterruptibleMask((restore) =>
-    Effect.gen(function* () {
-      const { consumer, stream } = yield* restore(acquire);
-      let healthListeners: KafkaConsumerHealthListenerRegistration | null = null;
-      const resources: StartedKafkaConsumerResources = {
-        consumer,
-        healthListeners: () => healthListeners,
-        stream,
-      };
-      const closeResources = yield* makeStartedKafkaConsumerResourcesFinalizer(resources);
-      yield* registerStartedKafkaConsumerResourcesFinalizer(scope, closeResources);
-      return {
-        consumer,
-        closeResources,
-        setHealthListeners: (registration: KafkaConsumerHealthListenerRegistration) => {
-          healthListeners = registration;
-        },
-        stream,
-      };
-    }),
+  return yield* acquireKafkaDeliveryResource(
+    makeKafkaConsumer(region, brokers, topics, consume),
+    (resources) => closeKafkaConsumer(resources).pipe(ignoreKafkaStartedResourceCloseFailure),
   );
 });
 
@@ -1193,25 +1084,28 @@ const startRegionConsumer = Effect.fn("ViewServerRuntime.kafka.region.start")(fu
   region: string,
   brokers: string,
   topics: ReadonlyArray<string>,
-  scope: Scope.Scope,
+  startWorker: StartKafkaDeliveryWorker,
 ) {
-  const { consumer, stream, closeResources, setHealthListeners } =
-    yield* acquireStartedKafkaConsumerResources(
-      scope,
-      makeKafkaConsumer(region, brokers, topics, options.consume),
-    );
-  return yield* closeKafkaConsumerOnPostConsumeStartupFailure(
-    closeResources,
+  yield* startWorker(
     Effect.gen(function* () {
-      const healthListeners = yield* registerKafkaConsumerHealthListeners(
-        consumer,
-        health,
-        requestHealthRefresh,
+      const { consumer, stream } = yield* acquireKafkaConsumerResources(
         region,
+        brokers,
         topics,
-        scope,
+        options.consume,
       );
-      setHealthListeners(healthListeners);
+      const workerScope = yield* Effect.scope;
+      yield* Effect.acquireRelease(
+        registerKafkaConsumerHealthListeners(
+          consumer,
+          health,
+          requestHealthRefresh,
+          region,
+          topics,
+          workerScope,
+        ),
+        (registration) => registration.close,
+      );
       yield* startKafkaLagMonitoring(consumer, topics);
       const nowMillis = yield* Clock.currentTimeMillis;
       yield* health.regionConnected(region, nowMillis);
@@ -1223,97 +1117,24 @@ const startRegionConsumer = Effect.fn("ViewServerRuntime.kafka.region.start")(fu
         consumer.assignments,
         nowMillis,
       );
-      const processStream = runKafkaMessageStream(
-        config,
-        client,
-        requestHealthRefresh,
-        options,
-        health,
-        region,
-        stream,
-      ).pipe(Effect.ensuring(closeResources.pipe(ignoreKafkaStartedResourceCloseFailure)));
-      const fiber = yield* processStream.pipe(Effect.forkIn(scope, { startImmediately: true }));
-      return {
-        close: closeKafkaMessageStreamFiber(fiber, closeResources),
-      };
+      return stream;
     }),
+    (stream) =>
+      runKafkaMessageStream(config, client, requestHealthRefresh, options, health, region, stream),
   );
 });
 
-export const startKafkaRegionConsumers = Effect.fn("ViewServerRuntime.kafka.regions.start")(
-  function* <E>(
-    regions: Iterable<readonly [string, string]>,
-    start: (region: string, brokers: string) => Effect.Effect<StartedKafkaRegionConsumer, E>,
-  ) {
-    const consumers: Array<StartedKafkaRegionConsumer> = [];
-    yield* Effect.forEach(
-      regions,
-      ([region, brokers]) =>
-        Effect.gen(function* () {
-          const consumer = yield* start(region, brokers);
-          consumers.push(consumer);
-        }),
-      { discard: true },
-    ).pipe(
-      Effect.onExit((exit) =>
-        Exit.isFailure(exit) ? closeStartedKafkaRegionConsumers(consumers) : Effect.void,
-      ),
-    );
-    return consumers;
-  },
-);
-
-const makeKafkaIngressClose = (
-  consumers: ReadonlyArray<StartedKafkaRegionConsumer>,
-  scope: Scope.Scope,
-) =>
-  Ref.make(false).pipe(
-    Effect.map((closed) => makeIdempotentKafkaIngressClose(consumers, scope, closed)),
-  );
-
-const makeIdempotentKafkaIngressClose = (
-  consumers: ReadonlyArray<StartedKafkaRegionConsumer>,
-  scope: Scope.Scope,
-  closed: Ref.Ref<boolean>,
-): Effect.Effect<void> => {
-  const closeLock = Semaphore.makeUnsafe(1);
-  return Effect.uninterruptible(
-    closeLock.withPermits(1)(
-      Effect.gen(function* () {
-        const alreadyClosed = yield* Ref.get(closed);
-        if (alreadyClosed) {
-          return;
-        }
-        yield* closeStartedKafkaRegionConsumers(consumers).pipe(
-          ignoreKafkaStartedResourceCloseFailure,
-          Effect.ensuring(Scope.close(scope, Exit.void)),
-        );
-        yield* Ref.set(closed, true);
-      }),
-    ),
-  );
-};
-
-export const makeScopedKafkaIngress = Effect.fn("ViewServerRuntime.kafka.ingress.makeScoped")(
-  function* <E>(
-    startConsumers: (
-      scope: Scope.Scope,
-    ) => Effect.Effect<ReadonlyArray<StartedKafkaRegionConsumer>, E>,
-  ) {
-    return yield* Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const scope = yield* Scope.make("parallel");
-        const consumers = yield* restore(startConsumers(scope)).pipe(
-          Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
-        );
-        const close = yield* makeKafkaIngressClose(consumers, scope);
-        return {
-          close,
-        };
-      }),
-    );
-  },
-);
+const startKafkaRegionDeliveries = Effect.fn("ViewServerRuntime.kafka.regions.start")(function* <
+  E,
+  R,
+>(
+  regions: Iterable<readonly [string, string]>,
+  start: (region: string, brokers: string) => Effect.Effect<void, E, R>,
+) {
+  yield* Effect.forEach(regions, ([region, brokers]) => start(region, brokers), {
+    discard: true,
+  });
+});
 
 export const makeViewServerKafkaIngress: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -1336,13 +1157,11 @@ export const makeViewServerKafkaIngress: <
   options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
   health: ViewServerKafkaHealthLedger<Topics>,
 ) {
-  return yield* makeScopedKafkaIngress((scope) =>
-    startKafkaRegionConsumers(Object.entries(options.regions), (region, brokers) => {
+  return yield* makeScopedKafkaDelivery((startWorker) =>
+    startKafkaRegionDeliveries(Object.entries(options.regions), (region, brokers) => {
       const topics = sourceTopicsForRegion(options, region);
       if (topics.length === 0) {
-        return Effect.succeed({
-          close: Effect.void,
-        });
+        return Effect.void;
       }
       return startRegionConsumer(
         config,
@@ -1353,7 +1172,7 @@ export const makeViewServerKafkaIngress: <
         region,
         brokers,
         topics,
-        scope,
+        startWorker,
       );
     }),
   );

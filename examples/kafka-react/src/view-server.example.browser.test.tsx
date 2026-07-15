@@ -24,6 +24,7 @@ describe("Kafka React example", () => {
         }),
       )
       .toBeVisible();
+    await expect.element(screen.getByText("Max Kafka lag: n/a", { exact: true })).toBeVisible();
     await Effect.runPromise(
       inMemoryExample.client.publish("orders", {
         id: "order-kafka-browser",

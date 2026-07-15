@@ -10,6 +10,8 @@ The active objective is to complete [PRD #292](https://github.com/bmvantunes/eff
 
 The goal is **not complete**.
 
+The exact original active-goal contract is preserved in the paste-ready prompt below. Its `#293 through #307` range describes the first remediation issue set, not the current stopping boundary. Live GitHub state now extends the same PRD with #327 through #348; therefore, `every child issue is closed` includes those follow-ups, and the loop must not stop merely because the original #293-through-#307 set is satisfied.
+
 - Original remediation issues [#293 through #306](https://github.com/bmvantunes/effect-view-server/issues/292) are closed through merged work.
 - Follow-up issue [#356](https://github.com/bmvantunes/effect-view-server/issues/356) is closed by merged [PR #357](https://github.com/bmvantunes/effect-view-server/pull/357), merge commit `6327e6e8b9da4386a2bd0b58387b296fe361a7e7`.
 - Parent-linked follow-ups #327 through #348 remain open and carry `ready-for-agent`.
@@ -73,20 +75,22 @@ Do not overstate validation: the prior repository-wide `vp check`, strict Effect
 Run these commands from the repository clone on the new computer:
 
 ```sh
+git status --short
 git switch main
 git pull --ff-only origin main
 git fetch origin codex/issue-327-tcp-interruption
 git worktree add --track -b codex/issue-327-tcp-interruption ../view-server-327-tcp-interruption origin/codex/issue-327-tcp-interruption
 cd ../view-server-327-tcp-interruption
 vp install
+git --no-pager show origin/main:docs/handoffs/prd-292-issue-loop.md
 git rev-parse HEAD
 ```
 
-The final command must print `3d0fedd1eaa7b75c556cf2d88445dab62072808c` before work resumes. If that local branch name already exists, inspect it instead of deleting it blindly; use another local branch name if necessary.
+Understand and preserve anything reported by the first command before switching branches. The `git show` command deliberately reads the current handoff from `origin/main`: the WIP checkpoint branch predates the latest handoff commits, so its checked-out copy is not authoritative. The final command must print `3d0fedd1eaa7b75c556cf2d88445dab62072808c` before work resumes. If that local branch name already exists, inspect it instead of deleting it blindly; use another local branch name if necessary.
 
 ## Exact resume sequence for #327
 
-1. Complete the cross-computer bootstrap, then read root `AGENTS.md`, [CONTEXT.md](../../CONTEXT.md), relevant [ADRs](../adr/), [plans](../../plans/), parent #292, and issue #327.
+1. Complete the cross-computer bootstrap, read the handoff from `origin/main` rather than the stale WIP checkout copy, then read root `AGENTS.md`, [CONTEXT.md](../../CONTEXT.md), relevant [ADRs](../adr/), [plans](../../plans/), parent #292, and issue #327.
 2. Confirm the new worktree is clean and points at checkpoint `3d0fedd1eaa7b75c556cf2d88445dab62072808c`.
 3. Inspect the branch diff against `origin/main` and confirm the WIP code checkpoint changes only the two intended TCP files.
 4. Rerun the focused exact-coverage command and `vp run @effect-view-server/example-tcp-publisher-react#test`.
@@ -139,4 +143,50 @@ This user change is not in `main` or the WIP branch. On a different computer, do
 
 ## Paste-ready resume prompt
 
-> Pull `main`, read `AGENTS.md` and `docs/handoffs/prd-292-issue-loop.md`, fetch `codex/issue-327-tcp-interruption`, and create an isolated worktree at checkpoint `3d0fedd1eaa7b75c556cf2d88445dab62072808c` using the documented bootstrap commands. Treat it as WIP: rerun the stale repository-wide gates and smoke benchmark, repeat the Effect/Vitest/architecture reviewer loop until zero blockers, then open, review, and merge the #327 PR. Continue #328 through #348 and finally #307 one issue at a time. Verify live GitHub state and do not mark PRD #292 complete until every linked stopping condition is actually satisfied.
+Copy the complete block below to the next agent:
+
+```text
+Continue the active PRD #292 implementation goal for bmvantunes/effect-view-server.
+
+CURRENT EXECUTION GOAL
+
+Complete GitHub PRD #292 for bmvantunes/effect-view-server, treating live GitHub parent/child state as authoritative. Issues #293 through #306 and the agent-workflow setup are already merged; do not redo them. The human Kafka compatibility decision in #304 and its implementation in #305 are complete. Preserve the accepted contract and ADR unless a new explicit human decision approves another change.
+
+Resume at the portable WIP checkpoint for #327. Resolve every open parent-linked issue in dependency order: #327; #328 through #335; #336 through #340; #341 through #348; and finally #307. Honor every issue body's dependencies and acceptance criteria, including #335's dependency on #327, and resolve any additional blocking issue explicitly linked to PRD #292 before final convergence.
+
+For each unblocked ready-for-agent issue, read PRD #292, the issue, AGENTS.md, CONTEXT.md, and relevant ADRs and plans. Implement one complete vertical slice with regression-first tests. Preserve type safety, Effect patterns, typed errors, NDJSON, package direction, resource ownership, and performance. Run focused tests, changed-package tests at exact 100% coverage, vp check, strict Effect diagnostics, vp run -w ready, and every relevant serial benchmark gate. Obtain separate Effect, Vitest/type-safety, and architecture/maintainability reviews; fix every blocker and repeat all three until each reports zero blockers. Commit intentionally, push, open a pull request, wait for CI and Codex Cloud review, fix all actionable feedback, repeat reviews after code changes, merge only when clean, and verify the issue closes before continuing.
+
+Stop only when #327 through #348 are closed through merged work, #307 is satisfied, every PRD blocker is closed, #292 is closed with evidence, implementation worktrees are clean, documentation agrees with accepted ADRs, vp run -w ready passes, required smoke and release-capacity gates pass serially, and no blocking local, CI, or Codex Cloud review feedback remains.
+
+ORIGINAL GOAL LEDGER
+
+Preserve the original goal contract below for intent and stopping-condition provenance, but do not treat its completed setup step, stale issue range, or resolved #304 pause as current execution instructions:
+
+Complete GitHub PRD #292 for bmvantunes/effect-view-server by resolving child issues #293 through #307 in dependency order. First land the approved repository agent-workflow configuration currently in AGENTS.md and docs/agents/ through a reviewed pull request without modifying or discarding the existing untracked TCP extraction. Then, for each unblocked ready-for-agent issue: read the parent PRD, issue, CONTEXT.md, relevant ADRs and plans; implement one complete vertical slice with regression-first tests; preserve type safety, Effect patterns, NDJSON, package direction, and performance; run focused tests, changed-package tests at 100% coverage, vp check, strict Effect diagnostics, vp run -w ready, and every relevant serial benchmark gate; obtain separate Effect, Vitest/type-safety, and architecture reviews and fix every blocker; commit intentionally, push, open a pull request, wait for CI and Codex Cloud review, fix all blocking feedback, merge, close the issue with evidence, and continue. Do not change the Kafka JSON compatibility contract until the human decision and ADR in #304 are approved; pause there if no decision exists, while continuing any other unblocked work. Preserve user work and use isolated branches/worktrees where concurrent work would overlap. Stop only when #307 is satisfied, every child issue is closed through merged work, the checkout is clean, all documentation agrees with accepted ADRs, vp run -w ready passes, the smoke baseline passes, and no blocking review feedback remains.
+
+First, in the existing repository clone, preserve and inspect any local changes. Do not discard or overwrite them. Then run:
+
+git status --short
+git switch main
+git pull --ff-only origin main
+git fetch origin codex/issue-327-tcp-interruption
+git worktree add --track -b codex/issue-327-tcp-interruption ../view-server-327-tcp-interruption origin/codex/issue-327-tcp-interruption
+cd ../view-server-327-tcp-interruption
+vp install
+git --no-pager show origin/main:docs/handoffs/prd-292-issue-loop.md
+git rev-parse HEAD
+
+The expected HEAD is exactly:
+
+3d0fedd1eaa7b75c556cf2d88445dab62072808c
+
+Understand and preserve anything reported by git status before switching branches. If the local branch or worktree already exists, inspect and reuse it or choose a different local branch/worktree name. Do not delete it blindly. The git show command reads the authoritative handoff from origin/main because the WIP branch contains an older copy.
+
+Before changing code, read AGENTS.md, the origin/main handoff printed above, CONTEXT.md, relevant docs/adr/ and plans/, GitHub PRD #292, and issue #327. The handoff records completed work, the current WIP, validation evidence, remaining work, and the exact execution loop.
+
+Treat codex/issue-327-tcp-interruption as a WIP checkpoint, not merge-ready. Verify live GitHub state. Follow the handoff's exact #327 resume sequence: rerun focused exact coverage, package tests, vp check, strict Effect diagnostics, ready, route-tree cleanup if needed, and the serial smoke benchmark. Run three independent read-only Effect, Vitest/type-safety, and architecture/maintainability reviewers; fix every blocker and repeat until all three report zero blockers. Commit and push the same branch, open a ready PR closing #327, monitor CI and Codex Cloud review, fix all actionable feedback, repeat reviews after code changes, and merge only when everything is clean.
+
+Then continue #328 through #348 in dependency order and finally #307, one isolated branch/worktree and one reviewed PR per issue. Never run competing benchmark suites concurrently. Do not mark PRD #292 complete until all linked children are closed through merged work and every stopping condition in the goal and handoff is true.
+
+Use the effect-ts, vitest, improve-codebase-architecture, thermo-nuclear-code-quality-review, and tdd skills. The original computer's protected packages/runtime/src/tcp-publish-socket-runtime.ts modification was intentionally not pushed and should not be recreated. Preserve any actual local user changes on this computer.
+```

@@ -2,10 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
-  defaultBenchmarkThresholds,
   readBenchmarkBaseline,
   writeBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
+import { defaultBenchmarkThresholds } from "./benchmark-comparison-policy.mjs";
 import { runBenchmarkBaseline } from "./benchmark-baseline-workflow.mjs";
 import {
   makeDirectory,

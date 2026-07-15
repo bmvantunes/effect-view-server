@@ -1,10 +1,14 @@
 import { fileSystemBenchmarkArtifactIo } from "./benchmark-artifact-io.mjs";
 import {
   buildBenchmarkBaseline,
-  compareBenchmarkBaseline,
   readBenchmarkBaseline,
+  validateBenchmarkBaseline,
   writeBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
+import {
+  benchmarkComparisonPolicyForProfile,
+  compareBenchmarkArtifacts,
+} from "./benchmark-comparison-policy.mjs";
 import {
   profiles,
   repeatableReportOnlyProfiles,
@@ -234,7 +238,11 @@ export const runBenchmarkBaseline = async ({
     logger.log(`\nUpdated benchmark baseline: ${profileBaselinePath}`);
   } else if (compareBaseline) {
     const baseline = readBenchmarkBaseline(profileBaselinePath);
-    const comparison = compareBenchmarkBaseline(baseline, actualBaseline);
+    const comparison = compareBenchmarkArtifacts({
+      actual: validateBenchmarkBaseline(actualBaseline, "actual"),
+      baseline,
+      policy: benchmarkComparisonPolicyForProfile(requestedProfile),
+    });
     if (!comparison.ok) {
       logger.error(
         [

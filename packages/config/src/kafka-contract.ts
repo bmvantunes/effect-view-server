@@ -3,6 +3,7 @@ import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
 import { Effect, Schema } from "effect";
 import type { Config } from "effect";
 import { validateDecodedRow } from "./decoded-row-validation";
+import { resolveKafkaSourceFormat } from "./kafka-source-format";
 import type { RowSchema, TopicRow } from "./topic-contract";
 
 export type RuntimeValue<A> = A | Config.Config<A>;
@@ -68,7 +69,6 @@ type RejectAnyReturn<Mapper extends (...args: ReadonlyArray<never>) => unknown> 
 const KafkaCodecValueTypeId = Symbol("@effect-view-server/config/KafkaCodecValue");
 const KafkaCodecErrorTypeId = Symbol("@effect-view-server/config/KafkaCodecError");
 const KafkaCodecDecodeTypeId = Symbol("@effect-view-server/config/KafkaCodecDecode");
-const KafkaTopicDecodeTypeId = Symbol("@effect-view-server/config/KafkaTopicDecode");
 const KafkaResolvedSourceTopicTypeId = Symbol(
   "@effect-view-server/config/KafkaResolvedSourceTopic",
 );
@@ -217,7 +217,7 @@ type KafkaTopicSourceDecoder<
   Region extends string,
   E,
 > = {
-  readonly [KafkaTopicDecodeTypeId]: {
+  readonly decode: {
     bivarianceHack(
       input: KafkaTopicSourceDecodeInput<Topics, ViewTopic, Region>,
     ): Effect.Effect<KafkaDecodedTopicSourceResult<Topics, ViewTopic>, E>;
@@ -742,9 +742,6 @@ export type KafkaResolvedSourceTopicDefinition<
   readonly viewServerTopic: ViewTopic;
 };
 
-const decodeKafkaStringKey = (input: KafkaCodecDecodeInput): string =>
-  utf8Decoder.decode(input.bytes);
-
 const mapKafkaPayload = <A>(map: () => A): Effect.Effect<A, KafkaMappingError> =>
   Effect.try({
     try: map,
@@ -872,7 +869,7 @@ const decodeKafkaTopicMessageEffect: (
       }),
     );
   }
-  const decoded = yield* topic[KafkaTopicDecodeTypeId]({
+  const decoded = yield* topic.decode({
     keyBytes: input.keyBytes,
     valueBytes: input.valueBytes,
     region: input.region,
@@ -1280,59 +1277,73 @@ const makeKafkaResolvedSourceTopicWithKey = <
     TopicRegions,
     Mapping
   >,
-): KafkaResolvedSourceTopicDefinition<Topics, Regions, ViewTopic, TopicRegions> => ({
-  ...topic,
-  [KafkaResolvedSourceTopicTypeId]: true,
-  viewServerTopic,
-  [KafkaTopicDecodeTypeId]: (input) =>
-    Effect.gen(function* () {
-      const key = yield* decodeKafkaCodec(topic.key, {
-        bytes: input.keyBytes,
-        metadata: input.metadata,
-      });
-      const rowKey = yield* mapKafkaRowKey(() =>
-        topic.rowKey({
-          key,
-          region: input.region,
+): KafkaResolvedSourceTopicDefinition<Topics, Regions, ViewTopic, TopicRegions> => {
+  const keyDecoder = resolveKafkaSourceFormat(topic.key, topic.key[KafkaCodecDecodeTypeId]);
+  const valueDecoder = resolveKafkaSourceFormat(topic.value, topic.value[KafkaCodecDecodeTypeId]);
+  const sourceTopic = topic.topic;
+  const sourceRegions = topic.regions;
+  const sourceRowKey = topic.rowKey;
+  const map = topic.map;
+  return {
+    [KafkaResolvedSourceTopicTypeId]: true,
+    topic: sourceTopic,
+    regions: sourceRegions,
+    viewServerTopic,
+    decode: (input) =>
+      Effect.gen(function* () {
+        const key = yield* keyDecoder.decode({
+          bytes: input.keyBytes,
           metadata: input.metadata,
-        }),
-      );
-      if (input.valueBytes === null) {
-        const tombstone: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+        });
+        const rowKey = yield* mapKafkaRowKey(() =>
+          sourceRowKey({
+            key,
+            region: input.region,
+            metadata: input.metadata,
+          }),
+        );
+        if (input.valueBytes === null) {
+          const tombstone: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+            rowKey,
+            tombstone: true,
+            viewServerTopic,
+          };
+          return tombstone;
+        }
+        const value = yield* valueDecoder.decode({
+          bytes: input.valueBytes,
+          metadata: input.metadata,
+        });
+        const mappedRowWithoutKey = yield* mapKafkaPayload(() =>
+          map({
+            key,
+            value,
+            region: input.region,
+            rowKey,
+            schema: input.schema,
+            metadata: input.metadata,
+          }),
+        );
+        yield* validateKafkaMappedRowDoesNotProvideRowKey(input.rowKeyField, mappedRowWithoutKey);
+        const mappedRow = {
+          ...mappedRowWithoutKey,
+          [input.rowKeyField]: rowKey,
+        };
+        const row = yield* validateKafkaMappedRow(
+          input.schema,
+          mappedRow,
+          input.rowKeyField,
           rowKey,
-          tombstone: true,
+        );
+        const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+          row,
+          rowKey,
           viewServerTopic,
         };
-        return tombstone;
-      }
-      const value = yield* decodeKafkaCodec(topic.value, {
-        bytes: input.valueBytes,
-        metadata: input.metadata,
-      });
-      const mappedRowWithoutKey = yield* mapKafkaPayload(() =>
-        topic.map({
-          key,
-          value,
-          region: input.region,
-          rowKey,
-          schema: input.schema,
-          metadata: input.metadata,
-        }),
-      );
-      yield* validateKafkaMappedRowDoesNotProvideRowKey(input.rowKeyField, mappedRowWithoutKey);
-      const mappedRow = {
-        ...mappedRowWithoutKey,
-        [input.rowKeyField]: rowKey,
-      };
-      const row = yield* validateKafkaMappedRow(input.schema, mappedRow, input.rowKeyField, rowKey);
-      const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
-        row,
-        rowKey,
-        viewServerTopic,
-      };
-      return decoded;
-    }),
-});
+        return decoded;
+      }),
+  };
+};
 
 const makeKafkaResolvedSourceTopicWithoutKey = <
   Topics extends KafkaTopicSchemaRegistry,
@@ -1354,59 +1365,77 @@ const makeKafkaResolvedSourceTopicWithoutKey = <
     TopicRegions,
     Mapping
   >,
-): KafkaResolvedSourceTopicDefinition<Topics, Regions, ViewTopic, TopicRegions> => ({
-  ...topic,
-  [KafkaResolvedSourceTopicTypeId]: true,
-  viewServerTopic,
-  [KafkaTopicDecodeTypeId]: (input) =>
-    Effect.gen(function* () {
-      const key = decodeKafkaStringKey({
-        bytes: input.keyBytes,
-        metadata: input.metadata,
-      });
-      const rowKey = yield* mapKafkaRowKey(() =>
-        topic.rowKey({
-          key,
-          region: input.region,
+): KafkaResolvedSourceTopicDefinition<Topics, Regions, ViewTopic, TopicRegions> => {
+  const implicitKeyCodec = kafka.stringKey();
+  const keyDecoder = resolveKafkaSourceFormat(
+    implicitKeyCodec,
+    implicitKeyCodec[KafkaCodecDecodeTypeId],
+  );
+  const valueDecoder = resolveKafkaSourceFormat(topic.value, topic.value[KafkaCodecDecodeTypeId]);
+  const sourceTopic = topic.topic;
+  const sourceRegions = topic.regions;
+  const sourceRowKey = topic.rowKey;
+  const map = topic.map;
+  return {
+    [KafkaResolvedSourceTopicTypeId]: true,
+    topic: sourceTopic,
+    regions: sourceRegions,
+    viewServerTopic,
+    decode: (input) =>
+      Effect.gen(function* () {
+        const key = yield* keyDecoder.decode({
+          bytes: input.keyBytes,
           metadata: input.metadata,
-        }),
-      );
-      if (input.valueBytes === null) {
-        const tombstone: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+        });
+        const rowKey = yield* mapKafkaRowKey(() =>
+          sourceRowKey({
+            key,
+            region: input.region,
+            metadata: input.metadata,
+          }),
+        );
+        if (input.valueBytes === null) {
+          const tombstone: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+            rowKey,
+            tombstone: true,
+            viewServerTopic,
+          };
+          return tombstone;
+        }
+        const value = yield* valueDecoder.decode({
+          bytes: input.valueBytes,
+          metadata: input.metadata,
+        });
+        const mappedRowWithoutKey = yield* mapKafkaPayload(() =>
+          map({
+            key,
+            value,
+            region: input.region,
+            rowKey,
+            schema: input.schema,
+            metadata: input.metadata,
+          }),
+        );
+        yield* validateKafkaMappedRowDoesNotProvideRowKey(input.rowKeyField, mappedRowWithoutKey);
+        const mappedRow = {
+          ...mappedRowWithoutKey,
+          [input.rowKeyField]: rowKey,
+        };
+        const row = yield* validateKafkaMappedRow(
+          input.schema,
+          mappedRow,
+          input.rowKeyField,
           rowKey,
-          tombstone: true,
+        );
+        const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
+          row,
+          rowKey,
           viewServerTopic,
         };
-        return tombstone;
-      }
-      const value = yield* decodeKafkaCodec(topic.value, {
-        bytes: input.valueBytes,
-        metadata: input.metadata,
-      });
-      const mappedRowWithoutKey = yield* mapKafkaPayload(() =>
-        topic.map({
-          key,
-          value,
-          region: input.region,
-          rowKey,
-          schema: input.schema,
-          metadata: input.metadata,
-        }),
-      );
-      yield* validateKafkaMappedRowDoesNotProvideRowKey(input.rowKeyField, mappedRowWithoutKey);
-      const mappedRow = {
-        ...mappedRowWithoutKey,
-        [input.rowKeyField]: rowKey,
-      };
-      const row = yield* validateKafkaMappedRow(input.schema, mappedRow, input.rowKeyField, rowKey);
-      const decoded: KafkaDecodedTopicSourceMessage<Topics, ViewTopic> = {
-        row,
-        rowKey,
-        viewServerTopic,
-      };
-      return decoded;
-    }),
-});
+        return decoded;
+      }),
+  };
+};
 
 const makeKafkaResolvedSourceTopic = <
   Topics extends KafkaTopicSchemaRegistry,

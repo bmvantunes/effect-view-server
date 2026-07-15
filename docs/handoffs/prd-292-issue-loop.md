@@ -22,15 +22,17 @@ Suggested implementation order is #327, #328 through #335, #336 through #340, #3
 
 Issue: [Make the TCP publisher example command interruption-safe](https://github.com/bmvantunes/effect-view-server/issues/327)
 
-Live work is uncommitted in:
+Portable WIP checkpoint:
 
-- Worktree: `/private/tmp/view-server-327-tcp-interruption`
-- Branch: `codex/issue-327-tcp-interruption`
-- Base: `origin/main` at `6327e6e8b9da4386a2bd0b58387b296fe361a7e7`
-- Intended modified files only:
+- Remote branch: [`codex/issue-327-tcp-interruption`](https://github.com/bmvantunes/effect-view-server/tree/codex/issue-327-tcp-interruption)
+- Checkpoint commit: [`3d0fedd1eaa7b75c556cf2d88445dab62072808c`](https://github.com/bmvantunes/effect-view-server/commit/3d0fedd1eaa7b75c556cf2d88445dab62072808c)
+- Parent `main` commit: `9fb6208b92b3688588c4a2c87f805e1b7f5f1bb6`
+- Code changes at the checkpoint:
   - `examples/tcp-publisher-react/src/tcp-client.ts`
   - `examples/tcp-publisher-react/src/tcp-client.test.ts`
-- The branch is not committed, not pushed, and has no pull request yet.
+- No pull request exists. The commit is deliberately labeled WIP and must not be treated as reviewed, merge-ready, or complete.
+
+The original-computer worktree `/private/tmp/view-server-327-tcp-interruption` is only a historical local path. A different computer must fetch the remote branch and create its own worktree using the commands below.
 
 The current implementation:
 
@@ -62,31 +64,49 @@ Latest evidence after those fixes:
 - Fresh Vitest re-review: 0 blocking, 1 non-blocking generated-route hygiene note; the route-tree note was cleaned immediately afterward, so the worktree again contains only the two intended TCP files.
 - `git diff --check` passes and the changed files contain no forbidden timers, nested runtimes, casts, assertion styles, or coverage ignores.
 
+The focused exact-coverage and package gates above were rerun successfully after creating checkpoint commit `3d0fedd`.
+
 Do not overstate validation: the prior repository-wide `vp check`, strict Effect diagnostics, and `vp run -w ready` passed in the isolated worktree before the final encoding/default/review fixes, so they are stale and must be rerun. The serial smoke benchmark has not run for the final diff. A complete second review round with all three independent reviewers has not run yet.
+
+## Cross-computer bootstrap
+
+Run these commands from the repository clone on the new computer:
+
+```sh
+git switch main
+git pull --ff-only origin main
+git fetch origin codex/issue-327-tcp-interruption
+git worktree add --track -b codex/issue-327-tcp-interruption ../view-server-327-tcp-interruption origin/codex/issue-327-tcp-interruption
+cd ../view-server-327-tcp-interruption
+vp install
+git rev-parse HEAD
+```
+
+The final command must print `3d0fedd1eaa7b75c556cf2d88445dab62072808c` before work resumes. If that local branch name already exists, inspect it instead of deleting it blindly; use another local branch name if necessary.
 
 ## Exact resume sequence for #327
 
-1. Read root `AGENTS.md`, [CONTEXT.md](../../CONTEXT.md), relevant [ADRs](../adr/), [plans](../../plans/), parent #292, and issue #327.
-2. Verify the root checkout still contains only the protected user TCP edit and that its SHA-256 is unchanged (see the protected-state section). Never validate in the root checkout.
-3. In `/private/tmp/view-server-327-tcp-interruption`, inspect the full diff and confirm only the two intended TCP files are modified.
+1. Complete the cross-computer bootstrap, then read root `AGENTS.md`, [CONTEXT.md](../../CONTEXT.md), relevant [ADRs](../adr/), [plans](../../plans/), parent #292, and issue #327.
+2. Confirm the new worktree is clean and points at checkpoint `3d0fedd1eaa7b75c556cf2d88445dab62072808c`.
+3. Inspect the branch diff against `origin/main` and confirm the WIP code checkpoint changes only the two intended TCP files.
 4. Rerun the focused exact-coverage command and `vp run @effect-view-server/example-tcp-publisher-react#test`.
 5. Run `vp check`, strict Effect diagnostics (`vp run -w check:effect`), and `vp run -w ready` from the isolated #327 worktree.
 6. Clean any TanStack generated route-tree drift with `scripts/clean-tanstack-route-tree.mjs` followed by `vp check --fix` on the generated route files. Confirm the diff returns to the two intended files.
 7. Run `vp run -w bench:baseline:smoke` serially. Do not run competing benchmark suites concurrently.
 8. Spawn three read-only reviewers in parallel: Effect, Vitest/type safety, and architecture/maintainability. Require explicit `BLOCKING` and `NON-BLOCKING` counts. Fix every blocker, rerun affected gates, then repeat all three reviewers until all report zero blockers.
 9. No changeset is expected: this is a private example/internal correctness fix, not a publishable public-package change.
-10. Commit intentionally, push `codex/issue-327-tcp-interruption`, open a ready PR that closes #327, and include red/green, exact-coverage, browser/type, readiness, smoke, and three-reviewer evidence.
-11. Monitor GitHub Actions and Codex Cloud review. Fix all actionable feedback, repeat the three-reviewer loop after code changes, merge only when clean, verify #327 closes, and reverify the protected root file.
+10. Commit any final fixes intentionally, push the existing `codex/issue-327-tcp-interruption` branch, open a ready PR that closes #327, and include red/green, exact-coverage, browser/type, readiness, smoke, and three-reviewer evidence.
+11. Monitor GitHub Actions and Codex Cloud review. Fix all actionable feedback, repeat the three-reviewer loop after code changes, merge only when clean, and verify #327 closes.
 12. Continue the remaining ready issues one at a time in dependency order, then run #307's final convergence/capacity gates and close #292 only when every stopping condition is true.
 
-## Protected root checkout
+## Original-computer protected state
 
-The root checkout is `/Users/bruno/projects/view-server-smart`. It contains user work that must not be touched, staged, discarded, overwritten, or included in any issue commit:
+On the original computer only, `/Users/bruno/projects/view-server-smart` contains user work that must not be touched, staged, discarded, overwritten, or included in any issue commit:
 
 - `M packages/runtime/src/tcp-publish-socket-runtime.ts`
 - Expected SHA-256: `9b16f805e66b1e43a924b301fc39a7ae95bd2e76bbe63b1ba78201e377467b30`
 
-Use isolated worktrees for implementation and validation. Never run validations in the root checkout. Recheck the hash before and after Git operations.
+This user change is not in `main` or the WIP branch. On a different computer, do not recreate or copy it; simply preserve any local user work that actually exists there. Continue to use isolated worktrees for implementation and validation.
 
 ## Loop discipline
 
@@ -119,4 +139,4 @@ Use isolated worktrees for implementation and validation. Never run validations 
 
 ## Paste-ready resume prompt
 
-> Resume PRD #292 from `docs/handoffs/prd-292-issue-loop.md`. Start with the uncommitted #327 worktree at `/private/tmp/view-server-327-tcp-interruption`, preserve the protected root TCP file and its exact hash, rerun the stale final gates, repeat the three-reviewer loop until zero blockers, publish/merge #327, then continue #328 through #348 and finally #307 one issue at a time under the repository rules. Do not validate in the root checkout and do not mark #292 complete until every linked stopping condition is actually satisfied.
+> Pull `main`, read `AGENTS.md` and `docs/handoffs/prd-292-issue-loop.md`, fetch `codex/issue-327-tcp-interruption`, and create an isolated worktree at checkpoint `3d0fedd1eaa7b75c556cf2d88445dab62072808c` using the documented bootstrap commands. Treat it as WIP: rerun the stale repository-wide gates and smoke benchmark, repeat the Effect/Vitest/architecture reviewer loop until zero blockers, then open, review, and merge the #327 PR. Continue #328 through #348 and finally #307 one issue at a time. Verify live GitHub state and do not mark PRD #292 complete until every linked stopping condition is actually satisfied.

@@ -316,13 +316,11 @@ describe("Real View Server composition lifecycle", () => {
               }).pipe(Effect.andThen(runtimeCore.close)),
             })),
           ),
-        makeKafkaHealthObserver: (health, requestHealthRefresh, flushHealth) =>
+        makeKafkaHealthObserver: (health, refreshHealth) =>
           Effect.sync(() => {
             events.push("acquire:kafkaHealthObserver");
           }).pipe(
-            Effect.andThen(
-              defaults.makeKafkaHealthObserver(health, requestHealthRefresh, flushHealth),
-            ),
+            Effect.andThen(defaults.makeKafkaHealthObserver(health, refreshHealth)),
             Effect.map((observer) => ({
               ...observer,
               close: Effect.sync(() => {
@@ -438,9 +436,9 @@ describe("Real View Server composition lifecycle", () => {
       let cleanupObserver = Effect.void;
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
         ...defaults,
-        makeKafkaHealthObserver: (health, requestHealthRefresh, flushHealth) =>
+        makeKafkaHealthObserver: (health, refreshHealth) =>
           Effect.uninterruptible(
-            defaults.makeKafkaHealthObserver(health, requestHealthRefresh, flushHealth).pipe(
+            defaults.makeKafkaHealthObserver(health, refreshHealth).pipe(
               Effect.map((observer) => {
                 const close = Effect.sync(() => {
                   observerCloseCount += 1;

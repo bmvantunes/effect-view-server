@@ -38,15 +38,11 @@ describe("Kafka health observation", () => {
   it.effect("awaits an immediate health flush when the observer closes", () =>
     Effect.gen(function* () {
       const ledger = makeHealthLedger();
-      let scheduledRefreshes = 0;
-      let immediateFlushes = 0;
+      let immediateRefreshes = 0;
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
         Effect.sync(() => {
-          scheduledRefreshes += 1;
-        }),
-        Effect.sync(() => {
-          immediateFlushes += 1;
+          immediateRefreshes += 1;
         }),
         "1 minute",
       );
@@ -54,10 +50,7 @@ describe("Kafka health observation", () => {
       yield* observer.regionStopped("local");
       yield* observer.close;
 
-      expect({ immediateFlushes, scheduledRefreshes }).toStrictEqual({
-        immediateFlushes: 1,
-        scheduledRefreshes: 0,
-      });
+      expect(immediateRefreshes).toBe(1);
     }),
   );
 
@@ -71,7 +64,6 @@ describe("Kafka health observation", () => {
         Effect.sync(() => {
           refreshes += 1;
         }),
-        Effect.void,
         "1 second",
       );
 
@@ -126,6 +118,30 @@ describe("Kafka health observation", () => {
     }),
   );
 
+  it.effect("uses the immediate health refresh after the observer cadence", () =>
+    Effect.gen(function* () {
+      const ledger = makeHealthLedger();
+      let immediateRefreshes = 0;
+      const observer = yield* makeViewServerKafkaHealthObserver(
+        ledger,
+        Effect.sync(() => {
+          immediateRefreshes += 1;
+        }),
+        "1 second",
+      );
+
+      yield* observer.decodeFailed(ordersSourceTopic, "local", {
+        bytes: 5,
+        message: "decode failed",
+        nowMillis: 1_000,
+      });
+      yield* TestClock.adjust("1 second");
+
+      expect(immediateRefreshes).toBe(1);
+      yield* observer.close;
+    }),
+  );
+
   it.effect("joins an in-flight cadence refresh before flushing observer shutdown", () =>
     Effect.gen(function* () {
       const ledger = makeHealthLedger();
@@ -143,7 +159,6 @@ describe("Kafka health observation", () => {
             }),
           ),
         ),
-        Effect.void,
         "1 second",
       );
 
@@ -159,7 +174,7 @@ describe("Kafka health observation", () => {
       expect(yield* Deferred.isDone(closeCompleted)).toBe(false);
       yield* Deferred.succeed(allowRefresh, undefined);
       yield* Fiber.join(close);
-      expect(refreshes).toBe(1);
+      expect(refreshes).toBe(2);
     }),
   );
 
@@ -167,12 +182,7 @@ describe("Kafka health observation", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
       const ledger = makeHealthLedger();
-      const observer = yield* makeViewServerKafkaHealthObserver(
-        ledger,
-        Effect.void,
-        Effect.void,
-        "1 second",
-      );
+      const observer = yield* makeViewServerKafkaHealthObserver(ledger, Effect.void, "1 second");
 
       yield* recordKafkaAssignments(
         observer,
@@ -221,9 +231,6 @@ describe("Kafka health observation", () => {
       let refreshes = 0;
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
-        Effect.sync(() => {
-          refreshes += 1;
-        }),
         Effect.sync(() => {
           refreshes += 1;
         }),
@@ -296,9 +303,6 @@ describe("Kafka health observation", () => {
       let refreshes = 0;
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
-        Effect.sync(() => {
-          refreshes += 1;
-        }),
         Effect.sync(() => {
           refreshes += 1;
         }),

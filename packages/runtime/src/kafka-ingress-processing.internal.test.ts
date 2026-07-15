@@ -51,11 +51,7 @@ describe("Kafka ingress source processing internals", () => {
         regions: emptyKafkaOptions.regions,
         topics: {},
       });
-      const observer = yield* makeViewServerKafkaHealthObserver(
-        ledger,
-        runtimeCore.requestHealthRefresh,
-        Effect.void,
-      );
+      const observer = yield* makeViewServerKafkaHealthObserver(ledger, Effect.void);
 
       const ingress = yield* makeViewServerKafkaIngress(
         viewServer,
@@ -259,11 +255,7 @@ describe("Kafka ingress source processing internals", () => {
           },
         },
       });
-      const observer = yield* makeViewServerKafkaHealthObserver(
-        ledger,
-        runtimeCore.requestHealthRefresh,
-        Effect.void,
-      );
+      const observer = yield* makeViewServerKafkaHealthObserver(ledger, Effect.void);
 
       const exit = yield* Effect.exit(
         makeViewServerKafkaIngress(

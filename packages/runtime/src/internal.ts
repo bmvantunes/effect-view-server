@@ -212,11 +212,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         ? undefined
         : yield* acquireRuntimeResourceUninterruptibly(
             runtimeScope,
-            dependencies.makeKafkaHealthObserver(
-              kafkaHealth,
-              runtimeCore.requestHealthRefresh,
-              refreshRuntimeHealth,
-            ),
+            dependencies.makeKafkaHealthObserver(kafkaHealth, refreshRuntimeHealth),
             (resource) => resource.close,
           );
     const grpcLeaseManager =

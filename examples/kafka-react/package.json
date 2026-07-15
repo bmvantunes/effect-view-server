@@ -13,7 +13,7 @@
     "runtime": "vp run -t effect-view-server#build && vp exec tsx src/runtime.ts",
     "build": "vp run -t effect-view-server#build && vp run generate-routes && vp build && vp run clean-routes",
     "preview": "vp preview",
-    "test": "vp run -t effect-view-server#build && vp run generate-routes && vp test run --coverage --typecheck.enabled=false && vp test run --browser.enabled=false --typecheck && vp run clean-routes"
+    "test": "vp run -t effect-view-server#build && vp run generate-routes && vp test run --globals --coverage --typecheck.enabled=false && vp test run --browser.enabled=false --typecheck && vp run clean-routes"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

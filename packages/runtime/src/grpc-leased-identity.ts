@@ -25,7 +25,6 @@ export type GrpcLeasedGroupedKeyRetentionObserver = (
 ) => void;
 
 export type GrpcLeasedResultKeyTranslation<Row extends object> = {
-  readonly translateKey: (internalKey: string) => Result.Result<string, GrpcLeasedIdentityError>;
   readonly translateSnapshot: (
     internalKeys: ReadonlyArray<string>,
     rows: ReadonlyArray<Row>,
@@ -37,7 +36,6 @@ export type GrpcLeasedResultKeyTranslation<Row extends object> = {
 };
 
 export type GrpcLeasedInternalRowKey = {
-  readonly publicKey: string;
   readonly storageKey: string;
 };
 
@@ -170,7 +168,6 @@ const mapInternalKeys = (
 const makeRawResultKeyTranslation = <Row extends object>(
   feedKey: string,
 ): GrpcLeasedResultKeyTranslation<Row> => ({
-  translateKey: (internalKey) => publicRowKey(feedKey, internalKey),
   translateSnapshot: (internalKeys) => mapInternalKeys(feedKey, internalKeys),
   translateDelta: (operations) => {
     const translated: Array<DeltaOperation<Row>> = [];
@@ -196,7 +193,6 @@ const resultKeyError = (cause: unknown): GrpcLeasedIdentityError =>
 const makeFailedResultKeyTranslation = <Row extends object>(
   error: GrpcLeasedIdentityError,
 ): GrpcLeasedResultKeyTranslation<Row> => ({
-  translateKey: () => Result.fail(error),
   translateSnapshot: () => Result.fail(error),
   translateDelta: () => Result.fail(error),
   clear: () => undefined,
@@ -328,7 +324,6 @@ const makeGroupedResultKeyTranslation = <Row extends object>(options: {
   };
 
   return {
-    translateKey: translatedKey,
     translateSnapshot,
     translateDelta,
     clear: () => {
@@ -341,6 +336,13 @@ const makeGroupedResultKeyTranslation = <Row extends object>(options: {
 
 const groupedFields = (query: unknown): ReadonlyArray<unknown> | undefined =>
   isRecord(query) && Array.isArray(query["groupBy"]) ? query["groupBy"] : undefined;
+
+const encodeIdentityComponent = (value: string): string => {
+  const encoded = Result.try(() => encodeURIComponent(value));
+  return Result.isSuccess(encoded)
+    ? encoded.success
+    : `json:${encodeURIComponent(String(JSON.stringify(value)))}`;
+};
 
 export const makeGrpcLeasedIdentityContract = (input: {
   readonly topic: string;
@@ -393,8 +395,8 @@ export const makeGrpcLeasedIdentityContract = (input: {
     routeFields.push({ field, identity: identity.success });
   }
   const frozenRouteFields = Object.freeze(routeFields);
-  const encodedTopic = encodeURIComponent(input.topic);
-  const encodedFeedName = encodeURIComponent(input.feedName);
+  const encodedTopic = encodeIdentityComponent(input.topic);
+  const encodedFeedName = encodeIdentityComponent(input.feedName);
 
   const leaseFromQuery = (
     query: unknown,
@@ -429,7 +431,7 @@ export const makeGrpcLeasedIdentityContract = (input: {
     const feedKey = `${encodedTopic}/${encodedFeedName}/leased/${frozenRouteFields
       .map(
         (routeField, index) =>
-          `${encodeURIComponent(routeField.field)}=${encodeURIComponent(materialized.success.canonicalKeys[index]!)}`,
+          `${encodeIdentityComponent(routeField.field)}=${encodeIdentityComponent(materialized.success.canonicalKeys[index]!)}`,
       )
       .join("&")}`;
     const storedRoute = materialized.success.values;
@@ -483,7 +485,6 @@ export const makeGrpcLeasedIdentityContract = (input: {
         );
       }
       return Result.succeed({
-        publicKey: publicKey.success,
         storageKey: internalRowKey(feedKey, publicKey.success),
       });
     };

@@ -80,11 +80,9 @@ describe("leased gRPC identity contract", () => {
       const firstRowKey = yield* Effect.fromResult(lease.internalizeRowKey(firstRow));
       const secondRowKey = yield* Effect.fromResult(lease.internalizeRowKey(secondRow));
       const rawKeys = lease.resultKeys<typeof firstRow>({ select: ["id"] });
-      const invalidInternalKey = yield* Effect.fromResult(
-        rawKeys.translateKey("not-an-internal-row-key"),
-      ).pipe(Effect.flip);
       const malformedInternalKeys = yield* Effect.forEach(
         [
+          "not-an-internal-row-key",
           "null",
           "{}",
           "[]",
@@ -92,7 +90,7 @@ describe("leased gRPC identity contract", () => {
           JSON.stringify(["leased-row", "other-feed", "key"]),
           JSON.stringify(["leased-row", lease.feedKey, 1]),
         ],
-        (key) => Effect.fromResult(rawKeys.translateKey(key)).pipe(Effect.flip),
+        (key) => Effect.fromResult(rawKeys.translateSnapshot([key], [firstRow])).pipe(Effect.flip),
       );
       const invalidRawDelta = yield* Effect.fromResult(
         rawKeys.translateDelta([{ type: "remove", key: "not-an-internal-row-key" }]),
@@ -124,8 +122,6 @@ describe("leased gRPC identity contract", () => {
         firstRoute,
         secondRoute,
         validatedRow: yield* Effect.fromResult(lease.validateRowRoute(firstRow)),
-        firstPublicKey: yield* Effect.fromResult(rawKeys.translateKey(firstRowKey.storageKey)),
-        secondPublicKey: yield* Effect.fromResult(rawKeys.translateKey(secondRowKey.storageKey)),
         snapshotKeys: yield* Effect.fromResult(
           rawKeys.translateSnapshot(
             [firstRowKey.storageKey, secondRowKey.storageKey],
@@ -139,7 +135,6 @@ describe("leased gRPC identity contract", () => {
             { type: "remove", key: firstRowKey.storageKey },
           ]),
         ),
-        invalidInternalKeyKind: invalidInternalKey.kind,
         malformedInternalKeyKinds: malformedInternalKeys.map((error) => error.kind),
         invalidRawDeltaKind: invalidRawDelta.kind,
         invalidRawSnapshotKind: invalidRawSnapshot.kind,
@@ -154,16 +149,21 @@ describe("leased gRPC identity contract", () => {
         firstRoute: { region: "us&a=1/%", desk: { name: "equities" } },
         secondRoute: { region: "us&a=1/%", desk: { name: "equities" } },
         validatedRow: firstRow,
-        firstPublicKey: 'a","b',
-        secondPublicKey: 'a],["b',
         snapshotKeys: ['a","b', 'a],["b'],
         delta: [
           { type: "insert", key: 'a","b', row: firstRow, index: 0 },
           { type: "move", key: 'a],["b', fromIndex: 1, toIndex: 0 },
           { type: "remove", key: 'a","b' },
         ],
-        invalidInternalKeyKind: "RowKey",
-        malformedInternalKeyKinds: ["RowKey", "RowKey", "RowKey", "RowKey", "RowKey", "RowKey"],
+        malformedInternalKeyKinds: [
+          "RowKey",
+          "RowKey",
+          "RowKey",
+          "RowKey",
+          "RowKey",
+          "RowKey",
+          "RowKey",
+        ],
         invalidRawDeltaKind: "RowKey",
         invalidRawSnapshotKind: "RowKey",
         routeMismatchKind: "RouteMismatch",
@@ -388,18 +388,19 @@ describe("leased gRPC identity contract", () => {
         ]),
       ).pipe(Effect.flip);
       const retainedAfterRollback = yield* Effect.fromResult(
-        translations.translateKey("internal-a"),
+        translations.translateDelta([
+          { type: "move", key: "internal-a", fromIndex: 0, toIndex: 1 },
+        ]),
       );
       const replacement = yield* Effect.fromResult(
         translations.translateSnapshot(["replacement"], [{ text: "replacement" }]),
       );
-      const replacedKey = yield* Effect.fromResult(translations.translateKey("internal-a")).pipe(
-        Effect.flip,
-      );
+      const replacedKey = yield* Effect.fromResult(
+        translations.translateDelta([
+          { type: "move", key: "internal-a", fromIndex: 0, toIndex: 1 },
+        ]),
+      ).pipe(Effect.flip);
       translations.clear();
-      const clearedKey = yield* Effect.fromResult(translations.translateKey("replacement")).pipe(
-        Effect.flip,
-      );
       const clearedMove = yield* Effect.fromResult(
         translations.translateDelta([
           { type: "move", key: "replacement", fromIndex: 0, toIndex: 1 },
@@ -417,7 +418,6 @@ describe("leased gRPC identity contract", () => {
         retainedAfterRollback,
         replacement,
         replacedKey: replacedKey.kind,
-        clearedKey: clearedKey.kind,
         clearedMove: clearedMove.kind,
       }).toStrictEqual({
         initial: [
@@ -454,10 +454,16 @@ describe("leased gRPC identity contract", () => {
           },
         ],
         rolledBack: "ResultKey",
-        retainedAfterRollback: groupedPublicKey([["text", presentPresenceKey('"a2"')]]),
+        retainedAfterRollback: [
+          {
+            type: "move",
+            key: groupedPublicKey([["text", presentPresenceKey('"a2"')]]),
+            fromIndex: 0,
+            toIndex: 1,
+          },
+        ],
         replacement: [groupedPublicKey([["text", presentPresenceKey('"replacement"')]])],
         replacedKey: "ResultKey",
-        clearedKey: "ResultKey",
         clearedMove: "ResultKey",
       });
     }),
@@ -501,9 +507,6 @@ describe("leased gRPC identity contract", () => {
       const missingFieldError = yield* Effect.fromResult(
         missingField.translateSnapshot(["key"], [{}]),
       ).pipe(Effect.flip);
-      const missingFieldKeyError = yield* Effect.fromResult(missingField.translateKey("key")).pipe(
-        Effect.flip,
-      );
       const nonStringFieldError = yield* Effect.fromResult(nonStringField.translateDelta([])).pipe(
         Effect.flip,
       );
@@ -516,13 +519,11 @@ describe("leased gRPC identity contract", () => {
 
       expect({
         missingField: missingFieldError.kind,
-        missingFieldKey: missingFieldKeyError.kind,
         nonStringField: nonStringFieldError.kind,
         invalidValue: invalidValueError.kind,
         hostileGrouping: hostileGroupingError.kind,
       }).toStrictEqual({
         missingField: "ResultKey",
-        missingFieldKey: "ResultKey",
         nonStringField: "ResultKey",
         invalidValue: "ResultKey",
         hostileGrouping: "ResultKey",

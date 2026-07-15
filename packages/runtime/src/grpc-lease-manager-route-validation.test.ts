@@ -221,6 +221,73 @@ describe("gRPC lease manager route validation", () => {
     }),
   );
 
+  it.live("frames lone-surrogate topic, feed, and route identities without defects", () =>
+    Effect.gen(function* () {
+      const identityName = "\ud800";
+      const LoneSurrogateRouteOrder = Schema.Struct({
+        id: Schema.String,
+        [identityName]: Schema.String,
+        customerId: Schema.String,
+        price: Schema.Number,
+      });
+      let acquiredRoute: string | undefined;
+      const localViewServer = defineViewServerConfig({
+        grpc: { clients: grpcClients },
+        topics: {
+          [identityName]: grpcTopicSources.leased({
+            schema: LoneSurrogateRouteOrder,
+            key: "id",
+            client: "orders",
+            method: "streamOrders",
+            routeBy: [identityName],
+            request: (route) => ({ orderId: route[identityName] }),
+            acquire: ({ route }) => {
+              acquiredRoute = route[identityName];
+              return Stream.never;
+            },
+            map: ({ value, route }) => ({
+              id: `${route[identityName]}:${value.customerId}`,
+              [identityName]: route[identityName],
+              customerId: value.customerId,
+              price: value.price,
+            }),
+          }),
+        },
+      });
+      const grpcOptions = yield* resolveViewServerRuntimeOptions(localViewServer).pipe(
+        Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)),
+      );
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+
+      const subscription = yield* manager.liveClient.subscribeRuntime(identityName, {
+        select: ["id", identityName],
+        where: {
+          [identityName]: { eq: "route" },
+        },
+        orderBy: [{ field: "id", direction: "asc" }],
+        limit: 10,
+      });
+
+      expect(acquiredRoute).toBe("route");
+      yield* subscription.close();
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.live("captures decoded leased gRPC route values before subscribeRuntime returns", () =>
     Effect.gen(function* () {
       let acquiredRegion: string | null = null;

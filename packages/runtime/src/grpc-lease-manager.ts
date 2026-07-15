@@ -40,6 +40,7 @@ import {
   makeGrpcLeasedIdentityContract,
   type GrpcLeasedGroupedKeyRetentionObserver,
   type GrpcLeasedIdentityContract,
+  type GrpcLeasedIdentityError,
   type GrpcLeasedIdentityLease,
   type GrpcLeasedResultKeyTranslation,
 } from "./grpc-leased-identity";
@@ -356,15 +357,10 @@ const validateLeasedRowRoute = Effect.fn("ViewServerRuntime.grpc.leased.row.vali
   },
 );
 
-const groupedKeyEncodingErrorPrefix =
-  "Leased gRPC grouped key value cannot be encoded as a stable public key";
-
-const rawKeyEncodingErrorPrefix = "Leased gRPC internal Row Key";
-
 const resultKeyEncodingErrorStatus = (
   lease: ActiveLease,
   queryId: string,
-  error: { readonly message: string },
+  error: GrpcLeasedIdentityError,
 ): StatusEvent => ({
   type: "status",
   topic: lease.feed.topic,
@@ -374,12 +370,28 @@ const resultKeyEncodingErrorStatus = (
   message: error.message,
 });
 
-const isResultKeyEncodingErrorStatus = (event: ViewServerLiveEvent<unknown>): boolean =>
-  event.type === "status" &&
-  event.status === "error" &&
-  event.code === "RuntimeUnavailable" &&
-  (event.message?.startsWith(groupedKeyEncodingErrorPrefix) === true ||
-    event.message?.startsWith(rawKeyEncodingErrorPrefix) === true);
+const grpcLeasedResultKeyFailureTypeId: unique symbol = Symbol(
+  "@effect-view-server/runtime/GrpcLeasedResultKeyFailure",
+);
+
+type GrpcLeasedResultKeyFailure = {
+  readonly [grpcLeasedResultKeyFailureTypeId]: true;
+  readonly queryId: string;
+  readonly error: GrpcLeasedIdentityError;
+};
+
+const resultKeyTranslationFailure = (
+  queryId: string,
+  error: GrpcLeasedIdentityError,
+): GrpcLeasedResultKeyFailure => ({
+  [grpcLeasedResultKeyFailureTypeId]: true,
+  queryId,
+  error,
+});
+
+const isResultKeyTranslationFailure = <Row extends object>(
+  value: ViewServerLiveEvent<Row> | GrpcLeasedResultKeyFailure,
+): value is GrpcLeasedResultKeyFailure => grpcLeasedResultKeyFailureTypeId in value;
 
 const isTerminalStatusEvent = (event: ViewServerLiveEvent<unknown>): event is StatusEvent =>
   event.type === "status" && (event.status === "closed" || event.status === "error");
@@ -436,14 +448,13 @@ const resetLeaseRowCount = Effect.fn("ViewServerRuntime.grpc.leased.health.rowCo
 );
 
 const externalizeLeasedEvent = <Row extends object>(
-  lease: ActiveLease,
   resultKeys: GrpcLeasedResultKeyTranslation<Row>,
   event: ViewServerLiveEvent<Row>,
-): ViewServerLiveEvent<Row> => {
+): ViewServerLiveEvent<Row> | GrpcLeasedResultKeyFailure => {
   if (event.type === "snapshot") {
     const keys = resultKeys.translateSnapshot(event.keys, event.rows);
     if (Result.isFailure(keys)) {
-      return resultKeyEncodingErrorStatus(lease, event.queryId, keys.failure);
+      return resultKeyTranslationFailure(event.queryId, keys.failure);
     }
     return {
       ...event,
@@ -453,7 +464,7 @@ const externalizeLeasedEvent = <Row extends object>(
   if (event.type === "delta") {
     const operations = resultKeys.translateDelta(event.operations);
     if (Result.isFailure(operations)) {
-      return resultKeyEncodingErrorStatus(lease, event.queryId, operations.failure);
+      return resultKeyTranslationFailure(event.queryId, operations.failure);
     }
     return {
       ...event,
@@ -1101,17 +1112,22 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           return (yield* Deferred.await(input.terminalSignal)) === terminal;
         });
       const runtimeEvents = input.subscription.events.pipe(
-        Stream.map((event) => externalizeLeasedEvent(input.lease, resultKeys, event)),
-        Stream.filterEffect((event) => {
-          if (isResultKeyEncodingErrorStatus(event)) {
+        Stream.map((event) => externalizeLeasedEvent(resultKeys, event)),
+        Stream.filterEffect((translated) => {
+          if (isResultKeyTranslationFailure(translated)) {
             return claimRuntimeTerminal(runtimeTerminal);
           }
-          if (isTerminalStatusEvent(event)) {
+          if (isTerminalStatusEvent(translated)) {
             return Effect.succeed(false);
           }
           return Effect.succeed(true);
         }),
-        Stream.takeUntil(isResultKeyEncodingErrorStatus),
+        Stream.takeUntil(isResultKeyTranslationFailure),
+        Stream.map((translated) =>
+          isResultKeyTranslationFailure(translated)
+            ? resultKeyEncodingErrorStatus(input.lease, translated.queryId, translated.error)
+            : translated,
+        ),
       );
       const terminalStatusEvents = Stream.fromEffect(Deferred.await(input.terminalSignal)).pipe(
         Stream.flatMap((terminal) => {

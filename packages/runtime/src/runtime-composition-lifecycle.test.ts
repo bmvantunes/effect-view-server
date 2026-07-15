@@ -316,11 +316,13 @@ describe("Real View Server composition lifecycle", () => {
               }).pipe(Effect.andThen(runtimeCore.close)),
             })),
           ),
-        makeKafkaHealthObserver: (health, requestHealthRefresh) =>
+        makeKafkaHealthObserver: (health, requestHealthRefresh, flushHealth) =>
           Effect.sync(() => {
             events.push("acquire:kafkaHealthObserver");
           }).pipe(
-            Effect.andThen(defaults.makeKafkaHealthObserver(health, requestHealthRefresh)),
+            Effect.andThen(
+              defaults.makeKafkaHealthObserver(health, requestHealthRefresh, flushHealth),
+            ),
             Effect.map((observer) => ({
               ...observer,
               close: Effect.sync(() => {
@@ -371,6 +373,62 @@ describe("Real View Server composition lifecycle", () => {
     }),
   );
 
+  it.effect("flushes stopped Kafka health before runtime-core teardown", () =>
+    Effect.gen(function* () {
+      const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      let ingressClosed = false;
+      let runtimeCoreClosed = false;
+      let flushedAfterIngress = false;
+      const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
+        ...defaults,
+        makeRuntimeCore: (config, options) =>
+          defaults.makeRuntimeCore(config, options).pipe(
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              close: Effect.sync(() => {
+                runtimeCoreClosed = true;
+              }).pipe(Effect.andThen(runtimeCore.close)),
+              refreshHealth: Effect.sync(() => {
+                if (ingressClosed && !runtimeCoreClosed) {
+                  flushedAfterIngress = true;
+                }
+              }).pipe(Effect.andThen(runtimeCore.refreshHealth)),
+            })),
+          ),
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
+            close: Effect.void,
+          }),
+        makeKafkaIngress: (_config, _client, _options, observation) =>
+          Effect.succeed({
+            close: observation.regionStopped("local").pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  ingressClosed = true;
+                }),
+              ),
+            ),
+          }),
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, kafkaViewServer, {
+        kafka: {
+          consumerGroupId: "runtime-observer-final-flush-test",
+        },
+      });
+      yield* runtime.close;
+
+      expect({ flushedAfterIngress, ingressClosed, runtimeCoreClosed }).toStrictEqual({
+        flushedAfterIngress: true,
+        ingressClosed: true,
+        runtimeCoreClosed: true,
+      });
+    }),
+  );
+
   it.effect("closes a Kafka health observer when acquisition receives a pending interrupt", () =>
     Effect.gen(function* () {
       const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
@@ -380,9 +438,9 @@ describe("Real View Server composition lifecycle", () => {
       let cleanupObserver = Effect.void;
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
         ...defaults,
-        makeKafkaHealthObserver: (health, requestHealthRefresh) =>
+        makeKafkaHealthObserver: (health, requestHealthRefresh, flushHealth) =>
           Effect.uninterruptible(
-            defaults.makeKafkaHealthObserver(health, requestHealthRefresh).pipe(
+            defaults.makeKafkaHealthObserver(health, requestHealthRefresh, flushHealth).pipe(
               Effect.map((observer) => {
                 const close = Effect.sync(() => {
                   observerCloseCount += 1;

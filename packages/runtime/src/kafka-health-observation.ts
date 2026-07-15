@@ -98,6 +98,7 @@ export const makeViewServerKafkaHealthObserver = Effect.fn(
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
   health: ViewServerKafkaHealthLedger<Topics>,
   requestHealthRefresh: Effect.Effect<void>,
+  flushHealth: Effect.Effect<void>,
   cadence: Duration.Input = "1 second",
 ) {
   return yield* Effect.uninterruptibleMask(() =>
@@ -128,7 +129,7 @@ export const makeViewServerKafkaHealthObserver = Effect.fn(
       ).pipe(Effect.forkIn(scope, { startImmediately: true }));
 
       const close = (yield* Effect.cached(
-        Scope.close(scope, Exit.void).pipe(Effect.andThen(refreshIfDirtyUninterruptibly())),
+        Scope.close(scope, Exit.void).pipe(Effect.andThen(flushHealth)),
       )).pipe(Effect.uninterruptible);
 
       return {

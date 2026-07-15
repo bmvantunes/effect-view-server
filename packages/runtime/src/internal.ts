@@ -206,15 +206,19 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
       (resource) => resource.close,
     );
+    const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
     const kafkaHealthObserver =
       kafkaHealth === undefined
         ? undefined
         : yield* acquireRuntimeResourceUninterruptibly(
             runtimeScope,
-            dependencies.makeKafkaHealthObserver(kafkaHealth, runtimeCore.requestHealthRefresh),
+            dependencies.makeKafkaHealthObserver(
+              kafkaHealth,
+              runtimeCore.requestHealthRefresh,
+              refreshRuntimeHealth,
+            ),
             (resource) => resource.close,
           );
-    const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
     const grpcLeaseManager =
       grpcOptions === undefined || grpcHealth === undefined
         ? undefined
@@ -242,10 +246,10 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           liveClient: runtimeLiveClient,
           runtime: runtimeClient,
           transport: {
-            clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshTransportHealth)),
-            clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshTransportHealth)),
-            streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshTransportHealth)),
-            streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshTransportHealth)),
+            clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
+            clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
+            streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
+            streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
           },
         },
         resolvedOptions.serverOptions,

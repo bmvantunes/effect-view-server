@@ -35,6 +35,32 @@ const makeHealthLedger = () =>
   });
 
 describe("Kafka health observation", () => {
+  it.effect("awaits an immediate health flush when the observer closes", () =>
+    Effect.gen(function* () {
+      const ledger = makeHealthLedger();
+      let scheduledRefreshes = 0;
+      let immediateFlushes = 0;
+      const observer = yield* makeViewServerKafkaHealthObserver(
+        ledger,
+        Effect.sync(() => {
+          scheduledRefreshes += 1;
+        }),
+        Effect.sync(() => {
+          immediateFlushes += 1;
+        }),
+        "1 minute",
+      );
+
+      yield* observer.regionStopped("local");
+      yield* observer.close;
+
+      expect({ immediateFlushes, scheduledRefreshes }).toStrictEqual({
+        immediateFlushes: 1,
+        scheduledRefreshes: 0,
+      });
+    }),
+  );
+
   it.effect("refreshes observed delivery health only on the bounded cadence", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
@@ -45,6 +71,7 @@ describe("Kafka health observation", () => {
         Effect.sync(() => {
           refreshes += 1;
         }),
+        Effect.void,
         "1 second",
       );
 
@@ -116,6 +143,7 @@ describe("Kafka health observation", () => {
             }),
           ),
         ),
+        Effect.void,
         "1 second",
       );
 
@@ -139,7 +167,12 @@ describe("Kafka health observation", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
       const ledger = makeHealthLedger();
-      const observer = yield* makeViewServerKafkaHealthObserver(ledger, Effect.void, "1 second");
+      const observer = yield* makeViewServerKafkaHealthObserver(
+        ledger,
+        Effect.void,
+        Effect.void,
+        "1 second",
+      );
 
       yield* recordKafkaAssignments(
         observer,
@@ -188,6 +221,9 @@ describe("Kafka health observation", () => {
       let refreshes = 0;
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
+        Effect.sync(() => {
+          refreshes += 1;
+        }),
         Effect.sync(() => {
           refreshes += 1;
         }),
@@ -260,6 +296,9 @@ describe("Kafka health observation", () => {
       let refreshes = 0;
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
+        Effect.sync(() => {
+          refreshes += 1;
+        }),
         Effect.sync(() => {
           refreshes += 1;
         }),

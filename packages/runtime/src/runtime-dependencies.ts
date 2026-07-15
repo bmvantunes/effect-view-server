@@ -69,6 +69,7 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   readonly makeKafkaHealthObserver: (
     health: ViewServerKafkaHealthLedger<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
+    flushHealth: Effect.Effect<void>,
   ) => Effect.Effect<ViewServerKafkaHealthObserver<Topics>>;
   readonly makeGrpcHealthLedger: <const Clients extends GrpcRuntimeClients>(
     config: ViewServerRuntimeDependencyConfig<Topics>,

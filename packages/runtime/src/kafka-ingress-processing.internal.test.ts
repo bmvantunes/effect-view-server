@@ -54,6 +54,7 @@ describe("Kafka ingress source processing internals", () => {
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
         runtimeCore.requestHealthRefresh,
+        Effect.void,
       );
 
       const ingress = yield* makeViewServerKafkaIngress(
@@ -261,6 +262,7 @@ describe("Kafka ingress source processing internals", () => {
       const observer = yield* makeViewServerKafkaHealthObserver(
         ledger,
         runtimeCore.requestHealthRefresh,
+        Effect.void,
       );
 
       const exit = yield* Effect.exit(

@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import { Cause, Effect, Exit, Fiber, Queue, Schema, Stream } from "effect";
+import { Effect, Fiber, Queue, Schema, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import { resolveViewServerRuntimeOptions } from "./runtime-options";
@@ -403,13 +403,13 @@ describe("gRPC lease manager route validation", () => {
       }).toStrictEqual({
         missingWhereError: {
           _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
+          code: "RuntimeUnavailable",
           topic: "orders",
-          message: "Leased topic orders requires exact equality filters for route fields: missing.",
+          message: "Leased topic orders route field missing is not in the topic schema.",
         },
         missingFieldError: {
           _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
+          code: "RuntimeUnavailable",
           topic: "orders",
           message: "Leased topic orders route field missing is not in the topic schema.",
         },
@@ -547,54 +547,38 @@ describe("gRPC lease manager route validation", () => {
     }),
   );
 
-  it.live(
-    "fails leased gRPC subscription when feed route metadata changes during acquisition",
-    () =>
-      Effect.gen(function* () {
-        const feed = grpcLeasedViewServer({
-          streamForRegion: () => Stream.empty,
-        });
-        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-        const resolvedFeed = yield* Effect.fromNullishOr(grpcOptions.feeds["orders"]);
-        let routeByReads = 0;
-        Object.defineProperty(resolvedFeed, "routeBy", {
-          get: () => {
-            routeByReads += 1;
-            return routeByReads <= 2 ? ["region"] : ["region", "status"];
-          },
-        });
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-        const health = makeLeasedGrpcHealth(grpcOptions);
-        const manager = yield* makeViewServerGrpcLeaseManager(
-          grpcOptions.sourceConfig,
-          runtimeCore.internalClient,
-          runtimeCore.liveClient,
-          runtimeCore.internalLiveClient,
-          Effect.void,
-          grpcOptions,
-          health,
-        );
+  it.live("snapshots leased gRPC route metadata once for the identity contract", () =>
+    Effect.gen(function* () {
+      const feed = grpcLeasedViewServer({
+        streamForRegion: () => Stream.empty,
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const resolvedFeed = yield* Effect.fromNullishOr(grpcOptions.feeds["orders"]);
+      let routeByReads = 0;
+      Object.defineProperty(resolvedFeed, "routeBy", {
+        get: () => {
+          routeByReads += 1;
+          return routeByReads === 1 ? ["region"] : ["region", "status"];
+        },
+      });
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeLeasedGrpcHealth(grpcOptions);
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        grpcOptions.sourceConfig,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
 
-        const exit = yield* Effect.exit(
-          manager.liveClient.subscribe("orders", leasedOrdersQuery("usa")),
-        );
+      const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
 
-        expect({
-          error: Exit.isFailure(exit)
-            ? exit.cause.reasons.find(Cause.isFailReason)?.error
-            : undefined,
-          routeByReads,
-        }).toStrictEqual({
-          error: {
-            _tag: "ViewServerRuntimeError",
-            code: "RuntimeUnavailable",
-            topic: "orders",
-            message: "Leased gRPC route is missing configured field status",
-          },
-          routeByReads: 3,
-        });
-        yield* manager.close;
-        yield* runtimeCore.close;
-      }),
+      expect(routeByReads).toBe(1);
+      yield* subscription.close();
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
   );
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
-import { Effect, Fiber, Queue, Stream } from "effect";
+import { Effect, Fiber, HashMap, Queue, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 
@@ -43,6 +43,13 @@ const missingOptionalGroupedPublicKey = JSON.stringify([
 
 const presentUndefinedGroupedPublicKey = JSON.stringify([
   ["optionalValue", JSON.stringify(["present", "null"])],
+]);
+
+const collisionLeft = "8ocpIaaa";
+const collisionRight = "GpcpIaaa";
+
+const collisionGroupedPublicKey = groupedPublicKey([
+  ["semanticHashMap", `[["${collisionLeft}","left"],["${collisionRight}","right"]]`],
 ]);
 
 describe("gRPC lease manager semantic route and grouped identity", () => {
@@ -347,6 +354,96 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         },
       ]);
       yield* subscription.close();
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.live("coalesces collision-node HashMap groups behind one public result key", () =>
+    Effect.gen(function* () {
+      const semanticValues = semanticGroupedKeyValues();
+      const feed = grpcSemanticGroupedKeyLeasedViewServer({
+        acquire: () =>
+          longRunningGrpcStream([
+            grpcOrderValue("collision-left", 10),
+            grpcOrderValue("collision-right", 20),
+          ]),
+        map: (value) => ({
+          id: value.customerId,
+          text: routeEncodingValues.text,
+          ...semanticValues,
+          semanticHashMap:
+            value.price === 10
+              ? HashMap.make([collisionLeft, "left"], [collisionRight, "right"])
+              : HashMap.make([collisionRight, "right"], [collisionLeft, "left"]),
+          semanticPlain: semanticGroupedPlainValue,
+        }),
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
+        clients: {
+          orders: "https://orders.example.test",
+        },
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        grpcOptions.sourceConfig,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+      const rawSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        select: ["id", "semanticHashMap"],
+        where: {
+          text: { eq: routeEncodingValues.text },
+        },
+        limit: 10,
+      });
+      const rawEventQueue = yield* Queue.unbounded<unknown>();
+      const rawEventsFiber = yield* rawSubscription.events.pipe(
+        Stream.runForEach((event) => Queue.offer(rawEventQueue, event)),
+        Effect.forkChild,
+      );
+      yield* Queue.take(rawEventQueue);
+      yield* Queue.take(rawEventQueue);
+      const groupedSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        groupBy: ["semanticHashMap"],
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
+        where: {
+          text: { eq: routeEncodingValues.text },
+        },
+        limit: 10,
+      });
+      const groupedEvents = yield* groupedSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+      );
+
+      expect(groupedEvents).toStrictEqual([
+        {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-1",
+          version: 1,
+          keys: [collisionGroupedPublicKey],
+          rows: [
+            {
+              semanticHashMap: HashMap.make([collisionLeft, "left"], [collisionRight, "right"]),
+              rowCount: 2n,
+            },
+          ],
+          totalRows: 1,
+        },
+      ]);
+      yield* rawSubscription.close();
+      yield* groupedSubscription.close();
+      yield* Fiber.interrupt(rawEventsFiber);
       yield* manager.close;
       yield* runtimeCore.close;
     }),

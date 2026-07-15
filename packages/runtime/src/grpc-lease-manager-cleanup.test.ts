@@ -129,126 +129,109 @@ describe("gRPC lease manager cleanup", () => {
       }),
   );
 
-  it.live(
-    "releases leased gRPC scope when topic key lookup fails during subscription wrapping",
-    () =>
-      Effect.gen(function* () {
-        let released = 0;
-        const localViewServer = cloneWithMutableOrdersGrpcSource(
-          grpcLeasedViewServer({
-            streamForRegion: () => Stream.never,
-            release: Effect.sync(() => {
-              released += 1;
-            }),
+  it.live("keeps leased gRPC key identity stable during subscription wrapping", () =>
+    Effect.gen(function* () {
+      let released = 0;
+      const localViewServer = cloneWithMutableOrdersGrpcSource(
+        grpcLeasedViewServer({
+          streamForRegion: () => Stream.never,
+          release: Effect.sync(() => {
+            released += 1;
           }),
-        );
-        Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
-          value: ({ region }: { readonly region: string }) => {
-            Object.defineProperty(localViewServer.topics, "orders", {
-              value: undefined,
-            });
-            return { orderId: region };
-          },
-        });
-        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
-        const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
-          clients: grpcOptions.clientBaseUrls,
-          feeds: {},
-        });
-        const manager = yield* makeViewServerGrpcLeaseManager(
-          localViewServer,
-          runtimeCore.internalClient,
-          runtimeCore.liveClient,
-          runtimeCore.internalLiveClient,
-          Effect.void,
-          grpcOptions,
-          health,
-        );
+        }),
+      );
+      Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
+        value: ({ region }: { readonly region: string }) => {
+          Object.defineProperty(localViewServer.topics.orders, "key", {
+            value: "price",
+          });
+          return { orderId: region };
+        },
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
 
-        const error = yield* manager.liveClient
-          .subscribe("orders", leasedOrdersQuery("usa"))
-          .pipe(Effect.flip);
-        const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
+      const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
+      yield* subscription.close();
+      const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
-        expect({
-          error,
-          released,
-          leasedFeedKeys: Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}),
-        }).toStrictEqual({
-          error: {
-            _tag: "ViewServerRuntimeError",
-            code: "RuntimeUnavailable",
-            topic: "orders",
-            message: "gRPC leased feed orders references unknown topic orders",
-          },
-          released: 1,
-          leasedFeedKeys: [],
-        });
-        yield* manager.close;
-        yield* runtimeCore.close;
-      }),
+      expect({
+        released,
+        leasedFeedKeys: Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}),
+      }).toStrictEqual({
+        released: 1,
+        leasedFeedKeys: [],
+      });
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
   );
 
-  it.live(
-    "releases leased gRPC scope when topic key lookup fails during runtime subscription wrapping",
-    () =>
-      Effect.gen(function* () {
-        let released = 0;
-        const localViewServer = cloneWithMutableOrdersGrpcSource(
-          grpcLeasedViewServer({
-            streamForRegion: () => Stream.never,
-            release: Effect.sync(() => {
-              released += 1;
-            }),
+  it.live("keeps leased gRPC key identity stable during runtime subscription wrapping", () =>
+    Effect.gen(function* () {
+      let released = 0;
+      const localViewServer = cloneWithMutableOrdersGrpcSource(
+        grpcLeasedViewServer({
+          streamForRegion: () => Stream.never,
+          release: Effect.sync(() => {
+            released += 1;
           }),
-        );
-        Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
-          value: ({ region }: { readonly region: string }) => {
-            Object.defineProperty(localViewServer.topics, "orders", {
-              value: undefined,
-            });
-            return { orderId: region };
-          },
-        });
-        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
-        const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
-          clients: grpcOptions.clientBaseUrls,
-          feeds: {},
-        });
-        const manager = yield* makeViewServerGrpcLeaseManager(
-          localViewServer,
-          runtimeCore.internalClient,
-          runtimeCore.liveClient,
-          runtimeCore.internalLiveClient,
-          Effect.void,
-          grpcOptions,
-          health,
-        );
+        }),
+      );
+      Object.defineProperty(localViewServer.topics.orders.grpcSource, "request", {
+        value: ({ region }: { readonly region: string }) => {
+          Object.defineProperty(localViewServer.topics.orders, "key", {
+            value: "price",
+          });
+          return { orderId: region };
+        },
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
+      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        localViewServer,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
 
-        const error = yield* manager.liveClient
-          .subscribeRuntime("orders", leasedOrdersQuery("usa"))
-          .pipe(Effect.flip);
-        const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
+      const subscription = yield* manager.liveClient.subscribeRuntime(
+        "orders",
+        leasedOrdersQuery("usa"),
+      );
+      yield* subscription.close();
+      const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
-        expect({
-          error,
-          released,
-          leasedFeedKeys: Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}),
-        }).toStrictEqual({
-          error: {
-            _tag: "ViewServerRuntimeError",
-            code: "RuntimeUnavailable",
-            topic: "orders",
-            message: "gRPC leased feed orders references unknown topic orders",
-          },
-          released: 1,
-          leasedFeedKeys: [],
-        });
-        yield* manager.close;
-        yield* runtimeCore.close;
-      }),
+      expect({
+        released,
+        leasedFeedKeys: Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {}),
+      }).toStrictEqual({
+        released: 1,
+        leasedFeedKeys: [],
+      });
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
   );
 
   it.live("marks leased gRPC cleanup degraded when runtime topic disappears before close", () =>
@@ -530,7 +513,7 @@ describe("gRPC lease manager cleanup", () => {
     }),
   );
 
-  it.live("cleans a leased gRPC feed when mapped rows have a non-string row key", () =>
+  it.live("cleans a leased gRPC feed with a configured non-string Row Key", () =>
     Effect.gen(function* () {
       const firstValue = yield* Deferred.make<GrpcOrderValueMessage>();
       const localViewServer = cloneWithMutableOrdersGrpcSource(
@@ -539,6 +522,9 @@ describe("gRPC lease manager cleanup", () => {
             Stream.fromEffect(Deferred.await(firstValue)).pipe(Stream.concat(Stream.never)),
         }),
       );
+      Object.defineProperty(localViewServer.topics.orders, "key", {
+        value: "price",
+      });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const degradationMessages: Array<string> = [];
@@ -562,9 +548,6 @@ describe("gRPC lease manager cleanup", () => {
           region: { eq: "usa" },
         },
         limit: 10,
-      });
-      Object.defineProperty(localViewServer.topics.orders, "key", {
-        value: "price",
       });
       yield* Deferred.succeed(firstValue, grpcOrderValue("numeric-key", 10));
       const cleanedHealth = yield* Effect.gen(function* () {

@@ -5,6 +5,7 @@ interface TanStackReactExampleConfigOptions {
   readonly plugins: Array<PluginOption>;
   readonly browserProvider: BrowserProviderOption;
   readonly enforceAllSourceCoverage?: boolean;
+  readonly includeNodeTests?: boolean;
   readonly optimizeDepsInclude?: ReadonlyArray<string>;
 }
 
@@ -29,6 +30,7 @@ export const defineTanStackReactExampleConfig = ({
   plugins,
   browserProvider,
   enforceAllSourceCoverage,
+  includeNodeTests,
   optimizeDepsInclude,
 }: TanStackReactExampleConfigOptions) =>
   defineConfig({
@@ -73,6 +75,27 @@ export const defineTanStackReactExampleConfig = ({
           },
         ],
       },
+      ...(includeNodeTests === true
+        ? {
+            projects: [
+              {
+                extends: true,
+                test: {
+                  name: "node",
+                  browser: { enabled: false },
+                  include: ["src/**/*.test.ts"],
+                },
+              },
+              {
+                extends: true,
+                test: {
+                  name: "browser",
+                  typecheck: { enabled: false },
+                },
+              },
+            ],
+          }
+        : {}),
       ...(enforceAllSourceCoverage === true ? { coverage: exactAllSourceCoverage } : {}),
     },
     lint: {

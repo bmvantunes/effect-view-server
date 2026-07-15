@@ -8,6 +8,7 @@ import {
 import {
   Clock,
   Context,
+  Deferred,
   Effect,
   Fiber,
   Layer,
@@ -16,6 +17,7 @@ import {
   Schema,
   SchemaGetter,
   Stream,
+  SubscriptionRef,
   type Duration,
 } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
@@ -257,6 +259,17 @@ const trustedEvent = (event: ViewServerWireEvent) =>
     Effect.mapError(invalidTrustedEvent),
   );
 
+const awaitSubscriptionCount = Effect.fn(
+  "ViewServerClient.remote.testServer.awaitSubscriptionCount",
+)(function* (ref: SubscriptionRef.SubscriptionRef<number>, expected: number) {
+  yield* SubscriptionRef.changes(ref).pipe(
+    Stream.filter((count) => count === expected),
+    Stream.take(1),
+    Stream.runDrain,
+    Effect.timeout("1 second"),
+  );
+});
+
 const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(function* () {
   const path = "/rpc";
   const events = yield* Queue.unbounded<ViewServerTrustedWireEvent>();
@@ -264,7 +277,7 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
   const healthTopicEvents = yield* Queue.unbounded<ViewServerTrustedWireEvent>();
   let lastSubscribeQuery: unknown = undefined;
   let rows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [];
-  let activeSubscriptions = 0;
+  const activeSubscriptions = yield* SubscriptionRef.make(0);
   let healthRequests = 0;
   let healthOverride: ViewServerWireHealth | undefined = undefined;
   let healthDelay: Duration.Input = "0 millis";
@@ -282,7 +295,8 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
           Effect.gen(function* () {
             healthRequests += 1;
             yield* Effect.sleep(healthDelay);
-            return healthOverride ?? health(rows.length, activeSubscriptions);
+            const activeSubscriptionCount = yield* SubscriptionRef.get(activeSubscriptions);
+            return healthOverride ?? health(rows.length, activeSubscriptionCount);
           }),
         "ViewServer.Subscribe": (
           payload,
@@ -293,19 +307,18 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
               return Stream.fail(healthSummaryError);
             }
             return Stream.unwrap(
-              Effect.sync(() => {
-                activeSubscriptions += 1;
-                return Stream.fromEffect(
-                  trustedEvent(snapshotEvent(payload.topic, healthSummaryRows)),
-                ).pipe(
-                  Stream.concat(Stream.fromQueue(healthSummaryEvents)),
-                  Stream.ensuring(
-                    Effect.sync(() => {
-                      activeSubscriptions -= 1;
-                    }),
+              SubscriptionRef.update(activeSubscriptions, (count) => count + 1).pipe(
+                Effect.as(
+                  Stream.fromEffect(
+                    trustedEvent(snapshotEvent(payload.topic, healthSummaryRows)),
+                  ).pipe(
+                    Stream.concat(Stream.fromQueue(healthSummaryEvents)),
+                    Stream.ensuring(
+                      SubscriptionRef.update(activeSubscriptions, (count) => count - 1),
+                    ),
                   ),
-                );
-              }),
+                ),
+              ),
             );
           }
           if (payload.topic === VIEW_SERVER_HEALTH_TOPIC) {
@@ -313,19 +326,18 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
               return Stream.fail(healthTopicError);
             }
             return Stream.unwrap(
-              Effect.sync(() => {
-                activeSubscriptions += 1;
-                return Stream.fromEffect(
-                  trustedEvent(snapshotEvent(payload.topic, healthTopicRows)),
-                ).pipe(
-                  Stream.concat(Stream.fromQueue(healthTopicEvents)),
-                  Stream.ensuring(
-                    Effect.sync(() => {
-                      activeSubscriptions -= 1;
-                    }),
+              SubscriptionRef.update(activeSubscriptions, (count) => count + 1).pipe(
+                Effect.as(
+                  Stream.fromEffect(
+                    trustedEvent(snapshotEvent(payload.topic, healthTopicRows)),
+                  ).pipe(
+                    Stream.concat(Stream.fromQueue(healthTopicEvents)),
+                    Stream.ensuring(
+                      SubscriptionRef.update(activeSubscriptions, (count) => count - 1),
+                    ),
                   ),
-                );
-              }),
+                ),
+              ),
             );
           }
           const limit = readLimit(payload.query);
@@ -375,17 +387,16 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
             });
           }
           return Stream.unwrap(
-            Effect.sync(() => {
-              activeSubscriptions += 1;
-              return Stream.fromEffect(trustedEvent(snapshotEvent(payload.topic, rows))).pipe(
-                Stream.concat(Stream.fromQueue(events)),
-                Stream.ensuring(
-                  Effect.sync(() => {
-                    activeSubscriptions -= 1;
-                  }),
+            SubscriptionRef.update(activeSubscriptions, (count) => count + 1).pipe(
+              Effect.as(
+                Stream.fromEffect(trustedEvent(snapshotEvent(payload.topic, rows))).pipe(
+                  Stream.concat(Stream.fromQueue(events)),
+                  Stream.ensuring(
+                    SubscriptionRef.update(activeSubscriptions, (count) => count - 1),
+                  ),
                 ),
-              );
-            }),
+              ),
+            ),
           );
         },
       }),
@@ -414,7 +425,9 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
     return yield* Effect.die(new Error("Expected a TCP test server address."));
   }
   return {
-    activeSubscriptions: () => activeSubscriptions,
+    activeSubscriptions: () => SubscriptionRef.getUnsafe(activeSubscriptions),
+    awaitSubscriptionCount: (expected: number) =>
+      awaitSubscriptionCount(activeSubscriptions, expected),
     close: runtime.disposeEffect,
     emit: (event: ViewServerWireEvent) =>
       Effect.flatMap(trustedEvent(event), (trusted) => Queue.offer(events, trusted)),
@@ -529,7 +542,7 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       expect(server.healthRequests()).toBe(1);
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(1);
       expect(client.health.value.transport.activeSubscriptions).toBe(1);
@@ -543,11 +556,10 @@ describe("remote ViewServer client", () => {
         operations: [{ type: "insert", key: "queued", row: { id: "queued", price: 5 }, index: 0 }],
         totalRows: 1,
       });
-      yield* Effect.sleep("10 millis");
-      expect(server.healthRequests()).toBe(1);
 
       yield* server.emitInsert("orders", order("a", 10));
       const events = yield* Fiber.join(eventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(server.healthRequests()).toBe(1);
       expect(events[0]).toStrictEqual({
         type: "snapshot",
@@ -577,7 +589,6 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
 
-      yield* Effect.sleep("10 millis");
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
       expect(client.health.value.transport.activeSubscriptions).toBe(0);
 
@@ -601,6 +612,7 @@ describe("remote ViewServer client", () => {
           limit: 10,
         });
 
+        yield* server.awaitSubscriptionCount(1);
         yield* server.emitInsert("orders", order("first", 1));
         yield* server.emitInsert("orders", order("second", 2));
         const events = yield* subscription.events.pipe(Stream.takeRight(1), Stream.runCollect);
@@ -615,7 +627,7 @@ describe("remote ViewServer client", () => {
             message: "Remote subscription buffer exceeded capacity with 1 queued event(s).",
           },
         ]);
-        yield* Effect.sleep("10 millis");
+        yield* server.awaitSubscriptionCount(0);
         expect(server.activeSubscriptions()).toBe(0);
 
         yield* client.close;
@@ -635,6 +647,7 @@ describe("remote ViewServer client", () => {
         limit: 10,
       });
 
+      yield* server.awaitSubscriptionCount(1);
       yield* server.emitInsert("orders", order("first", 1));
       yield* server.emitInsert("orders", order("second", 2));
       const events = yield* subscription.events.pipe(Stream.takeRight(1), Stream.runCollect);
@@ -649,7 +662,7 @@ describe("remote ViewServer client", () => {
           message: "Remote subscription buffer exceeded capacity with 1 queued event(s).",
         },
       ]);
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(0);
       expect(server.activeSubscriptions()).toBe(0);
 
       yield* client.close;
@@ -671,6 +684,7 @@ describe("remote ViewServer client", () => {
           limit: 10,
         });
 
+        yield* server.awaitSubscriptionCount(1);
         yield* server.emitInsert("orders", order("first", 1));
         yield* server.emitInsert("orders", order("second", 2));
         const events = yield* subscription.events.pipe(Stream.takeRight(1), Stream.runCollect);
@@ -685,7 +699,7 @@ describe("remote ViewServer client", () => {
             message: "Remote subscription buffer exceeded capacity with 1 queued event(s).",
           },
         ]);
-        yield* Effect.sleep("10 millis");
+        yield* server.awaitSubscriptionCount(0);
         expect(server.activeSubscriptions()).toBe(0);
 
         yield* client.close;
@@ -699,6 +713,7 @@ describe("remote ViewServer client", () => {
       const client = yield* makeViewServerClient(viewServer, {
         url: server.url,
       });
+      // This delay is the scenario under test: event delivery must not wait for a slow health RPC.
       server.setHealthDelay("500 millis");
       const subscription = yield* client.subscribe("orders", {
         select: ["id"],
@@ -719,7 +734,7 @@ describe("remote ViewServer client", () => {
         rows: [],
         totalRows: 0,
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(0);
       expect(server.healthRequests()).toBe(1);
 
       server.setHealthDelay("0 millis");
@@ -737,11 +752,11 @@ describe("remote ViewServer client", () => {
         select: ["id"],
         limit: 10,
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       expect(server.activeSubscriptions()).toBe(1);
 
       yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(0);
 
       expect(server.activeSubscriptions()).toBe(0);
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
@@ -848,12 +863,15 @@ describe("remote ViewServer client", () => {
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
 
       const summarySubscription = yield* client.subscribeHealthSummary();
+      const initialSummaryReceived = yield* Deferred.make<void>();
       const summaryEventsFiber = yield* summarySubscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(initialSummaryReceived, undefined)),
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
+      yield* Deferred.await(initialSummaryReceived).pipe(Effect.timeout("1 second"));
       expect(client.health.value.status).toBe("degraded");
       expect(server.healthRequests()).toBe(1);
       const refreshedHealth = health(0, 0);
@@ -934,7 +952,7 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
       yield* Fiber.join(summaryEventsFiber);
-      yield* Effect.sleep("50 millis");
+      yield* server.awaitSubscriptionCount(0);
       expect(client.health.value.status).toBe("ready");
       expect(client.health.value.version).toBe(0);
       expect(client.health.value.uptimeMs).toBe(0);
@@ -946,12 +964,15 @@ describe("remote ViewServer client", () => {
       yield* summarySubscription.close();
 
       const healthSubscription = yield* client.subscribeHealth();
+      const initialDetailReceived = yield* Deferred.make<void>();
       const detailEventsFiber = yield* healthSubscription.events.pipe(
+        Stream.tap(() => Deferred.succeed(initialDetailReceived, undefined)),
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
+      yield* Deferred.await(initialDetailReceived).pipe(Effect.timeout("1 second"));
       expect(client.health.value.engine.topics.orders.status).toBe("ready");
       yield* server.emitHealthTopic({
         type: "delta",
@@ -976,6 +997,7 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
       yield* Fiber.join(detailEventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(client.health.value.engine.topics.orders.rowCount).toBe(25);
       yield* healthSubscription.close();
 
@@ -1087,13 +1109,13 @@ describe("remote ViewServer client", () => {
         select: ["id"],
         limit: 10,
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       expect(server.activeSubscriptions()).toBe(1);
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(1);
       expect(client.health.value.transport.activeSubscriptions).toBe(1);
 
       yield* client.close;
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(0);
 
       expect(server.activeSubscriptions()).toBe(0);
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
@@ -1127,7 +1149,7 @@ describe("remote ViewServer client", () => {
         select: ["id"],
         limit: 10,
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
 
       expect(client.health.value.engine.topics.orders.activeViews).toBe(7);
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(3);
@@ -1135,6 +1157,7 @@ describe("remote ViewServer client", () => {
       expect(client.health.value.transport.activeSubscriptions).toBe(3);
 
       yield* subscription.close();
+      yield* server.awaitSubscriptionCount(0);
       expect(client.health.value.engine.topics.orders.activeViews).toBe(7);
       expect(client.health.value.engine.topics.orders.activeSubscriptions).toBe(2);
       expect(client.health.value.transport.activeStreams).toBe(2);
@@ -1163,7 +1186,7 @@ describe("remote ViewServer client", () => {
         offset: 1,
         limit: 10,
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       expect(server.lastSubscribeQuery()).toStrictEqual({
         select: ["id", "price"],
         where: {
@@ -1178,6 +1201,7 @@ describe("remote ViewServer client", () => {
         limit: 10,
       });
       yield* richQuery.close();
+      yield* server.awaitSubscriptionCount(0);
 
       const scalarFilter = yield* client.subscribe("orders", {
         select: ["id"],
@@ -1186,7 +1210,7 @@ describe("remote ViewServer client", () => {
         },
         limit: 10,
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       expect(server.lastSubscribeQuery()).toStrictEqual({
         select: ["id"],
         where: {
@@ -1195,15 +1219,17 @@ describe("remote ViewServer client", () => {
         limit: 10,
       });
       yield* scalarFilter.close();
+      yield* server.awaitSubscriptionCount(0);
 
       const noLimit = yield* client.subscribe("orders", {
         select: ["id"],
       });
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       expect(server.lastSubscribeQuery()).toStrictEqual({
         select: ["id"],
       });
       yield* noLimit.close();
+      yield* server.awaitSubscriptionCount(0);
 
       const invalidTopic = yield* Effect.flip(
         // @ts-expect-error hostile callers can still send unknown topics.
@@ -1460,7 +1486,7 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       yield* server.emit({
         type: "snapshot",
         topic: "orders",
@@ -1471,6 +1497,7 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
       const unknownFieldEvents = yield* Fiber.join(unknownFieldEventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(unknownFieldEvents[1]).toStrictEqual({
         type: "status",
         topic: "orders",
@@ -1489,7 +1516,7 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       yield* server.emit({
         type: "snapshot",
         topic: "orders",
@@ -1500,6 +1527,7 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
       const invalidTypeEvents = yield* Fiber.join(invalidTypeEventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(invalidTypeEvents[1]).toStrictEqual({
         type: "status",
         topic: "orders",
@@ -1518,7 +1546,7 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       yield* server.emit({
         type: "snapshot",
         topic: "missing",
@@ -1529,6 +1557,7 @@ describe("remote ViewServer client", () => {
         totalRows: 0,
       });
       const invalidTopicEvents = yield* Fiber.join(invalidTopicEventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(invalidTopicEvents[1]).toStrictEqual({
         type: "status",
         topic: "orders",
@@ -1547,7 +1576,7 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       yield* server.emit({
         type: "snapshot",
         topic: "orders",
@@ -1558,6 +1587,7 @@ describe("remote ViewServer client", () => {
         totalRows: 1,
       });
       const missingFieldEvents = yield* Fiber.join(missingFieldEventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(missingFieldEvents[1]).toStrictEqual({
         type: "status",
         topic: "orders",
@@ -1576,7 +1606,7 @@ describe("remote ViewServer client", () => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      yield* Effect.sleep("10 millis");
+      yield* server.awaitSubscriptionCount(1);
       yield* server.emit({
         type: "status",
         topic: "orders",
@@ -1597,6 +1627,7 @@ describe("remote ViewServer client", () => {
         totalRows: 0,
       });
       const statusAndMoveEvents = yield* Fiber.join(statusAndMoveEventsFiber);
+      yield* server.awaitSubscriptionCount(0);
       expect(statusAndMoveEvents[1]).toStrictEqual({
         type: "status",
         topic: "orders",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { readFileSync } from "node:fs";
-import { profiles } from "./benchmark-baseline-runner.mjs";
+import { profiles } from "./benchmark-baseline-profiles.mjs";
 import { rawPredicateIndexTask } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {

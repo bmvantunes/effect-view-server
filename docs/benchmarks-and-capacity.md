@@ -101,7 +101,9 @@ Core capacity profiles cover:
 ## Artifacts
 
 Benchmark artifacts are written under package-local `.artifacts/` directories.
-Stable baseline comparisons are managed by `scripts/run-benchmark-baseline.mjs`.
+Each named execution writes a validated `profile-<name>.json` run artifact containing its profile
+identity and fresh task observations, but no comparison thresholds. Stable baseline updates and
+comparisons are managed separately by `scripts/run-benchmark-baseline.mjs`.
 Noisy maximum latency should stay report-only unless repeated runs prove the
 threshold is stable enough to gate CI.
 

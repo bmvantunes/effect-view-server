@@ -1,10 +1,8 @@
-import { existsSync, rmSync } from "node:fs";
-import { constants as osConstants } from "node:os";
+import { fileSystemBenchmarkArtifactIo } from "./benchmark-artifact-io.mjs";
 import {
   buildBenchmarkBaseline,
   compareBenchmarkBaseline,
   readBenchmarkBaseline,
-  readBenchmarkObservation,
   writeBenchmarkBaseline,
 } from "./benchmark-baseline.mjs";
 import {
@@ -12,18 +10,10 @@ import {
   repeatableReportOnlyProfiles,
 } from "./benchmark-baseline-profiles.mjs";
 import {
-  repeatArtifactPath,
-  summaryPath,
-  taskForRepeat,
-} from "./benchmark-baseline-task-catalog.mjs";
-
-export {
-  profiles,
-  repeatableReportOnlyProfiles,
-  repeatArtifactPath,
-  summaryPath,
-  taskForRepeat,
-};
+  requestedBenchmarkProfileName,
+  resolveBenchmarkProfile,
+} from "./benchmark-profile.mjs";
+import { runBenchmarkProfile } from "./benchmark-profile-runner.mjs";
 
 export const baselinePath = (profile) => `benchmarks/baselines/${profile}.json`;
 
@@ -45,49 +35,6 @@ export const repeatCountFrom = (argv) => {
   }
   const repeatCount = Number.parseInt(repeatValue, 10);
   return Number.isSafeInteger(repeatCount) && repeatCount <= 20 ? repeatCount : undefined;
-};
-
-export const isBenchmarkEnvironmentKey = (key) =>
-  key === "VIEW_SERVER_BENCH_BASELINE_PROFILE" ||
-  key === "VIEW_SERVER_BENCH_REPEAT_INDEX" ||
-  key === "VIEW_SERVER_BENCH_REPEAT_TOTAL" ||
-  key === "VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS" ||
-  key.startsWith("VIEW_SERVER_ENGINE_BENCH_") ||
-  key.startsWith("VIEW_SERVER_REACT_BENCH_") ||
-  key.startsWith("VIEW_SERVER_RUNTIME_BENCH_") ||
-  key.startsWith("VITE_VIEW_SERVER_REACT_BENCH_");
-
-export const cleanBenchmarkEnvironment = (environment) =>
-  Object.fromEntries(
-    Object.entries(environment).filter(([key]) => !isBenchmarkEnvironmentKey(key)),
-  );
-
-export const exitCodeForSignal = (signal) => {
-  const signalNumber = osConstants.signals[signal];
-  return typeof signalNumber === "number" ? 128 + signalNumber : 1;
-};
-
-export const removeTaskArtifacts = (currentTask) => {
-  rmSync(currentTask.outputJsonPath, { force: true });
-  rmSync(currentTask.summaryPath, { force: true });
-};
-
-export const assertTaskArtifactsWritten = (currentTask) => {
-  if (!existsSync(currentTask.outputJsonPath)) {
-    throw new Error(`${currentTask.label}: missing benchmark output ${currentTask.outputJsonPath}.`);
-  }
-  if (!existsSync(currentTask.summaryPath)) {
-    throw new Error(`${currentTask.label}: missing benchmark summary ${currentTask.summaryPath}.`);
-  }
-};
-
-const requestedProfileFrom = (argv, environment) => {
-  const profileArgument = argv.find((argument) => argument.startsWith("--profile="));
-  return (
-    profileArgument?.slice("--profile=".length) ??
-    environment["VIEW_SERVER_BENCH_BASELINE_PROFILE"] ??
-    "smoke"
-  );
 };
 
 const updateBaselineTaskArgument = "--update-baseline-task";
@@ -158,6 +105,7 @@ const mergeSelectedBaselineTasks = (baseline, actualBaseline) => {
 };
 
 export const runBenchmarkBaseline = async ({
+  artifactIo = fileSystemBenchmarkArtifactIo,
   argv,
   baselinePathForProfile = baselinePath,
   environment,
@@ -171,9 +119,8 @@ export const runBenchmarkBaseline = async ({
   const updateBaselineTaskSelection = updateBaselineTaskSelectionFrom(argv);
   const updateBaselineTaskLabels = updateBaselineTaskSelection.taskLabels;
   const repeatCount = repeatCountFrom(argv);
-  const requestedProfile = requestedProfileFrom(argv, environment);
+  const requestedProfile = requestedBenchmarkProfileName(argv, environment);
   const tasks = profileMap.get(requestedProfile);
-  const parentEnvironment = cleanBenchmarkEnvironment(environment);
 
   if (repeatCount === undefined) {
     logger.error("--repeat must be a positive integer.");
@@ -207,6 +154,7 @@ export const runBenchmarkBaseline = async ({
     );
     return 1;
   }
+  const resolvedProfile = resolveBenchmarkProfile(requestedProfile, profileMap);
   if (repeatCount > 1 && !repeatableProfiles.has(requestedProfile)) {
     logger.error(`--repeat is not enabled for benchmark baseline profile: ${requestedProfile}`);
     return 1;
@@ -261,35 +209,21 @@ export const runBenchmarkBaseline = async ({
       ? `${tasksToRun.length} tasks`
       : `${tasksToRun.length} tasks x ${repeatCount} runs`;
   logger.log(`Running ${requestedProfile} benchmark baseline serially (${runCountMessage}).`);
-
-  const completedTasks = [];
-  const totalTaskRuns = tasksToRun.length * repeatCount;
-  for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
-    for (const [index, baseTask] of tasksToRun.entries()) {
-      const taskNumber = repeatIndex * tasksToRun.length + index + 1;
-      const currentTask = taskForRepeat(baseTask, repeatIndex, repeatCount);
-      const startedAt = process.hrtime.bigint();
-      logger.log(`\n[${taskNumber}/${totalTaskRuns}] ${currentTask.label}`);
-      removeTaskArtifacts(currentTask);
-      const exitCode = await runTask({
-        ...currentTask,
-        env: {
-          ...parentEnvironment,
-          ...currentTask.env,
-        },
-      });
-      if (exitCode !== 0) {
-        return exitCode;
-      }
-      assertTaskArtifactsWritten(currentTask);
-      completedTasks.push(currentTask);
-      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
-      logger.log(`[${taskNumber}/${totalTaskRuns}] completed in ${elapsedMs.toFixed(0)}ms`);
-    }
+  const execution = await runBenchmarkProfile({
+    artifactIo,
+    environment,
+    logger,
+    profile: {
+      ...resolvedProfile,
+      tasks: tasksToRun,
+    },
+    repeatCount,
+    runTask,
+  });
+  if (execution.exitCode !== 0) {
+    return execution.exitCode;
   }
-
-  const observations = completedTasks.map(readBenchmarkObservation);
-  const actualBaseline = buildBenchmarkBaseline(requestedProfile, observations);
+  const actualBaseline = buildBenchmarkBaseline(requestedProfile, execution.artifact.tasks);
 
   if (updateBaseline) {
     const baselineToWrite =

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { profiles } from "./benchmark-baseline-runner.mjs";
+import { profiles } from "./benchmark-baseline-profiles.mjs";
 
 describe("benchmark baseline runner", () => {
   it("defines active-query sharing fanout tasks", () => {

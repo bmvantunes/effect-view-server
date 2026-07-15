@@ -7,4 +7,13 @@ import { defineTanStackReactExampleConfig } from "../vite.config.shared";
 export default defineTanStackReactExampleConfig({
   plugins: [tailwindcss(), tanstackStart(), viteReact()],
   browserProvider: playwright(),
+  enforceAllSourceCoverage: true,
+  optimizeDepsInclude: [
+    "@effect/platform-node",
+    "effect/unstable/http",
+    "effect/unstable/socket/Socket",
+    "effect-view-server > @connectrpc/connect",
+    "effect-view-server > @connectrpc/connect-node",
+    "effect-view-server > @platformatic/kafka",
+  ],
 });

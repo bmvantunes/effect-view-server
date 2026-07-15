@@ -64,7 +64,7 @@ describe("Runtime source composition and options", () => {
             metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
-        makeKafkaIngress: (_config, _client, _requestHealthRefresh, options) => {
+        makeKafkaIngress: (_config, _client, options) => {
           kafkaOptionsSummary = {
             consume: options.consume,
             consumerGroupId: options.consumerGroupId,

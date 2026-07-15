@@ -1,9 +1,8 @@
 import type { Message } from "@platformatic/kafka";
 import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import { Buffer } from "node:buffer";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import { Cause, Clock, Effect, Option } from "effect";
-import type { ViewServerKafkaHealthLedger } from "./kafka-health";
+import type { ViewServerKafkaHealthObservation } from "./kafka-health-observation";
 import {
   kafkaFailureCause,
   kafkaIngressFailureCause,
@@ -86,19 +85,9 @@ export type KafkaDeliveryRuntimeClient<Topics extends ViewServerRuntimeTopicDefi
   "delete" | "publishManyDecodedRowsWithStorageKeys"
 >;
 
-export type KafkaDeliveryHealthRefreshRequest = Effect.Effect<void>;
-
 export type KafkaDecodedCommitOptions = {
   readonly preserveLastErrorForSourceTopic: string | undefined;
 };
-
-const ignoreKafkaDeliveryHealthRefreshFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
-  "Ignoring Kafka delivery health refresh failure.",
-);
-
-const requestKafkaDeliveryHealthRefresh = (
-  requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-) => requestHealthRefresh.pipe(ignoreKafkaDeliveryHealthRefreshFailure);
 
 export const kafkaBatchMessageIsTombstone = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -173,8 +162,7 @@ export const planKafkaUpsertPublishRuns = <const Topics extends ViewServerRuntim
 
 const publishKafkaRowsForMessages = Effect.fn("ViewServerRuntime.kafka.delivery.publishRows")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-    requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-    health: ViewServerKafkaHealthLedger<Topics>,
+    health: ViewServerKafkaHealthObservation<Topics>,
     region: string,
     sourceTopic: string,
     messages: ReadonlyArray<DecodedKafkaBatchMessage<Topics>>,
@@ -206,7 +194,6 @@ const publishKafkaRowsForMessages = Effect.fn("ViewServerRuntime.kafka.delivery.
               }),
             { discard: true },
           ).pipe(
-            Effect.andThen(requestKafkaDeliveryHealthRefresh(requestHealthRefresh)),
             Effect.andThen(Effect.failCause(kafkaIngressFailureCause(processingError, cause))),
           );
         },
@@ -219,8 +206,7 @@ const publishKafkaRowsForMessages = Effect.fn("ViewServerRuntime.kafka.delivery.
 export const commitSkippedKafkaMessage = Effect.fn(
   "ViewServerRuntime.kafka.delivery.skipAndCommit",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-  health: ViewServerKafkaHealthLedger<Topics>,
+  health: ViewServerKafkaHealthObservation<Topics>,
   region: string,
   sourceTopic: string,
   message: KafkaConsumerMessage,
@@ -251,42 +237,35 @@ export const commitSkippedKafkaMessage = Effect.fn(
           }),
       }),
     ),
-  ).pipe(Effect.ensuring(requestKafkaDeliveryHealthRefresh(requestHealthRefresh)));
+  );
 });
 
 export const recordAndCommitKeylessKafkaMessage = Effect.fn(
   "ViewServerRuntime.kafka.delivery.keylessSkipAndCommit",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-  health: ViewServerKafkaHealthLedger<Topics>,
+  health: ViewServerKafkaHealthObservation<Topics>,
   region: string,
   message: KafkaConsumerMessage,
 ) {
   const nowMillis = yield* Clock.currentTimeMillis;
   const sourceTopic = message.topic;
   const messageBytes = (message.value?.byteLength ?? 0) + (message.key?.byteLength ?? 0);
-  yield* health
-    .mappingFailed(sourceTopic, region, {
-      bytes: messageBytes,
-      message: "Kafka source key bytes are required",
-      nowMillis,
-    })
-    .pipe(Effect.andThen(requestKafkaDeliveryHealthRefresh(requestHealthRefresh)));
-  yield* commitSkippedKafkaMessage(requestHealthRefresh, health, region, sourceTopic, message, {
+  yield* health.mappingFailed(sourceTopic, region, {
+    bytes: messageBytes,
+    message: "Kafka source key bytes are required",
     nowMillis,
   });
+  yield* commitSkippedKafkaMessage(health, region, sourceTopic, message, { nowMillis });
 });
 
 const publishKafkaDecodedTombstone = Effect.fn("ViewServerRuntime.kafka.delivery.publishTombstone")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     client: KafkaDeliveryRuntimeClient<Topics>,
-    requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-    health: ViewServerKafkaHealthLedger<Topics>,
+    health: ViewServerKafkaHealthObservation<Topics>,
     region: string,
     message: DecodedKafkaBatchTombstoneMessage<Topics>,
   ) {
     yield* publishKafkaRowsForMessages(
-      requestHealthRefresh,
       health,
       region,
       message.sourceTopic,
@@ -299,13 +278,11 @@ const publishKafkaDecodedTombstone = Effect.fn("ViewServerRuntime.kafka.delivery
 const publishKafkaDecodedUpsertRun = Effect.fn("ViewServerRuntime.kafka.delivery.publishUpserts")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     client: KafkaDeliveryRuntimeClient<Topics>,
-    requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-    health: ViewServerKafkaHealthLedger<Topics>,
+    health: ViewServerKafkaHealthObservation<Topics>,
     region: string,
     run: KafkaUpsertPublishRun<Topics>,
   ) {
     yield* publishKafkaRowsForMessages(
-      requestHealthRefresh,
       health,
       region,
       run.sourceTopic,
@@ -323,8 +300,7 @@ const publishKafkaDecodedUpsertRun = Effect.fn("ViewServerRuntime.kafka.delivery
 
 export const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.delivery.commit")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-    requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-    health: ViewServerKafkaHealthLedger<Topics>,
+    health: ViewServerKafkaHealthObservation<Topics>,
     region: string,
     messages: ReadonlyArray<DecodedKafkaBatchMessage<Topics>>,
     options?: KafkaDecodedCommitOptions,
@@ -358,7 +334,7 @@ export const commitKafkaDecodedBatch = Effect.fn("ViewServerRuntime.kafka.delive
           ),
         );
       }
-    }).pipe(Effect.ensuring(requestKafkaDeliveryHealthRefresh(requestHealthRefresh)));
+    });
   },
 );
 
@@ -366,8 +342,7 @@ export const publishAndCommitKafkaDecodedBatch = Effect.fn(
   "ViewServerRuntime.kafka.delivery.publishAndCommit",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
   client: KafkaDeliveryRuntimeClient<Topics>,
-  requestHealthRefresh: KafkaDeliveryHealthRefreshRequest,
-  health: ViewServerKafkaHealthLedger<Topics>,
+  health: ViewServerKafkaHealthObservation<Topics>,
   region: string,
   messages: ReadonlyArray<DecodedKafkaBatchMessage<Topics>>,
   options?: KafkaDecodedCommitOptions,
@@ -378,15 +353,8 @@ export const publishAndCommitKafkaDecodedBatch = Effect.fn(
     if (run._tag === "Upserts") {
       const upsertRuns = planKafkaUpsertPublishRuns(run.messages);
       for (const upsertRun of upsertRuns) {
-        yield* publishKafkaDecodedUpsertRun(
-          client,
-          requestHealthRefresh,
-          health,
-          region,
-          upsertRun,
-        );
+        yield* publishKafkaDecodedUpsertRun(client, health, region, upsertRun);
         yield* commitKafkaDecodedBatch(
-          requestHealthRefresh,
           health,
           region,
           upsertRun.rows.map((row) => row.message),
@@ -394,14 +362,8 @@ export const publishAndCommitKafkaDecodedBatch = Effect.fn(
         );
       }
     } else {
-      yield* publishKafkaDecodedTombstone(
-        client,
-        requestHealthRefresh,
-        health,
-        region,
-        run.message,
-      );
-      yield* commitKafkaDecodedBatch(requestHealthRefresh, health, region, [run.message], options);
+      yield* publishKafkaDecodedTombstone(client, health, region, run.message);
+      yield* commitKafkaDecodedBatch(health, region, [run.message], options);
     }
   }
 });

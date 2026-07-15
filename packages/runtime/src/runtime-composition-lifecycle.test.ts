@@ -298,6 +298,133 @@ describe("Real View Server composition lifecycle", () => {
     }),
   );
 
+  it.effect("keeps the Kafka observation resource alive until Kafka ingress has stopped", () =>
+    Effect.gen(function* () {
+      const events: Array<string> = [];
+      const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
+        ...defaults,
+        makeRuntimeCore: (config, options) =>
+          Effect.sync(() => {
+            events.push("acquire:runtimeCore");
+          }).pipe(
+            Effect.andThen(defaults.makeRuntimeCore(config, options)),
+            Effect.map((runtimeCore) => ({
+              ...runtimeCore,
+              close: Effect.sync(() => {
+                events.push("close:runtimeCore");
+              }).pipe(Effect.andThen(runtimeCore.close)),
+            })),
+          ),
+        makeKafkaHealthObserver: (health, requestHealthRefresh) =>
+          Effect.sync(() => {
+            events.push("acquire:kafkaHealthObserver");
+          }).pipe(
+            Effect.andThen(defaults.makeKafkaHealthObserver(health, requestHealthRefresh)),
+            Effect.map((observer) => ({
+              ...observer,
+              close: Effect.sync(() => {
+                events.push("close:kafkaHealthObserver");
+              }).pipe(Effect.andThen(observer.close)),
+            })),
+          ),
+        makeServer: () =>
+          Effect.sync(() => {
+            events.push("acquire:server");
+            return {
+              url: "ws://127.0.0.1:0/rpc",
+              healthUrl: "http://127.0.0.1:0/health",
+              metricsUrl: "http://127.0.0.1:0/metrics",
+              close: Effect.sync(() => {
+                events.push("close:server");
+              }),
+            };
+          }),
+        makeKafkaIngress: () =>
+          Effect.sync(() => {
+            events.push("acquire:kafkaIngress");
+            return {
+              close: Effect.sync(() => {
+                events.push("close:kafkaIngress");
+              }),
+            };
+          }),
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, kafkaViewServer, {
+        kafka: {
+          consumerGroupId: "runtime-observation-ownership-test",
+        },
+      });
+      yield* runtime.close;
+
+      expect(events).toStrictEqual([
+        "acquire:runtimeCore",
+        "acquire:kafkaHealthObserver",
+        "acquire:server",
+        "acquire:kafkaIngress",
+        "close:kafkaIngress",
+        "close:server",
+        "close:kafkaHealthObserver",
+        "close:runtimeCore",
+      ]);
+    }),
+  );
+
+  it.effect("closes a Kafka health observer when acquisition receives a pending interrupt", () =>
+    Effect.gen(function* () {
+      const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      const observerCreated = yield* Deferred.make<void>();
+      const allowObserverReturn = yield* Deferred.make<void>();
+      let observerCloseCount = 0;
+      let cleanupObserver = Effect.void;
+      const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
+        ...defaults,
+        makeKafkaHealthObserver: (health, requestHealthRefresh) =>
+          Effect.uninterruptible(
+            defaults.makeKafkaHealthObserver(health, requestHealthRefresh).pipe(
+              Effect.map((observer) => {
+                const close = Effect.sync(() => {
+                  observerCloseCount += 1;
+                }).pipe(Effect.andThen(observer.close));
+                cleanupObserver = close;
+                return {
+                  ...observer,
+                  close,
+                };
+              }),
+              Effect.tap(() => Deferred.succeed(observerCreated, undefined)),
+              Effect.tap(() => Deferred.await(allowObserverReturn)),
+            ),
+          ),
+      };
+      const startup = yield* makeViewServerRuntimeWithDependencies(dependencies, kafkaViewServer, {
+        kafka: {
+          consumerGroupId: "runtime-observer-interruption-test",
+        },
+      }).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Deferred.await(observerCreated);
+      const interrupt = yield* Fiber.interrupt(startup).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(allowObserverReturn, undefined);
+      yield* Fiber.join(interrupt);
+      const startupExit = yield* Fiber.await(startup);
+      const closeCountBeforeManualCleanup = observerCloseCount;
+      yield* cleanupObserver;
+
+      expect({
+        closeCountBeforeManualCleanup,
+        startupInterrupted: Exit.hasInterrupts(startupExit),
+      }).toStrictEqual({
+        closeCountBeforeManualCleanup: 1,
+        startupInterrupted: true,
+      });
+    }),
+  );
+
   it.effect("shares one join-idempotent close across every public owner", () =>
     Effect.gen(function* () {
       const cleanupStarted = yield* Deferred.make<void>();

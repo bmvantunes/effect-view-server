@@ -79,6 +79,18 @@ const acquireRuntimeResource = Effect.fn("ViewServerRuntime.acquireResource")(fu
   );
 });
 
+const acquireRuntimeResourceUninterruptibly = Effect.fn(
+  "ViewServerRuntime.acquireResourceUninterruptibly",
+)(function* <A, E, R>(
+  scope: Scope.Scope,
+  acquire: Effect.Effect<A, E, R>,
+  release: (resource: A) => Effect.Effect<void>,
+) {
+  return yield* Effect.acquireRelease(acquire, release, { interruptible: false }).pipe(
+    Scope.provide(scope),
+  );
+});
+
 type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
   groupedIncrementalAdmissionLimits?: NonNullable<
     ViewServerRuntimeCoreOptionsFor<Topics>["groupedIncrementalAdmissionLimits"]
@@ -194,6 +206,14 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
       (resource) => resource.close,
     );
+    const kafkaHealthObserver =
+      kafkaHealth === undefined
+        ? undefined
+        : yield* acquireRuntimeResourceUninterruptibly(
+            runtimeScope,
+            dependencies.makeKafkaHealthObserver(kafkaHealth, runtimeCore.requestHealthRefresh),
+            (resource) => resource.close,
+          );
     const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
     const grpcLeaseManager =
       grpcOptions === undefined || grpcHealth === undefined
@@ -232,15 +252,14 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       ),
       (resource) => resource.close,
     );
-    if (kafkaOptions !== undefined && kafkaHealth !== undefined) {
+    if (kafkaOptions !== undefined && kafkaHealthObserver !== undefined) {
       yield* acquireRuntimeResource(
         runtimeScope,
         dependencies.makeKafkaIngress(
           dependencyConfig,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
-          kafkaHealth,
+          kafkaHealthObserver,
         ),
         (resource) => resource.close,
       );

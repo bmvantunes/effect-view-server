@@ -63,7 +63,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           viewServer,
           publishManyFailingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -147,7 +146,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           viewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -326,7 +324,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         processKafkaMessageBatch(
           mappingViewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           mappingKafkaOptions,
           ledger,
           "local",
@@ -503,7 +500,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           multiSourceViewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
           ledger,
           "local",
@@ -703,7 +699,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         processKafkaMessageBatch(
           missingPaymentsViewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
           ledger,
           "local",
@@ -859,7 +854,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         processKafkaMessageBatch(
           missingPaymentsViewServer,
           publishManyFailingClient,
-          runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
           ledger,
           "local",
@@ -1041,7 +1035,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           defectingViewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           defectingKafkaOptions,
           ledger,
           "local",
@@ -1162,7 +1155,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           viewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -1341,7 +1333,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           mixedInterruptViewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           mixedInterruptKafkaOptions,
           ledger,
           "local",
@@ -1503,7 +1494,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           mixedCauseViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           mixedCauseKafkaOptions,
           ledger,
           "local",
@@ -1658,7 +1648,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           interruptingViewServer,
           batchingClient,
-          runtimeCore.requestHealthRefresh,
           interruptingKafkaOptions,
           ledger,
           "local",
@@ -1763,7 +1752,6 @@ describe("Kafka microbatch failure recovery internals", () => {
           runKafkaMessageStream(
             viewServer,
             runtimeCore.internalClient,
-            runtimeCore.requestHealthRefresh,
             kafkaOptions,
             ledger,
             "local",
@@ -1872,7 +1860,6 @@ describe("Kafka microbatch failure recovery internals", () => {
         runKafkaMessageStream(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",

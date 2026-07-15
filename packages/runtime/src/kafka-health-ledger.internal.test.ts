@@ -4,11 +4,8 @@ import { makeViewServerRuntimeCoreInternal as makeViewServerRuntimeCore } from "
 import { Buffer } from "node:buffer";
 import { Cause, Deferred, Effect, Exit, Fiber, Logger, References, Scope } from "effect";
 import type { ViewServerKafkaHealthLedger } from "./kafka-health";
-import {
-  recordKafkaAssignments,
-  recordKafkaLag,
-  registerKafkaConsumerHealthListeners,
-} from "./kafka-ingress";
+import { recordKafkaAssignments, recordKafkaLag } from "./kafka-health-observation";
+import { registerKafkaConsumerHealthListeners } from "./kafka-ingress";
 import {
   kafkaOptions,
   makeCapturedLogs,
@@ -245,14 +242,9 @@ describe("Kafka ingress health ledger internals", () => {
             },
           },
         });
-        let healthRefreshRequestCount = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshRequestCount += 1;
-        });
         yield* ledger.regionConnected("local", 1_000);
         yield* recordKafkaAssignments(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           [{ topic: ordersSourceTopic, partitions: [0, 1] }],
@@ -260,7 +252,6 @@ describe("Kafka ingress health ledger internals", () => {
         );
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic, unknownSourceTopic],
           new Map([
@@ -270,8 +261,6 @@ describe("Kafka ingress health ledger internals", () => {
           2_000,
         );
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
-
-        expect(healthRefreshRequestCount).toBe(2);
         expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
           status: "ready",
           sourceTopic: ordersSourceTopic,
@@ -315,14 +304,9 @@ describe("Kafka ingress health ledger internals", () => {
             },
           },
         });
-        let healthRefreshRequestCount = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshRequestCount += 1;
-        });
 
         yield* recordKafkaAssignments(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           [{ topic: ordersSourceTopic, partitions: [0] }],
@@ -330,7 +314,6 @@ describe("Kafka ingress health ledger internals", () => {
         );
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           new Map([[ordersSourceTopic, [5n]]]),
@@ -338,15 +321,12 @@ describe("Kafka ingress health ledger internals", () => {
         );
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           new Map([[ordersSourceTopic, [-1n]]]),
           2_000,
         );
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
-
-        expect(healthRefreshRequestCount).toBe(3);
         expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
           status: "ready",
           sourceTopic: ordersSourceTopic,
@@ -389,14 +369,9 @@ describe("Kafka ingress health ledger internals", () => {
             },
           },
         });
-        let healthRefreshRequestCount = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshRequestCount += 1;
-        });
 
         yield* recordKafkaAssignments(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           [{ topic: ordersSourceTopic, partitions: [0] }],
@@ -404,15 +379,12 @@ describe("Kafka ingress health ledger internals", () => {
         );
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           new Map([[ordersSourceTopic, []]]),
           2_000,
         );
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
-
-        expect(healthRefreshRequestCount).toBe(2);
         expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
           status: "ready",
           sourceTopic: ordersSourceTopic,
@@ -459,15 +431,10 @@ describe("Kafka ingress health ledger internals", () => {
             },
           },
         });
-        let healthRefreshRequestCount = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshRequestCount += 1;
-        });
 
         yield* ledger.regionConnected("local", 1_000);
         yield* recordKafkaAssignments(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic, paymentsSourceTopic],
           [
@@ -478,7 +445,6 @@ describe("Kafka ingress health ledger internals", () => {
         );
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic, paymentsSourceTopic],
           new Map([
@@ -489,15 +455,12 @@ describe("Kafka ingress health ledger internals", () => {
         );
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic, paymentsSourceTopic],
           new Map([[ordersSourceTopic, [1n]]]),
           3_000,
         );
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 3_000);
-
-        expect(healthRefreshRequestCount).toBe(3);
         expect({
           orders: health.kafka?.topics[ordersSourceTopic],
           payments: health.kafka?.topics[paymentsSourceTopic],
@@ -570,15 +533,10 @@ describe("Kafka ingress health ledger internals", () => {
             },
           },
         });
-        let healthRefreshRequestCount = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshRequestCount += 1;
-        });
 
         yield* ledger.regionConnected("local", 1_000);
         yield* recordKafkaAssignments(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           [{ topic: ordersSourceTopic, partitions: [0, 1] }],
@@ -587,15 +545,12 @@ describe("Kafka ingress health ledger internals", () => {
         yield* ledger.regionDisconnected("local", "Kafka consumer left group");
         yield* recordKafkaLag(
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           new Map([[ordersSourceTopic, [8n, -1n, 3n]]]),
           2_000,
         );
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 2_000);
-
-        expect(healthRefreshRequestCount).toBe(2);
         expect({
           region: health.kafka?.regions["local"],
           topicStatus: health.kafka?.topics[ordersSourceTopic]?.status,
@@ -643,10 +598,6 @@ describe("Kafka ingress health ledger internals", () => {
           },
         },
       });
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
         bootstrapBrokers: ["127.0.0.1:1"],
         clientId: "view-server-listener-test",
@@ -657,7 +608,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         ledger,
-        requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,
@@ -686,13 +636,7 @@ describe("Kafka ingress health ledger internals", () => {
       const degradedProcessed = yield* listenerRegistration.processed;
       const degradedHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
-      expect({
-        healthRefreshRequestCount,
-        processed: degradedProcessed,
-      }).toStrictEqual({
-        healthRefreshRequestCount: 5,
-        processed: 5,
-      });
+      expect(degradedProcessed).toBe(5);
       expect({
         region: degradedHealth.kafka?.regions["local"],
         topicStatus: degradedHealth.kafka?.topics[ordersSourceTopic]?.status,
@@ -738,13 +682,7 @@ describe("Kafka ingress health ledger internals", () => {
       const recoveredProcessed = yield* listenerRegistration.processed;
       const recoveredHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
-      expect({
-        healthRefreshRequestCount,
-        processed: recoveredProcessed,
-      }).toStrictEqual({
-        healthRefreshRequestCount: 7,
-        processed: 7,
-      });
+      expect(recoveredProcessed).toBe(7);
       expect({
         region: recoveredHealth.kafka?.regions["local"],
         topicStatus: recoveredHealth.kafka?.topics[ordersSourceTopic]?.status,
@@ -800,10 +738,6 @@ describe("Kafka ingress health ledger internals", () => {
           },
         },
       });
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
         bootstrapBrokers: ["127.0.0.1:1"],
         clientId: "view-server-listener-omitted-lag-test",
@@ -814,7 +748,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         ledger,
-        requestHealthRefresh,
         "local",
         [ordersSourceTopic, paymentsSourceTopic],
         scope,
@@ -845,11 +778,9 @@ describe("Kafka ingress health ledger internals", () => {
       const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect({
-        healthRefreshRequestCount,
         orders: health.kafka?.topics[ordersSourceTopic]?.regions["local"],
         payments: health.kafka?.topics[paymentsSourceTopic]?.regions["local"],
       }).toStrictEqual({
-        healthRefreshRequestCount: 3,
         orders: {
           connected: true,
           assignedPartitions: 1,
@@ -909,10 +840,6 @@ describe("Kafka ingress health ledger internals", () => {
             },
           },
         });
-        let healthRefreshRequestCount = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshRequestCount += 1;
-        });
         const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
           bootstrapBrokers: ["127.0.0.1:1"],
           clientId: "view-server-listener-rebalance-test",
@@ -923,7 +850,6 @@ describe("Kafka ingress health ledger internals", () => {
         const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
           consumer,
           ledger,
-          requestHealthRefresh,
           "local",
           [ordersSourceTopic],
           scope,
@@ -939,8 +865,6 @@ describe("Kafka ingress health ledger internals", () => {
         });
         yield* Fiber.join(connectedWait);
         const connectedHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
-
-        expect(healthRefreshRequestCount).toBe(1);
         expect({
           region: connectedHealth.kafka?.regions["local"],
           topicRegion: connectedHealth.kafka?.topics[ordersSourceTopic]?.regions["local"],
@@ -979,8 +903,6 @@ describe("Kafka ingress health ledger internals", () => {
         });
         yield* Fiber.join(rebalanceWait);
         const rebalanceHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
-
-        expect(healthRefreshRequestCount).toBe(2);
         expect({
           region: rebalanceHealth.kafka?.regions["local"],
           topicStatus: rebalanceHealth.kafka?.topics[ordersSourceTopic]?.status,
@@ -1023,8 +945,6 @@ describe("Kafka ingress health ledger internals", () => {
         });
         yield* Fiber.join(recoveredWait);
         const recoveredHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
-
-        expect(healthRefreshRequestCount).toBe(3);
         expect({
           region: recoveredHealth.kafka?.regions["local"],
           topicStatus: recoveredHealth.kafka?.topics[ordersSourceTopic]?.status,
@@ -1083,10 +1003,6 @@ describe("Kafka ingress health ledger internals", () => {
             Effect.andThen(ledger.regionDisconnected(region, message, options)),
           ),
       };
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
         bootstrapBrokers: ["127.0.0.1:1"],
         clientId: "view-server-listener-rebalance-order-test",
@@ -1097,7 +1013,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         delayedDisconnectLedger,
-        requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,
@@ -1126,8 +1041,6 @@ describe("Kafka ingress health ledger internals", () => {
       });
       yield* Fiber.join(recoveredWait);
       const recoveredHealth = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
-
-      expect(healthRefreshRequestCount).toBe(3);
       expect({
         region: recoveredHealth.kafka?.regions["local"],
         topicStatus: recoveredHealth.kafka?.topics[ordersSourceTopic]?.status,
@@ -1187,10 +1100,6 @@ describe("Kafka ingress health ledger internals", () => {
             Effect.andThen(ledger.regionDegraded(region, message)),
           ),
       };
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
         bootstrapBrokers: ["127.0.0.1:1"],
         clientId: "view-server-listener-assignment-snapshot-test",
@@ -1201,7 +1110,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         blockingLedger,
-        requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,
@@ -1220,8 +1128,6 @@ describe("Kafka ingress health ledger internals", () => {
       yield* Deferred.succeed(releaseLagError, undefined);
       yield* Fiber.join(processedWait);
       const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
-
-      expect(healthRefreshRequestCount).toBe(2);
       expect(health.kafka?.topics[ordersSourceTopic]?.regions["local"]).toStrictEqual({
         connected: true,
         assignedPartitions: 2,
@@ -1278,7 +1184,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         failingLedger,
-        runtimeCore.requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,
@@ -1372,7 +1277,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         interruptingLedger,
-        runtimeCore.requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,
@@ -1465,7 +1369,6 @@ describe("Kafka ingress health ledger internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         blockingLedger,
-        runtimeCore.requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,

@@ -11,6 +11,7 @@ import {
   processKafkaMessage,
   registerKafkaConsumerHealthListeners,
 } from "./kafka-ingress";
+import { makeViewServerKafkaHealthObserver } from "./kafka-health-observation";
 import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
 import {
   committedKafkaStart,
@@ -50,16 +51,20 @@ describe("Kafka ingress source processing internals", () => {
         regions: emptyKafkaOptions.regions,
         topics: {},
       });
+      const observer = yield* makeViewServerKafkaHealthObserver(
+        ledger,
+        runtimeCore.requestHealthRefresh,
+      );
 
       const ingress = yield* makeViewServerKafkaIngress(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         emptyKafkaOptions,
-        ledger,
+        observer,
       );
       yield* ingress.close;
       yield* ingress.close;
+      yield* observer.close;
       const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect(health.status).toBe("ready");
@@ -164,10 +169,6 @@ describe("Kafka ingress source processing internals", () => {
           },
         },
       });
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
         bootstrapBrokers: ["127.0.0.1:1"],
         clientId: "view-server-scoped-listener-test",
@@ -177,7 +178,6 @@ describe("Kafka ingress source processing internals", () => {
       const listenerRegistration = yield* registerKafkaConsumerHealthListeners(
         consumer,
         ledger,
-        requestHealthRefresh,
         "local",
         [ordersSourceTopic],
         scope,
@@ -196,11 +196,9 @@ describe("Kafka ingress source processing internals", () => {
       const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect({
-        healthRefreshRequestCount,
         region: health.kafka?.regions["local"],
         topic: health.kafka?.topics[ordersSourceTopic],
       }).toStrictEqual({
-        healthRefreshRequestCount: 0,
         region: {
           status: "starting",
           brokers: regions.local,
@@ -260,19 +258,23 @@ describe("Kafka ingress source processing internals", () => {
           },
         },
       });
+      const observer = yield* makeViewServerKafkaHealthObserver(
+        ledger,
+        runtimeCore.requestHealthRefresh,
+      );
 
       const exit = yield* Effect.exit(
         makeViewServerKafkaIngress(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           invalidKafkaOptions,
-          ledger,
+          observer,
         ),
       );
 
       expect(Exit.isFailure(exit)).toBe(true);
 
+      yield* observer.close;
       yield* runtimeCore.close;
     }),
   );
@@ -296,7 +298,6 @@ describe("Kafka ingress source processing internals", () => {
       yield* processKafkaMessage(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "local",
@@ -309,7 +310,6 @@ describe("Kafka ingress source processing internals", () => {
       yield* processKafkaMessage(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "cold",
@@ -329,7 +329,6 @@ describe("Kafka ingress source processing internals", () => {
       yield* processKafkaMessage(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "local",
@@ -351,7 +350,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -371,7 +369,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           viewServer,
           failingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -468,7 +465,6 @@ describe("Kafka ingress source processing internals", () => {
       yield* processKafkaMessage(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "local",
@@ -485,7 +481,6 @@ describe("Kafka ingress source processing internals", () => {
       yield* processKafkaMessage(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "cold",
@@ -582,7 +577,6 @@ describe("Kafka ingress source processing internals", () => {
       yield* processKafkaMessage(
         preciseViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         preciseKafkaOptions,
         ledger,
         "local",
@@ -666,16 +660,11 @@ describe("Kafka ingress source processing internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
 
       const error = yield* Effect.flip(
         processKafkaMessage(
           throwingViewServer,
           runtimeCore.internalClient,
-          requestHealthRefresh,
           throwingKafkaOptions,
           ledger,
           "local",
@@ -699,7 +688,6 @@ describe("Kafka ingress source processing internals", () => {
           region: error.region,
           sourceTopic: error.sourceTopic,
         },
-        healthRefreshRequestCount,
         kafkaTopic: health.kafka?.topics[ordersSourceTopic],
       }).toStrictEqual({
         error: {
@@ -708,7 +696,6 @@ describe("Kafka ingress source processing internals", () => {
           region: "local",
           sourceTopic: ordersSourceTopic,
         },
-        healthRefreshRequestCount: 1,
         kafkaTopic: {
           status: "degraded",
           sourceTopic: ordersSourceTopic,
@@ -787,7 +774,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           untaggedDecodeViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           untaggedDecodeKafkaOptions,
           ledger,
           "local",
@@ -887,7 +873,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           forgedMappingTagViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           forgedMappingTagKafkaOptions,
           ledger,
           "local",
@@ -993,7 +978,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           primitiveDecodeViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           primitiveDecodeKafkaOptions,
           ledger,
           "local",
@@ -1060,16 +1044,11 @@ describe("Kafka ingress source processing internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
 
       const exit = yield* Effect.exit(
         processKafkaMessage(
           viewServer,
           runtimeCore.internalClient,
-          requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -1084,7 +1063,6 @@ describe("Kafka ingress source processing internals", () => {
       const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
       expect(Exit.isSuccess(exit)).toBe(true);
-      expect(healthRefreshRequestCount).toBe(2);
       expect(health.kafka?.topics[ordersSourceTopic]).toStrictEqual({
         status: "degraded",
         sourceTopic: ordersSourceTopic,
@@ -1129,10 +1107,6 @@ describe("Kafka ingress source processing internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const commitFailedMessage = kafkaMessage({
         topic: ordersSourceTopic,
         key: null,
@@ -1145,7 +1119,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           viewServer,
           runtimeCore.internalClient,
-          requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -1161,7 +1134,6 @@ describe("Kafka ingress source processing internals", () => {
           region: error.region,
           sourceTopic: error.sourceTopic,
         },
-        healthRefreshRequestCount,
         kafkaTopic: health.kafka?.topics[ordersSourceTopic],
       }).toStrictEqual({
         error: {
@@ -1170,7 +1142,6 @@ describe("Kafka ingress source processing internals", () => {
           region: "local",
           sourceTopic: ordersSourceTopic,
         },
-        healthRefreshRequestCount: 2,
         kafkaTopic: {
           status: "degraded",
           sourceTopic: ordersSourceTopic,
@@ -1216,11 +1187,6 @@ describe("Kafka ingress source processing internals", () => {
       });
       yield* ledger.regionConnected("local", 1_000);
       yield* ledger.topicConnected(ordersSourceTopic, "local", 1, 1_000);
-
-      let healthRefreshRequestCount = 0;
-      const requestHealthRefresh = Effect.sync(() => {
-        healthRefreshRequestCount += 1;
-      });
       const commitFailedMessage = kafkaMessage({
         topic: ordersSourceTopic,
         key: "order-commit-failed",
@@ -1237,7 +1203,6 @@ describe("Kafka ingress source processing internals", () => {
         processKafkaMessage(
           viewServer,
           runtimeCore.internalClient,
-          requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -1258,7 +1223,6 @@ describe("Kafka ingress source processing internals", () => {
           region: error.region,
           sourceTopic: error.sourceTopic,
         },
-        healthRefreshRequestCount,
         snapshot,
         kafkaTopic: health.kafka?.topics[ordersSourceTopic],
       }).toStrictEqual({
@@ -1268,7 +1232,6 @@ describe("Kafka ingress source processing internals", () => {
           region: "local",
           sourceTopic: ordersSourceTopic,
         },
-        healthRefreshRequestCount: 1,
         snapshot: {
           status: "ready",
           statusCode: "Ready",

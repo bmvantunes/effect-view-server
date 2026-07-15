@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Schema } from "effect";
 import * as Net from "node:net";
 
 export class TcpPublisherExampleError extends Schema.TaggedErrorClass<TcpPublisherExampleError>()(
@@ -39,6 +39,18 @@ export type WriteCommandOptions = {
   readonly port?: number;
 };
 
+type ResolvedWriteCommandOptions = {
+  readonly host: string;
+  readonly port: number;
+};
+
+const defaultWriteCommandOptions: ResolvedWriteCommandOptions = {
+  host: "127.0.0.1",
+  port: 8081,
+};
+
+const acknowledgementTimeout = "5 seconds";
+
 const TcpPublishResponse = Schema.Union([
   Schema.Struct({
     ok: Schema.Literal(true),
@@ -56,8 +68,10 @@ const TcpPublishResponse = Schema.Union([
 
 export type TcpPublishResponse = typeof TcpPublishResponse.Type;
 
-const parseTcpPublishResponse = (line: string) =>
-  Effect.try({
+const parseTcpPublishResponse = Effect.fn("TcpPublisherExample.parseResponse")(function* (
+  line: string,
+) {
+  const parsed = yield* Effect.try({
     try: () => JSON.parse(line),
     catch: (cause) =>
       new TcpPublisherExampleError({
@@ -65,67 +79,111 @@ const parseTcpPublishResponse = (line: string) =>
         message: "Invalid TCP publish acknowledgement.",
       }),
   });
+  return yield* Schema.decodeUnknownEffect(TcpPublishResponse)(parsed);
+});
 
-export const writeCommand = (
-  command: TcpCommand | InvalidTcpCommand,
-  options: WriteCommandOptions = {},
-) =>
-  Effect.tryPromise({
-    try: () =>
-      new Promise<unknown>((resolve, reject) => {
-        let isSettled = false;
-        let responseBuffer = "";
-        const socket = Net.createConnection({
-          host: options.host ?? "127.0.0.1",
-          port: options.port ?? 8081,
-        });
-        const writeCommand = () => {
-          socket.write(`${JSON.stringify(command)}\n`);
-        };
-        const cleanup = () => {
-          socket.off("data", onData);
-          socket.off("connect", writeCommand);
-          socket.off("error", fail);
-        };
-        const finish = (line: string) => {
-          if (!isSettled) {
-            isSettled = true;
-            cleanup();
-            socket.end();
-            Effect.runPromise(parseTcpPublishResponse(line)).then(resolve, reject);
-          }
-        };
-        const fail = (cause: unknown) => {
-          if (!isSettled) {
-            isSettled = true;
-            cleanup();
-            socket.destroy();
-            reject(cause);
-          }
-        };
-        const onData = (chunk: Buffer) => {
-          responseBuffer += chunk.toString("utf8");
-          const newlineIndex = responseBuffer.indexOf("\n");
-          if (newlineIndex >= 0) {
-            finish(responseBuffer.slice(0, newlineIndex));
-          }
-        };
-        socket.setTimeout(5_000, () =>
-          fail(
-            new TcpPublisherExampleError({
-              message: "Timed out waiting for TCP publish acknowledgement.",
-            }),
+const tcpPublishTransportError = (cause: unknown, message = "TCP publish command failed.") =>
+  new TcpPublisherExampleError({ cause, message });
+
+const createTcpResponseLineHandler = (complete: (line: string) => void) => {
+  let responseBuffer = "";
+  return (chunk: Buffer) => {
+    responseBuffer += chunk.toString("utf8");
+    const newlineIndex = responseBuffer.indexOf("\n");
+    if (newlineIndex >= 0) {
+      complete(responseBuffer.slice(0, newlineIndex));
+    }
+  };
+};
+
+const acquireCommandSocket = Effect.fn("TcpPublisherExample.acquireCommandSocket")(function* (
+  commandLine: string,
+  responseLine: Deferred.Deferred<string, TcpPublisherExampleError>,
+) {
+  return yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      const socket = new Net.Socket();
+      const onConnect = () => {
+        socket.write(commandLine);
+      };
+      const onData = createTcpResponseLineHandler((line) => {
+        Deferred.doneUnsafe(responseLine, Effect.succeed(line));
+      });
+      const onError = (cause: Error) => {
+        Deferred.doneUnsafe(responseLine, Effect.fail(tcpPublishTransportError(cause)));
+      };
+      const onClose = () => {
+        Deferred.doneUnsafe(
+          responseLine,
+          Effect.fail(
+            tcpPublishTransportError(
+              undefined,
+              "TCP publisher closed before sending an acknowledgement.",
+            ),
           ),
         );
-        socket.once("error", fail);
-        socket.once("connect", writeCommand);
-        socket.on("data", onData);
+      };
+
+      socket.once("close", onClose);
+      socket.once("connect", onConnect);
+      socket.on("data", onData);
+      socket.once("error", onError);
+
+      return { socket, onClose, onConnect, onData, onError };
+    }),
+    ({ socket, onClose, onConnect, onData, onError }) =>
+      Effect.sync(() => {
+        socket.off("close", onClose);
+        socket.off("connect", onConnect);
+        socket.off("data", onData);
+        socket.off("error", onError);
+        socket.destroy();
       }),
+  );
+});
+
+export const writeCommand = Effect.fn("TcpPublisherExample.writeCommand")(function* (
+  command: TcpCommand | InvalidTcpCommand,
+  options?: WriteCommandOptions,
+) {
+  const resolvedOptions: ResolvedWriteCommandOptions = {
+    host: options?.host ?? defaultWriteCommandOptions.host,
+    port: options?.port ?? defaultWriteCommandOptions.port,
+  };
+  const commandLine = yield* Effect.try({
+    try: () => `${JSON.stringify(command)}\n`,
     catch: (cause) =>
-      cause instanceof TcpPublisherExampleError
-        ? cause
-        : new TcpPublisherExampleError({
-            cause,
-            message: "TCP publish command failed.",
-          }),
-  }).pipe(Effect.andThen(Schema.decodeUnknownEffect(TcpPublishResponse)));
+      new TcpPublisherExampleError({
+        cause,
+        message: "Failed to encode TCP publish command.",
+      }),
+  });
+  const responseLine = yield* Deferred.make<string, TcpPublisherExampleError>();
+
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const commandSocket = yield* acquireCommandSocket(commandLine, responseLine);
+      yield* Effect.try({
+        try: () => {
+          commandSocket.socket.connect({
+            host: resolvedOptions.host,
+            port: resolvedOptions.port,
+          });
+        },
+        catch: (cause) => tcpPublishTransportError(cause),
+      });
+      const line = yield* Deferred.await(responseLine).pipe(
+        Effect.timeoutOrElse({
+          duration: acknowledgementTimeout,
+          orElse: () =>
+            Effect.fail(
+              new TcpPublisherExampleError({
+                message: "Timed out waiting for TCP publish acknowledgement.",
+              }),
+            ),
+        }),
+      );
+      return yield* parseTcpPublishResponse(line);
+    }),
+  );
+});

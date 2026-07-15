@@ -77,6 +77,7 @@ export type ViewServerKafkaHealthLedger<Topics extends ViewServerRuntimeTopicDef
   ) => Effect.Effect<void>;
   readonly regionDegraded: (region: string, message: string) => Effect.Effect<void>;
   readonly regionRecovered: (region: string, nowMillis: number) => Effect.Effect<void>;
+  readonly regionStopped: (region: string) => Effect.Effect<void>;
   readonly topicConnected: (
     sourceTopic: string,
     region: string,
@@ -265,6 +266,18 @@ const resetIdleWindow = (region: KafkaTopicRegionLedger, nowMillis: number) => {
   region.publishFailuresPerSecond = publishFailuresPerSecond;
   region.commitFailuresPerSecond = commitFailuresPerSecond;
   region.processingFailuresPerSecond = processingFailuresPerSecond;
+};
+
+const clearRateWindow = (region: KafkaTopicRegionLedger) => {
+  region.messagesPerSecond = 0;
+  region.bytesPerSecond = 0;
+  region.decodedMessagesPerSecond = 0;
+  region.decodeFailuresPerSecond = 0;
+  region.mappingFailuresPerSecond = 0;
+  region.publishFailuresPerSecond = 0;
+  region.commitFailuresPerSecond = 0;
+  region.processingFailuresPerSecond = 0;
+  region.rateBuckets = Array.from({ length: maxKafkaRateBuckets }, () => undefined);
 };
 
 const copyRegionHealth = (region: KafkaRegionLedger): KafkaRegionHealth => ({
@@ -474,6 +487,24 @@ export const makeViewServerKafkaHealthLedger = <
               topicRegion.regionLastError = null;
               refreshTopicStatus(topic);
             }
+          }
+        }
+      }),
+    regionStopped: (region) =>
+      Effect.sync(() => {
+        const regionLedger = regions.get(region);
+        if (regionLedger !== undefined) {
+          regionLedger.status = "disconnected";
+        }
+        for (const topic of topics.values()) {
+          const topicRegion = topic.regions.get(region);
+          if (topicRegion !== undefined) {
+            topicRegion.connected = false;
+            topicRegion.assignedPartitions = 0;
+            topicRegion.consumerLagMessages = null;
+            topicRegion.lagSampledAt = null;
+            clearRateWindow(topicRegion);
+            refreshTopicStatus(topic);
           }
         }
       }),

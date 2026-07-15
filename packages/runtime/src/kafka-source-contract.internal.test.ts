@@ -74,7 +74,6 @@ describe("Kafka source mapping contracts", () => {
         processKafkaMessage(
           missingGhostViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           health,
           "local",
@@ -147,7 +146,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -227,7 +225,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -306,7 +303,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -322,7 +318,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -403,7 +398,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -419,7 +413,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -490,7 +483,6 @@ describe("Kafka source mapping contracts", () => {
       yield* processKafkaMessage(
         kafkaBackedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -585,7 +577,6 @@ describe("Kafka source mapping contracts", () => {
         processKafkaMessage(
           invalidMappingViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           health,
           "local",

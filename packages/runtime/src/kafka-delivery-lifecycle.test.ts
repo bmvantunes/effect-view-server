@@ -232,6 +232,101 @@ describe("Kafka delivery lifecycle", () => {
     }),
   );
 
+  it.effect("clears Region health after in-flight observations and ordered resource shutdown", () =>
+    Effect.gen(function* () {
+      const operations: Array<string> = [];
+      const workerStarted = yield* Deferred.make<void>();
+      const unblockObservation = yield* Deferred.make<void>();
+
+      const delivery = yield* makeScopedKafkaDelivery((startWorker) =>
+        startWorker(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.gen(function* () {
+              operations.push("lag:stop");
+              operations.push("listeners:close");
+              operations.push("consumer:close");
+              yield* Deferred.succeed(unblockObservation, undefined);
+            }),
+          ),
+          () =>
+            Deferred.succeed(workerStarted, undefined).pipe(
+              Effect.andThen(
+                Deferred.await(unblockObservation).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      operations.push("observation:finished");
+                    }),
+                  ),
+                  Effect.uninterruptible,
+                ),
+              ),
+            ),
+          Effect.sync(() => {
+            operations.push("region:stopped");
+          }),
+        ),
+      );
+
+      yield* Deferred.await(workerStarted);
+      yield* delivery.close;
+
+      expect(operations).toStrictEqual([
+        "lag:stop",
+        "listeners:close",
+        "consumer:close",
+        "observation:finished",
+        "region:stopped",
+      ]);
+    }),
+  );
+
+  it.effect("shares shutdown finalizer defects with delivery close callers", () =>
+    Effect.gen(function* () {
+      const workerStarted = yield* Deferred.make<void>();
+      const delivery = yield* makeScopedKafkaDelivery((startWorker) =>
+        startWorker(
+          Effect.void,
+          () => Deferred.succeed(workerStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          Effect.die(new Error("Region health shutdown defect")),
+        ),
+      );
+
+      yield* Deferred.await(workerStarted);
+      const closeExit = yield* Effect.exit(delivery.close);
+
+      expect(Exit.isFailure(closeExit)).toBe(true);
+    }),
+  );
+
+  it.effect("runs Region health shutdown after a worker resource finalizer defects", () =>
+    Effect.gen(function* () {
+      const workerStarted = yield* Deferred.make<void>();
+      let regionStopped = 0;
+      const delivery = yield* makeScopedKafkaDelivery((startWorker) =>
+        startWorker(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.die(new Error("consumer cleanup defect")),
+          ),
+          () => Deferred.succeed(workerStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          Effect.sync(() => {
+            regionStopped += 1;
+          }),
+        ),
+      );
+
+      yield* Deferred.await(workerStarted);
+      const closeExit = yield* Effect.exit(delivery.close);
+
+      expect({
+        closeFailed: Exit.isFailure(closeExit),
+        regionStopped,
+      }).toStrictEqual({
+        closeFailed: true,
+        regionStopped: 1,
+      });
+    }),
+  );
+
   it.effect("releases an acquired Region when delivery startup is interrupted", () =>
     Effect.gen(function* () {
       let releaseCount = 0;

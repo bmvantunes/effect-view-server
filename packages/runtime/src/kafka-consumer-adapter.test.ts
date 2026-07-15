@@ -1,8 +1,9 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
+import { Consumer } from "@platformatic/kafka";
 import { Buffer } from "node:buffer";
-import { Effect, Exit, Fiber } from "effect";
+import { Effect, Exit, Fiber, Scope } from "effect";
 import {
-  assignedPartitionsForSourceTopic,
+  acquireKafkaRegionResources,
   bootstrapBrokers,
   closeKafkaConsumer,
   closeKafkaConsumerAfterStartFailure,
@@ -18,15 +19,19 @@ import {
   mapKafkaConsumerStartError,
   mapKafkaStreamError,
   messageFromUnknown,
+  registerKafkaConsumerHealthListeners,
   sourceTopicsForRegion,
 } from "./kafka-ingress";
+import { assignedPartitionsForSourceTopic } from "./kafka-health-observation";
 import { acquireKafkaDeliveryResource, makeScopedKafkaDelivery } from "./kafka-delivery";
 import {
   kafkaIngressErrorSourceTopicOrNull,
   kafkaOptions,
+  makeViewServerKafkaHealthLedger,
   ordersSourceTopic,
   regions,
   runtimeUnavailable,
+  type Topics,
   unknownSourceTopic,
 } from "../test-harness/kafka-ingress";
 
@@ -201,6 +206,52 @@ describe("Kafka consumer Adapter", () => {
     });
   });
 
+  it.effect("removes observation listeners without owning lag monitoring or the consumer", () =>
+    Effect.gen(function* () {
+      const health = makeViewServerKafkaHealthLedger<Topics>({
+        regions: kafkaOptions.regions,
+        topics: {
+          [ordersSourceTopic]: {
+            regions: ["local"],
+            viewServerTopic: "orders",
+          },
+        },
+      });
+      const consumer = new Consumer<Buffer, Buffer, Buffer, Buffer>({
+        bootstrapBrokers: ["127.0.0.1:1"],
+        clientId: "view-server-observation-ownership-test",
+        groupId: "view-server-observation-ownership-test",
+      });
+      const closeConsumer = vi.spyOn(consumer, "close").mockImplementation(() => Promise.resolve());
+      const stopLagMonitoring = vi
+        .spyOn(consumer, "stopLagMonitoring")
+        .mockImplementation(() => undefined);
+      const scope = yield* Scope.make("parallel");
+      const registration = yield* registerKafkaConsumerHealthListeners(
+        consumer,
+        health,
+        "local",
+        [ordersSourceTopic],
+        scope,
+      );
+
+      yield* registration.close;
+      yield* Scope.close(scope, Exit.void);
+
+      expect({
+        consumerCloseCalls: closeConsumer.mock.calls.length,
+        stopLagMonitoringCalls: stopLagMonitoring.mock.calls.length,
+      }).toStrictEqual({
+        consumerCloseCalls: 0,
+        stopLagMonitoringCalls: 0,
+      });
+
+      closeConsumer.mockRestore();
+      stopLagMonitoring.mockRestore();
+      yield* Effect.promise(() => Promise.resolve(consumer.close(true)));
+    }),
+  );
+
   it.effect("closes a constructed consumer when consume startup fails or is interrupted", () =>
     Effect.gen(function* () {
       const closeForces: Array<boolean | undefined> = [];
@@ -229,6 +280,142 @@ describe("Kafka consumer Adapter", () => {
         closeForces: [true, true, true],
         failed: true,
         interrupted: true,
+      });
+    }),
+  );
+
+  it.effect("rolls back Region resources when listener registration defects", () =>
+    Effect.gen(function* () {
+      const successfulCleanupOperations: Array<string> = [];
+      const successfulCleanup = yield* Effect.exit(
+        acquireKafkaRegionResources(
+          Effect.sync(() => {
+            successfulCleanupOperations.push("acquire");
+            return "consumer";
+          }),
+          () =>
+            Effect.sync(() => {
+              successfulCleanupOperations.push("register");
+            }).pipe(Effect.andThen(Effect.die(new Error("registration defect")))),
+          () => Effect.void,
+          () =>
+            Effect.sync(() => {
+              successfulCleanupOperations.push("close consumer");
+            }),
+          () => Effect.void,
+        ),
+      );
+      const failedCleanupOperations: Array<string> = [];
+      const failedCleanup = yield* Effect.exit(
+        acquireKafkaRegionResources(
+          Effect.sync(() => {
+            failedCleanupOperations.push("acquire");
+            return "consumer";
+          }),
+          () =>
+            Effect.sync(() => {
+              failedCleanupOperations.push("register");
+            }).pipe(Effect.andThen(Effect.die(new Error("registration defect")))),
+          () => Effect.void,
+          () =>
+            Effect.sync(() => {
+              failedCleanupOperations.push("close consumer");
+            }).pipe(Effect.andThen(Effect.die(new Error("consumer close defect")))),
+          () => Effect.void,
+        ),
+      );
+
+      expect({
+        failedCleanup: Exit.isFailure(failedCleanup),
+        failedCleanupOperations,
+        successfulCleanup: Exit.isFailure(successfulCleanup),
+        successfulCleanupOperations,
+      }).toStrictEqual({
+        failedCleanup: true,
+        failedCleanupOperations: ["acquire", "register", "close consumer"],
+        successfulCleanup: true,
+        successfulCleanupOperations: ["acquire", "register", "close consumer"],
+      });
+    }),
+  );
+
+  it.effect("rolls back listeners and consumer when lag monitoring defects", () =>
+    Effect.gen(function* () {
+      const successfulCleanupOperations: Array<string> = [];
+      const successfulCleanup = yield* Effect.exit(
+        acquireKafkaRegionResources(
+          Effect.sync(() => {
+            successfulCleanupOperations.push("acquire");
+            return "consumer";
+          }),
+          () =>
+            Effect.sync(() => {
+              successfulCleanupOperations.push("register");
+              return "listeners";
+            }),
+          () =>
+            Effect.sync(() => {
+              successfulCleanupOperations.push("start lag");
+            }).pipe(Effect.andThen(Effect.die(new Error("lag monitoring defect")))),
+          () =>
+            Effect.sync(() => {
+              successfulCleanupOperations.push("close consumer");
+            }),
+          () =>
+            Effect.sync(() => {
+              successfulCleanupOperations.push("close listeners");
+            }),
+        ),
+      );
+      const failedCleanupOperations: Array<string> = [];
+      const failedCleanup = yield* Effect.exit(
+        acquireKafkaRegionResources(
+          Effect.sync(() => {
+            failedCleanupOperations.push("acquire");
+            return "consumer";
+          }),
+          () =>
+            Effect.sync(() => {
+              failedCleanupOperations.push("register");
+              return "listeners";
+            }),
+          () =>
+            Effect.sync(() => {
+              failedCleanupOperations.push("start lag");
+            }).pipe(Effect.andThen(Effect.die(new Error("lag monitoring defect")))),
+          () =>
+            Effect.sync(() => {
+              failedCleanupOperations.push("close consumer");
+            }).pipe(Effect.andThen(Effect.die(new Error("consumer close defect")))),
+          () =>
+            Effect.sync(() => {
+              failedCleanupOperations.push("close listeners");
+            }).pipe(Effect.andThen(Effect.die(new Error("listener close defect")))),
+        ),
+      );
+
+      expect({
+        failedCleanup: Exit.isFailure(failedCleanup),
+        failedCleanupOperations,
+        successfulCleanup: Exit.isFailure(successfulCleanup),
+        successfulCleanupOperations,
+      }).toStrictEqual({
+        failedCleanup: true,
+        failedCleanupOperations: [
+          "acquire",
+          "register",
+          "start lag",
+          "close listeners",
+          "close consumer",
+        ],
+        successfulCleanup: true,
+        successfulCleanupOperations: [
+          "acquire",
+          "register",
+          "start lag",
+          "close listeners",
+          "close consumer",
+        ],
       });
     }),
   );

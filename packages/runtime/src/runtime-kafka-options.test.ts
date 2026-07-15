@@ -651,7 +651,7 @@ describe("Runtime Kafka options and health", () => {
             metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
-        makeKafkaIngress: (_config, _client, _requestHealthRefresh, options) => {
+        makeKafkaIngress: (_config, _client, options) => {
           kafkaOptionsSummary = {
             consumerGroupId: options.consumerGroupId,
             regions: options.regions,
@@ -725,8 +725,8 @@ describe("Runtime Kafka options and health", () => {
       });
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics> = {
         ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
-        makeKafkaIngress: (_config, _client, _requestHealthRefresh, _options, health) =>
-          health.regionDisconnected("local", "lost").pipe(
+        makeKafkaIngress: (_config, _client, _options, observation) =>
+          observation.regionDisconnected("local", "lost").pipe(
             Effect.as({
               close: Effect.void,
             }),

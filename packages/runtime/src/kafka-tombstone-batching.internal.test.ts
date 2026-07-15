@@ -67,7 +67,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -84,7 +83,6 @@ describe("Kafka tombstone batching contracts", () => {
         processKafkaMessage(
           topicOwnedViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           health,
           "local",
@@ -178,7 +176,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessage(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -280,7 +277,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessageBatch(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -380,7 +376,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessageBatch(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -464,7 +459,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessageBatch(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -592,7 +586,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessageBatch(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -701,7 +694,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessage(
         mixedSourceViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -718,7 +710,6 @@ describe("Kafka tombstone batching contracts", () => {
       yield* processKafkaMessageBatch(
         mixedSourceViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         health,
         "local",
@@ -846,7 +837,6 @@ describe("Kafka tombstone batching contracts", () => {
         yield* processKafkaMessage(
           kafkaBackedViewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           health,
           "local",

@@ -79,6 +79,18 @@ const acquireRuntimeResource = Effect.fn("ViewServerRuntime.acquireResource")(fu
   );
 });
 
+const acquireRuntimeResourceUninterruptibly = Effect.fn(
+  "ViewServerRuntime.acquireResourceUninterruptibly",
+)(function* <A, E, R>(
+  scope: Scope.Scope,
+  acquire: Effect.Effect<A, E, R>,
+  release: (resource: A) => Effect.Effect<void>,
+) {
+  return yield* Effect.acquireRelease(acquire, release, { interruptible: false }).pipe(
+    Scope.provide(scope),
+  );
+});
+
 type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
   groupedIncrementalAdmissionLimits?: NonNullable<
     ViewServerRuntimeCoreOptionsFor<Topics>["groupedIncrementalAdmissionLimits"]
@@ -194,7 +206,15 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       dependencies.makeRuntimeCore(dependencyConfig, runtimeCoreInput),
       (resource) => resource.close,
     );
-    const refreshTransportHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
+    const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
+    const kafkaHealthObserver =
+      kafkaHealth === undefined
+        ? undefined
+        : yield* acquireRuntimeResourceUninterruptibly(
+            runtimeScope,
+            dependencies.makeKafkaHealthObserver(kafkaHealth, refreshRuntimeHealth),
+            (resource) => resource.close,
+          );
     const grpcLeaseManager =
       grpcOptions === undefined || grpcHealth === undefined
         ? undefined
@@ -222,25 +242,24 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           liveClient: runtimeLiveClient,
           runtime: runtimeClient,
           transport: {
-            clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshTransportHealth)),
-            clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshTransportHealth)),
-            streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshTransportHealth)),
-            streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshTransportHealth)),
+            clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
+            clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
+            streamOpened: transportHealth.streamOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
+            streamClosed: transportHealth.streamClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
           },
         },
         resolvedOptions.serverOptions,
       ),
       (resource) => resource.close,
     );
-    if (kafkaOptions !== undefined && kafkaHealth !== undefined) {
+    if (kafkaOptions !== undefined && kafkaHealthObserver !== undefined) {
       yield* acquireRuntimeResource(
         runtimeScope,
         dependencies.makeKafkaIngress(
           dependencyConfig,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
-          kafkaHealth,
+          kafkaHealthObserver,
         ),
         (resource) => resource.close,
       );

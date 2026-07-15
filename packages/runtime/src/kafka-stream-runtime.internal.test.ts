@@ -90,7 +90,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           defectiveClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -177,7 +176,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           interruptingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -277,7 +275,6 @@ describe("Kafka message stream runtime internals", () => {
       const streamFiber = yield* runKafkaMessageStream(
         viewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "local",
@@ -311,7 +308,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -412,7 +408,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -494,7 +489,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -571,7 +565,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -658,7 +651,6 @@ describe("Kafka message stream runtime internals", () => {
         runKafkaMessageStream(
           viewServer,
           runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -898,7 +890,6 @@ describe("Kafka message stream runtime internals", () => {
           runKafkaMessageStream(
             viewServer,
             runtimeCore.internalClient,
-            runtimeCore.requestHealthRefresh,
             kafkaOptions,
             ledger,
             "local",

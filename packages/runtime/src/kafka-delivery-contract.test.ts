@@ -154,11 +154,6 @@ const makeKafkaHealthLedger = () =>
     },
   });
 
-const healthRefresh = (operations: Array<string>) =>
-  Effect.sync(() => {
-    operations.push("health");
-  });
-
 describe("Kafka delivery contract", () => {
   it("plans contiguous upsert runs and tombstone runs without reordering messages", () => {
     const firstUpsert = upsertMessage({
@@ -390,7 +385,6 @@ describe("Kafka delivery contract", () => {
 
       yield* publishAndCommitKafkaDecodedBatch(
         makeDeliveryClient(operations),
-        healthRefresh(operations),
         makeKafkaHealthLedger(),
         "local",
         [firstUpsert, secondUpsert, tombstone, finalUpsert],
@@ -400,13 +394,10 @@ describe("Kafka delivery contract", () => {
         "publish:orders:a,b",
         "commit:1",
         "commit:2",
-        "health",
         "delete:orders:a",
         "commit:3",
-        "health",
         "publish:orders:c",
         "commit:4",
-        "health",
       ]);
     }),
   );
@@ -428,7 +419,6 @@ describe("Kafka delivery contract", () => {
       const exit = yield* Effect.exit(
         publishAndCommitKafkaDecodedBatch(
           makeDeliveryClient(operations, { publishFails: true }),
-          healthRefresh(operations),
           makeKafkaHealthLedger(),
           "local",
           [message],
@@ -436,7 +426,7 @@ describe("Kafka delivery contract", () => {
       );
 
       expect(Exit.isFailure(exit)).toBe(true);
-      expect(operations).toStrictEqual(["publish-fail:orders:a", "health"]);
+      expect(operations).toStrictEqual(["publish-fail:orders:a"]);
     }),
   );
 
@@ -467,7 +457,6 @@ describe("Kafka delivery contract", () => {
       const exit = yield* Effect.exit(
         publishAndCommitKafkaDecodedBatch(
           makeDeliveryClient(operations, { publishFailsForTopic: "trades" }),
-          healthRefresh(operations),
           makeKafkaHealthLedger(),
           "local",
           [ordersMessage, tradesMessage],
@@ -478,9 +467,7 @@ describe("Kafka delivery contract", () => {
       expect(operations).toStrictEqual([
         "publish:orders:a",
         "commit:orders",
-        "health",
         "publish-fail:trades:t1",
-        "health",
       ]);
     }),
   );
@@ -496,14 +483,9 @@ describe("Kafka delivery contract", () => {
         sourceTopic: "orders-source",
       });
 
-      yield* recordAndCommitKeylessKafkaMessage(
-        healthRefresh(operations),
-        makeKafkaHealthLedger(),
-        "local",
-        message,
-      );
+      yield* recordAndCommitKeylessKafkaMessage(makeKafkaHealthLedger(), "local", message);
 
-      expect(operations).toStrictEqual(["health", "commit:5", "health"]);
+      expect(operations).toStrictEqual(["commit:5"]);
     }),
   );
 });

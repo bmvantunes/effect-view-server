@@ -20,6 +20,11 @@ import {
 import type { Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import { makeViewServerKafkaHealthLedger, type ViewServerKafkaHealthLedger } from "./kafka-health";
+import {
+  makeViewServerKafkaHealthObserver,
+  type ViewServerKafkaHealthObservation,
+  type ViewServerKafkaHealthObserver,
+} from "./kafka-health-observation";
 import { makeViewServerGrpcHealthLedger, type ViewServerGrpcHealthLedger } from "./grpc-health";
 import {
   makeViewServerGrpcIngress,
@@ -61,6 +66,10 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
     config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
   ) => ViewServerKafkaHealthLedger<Topics>;
+  readonly makeKafkaHealthObserver: (
+    health: ViewServerKafkaHealthLedger<Topics>,
+    refreshHealth: Effect.Effect<void>,
+  ) => Effect.Effect<ViewServerKafkaHealthObserver<Topics>>;
   readonly makeGrpcHealthLedger: <const Clients extends GrpcRuntimeClients>(
     config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
@@ -77,9 +86,8 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   readonly makeKafkaIngress: <const Regions extends RuntimeRegions>(
     config: ViewServerRuntimeDependencyConfig<Topics>,
     client: ViewServerRuntimeCoreInternalClient<Topics>,
-    requestHealthRefresh: Effect.Effect<void>,
     options: ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
-    health: ViewServerKafkaHealthLedger<Topics>,
+    health: ViewServerKafkaHealthObservation<Topics>,
   ) => Effect.Effect<ViewServerKafkaIngress, ViewServerKafkaIngressError>;
   readonly makeTcpPublishIngress: (
     config: ViewServerRuntimeDependencyConfig<Topics>,
@@ -144,6 +152,7 @@ export const makeDefaultRuntimeDependencies = <
     });
   },
   makeGrpcLeaseManager: makeViewServerGrpcLeaseManager,
+  makeKafkaHealthObserver: makeViewServerKafkaHealthObserver,
   makeKafkaIngress: makeViewServerKafkaIngress,
   makeTcpPublishIngress: makeViewServerTcpPublishIngress,
   makeGrpcIngress: makeViewServerGrpcIngress,

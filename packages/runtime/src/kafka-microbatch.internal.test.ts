@@ -58,16 +58,9 @@ describe("Kafka microbatch publishing internals", () => {
               ),
             ),
         };
-        let healthRefreshes = 0;
-        const requestHealthRefresh = Effect.sync(() => {
-          healthRefreshes += 1;
-          operations.push("healthRefresh");
-        });
-
         yield* runKafkaMessageStream(
           viewServer,
           batchingClient,
-          requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -118,13 +111,11 @@ describe("Kafka microbatch publishing internals", () => {
         const health = ledger.healthOverlay(yield* runtimeCore.client.health(), 0);
 
         expect({
-          healthRefreshes,
           operations,
           snapshot,
           kafkaTopic: health.kafka?.topics[ordersSourceTopic],
         }).toStrictEqual({
-          healthRefreshes: 1,
-          operations: ["publishMany:orders:3", "commit:1", "commit:2", "commit:3", "healthRefresh"],
+          operations: ["publishMany:orders:3", "commit:1", "commit:2", "commit:3"],
           snapshot: {
             status: "ready",
             statusCode: "Ready",
@@ -214,7 +205,6 @@ describe("Kafka microbatch publishing internals", () => {
       yield* runKafkaMessageStream(
         viewServer,
         batchingClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "local",
@@ -305,7 +295,6 @@ describe("Kafka microbatch publishing internals", () => {
       yield* runKafkaMessageStream(
         viewServer,
         batchingClient,
-        runtimeCore.requestHealthRefresh,
         kafkaOptions,
         ledger,
         "local",
@@ -384,7 +373,6 @@ describe("Kafka microbatch publishing internals", () => {
         runKafkaMessageStream(
           viewServer,
           publishManyFailingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -513,7 +501,6 @@ describe("Kafka microbatch publishing internals", () => {
         runKafkaMessageStream(
           viewServer,
           publishManyFailingClient,
-          runtimeCore.requestHealthRefresh,
           kafkaOptions,
           ledger,
           "local",
@@ -662,7 +649,6 @@ describe("Kafka microbatch publishing internals", () => {
       yield* processKafkaMessageBatch(
         multiSourceViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         multiSourceKafkaOptions,
         ledger,
         "local",
@@ -797,7 +783,6 @@ describe("Kafka microbatch publishing internals", () => {
       yield* processKafkaMessageBatch(
         topicOwnedViewServer,
         runtimeCore.internalClient,
-        runtimeCore.requestHealthRefresh,
         topicOwnedKafkaOptions,
         ledger,
         "local",
@@ -937,7 +922,6 @@ describe("Kafka microbatch publishing internals", () => {
         runKafkaMessageStream(
           multiSourceViewServer,
           publishManyFailingClient,
-          runtimeCore.requestHealthRefresh,
           multiSourceKafkaOptions,
           ledger,
           "local",

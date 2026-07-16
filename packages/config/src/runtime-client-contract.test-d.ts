@@ -6,6 +6,7 @@ import {
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "./index";
+import type { ViewServerRuntimeDecodedMutationClient } from "./internal";
 
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -111,6 +112,227 @@ describe("Runtime client and configuration generic contracts", () => {
     };
 
     expectTypeOf(assertRuntimeContracts).toBeFunction();
+
+    const assertDecodedMutationContract = (
+      runtime: ViewServerRuntimeDecodedMutationClient<typeof viewServer.topics>,
+    ) => {
+      const checkEffect = runtime.execute({
+        _tag: "CheckMutationAllowed",
+        topic: "orders",
+      });
+      const publishEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "orders",
+        rows: [
+          {
+            id: "order-1",
+            customerId: "customer-1",
+            status: "open",
+            price: 42,
+            region: "usa",
+            updatedAt: 1,
+          },
+        ],
+      });
+      const patchEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "orders",
+        key: "order-1",
+        patch: { status: "closed" },
+      });
+      const deleteEffect = runtime.execute({
+        _tag: "DeleteDecodedRow",
+        topic: "orders",
+        key: "order-1",
+      });
+
+      expectTypeOf<Effect.Error<typeof checkEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf<Effect.Error<typeof publishEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf<Effect.Error<typeof patchEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf<Effect.Error<typeof deleteEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
+
+      const invalidTopicEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        // @ts-expect-error decoded mutations are constrained to configured topics
+        topic: "customers",
+        rows: [],
+      });
+      const invalidTagEffect = runtime.execute({
+        // @ts-expect-error decoded mutations reject unknown operation tags
+        _tag: "Reset",
+        topic: "orders",
+      });
+      const invalidIncompleteRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "orders",
+        // @ts-expect-error decoded rows must include every required topic field
+        rows: [{ id: "order-1" }],
+      });
+      const invalidExtraRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "orders",
+        // @ts-expect-error decoded rows reject fields outside the selected topic
+        rows: [
+          {
+            id: "order-1",
+            customerId: "customer-1",
+            status: "open",
+            price: 42,
+            region: "usa",
+            updatedAt: 1,
+            unexpected: true,
+          },
+        ],
+      });
+      const invalidWrongRowFieldEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "orders",
+        rows: [
+          {
+            id: "order-1",
+            customerId: "customer-1",
+            status: "open",
+            // @ts-expect-error decoded row field values must match the selected topic
+            price: "not-a-number",
+            region: "usa",
+            updatedAt: 1,
+          },
+        ],
+      });
+      const invalidTopicMismatchedRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "orders",
+        rows: [
+          {
+            id: "trade-1",
+            // @ts-expect-error decoded rows must match the mutation topic
+            symbol: "AAPL",
+            quantity: 1,
+            price: 42,
+            updatedAt: 1,
+          },
+        ],
+      });
+      const invalidPatchFieldEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "orders",
+        key: "order-1",
+        patch: {
+          // @ts-expect-error decoded patches reject fields outside the selected topic
+          unexpected: true,
+        },
+      });
+      const rowWithExtraField = {
+        id: "order-1",
+        customerId: "customer-1",
+        status: "open",
+        price: 42,
+        region: "usa",
+        updatedAt: 1,
+        unexpected: true,
+      } as const;
+      const invalidExtraRowVariableEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "orders",
+        // @ts-expect-error decoded row variables retain exact topic-field checking
+        rows: [rowWithExtraField],
+      });
+      const patchWithExtraField = {
+        status: "closed",
+        unexpected: true,
+      } as const;
+      const invalidExtraPatchVariableEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "orders",
+        key: "order-1",
+        // @ts-expect-error decoded patch variables retain exact topic-field checking
+        patch: patchWithExtraField,
+      });
+      const patchWithOptionalExtraField: {
+        readonly status?: "closed";
+        readonly unexpected?: true;
+      } = { status: "closed", unexpected: true };
+      const invalidOptionalExtraPatchVariableEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "orders",
+        key: "order-1",
+        // @ts-expect-error optional extra patch fields remain rejected when present
+        patch: patchWithOptionalExtraField,
+      });
+      type OrderRow = typeof Order.Type;
+      const assertUnionExactness = (
+        row: OrderRow | (OrderRow & { readonly unexpected: true }),
+        patch: Partial<OrderRow> | (Partial<OrderRow> & { readonly unexpected: true }),
+      ) => {
+        const invalidUnionRowEffect = runtime.execute({
+          _tag: "PublishDecodedRows",
+          topic: "orders",
+          // @ts-expect-error unions cannot hide decoded row fields outside the selected topic
+          rows: [row],
+        });
+        const invalidUnionPatchEffect = runtime.execute({
+          _tag: "PatchDecodedFields",
+          topic: "orders",
+          key: "order-1",
+          // @ts-expect-error unions cannot hide decoded patch fields outside the selected topic
+          patch,
+        });
+
+        expectTypeOf(invalidUnionRowEffect).toMatchTypeOf<
+          Effect.Effect<void, ViewServerRuntimeError>
+        >();
+        expectTypeOf(invalidUnionPatchEffect).toMatchTypeOf<
+          Effect.Effect<void, ViewServerRuntimeError>
+        >();
+      };
+
+      expectTypeOf(assertUnionExactness).toBeFunction();
+      const assertRowContainerUnionExactness = (
+        rows: ReadonlyArray<OrderRow> | ReadonlyArray<OrderRow & { readonly unexpected: true }>,
+      ) => {
+        const invalidRowContainerUnionEffect = runtime.execute({
+          _tag: "PublishDecodedRows",
+          topic: "orders",
+          // @ts-expect-error unions of row containers cannot hide fields outside the selected topic
+          rows,
+        });
+
+        expectTypeOf(invalidRowContainerUnionEffect).toMatchTypeOf<
+          Effect.Effect<void, ViewServerRuntimeError>
+        >();
+      };
+
+      expectTypeOf(assertRowContainerUnionExactness).toBeFunction();
+
+      expectTypeOf(invalidTopicEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
+      expectTypeOf(invalidTagEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
+      expectTypeOf(invalidIncompleteRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidExtraRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidWrongRowFieldEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidTopicMismatchedRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidPatchFieldEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidExtraRowVariableEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidExtraPatchVariableEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidOptionalExtraPatchVariableEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+    };
+
+    expectTypeOf(assertDecodedMutationContract).toBeFunction();
 
     expectTypeOf<ViewServerBackpressureError>().toMatchTypeOf<ViewServerRuntimeError>();
 

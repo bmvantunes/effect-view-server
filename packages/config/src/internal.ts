@@ -8,6 +8,11 @@ import {
 import type { RowSchema } from "./topic-contract";
 
 export { validateDecodedRow } from "./decoded-row-validation";
+export type {
+  ViewServerRuntimeDecodedMutation,
+  ViewServerRuntimeDecodedMutationClient,
+  ViewServerRuntimeTopicDefinitions,
+} from "./runtime-contract";
 
 type KafkaSourceTopicRegistry = Record<
   string,

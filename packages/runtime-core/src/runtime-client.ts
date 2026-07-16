@@ -12,6 +12,7 @@ import type {
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
 import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import { Effect } from "effect";
 import { makeCoalescedHealthReader } from "./health";
@@ -24,6 +25,7 @@ import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
+  readonly decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics>;
   readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
   readonly requestHealthRefresh: Effect.Effect<void>;
 };
@@ -88,6 +90,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
               .pipe(Effect.flatMap(() => internalClient.snapshot(topic, query))),
           health: internalClient.health,
         },
+        decodedMutationClient: mutationPipeline.decodedMutationClient,
         internalClient,
         requestHealthRefresh,
       } satisfies RuntimeCoreClientInstance<Topics>;

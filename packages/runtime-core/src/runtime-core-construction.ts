@@ -133,6 +133,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
             };
             return {
               client: runtimeClient.client,
+              decodedMutationClient: runtimeClient.decodedMutationClient,
               internalClient: runtimeClient.internalClient,
               publicClient: runtimeClient.client,
               liveClient: {

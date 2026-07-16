@@ -1,7 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type ViewServerRuntimeError } from "@effect-view-server/config";
+import type { ViewServerRuntimeError } from "@effect-view-server/config";
+import type {
+  ViewServerRuntimeDecodedMutation,
+  ViewServerRuntimeDecodedMutationClient,
+  ViewServerRuntimeTopicDefinitions,
+} from "@effect-view-server/config/internal";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import type { ViewServerRuntimeDependencies } from "./internal";
@@ -26,6 +30,14 @@ import * as Net from "node:net";
 
 import { order, Order, viewServer } from "../test-harness/runtime-config";
 
+const withDecodedPublish = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+  client: ViewServerRuntimeDecodedMutationClient<Topics>,
+  publish: (rows: ReadonlyArray<object>) => Effect.Effect<void, ViewServerRuntimeError>,
+): ViewServerRuntimeDecodedMutationClient<Topics> => ({
+  execute: (mutation) =>
+    mutation._tag === "PublishDecodedRows" ? publish(mutation.rows) : client.execute(mutation),
+});
+
 describe("TCP publish lifecycle ownership", () => {
   it.effect("owns accepted TCP socket deadlines with Effect time", () =>
     Effect.acquireUseRelease(
@@ -34,7 +46,7 @@ describe("TCP publish lifecycle ownership", () => {
         Effect.acquireUseRelease(
           makeViewServerTcpPublishIngressWithServerFactory(
             viewServer,
-            runtimeCore.internalClient,
+            runtimeCore.decodedMutationClient,
             { port: 0 },
             (connectionListener) => Net.createServer(connectionListener),
           ),
@@ -83,19 +95,17 @@ describe("TCP publish lifecycle ownership", () => {
           const allowCommandFinalizer = yield* Deferred.make<void>();
           const commandFinalized = yield* Deferred.make<void>();
           const closeCompleted = yield* Deferred.make<void>();
-          const client: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-            ...runtimeCore.internalClient,
-            publishManyDecodedRows: () =>
-              Effect.acquireUseRelease(
-                Deferred.succeed(commandStarted, undefined),
-                () => Effect.never,
-                () =>
-                  Deferred.succeed(commandFinalizerStarted, undefined).pipe(
-                    Effect.andThen(Deferred.await(allowCommandFinalizer)),
-                    Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
-                  ),
-              ),
-          };
+          const client = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+            Effect.acquireUseRelease(
+              Deferred.succeed(commandStarted, undefined),
+              () => Effect.never,
+              () =>
+                Deferred.succeed(commandFinalizerStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(allowCommandFinalizer)),
+                  Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
+                ),
+            ),
+          );
 
           yield* Effect.acquireUseRelease(
             makeViewServerTcpPublishIngress(viewServer, client, { port: 0 }),
@@ -161,19 +171,17 @@ describe("TCP publish lifecycle ownership", () => {
           const commandFinalizerStarted = yield* Deferred.make<void>();
           const allowCommandFinalizer = yield* Deferred.make<void>();
           const commandFinalized = yield* Deferred.make<void>();
-          const client: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-            ...runtimeCore.internalClient,
-            publishManyDecodedRows: () =>
-              Effect.acquireUseRelease(
-                Deferred.succeed(commandStarted, undefined),
-                () => Effect.never,
-                () =>
-                  Deferred.succeed(commandFinalizerStarted, undefined).pipe(
-                    Effect.andThen(Deferred.await(allowCommandFinalizer)),
-                    Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
-                  ),
-              ),
-          };
+          const client = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+            Effect.acquireUseRelease(
+              Deferred.succeed(commandStarted, undefined),
+              () => Effect.never,
+              () =>
+                Deferred.succeed(commandFinalizerStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(allowCommandFinalizer)),
+                  Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
+                ),
+            ),
+          );
 
           yield* Effect.acquireUseRelease(
             makeViewServerTcpPublishIngress(viewServer, client, {
@@ -236,24 +244,21 @@ describe("TCP publish lifecycle ownership", () => {
           const allowCommandFinalizer = yield* Deferred.make<void>();
           const commandFinalized = yield* Deferred.make<void>();
           let publishCalls = 0;
-          const client: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-            ...runtimeCore.internalClient,
-            publishManyDecodedRows: () => {
-              publishCalls += 1;
-              if (publishCalls > 1) {
-                return Effect.void;
-              }
-              return Effect.acquireUseRelease(
-                Deferred.succeed(commandStarted, undefined),
-                () => Effect.never,
-                () =>
-                  Deferred.succeed(commandFinalizerStarted, undefined).pipe(
-                    Effect.andThen(Deferred.await(allowCommandFinalizer)),
-                    Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
-                  ),
-              );
-            },
-          };
+          const client = withDecodedPublish(runtimeCore.decodedMutationClient, () => {
+            publishCalls += 1;
+            if (publishCalls > 1) {
+              return Effect.void;
+            }
+            return Effect.acquireUseRelease(
+              Deferred.succeed(commandStarted, undefined),
+              () => Effect.never,
+              () =>
+                Deferred.succeed(commandFinalizerStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(allowCommandFinalizer)),
+                  Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
+                ),
+            );
+          });
 
           yield* Effect.acquireUseRelease(
             makeViewServerTcpPublishIngress(viewServer, client, {
@@ -317,61 +322,46 @@ describe("TCP publish lifecycle ownership", () => {
       const closedQueuePublishInterrupted = yield* Deferred.make<void>();
       const fifoIds: Array<string> = [];
       let slowPublishCalls = 0;
-      const slowPublishClient: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: () => {
-          slowPublishCalls += 1;
-          if (slowPublishCalls === 1) {
-            return Deferred.succeed(slowPublishStarted, undefined).pipe(
-              Effect.andThen(Effect.never),
-              Effect.ensuring(Deferred.succeed(slowPublishInterrupted, undefined)),
-            );
-          }
-          if (slowPublishCalls === 2) {
-            return Effect.acquireUseRelease(
-              Deferred.succeed(recoveryPublishStarted, undefined),
-              () => Deferred.await(allowRecoveryPublish),
-              () => Deferred.succeed(recoveryPublishFinalized, undefined),
-            );
-          }
-          return Effect.void;
-        },
-      };
-      const fifoPublishClient: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: (_topic, rows) =>
-          Effect.sync(() => {
-            fifoIds.push(...rows.map((row) => Schema.decodeUnknownSync(Order)(row).id));
-          }),
-      };
-      const globalPublishClient: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: () =>
-          Deferred.succeed(globalPublishStarted, undefined).pipe(
+      const slowPublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () => {
+        slowPublishCalls += 1;
+        if (slowPublishCalls === 1) {
+          return Deferred.succeed(slowPublishStarted, undefined).pipe(
             Effect.andThen(Effect.never),
-            Effect.ensuring(Deferred.succeed(globalPublishInterrupted, undefined)),
-          ),
-      };
-      const disconnectedPublishClient: ViewServerRuntimeCoreInternalClient<
-        typeof viewServer.topics
-      > = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: () =>
-          Deferred.succeed(disconnectedPublishStarted, undefined).pipe(
-            Effect.andThen(Effect.never),
-            Effect.ensuring(Deferred.succeed(disconnectedPublishInterrupted, undefined)),
-          ),
-      };
-      const closedQueuePublishClient: ViewServerRuntimeCoreInternalClient<
-        typeof viewServer.topics
-      > = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: () =>
-          Deferred.succeed(closedQueuePublishStarted, undefined).pipe(
-            Effect.andThen(Effect.never),
-            Effect.ensuring(Deferred.succeed(closedQueuePublishInterrupted, undefined)),
-          ),
-      };
+            Effect.ensuring(Deferred.succeed(slowPublishInterrupted, undefined)),
+          );
+        }
+        if (slowPublishCalls === 2) {
+          return Effect.acquireUseRelease(
+            Deferred.succeed(recoveryPublishStarted, undefined),
+            () => Deferred.await(allowRecoveryPublish),
+            () => Deferred.succeed(recoveryPublishFinalized, undefined),
+          );
+        }
+        return Effect.void;
+      });
+      const fifoPublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, (rows) =>
+        Effect.sync(() => {
+          fifoIds.push(...rows.map((row) => Schema.decodeUnknownSync(Order)(row).id));
+        }),
+      );
+      const globalPublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+        Deferred.succeed(globalPublishStarted, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(globalPublishInterrupted, undefined)),
+        ),
+      );
+      const disconnectedPublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+        Deferred.succeed(disconnectedPublishStarted, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(disconnectedPublishInterrupted, undefined)),
+        ),
+      );
+      const closedQueuePublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+        Deferred.succeed(closedQueuePublishStarted, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(closedQueuePublishInterrupted, undefined)),
+        ),
+      );
       const fifoCommandLines = ["fifo-1", "fifo-2"].map(
         (id) =>
           `${JSON.stringify({
@@ -387,7 +377,7 @@ describe("TCP publish lifecycle ownership", () => {
       })}\n`;
       const oversizedIngress = yield* makeViewServerTcpPublishIngress(
         viewServer,
-        runtimeCore.internalClient,
+        runtimeCore.decodedMutationClient,
         {
           maxLineBytes: 8,
           port: 0,
@@ -395,7 +385,7 @@ describe("TCP publish lifecycle ownership", () => {
       );
       const oversizedCompleteLineIngress = yield* makeViewServerTcpPublishIngress(
         viewServer,
-        runtimeCore.internalClient,
+        runtimeCore.decodedMutationClient,
         {
           maxLineBytes: 8,
           port: 0,
@@ -432,7 +422,7 @@ describe("TCP publish lifecycle ownership", () => {
       );
       const connectionCappedIngress = yield* makeViewServerTcpPublishIngress(
         viewServer,
-        runtimeCore.internalClient,
+        runtimeCore.decodedMutationClient,
         {
           maxConnections: 1,
           port: 0,
@@ -779,28 +769,26 @@ describe("TCP publish lifecycle ownership", () => {
   it.live("returns typed TCP publish errors for runtime mutation failures", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
-      const defectPublishClient: ViewServerRuntimeCoreInternalClient<typeof viewServer.topics> = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: () => Effect.die("tcp publish defect"),
-      };
-      const unavailablePublishClient: ViewServerRuntimeCoreInternalClient<
+      const defectPublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+        Effect.die("tcp publish defect"),
+      );
+      const unavailablePublishClient = withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+        Effect.fail({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "runtime unavailable for tcp test",
+        } satisfies ViewServerRuntimeError),
+      );
+      const typedFailurePublishClient: ViewServerRuntimeDecodedMutationClient<
         typeof viewServer.topics
       > = {
-        ...runtimeCore.internalClient,
-        publishManyDecodedRows: () =>
-          Effect.fail({
-            _tag: "ViewServerRuntimeError",
-            code: "RuntimeUnavailable",
-            message: "runtime unavailable for tcp test",
-          } satisfies ViewServerRuntimeError),
+        ...runtimeCore.decodedMutationClient,
       };
-      const typedFailurePublishClient: ViewServerRuntimeCoreInternalClient<
-        typeof viewServer.topics
-      > = {
-        ...runtimeCore.internalClient,
-      };
-      Object.defineProperty(typedFailurePublishClient, "publishManyDecodedRows", {
-        value: () => Effect.fail(new RuntimeTestFailure({ message: "runtime typed failure" })),
+      Object.defineProperty(typedFailurePublishClient, "execute", {
+        value: (mutation: ViewServerRuntimeDecodedMutation<typeof viewServer.topics>) =>
+          mutation._tag === "PublishDecodedRows"
+            ? Effect.fail(new RuntimeTestFailure({ message: "runtime typed failure" }))
+            : runtimeCore.decodedMutationClient.execute(mutation),
       });
       const defectPublishIngress = yield* makeViewServerTcpPublishIngress(
         viewServer,
@@ -885,7 +873,7 @@ describe("TCP publish lifecycle ownership", () => {
           yield* Effect.acquireUseRelease(
             makeViewServerTcpPublishIngressWithServerFactory(
               viewServer,
-              runtimeCore.internalClient,
+              runtimeCore.decodedMutationClient,
               { port: 0 },
               (connectionListener) => {
                 const created = Net.createServer(connectionListener);
@@ -988,7 +976,7 @@ describe("TCP publish lifecycle ownership", () => {
           yield* Effect.acquireUseRelease(
             makeViewServerTcpPublishIngressWithServerFactory(
               viewServer,
-              runtimeCore.internalClient,
+              runtimeCore.decodedMutationClient,
               { maxConnections: 1, port: 0 },
               (connectionListener) => {
                 acceptSocket = connectionListener;
@@ -1136,7 +1124,7 @@ describe("TCP publish lifecycle ownership", () => {
           let acceptedSocket: Net.Socket | undefined;
           const ingress = yield* makeViewServerTcpPublishIngressWithServerFactory(
             viewServer,
-            runtimeCore.internalClient,
+            runtimeCore.decodedMutationClient,
             { maxConnections: 1, port: 0 },
             (connectionListener) => {
               acceptSocket = connectionListener;
@@ -1284,19 +1272,17 @@ describe("TCP publish lifecycle ownership", () => {
             makeViewServerRuntimeCoreInternal(config, options).pipe(
               Effect.map((runtimeCore) => ({
                 ...runtimeCore,
-                internalClient: {
-                  ...runtimeCore.internalClient,
-                  publishManyDecodedRows: () =>
-                    Deferred.succeed(commandStarted, undefined).pipe(
-                      Effect.andThen(Effect.never),
-                      Effect.ensuring(
-                        Deferred.succeed(commandInterruptStarted, undefined).pipe(
-                          Effect.andThen(Deferred.await(allowCommandFinalize)),
-                          Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
-                        ),
+                decodedMutationClient: withDecodedPublish(runtimeCore.decodedMutationClient, () =>
+                  Deferred.succeed(commandStarted, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                    Effect.ensuring(
+                      Deferred.succeed(commandInterruptStarted, undefined).pipe(
+                        Effect.andThen(Deferred.await(allowCommandFinalize)),
+                        Effect.andThen(Deferred.succeed(commandFinalized, undefined)),
                       ),
                     ),
-                },
+                  ),
+                ),
                 close: Deferred.succeed(runtimeCoreCloseStarted, undefined).pipe(
                   Effect.andThen(runtimeCore.close),
                 ),
@@ -1433,7 +1419,7 @@ describe("TCP publish lifecycle ownership", () => {
           let server: Net.Server | undefined;
           const startupFiber = yield* makeViewServerTcpPublishIngressWithServerFactory(
             viewServer,
-            runtimeCore.internalClient,
+            runtimeCore.decodedMutationClient,
             { port: 0 },
             (connectionListener) => {
               const createdServer = Net.createServer(connectionListener);
@@ -1489,7 +1475,7 @@ describe("TCP publish lifecycle ownership", () => {
           let server: Net.Server | undefined;
           const exit = yield* makeViewServerTcpPublishIngressWithServerFactory(
             viewServer,
-            runtimeCore.internalClient,
+            runtimeCore.decodedMutationClient,
             { port: 0 },
             (connectionListener) => {
               const createdServer = Net.createServer(connectionListener);

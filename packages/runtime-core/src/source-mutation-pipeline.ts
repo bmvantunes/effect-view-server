@@ -10,6 +10,7 @@ import type {
   ViewServerRuntimeError,
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
+import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
 import { Effect } from "effect";
 import { engineErrorToRuntimeError } from "./runtime-error";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
@@ -53,6 +54,7 @@ export type ViewServerRuntimeCoreCheckedMutations<Topics extends DecodableTopicD
 export type RuntimeCoreMutationPipeline<Topics extends DecodableTopicDefinitions> = {
   readonly internalMutations: ViewServerRuntimeCoreInternalMutations<Topics>;
   readonly checkedMutations: ViewServerRuntimeCoreCheckedMutations<Topics>;
+  readonly decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics>;
 };
 
 const applyEngineMutation = Effect.fn("ViewServerRuntimeCore.sourceMutation.apply")(function* (
@@ -147,6 +149,27 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
     delete: deleteRow,
     reset,
   };
+  const decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics> = {
+    execute: Effect.fn("ViewServerRuntimeCore.sourceMutation.decoded.execute")(
+      function* (mutation) {
+        yield* sourceOwnership.requirePublicMutationAllowed(mutation.topic, "runtimeCore");
+        if (mutation._tag === "CheckMutationAllowed") {
+          return;
+        }
+        if (mutation._tag === "PublishDecodedRows") {
+          return yield* internalMutations.publishManyDecodedRows(mutation.topic, mutation.rows);
+        }
+        if (mutation._tag === "PatchDecodedFields") {
+          return yield* internalMutations.patchDecodedFields(
+            mutation.topic,
+            mutation.key,
+            mutation.patch,
+          );
+        }
+        return yield* internalMutations.delete(mutation.topic, mutation.key);
+      },
+    ),
+  };
   const checkedMutations: ViewServerRuntimeCoreCheckedMutations<Topics> = {
     publish: (topic, row) =>
       sourceOwnership
@@ -172,5 +195,6 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
   return {
     internalMutations,
     checkedMutations,
+    decodedMutationClient,
   };
 };

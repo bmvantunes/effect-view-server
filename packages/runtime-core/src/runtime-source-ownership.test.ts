@@ -268,6 +268,51 @@ describe("Runtime Core source ownership", () => {
     }),
   );
 
+  it.effect("applies Source Ownership Policy to the neutral decoded mutation client", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaOwnedViewServer, {});
+      const checkError = yield* runtimeCore.decodedMutationClient
+        .execute({
+          _tag: "CheckMutationAllowed",
+          topic: "orders",
+        })
+        .pipe(Effect.flip);
+      const publishError = yield* runtimeCore.decodedMutationClient
+        .execute({
+          _tag: "PublishDecodedRows",
+          topic: "orders",
+          rows: [order("blocked", 10)],
+        })
+        .pipe(Effect.flip);
+      const patchError = yield* runtimeCore.decodedMutationClient
+        .execute({
+          _tag: "PatchDecodedFields",
+          topic: "orders",
+          key: "blocked",
+          patch: { price: 20 },
+        })
+        .pipe(Effect.flip);
+      const deleteError = yield* runtimeCore.decodedMutationClient
+        .execute({
+          _tag: "DeleteDecodedRow",
+          topic: "orders",
+          key: "blocked",
+        })
+        .pipe(Effect.flip);
+      const resetError = yield* runtimeCore.client.reset().pipe(Effect.flip);
+
+      expect([checkError, publishError, patchError, deleteError]).toStrictEqual([
+        publicSourceOwnedRuntimeMutationError,
+        publicSourceOwnedRuntimeMutationError,
+        publicSourceOwnedRuntimeMutationError,
+        publicSourceOwnedRuntimeMutationError,
+      ]);
+      expect(resetError).toStrictEqual(publicSourceOwnedRuntimeResetError);
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("rejects public grpcSource leased subscriptions before route validation", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedGrpcSourceViewServer, {});

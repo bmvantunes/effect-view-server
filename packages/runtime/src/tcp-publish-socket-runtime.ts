@@ -1,10 +1,9 @@
 import type { ViewServerRuntimeError, ViewServerTopicConfig } from "@effect-view-server/config";
+import type {
+  ViewServerRuntimeDecodedMutationClient,
+  ViewServerRuntimeTopicDefinitions,
+} from "@effect-view-server/config/internal";
 import { ViewServerAuthError } from "@effect-view-server/server";
-import {
-  makeSourceOwnershipPolicy,
-  type SourceOwnershipPolicy,
-  type ViewServerRuntimeCoreInternalClient,
-} from "@effect-view-server/runtime-core/internal";
 import { Cause, Effect, Exit, FiberSet, Option, Queue, Schema, Scope } from "effect";
 import * as Net from "node:net";
 import {
@@ -13,7 +12,6 @@ import {
   ViewServerTcpPublishIngressError,
 } from "./tcp-publish-command";
 import type { ViewServerTcpPublishIngressOptions } from "./tcp-publish-ingress";
-import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 type TcpResponseSocket = {
   readonly destroyed: boolean;
@@ -241,9 +239,8 @@ const executeLine = Effect.fn("ViewServerRuntime.tcpPublish.socket.executeLine")
   socket: Net.Socket,
   state: TcpPublishSocketState,
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeCoreInternalClient<Topics>,
+  client: ViewServerRuntimeDecodedMutationClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
-  sourceOwnership: SourceOwnershipPolicy,
   line: string,
 ) {
   const exit = yield* handleTcpPublishCommandLine(
@@ -253,7 +250,6 @@ const executeLine = Effect.fn("ViewServerRuntime.tcpPublish.socket.executeLine")
     config,
     client,
     options,
-    sourceOwnership,
     line,
   ).pipe(Effect.exit);
   if (Exit.isSuccess(exit)) {
@@ -272,9 +268,8 @@ const runSocketWorker = Effect.fn("ViewServerRuntime.tcpPublish.socket.worker")(
   state: TcpPublishSocketState,
   serverState: TcpPublishServerState,
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeCoreInternalClient<Topics>,
+  client: ViewServerRuntimeDecodedMutationClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
-  sourceOwnership: SourceOwnershipPolicy,
 ) {
   while (state.closed === false && serverState.closed === false) {
     const queuedLine = yield* Queue.poll(state.queue);
@@ -285,7 +280,7 @@ const runSocketWorker = Effect.fn("ViewServerRuntime.tcpPublish.socket.worker")(
       socket.destroy();
       return;
     }
-    yield* executeLine(socket, state, config, client, options, sourceOwnership, line.value).pipe(
+    yield* executeLine(socket, state, config, client, options, line.value).pipe(
       Effect.ensuring(
         Effect.sync(() => {
           state.queuedCommands -= 1;
@@ -345,13 +340,12 @@ export const makeTcpPublishSocketServer = Effect.fn(
   "ViewServerRuntime.tcpPublish.socketServer.make",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeCoreInternalClient<Topics>,
+  client: ViewServerRuntimeDecodedMutationClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   createServer: TcpPublishServerFactory,
 ) {
   const serverScope = yield* Scope.make("parallel");
   const runLifecycleFiber = Effect.runForkWith(yield* Effect.context<never>());
-  const sourceOwnership = makeSourceOwnershipPolicy(config);
   const state: TcpPublishServerState = {
     closed: false,
     pendingSockets: new Set(),
@@ -509,9 +503,7 @@ export const makeTcpPublishSocketServer = Effect.fn(
           return yield* closeSocket;
         }
         runSocketFiber(
-          restore(
-            runSocketWorker(socket, socketState, state, config, client, options, sourceOwnership),
-          ),
+          restore(runSocketWorker(socket, socketState, state, config, client, options)),
         );
       }),
     );

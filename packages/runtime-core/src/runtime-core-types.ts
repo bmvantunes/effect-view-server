@@ -8,6 +8,7 @@ import type {
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
 import type { Duration, Effect } from "effect";
 import type { RuntimeCoreHealthOverlay, RuntimeCoreTransportHealth } from "./health";
 import type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client";
@@ -48,6 +49,7 @@ export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicD
   "client" | "liveClient"
 > & {
   readonly client: ViewServerRuntimeClient<Topics>;
+  readonly decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics>;
   readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
   readonly publicClient: ViewServerRuntimeCorePublicClient<Topics>;
   readonly liveClient: ViewServerRuntimeLiveClient<Topics>;

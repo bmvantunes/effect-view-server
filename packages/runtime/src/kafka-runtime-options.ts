@@ -93,23 +93,15 @@ const kafkaSourcesFromConfig = <
     return topics;
   });
 
-const emptyKafkaSourceTopics = <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
->(): Record<string, KafkaResolvedSourceTopicDefinition<Topics, Regions>> => Object.create(null);
-
 export const requireKafkaRuntimeOptionsForConfigSources = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
 ): Effect.Effect<void, ViewServerKafkaIngressError> =>
   Effect.gen(function* () {
-    const configuredTopics =
-      config === undefined
-        ? emptyKafkaSourceTopics<Topics, Regions>()
-        : yield* kafkaSourcesFromConfig(config);
+    const configuredTopics = yield* kafkaSourcesFromConfig(config);
     if (Object.keys(configuredTopics).length > 0) {
       return yield* new ViewServerKafkaIngressError({
         message:
@@ -163,7 +155,7 @@ export const resolveViewServerKafkaRuntimeOptions: <
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: ViewServerKafkaRuntimeOptions<Topics, Regions>,
 ) => Effect.Effect<
   ResolvedViewServerKafkaRuntimeOptions<Topics, Regions>,
@@ -173,7 +165,7 @@ export const resolveViewServerKafkaRuntimeOptions: <
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients> | undefined,
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: ViewServerKafkaRuntimeOptions<Topics, Regions>,
 ) {
   if (Object.prototype.hasOwnProperty.call(options, "topics")) {
@@ -184,10 +176,7 @@ export const resolveViewServerKafkaRuntimeOptions: <
     });
   }
   const consumerGroupId = yield* validateKafkaConsumerGroupId(options.consumerGroupId);
-  const configuredTopics =
-    config === undefined
-      ? emptyKafkaSourceTopics<Topics, Regions>()
-      : yield* kafkaSourcesFromConfig(config);
+  const configuredTopics = yield* kafkaSourcesFromConfig(config);
   const topics = configuredTopics;
   const sourceTopicCount = Object.keys(topics).length;
   if (sourceTopicCount === 0) {
@@ -197,7 +186,7 @@ export const resolveViewServerKafkaRuntimeOptions: <
       cause: "missing-kafka-source-topics",
     });
   }
-  const configuredRegions = options.regions ?? config?.kafka;
+  const configuredRegions = options.regions ?? config.kafka;
   const entries = yield* Effect.forEach(
     Object.entries(configuredRegions ?? {}),
     ([region, value]) =>

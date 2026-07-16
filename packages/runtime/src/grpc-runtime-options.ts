@@ -153,12 +153,9 @@ export const grpcFeedsFromConfig = <
   const Regions extends RuntimeRegions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, Clients> | undefined,
+  config: ViewServerConfig<Topics, Regions, Clients>,
 ): Record<string, ResolvedViewServerGrpcFeedDefinition> => {
   const feeds: Record<string, ResolvedViewServerGrpcFeedDefinition> = Object.create(null);
-  if (config === undefined) {
-    return feeds;
-  }
   for (const [topic, binding] of makeTopicSourceBindings(config)) {
     if (binding.grpcMetadata._tag !== "valid") {
       continue;
@@ -187,9 +184,8 @@ export const hasGrpcSourceDeclarations = <
   const Regions extends RuntimeRegions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, Clients> | undefined,
+  config: ViewServerConfig<Topics, Regions, Clients>,
 ): boolean =>
-  config !== undefined &&
   Array.from(makeTopicSourceBindings(config).values()).some(
     (binding) => binding.grpcMetadata._tag !== "absent",
   );
@@ -199,12 +195,9 @@ const validateConfigGrpcSourceMetadata = <
   const Regions extends RuntimeRegions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, Clients> | undefined,
+  config: ViewServerConfig<Topics, Regions, Clients>,
 ): Effect.Effect<void, ViewServerGrpcIngressError> =>
   Effect.gen(function* () {
-    if (config === undefined) {
-      return;
-    }
     for (const [topic, binding] of makeTopicSourceBindings(config)) {
       if (binding.grpcMetadata._tag !== "invalid") {
         continue;
@@ -223,7 +216,7 @@ export const resolveViewServerGrpcRuntimeOptions: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, RuntimeRegions, Clients> | undefined,
+  config: ViewServerConfig<Topics, RuntimeRegions, Clients>,
   options: ViewServerGrpcRuntimeOptions<Topics, Clients>,
 ) => Effect.Effect<
   ResolvedViewServerGrpcRuntimeOptions<Topics, Clients>,
@@ -232,11 +225,11 @@ export const resolveViewServerGrpcRuntimeOptions: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
   const Clients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, RuntimeRegions, Clients> | undefined,
+  config: ViewServerConfig<Topics, RuntimeRegions, Clients>,
   options: ViewServerGrpcRuntimeOptions<Topics, Clients>,
 ) {
   yield* validateConfigGrpcSourceMetadata(config);
-  const clients = config?.grpc?.clients;
+  const clients = config.grpc?.clients;
   const feeds = grpcFeedsFromConfig(config);
   if (clients === undefined) {
     if (Object.keys(feeds).length > 0) {

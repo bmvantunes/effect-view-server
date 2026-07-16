@@ -1,0 +1,177 @@
+import { describe, expect, it } from "@effect/vitest";
+import type { ViewServerRuntimeError } from "@effect-view-server/config";
+import { Effect } from "effect";
+import { makeViewServerWebSocketServer } from "./index";
+import {
+  bearerAuth,
+  createServerTestRuntime,
+  degradedServerHealth,
+  fetchJson,
+  fetchText,
+  fetchTextWithAuthorization,
+  order,
+  viewServer,
+} from "../test-harness/server";
+
+describe("Real View Server metrics route", () => {
+  it.live("serves GET /metrics beside the websocket RPC endpoint", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: inMemory.client,
+      });
+
+      yield* inMemory.client.publish("orders", order("a", 10));
+
+      const metrics = yield* fetchText(server.metricsUrl);
+
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.response.headers.get("content-type")).toContain("text/plain");
+      expect(metrics.text).toContain("# TYPE view_server_runtime_status gauge");
+      expect(metrics.text).toContain("# TYPE view_server_runtime_version gauge");
+      expect(metrics.text).toContain("# TYPE view_server_transport_backpressure_events gauge");
+      expect(metrics.text).toContain("# TYPE view_server_engine_topic_grouped_evaluations gauge");
+      expect(metrics.text).toContain("# TYPE view_server_engine_topic_backpressure_events gauge");
+      expect(metrics.text).toContain("# TYPE view_server_grpc_feed_reconnects gauge");
+      expect(metrics.text).toContain('view_server_runtime_status{status="ready"} 1');
+      expect(metrics.text).toContain(
+        'view_server_engine_topic_rows{topic="orders",state="total"} 1',
+      );
+      expect(metrics.text).toContain(
+        'view_server_engine_topic_rows{topic="orders",state="live"} 1',
+      );
+      expect(metrics.text).toContain("view_server_transport_active_clients 0");
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+
+  it.live("returns fallback metrics when runtime health fails", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const healthError: ViewServerRuntimeError = {
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        message: "health unavailable",
+      };
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: {
+          health: () => Effect.fail(healthError),
+        },
+      });
+
+      const metrics = yield* fetchText(server.metricsUrl);
+
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.text).toBe("view_server_metrics_error 1\n");
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+
+  it.live("renders degraded Kafka and gRPC health metrics", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const baseHealth = yield* inMemory.client.health();
+      const degradedHealth = degradedServerHealth(baseHealth);
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: {
+          health: () => Effect.succeed(degradedHealth),
+        },
+      });
+
+      const metrics = yield* fetchText(server.metricsUrl);
+
+      expect(metrics.response.status).toBe(200);
+      expect(metrics.text).toContain(
+        'view_server_kafka_region_connected{region="usa",sourceTopic="source_orders",viewServerTopic="orders"} 1',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_bytes_per_second{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 70',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_processing_failures_per_second{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 5',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_consumer_lag_messages{region="usa",sourceTopic="source_orders",viewServerTopic="orders"} 42',
+      );
+      expect(metrics.text).toContain(
+        'view_server_kafka_region_connected{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 0',
+      );
+      expect(metrics.text).not.toContain(
+        'view_server_kafka_consumer_lag_messages{region="london",sourceTopic="source_orders",viewServerTopic="orders"}',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_rows{lifecycle="materialized",topic="orders",feed="ordersFeed"} 5',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_client_active_feeds{client="ordersClient",baseUrl="http://127.0.0.1:8080"} 3',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_subscribers{lifecycle="leased",topic="orders",feed="ordersLease"} 3',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_messages_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_rows_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 8',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_mapping_failures_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 2',
+      );
+      expect(metrics.text).toContain(
+        'view_server_grpc_feed_reconnects{lifecycle="leased",topic="orders",feed="ordersLease"} 4',
+      );
+      expect(
+        metrics.text
+          .split("\n")
+          .filter((line) =>
+            line.startsWith('view_server_grpc_feed_rows{lifecycle="leased",topic="orders"'),
+          ),
+      ).toStrictEqual([
+        'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
+      ]);
+      expect(metrics.text).not.toContain("ordersLease:strategy=strat-1");
+      expect(metrics.text).not.toContain("ordersLease:strategy=strat-2");
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+
+  it.live("requires auth for GET /metrics when an auth validator is configured", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        auth: bearerAuth,
+        liveClient: inMemory.liveClient,
+        runtime: inMemory.client,
+      });
+
+      const deniedMetrics = yield* fetchJson(server.metricsUrl);
+      const acceptedMetrics = yield* fetchTextWithAuthorization(
+        server.metricsUrl,
+        "Bearer view-server-test",
+      );
+
+      expect(deniedMetrics.response.status).toBe(401);
+      expect(deniedMetrics.value).toStrictEqual({
+        _tag: "ViewServerAuthError",
+        message: "Missing or invalid authorization header.",
+      });
+      expect(acceptedMetrics.response.status).toBe(200);
+      expect(acceptedMetrics.text).toContain("# TYPE view_server_runtime_status gauge");
+
+      yield* server.close;
+      yield* inMemory.close;
+    }),
+  );
+});

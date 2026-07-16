@@ -1,12 +1,12 @@
 import type { RowSchema, ViewServerRuntimeError } from "@effect-view-server/config";
-import type {
-  SourceOwnershipPolicy,
-  ViewServerRuntimeCoreInternalClient,
-} from "@effect-view-server/runtime-core/internal";
+import {
+  type ViewServerRuntimeDecodedMutationClient,
+  type ViewServerRuntimeTopicDefinitions,
+  viewServerRuntimeDecodedMutationTrust,
+} from "@effect-view-server/config/internal";
 import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/server";
 import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
 import { Effect, Option, Result, Schema } from "effect";
-import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export class ViewServerTcpPublishIngressError extends Schema.TaggedErrorClass<ViewServerTcpPublishIngressError>()(
   "ViewServerTcpPublishIngressError",
@@ -34,12 +34,15 @@ export type TcpPublishCommandAuthContext = {
 type TcpFieldSchema = NonNullable<RowSchema["fields"][string]>;
 type TcpDecodePhase = "key" | "patch" | "row";
 type TcpFieldDefaultDecoder = Effect.Effect<Option.Option<unknown>>;
-type TcpConfiguredTopic<Topics extends ViewServerRuntimeTopicDefinitions> = {
+type TcpConfiguredTopic<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  Topic extends Extract<keyof Topics, string> = Extract<keyof Topics, string>,
+> = {
   readonly fieldSchemas: ReadonlyMap<string, TcpFieldSchema>;
   readonly keyField: string;
   readonly keySchema: TcpFieldSchema;
-  readonly schema: RowSchema;
-  readonly topic: Extract<keyof Topics, string>;
+  readonly schema: Topics[Topic]["schema"];
+  readonly topic: Topic;
 };
 
 const TcpJsonObject = Schema.Record(Schema.String, Schema.Json);
@@ -263,8 +266,11 @@ const makeTcpMissingFieldDefaultDecoder = (
   ).pipe(Effect.withSpan("ViewServerRuntime.tcpPublish.field.default.decode"));
 };
 
-const makeTcpRowDefaultDecoders = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  topicDefinition: TcpConfiguredTopic<Topics>,
+const makeTcpRowDefaultDecoders = <
+  const Topics extends ViewServerRuntimeTopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  topicDefinition: TcpConfiguredTopic<Topics, Topic>,
 ): ReadonlyMap<string, TcpFieldDefaultDecoder> => {
   const defaultDecoders = new Map<string, TcpFieldDefaultDecoder>();
   for (const [field, fieldSchema] of topicDefinition.fieldSchemas) {
@@ -275,7 +281,8 @@ const makeTcpRowDefaultDecoders = <const Topics extends ViewServerRuntimeTopicDe
 
 const decodeTcpKey = Effect.fn("ViewServerRuntime.tcpPublish.key.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(topicDefinition: TcpConfiguredTopic<Topics>, key: string) {
+  Topic extends Extract<keyof Topics, string>,
+>(topicDefinition: TcpConfiguredTopic<Topics, Topic>, key: string) {
   const decodedKey = yield* decodeTcpFieldForRuntime(
     topicDefinition.keySchema,
     topicDefinition.topic,
@@ -293,8 +300,9 @@ const decodeTcpKey = Effect.fn("ViewServerRuntime.tcpPublish.key.decode")(functi
 
 const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
 >(
-  topicDefinition: TcpConfiguredTopic<Topics>,
+  topicDefinition: TcpConfiguredTopic<Topics, Topic>,
   topic: string,
   row: Record<string, unknown>,
   defaultDecoders: ReadonlyMap<string, TcpFieldDefaultDecoder>,
@@ -326,8 +334,9 @@ const decodeTcpRow = Effect.fn("ViewServerRuntime.tcpPublish.row.decode")(functi
 
 const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
 >(
-  topicDefinition: TcpConfiguredTopic<Topics>,
+  topicDefinition: TcpConfiguredTopic<Topics, Topic>,
   topic: string,
   rows: ReadonlyArray<Record<string, unknown>>,
 ) {
@@ -339,8 +348,13 @@ const decodeTcpRows = Effect.fn("ViewServerRuntime.tcpPublish.rows.decode")(func
 
 const decodeTcpPatch = Effect.fn("ViewServerRuntime.tcpPublish.patch.decode")(function* <
   const Topics extends ViewServerRuntimeTopicDefinitions,
->(topicDefinition: TcpConfiguredTopic<Topics>, topic: string, patch: Record<string, unknown>) {
-  const decodedPatch: Record<string, unknown> = {};
+  Topic extends Extract<keyof Topics, string>,
+>(
+  topicDefinition: TcpConfiguredTopic<Topics, Topic>,
+  topic: string,
+  patch: Record<string, unknown>,
+) {
+  const decodedPatch: Partial<Topics[Topic]["schema"]["Type"]> = {};
   for (const [field, value] of Object.entries(patch)) {
     const fieldSchema = topicDefinition.fieldSchemas.get(field);
     if (fieldSchema === undefined) {
@@ -354,12 +368,6 @@ const decodeTcpPatch = Effect.fn("ViewServerRuntime.tcpPublish.patch.decode")(fu
   }
   return decodedPatch;
 });
-
-const ensureTopicCanBeMutated = (
-  topic: string,
-  sourceOwnership: SourceOwnershipPolicy,
-): Effect.Effect<void, ViewServerRuntimeError> =>
-  sourceOwnership.requirePublicMutationAllowed(topic, "runtimeCore");
 
 const mapRuntimeError =
   (topic: string, operation: "delete" | "patch" | "publish" | "publishMany") =>
@@ -376,15 +384,17 @@ export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPubli
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     context: TcpPublishCommandAuthContext,
     config: { readonly topics: Topics },
-    client: ViewServerRuntimeCoreInternalClient<Topics>,
+    client: ViewServerRuntimeDecodedMutationClient<Topics>,
     options: TcpPublishCommandOptions,
-    sourceOwnership: SourceOwnershipPolicy,
     line: string,
   ) {
     const command = yield* parseCommand(line);
     yield* validateViewServerAuthRequest(options.auth, tcpAuthRequest(command, context));
     const topicDefinition = yield* topicSchema(config, command.topic);
-    yield* ensureTopicCanBeMutated(topicDefinition.topic, sourceOwnership);
+    yield* client.execute({
+      _tag: "CheckMutationAllowed",
+      topic: topicDefinition.topic,
+    });
     if (command.op === "publish") {
       const row = yield* decodeTcpRow(
         topicDefinition,
@@ -393,14 +403,28 @@ export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPubli
         makeTcpRowDefaultDecoders(topicDefinition),
       );
       yield* client
-        .publishManyDecodedRows(topicDefinition.topic, [row])
+        .execute(
+          {
+            _tag: "PublishDecodedRows",
+            topic: topicDefinition.topic,
+            rows: [row],
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "publish")));
       return;
     }
     if (command.op === "publishMany") {
       const rows = yield* decodeTcpRows(topicDefinition, topicDefinition.topic, command.rows);
       yield* client
-        .publishManyDecodedRows(topicDefinition.topic, rows)
+        .execute(
+          {
+            _tag: "PublishDecodedRows",
+            topic: topicDefinition.topic,
+            rows,
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "publishMany")));
       return;
     }
@@ -408,13 +432,25 @@ export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPubli
       const key = yield* decodeTcpKey(topicDefinition, command.key);
       const patch = yield* decodeTcpPatch(topicDefinition, topicDefinition.topic, command.patch);
       yield* client
-        .patchDecodedFields(topicDefinition.topic, key, patch)
+        .execute(
+          {
+            _tag: "PatchDecodedFields",
+            topic: topicDefinition.topic,
+            key,
+            patch,
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "patch")));
       return;
     }
     const key = yield* decodeTcpKey(topicDefinition, command.key);
     yield* client
-      .delete(topicDefinition.topic, key)
+      .execute({
+        _tag: "DeleteDecodedRow",
+        topic: topicDefinition.topic,
+        key,
+      })
       .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "delete")));
   },
 );

@@ -122,4 +122,45 @@ describe("Runtime Core mutation", () => {
       yield* runtimeCore.close;
     }),
   );
+
+  it.effect("executes decoded mutations through the neutral mutation client", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+        yield* Effect.addFinalizer(() => runtimeCore.close);
+        yield* runtimeCore.decodedMutationClient.execute({
+          _tag: "CheckMutationAllowed",
+          topic: "orders",
+        });
+        yield* runtimeCore.decodedMutationClient.execute({
+          _tag: "PublishDecodedRows",
+          topic: "orders",
+          rows: [order("kept", 20), order("deleted", 30)],
+        });
+        yield* runtimeCore.decodedMutationClient.execute({
+          _tag: "PatchDecodedFields",
+          topic: "orders",
+          key: "kept",
+          patch: { price: 21, status: "closed" },
+        });
+        yield* runtimeCore.decodedMutationClient.execute({
+          _tag: "DeleteDecodedRow",
+          topic: "orders",
+          key: "deleted",
+        });
+
+        const snapshot = yield* runtimeCore.client.snapshot("orders", {
+          select: ["id", "price", "status"],
+          limit: 10,
+        });
+        expect(snapshot).toStrictEqual({
+          rows: [{ id: "kept", price: 21, status: "closed" }],
+          totalRows: 1,
+          version: 3,
+          status: "ready",
+          statusCode: "Ready",
+        });
+      }),
+    ),
+  );
 });

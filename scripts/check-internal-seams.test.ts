@@ -158,6 +158,33 @@ describe("internal Seam checker", () => {
     ).toStrictEqual([]);
   });
 
+  it("keeps TCP Publish on the neutral decoded-mutation contract", () => {
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents:
+          'import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";',
+        path: join(process.cwd(), "packages/runtime/src/tcp-publish-command.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/tcp-publish-command.ts imports Runtime Core implementation types through @effect-view-server/runtime-core/internal instead of the neutral decoded-mutation contract.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents:
+          'import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";',
+        path: join(process.cwd(), "packages/runtime/src/tcp-publish-command.ts"),
+      }),
+    ).toStrictEqual([]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";',
+        path: join(process.cwd(), "packages/runtime/src/tcp-publish-ingress.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/tcp-publish-ingress.ts imports Runtime Core implementation types through ./runtime-types instead of the neutral decoded-mutation contract.",
+    ]);
+  });
+
   it("rejects private, stale, bare-root, deep, and evasive consumer imports", () => {
     const staleScope = "@view" + "-server";
     expect(

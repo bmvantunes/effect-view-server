@@ -1675,12 +1675,13 @@ describe("TCP publish Interface", () => {
       const missingTopicSchemaIngress = yield* makeViewServerTcpPublishIngress(
         // @ts-expect-error intentionally malformed config for the runtime defensive guard.
         missingTopicSchemaConfig,
-        runtimeCore.internalClient,
+        runtimeCore.decodedMutationClient,
         { port: 0 },
       );
       const missingTopicKeyFieldIngress = yield* makeViewServerTcpPublishIngress(
+        // @ts-expect-error intentionally malformed config for the runtime key guard.
         missingTopicKeyFieldConfig,
-        runtimeCore.internalClient,
+        runtimeCore.decodedMutationClient,
         { port: 0 },
       );
 
@@ -1776,9 +1777,11 @@ describe("TCP publish Interface", () => {
         { maxGlobalQueuedCommands: 0, port: 0 },
       ];
       const errors = yield* Effect.forEach(invalidOptions, (options) =>
-        makeViewServerTcpPublishIngress(viewServer, runtimeCore.internalClient, options).pipe(
-          Effect.flip,
-        ),
+        makeViewServerTcpPublishIngress(
+          viewServer,
+          runtimeCore.decodedMutationClient,
+          options,
+        ).pipe(Effect.flip),
       );
 
       expect(
@@ -1854,7 +1857,7 @@ describe("TCP publish Interface", () => {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(sourceOwnedViewServer, {});
       const ingress = yield* makeViewServerTcpPublishIngress(
         sourceOwnedViewServer,
-        runtimeCore.internalClient,
+        runtimeCore.decodedMutationClient,
         {
           port: 0,
         },

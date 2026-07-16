@@ -842,6 +842,8 @@ const runtimeAdapterOptionModule =
 const runtimeAdapterLeafModule =
   /^packages\/runtime\/src\/(?!tcp-publish-)(.+)-(?:ingress|lease-manager)\.ts$/;
 
+const tcpPublishAdapterModule = /^packages\/runtime\/src\/tcp-publish-[^/]+\.ts$/;
+
 const runtimeAdapterImplementationSpecifier = (adapter: string, specifier: string): boolean =>
   specifier === `./${adapter}-ingress` ||
   specifier === `./${adapter}-lease-manager` ||
@@ -895,6 +897,19 @@ export const runtimeSourceSeamViolationsForFile = ({
     violations.push(
       `${relativePath} imports central runtime options instead of its Adapter-owned option module.`,
     );
+  }
+  if (tcpPublishAdapterModule.test(relativePath)) {
+    for (const specifier of moduleSpecifiers) {
+      if (
+        specifier === "@effect-view-server/runtime-core" ||
+        specifier.startsWith("@effect-view-server/runtime-core/") ||
+        specifier === "./runtime-types"
+      ) {
+        violations.push(
+          `${relativePath} imports Runtime Core implementation types through ${specifier} instead of the neutral decoded-mutation contract.`,
+        );
+      }
+    }
   }
   return violations;
 };

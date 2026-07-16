@@ -1,8 +1,8 @@
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
+import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
 import { type ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import {
   makeViewServerRuntimeCoreInternal,
-  type ViewServerRuntimeCoreInternalClient,
   type ViewServerRuntimeCoreInternalInstance,
 } from "@effect-view-server/runtime-core/internal";
 import {
@@ -39,7 +39,7 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   ) => Effect.Effect<ViewServerWebSocketServer, HttpServerError.ServeError>;
   readonly makeTcpPublishIngress: (
     config: ViewServerRuntimeDependencyConfig<Topics>,
-    client: ViewServerRuntimeCoreInternalClient<Topics>,
+    client: ViewServerRuntimeDecodedMutationClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) => Effect.Effect<ViewServerTcpPublishIngress, ViewServerTcpPublishIngressError>;
 };

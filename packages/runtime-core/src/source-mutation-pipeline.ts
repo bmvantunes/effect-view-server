@@ -19,6 +19,15 @@ import { Effect } from "effect";
 import { engineErrorToRuntimeError } from "./runtime-error";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
+type AssertNever<Value extends never> = Value;
+
+type UnhandledDecodedMutationTag<Topics extends DecodableTopicDefinitions> = AssertNever<
+  Exclude<
+    ViewServerRuntimeDecodedMutation<Topics>["_tag"],
+    "CheckMutationAllowed" | "DeleteDecodedRow" | "PatchDecodedFields" | "PublishDecodedRows"
+  >
+>;
+
 export type RuntimeCoreDecodedRowWithStorageKey = {
   readonly storageKey: string;
   readonly row: object;
@@ -156,23 +165,23 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
   const decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics> = {
     execute: Effect.fn("ViewServerRuntimeCore.sourceMutation.decoded.execute")(function* (
       mutation: ViewServerRuntimeDecodedMutation<Topics>,
-      _trust?: typeof viewServerRuntimeDecodedMutationTrust,
+      _trust?: typeof viewServerRuntimeDecodedMutationTrust | UnhandledDecodedMutationTag<Topics>,
     ) {
       yield* sourceOwnership.requirePublicMutationAllowed(mutation.topic, "runtimeCore");
-      if (mutation._tag === "CheckMutationAllowed") {
-        return;
+      switch (mutation._tag) {
+        case "CheckMutationAllowed":
+          return;
+        case "PublishDecodedRows":
+          return yield* internalMutations.publishManyDecodedRows(mutation.topic, mutation.rows);
+        case "PatchDecodedFields":
+          return yield* internalMutations.patchDecodedFields(
+            mutation.topic,
+            mutation.key,
+            mutation.patch,
+          );
+        case "DeleteDecodedRow":
+          return yield* internalMutations.delete(mutation.topic, mutation.key);
       }
-      if (mutation._tag === "PublishDecodedRows") {
-        return yield* internalMutations.publishManyDecodedRows(mutation.topic, mutation.rows);
-      }
-      if (mutation._tag === "PatchDecodedFields") {
-        return yield* internalMutations.patchDecodedFields(
-          mutation.topic,
-          mutation.key,
-          mutation.patch,
-        );
-      }
-      return yield* internalMutations.delete(mutation.topic, mutation.key);
     }),
   };
   const checkedMutations: ViewServerRuntimeCoreCheckedMutations<Topics> = {

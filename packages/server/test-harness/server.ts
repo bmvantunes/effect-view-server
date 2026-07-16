@@ -412,26 +412,35 @@ export const fetchTextWithAuthorization = Effect.fn(
 
 export const reserveTcpPort = Effect.fn("ViewServerServer.test.tcp.reservePort")(function* () {
   const server = yield* Effect.acquireRelease(
-    Effect.callback<Net.Server, ServerTestTcpError>((resume) => {
+    Effect.callback<Net.Server, ServerTestTcpError>((resume, _signal) => {
       const blocker = Net.createServer();
-      const cleanup = () => {
-        blocker.removeAllListeners();
-      };
-      blocker.once("error", (cause) => {
-        cleanup();
+      let reservationComplete = false;
+      blocker.on("error", (cause) => {
+        if (reservationComplete) {
+          return;
+        }
+        reservationComplete = true;
         resume(Effect.fail(new ServerTestTcpError({ cause })));
       });
       blocker.listen(0, "127.0.0.1", () => {
-        cleanup();
+        reservationComplete = true;
         resume(Effect.succeed(blocker));
+      });
+      return Effect.callback<void>((cleanupResume) => {
+        blocker.close(() => {
+          blocker.removeAllListeners();
+          cleanupResume(Effect.void);
+        });
       });
     }),
     (server) =>
       Effect.callback<void>((resume) => {
         server.close(() => {
+          server.removeAllListeners();
           resume(Effect.void);
         });
       }),
+    { interruptible: true },
   );
   const address = yield* Schema.decodeUnknownEffect(TcpAddress)(server.address());
   return address.port;

@@ -241,11 +241,21 @@ describe("Real View Server lifecycle", () => {
     Effect.gen(function* () {
       const activeSocketClosers = new Set<Effect.Effect<void, unknown>>();
       const fastCloseRan = yield* Deferred.make<void>();
-      activeSocketClosers.add(Effect.never);
+      const releaseStuckClose = yield* Deferred.make<void>();
+      activeSocketClosers.add(Deferred.await(releaseStuckClose).pipe(Effect.uninterruptible));
       activeSocketClosers.add(Deferred.succeed(fastCloseRan, undefined));
 
-      yield* closeTrackedSockets(activeSocketClosers).pipe(Effect.timeout("1 second"));
+      const closeFiber = yield* Effect.acquireRelease(
+        closeTrackedSockets(activeSocketClosers).pipe(Effect.forkChild({ startImmediately: true })),
+        (fiber) =>
+          Deferred.succeed(releaseStuckClose, undefined).pipe(
+            Effect.andThen(Fiber.interrupt(fiber)),
+            Effect.asVoid,
+          ),
+      );
       yield* Deferred.await(fastCloseRan).pipe(Effect.timeout("1 second"));
+      yield* Deferred.succeed(releaseStuckClose, undefined);
+      yield* Fiber.join(closeFiber).pipe(Effect.timeout("1 second"));
     }),
   );
 

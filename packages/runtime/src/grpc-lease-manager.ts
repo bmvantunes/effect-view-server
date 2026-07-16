@@ -493,8 +493,9 @@ const acquireLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.acqui
       };
     }),
   );
-  // Returning runFeed directly makes Effect.fn flatten the nested Effect in its inferred result.
-  // Wrap it so acquisition returns the worker as a value for the Subscription to fork and own.
+  // The Subscription must receive runFeed as a value so it can fork and own the worker.
+  // Strict Effect diagnostics treat direct nested-Effect returns as accidental, so wrap it
+  // to make the intentional Effect<Effect<GrpcLeasedUpstreamTerminal>> explicit.
   return yield* Effect.succeed(runFeed);
 });
 

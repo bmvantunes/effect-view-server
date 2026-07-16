@@ -9,8 +9,10 @@ import { Clock, Effect, Exit } from "effect";
 import type { ViewServerGrpcHealthLedger } from "../src/grpc-health";
 import { makeViewServerGrpcIngress } from "../src/grpc-ingress";
 import { makeViewServerGrpcLeaseManager } from "../src/grpc-lease-manager";
-import { makeDefaultRuntimeDependencies } from "../src/runtime-dependencies";
-import { resolveViewServerRuntimeOptions } from "../src/runtime-options";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "../src/grpc-runtime-source";
 import type {
   ViewServerGrpcRuntimeOptions,
   ViewServerRuntimeTopicDefinitions,
@@ -36,8 +38,8 @@ const resolveGrpcRuntimeHarness = Effect.fn("ViewServerRuntime.test.grpc.harness
       input.config,
       input.grpc === undefined ? {} : { grpc: input.grpc },
     );
-    const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
-    const health = makeDefaultRuntimeDependencies<Topics>().makeGrpcHealthLedger(
+    const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions);
+    const health = makeDefaultGrpcRuntimeSourceDependencies<Topics>().makeHealthLedger(
       input.config,
       grpcOptions,
     );

@@ -7,11 +7,11 @@ import {
   type ViewServerRuntimeClient,
 } from "@effect-view-server/config";
 import { Effect, Schedule, Stream } from "effect";
-import { makeDefaultRuntimeDependencies } from "../src/internal";
 import {
-  resolveViewServerRuntimeOptions,
-  type ResolvedViewServerGrpcRuntimeOptions,
-} from "../src/runtime-options";
+  makeDefaultGrpcRuntimeSourceDependencies,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "../src/grpc-runtime-source";
+import { type ResolvedViewServerGrpcRuntimeOptions } from "../src/grpc-runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "../src/runtime-types";
 
 import {
@@ -225,7 +225,7 @@ export const makeGrpcHealth = <
     readonly sourceConfig: ViewServerConfig<Topics, Regions, Clients>;
   },
 ) =>
-  makeDefaultRuntimeDependencies<Topics>().makeGrpcHealthLedger(
+  makeDefaultGrpcRuntimeSourceDependencies<Topics>().makeHealthLedger(
     grpcOptions.sourceConfig,
     grpcOptions,
   );
@@ -258,7 +258,7 @@ export const resolveGrpcRuntimeOptions = Effect.fn("ViewServerRuntime.test.grpc.
         materializedReconnect,
       },
     });
-    const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+    const grpcOptions = yield* Effect.fromNullishOr(options);
     return {
       ...grpcOptions,
       sourceConfig: config,

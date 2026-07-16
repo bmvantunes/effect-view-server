@@ -4,12 +4,16 @@ import { Config, Effect, Schema } from "effect";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import { messageFromUnknown, ViewServerKafkaIngressError } from "./kafka-ingress";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import {
+  makeDefaultKafkaRuntimeSourceDependencies,
+  makeKafkaRuntimeSourceAdapter,
+  resolveKafkaRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "./kafka-runtime-source";
 import { fetchHealth, nullRecord } from "../test-harness/runtime";
 
 import { Order, Trade, viewServer } from "../test-harness/runtime-config";
 
-describe("Runtime Kafka options and health", () => {
+describe("Kafka runtime options and health", () => {
   it.effect("resolves explicit Kafka start policies", () =>
     Effect.gen(function* () {
       const regions = {
@@ -69,10 +73,10 @@ describe("Runtime Kafka options and health", () => {
       );
 
       expect({
-        committed: committed.kafkaOptions?.consume,
-        committedWithDefaultFallback: committedWithDefaultFallback.kafkaOptions?.consume,
-        earliest: earliest.kafkaOptions?.consume,
-        latest: latest.kafkaOptions?.consume,
+        committed: committed?.consume,
+        committedWithDefaultFallback: committedWithDefaultFallback?.consume,
+        earliest: earliest?.consume,
+        latest: latest?.consume,
       }).toStrictEqual({
         committed: {
           consumerGroupId: "view-server-existing-group",
@@ -138,13 +142,13 @@ describe("Runtime Kafka options and health", () => {
       );
 
       expect({
-        consumerGroupId: options.kafkaOptions?.consumerGroupId,
-        regions: options.kafkaOptions?.regions,
-        sourceTopics: Object.keys(options.kafkaOptions?.topics ?? {}),
-        topicRegions: options.kafkaOptions?.topics["orders-source"]?.regions,
-        viewServerTopic: options.kafkaOptions?.topics["orders-source"]?.viewServerTopic,
-        clonedConsumerGroupId: clonedOptions.kafkaOptions?.consumerGroupId,
-        clonedSourceTopics: Object.keys(clonedOptions.kafkaOptions?.topics ?? {}),
+        consumerGroupId: options?.consumerGroupId,
+        regions: options?.regions,
+        sourceTopics: Object.keys(options?.topics ?? {}),
+        topicRegions: options?.topics["orders-source"]?.regions,
+        viewServerTopic: options?.topics["orders-source"]?.viewServerTopic,
+        clonedConsumerGroupId: clonedOptions?.consumerGroupId,
+        clonedSourceTopics: Object.keys(clonedOptions?.topics ?? {}),
       }).toStrictEqual({
         consumerGroupId: "view-server-derived-kafka-source",
         regions: nullRecord([["local", "localhost:9092"]]),
@@ -372,32 +376,10 @@ describe("Runtime Kafka options and health", () => {
     }),
   );
 
-  it.effect("resolves default runtime options from config-only overload", () =>
-    Effect.gen(function* () {
-      const options = yield* resolveViewServerRuntimeOptions(viewServer);
-      const optionsWithOverrides = yield* resolveViewServerRuntimeOptions(viewServer, {
-        host: "127.0.0.1",
-        websocketPort: 3800,
-      });
-
-      expect({
-        hasKafkaOptions: "kafkaOptions" in options,
-        serverHost: options.serverOptions.host,
-        overrideServerHost: optionsWithOverrides.serverOptions.host,
-        overrideWebSocketPort: optionsWithOverrides.serverOptions.port,
-      }).toStrictEqual({
-        hasKafkaOptions: false,
-        serverHost: undefined,
-        overrideServerHost: "127.0.0.1",
-        overrideWebSocketPort: 3800,
-      });
-    }),
-  );
-
   it.effect("rejects runtime Kafka options without configured source topics", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
-        resolveViewServerRuntimeOptions({
+        resolveViewServerRuntimeOptions(viewServer, {
           kafka: {
             consumerGroupId: "view-server-no-kafka-topics",
             regions: {
@@ -644,6 +626,29 @@ describe("Runtime Kafka options and health", () => {
         | undefined;
       const dependencies: RuntimeDependencies = {
         ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaBackedViewServer.topics>(),
+            makeIngress: (_config, _client, options) => {
+              kafkaOptionsSummary = {
+                consumerGroupId: options.consumerGroupId,
+                regions: options.regions,
+                topics: Object.fromEntries(
+                  Object.entries(options.topics).map(([sourceTopic, topic]) => [
+                    sourceTopic,
+                    {
+                      regions: topic.regions,
+                      viewServerTopic: topic.viewServerTopic,
+                    },
+                  ]),
+                ),
+              };
+              return Effect.succeed({
+                close: Effect.void,
+              });
+            },
+          }),
+        ],
         makeServer: () =>
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
@@ -651,24 +656,6 @@ describe("Runtime Kafka options and health", () => {
             metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
-        makeKafkaIngress: (_config, _client, options) => {
-          kafkaOptionsSummary = {
-            consumerGroupId: options.consumerGroupId,
-            regions: options.regions,
-            topics: Object.fromEntries(
-              Object.entries(options.topics).map(([sourceTopic, topic]) => [
-                sourceTopic,
-                {
-                  regions: topic.regions,
-                  viewServerTopic: topic.viewServerTopic,
-                },
-              ]),
-            ),
-          };
-          return Effect.succeed({
-            close: Effect.void,
-          });
-        },
       };
 
       const runtime = yield* makeViewServerRuntimeWithDependencies(
@@ -725,12 +712,17 @@ describe("Runtime Kafka options and health", () => {
       });
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics> = {
         ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
-        makeKafkaIngress: (_config, _client, _options, observation) =>
-          observation.regionDisconnected("local", "lost").pipe(
-            Effect.as({
-              close: Effect.void,
-            }),
-          ),
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaBackedViewServer.topics>(),
+            makeIngress: (_config, _client, _options, observation) =>
+              observation.regionDisconnected("local", "lost").pipe(
+                Effect.as({
+                  close: Effect.void,
+                }),
+              ),
+          }),
+        ],
       };
 
       yield* Effect.acquireUseRelease(

@@ -12,7 +12,7 @@ import {
   registerKafkaConsumerHealthListeners,
 } from "./kafka-ingress";
 import { makeViewServerKafkaHealthObserver } from "./kafka-health-observation";
-import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
+import type { ResolvedViewServerKafkaRuntimeOptions } from "./kafka-runtime-options";
 import {
   committedKafkaStart,
   failingClient,

@@ -56,7 +56,7 @@ import {
   type ViewServerGrpcRuntimeCallable,
   type ViewServerGrpcSourceInput,
 } from "./grpc-source-lifecycle";
-import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
+import type { ResolvedViewServerGrpcRuntimeOptions } from "./grpc-runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 import { snapshotLeasedGrpcQuery } from "./grpc-leased-query-snapshot";
 import {

@@ -2,7 +2,14 @@ import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { Duration, Effect, Schema, Stream } from "effect";
 import { ViewServerGrpcIngressError } from "./grpc-ingress";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import type { ResolvedViewServerGrpcRuntimeOptions } from "./grpc-runtime-options";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  makeGrpcRuntimeSourceAdapter,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "./grpc-runtime-source";
+import type { ViewServerRuntimeDependencies } from "./internal";
+import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import {
   grpcClients,
   GrpcOrder,
@@ -12,7 +19,148 @@ import {
 import { grpcMaterializedViewServer } from "../test-harness/grpc-materialized";
 import { grpcLeasedViewServer } from "../test-harness/grpc-leased";
 
-describe("Runtime source composition and options", () => {
+type GrpcRuntimeOptionsSummary = {
+  readonly clientBaseUrls: ReadonlyArray<readonly [string, string]>;
+  readonly clientNames: ReadonlyArray<string>;
+  readonly feeds: ReadonlyArray<{
+    readonly client: string;
+    readonly feedName: string;
+    readonly lifecycle: "leased" | "materialized";
+    readonly method: string;
+    readonly topic: string;
+  }>;
+  readonly materializedReconnect: {
+    readonly delay: Duration.Input;
+    readonly maxReconnects: number;
+  };
+};
+
+const summarizeGrpcRuntimeOptions = (
+  options: ResolvedViewServerGrpcRuntimeOptions<typeof grpcTopicOwnedSourceViewServer.topics>,
+): GrpcRuntimeOptionsSummary => ({
+  clientBaseUrls: Object.entries(options.clientBaseUrls),
+  clientNames: Object.keys(options.clients),
+  feeds: Object.entries(options.feeds).map(([feedName, feed]) => ({
+    client: feed.client,
+    feedName,
+    lifecycle: feed.lifecycle,
+    method: feed.method,
+    topic: feed.topic,
+  })),
+  materializedReconnect: options.materializedReconnect,
+});
+
+describe("gRPC runtime options", () => {
+  it.live("hands resolved gRPC runtime options to the production source Adapter dependencies", () =>
+    Effect.gen(function* () {
+      type Topics = typeof grpcTopicOwnedSourceViewServer.topics;
+      const defaults = makeDefaultRuntimeDependencies<Topics>();
+      const grpcDefaults = makeDefaultGrpcRuntimeSourceDependencies<Topics>();
+      let healthLedgerReceivedConfiguredTopics = false;
+      let healthLedgerOptions: GrpcRuntimeOptionsSummary | undefined;
+      let leaseManagerOptions: GrpcRuntimeOptionsSummary | undefined;
+      let ingressOptions: GrpcRuntimeOptionsSummary | undefined;
+      const dependencies: ViewServerRuntimeDependencies<Topics> = {
+        ...defaults,
+        sourceAdapters: [
+          makeGrpcRuntimeSourceAdapter({
+            ...grpcDefaults,
+            makeHealthLedger: (config, options) => {
+              healthLedgerReceivedConfiguredTopics =
+                config.topics === grpcTopicOwnedSourceViewServer.topics;
+              healthLedgerOptions = summarizeGrpcRuntimeOptions(options);
+              return grpcDefaults.makeHealthLedger(config, options);
+            },
+            makeLeaseManager: (
+              config,
+              runtimeClient,
+              liveClient,
+              internalLiveClient,
+              requestHealthRefresh,
+              options,
+              health,
+            ) => {
+              leaseManagerOptions = summarizeGrpcRuntimeOptions(options);
+              return grpcDefaults.makeLeaseManager(
+                config,
+                runtimeClient,
+                liveClient,
+                internalLiveClient,
+                requestHealthRefresh,
+                options,
+                health,
+              );
+            },
+            makeIngress: (_config, _client, _requestHealthRefresh, options) => {
+              ingressOptions = summarizeGrpcRuntimeOptions(options);
+              return Effect.succeed({
+                close: Effect.void,
+              });
+            },
+          }),
+        ],
+        makeServer: () =>
+          Effect.succeed({
+            url: "ws://127.0.0.1:0/rpc",
+            healthUrl: "http://127.0.0.1:0/health",
+            metricsUrl: "http://127.0.0.1:0/metrics",
+            close: Effect.void,
+          }),
+      };
+
+      const runtime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        grpcTopicOwnedSourceViewServer,
+        {
+          grpc: {
+            materializedReconnect: {
+              delay: "100 millis",
+              maxReconnects: 5,
+            },
+          },
+        },
+      );
+
+      const expectedOptions: GrpcRuntimeOptionsSummary = {
+        clientBaseUrls: [["orders", "https://orders.example.test"]],
+        clientNames: ["orders"],
+        feeds: [
+          {
+            client: "orders",
+            feedName: "orders",
+            lifecycle: "materialized",
+            method: "streamOrders",
+            topic: "orders",
+          },
+          {
+            client: "orders",
+            feedName: "routedOrders",
+            lifecycle: "leased",
+            method: "streamOrders",
+            topic: "routedOrders",
+          },
+        ],
+        materializedReconnect: {
+          delay: "100 millis",
+          maxReconnects: 5,
+        },
+      };
+      expect({
+        healthLedgerOptions,
+        healthLedgerReceivedConfiguredTopics,
+        ingressOptions,
+        leaseManagerOptions,
+      }).toStrictEqual({
+        healthLedgerOptions: expectedOptions,
+        healthLedgerReceivedConfiguredTopics: true,
+        ingressOptions: expectedOptions,
+        leaseManagerOptions: expectedOptions,
+      });
+
+      yield* runtime.close;
+    }),
+  );
+
   it.live("derives topic-owned gRPC runtime feeds without release callbacks", () =>
     Effect.gen(function* () {
       const noReleaseViewServer = defineViewServerConfig({
@@ -59,11 +207,8 @@ describe("Runtime source composition and options", () => {
       const options = yield* resolveViewServerRuntimeOptions(noReleaseViewServer);
 
       expect({
-        ordersHasRelease: Object.hasOwn(options.grpcOptions?.feeds["orders"] ?? {}, "release"),
-        routedOrdersHasRelease: Object.hasOwn(
-          options.grpcOptions?.feeds["routedOrders"] ?? {},
-          "release",
-        ),
+        ordersHasRelease: Object.hasOwn(options?.feeds["orders"] ?? {}, "release"),
+        routedOrdersHasRelease: Object.hasOwn(options?.feeds["routedOrders"] ?? {}, "release"),
       }).toStrictEqual({
         ordersHasRelease: false,
         routedOrdersHasRelease: false,
@@ -73,7 +218,8 @@ describe("Runtime source composition and options", () => {
 
   it.live("rejects explicit gRPC runtime options without clients or feeds", () =>
     Effect.gen(function* () {
-      const error = yield* resolveViewServerRuntimeOptions({
+      const sourceFreeViewServer = defineViewServerConfig({ topics: {} });
+      const error = yield* resolveViewServerRuntimeOptions(sourceFreeViewServer, {
         grpc: {},
       }).pipe(Effect.flip);
       const grpcError = yield* Schema.decodeUnknownEffect(ViewServerGrpcIngressError)(error);
@@ -222,7 +368,7 @@ describe("Runtime source composition and options", () => {
           nullMessage: nullGrpcOptionsError.message,
           nullPhase: nullGrpcOptionsError.phase,
         },
-        nullReconnect: nullReconnectResult.grpcOptions?.materializedReconnect,
+        nullReconnect: nullReconnectResult?.materializedReconnect,
       }).toStrictEqual({
         clientsError: {
           cause: "clients",
@@ -297,7 +443,7 @@ describe("Runtime source composition and options", () => {
 
       const options = yield* resolveViewServerRuntimeOptions(viewServerWithInheritedSource);
 
-      expect(options.grpcOptions).toBeUndefined();
+      expect(options).toBeUndefined();
     }),
   );
 
@@ -308,7 +454,7 @@ describe("Runtime source composition and options", () => {
       });
       const options = yield* resolveViewServerRuntimeOptions(config);
 
-      expect(options.grpcOptions?.feeds["orders"]).toMatchObject({
+      expect(options?.feeds["orders"]).toMatchObject({
         client: "orders",
         lifecycle: "leased",
         method: "streamOrders",

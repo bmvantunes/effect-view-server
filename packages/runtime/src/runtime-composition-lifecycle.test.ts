@@ -11,6 +11,16 @@ import {
   runViewServerRuntimeWithDependencies,
 } from "./internal";
 import type { ViewServerRuntimeDependencies } from "./runtime-dependencies";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  makeGrpcRuntimeSourceAdapter,
+  type ViewServerGrpcRuntimeSourceDependencies,
+} from "./grpc-runtime-source";
+import {
+  makeDefaultKafkaRuntimeSourceDependencies,
+  makeKafkaRuntimeSourceAdapter,
+  type ViewServerKafkaRuntimeSourceDependencies,
+} from "./kafka-runtime-source";
 import { ViewServerKafkaIngressError } from "./kafka-ingress";
 
 const Order = Schema.Struct({
@@ -190,12 +200,76 @@ const allSourceRuntimeOptions = {
   },
 };
 
+type AllSourceKafkaDependencies = ViewServerKafkaRuntimeSourceDependencies<
+  typeof allSourceViewServer.topics
+>;
+
+type AllSourceGrpcDependencies = ViewServerGrpcRuntimeSourceDependencies<
+  typeof allSourceViewServer.topics
+>;
+
+type AllSourceDependencyOverrides = {
+  readonly kafka?: Partial<AllSourceKafkaDependencies>;
+  readonly grpc?: Partial<AllSourceGrpcDependencies>;
+};
+
 const makeTrackedAllSourceDependencies = (
   events: Array<string>,
+  sourceOverrides: AllSourceDependencyOverrides = {},
 ): ViewServerRuntimeDependencies<typeof allSourceViewServer.topics> => {
   const defaults = makeDefaultRuntimeDependencies<typeof allSourceViewServer.topics>();
+  const kafkaDefaults =
+    makeDefaultKafkaRuntimeSourceDependencies<typeof allSourceViewServer.topics>();
+  const grpcDefaults =
+    makeDefaultGrpcRuntimeSourceDependencies<typeof allSourceViewServer.topics>();
   return {
     ...defaults,
+    sourceAdapters: [
+      makeKafkaRuntimeSourceAdapter({
+        ...kafkaDefaults,
+        ...sourceOverrides.kafka,
+        makeIngress:
+          sourceOverrides.kafka?.makeIngress ??
+          (() =>
+            Effect.sync(() => {
+              events.push("acquire:kafkaIngress");
+              return {
+                close: Effect.sync(() => {
+                  events.push("close:kafkaIngress");
+                }),
+              };
+            })),
+      }),
+      makeGrpcRuntimeSourceAdapter({
+        ...grpcDefaults,
+        ...sourceOverrides.grpc,
+        makeLeaseManager:
+          sourceOverrides.grpc?.makeLeaseManager ??
+          ((...args) =>
+            Effect.sync(() => {
+              events.push("acquire:grpcLeaseManager");
+            }).pipe(
+              Effect.andThen(grpcDefaults.makeLeaseManager(...args)),
+              Effect.map((manager) => ({
+                ...manager,
+                close: Effect.sync(() => {
+                  events.push("close:grpcLeaseManager");
+                }).pipe(Effect.andThen(manager.close)),
+              })),
+            )),
+        makeIngress:
+          sourceOverrides.grpc?.makeIngress ??
+          (() =>
+            Effect.sync(() => {
+              events.push("acquire:grpcIngress");
+              return {
+                close: Effect.sync(() => {
+                  events.push("close:grpcIngress");
+                }),
+              };
+            })),
+      }),
+    ],
     makeRuntimeCore: (config, options) =>
       Effect.sync(() => {
         events.push("acquire:runtimeCore");
@@ -208,18 +282,6 @@ const makeTrackedAllSourceDependencies = (
           }).pipe(Effect.andThen(runtimeCore.close)),
         })),
       ),
-    makeGrpcLeaseManager: (...args) =>
-      Effect.sync(() => {
-        events.push("acquire:grpcLeaseManager");
-      }).pipe(
-        Effect.andThen(defaults.makeGrpcLeaseManager(...args)),
-        Effect.map((manager) => ({
-          ...manager,
-          close: Effect.sync(() => {
-            events.push("close:grpcLeaseManager");
-          }).pipe(Effect.andThen(manager.close)),
-        })),
-      ),
     makeServer: () =>
       Effect.sync(() => {
         events.push("acquire:server");
@@ -229,24 +291,6 @@ const makeTrackedAllSourceDependencies = (
           metricsUrl: "http://127.0.0.1:0/metrics",
           close: Effect.sync(() => {
             events.push("close:server");
-          }),
-        };
-      }),
-    makeKafkaIngress: () =>
-      Effect.sync(() => {
-        events.push("acquire:kafkaIngress");
-        return {
-          close: Effect.sync(() => {
-            events.push("close:kafkaIngress");
-          }),
-        };
-      }),
-    makeGrpcIngress: () =>
-      Effect.sync(() => {
-        events.push("acquire:grpcIngress");
-        return {
-          close: Effect.sync(() => {
-            events.push("close:grpcIngress");
           }),
         };
       }),
@@ -302,8 +346,36 @@ describe("Real View Server composition lifecycle", () => {
     Effect.gen(function* () {
       const events: Array<string> = [];
       const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      const kafkaDefaults =
+        makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaViewServer.topics>();
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
         ...defaults,
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...kafkaDefaults,
+            makeHealthObserver: (health, refreshHealth) =>
+              Effect.sync(() => {
+                events.push("acquire:kafkaHealthObserver");
+              }).pipe(
+                Effect.andThen(kafkaDefaults.makeHealthObserver(health, refreshHealth)),
+                Effect.map((observer) => ({
+                  ...observer,
+                  close: Effect.sync(() => {
+                    events.push("close:kafkaHealthObserver");
+                  }).pipe(Effect.andThen(observer.close)),
+                })),
+              ),
+            makeIngress: () =>
+              Effect.sync(() => {
+                events.push("acquire:kafkaIngress");
+                return {
+                  close: Effect.sync(() => {
+                    events.push("close:kafkaIngress");
+                  }),
+                };
+              }),
+          }),
+        ],
         makeRuntimeCore: (config, options) =>
           Effect.sync(() => {
             events.push("acquire:runtimeCore");
@@ -316,18 +388,6 @@ describe("Real View Server composition lifecycle", () => {
               }).pipe(Effect.andThen(runtimeCore.close)),
             })),
           ),
-        makeKafkaHealthObserver: (health, refreshHealth) =>
-          Effect.sync(() => {
-            events.push("acquire:kafkaHealthObserver");
-          }).pipe(
-            Effect.andThen(defaults.makeKafkaHealthObserver(health, refreshHealth)),
-            Effect.map((observer) => ({
-              ...observer,
-              close: Effect.sync(() => {
-                events.push("close:kafkaHealthObserver");
-              }).pipe(Effect.andThen(observer.close)),
-            })),
-          ),
         makeServer: () =>
           Effect.sync(() => {
             events.push("acquire:server");
@@ -337,15 +397,6 @@ describe("Real View Server composition lifecycle", () => {
               metricsUrl: "http://127.0.0.1:0/metrics",
               close: Effect.sync(() => {
                 events.push("close:server");
-              }),
-            };
-          }),
-        makeKafkaIngress: () =>
-          Effect.sync(() => {
-            events.push("acquire:kafkaIngress");
-            return {
-              close: Effect.sync(() => {
-                events.push("close:kafkaIngress");
               }),
             };
           }),
@@ -374,11 +425,28 @@ describe("Real View Server composition lifecycle", () => {
   it.effect("flushes stopped Kafka health before runtime-core teardown", () =>
     Effect.gen(function* () {
       const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      const kafkaDefaults =
+        makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaViewServer.topics>();
       let ingressClosed = false;
       let runtimeCoreClosed = false;
       let flushedAfterIngress = false;
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
         ...defaults,
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...kafkaDefaults,
+            makeIngress: (_config, _client, _options, observation) =>
+              Effect.succeed({
+                close: observation.regionStopped("local").pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      ingressClosed = true;
+                    }),
+                  ),
+                ),
+              }),
+          }),
+        ],
         makeRuntimeCore: (config, options) =>
           defaults.makeRuntimeCore(config, options).pipe(
             Effect.map((runtimeCore) => ({
@@ -400,16 +468,6 @@ describe("Real View Server composition lifecycle", () => {
             metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
-        makeKafkaIngress: (_config, _client, _options, observation) =>
-          Effect.succeed({
-            close: observation.regionStopped("local").pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  ingressClosed = true;
-                }),
-              ),
-            ),
-          }),
       };
 
       const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, kafkaViewServer, {
@@ -430,29 +488,36 @@ describe("Real View Server composition lifecycle", () => {
   it.effect("closes a Kafka health observer when acquisition receives a pending interrupt", () =>
     Effect.gen(function* () {
       const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      const kafkaDefaults =
+        makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaViewServer.topics>();
       const observerCreated = yield* Deferred.make<void>();
       const allowObserverReturn = yield* Deferred.make<void>();
       let observerCloseCount = 0;
       let cleanupObserver = Effect.void;
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
         ...defaults,
-        makeKafkaHealthObserver: (health, refreshHealth) =>
-          Effect.uninterruptible(
-            defaults.makeKafkaHealthObserver(health, refreshHealth).pipe(
-              Effect.map((observer) => {
-                const close = Effect.sync(() => {
-                  observerCloseCount += 1;
-                }).pipe(Effect.andThen(observer.close));
-                cleanupObserver = close;
-                return {
-                  ...observer,
-                  close,
-                };
-              }),
-              Effect.tap(() => Deferred.succeed(observerCreated, undefined)),
-              Effect.tap(() => Deferred.await(allowObserverReturn)),
-            ),
-          ),
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...kafkaDefaults,
+            makeHealthObserver: (health, refreshHealth) =>
+              Effect.uninterruptible(
+                kafkaDefaults.makeHealthObserver(health, refreshHealth).pipe(
+                  Effect.map((observer) => {
+                    const close = Effect.sync(() => {
+                      observerCloseCount += 1;
+                    }).pipe(Effect.andThen(observer.close));
+                    cleanupObserver = close;
+                    return {
+                      ...observer,
+                      close,
+                    };
+                  }),
+                  Effect.tap(() => Deferred.succeed(observerCreated, undefined)),
+                  Effect.tap(() => Deferred.await(allowObserverReturn)),
+                ),
+              ),
+          }),
+        ],
       };
       const startup = yield* makeViewServerRuntimeWithDependencies(dependencies, kafkaViewServer, {
         kafka: {
@@ -534,8 +599,19 @@ describe("Real View Server composition lifecycle", () => {
         cause: "test checkpoint",
       });
       const defaults = makeDefaultRuntimeDependencies<typeof kafkaViewServer.topics>();
+      const kafkaDefaults =
+        makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaViewServer.topics>();
       const dependencies: ViewServerRuntimeDependencies<typeof kafkaViewServer.topics> = {
         ...defaults,
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...kafkaDefaults,
+            makeIngress: () =>
+              Effect.sync(() => {
+                events.push("acquire:kafkaIngress");
+              }).pipe(Effect.andThen(Effect.fail(startupError))),
+          }),
+        ],
         makeRuntimeCore: (config, options) =>
           defaults.makeRuntimeCore(config, options).pipe(
             Effect.map((runtimeCore) => ({
@@ -562,10 +638,6 @@ describe("Real View Server composition lifecycle", () => {
               }).pipe(Effect.andThen(Effect.die(new Error("server cleanup defect")))),
             };
           }),
-        makeKafkaIngress: () =>
-          Effect.sync(() => {
-            events.push("acquire:kafkaIngress");
-          }).pipe(Effect.andThen(Effect.fail(startupError))),
       };
 
       const observedError = yield* makeViewServerRuntimeWithDependencies(
@@ -610,10 +682,11 @@ describe("Real View Server composition lifecycle", () => {
   it.effect("rolls back Runtime Core when gRPC lease-manager acquisition fails", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
-      const dependencies = {
-        ...makeTrackedAllSourceDependencies(events),
-        makeGrpcLeaseManager: () => failCheckpoint(events, "grpcLeaseManager"),
-      };
+      const dependencies = makeTrackedAllSourceDependencies(events, {
+        grpc: {
+          makeLeaseManager: () => failCheckpoint(events, "grpcLeaseManager"),
+        },
+      });
 
       const startupExit = yield* makeViewServerRuntimeWithDependencies(
         dependencies,
@@ -658,10 +731,11 @@ describe("Real View Server composition lifecycle", () => {
   it.effect("rolls back server ownership when Kafka acquisition fails", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
-      const dependencies = {
-        ...makeTrackedAllSourceDependencies(events),
-        makeKafkaIngress: () => failCheckpoint(events, "kafkaIngress"),
-      };
+      const dependencies = makeTrackedAllSourceDependencies(events, {
+        kafka: {
+          makeIngress: () => failCheckpoint(events, "kafkaIngress"),
+        },
+      });
 
       const startupExit = yield* makeViewServerRuntimeWithDependencies(
         dependencies,
@@ -685,10 +759,11 @@ describe("Real View Server composition lifecycle", () => {
   it.effect("rolls back Kafka ownership when materialized gRPC acquisition fails", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
-      const dependencies = {
-        ...makeTrackedAllSourceDependencies(events),
-        makeGrpcIngress: () => failCheckpoint(events, "grpcIngress"),
-      };
+      const dependencies = makeTrackedAllSourceDependencies(events, {
+        grpc: {
+          makeIngress: () => failCheckpoint(events, "grpcIngress"),
+        },
+      });
 
       const startupExit = yield* makeViewServerRuntimeWithDependencies(
         dependencies,

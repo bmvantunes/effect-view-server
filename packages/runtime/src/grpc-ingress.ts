@@ -15,7 +15,7 @@ import {
   type ViewServerGrpcClientFactory,
   type ViewServerGrpcRuntimeCallable,
 } from "./grpc-source-lifecycle";
-import type { ResolvedViewServerGrpcRuntimeOptions } from "./runtime-options";
+import type { ResolvedViewServerGrpcRuntimeOptions } from "./grpc-runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export { ViewServerGrpcIngressError } from "./grpc-source-lifecycle";

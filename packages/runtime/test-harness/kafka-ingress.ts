@@ -20,7 +20,7 @@ import {
   messageFromUnknown,
   ViewServerKafkaIngressError,
 } from "../src/kafka-ingress";
-import type { ResolvedViewServerKafkaRuntimeOptions } from "../src/runtime-options";
+import type { ResolvedViewServerKafkaRuntimeOptions } from "../src/kafka-runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "../src/runtime-types";
 
 export class KafkaIngressTestError extends Schema.TaggedErrorClass<KafkaIngressTestError>()(

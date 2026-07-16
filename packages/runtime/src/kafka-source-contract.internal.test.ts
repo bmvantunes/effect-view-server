@@ -4,7 +4,7 @@ import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-c
 import { Effect, Option, Schema } from "effect";
 import { makeViewServerKafkaHealthLedger } from "./kafka-health";
 import { processKafkaMessage, ViewServerKafkaIngressError } from "./kafka-ingress";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import { resolveKafkaRuntimeSourceOptions as resolveViewServerRuntimeOptions } from "./kafka-runtime-source";
 
 import {
   IncomingOrder,
@@ -51,7 +51,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-missing-topic-guard",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(corruptedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof corruptedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -130,7 +130,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-topic-owned-decode",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -209,7 +209,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-topic-owned-transformed-mapped-row",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -287,7 +287,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-topic-owned-storage-key",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -382,7 +382,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-topic-owned-tombstone",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -467,7 +467,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-direct-transformed-mapped-row",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -560,7 +560,7 @@ describe("Kafka source mapping contracts", () => {
           consumerGroupId: "view-server-direct-invalid-mapped-row",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(invalidMappingViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
         regions: kafkaOptions.regions,

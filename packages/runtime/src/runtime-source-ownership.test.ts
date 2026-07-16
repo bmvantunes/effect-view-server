@@ -10,8 +10,16 @@ import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import { ViewServerGrpcIngressError } from "./grpc-ingress";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  makeGrpcRuntimeSourceAdapter,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "./grpc-runtime-source";
+import {
+  makeDefaultKafkaRuntimeSourceDependencies,
+  makeKafkaRuntimeSourceAdapter,
+} from "./kafka-runtime-source";
 import { makeViewServerRuntime } from "./index";
-import { resolveViewServerRuntimeOptions, validateSourceOwnership } from "./runtime-options";
 import { order, Order, viewServer } from "../test-harness/runtime-config";
 import {
   grpcClients,
@@ -49,6 +57,7 @@ describe("Runtime source ownership and mutation policy", () => {
       const runtime = yield* makeViewServerRuntimeWithDependencies(
         dependencies,
         grpcTopicOwnedSourceViewServer,
+        { grpc: {} },
       );
 
       const snapshot: (
@@ -202,11 +211,11 @@ describe("Runtime source ownership and mutation policy", () => {
         const options = yield* resolveViewServerRuntimeOptions(sourceFreeGrpcViewServer, {
           grpc: {},
         });
-        const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+        const grpcOptions = yield* Effect.fromNullishOr(options);
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(sourceFreeGrpcViewServer, {});
-        const health = makeDefaultRuntimeDependencies<
+        const health = makeDefaultGrpcRuntimeSourceDependencies<
           typeof sourceFreeGrpcViewServer.topics
-        >().makeGrpcHealthLedger(sourceFreeGrpcViewServer, grpcOptions);
+        >().makeHealthLedger(sourceFreeGrpcViewServer, grpcOptions);
         const manager = yield* makeViewServerGrpcLeaseManager(
           sourceFreeGrpcViewServer,
           runtimeCore.internalClient,
@@ -263,10 +272,15 @@ describe("Runtime source ownership and mutation policy", () => {
       type RuntimeDependencies = ViewServerRuntimeDependencies<typeof kafkaBackedViewServer.topics>;
       const dependencies: RuntimeDependencies = {
         ...makeDefaultRuntimeDependencies<typeof kafkaBackedViewServer.topics>(),
-        makeKafkaIngress: () =>
-          Effect.succeed({
-            close: Effect.void,
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...makeDefaultKafkaRuntimeSourceDependencies<typeof kafkaBackedViewServer.topics>(),
+            makeIngress: () =>
+              Effect.succeed({
+                close: Effect.void,
+              }),
           }),
+        ],
         makeServer: () =>
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
@@ -495,28 +509,57 @@ describe("Runtime source ownership and mutation policy", () => {
     }),
   );
 
-  it.effect("rejects resolved Kafka and gRPC ownership of the same View Server topic", () =>
+  it.effect("constructs adapter-local ownership conflicts for Kafka and gRPC sources", () =>
     Effect.gen(function* () {
-      const error = yield* validateSourceOwnership(
-        {
-          topics: {
-            "orders-source": {
-              viewServerTopic: "orders",
-            },
+      const kafkaSource = kafka.source({
+        topic: "orders-source",
+        regions: ["local"],
+        value: kafka.json(() => Schema.toCodecJson(GrpcOrder)),
+        key: kafka.stringKey(),
+        rowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: value.region,
+          updatedAt: value.updatedAt,
+        }),
+      });
+      const kafkaViewServer = defineViewServerConfig({
+        kafka: {
+          local: "localhost:9092",
+        },
+        topics: {
+          orders: {
+            schema: GrpcOrder,
+            key: "id",
+            kafkaSource,
           },
         },
-        {
-          feeds: {
-            orders: {
-              topic: "orders",
-            },
-          },
+      });
+      const maybeKafkaModule = yield* makeKafkaRuntimeSourceAdapter<
+        typeof kafkaViewServer.topics
+      >().make(kafkaViewServer, {
+        kafka: {
+          consumerGroupId: "runtime-source-ownership-conflict",
         },
-      ).pipe(Effect.flip);
+      });
+      const kafkaModule = yield* Effect.fromNullishOr(maybeKafkaModule);
+      const maybeGrpcModule = yield* makeGrpcRuntimeSourceAdapter<
+        typeof grpcTopicOwnedSourceViewServer.topics
+      >().make(grpcTopicOwnedSourceViewServer, { grpc: {} });
+      const grpcModule = yield* Effect.fromNullishOr(maybeGrpcModule);
+      const kafkaOwnership = yield* Effect.fromNullishOr(kafkaModule.ownedTopics[0]);
+      const grpcOwnership = yield* Effect.fromNullishOr(grpcModule.ownedTopics[0]);
+      const grpcConflict = grpcOwnership.conflict(kafkaOwnership.owner);
+      const kafkaConflict = kafkaOwnership.conflict(grpcOwnership.owner);
 
-      expect(error).toBeInstanceOf(ViewServerGrpcIngressError);
-      expect(error.message).toBe(
+      expect(grpcConflict).toBeInstanceOf(ViewServerGrpcIngressError);
+      expect(grpcConflict.message).toBe(
         "View Server topic orders cannot be owned by both Kafka source orders-source and gRPC feed orders.",
+      );
+      expect(kafkaConflict.message).toBe(
+        "View Server topic orders cannot be owned by both gRPC feed orders and Kafka source orders-source.",
       );
     }),
   );

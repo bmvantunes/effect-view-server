@@ -61,7 +61,7 @@ import {
   messageFromUnknown,
   ViewServerKafkaIngressError,
 } from "./kafka-ingress-error";
-import type { ResolvedViewServerKafkaRuntimeOptions } from "./runtime-options";
+import type { ResolvedViewServerKafkaRuntimeOptions } from "./kafka-runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export {

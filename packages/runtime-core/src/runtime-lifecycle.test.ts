@@ -7,6 +7,7 @@ import { healthFromEngine } from "./health";
 import { makeViewServerRuntimeCore } from "./index";
 import { makeRuntimeCoreLiveClient } from "./live-client";
 import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
+import { makeViewServerRuntimeCoreInternalWithConstructionOptions } from "./runtime-core-construction";
 import { acquireRuntimeCoreResourceHandoff } from "./subscription-handoff";
 import { engineHealth } from "./test-support/runtime-test-fixtures";
 
@@ -239,7 +240,7 @@ describe("Runtime Core lifecycle", () => {
       const handoffFiber = yield* acquireRuntimeCoreResourceHandoff(
         (markAcquired) =>
           Effect.gen(function* () {
-            yield* markAcquired(resource);
+            yield* markAcquired(resource.close());
             return "ready";
           }),
         {
@@ -257,10 +258,46 @@ describe("Runtime Core lifecycle", () => {
     }),
   );
 
+  it.effect("transfers interrupted construction cleanup to the combined owner", () =>
+    Effect.gen(function* () {
+      const combinedOwnerReady = yield* Deferred.make<void>();
+      const keepHandoffOpen = yield* Deferred.make<void>();
+      let engineCloseCount = 0;
+      let hubCloseCount = 0;
+      const constructionFiber = yield* makeViewServerRuntimeCoreInternalWithConstructionOptions(
+        viewServer,
+        {},
+        {
+          afterEngineClose: Effect.sync(() => {
+            engineCloseCount += 1;
+          }),
+          afterPushedHealthClose: Effect.sync(() => {
+            hubCloseCount += 1;
+          }),
+          handoff: {
+            beforeReturn: Deferred.succeed(combinedOwnerReady, undefined).pipe(
+              Effect.andThen(Deferred.await(keepHandoffOpen)),
+            ),
+          },
+        },
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(combinedOwnerReady);
+
+      yield* Fiber.interrupt(constructionFiber);
+      yield* Fiber.interrupt(constructionFiber);
+
+      expect({ engineCloseCount, hubCloseCount }).toStrictEqual({
+        engineCloseCount: 1,
+        hubCloseCount: 1,
+      });
+    }),
+  );
+
   it.effect("releases an interrupted pushed-health subscription handoff", () =>
     Effect.gen(function* () {
       const handoffStarted = yield* Deferred.make<void>();
       const keepHandoffOpen = yield* Deferred.make<void>();
+      let closeClaimCount = 0;
       let handoffCount = 0;
       const initialHealth = healthFromEngine(engineHealth("ready", 0));
       const hub = yield* makeRuntimeCorePushedHealthHub(
@@ -268,6 +305,9 @@ describe("Runtime Core lifecycle", () => {
         Effect.succeed(initialHealth),
         "1 minute",
         {
+          afterSubscriptionCloseClaim: Effect.sync(() => {
+            closeClaimCount += 1;
+          }),
           subscriptionHandoff: {
             beforeReturn: Effect.suspend(() => {
               handoffCount += 1;
@@ -286,11 +326,15 @@ describe("Runtime Core lifecycle", () => {
       yield* Deferred.await(handoffStarted);
 
       yield* Fiber.interrupt(interruptedFiber);
+      expect(closeClaimCount).toBe(1);
       const replacement = yield* hub.subscribeHealthSummary();
       const replacementEvent = yield* replacement.events.pipe(Stream.runHead);
 
       expect(replacementEvent._tag).toBe("Some");
-      expect(handoffCount).toBe(2);
+      expect({ closeClaimCount, handoffCount }).toStrictEqual({
+        closeClaimCount: 2,
+        handoffCount: 2,
+      });
       yield* replacement.close();
       yield* hub.close;
     }),
@@ -362,6 +406,35 @@ describe("Runtime Core lifecycle", () => {
       yield* Fiber.interrupt(subscriptionFiber);
 
       expect((yield* engine.health()).activeSubscriptions).toBe(0);
+      yield* hub.close;
+      yield* engine.close();
+    }),
+  );
+
+  it.effect("requests pushed health after an engine subscription stream ends", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
+      const initialHealth = healthFromEngine(yield* engine.health());
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        initialHealth,
+        Effect.succeed(initialHealth),
+        "1 minute",
+      );
+      let refreshRequestCount = 0;
+      const liveClient = yield* makeRuntimeCoreLiveClient(viewServer, engine, {
+        ...hub,
+        requestRefresh: Effect.sync(() => {
+          refreshRequestCount += 1;
+        }),
+      });
+      const subscription = yield* liveClient.subscribeInternal("orders", { select: ["id"] });
+
+      expect(refreshRequestCount).toBe(1);
+      yield* subscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(refreshRequestCount).toBe(2);
+
+      yield* subscription.close();
+      expect(refreshRequestCount).toBe(3);
       yield* hub.close;
       yield* engine.close();
     }),

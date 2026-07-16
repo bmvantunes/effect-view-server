@@ -22,7 +22,7 @@ import type {
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "@effect-view-server/config";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import type { RuntimeCorePushedHealthHub } from "./pushed-health";
 import { engineErrorToRuntimeError } from "./runtime-error";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
@@ -99,11 +99,12 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
                 const subscription = yield* restore(
                   acquisition.pipe(Effect.mapError(engineErrorToRuntimeError)),
                 );
-                yield* markAcquired(subscription);
+                yield* markAcquired(subscription.close());
+                const requestRefreshAfterRelease = pushedHealth.requestRefresh;
                 const wrapped = {
-                  events: subscription.events,
+                  events: subscription.events.pipe(Stream.ensuring(requestRefreshAfterRelease)),
                   close: () =>
-                    subscription.close().pipe(Effect.andThen(pushedHealth.requestRefresh)),
+                    subscription.close().pipe(Effect.ensuring(requestRefreshAfterRelease)),
                 } satisfies ViewServerLiveSubscription<Row>;
                 yield* restore(pushedHealth.requestRefresh);
                 return wrapped;

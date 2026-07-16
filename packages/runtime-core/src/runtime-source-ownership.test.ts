@@ -464,8 +464,8 @@ describe("Runtime Core source ownership", () => {
         readonly limit: 1;
       };
       const subscribeRuntimeEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
-        runtimeCore.liveClient.subscribe,
-        runtimeCore.liveClient,
+        runtimeCore.serverLiveClient.subscribeRuntime,
+        runtimeCore.serverLiveClient,
         ["orders", delayedRuntimeQuery],
       );
       expect(Reflect.deleteProperty(delayedRuntimeQuery.where.status, "eq")).toBe(true);

@@ -372,7 +372,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
                   ),
                   close: releaseSubscriptionAndEndQueue,
                 } satisfies ViewServerLiveSubscription<Row, Topic, Key>;
-                yield* markAcquired(acquired);
+                yield* markAcquired(acquired.close());
                 return acquired;
               }),
             ),

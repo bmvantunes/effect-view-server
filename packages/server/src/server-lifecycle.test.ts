@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Deferred, Effect, Fiber, Logger, References } from "effect";
+import { Cause, Deferred, Effect, Fiber, Logger, Ref, References, Semaphore } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import { makeViewServerWebSocketServer } from "./index";
 import { closeTrackedSockets, makeTrackedSocket } from "./websocket-tracking";
@@ -12,11 +12,30 @@ import {
   viewServer,
 } from "../test-harness/server";
 
+const makeRetryableClose = Effect.fn("ViewServerServer.test.close.retryable")(
+  (close: Effect.Effect<void>) =>
+    Effect.map(Ref.make(false), (completed) => {
+      const lock = Semaphore.makeUnsafe(1);
+      return lock.withPermit(
+        Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            if (yield* Ref.get(completed)) {
+              return;
+            }
+            yield* restore(close);
+            yield* Ref.set(completed, true);
+          }),
+        ),
+      );
+    }),
+);
+
 describe("Real View Server lifecycle", () => {
   it.live("does not count plain HTTP GET requests as websocket clients", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
-      yield* Effect.addFinalizer(() => inMemory.close);
+      const closeInMemory = yield* makeRetryableClose(inMemory.close);
+      yield* Effect.addFinalizer(() => closeInMemory);
       let openedClients = 0;
       let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -31,7 +50,8 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
-      yield* Effect.addFinalizer(() => server.close);
+      const closeServer = yield* makeRetryableClose(server.close);
+      yield* Effect.addFinalizer(() => closeServer);
 
       const response = yield* Effect.promise(() => fetch(server.url.replace("ws://", "http://")));
       yield* Effect.promise(() => response.text());
@@ -39,15 +59,16 @@ describe("Real View Server lifecycle", () => {
       expect(response.ok).toBe(false);
       expect(openedClients).toBe(0);
       expect(closedClients).toBe(0);
-      yield* server.close;
-      yield* inMemory.close;
+      yield* closeServer;
+      yield* closeInMemory;
     }).pipe(Effect.scoped),
   );
 
   it.live("does not count malformed websocket upgrades as clients", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
-      yield* Effect.addFinalizer(() => inMemory.close);
+      const closeInMemory = yield* makeRetryableClose(inMemory.close);
+      yield* Effect.addFinalizer(() => closeInMemory);
       let openedClients = 0;
       let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -62,14 +83,15 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
-      yield* Effect.addFinalizer(() => server.close);
+      const closeServer = yield* makeRetryableClose(server.close);
+      yield* Effect.addFinalizer(() => closeServer);
 
       yield* sendMalformedWebSocketUpgrade(server.url);
 
       expect(openedClients).toBe(0);
       expect(closedClients).toBe(0);
-      yield* server.close;
-      yield* inMemory.close;
+      yield* closeServer;
+      yield* closeInMemory;
     }).pipe(Effect.scoped),
   );
 
@@ -77,7 +99,8 @@ describe("Real View Server lifecycle", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const inMemory = createServerTestRuntime(viewServer);
-        yield* Effect.addFinalizer(() => inMemory.close);
+        const closeInMemory = yield* makeRetryableClose(inMemory.close);
+        yield* Effect.addFinalizer(() => closeInMemory);
         const reservedPort = yield* reserveTcpPort();
 
         const startupError = yield* Effect.flip(
@@ -93,7 +116,7 @@ describe("Real View Server lifecycle", () => {
 
         expect(startupError._tag).toBe("ServeError");
         expect(startupError.cause).toHaveProperty("code", "EADDRINUSE");
-        yield* inMemory.close;
+        yield* closeInMemory;
       }),
     ),
   );
@@ -101,7 +124,8 @@ describe("Real View Server lifecycle", () => {
   it.live("closes tracked websocket clients when interrupted during the open hook", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
-      yield* Effect.addFinalizer(() => inMemory.close);
+      const closeInMemory = yield* makeRetryableClose(inMemory.close);
+      yield* Effect.addFinalizer(() => closeInMemory);
       let openedClients = 0;
       let closedClients = 0;
       const clientOpenedSignal = yield* Deferred.make<void>();
@@ -121,20 +145,21 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
-      yield* Effect.addFinalizer(() => server.close);
+      const closeServer = yield* makeRetryableClose(server.close);
+      yield* Effect.addFinalizer(() => closeServer);
 
       const socket = yield* openRawWebSocket(server.url);
       yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
       yield* Deferred.await(clientOpenedSignal).pipe(Effect.timeout("1 second"));
       socket.close();
-      const closeFiber = yield* server.close.pipe(Effect.forkChild({ startImmediately: true }));
+      const closeFiber = yield* closeServer.pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.addFinalizer(() => Fiber.interrupt(closeFiber).pipe(Effect.asVoid));
       yield* Deferred.await(clientClosedSignal).pipe(Effect.timeout("1 second"));
       yield* Fiber.join(closeFiber);
 
       expect(openedClients).toBe(1);
       expect(closedClients).toBe(1);
-      yield* inMemory.close;
+      yield* closeInMemory;
     }).pipe(Effect.scoped),
   );
 
@@ -227,7 +252,8 @@ describe("Real View Server lifecycle", () => {
   it.live("rejects websocket upgrades when auth validation fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
-      yield* Effect.addFinalizer(() => inMemory.close);
+      const closeInMemory = yield* makeRetryableClose(inMemory.close);
+      yield* Effect.addFinalizer(() => closeInMemory);
       let openedClients = 0;
       let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -243,7 +269,8 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
-      yield* Effect.addFinalizer(() => server.close);
+      const closeServer = yield* makeRetryableClose(server.close);
+      yield* Effect.addFinalizer(() => closeServer);
 
       const socketError = yield* Effect.flip(openRawWebSocket(server.url));
 
@@ -252,8 +279,8 @@ describe("Real View Server lifecycle", () => {
       expect(openedClients).toBe(0);
       expect(closedClients).toBe(0);
 
-      yield* server.close;
-      yield* inMemory.close;
+      yield* closeServer;
+      yield* closeInMemory;
     }).pipe(Effect.scoped),
   );
 });

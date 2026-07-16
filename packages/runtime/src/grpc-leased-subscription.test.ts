@@ -249,4 +249,60 @@ describe("leased gRPC Subscription", () => {
       });
     }),
   );
+
+  it.live("detaches completed subscriptions from the parent scope under route churn", () =>
+    Effect.gen(function* () {
+      const identityContract = yield* Effect.fromResult(
+        makeGrpcLeasedIdentityContract({
+          topic: "orders",
+          feedName: "orders",
+          routeBy: ["region"],
+          schema: SubscriptionRow,
+          keyField: "id",
+        }),
+      );
+      const identity = yield* Effect.fromResult(
+        identityContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+      );
+      const parentScope = yield* Scope.make("sequential");
+      let cleaned = 0;
+      let closed = 0;
+
+      yield* Effect.forEach(
+        Array.from({ length: 25 }),
+        () =>
+          Effect.gen(function* () {
+            const subscription = yield* makeGrpcLeasedSubscription({
+              parentScope,
+              topic: "orders",
+              identity,
+              cleanupRows: () =>
+                Effect.sync(() => {
+                  cleaned += 1;
+                }),
+              onCleanupFailure: () => Effect.die("cleanup must succeed"),
+              onClosed: Effect.sync(() => {
+                closed += 1;
+              }),
+              onRowsCleared: Effect.void,
+              onStopping: Effect.void,
+              onSubscriberAdded: Effect.void,
+              onSubscriberRemoved: Effect.void,
+              onUpstreamTerminal: () => Effect.void,
+            });
+            yield* subscription.close;
+          }),
+        { discard: true },
+      );
+
+      const retainedParentFinalizers =
+        parentScope.state._tag === "Open" ? parentScope.state.finalizers.size : 0;
+      expect({ cleaned, closed, retainedParentFinalizers }).toStrictEqual({
+        cleaned: 25,
+        closed: 25,
+        retainedParentFinalizers: 0,
+      });
+      yield* Scope.close(parentScope, Exit.void);
+    }),
+  );
 });

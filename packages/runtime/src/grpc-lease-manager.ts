@@ -92,7 +92,6 @@ type LeasedFeedRoute = Readonly<Record<string, unknown>>;
 type LeasedFeedRuntimeInput = ViewServerGrpcSourceInput<LeasedFeedRoute>;
 
 type ActiveLease = {
-  readonly owner: symbol;
   readonly feedName: string;
   readonly feed: RuntimeLeasedFeedDefinition;
   readonly subscription: GrpcLeasedSubscription<ViewServerGrpcIngressError>;
@@ -740,7 +739,6 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
         }),
       ),
     );
-    const owner = Symbol(feedKey);
     const subscription = yield* makeGrpcLeasedSubscription<ViewServerGrpcIngressError>({
       parentScope: managerScope,
       topic,
@@ -767,19 +765,14 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           health.clientDegraded(feed.client, terminal.healthMessage),
           ignoreGrpcHealthRefreshFailure(requestHealthRefresh),
         ]),
-      onClosed: health.leasedFeedRemoved(feedKey).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            if (leases.get(feedKey)?.owner === owner) {
-              leases.delete(feedKey);
-            }
-          }),
+      onClosed: health
+        .leasedFeedRemoved(feedKey)
+        .pipe(
+          Effect.andThen(Effect.sync(() => leases.delete(feedKey))),
+          Effect.andThen(ignoreGrpcHealthRefreshFailure(requestHealthRefresh)),
         ),
-        Effect.andThen(ignoreGrpcHealthRefreshFailure(requestHealthRefresh)),
-      ),
     });
     const lease: ActiveLease = {
-      owner,
       feedName,
       feed,
       subscription,

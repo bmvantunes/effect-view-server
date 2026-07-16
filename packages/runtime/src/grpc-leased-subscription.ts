@@ -202,7 +202,8 @@ export type GrpcLeasedSubscription<Error> = {
 export const makeGrpcLeasedSubscription = Effect.fn(
   "ViewServerRuntime.grpc.leased.subscription.make",
 )(function* <Error>(input: GrpcLeasedSubscriptionInput<Error>) {
-  const scope = yield* Scope.fork(input.parentScope, "sequential");
+  const ownerScope = yield* Scope.fork(input.parentScope, "sequential");
+  const scope = yield* Scope.make("sequential");
   const lock = yield* Semaphore.make(1);
   const storageKeys = new Set<string>();
   const activeClientLeases = new Set<ActiveClientLease>();
@@ -258,7 +259,7 @@ export const makeGrpcLeasedSubscription = Effect.fn(
       yield* runAllFinalizers([...clientCloses, Scope.close(scope, Exit.void)]);
     },
   );
-  const close = (yield* Effect.cached(
+  const closeResources = (yield* Effect.cached(
     closeSubscription().pipe(
       Effect.onExit(() =>
         Effect.sync(() => {
@@ -276,9 +277,13 @@ export const makeGrpcLeasedSubscription = Effect.fn(
   const awaitClose = Deferred.await(closeExit).pipe(
     Effect.flatMap((exit) => (Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.void)),
   );
+  const close = closeResources.pipe(
+    Effect.ensuring(Scope.close(ownerScope, Exit.void)),
+    Effect.uninterruptible,
+  );
   yield* Scope.addFinalizer(
-    input.parentScope,
-    Effect.suspend(() => (closeCompleted ? Effect.void : close)),
+    ownerScope,
+    Effect.suspend(() => (closeCompleted ? Effect.void : closeResources)),
   );
 
   const releaseSubscriber = Effect.fn(

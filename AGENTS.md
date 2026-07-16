@@ -205,8 +205,8 @@ These issues block merge until fixed or explicitly accepted by the user:
 2 - wait for all review agents to report.
 3 - if any issues are found, fix them, commit/push, and return to step 1 until all agents agree there are no problems.
 4 - open a Pull Request on GitHub.
-5 - wait for Codex Cloud review.
-6 - if Codex Cloud reports issues, fix them, commit/push, and return to step 1.
+5 - wait for both Codex Cloud and CodeRabbit reviews.
+6 - if either Codex Cloud or CodeRabbit reports issues, fix them, commit/push, and return to step 1.
 7 - once all reviews are clean, merge the Pull Request and proceed to the next request.
 8 - if you changed a public API, add Vitest type tests for inference and rejection behavior (including `@ts-expect-error` cases where applicable).
 
@@ -229,3 +229,4 @@ These issues block merge until fixed or explicitly accepted by the user:
   - `c8 ignore` / `v8 ignore` / `istanbul ignore`
   - removed browser/admin RPC symbols such as `ViewServer.Publish`, `ViewServer.PublishMany`, `ViewServer.Reset`, or `ViewServerPublish`
 - If reviewers find blockers, fix them and run the review loop again. Do not open or merge a PR while known blockers remain.
+- Do not merge while either Codex Cloud or CodeRabbit review is pending. Address actionable feedback from both reviewers and wait for both to report clean.

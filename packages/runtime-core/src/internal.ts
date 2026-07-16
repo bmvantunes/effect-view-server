@@ -1,36 +1,22 @@
-import {
-  type DecodableTopicDefinitions,
-  type GroupedIncrementalAdmissionLimits,
-} from "@effect-view-server/column-live-view-engine";
+import { type DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   ViewServerHealth,
   ViewServerTopicConfig,
-  ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import { runAllFinalizers } from "@effect-view-server/effect-utils";
-import { Clock, Effect, type Duration } from "effect";
-import { AtomRef } from "effect/unstable/reactivity";
-import {
-  defaultRuntimeCoreTransportHealth,
-  healthFromEngine,
-  type RuntimeCoreHealthOverlay,
-  type RuntimeCoreTransportHealth,
-} from "./health";
-import {
-  makeRuntimeCoreLiveClient,
-  type ViewServerRuntimeCoreInternalLiveClient,
-} from "./live-client";
-import type {
-  ViewServerRuntimeCorePublicClient,
-  ViewServerRuntimeCorePublicLiveClient,
-} from "./public-client";
+import { Clock, Effect } from "effect";
+import { defaultRuntimeCoreTransportHealth, healthFromEngine, readHealthSnapshot } from "./health";
+import { makeRuntimeCoreLiveClient } from "./live-client";
+import type { ViewServerRuntimeCorePublicLiveClient } from "./public-client";
+import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
 import { makeRuntimeCoreClient } from "./runtime-client";
-import type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
 import { engineErrorToRuntimeError } from "./runtime-error";
-import type { ViewServerRuntimeCoreInstance } from "./index";
+import type {
+  ViewServerRuntimeCoreInternalInstance,
+  ViewServerRuntimeCoreInternalOptionsFor,
+} from "./runtime-core-types";
 export {
   collectSourceOwnershipConflicts,
   makeSourceOwnershipPolicy,
@@ -72,26 +58,10 @@ export type {
   ViewServerRuntimeCoreTerminalObserver,
 } from "./live-client";
 export type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
-
-export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicDefinitions> = Omit<
-  ViewServerRuntimeCoreInstance<Topics>,
-  "client" | "liveClient"
-> & {
-  readonly client: ViewServerRuntimeClient<Topics>;
-  readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
-  readonly publicClient: ViewServerRuntimeCorePublicClient<Topics>;
-  readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
-  readonly internalLiveClient: ViewServerRuntimeCoreInternalLiveClient<Topics>;
-  readonly publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
-};
-
-export type ViewServerRuntimeCoreInternalOptionsFor<Topics extends DecodableTopicDefinitions> = {
-  readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
-  readonly subscriptionQueueCapacity?: number;
-  readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
-  readonly healthOverlay?: RuntimeCoreHealthOverlay<Topics>;
-  readonly healthRefreshCadence?: Duration.Input;
-};
+export type {
+  ViewServerRuntimeCoreInternalInstance,
+  ViewServerRuntimeCoreInternalOptionsFor,
+} from "./runtime-core-types";
 
 export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
@@ -117,33 +87,37 @@ export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableT
     const engineHealth = yield* engine.health();
     const runtimeStartedAtMillis = yield* Clock.currentTimeMillis;
     const runtimeStartedAtNanos = yield* Clock.currentTimeNanos;
-    const health: AtomRef.AtomRef<ViewServerHealth<Topics>> = AtomRef.make(
-      healthFromEngine(engineHealth, {
-        transportHealth,
-        ...(healthOverlay === undefined ? {} : { healthOverlay }),
-        timing: {
-          nowMillis: runtimeStartedAtMillis,
-          nowNanos: runtimeStartedAtNanos,
-          runtimeStartedAtNanos,
-        },
-      }),
+    const initialHealth: ViewServerHealth<Topics> = healthFromEngine(engineHealth, {
+      transportHealth,
+      ...(healthOverlay === undefined ? {} : { healthOverlay }),
+      timing: {
+        nowMillis: runtimeStartedAtMillis,
+        nowNanos: runtimeStartedAtNanos,
+        runtimeStartedAtNanos,
+      },
+    });
+    const readRuntimeHealth = readHealthSnapshot(engine, {
+      runtimeStartedAtNanos,
+      transportHealth,
+      healthOverlay,
+    });
+    const pushedHealth = yield* makeRuntimeCorePushedHealthHub(
+      initialHealth,
+      readRuntimeHealth,
+      input.healthRefreshCadence,
     );
     const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
       config,
       engine,
-      health,
       runtimeStartedAtNanos,
       transportHealth,
+      pushedHealth.requestRefresh,
       healthOverlay,
-      input.healthRefreshCadence,
     );
-    const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(
-      config,
-      engine,
-      health,
-      runtimeClient.refreshHealth,
-    );
-    const close = Effect.uninterruptible(runAllFinalizers([runtimeClient.close, liveClient.close]));
+    const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(config, engine, pushedHealth);
+    const close = (yield* Effect.cached(
+      runAllFinalizers([pushedHealth.close, engine.close()]),
+    )).pipe(Effect.uninterruptible);
     const publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics> = {
       close,
       health: liveClient.health,
@@ -166,7 +140,7 @@ export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableT
       internalLiveClient: liveClient,
       publicLiveClient,
       close,
-      requestHealthRefresh: runtimeClient.requestHealthRefresh,
-      refreshHealth: runtimeClient.refreshHealth,
+      requestHealthRefresh: pushedHealth.requestRefresh,
+      refreshHealth: pushedHealth.refresh,
     };
   });

@@ -104,6 +104,35 @@ describe("leased gRPC identity contract", () => {
       const invalidRowRoute = yield* Effect.fromResult(
         lease.validateRowRoute({ ...firstRow, region: 1 }),
       ).pipe(Effect.flip);
+      let hostileRouteReads = 0;
+      const hostileRouteMismatch = yield* Effect.fromResult(
+        lease.validateRowRoute(
+          new Proxy(firstRow, {
+            get(target, property, receiver) {
+              if (property === "region") {
+                hostileRouteReads += 1;
+                if (hostileRouteReads > 1) {
+                  throw new Error("route field was read twice");
+                }
+                return "europe";
+              }
+              return Reflect.get(target, property, receiver);
+            },
+          }),
+        ),
+      ).pipe(Effect.flip);
+      const hostileRouteRead = yield* Effect.fromResult(
+        lease.validateRowRoute(
+          new Proxy(firstRow, {
+            get(target, property, receiver) {
+              if (property === "region") {
+                throw new Error("route field reflection failed");
+              }
+              return Reflect.get(target, property, receiver);
+            },
+          }),
+        ),
+      ).pipe(Effect.flip);
       const invalidPublicKey = yield* Effect.fromResult(
         lease.internalizeRowKey({ ...firstRow, id: 1 }),
       ).pipe(Effect.flip);
@@ -140,6 +169,9 @@ describe("leased gRPC identity contract", () => {
         invalidRawSnapshotKind: invalidRawSnapshot.kind,
         routeMismatchKind: routeMismatch.kind,
         invalidRowRouteKind: invalidRowRoute.kind,
+        hostileRouteMismatchKind: hostileRouteMismatch.kind,
+        hostileRouteReadKind: hostileRouteRead.kind,
+        hostileRouteReads,
         invalidPublicKeyKind: invalidPublicKey.kind,
         hostilePublicKeyKind: hostilePublicKey.kind,
         distinctStorageKeys: firstRowKey.storageKey !== secondRowKey.storageKey,
@@ -168,6 +200,9 @@ describe("leased gRPC identity contract", () => {
         invalidRawSnapshotKind: "RowKey",
         routeMismatchKind: "RouteMismatch",
         invalidRowRouteKind: "RouteMismatch",
+        hostileRouteMismatchKind: "RouteMismatch",
+        hostileRouteReadKind: "RouteMismatch",
+        hostileRouteReads: 1,
         invalidPublicKeyKind: "RowKey",
         hostilePublicKeyKind: "RowKey",
         distinctStorageKeys: true,
@@ -203,6 +238,14 @@ describe("leased gRPC identity contract", () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    const UnreadableFieldsIdentityRow = new Proxy(IdentityRow, {
+      get(target, property, receiver) {
+        if (property === "fields") {
+          throw new Error("schema fields failed");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const contract = Result.getOrThrow(
       makeGrpcLeasedIdentityContract({
         topic: "orders",
@@ -212,8 +255,20 @@ describe("leased gRPC identity contract", () => {
         keyField: "id",
       }),
     );
+    const loneSurrogateLease = Result.getOrThrow(
+      Result.getOrThrow(
+        makeGrpcLeasedIdentityContract({
+          topic: "\ud800",
+          feedName: "orders",
+          routeBy: ["region"],
+          schema: IdentityRow,
+          keyField: "id",
+        }),
+      ).leaseFromQuery({ where: { region: { eq: "usa" } } }),
+    );
 
     expect({
+      loneSurrogateFeedKey: loneSurrogateLease.feedKey,
       unreadable: failure(
         makeGrpcLeasedIdentityContract({
           topic: "orders",
@@ -259,15 +314,26 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
+      unreadableFields: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "orders",
+          feedName: "orders",
+          routeBy: ["region"],
+          schema: UnreadableFieldsIdentityRow,
+          keyField: "id",
+        }),
+      )?.kind,
       missingWhere: failure(contract.leaseFromQuery({}))?.kind,
       nonExact: failure(contract.leaseFromQuery({ where: { region: { startsWith: "u" } } }))?.kind,
       invalidValue: failure(contract.leaseFromQuery({ where: { region: { eq: 1 } } }))?.kind,
     }).toStrictEqual({
+      loneSurrogateFeedKey: "json:%22%5Cud800%22/orders/leased/region=%22usa%22",
       unreadable: "Configuration",
       empty: "Configuration",
       duplicate: "Configuration",
       missing: "Configuration",
       hostileCodec: "Configuration",
+      unreadableFields: "Configuration",
       missingWhere: "Route",
       nonExact: "Route",
       invalidValue: "Route",
@@ -491,6 +557,22 @@ describe("leased gRPC identity contract", () => {
           return Reflect.get(target, property, receiver);
         },
       });
+      const unreadableGroupedFields = new Proxy(GroupedIdentityRow.fields, {
+        get(target, property, receiver) {
+          if (property === "unreadable") {
+            throw new Error("grouped schema fields failed");
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      const UnreadableGroupedIdentityRow = new Proxy(GroupedIdentityRow, {
+        get(target, property, receiver) {
+          if (property === "fields") {
+            return unreadableGroupedFields;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
       const hostileContract = yield* Effect.fromResult(
         makeGrpcLeasedIdentityContract({
           topic: "orders",
@@ -504,6 +586,19 @@ describe("leased gRPC identity contract", () => {
         hostileContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
       );
       const hostileGrouping = hostileLease.resultKeys({ groupBy: ["hostile"] });
+      const unreadableContract = yield* Effect.fromResult(
+        makeGrpcLeasedIdentityContract({
+          topic: "orders",
+          feedName: "orders",
+          routeBy: ["region"],
+          schema: UnreadableGroupedIdentityRow,
+          keyField: "id",
+        }),
+      );
+      const unreadableLease = yield* Effect.fromResult(
+        unreadableContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+      );
+      const unreadableGrouping = unreadableLease.resultKeys({ groupBy: ["unreadable"] });
       const missingFieldError = yield* Effect.fromResult(
         missingField.translateSnapshot(["key"], [{}]),
       ).pipe(Effect.flip);
@@ -516,17 +611,22 @@ describe("leased gRPC identity contract", () => {
       const hostileGroupingError = yield* Effect.fromResult(
         hostileGrouping.translateSnapshot(["key"], [{}]),
       ).pipe(Effect.flip);
+      const unreadableGroupingError = yield* Effect.fromResult(
+        unreadableGrouping.translateSnapshot(["key"], [{}]),
+      ).pipe(Effect.flip);
 
       expect({
         missingField: missingFieldError.kind,
         nonStringField: nonStringFieldError.kind,
         invalidValue: invalidValueError.kind,
         hostileGrouping: hostileGroupingError.kind,
+        unreadableGrouping: unreadableGroupingError.kind,
       }).toStrictEqual({
         missingField: "ResultKey",
         nonStringField: "ResultKey",
         invalidValue: "ResultKey",
         hostileGrouping: "ResultKey",
+        unreadableGrouping: "ResultKey",
       });
       missingField.clear();
       nonStringField.clear();

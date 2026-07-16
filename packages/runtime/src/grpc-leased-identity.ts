@@ -127,36 +127,29 @@ const internalRowKey = (feedKey: string, publicKey: string): string =>
   JSON.stringify(["leased-row", feedKey, publicKey]);
 
 const publicRowKey = (
-  feedKey: string,
+  publicKeysByStorageKey: ReadonlyMap<string, string>,
   storageKey: string,
 ): Result.Result<string, GrpcLeasedIdentityError> => {
-  const decoded = Result.try((): unknown => JSON.parse(storageKey));
-  if (
-    Result.isFailure(decoded) ||
-    !Array.isArray(decoded.success) ||
-    decoded.success.length !== 3 ||
-    decoded.success[0] !== "leased-row" ||
-    decoded.success[1] !== feedKey ||
-    typeof decoded.success[2] !== "string"
-  ) {
+  const publicKey = publicKeysByStorageKey.get(storageKey);
+  if (publicKey === undefined) {
     return Result.fail(
       identityError(
         "RowKey",
         "Leased gRPC internal Row Key does not belong to the acquired feed identity.",
-        Result.isFailure(decoded) ? decoded.failure : storageKey,
+        storageKey,
       ),
     );
   }
-  return Result.succeed(decoded.success[2]);
+  return Result.succeed(publicKey);
 };
 
 const mapInternalKeys = (
-  feedKey: string,
+  publicKeysByStorageKey: ReadonlyMap<string, string>,
   internalKeys: ReadonlyArray<string>,
 ): Result.Result<ReadonlyArray<string>, GrpcLeasedIdentityError> => {
   const publicKeys: Array<string> = [];
   for (const internalKey of internalKeys) {
-    const translated = publicRowKey(feedKey, internalKey);
+    const translated = publicRowKey(publicKeysByStorageKey, internalKey);
     if (Result.isFailure(translated)) {
       return Result.fail(translated.failure);
     }
@@ -166,13 +159,13 @@ const mapInternalKeys = (
 };
 
 const makeRawResultKeyTranslation = <Row extends object>(
-  feedKey: string,
+  publicKeysByStorageKey: ReadonlyMap<string, string>,
 ): GrpcLeasedResultKeyTranslation<Row> => ({
-  translateSnapshot: (internalKeys) => mapInternalKeys(feedKey, internalKeys),
+  translateSnapshot: (internalKeys) => mapInternalKeys(publicKeysByStorageKey, internalKeys),
   translateDelta: (operations) => {
     const translated: Array<DeltaOperation<Row>> = [];
     for (const operation of operations) {
-      const publicKey = publicRowKey(feedKey, operation.key);
+      const publicKey = publicRowKey(publicKeysByStorageKey, operation.key);
       if (Result.isFailure(publicKey)) {
         return Result.fail(publicKey.failure);
       }
@@ -210,11 +203,15 @@ const compileGroupedPublicKey = (
     if (typeof field !== "string") {
       return Result.fail(resultKeyError(field));
     }
-    const fieldSchema = schema.fields[field];
-    if (fieldSchema === undefined) {
+    const fieldSchema = Result.try(() => schema.fields[field]);
+    if (Result.isFailure(fieldSchema)) {
+      return Result.fail(resultKeyError(fieldSchema.failure));
+    }
+    const schemaField = fieldSchema.success;
+    if (schemaField === undefined) {
       return Result.fail(resultKeyError(field));
     }
-    const identity = Result.try(() => makeSchemaJsonIdentity(fieldSchema));
+    const identity = Result.try(() => makeSchemaJsonIdentity(schemaField));
     if (Result.isFailure(identity)) {
       return Result.fail(resultKeyError(identity.failure));
     }
@@ -372,8 +369,18 @@ export const makeGrpcLeasedIdentityContract = (input: {
   }
   const routeFields: Array<CompiledRouteField> = [];
   for (const field of routeBy.success) {
-    const fieldSchema = input.schema.fields[field];
-    if (fieldSchema === undefined) {
+    const fieldSchema = Result.try(() => input.schema.fields[field]);
+    if (Result.isFailure(fieldSchema)) {
+      return Result.fail(
+        identityError(
+          "Configuration",
+          `Leased topic ${input.topic} route field ${field} could not be inspected in the topic schema.`,
+          fieldSchema.failure,
+        ),
+      );
+    }
+    const schemaField = fieldSchema.success;
+    if (schemaField === undefined) {
       return Result.fail(
         identityError(
           "Configuration",
@@ -382,7 +389,7 @@ export const makeGrpcLeasedIdentityContract = (input: {
         ),
       );
     }
-    const identity = Result.try(() => makeSchemaJsonIdentity(fieldSchema));
+    const identity = Result.try(() => makeSchemaJsonIdentity(schemaField));
     if (Result.isFailure(identity)) {
       return Result.fail(
         identityError(
@@ -435,6 +442,7 @@ export const makeGrpcLeasedIdentityContract = (input: {
       )
       .join("&")}`;
     const storedRoute = materialized.success.values;
+    const publicKeysByStorageKey = new Map<string, string>();
 
     const materializeStoredRoute = (): Readonly<Record<string, unknown>> => {
       const values: Record<string, unknown> = {};
@@ -452,18 +460,32 @@ export const makeGrpcLeasedIdentityContract = (input: {
       row: Row,
     ): Result.Result<Row, GrpcLeasedIdentityError> => {
       for (const [index, routeField] of frozenRouteFields.entries()) {
-        const rowKey = Result.try(() =>
-          routeField.identity.canonicalKey(Reflect.get(row, routeField.field)),
-        );
-        if (
-          Result.isFailure(rowKey) ||
-          rowKey.success !== materialized.success.canonicalKeys[index]
-        ) {
+        const rowValue = Result.try(() => Reflect.get(row, routeField.field));
+        if (Result.isFailure(rowValue)) {
           return Result.fail(
             identityError(
               "RouteMismatch",
               `gRPC leased feed ${input.feedName} mapped row field ${routeField.field} outside the acquired route.`,
-              Result.isFailure(rowKey) ? rowKey.failure : Reflect.get(row, routeField.field),
+              rowValue.failure,
+            ),
+          );
+        }
+        const rowKey = Result.try(() => routeField.identity.canonicalKey(rowValue.success));
+        if (Result.isFailure(rowKey)) {
+          return Result.fail(
+            identityError(
+              "RouteMismatch",
+              `gRPC leased feed ${input.feedName} mapped row field ${routeField.field} outside the acquired route.`,
+              rowKey.failure,
+            ),
+          );
+        }
+        if (rowKey.success !== materialized.success.canonicalKeys[index]) {
+          return Result.fail(
+            identityError(
+              "RouteMismatch",
+              `gRPC leased feed ${input.feedName} mapped row field ${routeField.field} outside the acquired route.`,
+              rowValue.success,
             ),
           );
         }
@@ -484,8 +506,10 @@ export const makeGrpcLeasedIdentityContract = (input: {
           ),
         );
       }
+      const storageKey = internalRowKey(feedKey, publicKey.success);
+      publicKeysByStorageKey.set(storageKey, publicKey.success);
       return Result.succeed({
-        storageKey: internalRowKey(feedKey, publicKey.success),
+        storageKey,
       });
     };
 
@@ -495,7 +519,7 @@ export const makeGrpcLeasedIdentityContract = (input: {
     ): GrpcLeasedResultKeyTranslation<Row> => {
       const groupBy = groupedFields(query);
       if (groupBy === undefined) {
-        return makeRawResultKeyTranslation(feedKey);
+        return makeRawResultKeyTranslation(publicKeysByStorageKey);
       }
       const publicKey = compileGroupedPublicKey(input.schema, groupBy);
       return Result.isFailure(publicKey)

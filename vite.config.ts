@@ -28,7 +28,7 @@ const declarationProjects = [
   {
     name: "server",
     directory: "packages/server",
-    dependsOn: ["client", "config", "effect-utils", "protocol"],
+    dependsOn: ["client", "config", "effect-utils", "protocol", "runtime-core"],
   },
   {
     name: "in-memory",

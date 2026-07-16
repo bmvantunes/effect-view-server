@@ -39,6 +39,7 @@ describe("strict Effect diagnostics task graph", () => {
         .filter((command) => typeof command === "string" && command.includes("vp run")),
       runtimeDeclarationBuild: tasks["build:effect-declarations:runtime"],
       runtimeDiagnostics: tasks["check:effect:runtime"],
+      serverDeclarationBuild: tasks["build:effect-declarations:server"],
       serverDependency: facadePackage.devDependencies["@effect-view-server/server"],
       uniqueBuildDirectories: [...new Set(buildDirectories)],
     }).toStrictEqual({
@@ -101,6 +102,17 @@ describe("strict Effect diagnostics task graph", () => {
           "effect-language-service diagnostics --project packages/runtime/tsconfig.json --format text --strict",
         dependsOn: ["build:effect-declarations:runtime"],
       },
+      serverDeclarationBuild: {
+        command: "vp pack",
+        cwd: "packages/server",
+        dependsOn: [
+          "build:effect-declarations:client",
+          "build:effect-declarations:config",
+          "build:effect-declarations:effect-utils",
+          "build:effect-declarations:protocol",
+          "build:effect-declarations:runtime-core",
+        ],
+      },
       serverDependency: "workspace:*",
       uniqueBuildDirectories: buildDirectories,
     });
@@ -135,34 +147,18 @@ describe("strict Effect diagnostics task graph", () => {
         .filter((dependency) => dependency.startsWith("check:effect:"))
         .map((dependency) => ({ dependency, name })),
     );
-    const broadPackageDiagnostics = diagnosticTasks
-      .filter(([, task]) => {
-        const command = taskCommand(task);
-        return typeof command === "string" && command.includes("--project packages/");
-      })
-      .filter(([, task]) => taskDependencies(task).includes("build:effect-declarations"))
-      .map(([name]) => name);
-    const incorrectlyScopedPackageDiagnostics = diagnosticTasks.flatMap(([name, task]) => {
-      const command = taskCommand(task);
-      if (typeof command !== "string") return [];
-      const match = command.match(/--project packages\/(.+)\/tsconfig\.json/);
-      if (match === null || match[1] === "config" || match[1] === "effect-utils") return [];
-      const expectedDependency =
-        match[1] === "effect-view-server"
-          ? "build:effect-declarations"
-          : `build:effect-declarations:${match[1]}`;
-      return taskDependencies(task).includes(expectedDependency) ? [] : [name];
-    });
+    const diagnosticDependencies = Object.fromEntries(
+      diagnosticTasks.map(([name, task]) => [name, taskDependencies(task)]),
+    );
 
     expect({
       appTask: tasks["check:effect:app"],
-      broadPackageDiagnostics,
+      diagnosticDependencies,
       diagnosticProjects,
       examplesTask: tasks["examples:check:effect"],
       inMemoryExampleTask: tasks["check:effect:example:in-memory-react"],
       legacyCheckScript: rootPackage.scripts["check:effect"],
       legacyExamplesScript: rootPackage.scripts["examples:check:effect"],
-      incorrectlyScopedPackageDiagnostics,
       rootTask: tasks["check:effect"],
       serializedDiagnostics,
     }).toStrictEqual({
@@ -171,7 +167,29 @@ describe("strict Effect diagnostics task graph", () => {
           "effect-language-service diagnostics --project apps/example/tsconfig.json --format text --strict",
         dependsOn: ["build:effect-declarations"],
       },
-      broadPackageDiagnostics: ["check:effect:facade"],
+      diagnosticDependencies: {
+        "check:effect:config": [],
+        "check:effect:effect-utils": [],
+        "check:effect:protocol": ["build:effect-declarations:protocol"],
+        "check:effect:client": ["build:effect-declarations:client"],
+        "check:effect:column-live-view-engine": [
+          "build:effect-declarations:column-live-view-engine",
+        ],
+        "check:effect:runtime-core": ["build:effect-declarations:runtime-core"],
+        "check:effect:in-memory": ["build:effect-declarations:in-memory"],
+        "check:effect:server": ["build:effect-declarations:server"],
+        "check:effect:runtime": ["build:effect-declarations:runtime"],
+        "check:effect:react": ["build:effect-declarations:react"],
+        "check:effect:facade": ["build:effect-declarations"],
+        "check:effect:example:kafka-react": ["build:effect-declarations"],
+        "check:effect:example:grpc-leased-react": ["build:effect-declarations"],
+        "check:effect:example:grpc-materialized-react": ["build:effect-declarations"],
+        "check:effect:example:combined-sources-react": ["build:effect-declarations"],
+        "check:effect:example:ssr-react": ["build:effect-declarations"],
+        "check:effect:example:tcp-publisher-react": ["build:effect-declarations"],
+        "check:effect:example:in-memory-react": ["build:effect-declarations"],
+        "check:effect:app": ["build:effect-declarations"],
+      },
       diagnosticProjects: discoveredProjects,
       examplesTask: {
         command: 'node --eval ""',
@@ -184,7 +202,6 @@ describe("strict Effect diagnostics task graph", () => {
       },
       legacyCheckScript: undefined,
       legacyExamplesScript: undefined,
-      incorrectlyScopedPackageDiagnostics: [],
       rootTask: {
         command: 'node --eval ""',
         dependsOn: diagnosticTaskNames,

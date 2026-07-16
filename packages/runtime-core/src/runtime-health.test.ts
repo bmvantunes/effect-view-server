@@ -4,6 +4,7 @@ import { Clock, Deferred, Effect, Exit, Fiber, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { healthFromEngine, makeCoalescedHealthReader, makeHealthRefreshScheduler } from "./health";
 import { makeViewServerRuntimeCore } from "./index";
+import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
 import { engineHealth } from "./test-support/runtime-test-fixtures";
 
 const Order = Schema.Struct({
@@ -34,6 +35,46 @@ const order = (id: string, price: number): typeof Order.Type => ({
 });
 
 describe("Runtime Core health", () => {
+  it.effect("notifies Atom listeners without holding the health state lock", () =>
+    Effect.gen(function* () {
+      let readCount = 0;
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        healthFromEngine(engineHealth("ready", 0)),
+        Effect.sync(() => {
+          readCount += 1;
+          return healthFromEngine(engineHealth("ready", readCount));
+        }),
+        "1 minute",
+      );
+      const services = yield* Effect.context();
+      let listenerCallCount = 0;
+      let nestedSubscriptionClose = Effect.void;
+      const unsubscribe = hub.health.subscribe(() => {
+        listenerCallCount += 1;
+        if (listenerCallCount === 1) {
+          nestedSubscriptionClose = Effect.runSyncWith(services)(
+            hub.subscribeHealthSummary(),
+          ).close();
+        }
+      });
+
+      const refreshedHealth = yield* hub.refresh.pipe(Effect.timeout("1 second"));
+
+      expect({
+        listenerCallCount,
+        readCount,
+        rowCount: refreshedHealth.engine.topics.orders.rowCount,
+      }).toStrictEqual({
+        listenerCallCount: 1,
+        readCount: 1,
+        rowCount: 1,
+      });
+      unsubscribe();
+      yield* nestedSubscriptionClose;
+      yield* hub.close;
+    }),
+  );
+
   it.effect(
     "keeps fresh Runtime Client health separate from cadence-controlled pushed health",
     () =>

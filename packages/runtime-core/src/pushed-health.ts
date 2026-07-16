@@ -62,6 +62,7 @@ export type RuntimeCorePushedHealthHub<Topics extends DecodableTopicDefinitions>
 };
 
 export type RuntimeCorePushedHealthHubOptions = {
+  readonly afterHubCloseClaim?: Effect.Effect<void>;
   readonly afterRefreshEpochClaim?: Effect.Effect<void>;
   readonly afterSubscriptionCloseClaim?: Effect.Effect<void>;
   readonly beforeSubscriptionRegistration?: Effect.Effect<void>;
@@ -151,6 +152,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
 
     const initialUpdatedAtNanos = yield* Clock.currentTimeNanos;
     const health = AtomRef.make(initialHealth);
+    let installedHealth = initialHealth;
     let installedSnapshots = healthSnapshotsFromHealth(initialHealth, initialUpdatedAtNanos);
     const activeHealthSubscriptions = new Set<ActiveHealthSubscription>();
     const healthSubscriptionLock = Semaphore.makeUnsafe(1);
@@ -163,37 +165,35 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
       refreshEpoch: number,
     ) {
       const updatedAtNanos = yield* Clock.currentTimeNanos;
-      const result = yield* healthSubscriptionLock.withPermit(
-        Effect.gen(function* () {
-          const claim = yield* Effect.sync(() => {
-            if (hubClosed || refreshEpoch !== requestedRefreshEpoch) {
-              return { _tag: "stale" as const, installed: health.value };
-            }
-            installedRefreshEpoch = refreshEpoch;
-            installedSnapshots = healthSnapshotsFromHealth(nextHealth, updatedAtNanos);
-            const backpressureFinalizers: Array<Effect.Effect<void>> = [];
-            for (const subscription of activeHealthSubscriptions) {
-              const offerResult = subscription.offer(installedSnapshots);
-              if (offerResult._tag === "backpressure") {
-                activeHealthSubscriptions.delete(subscription);
-                backpressureFinalizers.push(
-                  subscription.finishBackpressure(offerResult.queuedEvents),
-                );
-              }
-            }
-            return { _tag: "installed" as const, backpressureFinalizers };
-          });
-          if (claim._tag === "stale") {
-            return claim.installed;
+      const claim = yield* healthSubscriptionLock.withPermit(
+        Effect.sync(() => {
+          if (hubClosed || refreshEpoch !== requestedRefreshEpoch) {
+            return { _tag: "stale" as const, installed: installedHealth };
           }
-          yield* runAllFinalizers([
-            Effect.sync(() => health.update(() => nextHealth)),
-            ...claim.backpressureFinalizers,
-          ]);
-          return health.value;
+          installedRefreshEpoch = refreshEpoch;
+          installedHealth = nextHealth;
+          installedSnapshots = healthSnapshotsFromHealth(nextHealth, updatedAtNanos);
+          const backpressureFinalizers: Array<Effect.Effect<void>> = [];
+          for (const subscription of activeHealthSubscriptions) {
+            const offerResult = subscription.offer(installedSnapshots);
+            if (offerResult._tag === "backpressure") {
+              activeHealthSubscriptions.delete(subscription);
+              backpressureFinalizers.push(
+                subscription.finishBackpressure(offerResult.queuedEvents),
+              );
+            }
+          }
+          return { _tag: "installed" as const, backpressureFinalizers };
         }),
       );
-      return result;
+      if (claim._tag === "stale") {
+        return claim.installed;
+      }
+      yield* runAllFinalizers([
+        Effect.sync(() => health.update(() => installedHealth)),
+        ...claim.backpressureFinalizers,
+      ]);
+      return health.value;
     });
 
     const coalescedHealthReader = makeCoalescedHealthReader(
@@ -206,7 +206,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
         const beforeRead = yield* healthSubscriptionLock.withPermit(
           Effect.sync(() =>
             hubClosed
-              ? { _tag: "closed" as const, health: health.value }
+              ? { _tag: "closed" as const, health: installedHealth }
               : { _tag: "read" as const },
           ),
         );
@@ -217,7 +217,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
         const afterRead = yield* healthSubscriptionLock.withPermit(
           Effect.sync(() =>
             hubClosed || installedRefreshEpoch === requestedRefreshEpoch
-              ? { _tag: "settled" as const, health: health.value }
+              ? { _tag: "settled" as const, health: installedHealth }
               : { _tag: "retry" as const },
           ),
         );
@@ -260,25 +260,25 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
     );
 
     const closeActiveHealthSubscriptions = Effect.suspend(() =>
-      healthSubscriptionLock.withPermit(
-        Effect.gen(function* () {
-          const subscriptions = yield* Effect.sync(() => {
+      Effect.gen(function* () {
+        const subscriptions = yield* healthSubscriptionLock.withPermit(
+          Effect.sync(() => {
             hubClosed = true;
+            installedHealth = {
+              ...installedHealth,
+              status: "stopping",
+            };
             const claimed = Array.from(activeHealthSubscriptions);
             activeHealthSubscriptions.clear();
             return claimed;
-          });
-          yield* runAllFinalizers([
-            Effect.sync(() =>
-              health.update((current) => ({
-                ...current,
-                status: "stopping",
-              })),
-            ),
-            ...subscriptions.map((subscription) => subscription.finishNormal),
-          ]);
-        }),
-      ),
+          }),
+        );
+        yield* options.afterHubCloseClaim ?? Effect.void;
+        yield* runAllFinalizers([
+          Effect.sync(() => health.update(() => installedHealth)),
+          ...subscriptions.map((subscription) => subscription.finishNormal),
+        ]);
+      }),
     ).pipe(ignoreHealthSubscriptionCloseFailure);
 
     const close = (yield* Effect.cached(

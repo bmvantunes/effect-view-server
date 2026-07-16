@@ -86,6 +86,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
     config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
     pushedHealth: RuntimeCorePushedHealthHub<Topics>,
+    requestHealthRefresh: Effect.Effect<void>,
   ): Effect.Effect<RuntimeCoreLiveClientInstance<Topics>> =>
     Effect.sync<RuntimeCoreLiveClientInstance<Topics>>(() => {
       const sourceOwnership = makeSourceOwnershipPolicy(config);
@@ -99,14 +100,16 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
                 const subscription = yield* restore(
                   acquisition.pipe(Effect.mapError(engineErrorToRuntimeError)),
                 );
-                yield* markAcquired(subscription.close());
-                const requestRefreshAfterRelease = pushedHealth.requestRefresh;
+                const requestRefreshAfterRelease = requestHealthRefresh;
+                const closeSubscription = subscription
+                  .close()
+                  .pipe(Effect.ensuring(requestRefreshAfterRelease));
+                yield* markAcquired(closeSubscription);
                 const wrapped = {
                   events: subscription.events.pipe(Stream.ensuring(requestRefreshAfterRelease)),
-                  close: () =>
-                    subscription.close().pipe(Effect.ensuring(requestRefreshAfterRelease)),
+                  close: () => closeSubscription,
                 } satisfies ViewServerLiveSubscription<Row>;
-                yield* restore(pushedHealth.requestRefresh);
+                yield* restore(requestHealthRefresh);
                 return wrapped;
               }),
             ),

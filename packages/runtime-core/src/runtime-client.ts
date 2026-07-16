@@ -7,18 +7,14 @@ import type {
   LiveQueryResult,
   RawQuery,
   TopicRow,
+  ViewServerHealth,
   ViewServerTopicConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import { Effect } from "effect";
-import {
-  makeCoalescedHealthReader,
-  readHealthSnapshot,
-  type RuntimeCoreHealthOverlay,
-  type RuntimeCoreTransportHealth,
-} from "./health";
+import { makeCoalescedHealthReader } from "./health";
 import { engineErrorToRuntimeError, invalidRuntimeQueryError } from "./runtime-error";
 import {
   makeRuntimeCoreMutationPipeline,
@@ -29,6 +25,7 @@ import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
   readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
+  readonly requestHealthRefresh: Effect.Effect<void>;
 };
 
 export type ViewServerRuntimeCoreInternalClient<Topics extends DecodableTopicDefinitions> =
@@ -38,24 +35,23 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
   <const Topics extends DecodableTopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
-    runtimeStartedAtNanos: bigint,
-    transportHealth: RuntimeCoreTransportHealth<Topics>,
+    readFreshRuntimeHealth: Effect.Effect<ViewServerHealth<Topics>>,
     requestPushedHealthRefresh: Effect.Effect<void>,
-    healthOverlay?: RuntimeCoreHealthOverlay<Topics>,
   ): Effect.Effect<RuntimeCoreClientInstance<Topics>> =>
     Effect.sync(() => {
       const sourceOwnership = makeSourceOwnershipPolicy(config);
-      const readFreshRuntimeHealth = () =>
-        readHealthSnapshot(engine, {
-          runtimeStartedAtNanos,
-          transportHealth,
-          healthOverlay,
-        });
-      const healthReader = makeCoalescedHealthReader(readFreshRuntimeHealth);
+      let freshHealthReadEpoch = 0;
+      const healthReader = makeCoalescedHealthReader(
+        () => readFreshRuntimeHealth,
+        () => freshHealthReadEpoch,
+      );
+      const requestHealthRefresh = Effect.sync(() => {
+        freshHealthReadEpoch += 1;
+      }).pipe(Effect.andThen(requestPushedHealthRefresh));
       const mutationPipeline = makeRuntimeCoreMutationPipeline(
         config,
         engine,
-        requestPushedHealthRefresh,
+        requestHealthRefresh,
       );
       const snapshot = <
         Topic extends Extract<keyof Topics, string>,
@@ -93,6 +89,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
           health: internalClient.health,
         },
         internalClient,
+        requestHealthRefresh,
       } satisfies RuntimeCoreClientInstance<Topics>;
     }),
 );

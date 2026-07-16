@@ -25,6 +25,7 @@ import {
 export type RuntimeCoreConstructionOptions = {
   readonly afterEngineClose?: Effect.Effect<void>;
   readonly afterPushedHealthClose?: Effect.Effect<void>;
+  readonly afterRuntimeHealthRead?: Effect.Effect<void>;
   readonly handoff?: RuntimeCoreResourceHandoffOptions;
 };
 
@@ -83,7 +84,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
               runtimeStartedAtNanos,
               transportHealth,
               healthOverlay,
-            });
+            }).pipe(Effect.tap(() => constructionOptions.afterRuntimeHealthRead ?? Effect.void));
             const pushedHealth = yield* makeRuntimeCorePushedHealthHub(
               initialHealth,
               readRuntimeHealth,
@@ -95,24 +96,33 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
                 : pushedHealth.close.pipe(
                     Effect.ensuring(constructionOptions.afterPushedHealthClose),
                   );
-            const constructionClose = runAllFinalizers([pushedHealthClose, engineClose]).pipe(
+            const partialConstructionClose = runAllFinalizers([
+              engineClose,
+              pushedHealthClose,
+            ]).pipe(Effect.uninterruptible);
+            yield* markAcquired(partialConstructionClose);
+            const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
+              config,
+              engine,
+              readRuntimeHealth,
+              pushedHealth.requestRefresh,
+            );
+            const finalizePushedHealth = runAllFinalizers([
+              runtimeClient.requestHealthRefresh,
+              pushedHealth.refresh.pipe(Effect.asVoid),
+              pushedHealthClose,
+            ]);
+            const constructionClose = runAllFinalizers([engineClose, finalizePushedHealth]).pipe(
               Effect.uninterruptible,
             );
             yield* markAcquired(constructionClose);
             const close = (yield* Effect.cached(constructionClose)).pipe(Effect.uninterruptible);
             yield* markAcquired(close);
-            const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
-              config,
-              engine,
-              runtimeStartedAtNanos,
-              transportHealth,
-              pushedHealth.requestRefresh,
-              healthOverlay,
-            );
             const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(
               config,
               engine,
               pushedHealth,
+              runtimeClient.requestHealthRefresh,
             );
             const publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics> = {
               close,
@@ -136,7 +146,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
               internalLiveClient: liveClient,
               publicLiveClient,
               close,
-              requestHealthRefresh: pushedHealth.requestRefresh,
+              requestHealthRefresh: runtimeClient.requestHealthRefresh,
               refreshHealth: pushedHealth.refresh,
             };
           }),

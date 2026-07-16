@@ -1,10 +1,62 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Stream, Tracer } from "effect";
+import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
+import { Deferred, Effect, Fiber, Stream, Tracer } from "effect";
+import { healthFromEngine } from "./health";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { createViewServerRuntimeCore, makeViewServerRuntimeCore } from "./index";
+import { makeRuntimeCoreClient } from "./runtime-client";
 import { makeRecordingTracer, order, viewServer } from "./test-support/runtime-test-fixtures";
 
 describe("Runtime Core client", () => {
+  it.effect("starts a new fresh health read after a completed mutation", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
+      const firstReadStarted = yield* Deferred.make<void>();
+      const releaseFirstRead = yield* Deferred.make<void>();
+      let readCount = 0;
+      const readFreshHealth = Effect.gen(function* () {
+        const readNumber = readCount + 1;
+        readCount = readNumber;
+        const health = healthFromEngine(yield* engine.health());
+        if (readNumber === 1) {
+          yield* Deferred.succeed(firstReadStarted, undefined);
+          yield* Deferred.await(releaseFirstRead);
+        }
+        return health;
+      });
+      const runtimeClient = yield* makeRuntimeCoreClient(
+        viewServer,
+        engine,
+        readFreshHealth,
+        Effect.void,
+      );
+      const firstHealthFiber = yield* runtimeClient.client
+        .health()
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(firstReadStarted);
+
+      yield* runtimeClient.client.publish("orders", order("mutation", 10));
+      const secondHealthFiber = yield* runtimeClient.client
+        .health()
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      expect(readCount).toBe(2);
+      yield* Deferred.succeed(releaseFirstRead, undefined);
+      const [firstHealth, secondHealth] = yield* Effect.all(
+        [Fiber.join(firstHealthFiber), Fiber.join(secondHealthFiber)],
+        { concurrency: 2 },
+      );
+      expect({
+        firstRowCount: firstHealth.engine.topics.orders.rowCount,
+        secondRowCount: secondHealth.engine.topics.orders.rowCount,
+      }).toStrictEqual({
+        firstRowCount: 0,
+        secondRowCount: 1,
+      });
+      yield* engine.close();
+    }),
+  );
+
   it.effect("records runtime core publish, engine mutation, and subscription fanout spans", () =>
     Effect.gen(function* () {
       const recording = makeRecordingTracer();

@@ -24,6 +24,230 @@ const viewServer = defineViewServerConfig({
 });
 
 describe("Runtime Core lifecycle", () => {
+  it.effect("installs final stopping health after engine subscriptions close", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {
+        healthRefreshCadence: "1 minute",
+      });
+      const subscription = yield* runtimeCore.liveClient.subscribe("orders", {
+        select: ["id"],
+      });
+      yield* runtimeCore.refreshHealth;
+
+      expect(runtimeCore.liveClient.health.value.transport.activeSubscriptions).toBe(1);
+      yield* runtimeCore.close;
+
+      expect({
+        activeSubscriptions: runtimeCore.liveClient.health.value.transport.activeSubscriptions,
+        status: runtimeCore.liveClient.health.value.status,
+        topicActiveSubscriptions:
+          runtimeCore.liveClient.health.value.engine.topics.orders.activeSubscriptions,
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        status: "stopping",
+        topicActiveSubscriptions: 0,
+      });
+      yield* subscription.close();
+    }),
+  );
+
+  it.effect("invalidates an in-flight pre-close health read before final shutdown refresh", () =>
+    Effect.gen(function* () {
+      const firstReadStarted = yield* Deferred.make<void>();
+      const releaseFirstRead = yield* Deferred.make<void>();
+      const secondReadStarted = yield* Deferred.make<void>();
+      let readCount = 0;
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternalWithConstructionOptions(
+        viewServer,
+        { healthRefreshCadence: "1 minute" },
+        {
+          afterRuntimeHealthRead: Effect.suspend(() => {
+            readCount += 1;
+            if (readCount === 1) {
+              return Deferred.succeed(firstReadStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstRead)),
+              );
+            }
+            return Deferred.succeed(secondReadStarted, undefined);
+          }),
+        },
+      );
+      const subscription = yield* runtimeCore.liveClient.subscribe("orders", {
+        select: ["id"],
+      });
+      const staleRefreshFiber = yield* runtimeCore.refreshHealth.pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(firstReadStarted);
+
+      const closeFiber = yield* runtimeCore.close.pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(secondReadStarted);
+      yield* Fiber.join(closeFiber);
+
+      expect({
+        activeSubscriptions: runtimeCore.liveClient.health.value.transport.activeSubscriptions,
+        readCount,
+        status: runtimeCore.liveClient.health.value.status,
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        readCount: 2,
+        status: "stopping",
+      });
+      yield* Deferred.succeed(releaseFirstRead, undefined);
+      const staleHealth = yield* Fiber.join(staleRefreshFiber);
+      expect({
+        activeSubscriptions: staleHealth.transport.activeSubscriptions,
+        status: staleHealth.status,
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        status: "stopping",
+      });
+      yield* subscription.close();
+    }),
+  );
+
+  it.effect("invalidates direct client health reads across runtime shutdown", () =>
+    Effect.gen(function* () {
+      const firstReadStarted = yield* Deferred.make<void>();
+      const releaseFirstRead = yield* Deferred.make<void>();
+      const shutdownReadStarted = yield* Deferred.make<void>();
+      const postCloseReadStarted = yield* Deferred.make<void>();
+      let readCount = 0;
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternalWithConstructionOptions(
+        viewServer,
+        { healthRefreshCadence: "1 minute" },
+        {
+          afterRuntimeHealthRead: Effect.suspend(() => {
+            readCount += 1;
+            if (readCount === 1) {
+              return Deferred.succeed(firstReadStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstRead)),
+              );
+            }
+            if (readCount === 2) {
+              return Deferred.succeed(shutdownReadStarted, undefined);
+            }
+            return Deferred.succeed(postCloseReadStarted, undefined);
+          }),
+        },
+      );
+      const subscription = yield* runtimeCore.liveClient.subscribe("orders", {
+        select: ["id"],
+      });
+      const staleHealthFiber = yield* runtimeCore.client
+        .health()
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(firstReadStarted);
+
+      const closeFiber = yield* runtimeCore.close.pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(shutdownReadStarted);
+      yield* Fiber.join(closeFiber);
+      const postCloseHealthFiber = yield* runtimeCore.client
+        .health()
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(postCloseReadStarted);
+      const postCloseHealth = yield* Fiber.join(postCloseHealthFiber);
+
+      expect({
+        activeSubscriptions: postCloseHealth.transport.activeSubscriptions,
+        readCount,
+        status: postCloseHealth.status,
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        readCount: 3,
+        status: "stopping",
+      });
+      yield* Deferred.succeed(releaseFirstRead, undefined);
+      const staleHealth = yield* Fiber.join(staleHealthFiber);
+      expect({
+        activeSubscriptions: staleHealth.transport.activeSubscriptions,
+        status: staleHealth.status,
+      }).toStrictEqual({
+        activeSubscriptions: 1,
+        status: "ready",
+      });
+      yield* subscription.close();
+    }),
+  );
+
+  it.effect(
+    "invalidates direct client health reads after subscription acquisition and release",
+    () =>
+      Effect.gen(function* () {
+        const preAcquisitionReadStarted = yield* Deferred.make<void>();
+        const releasePreAcquisitionRead = yield* Deferred.make<void>();
+        const preReleaseReadStarted = yield* Deferred.make<void>();
+        const releasePreReleaseRead = yield* Deferred.make<void>();
+        const postReleaseReadStarted = yield* Deferred.make<void>();
+        let readCount = 0;
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternalWithConstructionOptions(
+          viewServer,
+          { healthRefreshCadence: "1 minute" },
+          {
+            afterRuntimeHealthRead: Effect.suspend(() => {
+              readCount += 1;
+              if (readCount === 1) {
+                return Deferred.succeed(preAcquisitionReadStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releasePreAcquisitionRead)),
+                );
+              }
+              if (readCount === 2) {
+                return Deferred.succeed(preReleaseReadStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releasePreReleaseRead)),
+                );
+              }
+              return Deferred.succeed(postReleaseReadStarted, undefined);
+            }),
+          },
+        );
+        const preAcquisitionHealthFiber = yield* runtimeCore.client
+          .health()
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(preAcquisitionReadStarted);
+
+        const subscription = yield* runtimeCore.liveClient.subscribe("orders", {
+          select: ["id"],
+        });
+        const preReleaseHealthFiber = yield* runtimeCore.client
+          .health()
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(preReleaseReadStarted);
+
+        yield* subscription.close();
+        const postReleaseHealthFiber = yield* runtimeCore.client
+          .health()
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(postReleaseReadStarted);
+        const postReleaseHealth = yield* Fiber.join(postReleaseHealthFiber);
+        expect({
+          activeSubscriptions: postReleaseHealth.transport.activeSubscriptions,
+          readCount,
+        }).toStrictEqual({
+          activeSubscriptions: 0,
+          readCount: 3,
+        });
+
+        yield* Deferred.succeed(releasePreAcquisitionRead, undefined);
+        yield* Deferred.succeed(releasePreReleaseRead, undefined);
+        const [preAcquisitionHealth, preReleaseHealth] = yield* Effect.all(
+          [Fiber.join(preAcquisitionHealthFiber), Fiber.join(preReleaseHealthFiber)],
+          { concurrency: 2 },
+        );
+        expect({
+          preAcquisitionActiveSubscriptions: preAcquisitionHealth.transport.activeSubscriptions,
+          preReleaseActiveSubscriptions: preReleaseHealth.transport.activeSubscriptions,
+        }).toStrictEqual({
+          preAcquisitionActiveSubscriptions: 0,
+          preReleaseActiveSubscriptions: 1,
+        });
+        yield* runtimeCore.close;
+      }),
+  );
+
   it.effect("releases the pushed-health hub once across concurrent public close owners", () =>
     Effect.gen(function* () {
       let healthBuildCount = 0;
@@ -55,7 +279,7 @@ describe("Runtime Core lifecycle", () => {
       }).toStrictEqual({
         cachedStatus: "stopping",
         freshStatus: "stopping",
-        healthBuildCount: 2,
+        healthBuildCount: 3,
       });
     }),
   );
@@ -381,34 +605,79 @@ describe("Runtime Core lifecycle", () => {
     }),
   );
 
-  it.effect("releases engine subscriptions when pushed-health handoff is interrupted", () =>
+  it.effect("returns authoritative stopping health while close notification is pending", () =>
     Effect.gen(function* () {
-      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
-      const initialHealth = healthFromEngine(yield* engine.health());
+      const closeClaimed = yield* Deferred.make<void>();
+      const releaseNotification = yield* Deferred.make<void>();
+      const initialHealth = healthFromEngine(engineHealth("ready", 0));
       const hub = yield* makeRuntimeCorePushedHealthHub(
         initialHealth,
         Effect.succeed(initialHealth),
         "1 minute",
+        {
+          afterHubCloseClaim: Deferred.succeed(closeClaimed, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseNotification)),
+          ),
+        },
       );
-      const refreshStarted = yield* Deferred.make<void>();
-      const liveClient = yield* makeRuntimeCoreLiveClient(viewServer, engine, {
-        ...hub,
-        requestRefresh: Deferred.succeed(refreshStarted, undefined).pipe(
-          Effect.andThen(Effect.never),
-        ),
-      });
-      const subscriptionFiber = yield* liveClient
-        .subscribeInternal("orders", { select: ["id"] })
-        .pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Deferred.await(refreshStarted);
-      expect((yield* engine.health()).activeSubscriptions).toBe(1);
+      const closeFiber = yield* hub.close.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(closeClaimed);
 
-      yield* Fiber.interrupt(subscriptionFiber);
+      expect(hub.health.value.status).toBe("ready");
+      const healthDuringClose = yield* hub.refresh;
+      expect(healthDuringClose.status).toBe("stopping");
 
-      expect((yield* engine.health()).activeSubscriptions).toBe(0);
-      yield* hub.close;
-      yield* engine.close();
+      yield* Deferred.succeed(releaseNotification, undefined);
+      yield* Fiber.join(closeFiber);
+      expect(hub.health.value.status).toBe("stopping");
     }),
+  );
+
+  it.effect(
+    "releases and invalidates engine subscriptions when health handoff is interrupted",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
+        const initialHealth = healthFromEngine(yield* engine.health());
+        const hub = yield* makeRuntimeCorePushedHealthHub(
+          initialHealth,
+          Effect.succeed(initialHealth),
+          "1 minute",
+        );
+        const refreshStarted = yield* Deferred.make<void>();
+        const cleanupRefreshRequested = yield* Deferred.make<void>();
+        let refreshRequestCount = 0;
+        const requestHealthRefresh = Effect.suspend(() => {
+          refreshRequestCount += 1;
+          return refreshRequestCount === 1
+            ? Deferred.succeed(refreshStarted, undefined).pipe(Effect.andThen(Effect.never))
+            : Deferred.succeed(cleanupRefreshRequested, undefined).pipe(Effect.asVoid);
+        });
+        const liveClient = yield* makeRuntimeCoreLiveClient(
+          viewServer,
+          engine,
+          hub,
+          requestHealthRefresh,
+        );
+        const subscriptionFiber = yield* liveClient
+          .subscribeInternal("orders", { select: ["id"] })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(refreshStarted);
+        expect((yield* engine.health()).activeSubscriptions).toBe(1);
+
+        yield* Fiber.interrupt(subscriptionFiber);
+        yield* Deferred.await(cleanupRefreshRequested);
+
+        expect({
+          activeSubscriptions: (yield* engine.health()).activeSubscriptions,
+          refreshRequestCount,
+        }).toStrictEqual({
+          activeSubscriptions: 0,
+          refreshRequestCount: 2,
+        });
+        yield* hub.close;
+        yield* engine.close();
+      }),
   );
 
   it.effect("requests pushed health after an engine subscription stream ends", () =>
@@ -421,12 +690,14 @@ describe("Runtime Core lifecycle", () => {
         "1 minute",
       );
       let refreshRequestCount = 0;
-      const liveClient = yield* makeRuntimeCoreLiveClient(viewServer, engine, {
-        ...hub,
-        requestRefresh: Effect.sync(() => {
+      const liveClient = yield* makeRuntimeCoreLiveClient(
+        viewServer,
+        engine,
+        hub,
+        Effect.sync(() => {
           refreshRequestCount += 1;
         }),
-      });
+      );
       const subscription = yield* liveClient.subscribeInternal("orders", { select: ["id"] });
 
       expect(refreshRequestCount).toBe(1);

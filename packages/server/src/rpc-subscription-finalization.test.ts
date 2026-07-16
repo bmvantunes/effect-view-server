@@ -20,6 +20,7 @@ describe("Real View Server RPC subscription finalization", () => {
   it.live("closes transport stream counters when subscription acquisition fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       let openedStreams = 0;
       let closedStreams = 0;
       const subscribeError: ViewServerRuntimeError = {
@@ -42,11 +43,14 @@ describe("Real View Server RPC subscription finalization", () => {
           }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
 
       const subscription = yield* client.subscribe("orders", {
         select: ["id"],
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.ignore));
       const failedEvents = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
 
       expect(Array.from(failedEvents)).toStrictEqual([
@@ -65,7 +69,7 @@ describe("Real View Server RPC subscription finalization", () => {
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("logs typed RPC handler stream finalization close failures", () => {
@@ -91,6 +95,7 @@ describe("Real View Server RPC subscription finalization", () => {
     };
     return Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const closeStarted = yield* Deferred.make<void>();
       const liveClient = serverTestLiveClientWithSubscribe(inMemory.liveClient, () =>
         Effect.succeed({
@@ -112,6 +117,7 @@ describe("Real View Server RPC subscription finalization", () => {
         }),
       );
       const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
       const handlers = makeViewServerRpcHandlers(
         viewServer,
         {
@@ -148,6 +154,7 @@ describe("Real View Server RPC subscription finalization", () => {
       yield* Scope.close(handlerScope, Exit.void);
       yield* inMemory.close;
     }).pipe(
+      Effect.scoped,
       Effect.provide(Logger.layer([logger])),
       Effect.provideService(References.MinimumLogLevel, "Trace"),
     );
@@ -178,6 +185,7 @@ describe("Real View Server RPC subscription finalization", () => {
       };
       return Effect.gen(function* () {
         const inMemory = createServerTestRuntime(viewServer);
+        yield* Effect.addFinalizer(() => inMemory.close);
         const closeStarted = yield* Deferred.make<void>();
         const liveClient = serverTestLiveClientWithSubscribe(inMemory.liveClient, () =>
           Effect.succeed({
@@ -204,6 +212,7 @@ describe("Real View Server RPC subscription finalization", () => {
           }),
         );
         const handlerScope = yield* Scope.make("parallel");
+        yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
         const handlers = makeViewServerRpcHandlers(
           viewServer,
           {
@@ -237,6 +246,7 @@ describe("Real View Server RPC subscription finalization", () => {
         yield* Scope.close(handlerScope, Exit.void);
         yield* inMemory.close;
       }).pipe(
+        Effect.scoped,
         Effect.provide(Logger.layer([logger])),
         Effect.provideService(References.MinimumLogLevel, "Trace"),
       );
@@ -246,6 +256,7 @@ describe("Real View Server RPC subscription finalization", () => {
   it.live("does not fail RPC stream finalization when typed subscription close fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const closeStarted = yield* Deferred.make<void>();
       let closeAttempts = 0;
       const closeFailure: ViewServerTransportError = {
@@ -278,7 +289,9 @@ describe("Real View Server RPC subscription finalization", () => {
         liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const raw = yield* makeRawRpcClient(server.url);
+      yield* Effect.addFinalizer(() => raw.close);
 
       const events = yield* raw.rpc["ViewServer.Subscribe"]({
         topic: "orders",
@@ -300,29 +313,34 @@ describe("Real View Server RPC subscription finalization", () => {
       yield* raw.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("cleans up engine subscribers when the remote websocket disconnects", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
         transport: lifecycle.transport,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("orders", {
         select: ["id", "price"],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.ignore));
       const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
         Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
         Stream.runDrain,
         Effect.forkChild,
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(eventsFiber).pipe(Effect.asVoid));
 
       yield* Deferred.await(firstEventSeen).pipe(Effect.timeout("1 second"));
       const beforeDisconnect = yield* inMemory.client.health();
@@ -338,6 +356,6 @@ describe("Real View Server RPC subscription finalization", () => {
       yield* Fiber.interrupt(eventsFiber);
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

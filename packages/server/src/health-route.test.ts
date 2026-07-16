@@ -21,10 +21,12 @@ describe("Real View Server health route", () => {
   it.live("serves GET /health beside the websocket RPC endpoint", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       yield* inMemory.client.publish("orders", order("a", 10));
 
@@ -36,17 +38,19 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("requires auth for GET /health when an auth validator is configured", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         auth: bearerAuth,
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const deniedHealth = yield* fetchJson(server.healthUrl);
       const acceptedHealth = yield* fetchJsonWithAuthorization(
@@ -65,12 +69,13 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("returns 500 when runtime health fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const healthError: ViewServerRuntimeError = {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
@@ -82,6 +87,7 @@ describe("Real View Server health route", () => {
           health: () => Effect.fail(healthError),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const health = yield* fetchJson(server.healthUrl);
 
@@ -90,18 +96,20 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("returns 500 when runtime health defects", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: {
           health: () => Effect.die("health defect"),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const health = yield* fetchJson(server.healthUrl);
 
@@ -110,12 +118,13 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("returns 500 when runtime health is semantically invalid", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
@@ -139,6 +148,7 @@ describe("Real View Server health route", () => {
             }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const health = yield* fetchJson(server.healthUrl);
 
@@ -152,12 +162,13 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("returns 503 for degraded health and serializes bigint fields", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const degradedHealth = degradedServerHealth(baseHealth);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -166,6 +177,7 @@ describe("Real View Server health route", () => {
           health: () => Effect.succeed(degradedHealth),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const expectedHealth =
         yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(degradedHealth);
@@ -176,12 +188,13 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("serves fresh runtime health for Kubernetes readiness", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const degradedHealth: ViewServerHealth<typeof viewServer.topics> = {
         ...baseHealth,
@@ -234,6 +247,7 @@ describe("Real View Server health route", () => {
             }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const firstHealth = yield* fetchJson(server.healthUrl);
       const firstBody = yield* Schema.decodeUnknownEffect(HealthJson)(firstHealth.value);
@@ -252,6 +266,6 @@ describe("Real View Server health route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

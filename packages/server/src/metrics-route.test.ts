@@ -17,10 +17,12 @@ describe("Real View Server metrics route", () => {
   it.live("serves GET /metrics beside the websocket RPC endpoint", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       yield* inMemory.client.publish("orders", order("a", 10));
 
@@ -44,12 +46,13 @@ describe("Real View Server metrics route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("returns fallback metrics when runtime health fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const healthError: ViewServerRuntimeError = {
         _tag: "ViewServerRuntimeError",
         code: "RuntimeUnavailable",
@@ -61,6 +64,7 @@ describe("Real View Server metrics route", () => {
           health: () => Effect.fail(healthError),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const metrics = yield* fetchText(server.metricsUrl);
 
@@ -69,12 +73,13 @@ describe("Real View Server metrics route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("renders degraded Kafka and gRPC health metrics", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const degradedHealth = degradedServerHealth(baseHealth);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -83,6 +88,7 @@ describe("Real View Server metrics route", () => {
           health: () => Effect.succeed(degradedHealth),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const metrics = yield* fetchText(server.metricsUrl);
       const lines = metrics.text.trimEnd().split("\n");
@@ -151,17 +157,19 @@ describe("Real View Server metrics route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("requires auth for GET /metrics when an auth validator is configured", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         auth: bearerAuth,
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const deniedMetrics = yield* fetchJson(server.metricsUrl);
       const acceptedMetrics = yield* fetchTextWithAuthorization(
@@ -181,6 +189,6 @@ describe("Real View Server metrics route", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

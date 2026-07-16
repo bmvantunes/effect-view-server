@@ -16,6 +16,7 @@ describe("Real View Server lifecycle", () => {
   it.live("does not count plain HTTP GET requests as websocket clients", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       let openedClients = 0;
       let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -30,6 +31,7 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const response = yield* Effect.promise(() => fetch(server.url.replace("ws://", "http://")));
       yield* Effect.promise(() => response.text());
@@ -39,12 +41,13 @@ describe("Real View Server lifecycle", () => {
       expect(closedClients).toBe(0);
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("does not count malformed websocket upgrades as clients", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       let openedClients = 0;
       let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -59,6 +62,7 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       yield* sendMalformedWebSocketUpgrade(server.url);
 
@@ -66,13 +70,14 @@ describe("Real View Server lifecycle", () => {
       expect(closedClients).toBe(0);
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("fails when the websocket server port is unavailable", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const inMemory = createServerTestRuntime(viewServer);
+        yield* Effect.addFinalizer(() => inMemory.close);
         const reservedPort = yield* reserveTcpPort();
 
         const startupError = yield* Effect.flip(
@@ -96,6 +101,7 @@ describe("Real View Server lifecycle", () => {
   it.live("closes tracked websocket clients when interrupted during the open hook", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       let openedClients = 0;
       let closedClients = 0;
       const clientOpenedSignal = yield* Deferred.make<void>();
@@ -115,18 +121,21 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const socket = yield* openRawWebSocket(server.url);
+      yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
       yield* Deferred.await(clientOpenedSignal).pipe(Effect.timeout("1 second"));
       socket.close();
       const closeFiber = yield* server.close.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.addFinalizer(() => Fiber.interrupt(closeFiber).pipe(Effect.asVoid));
       yield* Deferred.await(clientClosedSignal).pipe(Effect.timeout("1 second"));
       yield* Fiber.join(closeFiber);
 
       expect(openedClients).toBe(1);
       expect(closedClients).toBe(1);
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("tracks active websocket close frames and logs shutdown close failures", () => {
@@ -175,6 +184,7 @@ describe("Real View Server lifecycle", () => {
       const socketFiber = yield* trackedSocket
         .runRaw(() => Effect.void)
         .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+      yield* Effect.addFinalizer(() => Fiber.interrupt(socketFiber).pipe(Effect.asVoid));
       yield* Deferred.await(socketOpened).pipe(Effect.timeout("1 second"));
       expect(activeSocketClosers.size).toBe(1);
 
@@ -196,6 +206,7 @@ describe("Real View Server lifecycle", () => {
       yield* Deferred.await(socketClosed).pipe(Effect.timeout("1 second"));
       expect(activeSocketClosers.size).toBe(0);
     }).pipe(
+      Effect.scoped,
       Effect.provide(Logger.layer([logger])),
       Effect.provideService(References.MinimumLogLevel, "Trace"),
     );
@@ -216,6 +227,7 @@ describe("Real View Server lifecycle", () => {
   it.live("rejects websocket upgrades when auth validation fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       let openedClients = 0;
       let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
@@ -231,6 +243,7 @@ describe("Real View Server lifecycle", () => {
           }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
 
       const socketError = yield* Effect.flip(openRawWebSocket(server.url));
 
@@ -241,6 +254,6 @@ describe("Real View Server lifecycle", () => {
 
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

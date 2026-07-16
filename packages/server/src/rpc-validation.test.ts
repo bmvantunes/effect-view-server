@@ -18,11 +18,14 @@ describe("Real View Server RPC validation and typed errors", () => {
   it.live("preserves typed server errors for raw RPC clients", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const raw = yield* makeRawRpcClient(server.url);
+      yield* Effect.addFinalizer(() => raw.close);
 
       const unknownSubscribeTopic = yield* Effect.flip(
         raw.rpc["ViewServer.Subscribe"]({
@@ -194,12 +197,13 @@ describe("Real View Server RPC validation and typed errors", () => {
       yield* raw.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("rejects malformed live-client rows during server event encoding", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const makeServerForEvent = Effect.fn("ViewServerServer.test.malformedEventServer.make")(
         function* (event: ViewServerLiveEvent<object>) {
           const liveClient = serverTestLiveClientWithSubscribe(inMemory.liveClient, () =>
@@ -212,7 +216,9 @@ describe("Real View Server RPC validation and typed errors", () => {
             liveClient,
             runtime: inMemory.client,
           });
+          yield* Effect.addFinalizer(() => server.close);
           const raw = yield* makeRawRpcClient(server.url);
+          yield* Effect.addFinalizer(() => raw.close);
           return { raw, server };
         },
       );
@@ -281,12 +287,13 @@ describe("Real View Server RPC validation and typed errors", () => {
       yield* wrongTopic.server.close;
 
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("rejects non-json schema encodings during server event encoding", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(safeEdgeViewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const event: ViewServerLiveEvent<object> = {
         type: "snapshot",
         topic: "badjson",
@@ -306,7 +313,9 @@ describe("Real View Server RPC validation and typed errors", () => {
         liveClient,
         runtime: inMemory.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const raw = yield* makeRawRpcClient(server.url);
+      yield* Effect.addFinalizer(() => raw.close);
 
       const error = yield* Effect.flip(
         raw.rpc["ViewServer.Subscribe"]({
@@ -324,12 +333,13 @@ describe("Real View Server RPC validation and typed errors", () => {
       yield* raw.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("serves custom paths and maps hostile remote inputs", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const server = yield* makeViewServerWebSocketServer(
         viewServer,
         {
@@ -338,7 +348,9 @@ describe("Real View Server RPC validation and typed errors", () => {
         },
         { host: "127.0.0.1", path: "/custom-rpc" },
       );
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
 
       const invalidSubscribeTopic = yield* Effect.flip(
         // @ts-expect-error hostile callers can still send unknown topics over the wire.
@@ -398,6 +410,6 @@ describe("Real View Server RPC validation and typed errors", () => {
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

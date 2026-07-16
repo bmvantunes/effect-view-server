@@ -17,18 +17,22 @@ describe("Real View Server RPC wire protocol composition", () => {
   it.live("serves an in-memory runtime through Effect RPC WebSocket", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
         transport: lifecycle.transport,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("orders", {
         select: ["id", "price"],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.orDie));
       const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
         Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
@@ -71,6 +75,7 @@ describe("Real View Server RPC wire protocol composition", () => {
       });
 
       const healthSummarySubscription = yield* client.subscribeHealthSummary();
+      yield* Effect.addFinalizer(() => healthSummarySubscription.close().pipe(Effect.orDie));
       const healthSummaryEvents = yield* healthSummarySubscription.events.pipe(
         Stream.take(1),
         Stream.runCollect,
@@ -83,6 +88,7 @@ describe("Real View Server RPC wire protocol composition", () => {
       yield* healthSummarySubscription.close();
 
       const healthSubscription = yield* client.subscribeHealth();
+      yield* Effect.addFinalizer(() => healthSubscription.close().pipe(Effect.orDie));
       const healthEvents = yield* healthSubscription.events.pipe(Stream.take(1), Stream.runCollect);
       const healthSnapshots = Array.from(healthEvents).filter((event) => event.type === "snapshot");
       expect(healthSnapshots[0]?.rows[0]?.rowCount).toBe(2);
@@ -105,19 +111,22 @@ describe("Real View Server RPC wire protocol composition", () => {
       });
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("round-trips BigInt rows and filters through the RPC NDJSON transport", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
         transport: lifecycle.transport,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("trades", {
         where: {
           quantity: { gte: 10n },
@@ -126,6 +135,7 @@ describe("Real View Server RPC wire protocol composition", () => {
         orderBy: [{ field: "quantity", direction: "asc" }],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.orDie));
       const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
         Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
@@ -162,19 +172,22 @@ describe("Real View Server RPC wire protocol composition", () => {
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("round-trips BigDecimal rows and filters through the RPC NDJSON transport", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
         transport: lifecycle.transport,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("quotes", {
         where: {
           price: { gte: fromStringUnsafe("10.50") },
@@ -183,6 +196,7 @@ describe("Real View Server RPC wire protocol composition", () => {
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.orDie));
       const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
         Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
@@ -226,19 +240,22 @@ describe("Real View Server RPC wire protocol composition", () => {
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("encodes snapshot rows, move/remove deltas, and close statuses", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
         transport: lifecycle.transport,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
 
       yield* inMemory.client.publishMany("orders", [order("a", 10), order("b", 20)]);
       const subscription = yield* client.subscribe("orders", {
@@ -246,6 +263,7 @@ describe("Real View Server RPC wire protocol composition", () => {
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.orDie));
       const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
         Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
@@ -297,23 +315,27 @@ describe("Real View Server RPC wire protocol composition", () => {
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("encodes subscription closed status when the runtime closes", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const lifecycle = yield* makeServerTransportLifecycleProbe();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
         runtime: inMemory.client,
         transport: lifecycle.transport,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("orders", {
         select: ["id"],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.orDie));
       const firstEventSeen = yield* Deferred.make<void>();
       const eventsFiber = yield* subscription.events.pipe(
         Stream.tap(() => Deferred.succeed(firstEventSeen, undefined)),
@@ -338,23 +360,27 @@ describe("Real View Server RPC wire protocol composition", () => {
 
       yield* client.close;
       yield* server.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("composes with the public runtime-core live client", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      yield* Effect.addFinalizer(() => runtimeCore.close);
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: runtimeCore.serverLiveClient,
         runtime: runtimeCore.client,
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
       yield* runtimeCore.client.publish("orders", order("public-core", 10));
 
       const subscription = yield* client.subscribe("orders", {
         select: ["id", "price"],
         limit: 10,
       });
+      yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.orDie));
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
 
       expect(Array.from(events)).toStrictEqual([
@@ -377,6 +403,6 @@ describe("Real View Server RPC wire protocol composition", () => {
       yield* client.close;
       yield* server.close;
       yield* runtimeCore.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

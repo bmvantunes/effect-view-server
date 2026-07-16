@@ -4,7 +4,7 @@ import { evaluateRawQuery } from "./active-query";
 import { InvalidRowError } from "./index";
 import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { publishTopicStoreRows, TopicStore } from "./topic-store";
-import { topicStoreReadModel } from "./topic-store-state";
+import { topicStoreTestQueryInterface } from "../test-harness/topic-store";
 import { position, Position } from "../test-harness/public-engine";
 
 describe("Topic Store plan semantics", () => {
@@ -17,7 +17,7 @@ describe("Topic Store plan semantics", () => {
         (topic, message) => InvalidRowError.make({ topic, message }),
       );
 
-      const result = topicStoreReadModel(store).scanRawWindow({
+      const result = topicStoreTestQueryInterface(store).scanRawWindow({
         predicate: {
           filters: [],
           callbackRequired: false,

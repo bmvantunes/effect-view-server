@@ -1,16 +1,17 @@
 import type { RowSchema } from "@effect-view-server/config";
 import { Effect, Semaphore } from "effect";
+import { activeStoreQueryExecutionCounts, clearStoreRawQueryExecutions } from "./active-query";
 import {
-  activeStoreQueryExecutionCounts,
-  clearStoreRawQueryExecutions,
+  createActiveQueryRegistry,
   type ActiveQueryExecutionCounts,
-  type ActiveQueryStoreState,
-} from "./active-query";
+  type ActiveQueryRegistry,
+} from "./active-query-contract";
 import { TopicRowStorage } from "./topic-row-storage";
 import { createTopicHealthLedger } from "./topic-health-ledger";
 import type { TopicStoreMutationAdmission, TopicStoreMutationState } from "./topic-store-mutation";
 import type { RawQueryCompilerMetadata } from "./raw-query-compiler";
 import type { LiveTopicSubscriber } from "./topic-subscriber";
+import type { TopicStoreQueryInterface } from "./topic-store-query-interface";
 
 const topicStoreSubscriptionPermitBrand: unique symbol = Symbol("TopicStoreSubscriptionPermit");
 
@@ -19,7 +20,15 @@ export type TopicStoreSubscriptionPermit = {
   readonly store: TopicStore;
 };
 
-export type TopicStoreState = TopicStoreMutationState;
+export type TopicStoreQueryResources = {
+  readonly activeQueries: ActiveQueryRegistry;
+  readonly metadata: RawQueryCompilerMetadata;
+  readonly queryInterface: TopicStoreQueryInterface;
+};
+
+export type TopicStoreState = TopicStoreMutationState & {
+  readonly queryResources: TopicStoreQueryResources;
+};
 
 const topicStoreStates = new WeakMap<TopicStore, TopicStoreState>();
 
@@ -44,8 +53,14 @@ export class TopicStore {
   ) {
     const storage = new TopicRowStorage(topic, schema, keyField);
     const subscribers = new Set<LiveTopicSubscriber>();
+    const queryResources: TopicStoreQueryResources = Object.freeze({
+      activeQueries: createActiveQueryRegistry(),
+      metadata: storage.rawQueryMetadata,
+      queryInterface: storage.queryInterface,
+    });
     const state: TopicStoreState = {
       storage,
+      queryResources,
       subscribers,
       mutationSemaphore: Semaphore.makeUnsafe(1),
       notificationSemaphore: Semaphore.makeUnsafe(1),
@@ -113,19 +128,18 @@ export const topicStoreHealthSource = (store: TopicStore): TopicStoreHealthSourc
   };
 };
 
-export const topicStoreRawQueryMetadata = (store: TopicStore): RawQueryCompilerMetadata =>
-  topicStoreState(store).storage.rawQueryMetadata;
-
-export const topicStoreReadModel = (store: TopicStore): ActiveQueryStoreState =>
-  topicStoreState(store).storage.readModel;
+export const topicStoreQueryResources = (store: TopicStore): TopicStoreQueryResources =>
+  topicStoreState(store).queryResources;
 
 export const clearTopicStoreQueryExecutions = Effect.fn(
   "ColumnLiveViewEngine.topicStore.queryExecutions.clear",
-)((store: TopicStore) => clearStoreRawQueryExecutions(topicStoreReadModel(store)));
+)((store: TopicStore) =>
+  clearStoreRawQueryExecutions(topicStoreState(store).queryResources.activeQueries),
+);
 
 export const collectTopicStoreActiveQueryCounts = Effect.fn(
   "ColumnLiveViewEngine.topicStore.queryExecutions.count",
 )(
   (store: TopicStore): Effect.Effect<ActiveQueryExecutionCounts> =>
-    activeStoreQueryExecutionCounts(topicStoreReadModel(store)),
+    activeStoreQueryExecutionCounts(topicStoreState(store).queryResources.activeQueries),
 );

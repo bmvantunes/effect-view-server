@@ -6,10 +6,13 @@ import { TopicRowStorage } from "./topic-row-storage";
 import {
   acquireMaterializedQueryExecution,
   acquireRawQueryExecution,
+  activeQueryTestInterface,
+  activeQueryTestInterfaceForStorage,
+  activeQueryTestMetadata,
   activeStoreRawQueryExecutionCount,
   clearStoreRawQueryExecutions,
   releaseMaterializedQueryExecution,
-} from "./active-query";
+} from "../test-harness/active-query-interface";
 import type { LiveTopicSubscriber } from "./topic-subscriber";
 import {
   acquireSubscriptionHandoff,
@@ -32,7 +35,6 @@ import {
   resetTopicStore,
   TopicStore,
 } from "./topic-store";
-import { topicStoreRawQueryMetadata, topicStoreReadModel } from "./topic-store-state";
 import { expectDefined } from "../test-harness/events";
 import { order, Order } from "../test-harness/public-engine";
 import { registerTestTopicStoreSubscriber } from "../test-harness/topic-store";
@@ -336,15 +338,15 @@ describe("Subscription lifecycle ownership", () => {
   it.effect("exposes bounded row-change batches for active query catch-up", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
-      const readModel = topicStoreReadModel(store);
-      expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
-      expect(readModel.changesSince(-1)).toBeUndefined();
-      expect(readModel.changesSince(1)).toBeUndefined();
+      const queryInterface = activeQueryTestInterface(store);
+      expect(queryInterface.changesSince(queryInterface.version())).toStrictEqual([]);
+      expect(queryInterface.changesSince(-1)).toBeUndefined();
+      expect(queryInterface.changesSince(1)).toBeUndefined();
 
       yield* publishTopicStoreRow(store, order("initial", "open", 10, 1), (topic, message) =>
         InvalidRowError.make({ topic, message }),
       );
-      expect(readModel.changesSince(0)).toBeUndefined();
+      expect(queryInterface.changesSince(0)).toBeUndefined();
 
       const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
@@ -355,17 +357,17 @@ describe("Subscription lifecycle ownership", () => {
         },
       );
       const execution = yield* acquireMaterializedQueryExecution(
-        readModel,
+        queryInterface,
         "journal-bounds",
         compiled.plan.resultSemantics,
-        () => makeIncrementalGroupedQueryExecution(readModel, compiled, () => {}),
+        () => makeIncrementalGroupedQueryExecution(queryInterface, compiled, () => {}),
       );
-      expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
+      expect(queryInterface.changesSince(queryInterface.version())).toStrictEqual([]);
 
       yield* publishTopicStoreRow(store, order("first-active", "open", 11, 2), (topic, message) =>
         InvalidRowError.make({ topic, message }),
       );
-      expect(readModel.changesSince(1)).toStrictEqual([
+      expect(queryInterface.changesSince(1)).toStrictEqual([
         {
           version: 2,
           changes: [
@@ -386,11 +388,11 @@ describe("Subscription lifecycle ownership", () => {
         );
       }
 
-      expect(readModel.version()).toBe(1_027);
-      expect(readModel.changesSince(0)).toBeUndefined();
-      expect(readModel.changesSince(readModel.version())).toStrictEqual([]);
-      yield* releaseMaterializedQueryExecution(readModel, "journal-bounds");
-      expect(readModel.changesSince(readModel.version() - 1)).toBeUndefined();
+      expect(queryInterface.version()).toBe(1_027);
+      expect(queryInterface.changesSince(0)).toBeUndefined();
+      expect(queryInterface.changesSince(queryInterface.version())).toStrictEqual([]);
+      yield* releaseMaterializedQueryExecution(queryInterface, "journal-bounds");
+      expect(queryInterface.changesSince(queryInterface.version() - 1)).toBeUndefined();
       const cursor = execution.createCursor();
       const unchanged = yield* execution.next("released-journal", cursor);
       expect(Option.isNone(unchanged)).toBe(true);
@@ -414,19 +416,34 @@ describe("Subscription lifecycle ownership", () => {
         },
       );
       yield* acquireMaterializedQueryExecution(
-        storage.readModel,
+        activeQueryTestInterfaceForStorage(storage),
         "overflow-journal",
         compiled.plan.resultSemantics,
-        () => makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
+        () =>
+          makeIncrementalGroupedQueryExecution(
+            activeQueryTestInterfaceForStorage(storage),
+            compiled,
+            () => {},
+          ),
       );
       yield* acquireMaterializedQueryExecution(
-        storage.readModel,
+        activeQueryTestInterfaceForStorage(storage),
         "overflow-journal-second",
         compiled.plan.resultSemantics,
-        () => makeIncrementalGroupedQueryExecution(storage.readModel, compiled, () => {}),
+        () =>
+          makeIncrementalGroupedQueryExecution(
+            activeQueryTestInterfaceForStorage(storage),
+            compiled,
+            () => {},
+          ),
       );
-      yield* releaseMaterializedQueryExecution(storage.readModel, "overflow-journal-second");
-      expect(storage.readModel.changesSince(storage.version)).toStrictEqual([]);
+      yield* releaseMaterializedQueryExecution(
+        activeQueryTestInterfaceForStorage(storage),
+        "overflow-journal-second",
+      );
+      expect(
+        activeQueryTestInterfaceForStorage(storage).changesSince(storage.version),
+      ).toStrictEqual([]);
 
       const baseVersion = storage.version;
       storage.setPreparedMany(
@@ -436,14 +453,16 @@ describe("Subscription lifecycle ownership", () => {
         ),
       );
       storage.advanceVersion();
-      expect(storage.readModel.changesSince(baseVersion)).toBeUndefined();
+      expect(activeQueryTestInterfaceForStorage(storage).changesSince(baseVersion)).toBeUndefined();
 
       const recoveredVersion = storage.version;
       storage.setPrepared(
         yield* storage.prepareRow(order("after-overflow", "closed", 1, 1), invalidRow),
       );
       storage.advanceVersion();
-      expect(storage.readModel.changesSince(recoveredVersion)).toStrictEqual([
+      expect(
+        activeQueryTestInterfaceForStorage(storage).changesSince(recoveredVersion),
+      ).toStrictEqual([
         {
           version: recoveredVersion + 1,
           changes: [
@@ -469,16 +488,22 @@ describe("Subscription lifecycle ownership", () => {
         );
         storage.advanceVersion();
       }
-      expect(storage.readModel.changesSince(multiVersionOverflowStart)).toBeUndefined();
+      expect(
+        activeQueryTestInterfaceForStorage(storage).changesSince(multiVersionOverflowStart),
+      ).toBeUndefined();
 
-      yield* clearStoreRawQueryExecutions(storage.readModel);
-      expect(yield* activeStoreRawQueryExecutionCount(storage.readModel)).toBe(0);
+      yield* clearStoreRawQueryExecutions(activeQueryTestInterfaceForStorage(storage));
+      expect(
+        yield* activeStoreRawQueryExecutionCount(activeQueryTestInterfaceForStorage(storage)),
+      ).toBe(0);
       storage.setPrepared(
         yield* storage.prepareRow(order("after-clear", "open", 1, 1), invalidRow),
       );
       const afterClearVersion = storage.version;
       storage.advanceVersion();
-      expect(storage.readModel.changesSince(afterClearVersion)).toBeUndefined();
+      expect(
+        activeQueryTestInterfaceForStorage(storage).changesSince(afterClearVersion),
+      ).toBeUndefined();
 
       const fallbackStorage = new TopicRowStorage("orders", Order, "id", {
         maxEntries: 4,
@@ -494,13 +519,22 @@ describe("Subscription lifecycle ownership", () => {
       );
       fallbackStorage.advanceVersion();
       yield* acquireMaterializedQueryExecution(
-        fallbackStorage.readModel,
+        activeQueryTestInterfaceForStorage(fallbackStorage),
         "fallback-clear",
         compiled.plan.resultSemantics,
-        () => makeIncrementalGroupedQueryExecution(fallbackStorage.readModel, compiled, () => {}),
+        () =>
+          makeIncrementalGroupedQueryExecution(
+            activeQueryTestInterfaceForStorage(fallbackStorage),
+            compiled,
+            () => {},
+          ),
       );
-      yield* clearStoreRawQueryExecutions(fallbackStorage.readModel);
-      expect(yield* activeStoreRawQueryExecutionCount(fallbackStorage.readModel)).toBe(0);
+      yield* clearStoreRawQueryExecutions(activeQueryTestInterfaceForStorage(fallbackStorage));
+      expect(
+        yield* activeStoreRawQueryExecutionCount(
+          activeQueryTestInterfaceForStorage(fallbackStorage),
+        ),
+      ).toBe(0);
     }),
   );
 
@@ -521,12 +555,12 @@ describe("Subscription lifecycle ownership", () => {
         },
       );
       const execution = yield* acquireMaterializedQueryExecution(
-        storage.readModel,
+        activeQueryTestInterfaceForStorage(storage),
         "demoted-grouped-journal",
         compiled.plan.resultSemantics,
         (releaseRetainedChanges) =>
           makeIncrementalGroupedQueryExecution(
-            storage.readModel,
+            activeQueryTestInterfaceForStorage(storage),
             compiled,
             releaseRetainedChanges,
             {
@@ -551,9 +585,14 @@ describe("Subscription lifecycle ownership", () => {
         yield* storage.prepareRow(order("after-demotion", "closed", 1, 1), invalidRow),
       );
       storage.advanceVersion();
-      expect(storage.readModel.changesSince(demotedVersion)).toBeUndefined();
+      expect(
+        activeQueryTestInterfaceForStorage(storage).changesSince(demotedVersion),
+      ).toBeUndefined();
 
-      yield* releaseMaterializedQueryExecution(storage.readModel, "demoted-grouped-journal");
+      yield* releaseMaterializedQueryExecution(
+        activeQueryTestInterfaceForStorage(storage),
+        "demoted-grouped-journal",
+      );
     }),
   );
 
@@ -634,10 +673,10 @@ describe("Subscription lifecycle ownership", () => {
   it.effect("interrupted topic-store close still releases subscribers and active queries", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
-      const compiled = yield* prepareRuntimeRawQuery("orders", topicStoreRawQueryMetadata(store), {
+      const compiled = yield* prepareRuntimeRawQuery("orders", activeQueryTestMetadata(store), {
         select: ["id"],
       });
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
+      yield* acquireRawQueryExecution(activeQueryTestInterface(store), compiled);
 
       const closeStarted = yield* Deferred.make<void>();
       const subscriber: LiveTopicSubscriber = {
@@ -656,7 +695,7 @@ describe("Subscription lifecycle ownership", () => {
         closed: false,
       };
       yield* registerTestTopicStoreSubscriber(store, subscriber);
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store))).toBe(1);
+      expect(yield* activeStoreRawQueryExecutionCount(activeQueryTestInterface(store))).toBe(1);
 
       const closeFiber = yield* Effect.forkChild(closeTopicStoreSubscriptions(store));
       yield* Deferred.await(closeStarted);
@@ -671,10 +710,10 @@ describe("Subscription lifecycle ownership", () => {
   it.effect("interrupted topic-store reset still releases subscribers and active queries", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
-      const compiled = yield* prepareRuntimeRawQuery("orders", topicStoreRawQueryMetadata(store), {
+      const compiled = yield* prepareRuntimeRawQuery("orders", activeQueryTestMetadata(store), {
         select: ["id"],
       });
-      yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
+      yield* acquireRawQueryExecution(activeQueryTestInterface(store), compiled);
 
       const closeStarted = yield* Deferred.make<void>();
       const subscriber: LiveTopicSubscriber = {
@@ -693,7 +732,7 @@ describe("Subscription lifecycle ownership", () => {
         closed: false,
       };
       yield* registerTestTopicStoreSubscriber(store, subscriber);
-      expect(yield* activeStoreRawQueryExecutionCount(topicStoreReadModel(store))).toBe(1);
+      expect(yield* activeStoreRawQueryExecutionCount(activeQueryTestInterface(store))).toBe(1);
 
       const resetFiber = yield* Effect.forkChild(resetTopicStore(store));
       yield* Deferred.await(closeStarted);
@@ -709,7 +748,7 @@ describe("Subscription lifecycle ownership", () => {
   it.effect("materialized active queries ignore unchanged evaluations and unknown releases", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
-      const readModel = topicStoreReadModel(store);
+      const queryInterface = activeQueryTestInterface(store);
       let evaluationCount = 0;
       const evaluate = () => {
         evaluationCount += 1;
@@ -718,7 +757,7 @@ describe("Subscription lifecycle ownership", () => {
           keys: [],
           window: [],
           totalRows: 0,
-          version: readModel.version(),
+          version: queryInterface.version(),
         };
       };
       const makeExecution = () => {
@@ -734,7 +773,7 @@ describe("Subscription lifecycle ownership", () => {
       };
 
       const execution = yield* acquireMaterializedQueryExecution(
-        readModel,
+        queryInterface,
         "empty-materialized",
         emptyResultSemantics,
         makeExecution,
@@ -745,17 +784,17 @@ describe("Subscription lifecycle ownership", () => {
       expect(Option.isNone(unchanged)).toBe(true);
       expect(evaluationCount).toBe(1);
       yield* acquireMaterializedQueryExecution(
-        readModel,
+        queryInterface,
         "second-materialized",
         emptyResultSemantics,
         makeExecution,
       );
-      expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(2);
-      yield* releaseMaterializedQueryExecution(readModel, "empty-materialized");
-      expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(1);
-      yield* releaseMaterializedQueryExecution(readModel, "missing-materialized");
-      yield* releaseMaterializedQueryExecution(readModel, "second-materialized");
-      expect(yield* activeStoreRawQueryExecutionCount(readModel)).toBe(0);
+      expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(2);
+      yield* releaseMaterializedQueryExecution(queryInterface, "empty-materialized");
+      expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(1);
+      yield* releaseMaterializedQueryExecution(queryInterface, "missing-materialized");
+      yield* releaseMaterializedQueryExecution(queryInterface, "second-materialized");
+      expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(0);
     }),
   );
 });

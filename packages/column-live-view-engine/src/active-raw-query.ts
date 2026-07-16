@@ -1,6 +1,14 @@
 import { Effect, Option } from "effect";
 import type { DeltaEvent, LiveQueryResult } from "@effect-view-server/config";
-import type { ActiveQueryStoreState, RawQueryExecution } from "./active-query";
+import type {
+  ActiveQueryBaseEvaluation,
+  ActiveQueryBaseExecution,
+  ActiveQueryRegistry,
+  RawQueryExecution,
+  RawQueryExecutionSlot,
+  RawQueryExecutionWindowSlot,
+  RetainedWindowEntry,
+} from "./active-query-contract";
 import type { CompiledRawQuery } from "./raw-query-compiler";
 import {
   rawQueryPlanWindow,
@@ -10,44 +18,13 @@ import {
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
 import type { QueryEvaluation } from "./query-result";
 import type { TopicRawWindowScan } from "./raw-window-scan";
-import type { TopicRowEntry } from "./row-scan";
 import {
   bindTopicStorageProjection,
   type TopicStorageProjectionSession,
 } from "./topic-storage-projection";
+import type { TopicStoreQueryInterface } from "./topic-store-query-interface";
 
 type RowObject = object;
-
-type ActiveQueryBaseExecution = {
-  readonly latest: () => ActiveQueryBaseEvaluation<object>;
-};
-
-export type RawQueryExecutionSlot = {
-  readonly execution: ActiveQueryBaseExecution;
-  readonly releaseRetainedChanges: () => void;
-  readonly windows: Map<string, RawQueryExecutionWindowSlot>;
-  refs: number;
-};
-
-type RawQueryExecutionWindowSlot = {
-  readonly window: RawQueryPlanWindow;
-  refs: number;
-};
-
-type ActiveQueryBaseEvaluation<Row extends RowObject> = {
-  readonly keyIndex: ReadonlyMap<string, number>;
-  readonly keys: ReadonlyArray<string>;
-  readonly retainedWindowFilled: boolean;
-  readonly totalRows: number;
-  readonly version: number;
-  readonly window: ReadonlyArray<RetainedWindowEntry<Row>>;
-};
-
-type RetainedWindowEntry<Row extends RowObject = RowObject> = TopicRowEntry<Row> & {
-  readonly key: string;
-  readonly row: Row;
-  readonly slot?: number;
-};
 
 const retainedWindowFilled = (
   window: ReadonlyArray<{ readonly key: string; readonly row: RowObject }>,
@@ -63,8 +40,10 @@ const retainedWindowLookahead = (window: RawQueryPlanWindow): number => {
   return window.limit >= 128 ? 64 : 1;
 };
 
-const getActiveRawQueryMap = (store: ActiveQueryStoreState): Map<string, RawQueryExecutionSlot> => {
-  return store.activeQueries.raw;
+const getActiveRawQueryMap = (
+  registry: ActiveQueryRegistry,
+): Map<string, RawQueryExecutionSlot> => {
+  return registry.raw;
 };
 
 const retainedWindowKeyIndex = (
@@ -78,14 +57,14 @@ const retainedWindowKeyIndex = (
 };
 
 const getActiveRawQueryEntry = <ResultRow extends RowObject>(
-  store: ActiveQueryStoreState,
+  registry: ActiveQueryRegistry,
   compiled: CompiledRawQuery<object, ResultRow>,
 ): {
   map: Map<string, RawQueryExecutionSlot>;
   key: string;
 } => {
   const key = compiled.plan.queryCacheKey;
-  const map = getActiveRawQueryMap(store);
+  const map = getActiveRawQueryMap(registry);
   return { map, key };
 };
 
@@ -181,7 +160,7 @@ const retainedLimitAfterInsertedChanges = (
 };
 
 const updateBaseEvaluationFromRetainedChanges = (
-  store: ActiveQueryStoreState,
+  store: TopicStoreQueryInterface,
   compiled: CompiledRawQuery<object, object>,
   evaluation: ActiveQueryBaseEvaluation<object>,
   baseWindow: RawQueryPlanWindow,
@@ -468,7 +447,7 @@ export const evaluateRawQueryResult = <Row extends RowObject, ResultRow extends 
 };
 
 const leaseRawQueryExecution = <ResultRow extends RowObject>(
-  store: ActiveQueryStoreState,
+  store: TopicStoreQueryInterface,
   execution: ActiveQueryBaseExecution,
   compiled: CompiledRawQuery<object, ResultRow>,
   storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
@@ -561,7 +540,7 @@ const releaseRawQueryWindow = (
 
 const makeRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.make")(
   (
-    store: ActiveQueryStoreState,
+    store: TopicStoreQueryInterface,
     canonicalCompiled: CompiledRawQuery<object, object>,
     windows: ReadonlyMap<string, RawQueryExecutionWindowSlot>,
   ) =>
@@ -612,11 +591,12 @@ const makeRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.ma
 
 export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.acquire")(
   function* <ResultRow extends RowObject>(
-    store: ActiveQueryStoreState,
+    store: TopicStoreQueryInterface,
+    registry: ActiveQueryRegistry,
     compiled: CompiledRawQuery<object, ResultRow>,
   ) {
     const storageProjection = bindStoreProjection(store, compiled);
-    const { map, key } = getActiveRawQueryEntry(store, compiled);
+    const { map, key } = getActiveRawQueryEntry(registry, compiled);
     const existing = map.get(key);
     if (existing !== undefined) {
       const entry = existing;
@@ -643,11 +623,11 @@ export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
 
 export const releaseRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.release")(
   <ResultRow extends RowObject>(
-    store: ActiveQueryStoreState,
+    registry: ActiveQueryRegistry,
     compiled: CompiledRawQuery<object, ResultRow>,
   ) =>
     Effect.sync(() => {
-      const { map, key } = getActiveRawQueryEntry(store, compiled);
+      const { map, key } = getActiveRawQueryEntry(registry, compiled);
       const existing = map.get(key);
       if (existing === undefined) {
         return undefined;
@@ -668,9 +648,9 @@ export const releaseRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
 );
 
 export const clearRawQueryExecutions = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.clearStore")(
-  (store: ActiveQueryStoreState) =>
+  (registry: ActiveQueryRegistry) =>
     Effect.sync(() => {
-      const map = getActiveRawQueryMap(store);
+      const map = getActiveRawQueryMap(registry);
       for (const entry of map.values()) {
         entry.releaseRetainedChanges();
       }
@@ -680,4 +660,4 @@ export const clearRawQueryExecutions = Effect.fn("ColumnLiveViewEngine.activeQue
 
 export const activeRawQueryExecutionCount = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.raw.countStore",
-)((store: ActiveQueryStoreState) => Effect.sync(() => getActiveRawQueryMap(store).size));
+)((registry: ActiveQueryRegistry) => Effect.sync(() => getActiveRawQueryMap(registry).size));

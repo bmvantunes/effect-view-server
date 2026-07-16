@@ -639,6 +639,7 @@ export const collectPackageSurfaceViolations = (
 const restrictedTopicStoreHelpers = [
   {
     name: "makeTopicStoreSubscriptionPermit",
+    boundary: "Topic Store Module",
     allowed: new Set([
       "packages/column-live-view-engine/src/topic-store-state.ts",
       "packages/column-live-view-engine/src/topic-store-subscription.ts",
@@ -646,22 +647,27 @@ const restrictedTopicStoreHelpers = [
   },
   {
     name: "topicStoreRawQueryMetadata",
-    allowed: new Set([
-      "packages/column-live-view-engine/src/topic-store-query.ts",
-      "packages/column-live-view-engine/src/topic-store-state.ts",
-    ]),
+    boundary: "Topic Store Interface",
+    allowed: new Set<string>(),
   },
   {
     name: "topicStoreReadModel",
+    boundary: "Topic Store Interface",
+    allowed: new Set<string>(),
+  },
+  {
+    name: "topicStoreState",
+    boundary: "Topic Store Module",
     allowed: new Set([
-      "packages/column-live-view-engine/src/topic-store-query.ts",
+      "packages/column-live-view-engine/src/topic-store-mutation.ts",
       "packages/column-live-view-engine/src/topic-store-state.ts",
     ]),
   },
   {
-    name: "topicStoreState",
+    name: "topicStoreQueryResources",
+    boundary: "Topic Store Module",
     allowed: new Set([
-      "packages/column-live-view-engine/src/topic-store-mutation.ts",
+      "packages/column-live-view-engine/src/topic-store-query.ts",
       "packages/column-live-view-engine/src/topic-store-state.ts",
     ]),
   },
@@ -681,10 +687,66 @@ export const topicStoreHelperViolationsForFile = ({
   return restrictedTopicStoreHelpers.flatMap((helper) =>
     identifiers.has(helper.name) && !helper.allowed.has(relativePath)
       ? [
-          `${relativePath} references ${helper.name} outside the Topic Store Module.`,
+          `${relativePath} references ${helper.name} outside the ${helper.boundary}.`,
         ]
       : [],
   );
+};
+
+const activeQueryLeafModules = new Set([
+  "packages/column-live-view-engine/src/active-materialized-query.ts",
+  "packages/column-live-view-engine/src/active-raw-query.ts",
+]);
+
+const activeQueryContractModule =
+  "packages/column-live-view-engine/src/active-query-contract.ts";
+
+const allowedActiveQueryContractImports = new Set([
+  "./query-result",
+  "./raw-query-plan",
+  "./row-scan",
+]);
+
+const lowerTopicStoreModules = new Set([
+  "packages/column-live-view-engine/src/topic-row-storage.ts",
+  "packages/column-live-view-engine/src/topic-store-query-interface.ts",
+]);
+
+export const engineTypeDependencyViolationsForFile = ({
+  contents,
+  path,
+  repositoryRoot = repoRoot,
+}: {
+  readonly contents: string;
+  readonly path: string;
+  readonly repositoryRoot?: string;
+}): ReadonlyArray<string> => {
+  const relativePath = toPosixPath(relative(repositoryRoot, path));
+  const moduleSpecifiers = inspectTypeScriptModule({ fileName: path, source: contents }).moduleSpecifiers;
+  const violations: Array<string> = [];
+  if (activeQueryLeafModules.has(relativePath) && moduleSpecifiers.includes("./active-query")) {
+    violations.push(
+      `${relativePath} imports the Active Query facade from an Active Query leaf module.`,
+    );
+  }
+  if (relativePath === activeQueryContractModule) {
+    for (const specifier of moduleSpecifiers) {
+      if (specifier.startsWith("./") && !allowedActiveQueryContractImports.has(specifier)) {
+        violations.push(
+          `${relativePath} imports ${specifier} above the allowed lower Active Query contracts.`,
+        );
+      }
+    }
+  }
+  if (
+    lowerTopicStoreModules.has(relativePath) &&
+    moduleSpecifiers.some((specifier) => specifier.startsWith("./active-"))
+  ) {
+    violations.push(
+      `${relativePath} imports Active Query state below the Topic Store Interface.`,
+    );
+  }
+  return violations;
 };
 
 const restrictedStateExportNames: ReadonlySet<string> = new Set(
@@ -753,6 +815,7 @@ export const collectEngineSeamViolations = (
       const contents = readFileSync(path, "utf8");
       helperViolations.push(
         ...topicStoreHelperViolationsForFile({ contents, path, repositoryRoot }),
+        ...engineTypeDependencyViolationsForFile({ contents, path, repositoryRoot }),
       );
       stateExportViolations.push(
         ...topicStoreStateExportViolationsForFile({ contents, path, repositoryRoot }),

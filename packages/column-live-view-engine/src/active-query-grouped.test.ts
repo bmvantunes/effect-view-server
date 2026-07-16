@@ -4,14 +4,14 @@ import { fromStringUnsafe } from "effect/BigDecimal";
 import { defaultGroupedIncrementalAdmissionLimits, InvalidRowError } from "./index";
 import {
   acquireMaterializedQueryExecution,
+  activeQueryTestInterface,
   releaseMaterializedQueryExecution,
-} from "./active-query";
+} from "../test-harness/active-query-interface";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
 import { prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
 import { makeIncrementalGroupedQueryExecution } from "./grouped-incremental-execution";
 import type { TopicRowChangeBatch } from "./row-scan";
 import { publishTopicStoreRow, TopicStore } from "./topic-store";
-import { topicStoreReadModel } from "./topic-store-state";
 import {
   applyDelta,
   expectDefined,
@@ -1406,7 +1406,7 @@ describe("Grouped incremental query execution", () => {
       yield* publishTopicStoreRow(store, order("initial", "open", 10, 1), (topic, message) =>
         InvalidRowError.make({ topic, message }),
       );
-      const readModel = topicStoreReadModel(store);
+      const readModel = activeQueryTestInterface(store);
       const compiled = yield* prepareRuntimeGroupedQuery(
         "orders",
         rawQueryCompilerMetadata(Order),

@@ -28,7 +28,7 @@ describe("Topic Storage projection proof", () => {
       let slotForKeyCalls = 0;
       const evaluation = evaluateRawQuery(
         {
-          ...storage.readModel,
+          ...storage.queryInterface,
           scanRawWindow: () => ({
             keys: ["projected-from-slot-2"],
             window: [
@@ -92,7 +92,7 @@ describe("Topic Storage projection proof", () => {
       let slotForKeyCalls = 0;
       const evaluation = evaluateRawQuery(
         {
-          ...storage.readModel,
+          ...storage.queryInterface,
           scanRawWindow: () => ({
             keys: ["moved-row"],
             window: [
@@ -106,7 +106,7 @@ describe("Topic Storage projection proof", () => {
           }),
           slotForKey: (key) => {
             slotForKeyCalls += 1;
-            return storage.readModel.slotForKey?.(key);
+            return storage.queryInterface.slotForKey?.(key);
           },
           version: () => 2,
         },
@@ -234,7 +234,7 @@ describe("Topic Storage projection proof", () => {
       expect(() =>
         evaluateRawQuery(
           {
-            ...incompatibleStorage.readModel,
+            ...incompatibleStorage.queryInterface,
             keyAtSlot: () => "hostile",
             scanRawWindow: () => ({
               keys: ["hostile"],
@@ -276,7 +276,7 @@ describe("Topic Storage projection proof", () => {
         Reflect.get(grouped.plan.resultSemantics, "topicStorageProjectionProof"),
       ).toBeUndefined();
       expect(Reflect.get(grouped.plan.resultSemantics, "projectTopicStorageRow")).toBeUndefined();
-      expect(Object.isFrozen(storage.readModel.storageProjection)).toBe(true);
+      expect(Object.isFrozen(storage.queryInterface.storageProjection)).toBe(true);
     }),
   );
 
@@ -290,10 +290,10 @@ describe("Topic Storage projection proof", () => {
         select: ["id", "price"],
       });
       const proof = first.plan.resultSemantics.topicStorageProjectionProof;
-      const session = bindTopicStorageProjection(storage.readModel.storageProjection, proof);
+      const session = bindTopicStorageProjection(storage.queryInterface.storageProjection, proof);
 
-      expect(Object.isFrozen(storage.readModel.storageProjection)).toBe(true);
-      expect(Object.isFrozen(Object.getPrototypeOf(storage.readModel.storageProjection))).toBe(
+      expect(Object.isFrozen(storage.queryInterface.storageProjection)).toBe(true);
+      expect(Object.isFrozen(Object.getPrototypeOf(storage.queryInterface.storageProjection))).toBe(
         true,
       );
       expect(Object.isFrozen(session)).toBe(true);
@@ -310,7 +310,10 @@ describe("Topic Storage projection proof", () => {
       });
       expect(() =>
         Reflect.construct(
-          Reflect.get(Object.getPrototypeOf(storage.readModel.storageProjection), "constructor"),
+          Reflect.get(
+            Object.getPrototypeOf(storage.queryInterface.storageProjection),
+            "constructor",
+          ),
           [],
         ),
       ).toThrowError("Topic Storage projection construction is private.");
@@ -328,7 +331,7 @@ describe("Topic Storage projection proof", () => {
       ).toThrowError("Query Result Topic Storage projection proof binding is private.");
       expect(() =>
         Reflect.apply(
-          Reflect.get(Object.getPrototypeOf(storage.readModel.storageProjection), "bind"),
+          Reflect.get(Object.getPrototypeOf(storage.queryInterface.storageProjection), "bind"),
           Object.freeze({}),
           [first.plan.resultSemantics.topicStorageProjectionProof],
         ),
@@ -349,9 +352,12 @@ describe("Topic Storage projection proof", () => {
         select: ["price"],
       });
       const idProof = idQuery.plan.resultSemantics.topicStorageProjectionProof;
-      const idSession = bindTopicStorageProjection(storage.readModel.storageProjection, idProof);
+      const idSession = bindTopicStorageProjection(
+        storage.queryInterface.storageProjection,
+        idProof,
+      );
       const priceSession = bindTopicStorageProjection(
-        storage.readModel.storageProjection,
+        storage.queryInterface.storageProjection,
         priceQuery.plan.resultSemantics.topicStorageProjectionProof,
       );
       const proxyProof = new Proxy(idProof, {});
@@ -361,11 +367,11 @@ describe("Topic Storage projection proof", () => {
       };
 
       expect(() =>
-        bindTopicStorageProjection(storage.readModel.storageProjection, proxyProof),
+        bindTopicStorageProjection(storage.queryInterface.storageProjection, proxyProof),
       ).toThrowError("Query Result Topic Storage projection proof is not authentic.");
       expect(() =>
         Reflect.apply(bindTopicStorageProjection, undefined, [
-          storage.readModel.storageProjection,
+          storage.queryInterface.storageProjection,
           spreadProof,
         ]),
       ).toThrowError("Query Result Topic Storage projection proof is not authentic.");
@@ -409,13 +415,13 @@ describe("Topic Storage projection proof", () => {
       Reflect.set(storedEntry, "row", Object.freeze({ price: 10 }));
       expect(() =>
         bindTopicStorageProjection(
-          storage.readModel.storageProjection,
+          storage.queryInterface.storageProjection,
           compiled.plan.resultSemantics.topicStorageProjectionProof,
         ).projectResultRow(0),
       ).toThrowError("Projected Query Result Row does not satisfy its compiled proof.");
       expect(() =>
         bindTopicStorageProjection(
-          storage.readModel.storageProjection,
+          storage.queryInterface.storageProjection,
           compiled.plan.resultSemantics.topicStorageProjectionProof,
         ).projectOwnedResultRow(0),
       ).toThrowError("Projected Query Result Row does not satisfy its compiled proof.");
@@ -439,10 +445,10 @@ describe("Topic Storage projection proof", () => {
         select: ["id", "price"],
       });
 
-      expect(() => evaluateRawQuery(storage.readModel, compiled)).toThrowError(
+      expect(() => evaluateRawQuery(storage.queryInterface, compiled)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
-      expect(() => evaluateRawQueryResult(storage.readModel, compiled)).toThrowError(
+      expect(() => evaluateRawQueryResult(storage.queryInterface, compiled)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
     }),
@@ -474,7 +480,9 @@ describe("Topic Storage projection proof", () => {
         { select: ["id", "note"] },
       );
 
-      expect(evaluateRawQuery(storage.readModel, compiled).rows).toStrictEqual([{ id: "stored" }]);
+      expect(evaluateRawQuery(storage.queryInterface, compiled).rows).toStrictEqual([
+        { id: "stored" },
+      ]);
     }),
   );
 
@@ -496,7 +504,7 @@ describe("Topic Storage projection proof", () => {
         { select: ["id", "__proto__"] },
       );
 
-      const projected = evaluateRawQuery(storage.readModel, compiled).rows[0]!;
+      const projected = evaluateRawQuery(storage.queryInterface, compiled).rows[0]!;
       expect(Object.getPrototypeOf(projected)).toBe(Object.prototype);
       expect(Object.prototype.propertyIsEnumerable.call(projected, "__proto__")).toBe(true);
       expect(projected).toStrictEqual({ id: "stored", ["__proto__"]: "plain-data" });
@@ -563,7 +571,7 @@ describe("Topic Storage projection proof", () => {
         rawQueryCompilerMetadata(StructuredOrder),
         { select: ["id", "payload"] },
       );
-      const ownedResult = evaluateRawQueryResult(storage.readModel, compiled);
+      const ownedResult = evaluateRawQueryResult(storage.queryInterface, compiled);
       expect(ownedResult.rows).toStrictEqual([{ id: "stored", payload: { count: 1 } }]);
       expect(Reflect.get(ownedResult.rows[0]!, "payload")).not.toBe(
         Reflect.get(prepared.row, "payload"),
@@ -571,10 +579,10 @@ describe("Topic Storage projection proof", () => {
 
       expect(Reflect.set(Reflect.get(prepared.row, "payload"), "count", "wrong")).toBe(true);
 
-      expect(() => evaluateRawQuery(storage.readModel, compiled)).toThrowError(
+      expect(() => evaluateRawQuery(storage.queryInterface, compiled)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
-      expect(() => evaluateRawQueryResult(storage.readModel, compiled)).toThrowError(
+      expect(() => evaluateRawQueryResult(storage.queryInterface, compiled)).toThrowError(
         "Projected Query Result Row does not satisfy its compiled proof.",
       );
     }),
@@ -600,7 +608,7 @@ describe("Topic Storage projection proof", () => {
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 2,
       });
-      const evaluation = evaluateRawQuery(storage.readModel, compiled);
+      const evaluation = evaluateRawQuery(storage.queryInterface, compiled);
 
       expect(evaluation).toStrictEqual({
         keys: ["moved", "deleted"],

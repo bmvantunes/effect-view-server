@@ -24,7 +24,7 @@ import {
   resetTopicStore,
   TopicStore,
 } from "./topic-store";
-import { topicStoreReadModel } from "./topic-store-state";
+import { topicStoreTestQueryInterface } from "../test-harness/topic-store";
 import { makeColumns } from "../test-harness/columns";
 import { order, Order, position, Position } from "../test-harness/public-engine";
 
@@ -46,7 +46,7 @@ describe("Topic predicate candidate index", () => {
         (topic, message) => InvalidRowError.make({ topic, message }),
       );
 
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const callbackSkipped = readModel.scanRawWindow({
         predicate: {
           filters: [{ field: "note", operator: "startsWith", value: "he" }],
@@ -102,7 +102,7 @@ describe("Topic predicate candidate index", () => {
         { ...order("noted", "open", 40, 4), note: "hello" },
         (topic, message) => InvalidRowError.make({ topic, message }),
       );
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const indexedNumberIn = readModel.scanRawWindow({
         predicate: {
           filters: [
@@ -173,7 +173,7 @@ describe("Topic predicate candidate index", () => {
         InvalidRowError.make({ topic, message }),
       );
 
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const compareByKey = (left: { readonly key: string }, right: { readonly key: string }) =>
         left.key.localeCompare(right.key);
 
@@ -1055,7 +1055,7 @@ describe("Topic predicate candidate index", () => {
         (topic, message) => InvalidRowError.make({ topic, message }),
       );
 
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const callbackSkipped = readModel.scanRawWindow({
         predicate: {
           filters: [{ field: "price", operator: "gt", value: 10 }],
@@ -1121,7 +1121,7 @@ describe("Topic predicate candidate index", () => {
           InvalidRowError.make({ topic, message }),
         );
 
-        const readModel = topicStoreReadModel(store);
+        const readModel = topicStoreTestQueryInterface(store);
         const fallbackResult = readModel.scanRawWindow({
           predicate: {
             filters: [{ field: "status", operator: "eq", value: "match" }],
@@ -2474,7 +2474,7 @@ describe("Topic predicate candidate index", () => {
         InvalidRowError.make({ topic, message }),
       );
 
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const rangeHinted = readModel.scanRawWindow({
         predicate: {
           filters: [{ field: "quantity", operator: "gt", value: 10n }],
@@ -2505,7 +2505,7 @@ describe("Topic predicate candidate index", () => {
         InvalidRowError.make({ topic, message }),
       );
 
-      const orderReadModel = topicStoreReadModel(orderStore);
+      const orderReadModel = topicStoreTestQueryInterface(orderStore);
       const exactNumberNotEqual = orderReadModel.scanRawWindow({
         predicate: {
           filters: [{ field: "price", operator: "neq", value: 20 }],
@@ -2615,7 +2615,7 @@ describe("Topic predicate candidate index", () => {
         (topic, message) => InvalidRowError.make({ topic, message }),
       );
 
-      const positionReadModel = topicStoreReadModel(positionStore);
+      const positionReadModel = topicStoreTestQueryInterface(positionStore);
       const manualBigDecimalRangeHint = positionReadModel.scanRawWindow({
         predicate: {
           filters: [{ field: "price", operator: "gt", value: fromStringUnsafe("20") }],
@@ -2666,7 +2666,7 @@ describe("Topic predicate candidate index", () => {
         InvalidRowError.make({ topic, message }),
       );
 
-      const looseNumberReadModel = topicStoreReadModel(looseNumberStore);
+      const looseNumberReadModel = topicStoreTestQueryInterface(looseNumberStore);
       const exactFiniteRange = looseNumberReadModel.scanRawWindow({
         predicate: {
           filters: [{ field: "value", operator: "gt", value: 10 }],

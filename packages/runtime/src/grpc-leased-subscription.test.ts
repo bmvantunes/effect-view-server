@@ -172,4 +172,81 @@ describe("leased gRPC Subscription", () => {
       });
     }),
   );
+
+  it.live("reports a failed upstream cleanup exactly once", () =>
+    Effect.gen(function* () {
+      const identityContract = yield* Effect.fromResult(
+        makeGrpcLeasedIdentityContract({
+          topic: "orders",
+          feedName: "orders",
+          routeBy: ["region"],
+          schema: SubscriptionRow,
+          keyField: "id",
+        }),
+      );
+      const identity = yield* Effect.fromResult(
+        identityContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+      );
+      const parentScope = yield* Scope.make("sequential");
+      const cleanupReported = yield* Deferred.make<void>();
+      const counters = {
+        cleanup: 0,
+        cleanupFailure: 0,
+        closed: 0,
+        release: 0,
+        subscriberAdded: 0,
+        subscriberRemoved: 0,
+      };
+      const subscription = yield* makeGrpcLeasedSubscription({
+        parentScope,
+        topic: "orders",
+        identity,
+        cleanupRows: () =>
+          Effect.sync(() => {
+            counters.cleanup += 1;
+          }).pipe(Effect.andThen(Effect.fail("cleanup failed"))),
+        onCleanupFailure: () =>
+          Effect.sync(() => {
+            counters.cleanupFailure += 1;
+          }).pipe(Effect.andThen(Deferred.succeed(cleanupReported, undefined)), Effect.asVoid),
+        onClosed: Effect.sync(() => {
+          counters.closed += 1;
+        }),
+        onRowsCleared: Effect.die("failed cleanup must not clear rows"),
+        onStopping: Effect.void,
+        onSubscriberAdded: Effect.sync(() => {
+          counters.subscriberAdded += 1;
+        }),
+        onSubscriberRemoved: Effect.sync(() => {
+          counters.subscriberRemoved += 1;
+        }),
+        onUpstreamTerminal: () => Effect.void,
+      });
+      const lease = Option.getOrThrow(yield* subscription.acquire);
+      yield* subscription.start({
+        acquire: Effect.succeed(
+          Effect.succeed({
+            message: "upstream completed",
+            healthMessage: "upstream completed",
+          }),
+        ),
+        release: Effect.sync(() => {
+          counters.release += 1;
+        }),
+      });
+
+      yield* Deferred.await(cleanupReported);
+      yield* lease.close;
+      yield* Scope.close(parentScope, Exit.void);
+
+      expect(counters).toStrictEqual({
+        cleanup: 1,
+        cleanupFailure: 1,
+        closed: 0,
+        release: 1,
+        subscriberAdded: 1,
+        subscriberRemoved: 1,
+      });
+    }),
+  );
 });

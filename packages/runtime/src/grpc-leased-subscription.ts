@@ -221,19 +221,28 @@ export const makeGrpcLeasedSubscription = Effect.fn(
     ),
   );
 
+  const cleanupRowsOutcome = yield* Effect.cached(
+    Effect.gen(function* () {
+      const cleanupExit = yield* cleanupRowsExit;
+      if (Exit.isFailure(cleanupExit)) {
+        yield* input.onCleanupFailure(cleanupExit.cause);
+      }
+      return cleanupExit;
+    }),
+  );
+
   const finalize = Effect.fn("ViewServerRuntime.grpc.leased.subscription.finalize")(function* () {
-    const cleanupExit = yield* cleanupRowsExit;
+    const cleanupExit = yield* cleanupRowsOutcome;
     if (Exit.isFailure(cleanupExit)) {
-      yield* input.onCleanupFailure(cleanupExit.cause);
       return;
     }
     yield* input.onClosed;
   });
   yield* Scope.addFinalizer(scope, finalize());
 
-  const close = (yield* Effect.cached(
-    lock
-      .withPermit(
+  const closeSubscription = Effect.fn("ViewServerRuntime.grpc.leased.subscription.close")(
+    function* () {
+      const clientCloses = yield* lock.withPermit(
         Effect.gen(function* () {
           const shouldStop = acceptingSubscribers && subscribers > 0;
           acceptingSubscribers = false;
@@ -245,23 +254,24 @@ export const makeGrpcLeasedSubscription = Effect.fn(
             runAllFinalizers([lease.markClosed, lease.closeChild]),
           );
         }),
-      )
-      .pipe(
-        Effect.flatMap((clientCloses) =>
-          runAllFinalizers([...clientCloses, Scope.close(scope, Exit.void)]),
-        ),
-        Effect.onExit(() =>
-          Effect.sync(() => {
-            closeCompleted = true;
-          }),
-        ),
-        Effect.exit,
-        Effect.flatMap((exit) =>
-          Deferred.succeed(closeExit, exit).pipe(
-            Effect.andThen(Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.void),
-          ),
+      );
+      yield* runAllFinalizers([...clientCloses, Scope.close(scope, Exit.void)]);
+    },
+  );
+  const close = (yield* Effect.cached(
+    closeSubscription().pipe(
+      Effect.onExit(() =>
+        Effect.sync(() => {
+          closeCompleted = true;
+        }),
+      ),
+      Effect.exit,
+      Effect.flatMap((exit) =>
+        Deferred.succeed(closeExit, exit).pipe(
+          Effect.andThen(Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.void),
         ),
       ),
+    ),
   )).pipe(Effect.uninterruptible);
   const awaitClose = Deferred.await(closeExit).pipe(
     Effect.flatMap((exit) => (Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.void)),
@@ -349,109 +359,105 @@ export const makeGrpcLeasedSubscription = Effect.fn(
           ),
         ]);
 
-        const attach = <Row extends object>({
-          query,
-          subscription,
-        }: GrpcLeasedSubscriptionAttachInput<Row>): Effect.Effect<
-          ViewServerLiveSubscription<Row>
-        > =>
-          Effect.gen(function* () {
-            const resultKeys = input.identity.resultKeys<Row>(
-              query,
-              input.groupedKeyRetentionObserver,
-            );
-            yield* Scope.addFinalizer(
-              leaseScope,
-              subscription.close().pipe(ignoreLeasedSubscriptionCloseFailure),
-            );
-            yield* Scope.addFinalizer(
-              leaseScope,
-              Effect.sync(() => resultKeys.clear()),
-            );
+        const attach = Effect.fn("ViewServerRuntime.grpc.leased.subscription.attach")(function* <
+          Row extends object,
+        >({ query, subscription }: GrpcLeasedSubscriptionAttachInput<Row>) {
+          const resultKeys = input.identity.resultKeys<Row>(
+            query,
+            input.groupedKeyRetentionObserver,
+          );
+          yield* Scope.addFinalizer(
+            leaseScope,
+            subscription.close().pipe(ignoreLeasedSubscriptionCloseFailure),
+          );
+          yield* Scope.addFinalizer(
+            leaseScope,
+            Effect.sync(() => resultKeys.clear()),
+          );
 
-            const runtimeTerminal: RuntimeSubscriptionTerminal = {
-              _tag: "Runtime",
-            };
-            const claimRuntimeTerminal = (nextTerminal: RuntimeSubscriptionTerminal) =>
-              Effect.gen(function* () {
-                yield* Deferred.succeed(terminal, nextTerminal);
-                return (yield* Deferred.await(terminal)) === nextTerminal;
-              });
-            const runtimeEvents = subscription.events.pipe(
-              Stream.map((event) => externalizeLeasedEvent(resultKeys, event)),
-              Stream.filterEffect((translated) => {
-                if (isResultKeyTranslationFailure(translated)) {
-                  return claimRuntimeTerminal(runtimeTerminal);
-                }
-                if (isTerminalStatusEvent(translated)) {
-                  return Effect.succeed(false);
-                }
-                return Effect.succeed(true);
-              }),
-              Stream.takeUntil(isResultKeyTranslationFailure),
-              Stream.map((translated) =>
-                isResultKeyTranslationFailure(translated)
-                  ? resultKeyEncodingErrorStatus(input.topic, translated.queryId, translated.error)
-                  : translated,
-              ),
-            );
-            const terminalStatusEvents = Stream.fromEffect(Deferred.await(terminal)).pipe(
-              Stream.flatMap((nextTerminal) => {
-                if (nextTerminal._tag === "Engine") {
-                  return Stream.succeed(nextTerminal.status);
-                }
-                if (nextTerminal._tag === "Upstream") {
-                  return Stream.fromEffect(Deferred.await(terminalRegistration.queryId)).pipe(
-                    Stream.map(
-                      (queryId): StatusEvent => ({
-                        type: "status",
-                        topic: input.topic,
-                        queryId,
-                        status: "error",
-                        code: "RuntimeUnavailable",
-                        message: nextTerminal.message,
-                      }),
+          const runtimeTerminal: RuntimeSubscriptionTerminal = {
+            _tag: "Runtime",
+          };
+          const claimRuntimeTerminal = (nextTerminal: RuntimeSubscriptionTerminal) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(terminal, nextTerminal);
+              return (yield* Deferred.await(terminal)) === nextTerminal;
+            });
+          const runtimeEvents = subscription.events.pipe(
+            Stream.map((event) => externalizeLeasedEvent(resultKeys, event)),
+            Stream.filterEffect((translated) => {
+              if (isResultKeyTranslationFailure(translated)) {
+                return claimRuntimeTerminal(runtimeTerminal);
+              }
+              if (isTerminalStatusEvent(translated)) {
+                return Effect.succeed(false);
+              }
+              return Effect.succeed(true);
+            }),
+            Stream.takeUntil(isResultKeyTranslationFailure),
+            Stream.map((translated) =>
+              isResultKeyTranslationFailure(translated)
+                ? resultKeyEncodingErrorStatus(input.topic, translated.queryId, translated.error)
+                : translated,
+            ),
+          );
+          const terminalStatusEvents = Stream.fromEffect(Deferred.await(terminal)).pipe(
+            Stream.flatMap((nextTerminal) => {
+              if (nextTerminal._tag === "Engine") {
+                return Stream.succeed(nextTerminal.status);
+              }
+              if (nextTerminal._tag === "Upstream") {
+                return Stream.fromEffect(Deferred.await(terminalRegistration.queryId)).pipe(
+                  Stream.map(
+                    (queryId): StatusEvent => ({
+                      type: "status",
+                      topic: input.topic,
+                      queryId,
+                      status: "error",
+                      code: "RuntimeUnavailable",
+                      message: nextTerminal.message,
+                    }),
+                  ),
+                );
+              }
+              return Stream.empty;
+            }),
+          );
+          const closeAfterTerminal = Deferred.await(terminal).pipe(
+            Effect.flatMap((nextTerminal) => {
+              if (nextTerminal._tag === "Engine") {
+                return Deferred.await(nextTerminal.ready).pipe(
+                  Effect.andThen(closeAfterTerminalClaim),
+                );
+              }
+              return nextTerminal._tag === "Runtime" || nextTerminal._tag === "Upstream"
+                ? closeAfterTerminalClaim
+                : Effect.void;
+            }),
+          );
+          yield* closeAfterTerminal.pipe(Effect.forkIn(leaseScope, { startImmediately: true }));
+          const closeEvents = Deferred.isDone(terminal).pipe(
+            Effect.flatMap((terminalDone) =>
+              terminalDone
+                ? Deferred.await(terminal).pipe(
+                    Effect.flatMap((claimedTerminal) =>
+                      claimedTerminal._tag === "Closed"
+                        ? runAllFinalizers([activeClientLease.markClosed, closeChild])
+                        : closeLease,
                     ),
-                  );
-                }
-                return Stream.empty;
-              }),
-            );
-            const closeAfterTerminal = Deferred.await(terminal).pipe(
-              Effect.flatMap((nextTerminal) => {
-                if (nextTerminal._tag === "Engine") {
-                  return Deferred.await(nextTerminal.ready).pipe(
-                    Effect.andThen(closeAfterTerminalClaim),
-                  );
-                }
-                return nextTerminal._tag === "Runtime" || nextTerminal._tag === "Upstream"
-                  ? closeAfterTerminalClaim
-                  : Effect.void;
-              }),
-            );
-            yield* closeAfterTerminal.pipe(Effect.forkIn(leaseScope, { startImmediately: true }));
-            const closeEvents = Deferred.isDone(terminal).pipe(
-              Effect.flatMap((terminalDone) =>
-                terminalDone
-                  ? Deferred.await(terminal).pipe(
-                      Effect.flatMap((claimedTerminal) =>
-                        claimedTerminal._tag === "Closed"
-                          ? runAllFinalizers([activeClientLease.markClosed, closeChild])
-                          : closeLease,
-                      ),
-                    )
-                  : closeLease,
-              ),
-            );
-            return {
-              events: runtimeEvents.pipe(
-                Stream.concat(terminalStatusEvents),
-                Stream.takeUntil(isTerminalStatusEvent),
-                Stream.ensuring(closeEvents),
-              ),
-              close: () => closeLease,
-            } satisfies ViewServerLiveSubscription<Row>;
-          });
+                  )
+                : closeLease,
+            ),
+          );
+          return {
+            events: runtimeEvents.pipe(
+              Stream.concat(terminalStatusEvents),
+              Stream.takeUntil(isTerminalStatusEvent),
+              Stream.ensuring(closeEvents),
+            ),
+            close: () => closeLease,
+          } satisfies ViewServerLiveSubscription<Row>;
+        });
 
         return Option.some({
           terminalObserver: terminalRegistration.observer,
@@ -484,12 +490,7 @@ export const makeGrpcLeasedSubscription = Effect.fn(
           runAllFinalizers([
             release,
             input.onUpstreamTerminal(terminal),
-            Effect.gen(function* () {
-              const cleanupExit = yield* cleanupRowsExit;
-              if (Exit.isFailure(cleanupExit)) {
-                yield* input.onCleanupFailure(cleanupExit.cause);
-              }
-            }),
+            cleanupRowsOutcome.pipe(Effect.asVoid),
             ...clients.map((client) => client.notifyUpstream(terminal)),
             close,
           ]),

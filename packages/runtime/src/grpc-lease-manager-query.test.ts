@@ -960,7 +960,7 @@ describe("gRPC lease manager query translation", () => {
       yield* runtimeCore.close;
     }),
   );
-  it.live("passes through malformed internal leased rows without rewriting non-string keys", () =>
+  it.live("rejects malformed internal leased Row Keys through the public subscription", () =>
     Effect.gen(function* () {
       const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
@@ -1022,18 +1022,12 @@ describe("gRPC lease manager query translation", () => {
 
       expect(Array.from(events)).toStrictEqual([
         {
-          type: "snapshot",
+          type: "status",
           topic: "orders",
           queryId: "internal-malformed",
-          version: 1,
-          keys: ["internal-key"],
-          rows: [
-            {
-              id: 123,
-              price: 10,
-            },
-          ],
-          totalRows: 1,
+          status: "error",
+          code: "RuntimeUnavailable",
+          message: "Leased gRPC internal Row Key does not belong to the acquired feed identity.",
         },
       ]);
       yield* subscription.close();

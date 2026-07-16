@@ -3,7 +3,7 @@ import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-c
 import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
 import { Deferred, Effect, Fiber, Queue, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
-import type { GrpcGroupedKeyRetentionView } from "./grpc-grouped-key-translations";
+import type { GrpcLeasedGroupedKeyRetentionView } from "./grpc-leased-identity";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import { makeDefaultGrpcClient } from "./grpc-source-lifecycle";
 
@@ -440,7 +440,7 @@ describe("gRPC lease manager grouped public-key translation and retention", () =
       const releaseCustomerRemovals = yield* Deferred.make<void>();
       const releaseCustomerReplacement = yield* Deferred.make<void>();
       const releaseStatusMove = yield* Deferred.make<void>();
-      const retentionViews: Array<GrpcGroupedKeyRetentionView> = [];
+      const retentionViews: Array<GrpcLeasedGroupedKeyRetentionView> = [];
       const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
       });

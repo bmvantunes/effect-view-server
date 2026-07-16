@@ -13,7 +13,7 @@ import {
 } from "./internal";
 
 import { viewServer } from "../test-harness/live-query";
-import { Order } from "../test-harness/schemas";
+import { Order, Trade } from "../test-harness/schemas";
 
 type OrderRow = typeof Order.Type;
 type LimitOrderRow = OrderRow & {
@@ -305,6 +305,8 @@ describe("Runtime client and configuration generic contracts", () => {
 
     const assertDecodedMutationContract = (
       runtime: ViewServerRuntimeDecodedMutationClient<typeof viewServer.topics>,
+      tradeRow: typeof Trade.Type,
+      tradePatch: { readonly symbol: string },
     ) => {
       const checkEffect = runtime.execute({
         _tag: "CheckMutationAllowed",
@@ -335,11 +337,36 @@ describe("Runtime client and configuration generic contracts", () => {
         topic: "orders",
         key: "order-1",
       });
+      const invalidTrustedTopicMismatchedRowEffect = runtime.execute(
+        {
+          _tag: "PublishDecodedRows",
+          topic: "orders",
+          // @ts-expect-error trusted decoded rows remain correlated with the selected topic
+          rows: [tradeRow],
+        },
+        viewServerRuntimeDecodedMutationTrust,
+      );
+      const invalidTrustedTopicMismatchedPatchEffect = runtime.execute(
+        {
+          _tag: "PatchDecodedFields",
+          topic: "orders",
+          key: "order-1",
+          // @ts-expect-error trusted decoded patches remain correlated with the selected topic
+          patch: tradePatch,
+        },
+        viewServerRuntimeDecodedMutationTrust,
+      );
 
       expectTypeOf<Effect.Error<typeof checkEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
       expectTypeOf<Effect.Error<typeof publishEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
       expectTypeOf<Effect.Error<typeof patchEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
       expectTypeOf<Effect.Error<typeof deleteEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf<
+        Effect.Error<typeof invalidTrustedTopicMismatchedRowEffect>
+      >().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf<
+        Effect.Error<typeof invalidTrustedTopicMismatchedPatchEffect>
+      >().toEqualTypeOf<ViewServerRuntimeError>();
 
       const invalidTopicEffect = runtime.execute({
         _tag: "PublishDecodedRows",

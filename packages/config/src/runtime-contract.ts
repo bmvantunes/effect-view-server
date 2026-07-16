@@ -139,17 +139,20 @@ type ExactDecodedMutation<
       }
     : unknown;
 
-type ViewServerRuntimeTrustedDecodedMutation<Topics extends ViewServerRuntimeTopicDefinitions> =
+type ViewServerRuntimeTrustedDecodedMutation<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> =
   | {
       readonly _tag: "PublishDecodedRows";
-      readonly topic: Extract<keyof Topics, string>;
-      readonly rows: ReadonlyArray<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>;
+      readonly topic: Topic;
+      readonly rows: ReadonlyArray<Topics[NoInfer<Topic>]["schema"]["Type"]>;
     }
   | {
       readonly _tag: "PatchDecodedFields";
-      readonly topic: Extract<keyof Topics, string>;
+      readonly topic: Topic;
       readonly key: string;
-      readonly patch: Partial<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>;
+      readonly patch: Partial<Topics[NoInfer<Topic>]["schema"]["Type"]>;
     };
 
 export type ViewServerRuntimeDecodedMutationClient<
@@ -159,8 +162,8 @@ export type ViewServerRuntimeDecodedMutationClient<
     <const Mutation extends ViewServerRuntimeDecodedMutation<Topics>>(
       mutation: Mutation & ExactDecodedMutation<Topics, Mutation>,
     ): Effect.Effect<void, ViewServerRuntimeError>;
-    (
-      mutation: ViewServerRuntimeTrustedDecodedMutation<Topics>,
+    <const Topic extends Extract<keyof Topics, string>>(
+      mutation: ViewServerRuntimeTrustedDecodedMutation<Topics, Topic>,
       trust: typeof viewServerRuntimeDecodedMutationTrust,
     ): Effect.Effect<void, ViewServerRuntimeError>;
   };

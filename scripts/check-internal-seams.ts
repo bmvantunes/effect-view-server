@@ -58,7 +58,8 @@ export const sourceFiles = (
 };
 
 export const isTestFile = (path: string): boolean =>
-  /\.(?:test|test-d|bench)\.(?:ts|tsx|mts|cts)$/.test(path);
+  /\.(?:test|test-d|bench)\.(?:ts|tsx|mts|cts)$/.test(path) ||
+  toPosixPath(path).includes("/test-support/");
 
 const currentScope = "@effect-view-server";
 const staleScope = "@view" + "-server";
@@ -917,6 +918,81 @@ export const collectRuntimeSourceSeamViolations = (
   return violations.sort();
 };
 
+const localTypeScriptDependency = (
+  path: string,
+  specifier: string,
+  sourcePaths: ReadonlySet<string>,
+): string | undefined => {
+  if (!specifier.startsWith(".")) {
+    return undefined;
+  }
+  const base = resolve(dirname(path), specifier);
+  const candidates = [
+    base,
+    ...sourceModuleExtensions.flatMap((extension) => [
+      `${base}${extension}`,
+      join(base, `index${extension}`),
+    ]),
+  ];
+  for (const candidate of candidates) {
+    if (sourcePaths.has(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+};
+
+export const collectRuntimeCoreDependencyCycleViolations = (
+  repositoryRoot = repoRoot,
+): ReadonlyArray<string> => {
+  const sourceRoot = join(repositoryRoot, "packages", "runtime-core", "src");
+  const paths = sourceFiles(sourceRoot).filter((path) => !isTestFile(path)).sort();
+  const sourcePaths = new Set(paths);
+  const graph = new Map(
+    paths.map((path) => {
+      const dependencies = inspectTypeScriptModule({
+        fileName: path,
+        source: readFileSync(path, "utf8"),
+      }).moduleSpecifiers.flatMap((specifier) => {
+        const dependency = localTypeScriptDependency(path, specifier, sourcePaths);
+        return dependency === undefined ? [] : [dependency];
+      });
+      return [path, Array.from(new Set(dependencies)).sort()] as const;
+    }),
+  );
+  const completed = new Set<string>();
+  const activeIndexes = new Map<string, number>();
+  const stack: Array<string> = [];
+  const violations: Array<string> = [];
+
+  const visit = (path: string): void => {
+    if (completed.has(path)) {
+      return;
+    }
+    activeIndexes.set(path, stack.length);
+    stack.push(path);
+    for (const dependency of graph.get(path)!) {
+      const activeIndex = activeIndexes.get(dependency);
+      if (activeIndex !== undefined) {
+        const cycle = [...stack.slice(activeIndex), dependency].map((cyclePath) =>
+          toPosixPath(relative(repositoryRoot, cyclePath)),
+        );
+        violations.push(`${cycle.join(" -> ")} forms a local Runtime Core dependency cycle.`);
+      } else {
+        visit(dependency);
+      }
+    }
+    stack.pop();
+    activeIndexes.delete(path);
+    completed.add(path);
+  };
+
+  for (const path of paths) {
+    visit(path);
+  }
+  return Array.from(new Set(violations)).sort();
+};
+
 const assertNoViolations = (heading: string, violations: ReadonlyArray<string>): void => {
   if (violations.length > 0) {
     throw new Error([heading, ...violations.map((violation) => `- ${violation}`)].join("\n"));
@@ -948,8 +1024,13 @@ export const assertNoRuntimeSourceSeamViolations = (
   violations: ReadonlyArray<string>,
 ): void => assertNoViolations("Runtime Source Module seam violations found.", violations);
 
+export const assertNoRuntimeCoreDependencyCycleViolations = (
+  violations: ReadonlyArray<string>,
+): void => assertNoViolations("Runtime Core dependency cycles found.", violations);
+
 assertNoPackageSurfaceViolations(collectPackageSurfaceViolations());
 assertNoPackageImportViolations(collectPackageImportViolations());
 assertNoConsumerImportViolations(collectConsumerImportViolations());
 assertNoEngineSeamViolations(collectEngineSeamViolations());
 assertNoRuntimeSourceSeamViolations(collectRuntimeSourceSeamViolations());
+assertNoRuntimeCoreDependencyCycleViolations(collectRuntimeCoreDependencyCycleViolations());

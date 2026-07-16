@@ -13,6 +13,7 @@ import {
   assertNoEngineSeamViolations,
   assertNoPackageImportViolations,
   assertNoPackageSurfaceViolations,
+  collectRuntimeCoreDependencyCycleViolations,
   collectConsumerImportViolations,
   collectEngineSeamViolations,
   collectPackageImportViolations,
@@ -46,6 +47,41 @@ describe("internal Seam checker", () => {
       stateExportViolations: [],
     });
     expect(collectRuntimeSourceSeamViolations()).toStrictEqual([]);
+    expect(collectRuntimeCoreDependencyCycleViolations()).toStrictEqual([]);
+  });
+
+  it("rejects local Runtime Core dependency cycles", () => {
+    const directory = makeDirectory();
+    const sourceRoot = join(directory, "packages", "runtime-core", "src");
+    mkdirSync(sourceRoot, { recursive: true });
+    writeFileSync(
+      join(sourceRoot, "health.ts"),
+      'import "./missing";\nimport type { Live } from "./live-client";\n',
+    );
+    writeFileSync(
+      join(sourceRoot, "live-client.ts"),
+      'import type { Health } from "./health";\n',
+    );
+
+    expect(collectRuntimeCoreDependencyCycleViolations(directory)).toStrictEqual([
+      "packages/runtime-core/src/health.ts -> packages/runtime-core/src/live-client.ts -> packages/runtime-core/src/health.ts forms a local Runtime Core dependency cycle.",
+    ]);
+
+    rmSync(directory, { force: true, recursive: true });
+  });
+
+  it("rejects local Runtime Core dependency cycles across source extensions", () => {
+    const directory = makeDirectory();
+    const sourceRoot = join(directory, "packages", "runtime-core", "src");
+    mkdirSync(sourceRoot, { recursive: true });
+    writeFileSync(join(sourceRoot, "health.tsx"), 'import type { Live } from "./live-client";\n');
+    writeFileSync(join(sourceRoot, "live-client.mts"), 'import type { Health } from "./health";\n');
+
+    expect(collectRuntimeCoreDependencyCycleViolations(directory)).toStrictEqual([
+      "packages/runtime-core/src/health.tsx -> packages/runtime-core/src/live-client.mts -> packages/runtime-core/src/health.tsx forms a local Runtime Core dependency cycle.",
+    ]);
+
+    rmSync(directory, { force: true, recursive: true });
   });
 
   it("keeps runtime composition neutral and Adapter option dependencies acyclic", () => {
@@ -352,8 +388,14 @@ describe("internal Seam checker", () => {
       ),
     ).toStrictEqual(Array.from({ length: 12 }, () => true));
     expect(
-      ["src/a.ts", "src/a.mts", "src/a.test.js", "src/a.integration.ts"].map(isTestFile),
-    ).toStrictEqual([false, false, false, false]);
+      [
+        "src/a.ts",
+        "src/a.mts",
+        "src/a.test.js",
+        "src/a.integration.ts",
+        "src/test-support/a.ts",
+      ].map(isTestFile),
+    ).toStrictEqual([false, false, false, false, true]);
     rmSync(root, { recursive: true });
   });
 

@@ -89,6 +89,8 @@ describe("gRPC runtime health", () => {
       });
 
       yield* runtimeCore.close;
+      const stoppingHealth = health.healthOverlay(yield* runtimeCore.client.health(), 3_000);
+      expect(stoppingHealth.status).toBe("stopping");
     }),
   );
 

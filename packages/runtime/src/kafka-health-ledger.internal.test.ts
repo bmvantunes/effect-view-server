@@ -1540,6 +1540,11 @@ describe("Kafka ingress health ledger internals", () => {
       });
 
       yield* readyRuntimeCore.close;
+      const stoppingHealth = readyLedger.healthOverlay(
+        yield* readyRuntimeCore.client.health(),
+        3_000,
+      );
+      expect(stoppingHealth.status).toBe("stopping");
       yield* startingRuntimeCore.close;
     }),
   );

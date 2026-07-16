@@ -493,7 +493,8 @@ const acquireLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.acqui
       };
     }),
   );
-  // The Subscription owns forking this worker, so acquisition intentionally returns it as a value.
+  // Returning runFeed directly makes Effect.fn flatten the nested Effect in its inferred result.
+  // Wrap it so acquisition returns the worker as a value for the Subscription to fork and own.
   return yield* Effect.succeed(runFeed);
 });
 

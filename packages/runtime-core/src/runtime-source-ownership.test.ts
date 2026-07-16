@@ -270,60 +270,79 @@ describe("Runtime Core source ownership", () => {
   );
 
   it.effect("applies Source Ownership Policy to the neutral decoded mutation client", () =>
-    Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaOwnedViewServer, {});
-      const checkError = yield* runtimeCore.decodedMutationClient
-        .execute({
-          _tag: "CheckMutationAllowed",
-          topic: "orders",
-        })
-        .pipe(Effect.flip);
-      const publishError = yield* runtimeCore.decodedMutationClient
-        .execute({
-          _tag: "PublishDecodedRows",
-          topic: "orders",
-          rows: [order("blocked", 10)],
-        })
-        .pipe(Effect.flip);
-      const patchError = yield* runtimeCore.decodedMutationClient
-        .execute({
-          _tag: "PatchDecodedFields",
-          topic: "orders",
-          key: "blocked",
-          patch: { price: 20 },
-        })
-        .pipe(Effect.flip);
-      const trustedPatchError = yield* runtimeCore.decodedMutationClient
-        .execute(
-          {
+    Effect.scoped(
+      Effect.gen(function* () {
+        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaOwnedViewServer, {});
+        yield* Effect.addFinalizer(() => runtimeCore.close);
+        const checkError = yield* runtimeCore.decodedMutationClient
+          .execute({
+            _tag: "CheckMutationAllowed",
+            topic: "orders",
+          })
+          .pipe(Effect.flip);
+        const publishError = yield* runtimeCore.decodedMutationClient
+          .execute({
+            _tag: "PublishDecodedRows",
+            topic: "orders",
+            rows: [order("blocked", 10)],
+          })
+          .pipe(Effect.flip);
+        const trustedPublishError = yield* runtimeCore.decodedMutationClient
+          .execute(
+            {
+              _tag: "PublishDecodedRows",
+              topic: "orders",
+              rows: [order("blocked-trusted", 11)],
+            },
+            viewServerRuntimeDecodedMutationTrust,
+          )
+          .pipe(Effect.flip);
+        const patchError = yield* runtimeCore.decodedMutationClient
+          .execute({
             _tag: "PatchDecodedFields",
             topic: "orders",
             key: "blocked",
-            patch: { price: 21 },
-          },
-          viewServerRuntimeDecodedMutationTrust,
-        )
-        .pipe(Effect.flip);
-      const deleteError = yield* runtimeCore.decodedMutationClient
-        .execute({
-          _tag: "DeleteDecodedRow",
-          topic: "orders",
-          key: "blocked",
-        })
-        .pipe(Effect.flip);
-      const resetError = yield* runtimeCore.client.reset().pipe(Effect.flip);
+            patch: { price: 20 },
+          })
+          .pipe(Effect.flip);
+        const trustedPatchError = yield* runtimeCore.decodedMutationClient
+          .execute(
+            {
+              _tag: "PatchDecodedFields",
+              topic: "orders",
+              key: "blocked",
+              patch: { price: 21 },
+            },
+            viewServerRuntimeDecodedMutationTrust,
+          )
+          .pipe(Effect.flip);
+        const deleteError = yield* runtimeCore.decodedMutationClient
+          .execute({
+            _tag: "DeleteDecodedRow",
+            topic: "orders",
+            key: "blocked",
+          })
+          .pipe(Effect.flip);
+        const resetError = yield* runtimeCore.client.reset().pipe(Effect.flip);
 
-      expect([checkError, publishError, patchError, trustedPatchError, deleteError]).toStrictEqual([
-        publicSourceOwnedRuntimeMutationError,
-        publicSourceOwnedRuntimeMutationError,
-        publicSourceOwnedRuntimeMutationError,
-        publicSourceOwnedRuntimeMutationError,
-        publicSourceOwnedRuntimeMutationError,
-      ]);
-      expect(resetError).toStrictEqual(publicSourceOwnedRuntimeResetError);
-
-      yield* runtimeCore.close;
-    }),
+        expect([
+          checkError,
+          publishError,
+          trustedPublishError,
+          patchError,
+          trustedPatchError,
+          deleteError,
+        ]).toStrictEqual([
+          publicSourceOwnedRuntimeMutationError,
+          publicSourceOwnedRuntimeMutationError,
+          publicSourceOwnedRuntimeMutationError,
+          publicSourceOwnedRuntimeMutationError,
+          publicSourceOwnedRuntimeMutationError,
+          publicSourceOwnedRuntimeMutationError,
+        ]);
+        expect(resetError).toStrictEqual(publicSourceOwnedRuntimeResetError);
+      }),
+    ),
   );
 
   it.effect("rejects public grpcSource leased subscriptions before route validation", () =>

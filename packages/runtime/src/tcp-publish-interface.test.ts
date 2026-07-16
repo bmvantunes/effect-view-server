@@ -1680,6 +1680,7 @@ describe("TCP publish Interface", () => {
       );
       const missingTopicKeyFieldIngress = yield* makeViewServerTcpPublishIngress(
         missingTopicKeyFieldConfig,
+        // @ts-expect-error intentionally mismatched client for the malformed runtime key guard.
         runtimeCore.decodedMutationClient,
         { port: 0 },
       );

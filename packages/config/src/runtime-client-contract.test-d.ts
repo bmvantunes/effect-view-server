@@ -15,6 +15,24 @@ import {
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
 
+type OrderRow = typeof Order.Type;
+type LimitOrderRow = OrderRow & {
+  readonly execution: "limit";
+  readonly venue: string;
+};
+type MarketOrderRow = OrderRow & {
+  readonly execution: "market";
+  readonly liquidityTaking: boolean;
+};
+type UnionOrderTopics = {
+  readonly unionOrders: {
+    readonly schema: typeof Order & {
+      readonly Type: LimitOrderRow | MarketOrderRow;
+    };
+    readonly key: "id";
+  };
+};
+
 describe("Runtime client and configuration generic contracts", () => {
   it("accepts valid contracts and rejects invalid contracts", () => {
     const assertRuntimeContracts = (runtime: ViewServerRuntimeClient<typeof viewServer.topics>) => {
@@ -117,19 +135,49 @@ describe("Runtime client and configuration generic contracts", () => {
 
     expectTypeOf(assertRuntimeContracts).toBeFunction();
 
-    const assertGenericDecodedPatch = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+    const assertGenericDecodedMutation = <const Topics extends ViewServerRuntimeTopicDefinitions>(
       runtime: ViewServerRuntimeDecodedMutationClient<Topics>,
       topic: Extract<keyof Topics, string>,
+      row: Topics[Extract<keyof Topics, string>]["schema"]["Type"],
+      rows: ReadonlyArray<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>,
       patch: Partial<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>,
     ) => {
-      const untrustedEffect = runtime.execute({
+      const untrustedPublishEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic,
+        // @ts-expect-error outer-generic decoded rows require the internal trust capability
+        rows: [row],
+      });
+      const untrustedPublishManyEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic,
+        // @ts-expect-error outer-generic decoded row arrays require the internal trust capability
+        rows,
+      });
+      const untrustedPatchEffect = runtime.execute({
         _tag: "PatchDecodedFields",
         topic,
         key: "row-1",
         // @ts-expect-error outer-generic decoded patches require the internal trust capability
         patch,
       });
-      const trustedEffect = runtime.execute(
+      const trustedPublishEffect = runtime.execute(
+        {
+          _tag: "PublishDecodedRows",
+          topic,
+          rows: [row],
+        },
+        viewServerRuntimeDecodedMutationTrust,
+      );
+      const trustedPublishManyEffect = runtime.execute(
+        {
+          _tag: "PublishDecodedRows",
+          topic,
+          rows,
+        },
+        viewServerRuntimeDecodedMutationTrust,
+      );
+      const trustedPatchEffect = runtime.execute(
         {
           _tag: "PatchDecodedFields",
           topic,
@@ -139,11 +187,121 @@ describe("Runtime client and configuration generic contracts", () => {
         viewServerRuntimeDecodedMutationTrust,
       );
 
-      expectTypeOf(untrustedEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
-      expectTypeOf(trustedEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
+      expectTypeOf(untrustedPublishEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(untrustedPublishManyEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(untrustedPatchEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(trustedPublishEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(trustedPublishManyEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(trustedPatchEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
     };
 
-    expectTypeOf(assertGenericDecodedPatch).toBeFunction();
+    expectTypeOf(assertGenericDecodedMutation).toBeFunction();
+
+    const assertUnionRowBranchExactness = (
+      runtime: ViewServerRuntimeDecodedMutationClient<UnionOrderTopics>,
+      limitOrder: LimitOrderRow,
+      marketOrder: MarketOrderRow,
+      limitPatch: Partial<LimitOrderRow>,
+      marketPatch: Partial<MarketOrderRow>,
+      limitOrBlendedRow: LimitOrderRow | (LimitOrderRow & { readonly liquidityTaking: true }),
+      limitOrBlendedPatch:
+        | Partial<LimitOrderRow>
+        | (Partial<LimitOrderRow> & { readonly liquidityTaking: true }),
+    ) => {
+      const validLimitRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "unionOrders",
+        rows: [limitOrder],
+      });
+      const validMarketRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "unionOrders",
+        rows: [marketOrder],
+      });
+      const validLimitPatchEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "unionOrders",
+        key: "order-1",
+        patch: limitPatch,
+      });
+      const validMarketPatchEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "unionOrders",
+        key: "order-1",
+        patch: marketPatch,
+      });
+      const invalidBlendedRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "unionOrders",
+        // @ts-expect-error decoded rows cannot blend fields from separate schema union branches
+        rows: [
+          {
+            ...limitOrder,
+            liquidityTaking: true,
+          },
+        ],
+      });
+      const invalidBlendedPatchEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "unionOrders",
+        key: "order-1",
+        // @ts-expect-error decoded patches cannot blend fields from separate schema union branches
+        patch: {
+          venue: "LSE",
+          liquidityTaking: true,
+        },
+      });
+      const invalidUnionBlendedRowEffect = runtime.execute({
+        _tag: "PublishDecodedRows",
+        topic: "unionOrders",
+        // @ts-expect-error a valid branch union cannot hide a blended decoded row member
+        rows: [limitOrBlendedRow],
+      });
+      const invalidUnionBlendedPatchEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "unionOrders",
+        key: "order-1",
+        // @ts-expect-error a valid branch union cannot hide a blended decoded patch member
+        patch: limitOrBlendedPatch,
+      });
+
+      expectTypeOf(validLimitRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(validMarketRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(validLimitPatchEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(validMarketPatchEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidBlendedRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidBlendedPatchEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidUnionBlendedRowEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidUnionBlendedPatchEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+    };
+
+    expectTypeOf(assertUnionRowBranchExactness).toBeFunction();
 
     const assertDecodedMutationContract = (
       runtime: ViewServerRuntimeDecodedMutationClient<typeof viewServer.topics>,
@@ -300,7 +458,6 @@ describe("Runtime client and configuration generic contracts", () => {
         // @ts-expect-error optional extra patch fields remain rejected when present
         patch: patchWithOptionalExtraField,
       });
-      type OrderRow = typeof Order.Type;
       const assertUnionExactness = (
         row: OrderRow | (OrderRow & { readonly unexpected: true }),
         patch: Partial<OrderRow> | (Partial<OrderRow> & { readonly unexpected: true }),

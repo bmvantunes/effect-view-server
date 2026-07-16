@@ -403,22 +403,28 @@ export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPubli
         makeTcpRowDefaultDecoders(topicDefinition),
       );
       yield* client
-        .execute({
-          _tag: "PublishDecodedRows",
-          topic: topicDefinition.topic,
-          rows: [row],
-        })
+        .execute(
+          {
+            _tag: "PublishDecodedRows",
+            topic: topicDefinition.topic,
+            rows: [row],
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "publish")));
       return;
     }
     if (command.op === "publishMany") {
       const rows = yield* decodeTcpRows(topicDefinition, topicDefinition.topic, command.rows);
       yield* client
-        .execute({
-          _tag: "PublishDecodedRows",
-          topic: topicDefinition.topic,
-          rows,
-        })
+        .execute(
+          {
+            _tag: "PublishDecodedRows",
+            topic: topicDefinition.topic,
+            rows,
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "publishMany")));
       return;
     }

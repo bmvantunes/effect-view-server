@@ -79,18 +79,43 @@ export type ViewServerRuntimeDecodedMutation<Topics extends ViewServerRuntimeTop
   >;
 }[Extract<keyof Topics, string>];
 
-type KeysOfUnion<Value> = Value extends Value ? keyof Value : never;
-
-type ExactDecodedRows<Row, Rows extends ReadonlyArray<unknown>> = [Rows[number]] extends [Row]
-  ? Exclude<KeysOfUnion<Rows[number]>, KeysOfUnion<Row>> extends never
-    ? Rows
+type ExactDecodedValueMember<Allowed, Value> = Allowed extends Allowed
+  ? [Value] extends [Allowed]
+    ? Exclude<keyof Value, keyof Allowed> extends never
+      ? Value
+      : never
     : never
   : never;
 
-type ExactDecodedPatch<Row, Patch> = [Patch] extends [Partial<Row>]
-  ? Exclude<KeysOfUnion<Patch>, KeysOfUnion<Row>> extends never
-    ? Patch
-    : never
+type KeysOfUnion<Value> = Value extends Value ? keyof Value : never;
+
+type DecodedValueMemberIsExact<Allowed, Value> = [ExactDecodedValueMember<Allowed, Value>] extends [
+  never,
+]
+  ? false
+  : true;
+
+type DecodedValueExactness<Allowed, Value> = Value extends Value
+  ? DecodedValueMemberIsExact<Allowed, Value>
+  : never;
+
+type ExactDecodedValue<Allowed, Value> =
+  Exclude<KeysOfUnion<Value>, KeysOfUnion<Allowed>> extends never
+    ? false extends DecodedValueExactness<Allowed, Value>
+      ? never
+      : Value
+    : never;
+
+type ExactDecodedRows<Row, Rows extends ReadonlyArray<unknown>> = [Rows[number]] extends [
+  ExactDecodedValue<Row, Rows[number]>,
+]
+  ? Rows
+  : never;
+
+type DecodedPatch<Row> = Row extends Row ? Partial<Row> : never;
+
+type ExactDecodedPatch<Row, Patch> = [Patch] extends [ExactDecodedValue<DecodedPatch<Row>, Patch>]
+  ? Patch
   : never;
 
 type ExactDecodedMutation<
@@ -114,14 +139,18 @@ type ExactDecodedMutation<
       }
     : unknown;
 
-type ViewServerRuntimeTrustedDecodedPatchMutation<
-  Topics extends ViewServerRuntimeTopicDefinitions,
-> = {
-  readonly _tag: "PatchDecodedFields";
-  readonly topic: Extract<keyof Topics, string>;
-  readonly key: string;
-  readonly patch: Partial<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>;
-};
+type ViewServerRuntimeTrustedDecodedMutation<Topics extends ViewServerRuntimeTopicDefinitions> =
+  | {
+      readonly _tag: "PublishDecodedRows";
+      readonly topic: Extract<keyof Topics, string>;
+      readonly rows: ReadonlyArray<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>;
+    }
+  | {
+      readonly _tag: "PatchDecodedFields";
+      readonly topic: Extract<keyof Topics, string>;
+      readonly key: string;
+      readonly patch: Partial<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>;
+    };
 
 export type ViewServerRuntimeDecodedMutationClient<
   Topics extends ViewServerRuntimeTopicDefinitions,
@@ -131,7 +160,7 @@ export type ViewServerRuntimeDecodedMutationClient<
       mutation: Mutation & ExactDecodedMutation<Topics, Mutation>,
     ): Effect.Effect<void, ViewServerRuntimeError>;
     (
-      mutation: ViewServerRuntimeTrustedDecodedPatchMutation<Topics>,
+      mutation: ViewServerRuntimeTrustedDecodedMutation<Topics>,
       trust: typeof viewServerRuntimeDecodedMutationTrust,
     ): Effect.Effect<void, ViewServerRuntimeError>;
   };

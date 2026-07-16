@@ -81,6 +81,36 @@ export type RuntimeCoreLiveClientInstance<Topics extends DecodableTopicDefinitio
 > &
   ViewServerRuntimeCoreInternalLiveClient<Topics>;
 
+export const acquireRuntimeCoreLiveSubscription = Effect.fn(
+  "ViewServerRuntimeCore.liveClient.acquireSubscription",
+)(
+  <Row>(
+    acquisition: Effect.Effect<ColumnLiveViewSubscription<Row>, ColumnLiveViewEngineError>,
+    requestHealthRefresh: Effect.Effect<void>,
+  ): Effect.Effect<ViewServerLiveSubscription<Row>, ViewServerRuntimeError> =>
+    Effect.suspend(() =>
+      acquireRuntimeCoreResourceHandoff((markAcquired) =>
+        Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const subscription = yield* restore(
+              acquisition.pipe(Effect.mapError(engineErrorToRuntimeError)),
+            );
+            const closeSubscription = subscription
+              .close()
+              .pipe(Effect.ensuring(requestHealthRefresh));
+            yield* markAcquired(closeSubscription);
+            const wrapped = {
+              events: subscription.events.pipe(Stream.ensuring(closeSubscription)),
+              close: () => closeSubscription,
+            } satisfies ViewServerLiveSubscription<Row>;
+            yield* restore(requestHealthRefresh);
+            return wrapped;
+          }),
+        ),
+      ),
+    ),
+);
+
 export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveClient.make")(
   <const Topics extends DecodableTopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
@@ -93,28 +123,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
       function wrapEngineSubscription<Row>(
         acquisition: Effect.Effect<ColumnLiveViewSubscription<Row>, ColumnLiveViewEngineError>,
       ): Effect.Effect<ViewServerLiveSubscription<Row>, ViewServerRuntimeError> {
-        return Effect.suspend(() =>
-          acquireRuntimeCoreResourceHandoff((markAcquired) =>
-            Effect.uninterruptibleMask((restore) =>
-              Effect.gen(function* () {
-                const subscription = yield* restore(
-                  acquisition.pipe(Effect.mapError(engineErrorToRuntimeError)),
-                );
-                const requestRefreshAfterRelease = requestHealthRefresh;
-                const closeSubscription = subscription
-                  .close()
-                  .pipe(Effect.ensuring(requestRefreshAfterRelease));
-                yield* markAcquired(closeSubscription);
-                const wrapped = {
-                  events: subscription.events.pipe(Stream.ensuring(requestRefreshAfterRelease)),
-                  close: () => closeSubscription,
-                } satisfies ViewServerLiveSubscription<Row>;
-                yield* restore(requestHealthRefresh);
-                return wrapped;
-              }),
-            ),
-          ),
-        );
+        return acquireRuntimeCoreLiveSubscription(acquisition, requestHealthRefresh);
       }
       function subscribeInternal<
         Topic extends Extract<keyof Topics, string>,

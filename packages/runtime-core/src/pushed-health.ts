@@ -167,7 +167,7 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
       const updatedAtNanos = yield* Clock.currentTimeNanos;
       const claim = yield* healthSubscriptionLock.withPermit(
         Effect.sync(() => {
-          if (hubClosed || refreshEpoch !== requestedRefreshEpoch) {
+          if (hubClosed || refreshEpoch < installedRefreshEpoch) {
             return { _tag: "stale" as const, installed: installedHealth };
           }
           installedRefreshEpoch = refreshEpoch;
@@ -202,29 +202,16 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
       () => requestedRefreshEpoch,
     );
     const refresh = Effect.fn("ViewServerRuntimeCore.pushedHealth.refresh")(function* () {
-      while (true) {
-        const beforeRead = yield* healthSubscriptionLock.withPermit(
-          Effect.sync(() =>
-            hubClosed
-              ? { _tag: "closed" as const, health: installedHealth }
-              : { _tag: "read" as const },
-          ),
-        );
-        if (beforeRead._tag === "closed") {
-          return beforeRead.health;
-        }
-        yield* coalescedHealthReader();
-        const afterRead = yield* healthSubscriptionLock.withPermit(
-          Effect.sync(() =>
-            hubClosed || installedRefreshEpoch === requestedRefreshEpoch
-              ? { _tag: "settled" as const, health: installedHealth }
-              : { _tag: "retry" as const },
-          ),
-        );
-        if (afterRead._tag === "settled") {
-          return afterRead.health;
-        }
+      const beforeRead = yield* healthSubscriptionLock.withPermit(
+        Effect.sync(() => (hubClosed ? installedHealth : undefined)),
+      );
+      if (beforeRead !== undefined) {
+        return beforeRead;
       }
+      const refreshedHealth = yield* coalescedHealthReader();
+      return yield* healthSubscriptionLock.withPermit(
+        Effect.sync(() => (hubClosed ? installedHealth : refreshedHealth)),
+      );
     });
     const flushPendingRefresh = Effect.fn("ViewServerRuntimeCore.pushedHealth.flushPendingRefresh")(
       function* () {
@@ -344,24 +331,18 @@ export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.p
                   );
                 });
                 const releaseSubscriptionAndEndQueue = () => closeSubscription();
-                let registration: "closed" | "registered" | "retry" = "retry";
-                while (registration === "retry") {
-                  yield* restore(flushPendingRefresh());
-                  yield* restore(options.beforeSubscriptionRegistration ?? Effect.void);
-                  registration = yield* healthSubscriptionLock.withPermit(
-                    Effect.sync(() => {
-                      if (hubClosed) {
-                        return "closed";
-                      }
-                      if (installedRefreshEpoch !== requestedRefreshEpoch) {
-                        return "retry";
-                      }
-                      Queue.offerUnsafe(queue, selectSnapshot(installedSnapshots));
-                      activeHealthSubscriptions.add(subscription);
-                      return "registered";
-                    }),
-                  );
-                }
+                yield* restore(flushPendingRefresh());
+                yield* restore(options.beforeSubscriptionRegistration ?? Effect.void);
+                const registration = yield* healthSubscriptionLock.withPermit(
+                  Effect.sync(() => {
+                    if (hubClosed) {
+                      return "closed" as const;
+                    }
+                    Queue.offerUnsafe(queue, selectSnapshot(installedSnapshots));
+                    activeHealthSubscriptions.add(subscription);
+                    return "registered" as const;
+                  }),
+                );
                 if (registration === "closed") {
                   yield* Queue.end(queue);
                   return yield* Effect.fail(runtimeClosedError);

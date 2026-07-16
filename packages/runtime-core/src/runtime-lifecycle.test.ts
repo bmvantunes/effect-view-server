@@ -5,7 +5,7 @@ import { Deferred, Effect, Exit, Fiber, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { healthFromEngine } from "./health";
 import { makeViewServerRuntimeCore } from "./index";
-import { makeRuntimeCoreLiveClient } from "./live-client";
+import { acquireRuntimeCoreLiveSubscription, makeRuntimeCoreLiveClient } from "./live-client";
 import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
 import { makeViewServerRuntimeCoreInternalWithConstructionOptions } from "./runtime-core-construction";
 import { acquireRuntimeCoreResourceHandoff } from "./subscription-handoff";
@@ -680,38 +680,39 @@ describe("Runtime Core lifecycle", () => {
       }),
   );
 
-  it.effect("requests pushed health after an engine subscription stream ends", () =>
+  it.effect("closes a wrapped engine subscription when its finite stream ends", () =>
     Effect.gen(function* () {
-      const engine = yield* createColumnLiveViewEngineInternal({ topics: viewServer.topics });
-      const initialHealth = healthFromEngine(yield* engine.health());
-      const hub = yield* makeRuntimeCorePushedHealthHub(
-        initialHealth,
-        Effect.succeed(initialHealth),
-        "1 minute",
-      );
+      let closeCount = 0;
       let refreshRequestCount = 0;
-      const liveClient = yield* makeRuntimeCoreLiveClient(
-        viewServer,
-        engine,
-        hub,
+      const subscription = yield* acquireRuntimeCoreLiveSubscription(
+        Effect.succeed({
+          events: Stream.empty,
+          close: () =>
+            Effect.sync(() => {
+              closeCount += 1;
+            }),
+        }),
         Effect.sync(() => {
           refreshRequestCount += 1;
         }),
       );
-      const subscription = yield* liveClient.subscribeInternal("orders", { select: ["id"] });
 
-      expect(refreshRequestCount).toBe(1);
-      yield* subscription.events.pipe(Stream.take(1), Stream.runDrain);
-      expect(refreshRequestCount).toBe(2);
-
-      yield* subscription.close();
-      expect(refreshRequestCount).toBe(3);
-      yield* hub.close;
-      yield* engine.close();
+      expect({
+        closeCount,
+        refreshRequestCount,
+      }).toStrictEqual({
+        closeCount: 0,
+        refreshRequestCount: 1,
+      });
+      yield* subscription.events.pipe(Stream.runDrain);
+      expect({ closeCount, refreshRequestCount }).toStrictEqual({
+        closeCount: 1,
+        refreshRequestCount: 2,
+      });
     }),
   );
 
-  it.effect("retries a superseded in-flight hub refresh at the newest request epoch", () =>
+  it.effect("returns a superseded hub refresh while the newest epoch continues", () =>
     Effect.gen(function* () {
       const firstReadStarted = yield* Deferred.make<void>();
       const releaseFirstRead = yield* Deferred.make<void>();
@@ -762,7 +763,7 @@ describe("Runtime Core lifecycle", () => {
         secondRowCount: secondHealth.engine.topics.orders.rowCount,
       }).toStrictEqual({
         cachedRowCount: 2,
-        firstRowCount: 2,
+        firstRowCount: 1,
         readCount: 2,
         secondRowCount: 2,
       });
@@ -770,7 +771,68 @@ describe("Runtime Core lifecycle", () => {
     }),
   );
 
-  it.effect("retries health subscription registration when a refresh request wins the race", () =>
+  it.effect("keeps newer health when an older refresh completes last", () =>
+    Effect.gen(function* () {
+      const firstReadStarted = yield* Deferred.make<void>();
+      const releaseFirstRead = yield* Deferred.make<void>();
+      const secondReadStarted = yield* Deferred.make<void>();
+      const releaseSecondRead = yield* Deferred.make<void>();
+      let readCount = 0;
+      const reads = [
+        Effect.gen(function* () {
+          yield* Deferred.succeed(firstReadStarted, undefined);
+          yield* Deferred.await(releaseFirstRead);
+          return healthFromEngine(engineHealth("ready", 1));
+        }),
+        Effect.gen(function* () {
+          yield* Deferred.succeed(secondReadStarted, undefined);
+          yield* Deferred.await(releaseSecondRead);
+          return healthFromEngine(engineHealth("ready", 2));
+        }),
+      ];
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        healthFromEngine(engineHealth("ready", 0)),
+        Effect.suspend(() => {
+          const read =
+            reads[readCount] ?? Effect.succeed(healthFromEngine(engineHealth("ready", 3)));
+          readCount += 1;
+          return read;
+        }),
+        "1 minute",
+      );
+
+      yield* hub.requestRefresh;
+      const firstRefresh = yield* hub.refresh.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(firstReadStarted);
+      yield* hub.requestRefresh;
+      const secondRefresh = yield* hub.refresh.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(secondReadStarted);
+      yield* Deferred.succeed(releaseSecondRead, undefined);
+      const secondHealth = yield* Fiber.join(secondRefresh);
+      expect({
+        cachedRowCount: hub.health.value.engine.topics.orders.rowCount,
+        secondRowCount: secondHealth.engine.topics.orders.rowCount,
+      }).toStrictEqual({
+        cachedRowCount: 2,
+        secondRowCount: 2,
+      });
+
+      yield* Deferred.succeed(releaseFirstRead, undefined);
+      const firstHealth = yield* Fiber.join(firstRefresh);
+      expect({
+        cachedRowCount: hub.health.value.engine.topics.orders.rowCount,
+        firstRowCount: firstHealth.engine.topics.orders.rowCount,
+        readCount,
+      }).toStrictEqual({
+        cachedRowCount: 2,
+        firstRowCount: 2,
+        readCount: 2,
+      });
+      yield* hub.close;
+    }),
+  );
+
+  it.effect("registers after one bounded flush when a newer refresh request wins the race", () =>
     Effect.gen(function* () {
       const registrationStarted = yield* Deferred.make<void>();
       const releaseRegistration = yield* Deferred.make<void>();
@@ -802,17 +864,23 @@ describe("Runtime Core lifecycle", () => {
       yield* hub.requestRefresh;
       yield* Deferred.succeed(releaseRegistration, undefined);
       const subscription = yield* Fiber.join(subscriptionFiber);
-      const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* TestClock.adjust("1 minute");
+      const events = yield* Fiber.join(eventsFiber);
       const snapshots = Array.from(events).filter((event) => event.type === "snapshot");
 
       expect({
         registrationCount,
         readCount,
-        rowCount: snapshots[0]?.rows[0]?.rowCount,
+        rowCounts: snapshots.map((snapshot) => snapshot.rows[0]?.rowCount),
       }).toStrictEqual({
-        registrationCount: 2,
+        registrationCount: 1,
         readCount: 1,
-        rowCount: 1,
+        rowCounts: [0, 1],
       });
       yield* subscription.close();
       yield* hub.close;

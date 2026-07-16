@@ -1,9 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
-import type {
-  ViewServerRuntimeDecodedMutation,
-  ViewServerRuntimeDecodedMutationClient,
-  ViewServerRuntimeTopicDefinitions,
+import {
+  type ViewServerRuntimeDecodedMutation,
+  type ViewServerRuntimeDecodedMutationClient,
+  type ViewServerRuntimeTopicDefinitions,
+  viewServerRuntimeDecodedMutationTrust,
 } from "@effect-view-server/config/internal";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect";
@@ -34,8 +35,28 @@ const withDecodedPublish = <const Topics extends ViewServerRuntimeTopicDefinitio
   client: ViewServerRuntimeDecodedMutationClient<Topics>,
   publish: (rows: ReadonlyArray<object>) => Effect.Effect<void, ViewServerRuntimeError>,
 ): ViewServerRuntimeDecodedMutationClient<Topics> => ({
-  execute: (mutation) =>
-    mutation._tag === "PublishDecodedRows" ? publish(mutation.rows) : client.execute(mutation),
+  execute: (
+    mutation: ViewServerRuntimeDecodedMutation<Topics>,
+    _trust?: typeof viewServerRuntimeDecodedMutationTrust,
+  ) => {
+    if (mutation._tag === "PublishDecodedRows") {
+      return publish(mutation.rows);
+    }
+    if (mutation._tag === "PatchDecodedFields") {
+      return client.execute(mutation, viewServerRuntimeDecodedMutationTrust);
+    }
+    if (mutation._tag === "CheckMutationAllowed") {
+      return client.execute({
+        _tag: "CheckMutationAllowed",
+        topic: mutation.topic,
+      });
+    }
+    return client.execute({
+      _tag: "DeleteDecodedRow",
+      topic: mutation.topic,
+      key: mutation.key,
+    });
+  },
 });
 
 describe("TCP publish lifecycle ownership", () => {

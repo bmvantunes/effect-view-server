@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
+import { viewServerRuntimeDecodedMutationTrust } from "@effect-view-server/config/internal";
 import { Effect, Stream } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { makeViewServerRuntimeCore } from "./index";
@@ -292,6 +293,17 @@ describe("Runtime Core source ownership", () => {
           patch: { price: 20 },
         })
         .pipe(Effect.flip);
+      const trustedPatchError = yield* runtimeCore.decodedMutationClient
+        .execute(
+          {
+            _tag: "PatchDecodedFields",
+            topic: "orders",
+            key: "blocked",
+            patch: { price: 21 },
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
+        .pipe(Effect.flip);
       const deleteError = yield* runtimeCore.decodedMutationClient
         .execute({
           _tag: "DeleteDecodedRow",
@@ -301,7 +313,8 @@ describe("Runtime Core source ownership", () => {
         .pipe(Effect.flip);
       const resetError = yield* runtimeCore.client.reset().pipe(Effect.flip);
 
-      expect([checkError, publishError, patchError, deleteError]).toStrictEqual([
+      expect([checkError, publishError, patchError, trustedPatchError, deleteError]).toStrictEqual([
+        publicSourceOwnedRuntimeMutationError,
         publicSourceOwnedRuntimeMutationError,
         publicSourceOwnedRuntimeMutationError,
         publicSourceOwnedRuntimeMutationError,

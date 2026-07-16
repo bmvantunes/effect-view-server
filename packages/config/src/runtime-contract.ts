@@ -114,13 +114,32 @@ type ExactDecodedMutation<
       }
     : unknown;
 
+type ViewServerRuntimeTrustedDecodedPatchMutation<
+  Topics extends ViewServerRuntimeTopicDefinitions,
+> = {
+  readonly _tag: "PatchDecodedFields";
+  readonly topic: Extract<keyof Topics, string>;
+  readonly key: string;
+  readonly patch: Partial<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>;
+};
+
 export type ViewServerRuntimeDecodedMutationClient<
   Topics extends ViewServerRuntimeTopicDefinitions,
 > = {
-  readonly execute: <const Mutation extends ViewServerRuntimeDecodedMutation<Topics>>(
-    mutation: Mutation & ExactDecodedMutation<Topics, Mutation>,
-  ) => Effect.Effect<void, ViewServerRuntimeError>;
+  readonly execute: {
+    <const Mutation extends ViewServerRuntimeDecodedMutation<Topics>>(
+      mutation: Mutation & ExactDecodedMutation<Topics, Mutation>,
+    ): Effect.Effect<void, ViewServerRuntimeError>;
+    (
+      mutation: ViewServerRuntimeTrustedDecodedPatchMutation<Topics>,
+      trust: typeof viewServerRuntimeDecodedMutationTrust,
+    ): Effect.Effect<void, ViewServerRuntimeError>;
+  };
 };
+
+export const viewServerRuntimeDecodedMutationTrust: unique symbol = Symbol(
+  "ViewServerRuntimeDecodedMutationTrust",
+);
 
 export type ViewServerTransportError =
   | ViewServerBackpressureError

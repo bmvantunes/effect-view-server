@@ -6,7 +6,11 @@ import {
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "./index";
-import type { ViewServerRuntimeDecodedMutationClient } from "./internal";
+import {
+  type ViewServerRuntimeDecodedMutationClient,
+  type ViewServerRuntimeTopicDefinitions,
+  viewServerRuntimeDecodedMutationTrust,
+} from "./internal";
 
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -112,6 +116,34 @@ describe("Runtime client and configuration generic contracts", () => {
     };
 
     expectTypeOf(assertRuntimeContracts).toBeFunction();
+
+    const assertGenericDecodedPatch = <const Topics extends ViewServerRuntimeTopicDefinitions>(
+      runtime: ViewServerRuntimeDecodedMutationClient<Topics>,
+      topic: Extract<keyof Topics, string>,
+      patch: Partial<Topics[Extract<keyof Topics, string>]["schema"]["Type"]>,
+    ) => {
+      const untrustedEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic,
+        key: "row-1",
+        // @ts-expect-error outer-generic decoded patches require the internal trust capability
+        patch,
+      });
+      const trustedEffect = runtime.execute(
+        {
+          _tag: "PatchDecodedFields",
+          topic,
+          key: "row-1",
+          patch,
+        },
+        viewServerRuntimeDecodedMutationTrust,
+      );
+
+      expectTypeOf(untrustedEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
+      expectTypeOf(trustedEffect).toMatchTypeOf<Effect.Effect<void, ViewServerRuntimeError>>();
+    };
+
+    expectTypeOf(assertGenericDecodedPatch).toBeFunction();
 
     const assertDecodedMutationContract = (
       runtime: ViewServerRuntimeDecodedMutationClient<typeof viewServer.topics>,
@@ -222,6 +254,15 @@ describe("Runtime client and configuration generic contracts", () => {
           unexpected: true,
         },
       });
+      const invalidTopicMismatchedPatchEffect = runtime.execute({
+        _tag: "PatchDecodedFields",
+        topic: "orders",
+        key: "order-1",
+        patch: {
+          // @ts-expect-error decoded patches remain correlated with the selected topic
+          symbol: "AAPL",
+        },
+      });
       const rowWithExtraField = {
         id: "order-1",
         customerId: "customer-1",
@@ -319,6 +360,9 @@ describe("Runtime client and configuration generic contracts", () => {
         Effect.Effect<void, ViewServerRuntimeError>
       >();
       expectTypeOf(invalidPatchFieldEffect).toMatchTypeOf<
+        Effect.Effect<void, ViewServerRuntimeError>
+      >();
+      expectTypeOf(invalidTopicMismatchedPatchEffect).toMatchTypeOf<
         Effect.Effect<void, ViewServerRuntimeError>
       >();
       expectTypeOf(invalidExtraRowVariableEffect).toMatchTypeOf<

@@ -1,7 +1,8 @@
 import type { RowSchema, ViewServerRuntimeError } from "@effect-view-server/config";
-import type {
-  ViewServerRuntimeDecodedMutationClient,
-  ViewServerRuntimeTopicDefinitions,
+import {
+  type ViewServerRuntimeDecodedMutationClient,
+  type ViewServerRuntimeTopicDefinitions,
+  viewServerRuntimeDecodedMutationTrust,
 } from "@effect-view-server/config/internal";
 import type { ViewServerAuth, ViewServerAuthRequest } from "@effect-view-server/server";
 import { validateViewServerAuthRequest, ViewServerAuthError } from "@effect-view-server/server";
@@ -425,12 +426,15 @@ export const handleTcpPublishCommandLine = Effect.fn("ViewServerRuntime.tcpPubli
       const key = yield* decodeTcpKey(topicDefinition, command.key);
       const patch = yield* decodeTcpPatch(topicDefinition, topicDefinition.topic, command.patch);
       yield* client
-        .execute({
-          _tag: "PatchDecodedFields",
-          topic: topicDefinition.topic,
-          key,
-          patch,
-        })
+        .execute(
+          {
+            _tag: "PatchDecodedFields",
+            topic: topicDefinition.topic,
+            key,
+            patch,
+          },
+          viewServerRuntimeDecodedMutationTrust,
+        )
         .pipe(Effect.mapError(mapRuntimeError(topicDefinition.topic, "patch")));
       return;
     }

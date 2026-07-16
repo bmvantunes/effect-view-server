@@ -13,6 +13,7 @@ export type {
   ViewServerRuntimeDecodedMutationClient,
   ViewServerRuntimeTopicDefinitions,
 } from "./runtime-contract";
+export { viewServerRuntimeDecodedMutationTrust } from "./runtime-contract";
 
 type KafkaSourceTopicRegistry = Record<
   string,

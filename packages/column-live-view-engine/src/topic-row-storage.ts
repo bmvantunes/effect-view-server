@@ -1,6 +1,5 @@
 import type { RowSchema } from "@effect-view-server/config";
 import { Effect } from "effect";
-import { createActiveQueryRegistry, type ActiveQueryStoreState } from "./active-query";
 import type {
   TopicRowChange,
   TopicRowChangeBatch,
@@ -63,6 +62,7 @@ import {
   makeTopicStorageProjectionCapability,
   type TopicStorageProjectionCapability,
 } from "./topic-storage-projection";
+import type { TopicStoreQueryInterface } from "./topic-store-query-interface";
 
 type RowObject = object;
 
@@ -86,7 +86,7 @@ const noopAppendBatchReservation: AppendBatchReservation = {
 
 export class TopicRowStorage {
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
-  readonly readModel: ActiveQueryStoreState & {
+  readonly queryInterface: TopicStoreQueryInterface & {
     readonly storageProjection: TopicStorageProjectionCapability;
   };
   readonly valueSemantics: TopicRowValueSemantics;
@@ -152,8 +152,7 @@ export class TopicRowStorage {
         this.reservableColumns.push(column);
       }
     }
-    this.readModel = {
-      activeQueries: createActiveQueryRegistry(),
+    this.queryInterface = {
       topic,
       changesSince: (version) => this.changesSince(version),
       compareRawSlots: (plan) => this.compareRawSlots(plan),

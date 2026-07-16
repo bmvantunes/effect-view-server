@@ -1,24 +1,16 @@
 import { Effect, Option } from "effect";
 import type { SnapshotEvent, DeltaEvent } from "@effect-view-server/config";
-import type { ActiveQueryStoreState, LiveQueryExecution } from "./active-query";
+import type {
+  ActiveQueryRegistry,
+  LiveQueryExecution,
+  MaterializedQueryExecution,
+  MaterializedQueryExecutionSlot,
+} from "./active-query-contract";
 import { deltaEvent, deltaOperations, snapshotEvent } from "./query-result";
-import type { QueryEvaluation } from "./query-result";
-import type { GroupedIncrementalExecutionDiagnosticCounts } from "./grouped-incremental-execution";
 import type { QueryResultSemantics } from "./query-result-semantics";
+import type { TopicStoreQueryInterface } from "./topic-store-query-interface";
 
 type RowObject = object;
-
-export type MaterializedQueryExecution = {
-  readonly diagnostics: () => GroupedIncrementalExecutionDiagnosticCounts;
-  readonly incremental: boolean;
-  readonly latest: () => QueryEvaluation<object>;
-};
-
-export type MaterializedQueryExecutionSlot = {
-  readonly execution: MaterializedQueryExecution;
-  readonly releaseRetainedChanges: () => void;
-  refs: number;
-};
 
 export type MaterializedQueryExecutionModeCounts = {
   readonly activeFallback: number;
@@ -29,13 +21,13 @@ export type MaterializedQueryExecutionModeCounts = {
 };
 
 const getActiveMaterializedQueryMap = (
-  store: ActiveQueryStoreState,
+  registry: ActiveQueryRegistry,
 ): Map<string, MaterializedQueryExecutionSlot> => {
-  return store.activeQueries.materialized;
+  return registry.materialized;
 };
 
 const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
-  store: ActiveQueryStoreState,
+  store: TopicStoreQueryInterface,
   execution: MaterializedQueryExecution,
   resultSemantics: QueryResultSemantics<ResultRow>,
 ): LiveQueryExecution<ResultRow> => {
@@ -66,13 +58,14 @@ const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
 export const acquireMaterializedQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.acquire",
 )(function <ResultRow extends RowObject>(
-  store: ActiveQueryStoreState,
+  store: TopicStoreQueryInterface,
+  registry: ActiveQueryRegistry,
   cacheKey: string,
   resultSemantics: QueryResultSemantics<ResultRow>,
   makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution,
 ) {
   return Effect.sync(() => {
-    const map = getActiveMaterializedQueryMap(store);
+    const map = getActiveMaterializedQueryMap(registry);
     const existing = map.get(cacheKey);
     if (existing !== undefined) {
       const entry = existing;
@@ -104,9 +97,9 @@ export const acquireMaterializedQueryExecution = Effect.fn(
 
 export const releaseMaterializedQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.release",
-)((store: ActiveQueryStoreState, cacheKey: string) =>
+)((registry: ActiveQueryRegistry, cacheKey: string) =>
   Effect.sync(() => {
-    const map = getActiveMaterializedQueryMap(store);
+    const map = getActiveMaterializedQueryMap(registry);
     const existing = map.get(cacheKey);
     if (existing === undefined) {
       return undefined;
@@ -124,9 +117,9 @@ export const releaseMaterializedQueryExecution = Effect.fn(
 
 export const clearMaterializedQueryExecutions = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.clearStore",
-)((store: ActiveQueryStoreState) =>
+)((registry: ActiveQueryRegistry) =>
   Effect.sync(() => {
-    const map = getActiveMaterializedQueryMap(store);
+    const map = getActiveMaterializedQueryMap(registry);
     for (const entry of map.values()) {
       entry.releaseRetainedChanges();
     }
@@ -136,18 +129,20 @@ export const clearMaterializedQueryExecutions = Effect.fn(
 
 export const activeMaterializedQueryExecutionCount = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.countStore",
-)((store: ActiveQueryStoreState) => Effect.sync(() => getActiveMaterializedQueryMap(store).size));
+)((registry: ActiveQueryRegistry) =>
+  Effect.sync(() => getActiveMaterializedQueryMap(registry).size),
+);
 
 export const activeMaterializedQueryExecutionModeCounts = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.countModes",
-)((store: ActiveQueryStoreState) =>
+)((registry: ActiveQueryRegistry) =>
   Effect.sync(() => {
     let activeFallback = 0;
     let activeIncremental = 0;
     let groupedFullEvaluationCount = 0;
     let groupedPatchedEvaluationCount = 0;
 
-    for (const entry of getActiveMaterializedQueryMap(store).values()) {
+    for (const entry of getActiveMaterializedQueryMap(registry).values()) {
       if (entry.execution.incremental) {
         activeIncremental += 1;
       } else {

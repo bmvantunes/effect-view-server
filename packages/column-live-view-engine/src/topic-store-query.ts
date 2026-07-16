@@ -24,11 +24,7 @@ import {
 } from "./raw-query-compiler";
 import { InvalidQueryError } from "./raw-query-decoder";
 import type { QueryEvaluation } from "./query-result";
-import {
-  topicStoreRawQueryMetadata,
-  topicStoreReadModel,
-  type TopicStore,
-} from "./topic-store-state";
+import { topicStoreQueryResources, type TopicStore } from "./topic-store-state";
 
 type RowObject = object;
 
@@ -37,7 +33,7 @@ export const topicStoreQueryMetadata = Effect.fn("ColumnLiveViewEngine.topicStor
     store: TopicStore,
     schema: SchemaValue,
   ) {
-    const metadata = topicStoreRawQueryMetadata(store);
+    const { metadata } = topicStoreQueryResources(store);
     if (!rawQueryCompilerMetadataMatchesSchema(metadata, schema)) {
       return yield* InvalidQueryError.make({
         topic: store.topic,
@@ -62,7 +58,11 @@ export const prepareTopicStoreRawQuery = Effect.fn(
 export const prepareTopicStoreRuntimeRawQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.prepareRuntime",
 )(function* (store: TopicStore, query: unknown) {
-  return yield* prepareRuntimeRawQuery(store.topic, topicStoreRawQueryMetadata(store), query);
+  return yield* prepareRuntimeRawQuery(
+    store.topic,
+    topicStoreQueryResources(store).metadata,
+    query,
+  );
 });
 
 export const prepareTopicStoreGroupedQuery = Effect.fn(
@@ -79,18 +79,24 @@ export const prepareTopicStoreGroupedQuery = Effect.fn(
 export const prepareTopicStoreRuntimeGroupedQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.grouped.prepareRuntime",
 )(function* (store: TopicStore, query: unknown) {
-  return yield* prepareRuntimeGroupedQuery(store.topic, topicStoreRawQueryMetadata(store), query);
+  return yield* prepareRuntimeGroupedQuery(
+    store.topic,
+    topicStoreQueryResources(store).metadata,
+    query,
+  );
 });
 
 export const evaluateTopicStoreRawQueryResult = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledRawQuery<object, ResultRow>,
-): LiveQueryResult<ResultRow> => evaluateRawQueryResult(topicStoreReadModel(store), compiled);
+): LiveQueryResult<ResultRow> =>
+  evaluateRawQueryResult(topicStoreQueryResources(store).queryInterface, compiled);
 
 export const evaluateTopicStoreGroupedQuery = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledGroupedQuery<object, ResultRow>,
-): QueryEvaluation<RowObject> => evaluateCompiledGroupedQuery(topicStoreReadModel(store), compiled);
+): QueryEvaluation<RowObject> =>
+  evaluateCompiledGroupedQuery(topicStoreQueryResources(store).queryInterface, compiled);
 
 export const acquireTopicStoreRawQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.acquire",
@@ -98,13 +104,15 @@ export const acquireTopicStoreRawQueryExecution = Effect.fn(
   store: TopicStore,
   compiled: CompiledRawQuery<object, ResultRow>,
 ) {
-  return yield* acquireRawQueryExecution(topicStoreReadModel(store), compiled);
+  const { activeQueries, queryInterface } = topicStoreQueryResources(store);
+  return yield* acquireRawQueryExecution(queryInterface, activeQueries, compiled);
 });
 
 export const releaseTopicStoreRawQueryExecution = <ResultRow extends RowObject>(
   store: TopicStore,
   compiled: CompiledRawQuery<object, ResultRow>,
-): Effect.Effect<void> => releaseRawQueryExecution(topicStoreReadModel(store), compiled);
+): Effect.Effect<void> =>
+  releaseRawQueryExecution(topicStoreQueryResources(store).activeQueries, compiled);
 
 export const acquireTopicStoreMaterializedQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.materialized.acquire",
@@ -113,14 +121,15 @@ export const acquireTopicStoreMaterializedQueryExecution = Effect.fn(
   compiled: CompiledGroupedQuery<object, ResultRow>,
   groupedIncrementalAdmissionLimits: GroupedIncrementalAdmissionLimits,
 ) {
-  const readModel = topicStoreReadModel(store);
+  const { activeQueries, queryInterface } = topicStoreQueryResources(store);
   return yield* acquireMaterializedQueryExecution(
-    readModel,
+    queryInterface,
+    activeQueries,
     compiled.cacheKey,
     compiled.plan.resultSemantics,
     (releaseRetainedChanges) =>
       makeIncrementalGroupedQueryExecution(
-        readModel,
+        queryInterface,
         compiled,
         releaseRetainedChanges,
         groupedIncrementalAdmissionLimits,
@@ -132,4 +141,7 @@ export const releaseTopicStoreMaterializedQueryExecution = <ResultRow extends Ro
   store: TopicStore,
   compiled: CompiledGroupedQuery<object, ResultRow>,
 ): Effect.Effect<void> =>
-  releaseMaterializedQueryExecution(topicStoreReadModel(store), compiled.cacheKey);
+  releaseMaterializedQueryExecution(
+    topicStoreQueryResources(store).activeQueries,
+    compiled.cacheKey,
+  );

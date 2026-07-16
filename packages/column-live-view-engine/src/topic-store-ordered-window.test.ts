@@ -11,7 +11,7 @@ import {
   publishTopicStoreRows,
   TopicStore,
 } from "./topic-store";
-import { topicStoreReadModel } from "./topic-store-state";
+import { topicStoreTestQueryInterface } from "../test-harness/topic-store";
 import { rawWindowOrderedSlotIndex } from "./topic-raw-ordered-window-index";
 import { numericRowField } from "../test-harness/columns";
 import { expectDefined } from "../test-harness/events";
@@ -33,7 +33,7 @@ describe("Topic Store ordered-window execution", () => {
       );
       yield* deleteTopicStoreRow(store, "1");
 
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const scannedKeys: Array<string> = [];
       readModel.scanRows((key) => {
         scannedKeys.push(key);
@@ -515,7 +515,7 @@ describe("Topic Store ordered-window execution", () => {
         return priceComparison === 0 ? left.key.localeCompare(right.key) : priceComparison;
       };
 
-      const readModel = topicStoreReadModel(store);
+      const readModel = topicStoreTestQueryInterface(store);
       const boundedWindow = readModel.scanRawWindow({
         predicate: {
           filters: [],
@@ -875,7 +875,7 @@ describe("Topic Store ordered-window execution", () => {
         numericRowField(left.row, "price") - numericRowField(right.row, "price") ||
         left.key.localeCompare(right.key);
 
-      const heapWindow = topicStoreReadModel(store).scanRawWindow({
+      const heapWindow = topicStoreTestQueryInterface(store).scanRawWindow({
         predicate: {
           filters: [],
           callbackRequired: false,
@@ -930,7 +930,7 @@ describe("Topic Store ordered-window execution", () => {
         right: { readonly row: object },
       ) => numericRowField(left.row, "price") - numericRowField(right.row, "price");
 
-      const priceOnlyTieWindow = topicStoreReadModel(store).scanRawWindow({
+      const priceOnlyTieWindow = topicStoreTestQueryInterface(store).scanRawWindow({
         predicate: {
           filters: [],
           callbackRequired: false,
@@ -963,7 +963,7 @@ describe("Topic Store ordered-window execution", () => {
         numericRowField(left.row, "updatedAt") - numericRowField(right.row, "updatedAt") ||
         left.key.localeCompare(right.key);
 
-      const candidateHeapWindow = topicStoreReadModel(store).scanRawWindow({
+      const candidateHeapWindow = topicStoreTestQueryInterface(store).scanRawWindow({
         predicate: {
           filters: [{ field: "region", operator: "eq", value: "emea" }],
           callbackRequired: false,
@@ -1013,7 +1013,7 @@ describe("Topic Store ordered-window execution", () => {
       ]);
       expect(candidateHeapWindow.totalRows).toBe(4_899);
 
-      const unboundedFallbackWindow = topicStoreReadModel(store).scanRawWindow({
+      const unboundedFallbackWindow = topicStoreTestQueryInterface(store).scanRawWindow({
         predicate: {
           filters: [],
           callbackRequired: false,

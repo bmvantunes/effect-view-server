@@ -19,6 +19,7 @@ import {
   collectPackageSurfaceViolations,
   consumerImportViolationsFor,
   consumerMarkdownImportViolationsFor,
+  engineTypeDependencyViolationsForFile,
   facadeProjectionViolationsForSource,
   isTestFile,
   packageImportViolationsForSource,
@@ -644,7 +645,25 @@ describe("internal Seam checker", () => {
         repositoryRoot: "/repo",
       }),
     ).toStrictEqual([
-      "packages/column-live-view-engine/src/active-query.ts references topicStoreReadModel outside the Topic Store Module.",
+      "packages/column-live-view-engine/src/active-query.ts references topicStoreReadModel outside the Topic Store Interface.",
+    ]);
+    expect(
+      topicStoreHelperViolationsForFile({
+        contents: "const metadata = topicStoreRawQueryMetadata(store);",
+        path: "/repo/packages/column-live-view-engine/src/topic-store-query.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/topic-store-query.ts references topicStoreRawQueryMetadata outside the Topic Store Interface.",
+    ]);
+    expect(
+      topicStoreHelperViolationsForFile({
+        contents: "const query = topicStoreReadModel(store);",
+        path: "/repo/packages/column-live-view-engine/src/topic-store-query.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/topic-store-query.ts references topicStoreReadModel outside the Topic Store Interface.",
     ]);
     expect(
       topicStoreStateExportViolationsForFile({
@@ -696,6 +715,63 @@ describe("internal Seam checker", () => {
     ).toStrictEqual([
       "packages/column-live-view-engine/src/topic-store.ts namespace imports restricted Topic Store state internals.",
     ]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents: 'import type { ActiveQueryRegistry } from "./active-query";',
+        path: "/repo/packages/column-live-view-engine/src/topic-row-storage.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/topic-row-storage.ts imports Active Query state below the Topic Store Interface.",
+    ]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents: 'import type { LiveQueryExecution } from "./active-query";',
+        path: "/repo/packages/column-live-view-engine/src/active-raw-query.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/active-raw-query.ts imports the Active Query facade from an Active Query leaf module.",
+    ]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents: 'import type { LiveQueryExecution } from "./active-query";',
+        path: "/repo/packages/column-live-view-engine/src/active-query-contract.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/active-query-contract.ts imports ./active-query above the allowed lower Active Query contracts.",
+    ]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents: 'import type { RawQueryExecutionSlot } from "./active-raw-query";',
+        path: "/repo/packages/column-live-view-engine/src/active-query-contract.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/active-query-contract.ts imports ./active-raw-query above the allowed lower Active Query contracts.",
+    ]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents:
+          'import type { MaterializedQueryExecution } from "./active-materialized-query";',
+        path: "/repo/packages/column-live-view-engine/src/active-query-contract.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([
+      "packages/column-live-view-engine/src/active-query-contract.ts imports ./active-materialized-query above the allowed lower Active Query contracts.",
+    ]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents: [
+          'import type { QueryEvaluation } from "./query-result";',
+          'import type { RawQueryPlanWindow } from "./raw-query-plan";',
+          'import type { TopicRowEntry } from "./row-scan";',
+        ].join("\n"),
+        path: "/repo/packages/column-live-view-engine/src/active-query-contract.ts",
+        repositoryRoot: "/repo",
+      }),
+    ).toStrictEqual([]);
     expect(
       topicStoreStateExportViolationsForFile({
         contents: [
@@ -761,6 +837,15 @@ describe("internal Seam checker", () => {
       topicStoreStateExportViolationsForFile({
         contents: "export const topicStoreState = true;",
         path: join(process.cwd(), "packages/column-live-view-engine/src/topic-store-state.ts"),
+      }),
+    ).toStrictEqual([]);
+    expect(
+      engineTypeDependencyViolationsForFile({
+        contents: 'import type { TopicRowScan } from "./row-scan";',
+        path: join(
+          process.cwd(),
+          "packages/column-live-view-engine/src/topic-store-query-interface.ts",
+        ),
       }),
     ).toStrictEqual([]);
   });

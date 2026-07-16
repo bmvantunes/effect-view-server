@@ -5,6 +5,13 @@ import {
   registerTopicStoreSubscription,
   TopicStore,
 } from "../src/topic-store";
+import { topicStoreQueryResources } from "../src/topic-store-state";
+
+export const topicStoreTestQueryInterface = (store: TopicStore) =>
+  topicStoreQueryResources(store).queryInterface;
+
+export const topicStoreTestQueryMetadata = (store: TopicStore) =>
+  topicStoreQueryResources(store).metadata;
 
 export const registerTestTopicStoreSubscriber = (
   store: TopicStore,

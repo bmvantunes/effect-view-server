@@ -17,6 +17,7 @@ describe("Real View Server RPC health", () => {
   it.live("serves health from the runtime instead of stale live-client state", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
@@ -37,19 +38,22 @@ describe("Real View Server RPC health", () => {
             }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
 
       expect(client.health.value.engine.topics.orders.rowCount).toBe(123);
 
       yield* client.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("rejects semantically invalid runtime health over unary RPC", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: inMemory.liveClient,
@@ -73,7 +77,9 @@ describe("Real View Server RPC health", () => {
             }),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
       const raw = yield* makeRawRpcClient(server.url);
+      yield* Effect.addFinalizer(() => raw.close);
 
       const invalidHealth = yield* Effect.flip(raw.rpc["ViewServer.Health"]()).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)),
@@ -84,12 +90,13 @@ describe("Real View Server RPC health", () => {
       yield* raw.close;
       yield* server.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("closes in-flight remote RPC health reads when the websocket server closes", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const readStarted = yield* Deferred.make<void>();
       const readInterrupted = yield* Deferred.make<void>();
       let readCount = 0;
@@ -106,17 +113,21 @@ describe("Real View Server RPC health", () => {
             ),
         },
       });
+      yield* Effect.addFinalizer(() => server.close);
       const raw = yield* makeRawRpcClient(server.url);
+      yield* Effect.addFinalizer(() => raw.close);
 
       const first = yield* raw.rpc["ViewServer.Health"]().pipe(
         Effect.exit,
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(first).pipe(Effect.asVoid));
       yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       const second = yield* raw.rpc["ViewServer.Health"]().pipe(
         Effect.exit,
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(second).pipe(Effect.asVoid));
       yield* Effect.yieldNow;
       yield* server.close.pipe(Effect.timeout("1 second"));
       yield* Deferred.await(readInterrupted).pipe(Effect.timeout("1 second"));
@@ -129,12 +140,13 @@ describe("Real View Server RPC health", () => {
       expect(Exit.isFailure(secondExit)).toBe(true);
       yield* raw.close;
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("coalesces concurrent RPC health reads while an active read is running", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const firstHealth = serverHealthWithOrdersRowCount(baseHealth, 1);
       const secondHealth = serverHealthWithOrdersRowCount(baseHealth, 2);
@@ -156,6 +168,7 @@ describe("Real View Server RPC health", () => {
         [1, Effect.succeed(secondHealth)],
       ]);
       const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
       const handlers = makeViewServerRpcHandlers(
         viewServer,
         {
@@ -177,10 +190,12 @@ describe("Real View Server RPC health", () => {
       const first = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(first).pipe(Effect.asVoid));
       yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       const second = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(second).pipe(Effect.asVoid));
       yield* Deferred.succeed(releaseRead, undefined);
 
       const [firstResult, secondResult] = yield* Effect.all(
@@ -195,12 +210,13 @@ describe("Real View Server RPC health", () => {
       expect(thirdResult).toStrictEqual(secondHealth);
       yield* Scope.close(handlerScope, Exit.void);
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("clears failed RPC health reads so later callers retry", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const recoveredHealth = serverHealthWithOrdersRowCount(baseHealth, 3);
       const healthError: ViewServerRuntimeError = {
@@ -217,6 +233,7 @@ describe("Real View Server RPC health", () => {
         [1, Effect.succeed(recoveredHealth)],
       ]);
       const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
       const handlers = makeViewServerRpcHandlers(
         viewServer,
         {
@@ -243,12 +260,13 @@ describe("Real View Server RPC health", () => {
       expect(retriedHealth).toStrictEqual(recoveredHealth);
       yield* Scope.close(handlerScope, Exit.void);
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("keeps shared RPC health reads alive when the leader caller is interrupted", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const baseHealth = yield* inMemory.client.health();
       const firstHealth = serverHealthWithOrdersRowCount(baseHealth, 3);
       const recoveredHealth = serverHealthWithOrdersRowCount(baseHealth, 4);
@@ -277,6 +295,7 @@ describe("Real View Server RPC health", () => {
         ],
       ]);
       const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
       const handlers = makeViewServerRpcHandlers(
         viewServer,
         {
@@ -296,10 +315,12 @@ describe("Real View Server RPC health", () => {
       const leader = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(leader).pipe(Effect.asVoid));
       yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       const follower = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(follower).pipe(Effect.asVoid));
       yield* Fiber.interrupt(leader).pipe(
         Effect.timeout("1 second"),
         Effect.onError(() => Deferred.succeed(releaseRead, undefined).pipe(Effect.asVoid)),
@@ -315,15 +336,17 @@ describe("Real View Server RPC health", () => {
       expect(retriedHealth).toStrictEqual(recoveredHealth);
       yield* Scope.close(handlerScope, Exit.void);
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("interrupts active RPC health reads when the handler scope closes", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const readStarted = yield* Deferred.make<void>();
       const readInterrupted = yield* Deferred.make<void>();
       const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
       const handlers = makeViewServerRpcHandlers(
         viewServer,
         {
@@ -342,6 +365,7 @@ describe("Real View Server RPC health", () => {
       const healthFiber = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(healthFiber).pipe(Effect.asVoid));
       yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       yield* Scope.close(handlerScope, Exit.void).pipe(Effect.timeout("1 second"));
       yield* Deferred.await(readInterrupted).pipe(Effect.timeout("1 second"));
@@ -349,7 +373,7 @@ describe("Real View Server RPC health", () => {
 
       expect(Exit.hasInterrupts(healthExit)).toBe(true);
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live(
@@ -357,11 +381,13 @@ describe("Real View Server RPC health", () => {
     () =>
       Effect.gen(function* () {
         const inMemory = createServerTestRuntime(viewServer);
+        yield* Effect.addFinalizer(() => inMemory.close);
         const baseHealth = yield* inMemory.client.health();
         const readStarted = yield* Deferred.make<void>();
         const releaseRead = yield* Deferred.make<void>();
         const workerReadFinished = yield* Deferred.make<void>();
         const handlerScope = yield* Scope.make("parallel");
+        yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
         const handlers = makeViewServerRpcHandlers(
           viewServer,
           {
@@ -383,6 +409,10 @@ describe("Real View Server RPC health", () => {
         const healthFiber = yield* handlers["ViewServer.Health"]().pipe(
           Effect.forkChild({ startImmediately: true }),
         );
+        yield* Effect.addFinalizer(() => Fiber.interrupt(healthFiber).pipe(Effect.asVoid));
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(releaseRead, undefined).pipe(Effect.asVoid),
+        );
         yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
         yield* Scope.close(handlerScope, Exit.void).pipe(Effect.timeout("1 second"));
         const healthExit = yield* Fiber.await(healthFiber).pipe(Effect.timeout("1 second"));
@@ -392,13 +422,15 @@ describe("Real View Server RPC health", () => {
 
         expect(Exit.hasInterrupts(healthExit)).toBe(true);
         yield* inMemory.close;
-      }),
+      }).pipe(Effect.scoped),
   );
 
   it.live("interrupts RPC health reads started after the handler scope closes", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
       const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
       const handlers = makeViewServerRpcHandlers(
         viewServer,
         {
@@ -413,6 +445,6 @@ describe("Real View Server RPC health", () => {
 
       expect(Exit.hasInterrupts(healthExit)).toBe(true);
       yield* inMemory.close;
-    }),
+    }).pipe(Effect.scoped),
   );
 });

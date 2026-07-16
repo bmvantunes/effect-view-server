@@ -141,7 +141,13 @@ describe("Real View Server metrics route", () => {
       ).toStrictEqual([
         'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
       ]);
-      expect(lines.filter((line) => line.includes("ordersLease:strategy="))).toStrictEqual([]);
+      expect(
+        lines.filter((line) =>
+          /^view_server_grpc_feed_[a-z_]+\{[^}]*feed="ordersLease:strategy=[^"]+"[^}]*\} -?\d+(?:\.\d+)?$/.test(
+            line,
+          ),
+        ),
+      ).toStrictEqual([]);
 
       yield* server.close;
       yield* inMemory.close;

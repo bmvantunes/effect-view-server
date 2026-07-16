@@ -1,9 +1,130 @@
 import { defineConfig } from "vite-plus";
 
-const effectDiagnosticsTask = (project: string, dependsOn: Array<string> = []) => ({
+const declarationBuildTask = "build:effect-declarations";
+
+const declarationProjects = [
+  { name: "config", directory: "packages/config", dependsOn: [] },
+  { name: "effect-utils", directory: "packages/effect-utils", dependsOn: [] },
+  {
+    name: "column-live-view-engine",
+    directory: "packages/column-live-view-engine",
+    dependsOn: ["config", "effect-utils"],
+  },
+  {
+    name: "protocol",
+    directory: "packages/protocol",
+    dependsOn: ["config", "effect-utils"],
+  },
+  {
+    name: "client",
+    directory: "packages/client",
+    dependsOn: ["config", "effect-utils", "protocol"],
+  },
+  {
+    name: "runtime-core",
+    directory: "packages/runtime-core",
+    dependsOn: ["client", "column-live-view-engine", "config", "effect-utils"],
+  },
+  {
+    name: "server",
+    directory: "packages/server",
+    dependsOn: ["client", "config", "effect-utils", "protocol"],
+  },
+  {
+    name: "in-memory",
+    directory: "packages/in-memory",
+    dependsOn: ["client", "config", "runtime-core"],
+  },
+  {
+    name: "runtime",
+    directory: "packages/runtime",
+    dependsOn: ["client", "config", "effect-utils", "runtime-core", "server"],
+  },
+  {
+    name: "react",
+    directory: "packages/react",
+    dependsOn: ["client", "config", "effect-utils", "in-memory"],
+  },
+] as const;
+
+const declarationTaskName = (name: string) => `${declarationBuildTask}:${name}`;
+
+const declarationTasks = Object.fromEntries(
+  declarationProjects.map(({ name, directory, dependsOn }) => [
+    declarationTaskName(name),
+    {
+      command: "vp pack",
+      cwd: directory,
+      dependsOn: dependsOn.map(declarationTaskName),
+    },
+  ]),
+);
+
+const diagnosticsProjects = [
+  { name: "config", project: "packages/config", needsDeclarations: false },
+  { name: "effect-utils", project: "packages/effect-utils", needsDeclarations: false },
+  { name: "protocol", project: "packages/protocol", needsDeclarations: true },
+  { name: "client", project: "packages/client", needsDeclarations: true },
+  {
+    name: "column-live-view-engine",
+    project: "packages/column-live-view-engine",
+    needsDeclarations: true,
+  },
+  { name: "runtime-core", project: "packages/runtime-core", needsDeclarations: true },
+  { name: "in-memory", project: "packages/in-memory", needsDeclarations: true },
+  { name: "server", project: "packages/server", needsDeclarations: true },
+  { name: "runtime", project: "packages/runtime", needsDeclarations: true },
+  { name: "react", project: "packages/react", needsDeclarations: true },
+  { name: "facade", project: "packages/effect-view-server", needsDeclarations: true },
+  { name: "example:kafka-react", project: "examples/kafka-react", needsDeclarations: true },
+  {
+    name: "example:grpc-leased-react",
+    project: "examples/grpc-leased-react",
+    needsDeclarations: true,
+  },
+  {
+    name: "example:grpc-materialized-react",
+    project: "examples/grpc-materialized-react",
+    needsDeclarations: true,
+  },
+  {
+    name: "example:combined-sources-react",
+    project: "examples/combined-sources-react",
+    needsDeclarations: true,
+  },
+  { name: "example:ssr-react", project: "examples/ssr-react", needsDeclarations: true },
+  {
+    name: "example:tcp-publisher-react",
+    project: "examples/tcp-publisher-react",
+    needsDeclarations: true,
+  },
+  {
+    name: "example:in-memory-react",
+    project: "examples/in-memory-react",
+    needsDeclarations: true,
+  },
+  { name: "app", project: "apps/example", needsDeclarations: true },
+] as const;
+
+const diagnosticsTaskName = (name: string) => `check:effect:${name}`;
+
+const effectDiagnosticsTask = (project: string, needsDeclarations: boolean) => ({
   command: `effect-language-service diagnostics --project ${project}/tsconfig.json --format text --strict`,
-  dependsOn,
+  dependsOn: needsDeclarations ? [declarationBuildTask] : [],
 });
+
+const diagnosticsTasks = Object.fromEntries(
+  diagnosticsProjects.map(({ name, project, needsDeclarations }) => [
+    diagnosticsTaskName(name),
+    effectDiagnosticsTask(project, needsDeclarations),
+  ]),
+);
+
+const exampleDiagnosticsTasks = diagnosticsProjects
+  .filter(({ name }) => name.startsWith("example:"))
+  .map(({ name }) => diagnosticsTaskName(name));
+
+const allDiagnosticsTasks = diagnosticsProjects.map(({ name }) => diagnosticsTaskName(name));
 
 export default defineConfig({
   test: {
@@ -51,83 +172,21 @@ export default defineConfig({
   run: {
     cache: true,
     tasks: {
+      ...declarationTasks,
+      ...diagnosticsTasks,
       "build:effect-declarations": {
-        command: "vp run -t effect-view-server#build",
+        command: "vp pack",
+        cwd: "packages/effect-view-server",
+        dependsOn: declarationProjects.map(({ name }) => declarationTaskName(name)),
       },
-      "check:effect:config": effectDiagnosticsTask("packages/config"),
-      "check:effect:protocol": effectDiagnosticsTask("packages/protocol", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:effect-utils": effectDiagnosticsTask("packages/effect-utils"),
-      "check:effect:client": effectDiagnosticsTask("packages/client", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:column-live-view-engine": effectDiagnosticsTask(
-        "packages/column-live-view-engine",
-        ["build:effect-declarations"],
-      ),
-      "check:effect:runtime-core": effectDiagnosticsTask("packages/runtime-core", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:in-memory": effectDiagnosticsTask("packages/in-memory", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:server": effectDiagnosticsTask("packages/server", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:runtime": effectDiagnosticsTask("packages/runtime", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:react": effectDiagnosticsTask("packages/react", ["build:effect-declarations"]),
-      "check:effect:facade": effectDiagnosticsTask("packages/effect-view-server", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:example:kafka-react": effectDiagnosticsTask("examples/kafka-react", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:example:grpc-leased-react": effectDiagnosticsTask(
-        "examples/grpc-leased-react",
-        ["build:effect-declarations"],
-      ),
-      "check:effect:example:grpc-materialized-react": effectDiagnosticsTask(
-        "examples/grpc-materialized-react",
-        ["build:effect-declarations"],
-      ),
-      "check:effect:example:combined-sources-react": effectDiagnosticsTask(
-        "examples/combined-sources-react",
-        ["build:effect-declarations"],
-      ),
-      "check:effect:example:ssr-react": effectDiagnosticsTask("examples/ssr-react", [
-        "build:effect-declarations",
-      ]),
-      "check:effect:example:tcp-publisher-react": effectDiagnosticsTask(
-        "examples/tcp-publisher-react",
-        ["build:effect-declarations"],
-      ),
-      "examples:check:effect": effectDiagnosticsTask("examples/in-memory-react", [
-        "build:effect-declarations",
-        "check:effect:example:kafka-react",
-        "check:effect:example:grpc-leased-react",
-        "check:effect:example:grpc-materialized-react",
-        "check:effect:example:combined-sources-react",
-        "check:effect:example:ssr-react",
-        "check:effect:example:tcp-publisher-react",
-      ]),
-      "check:effect": effectDiagnosticsTask("apps/example", [
-        "build:effect-declarations",
-        "check:effect:config",
-        "check:effect:protocol",
-        "check:effect:effect-utils",
-        "check:effect:client",
-        "check:effect:column-live-view-engine",
-        "check:effect:runtime-core",
-        "check:effect:in-memory",
-        "check:effect:server",
-        "check:effect:runtime",
-        "check:effect:react",
-        "check:effect:facade",
-        "examples:check:effect",
-      ]),
+      "examples:check:effect": {
+        command: 'node --eval ""',
+        dependsOn: exampleDiagnosticsTasks,
+      },
+      "check:effect": {
+        command: 'node --eval ""',
+        dependsOn: allDiagnosticsTasks,
+      },
     },
   },
 });

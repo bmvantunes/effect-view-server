@@ -17,6 +17,7 @@ import {
   collectEngineSeamViolations,
   collectPackageImportViolations,
   collectPackageSurfaceViolations,
+  collectRuntimeSourceSeamViolations,
   consumerImportViolationsFor,
   consumerMarkdownImportViolationsFor,
   engineTypeDependencyViolationsForFile,
@@ -26,6 +27,7 @@ import {
   packageSourceViolationsFor,
   packageSurfaceViolationsForManifest,
   packageSurfaceViolationsForViteConfig,
+  runtimeSourceSeamViolationsForFile,
   sourceFiles,
   sourceForbiddenExportViolationsForSource,
   topicStoreHelperViolationsForFile,
@@ -43,6 +45,81 @@ describe("internal Seam checker", () => {
       helperViolations: [],
       stateExportViolations: [],
     });
+    expect(collectRuntimeSourceSeamViolations()).toStrictEqual([]);
+  });
+
+  it("keeps runtime composition neutral and Adapter option dependencies acyclic", () => {
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import { makeViewServerKafkaIngress } from "./kafka-ingress";',
+        path: join(process.cwd(), "packages/runtime/src/internal.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/internal.ts imports source Adapter policy through ./kafka-ingress.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import type { ViewServerKafkaIngress } from "./kafka-ingress";',
+        path: join(process.cwd(), "packages/runtime/src/kafka-runtime-options.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/kafka-runtime-options.ts imports its source Adapter Implementation through ./kafka-ingress.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import type { ResolvedOptions } from "./runtime-options";',
+        path: join(process.cwd(), "packages/runtime/src/grpc-lease-manager.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/grpc-lease-manager.ts imports central runtime options instead of its Adapter-owned option module.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: [
+          'import type { ResolvedOptions } from "./grpc-runtime-options";',
+          'import { ViewServerGrpcIngressError } from "./grpc-source-lifecycle";',
+        ].join("\n"),
+        path: join(process.cwd(), "packages/runtime/src/grpc-ingress.ts"),
+      }),
+    ).toStrictEqual([]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import { makeRedisIngress } from "./redis-ingress";',
+        path: join(process.cwd(), "packages/runtime/src/internal.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/internal.ts imports source Adapter policy through ./redis-ingress.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import { makeRedisIngress } from "./redis-ingress";',
+        path: join(process.cwd(), "packages/runtime/src/redis-runtime-options.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/redis-runtime-options.ts imports its source Adapter Implementation through ./redis-ingress.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import { resolveBase } from "./runtime-options";',
+        path: join(process.cwd(), "packages/runtime/src/redis-ingress.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/redis-ingress.ts imports central runtime options instead of its Adapter-owned option module.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import { makeRedisIngress } from "./redis-ingress";',
+        path: join(process.cwd(), "packages/runtime/src/runtime-types.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/runtime-types.ts imports non-contract runtime code through ./redis-ingress.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import type { RedisOptions } from "./redis-runtime-option-contract";',
+        path: join(process.cwd(), "packages/runtime/src/runtime-types.ts"),
+      }),
+    ).toStrictEqual([]);
   });
 
   it("rejects private, stale, bare-root, deep, and evasive consumer imports", () => {

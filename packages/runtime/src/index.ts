@@ -6,8 +6,9 @@ import type {
 } from "@effect-view-server/config";
 import { Config, Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
-import type { ViewServerGrpcIngressError } from "./grpc-ingress";
-import type { ViewServerKafkaIngressError } from "./kafka-ingress";
+import type { ViewServerGrpcIngressError } from "./grpc-source-lifecycle";
+import type { ViewServerKafkaIngressError } from "./kafka-ingress-error";
+import type { ViewServerRuntimeSourceError } from "./runtime-source-adapters";
 import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 import {
   makeDefaultRuntimeDependencies,
@@ -72,8 +73,7 @@ export function makeViewServerRuntime<
   | HttpServerError.ServeError
   | Config.ConfigError
   | ViewServerRuntimeError
-  | ViewServerKafkaIngressError
-  | ViewServerGrpcIngressError
+  | ViewServerRuntimeSourceError
   | ViewServerTcpPublishIngressError
 > {
   const options = args[0];
@@ -122,8 +122,7 @@ export function runViewServerRuntime<
   | HttpServerError.ServeError
   | Config.ConfigError
   | ViewServerRuntimeError
-  | ViewServerKafkaIngressError
-  | ViewServerGrpcIngressError
+  | ViewServerRuntimeSourceError
   | ViewServerTcpPublishIngressError
 > {
   const options = args[0];

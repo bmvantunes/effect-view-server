@@ -5,7 +5,7 @@ import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-c
 import { Effect, Fiber, Queue, Schema, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import { resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions } from "./grpc-runtime-source";
 
 import {
   grpcClients,
@@ -153,7 +153,7 @@ describe("gRPC lease manager route validation", () => {
         },
       });
       const grpcOptions = yield* resolveViewServerRuntimeOptions(localViewServer).pipe(
-        Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)),
+        Effect.flatMap(Effect.fromNullishOr),
       );
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
@@ -255,7 +255,7 @@ describe("gRPC lease manager route validation", () => {
         },
       });
       const grpcOptions = yield* resolveViewServerRuntimeOptions(localViewServer).pipe(
-        Effect.flatMap((options) => Effect.fromNullishOr(options.grpcOptions)),
+        Effect.flatMap(Effect.fromNullishOr),
       );
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
       const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({

@@ -15,14 +15,17 @@ import {
   type ViewServerRuntimeDependencyConfig,
   type ViewServerRuntimeDependencies,
 } from "./runtime-dependencies";
-import type { ViewServerKafkaIngressError } from "./kafka-ingress";
-import type { ViewServerGrpcIngressError } from "./grpc-ingress";
 import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 import {
-  resolveViewServerRuntimeOptions,
-  validateGrpcSourceFeeds,
-  type ResolvedViewServerRuntimeOptions,
+  resolveViewServerRuntimeBaseOptions,
+  type ResolvedViewServerRuntimeBaseOptions,
 } from "./runtime-options";
+import type { ViewServerRuntimeSourceError } from "./runtime-source-adapters";
+import {
+  validateRuntimeSourceOwnership,
+  type ViewServerRuntimePreparedSource,
+  type ViewServerRuntimeSourceModule,
+} from "./runtime-source";
 import type {
   ViewServerRuntime,
   ViewServerRuntimeOptionsInput,
@@ -79,18 +82,6 @@ const acquireRuntimeResource = Effect.fn("ViewServerRuntime.acquireResource")(fu
   );
 });
 
-const acquireRuntimeResourceUninterruptibly = Effect.fn(
-  "ViewServerRuntime.acquireResourceUninterruptibly",
-)(function* <A, E, R>(
-  scope: Scope.Scope,
-  acquire: Effect.Effect<A, E, R>,
-  release: (resource: A) => Effect.Effect<void>,
-) {
-  return yield* Effect.acquireRelease(acquire, release, { interruptible: false }).pipe(
-    Scope.provide(scope),
-  );
-});
-
 type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions> = {
   groupedIncrementalAdmissionLimits?: NonNullable<
     ViewServerRuntimeCoreOptionsFor<Topics>["groupedIncrementalAdmissionLimits"]
@@ -106,8 +97,7 @@ type ViewServerRuntimeFactoryError =
   | HttpServerError.ServeError
   | Config.ConfigError
   | ViewServerRuntimeError
-  | ViewServerKafkaIngressError
-  | ViewServerGrpcIngressError
+  | ViewServerRuntimeSourceError
   | ViewServerTcpPublishIngressError;
 
 type MakeViewServerRuntimeWithDependencies = {
@@ -143,11 +133,20 @@ export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDep
     options?: Options,
   ) {
     if (options === undefined) {
-      const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, {});
-      return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
+      const runtimeOptions: ViewServerRuntimeOptions<Topics, Regions, GrpcClients> = {};
+      return yield* makeViewServerRuntimeFromResolvedOptions(
+        dependencies,
+        config,
+        runtimeOptions,
+        resolveViewServerRuntimeBaseOptions(runtimeOptions),
+      );
     }
-    const resolvedOptions = yield* resolveViewServerRuntimeOptions(config, options);
-    return yield* makeViewServerRuntimeFromResolvedOptions(dependencies, config, resolvedOptions);
+    return yield* makeViewServerRuntimeFromResolvedOptions(
+      dependencies,
+      config,
+      options,
+      resolveViewServerRuntimeBaseOptions(options),
+    );
   });
 
 const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
@@ -159,23 +158,22 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  resolvedOptions: ResolvedViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  runtimeOptions: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  resolvedOptions: ResolvedViewServerRuntimeBaseOptions<Topics, Regions, GrpcClients>,
 ) {
   const dependencyConfig: ViewServerRuntimeDependencyConfig<Topics> = {
     topics: config.topics,
   };
-  const kafkaOptions = resolvedOptions.kafkaOptions;
-  const grpcOptions = resolvedOptions.grpcOptions;
-  yield* validateGrpcSourceFeeds(dependencyConfig, grpcOptions);
+  const sourceModules: Array<ViewServerRuntimeSourceModule<Topics, ViewServerRuntimeSourceError>> =
+    [];
+  for (const sourceAdapter of dependencies.sourceAdapters) {
+    const sourceModule = yield* sourceAdapter.make(config, runtimeOptions);
+    if (sourceModule !== undefined) {
+      sourceModules.push(sourceModule);
+    }
+  }
+  yield* validateRuntimeSourceOwnership(sourceModules);
   const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
-  const kafkaHealth =
-    kafkaOptions === undefined
-      ? undefined
-      : dependencies.makeKafkaHealthLedger(dependencyConfig, kafkaOptions);
-  const grpcHealth =
-    grpcOptions === undefined
-      ? undefined
-      : dependencies.makeGrpcHealthLedger(dependencyConfig, grpcOptions);
   const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
     transportHealth: transportHealth.transportHealth,
   };
@@ -187,16 +185,16 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     runtimeCoreInput.subscriptionQueueCapacity =
       resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity;
   }
-  if (kafkaHealth !== undefined || grpcHealth !== undefined) {
+  if (sourceModules.length > 0) {
     runtimeCoreInput.healthOverlay = (
       health: ViewServerHealth<Topics>,
       nowMillis: number,
     ): ViewServerHealth<Topics> => {
-      const kafkaOverlayed =
-        kafkaHealth === undefined ? health : kafkaHealth.healthOverlay(health, nowMillis);
-      return grpcHealth === undefined
-        ? kafkaOverlayed
-        : grpcHealth.healthOverlay(kafkaOverlayed, nowMillis);
+      let overlayed = health;
+      for (const sourceModule of sourceModules) {
+        overlayed = sourceModule.healthOverlay(overlayed, nowMillis);
+      }
+      return overlayed;
     };
   }
   const runtimeScope = yield* Scope.make("sequential");
@@ -207,32 +205,26 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       (resource) => resource.close,
     );
     const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
-    const kafkaHealthObserver =
-      kafkaHealth === undefined
-        ? undefined
-        : yield* acquireRuntimeResourceUninterruptibly(
-            runtimeScope,
-            dependencies.makeKafkaHealthObserver(kafkaHealth, refreshRuntimeHealth),
-            (resource) => resource.close,
-          );
-    const grpcLeaseManager =
-      grpcOptions === undefined || grpcHealth === undefined
-        ? undefined
-        : yield* acquireRuntimeResource(
-            runtimeScope,
-            dependencies.makeGrpcLeaseManager(
-              dependencyConfig,
-              runtimeCore.internalClient,
-              runtimeCore.liveClient,
-              runtimeCore.internalLiveClient,
-              runtimeCore.requestHealthRefresh,
-              grpcOptions,
-              grpcHealth,
-            ),
-            (resource) => resource.close,
-          );
-    const runtimeLiveClient = grpcLeaseManager?.liveClient ?? runtimeCore.liveClient;
-    const runtimeClient = grpcLeaseManager?.client ?? runtimeCore.client;
+    const preparedSources: Array<
+      ViewServerRuntimePreparedSource<Topics, ViewServerRuntimeSourceError>
+    > = [];
+    let runtimeLiveClient = runtimeCore.liveClient;
+    let runtimeClient = runtimeCore.client;
+    for (const sourceModule of sourceModules) {
+      const preparedSource = yield* sourceModule
+        .prepare({
+          client: runtimeClient,
+          internalClient: runtimeCore.internalClient,
+          internalLiveClient: runtimeCore.internalLiveClient,
+          liveClient: runtimeLiveClient,
+          refreshHealth: refreshRuntimeHealth,
+          requestHealthRefresh: runtimeCore.requestHealthRefresh,
+        })
+        .pipe(Scope.provide(runtimeScope));
+      preparedSources.push(preparedSource);
+      runtimeClient = preparedSource.client;
+      runtimeLiveClient = preparedSource.liveClient;
+    }
     const server = yield* acquireRuntimeResource(
       runtimeScope,
       dependencies.makeServer(
@@ -252,30 +244,8 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       ),
       (resource) => resource.close,
     );
-    if (kafkaOptions !== undefined && kafkaHealthObserver !== undefined) {
-      yield* acquireRuntimeResource(
-        runtimeScope,
-        dependencies.makeKafkaIngress(
-          dependencyConfig,
-          runtimeCore.internalClient,
-          kafkaOptions,
-          kafkaHealthObserver,
-        ),
-        (resource) => resource.close,
-      );
-    }
-    if (grpcOptions !== undefined && grpcHealth !== undefined) {
-      yield* acquireRuntimeResource(
-        runtimeScope,
-        dependencies.makeGrpcIngress(
-          dependencyConfig,
-          runtimeCore.internalClient,
-          runtimeCore.requestHealthRefresh,
-          grpcOptions,
-          grpcHealth,
-        ),
-        (resource) => resource.close,
-      );
+    for (const preparedSource of preparedSources) {
+      yield* preparedSource.start.pipe(Scope.provide(runtimeScope));
     }
     const tcpPublishIngress =
       resolvedOptions.tcpPublishOptions === undefined

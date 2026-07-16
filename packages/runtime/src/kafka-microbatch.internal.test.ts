@@ -6,7 +6,7 @@ import {
 } from "@effect-view-server/runtime-core/internal";
 import { Cause, Clock, Effect, Exit, Option, Schema } from "effect";
 import { processKafkaMessageBatch, runKafkaMessageStream } from "./kafka-ingress";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import { resolveKafkaRuntimeSourceOptions as resolveViewServerRuntimeOptions } from "./kafka-runtime-source";
 import {
   causeReasonSummary,
   IncomingOrder,
@@ -765,7 +765,7 @@ describe("Kafka microbatch publishing internals", () => {
           consumerGroupId: "view-server-topic-owned-storage-run",
         },
       });
-      const topicOwnedKafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const topicOwnedKafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCore(topicOwnedViewServer, {});
       const ledger = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: topicOwnedKafkaOptions.regions,

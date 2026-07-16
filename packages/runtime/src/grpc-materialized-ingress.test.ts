@@ -3,11 +3,13 @@ import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-vie
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import { Cause, Deferred, Effect, Fiber, Queue, Schedule, Stream } from "effect";
-import { makeDefaultRuntimeDependencies } from "./internal";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "./grpc-runtime-source";
 import { makeViewServerGrpcIngress } from "./grpc-ingress";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
 import {
   makeMaterializedGrpcRuntimeHarness,
   readGrpcHealthOverlay,
@@ -1640,12 +1642,11 @@ describe("Materialized gRPC ingress", () => {
         },
       });
       const resolvedOptions = yield* resolveViewServerRuntimeOptions(config);
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, {});
-      const health = makeDefaultRuntimeDependencies<typeof config.topics>().makeGrpcHealthLedger(
-        config,
-        grpcOptions,
-      );
+      const health = makeDefaultGrpcRuntimeSourceDependencies<
+        typeof config.topics
+      >().makeHealthLedger(config, grpcOptions);
 
       const error = yield* Effect.flip(
         makeViewServerGrpcIngress(

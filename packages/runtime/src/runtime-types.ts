@@ -24,7 +24,12 @@ import type {
   RuntimeKafkaSourceRegionConstraint,
   TopicOwnedKafkaSourceTopic,
 } from "@effect-view-server/config/internal";
-import type { Duration, Effect, Schema } from "effect";
+import type { Effect, Schema } from "effect";
+import type { ViewServerGrpcRuntimeOptions } from "./grpc-runtime-option-contract";
+import type { ViewServerKafkaRuntimeOptions } from "./kafka-runtime-option-contract";
+
+export type { ViewServerGrpcRuntimeOptions } from "./grpc-runtime-option-contract";
+export type { ViewServerKafkaRuntimeOptions } from "./kafka-runtime-option-contract";
 
 export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &
   Record<
@@ -36,25 +41,6 @@ export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &
   >;
 
 type RuntimeHttpPath = `/${string}`;
-
-export type ViewServerKafkaRuntimeOptions<
-  _Topics extends ViewServerRuntimeTopicDefinitions,
-  Regions extends RuntimeRegions = RuntimeRegions,
-> = {
-  readonly consumerGroupId: string;
-  readonly startFrom?: ViewServerKafkaStartFrom;
-  readonly regions?: Regions;
-};
-
-export type ViewServerGrpcRuntimeOptions<
-  _Topics extends ViewServerRuntimeTopicDefinitions,
-  _Clients extends GrpcRuntimeClients = GrpcRuntimeClients,
-> = {
-  readonly materializedReconnect?: {
-    readonly maxReconnects?: number;
-    readonly delay?: Duration.Input;
-  };
-};
 
 export type ViewServerRuntimeOptions<
   Topics extends ViewServerRuntimeTopicDefinitions = ViewServerRuntimeTopicDefinitions,

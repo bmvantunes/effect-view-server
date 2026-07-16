@@ -825,6 +825,98 @@ export const collectEngineSeamViolations = (
   return { helperViolations, stateExportViolations };
 };
 
+const neutralRuntimeCompositionModules = new Set([
+  "packages/runtime/src/internal.ts",
+  "packages/runtime/src/runtime-dependencies.ts",
+  "packages/runtime/src/runtime-options.ts",
+  "packages/runtime/src/runtime-source.ts",
+]);
+
+const runtimeAdapterPolicySpecifier =
+  /^\.\/(?!runtime-)(?!tcp-publish-)(?!transport-)[^/]+-(?:health(?:-observation)?|ingress(?:-error)?|lease-manager|runtime-(?:option-contract|options|source)|source-lifecycle)$/;
+
+const runtimeAdapterOptionModule =
+  /^packages\/runtime\/src\/(.+)-runtime-(?:option-contract|options)\.ts$/;
+
+const runtimeAdapterLeafModule =
+  /^packages\/runtime\/src\/(?!tcp-publish-)(.+)-(?:ingress|lease-manager)\.ts$/;
+
+const runtimeAdapterImplementationSpecifier = (adapter: string, specifier: string): boolean =>
+  specifier === `./${adapter}-ingress` ||
+  specifier === `./${adapter}-lease-manager` ||
+  specifier === `./${adapter}-runtime-source`;
+
+export const runtimeSourceSeamViolationsForFile = ({
+  contents,
+  path,
+  repositoryRoot = repoRoot,
+}: {
+  readonly contents: string;
+  readonly path: string;
+  readonly repositoryRoot?: string;
+}): ReadonlyArray<string> => {
+  const relativePath = toPosixPath(relative(repositoryRoot, path));
+  const moduleSpecifiers = inspectTypeScriptModule({ fileName: path, source: contents }).moduleSpecifiers;
+  const violations: Array<string> = [];
+  if (neutralRuntimeCompositionModules.has(relativePath)) {
+    for (const specifier of moduleSpecifiers) {
+      if (runtimeAdapterPolicySpecifier.test(specifier)) {
+        violations.push(
+          `${relativePath} imports source Adapter policy through ${specifier}.`,
+        );
+      }
+    }
+  }
+  if (relativePath === "packages/runtime/src/runtime-types.ts") {
+    for (const specifier of moduleSpecifiers) {
+      if (specifier.startsWith("./") && !specifier.endsWith("-runtime-option-contract")) {
+        violations.push(
+          `${relativePath} imports non-contract runtime code through ${specifier}.`,
+        );
+      }
+    }
+  }
+  const adapterOptionMatch = runtimeAdapterOptionModule.exec(relativePath);
+  if (adapterOptionMatch !== null) {
+    const adapter = adapterOptionMatch[1];
+    for (const specifier of moduleSpecifiers) {
+      if (adapter !== undefined && runtimeAdapterImplementationSpecifier(adapter, specifier)) {
+        violations.push(
+          `${relativePath} imports its source Adapter Implementation through ${specifier}.`,
+        );
+      }
+    }
+  }
+  if (
+    runtimeAdapterLeafModule.test(relativePath) &&
+    moduleSpecifiers.includes("./runtime-options")
+  ) {
+    violations.push(
+      `${relativePath} imports central runtime options instead of its Adapter-owned option module.`,
+    );
+  }
+  return violations;
+};
+
+export const collectRuntimeSourceSeamViolations = (
+  repositoryRoot = repoRoot,
+): ReadonlyArray<string> => {
+  const violations: Array<string> = [];
+  const sourceRoot = join(repositoryRoot, "packages", "runtime", "src");
+  for (const path of sourceFiles(sourceRoot)) {
+    if (!isTestFile(path)) {
+      violations.push(
+        ...runtimeSourceSeamViolationsForFile({
+          contents: readFileSync(path, "utf8"),
+          path,
+          repositoryRoot,
+        }),
+      );
+    }
+  }
+  return violations.sort();
+};
+
 const assertNoViolations = (heading: string, violations: ReadonlyArray<string>): void => {
   if (violations.length > 0) {
     throw new Error([heading, ...violations.map((violation) => `- ${violation}`)].join("\n"));
@@ -852,7 +944,12 @@ export const assertNoEngineSeamViolations = ({
     ...stateExportViolations,
   ]);
 
+export const assertNoRuntimeSourceSeamViolations = (
+  violations: ReadonlyArray<string>,
+): void => assertNoViolations("Runtime Source Module seam violations found.", violations);
+
 assertNoPackageSurfaceViolations(collectPackageSurfaceViolations());
 assertNoPackageImportViolations(collectPackageImportViolations());
 assertNoConsumerImportViolations(collectConsumerImportViolations());
 assertNoEngineSeamViolations(collectEngineSeamViolations());
+assertNoRuntimeSourceSeamViolations(collectRuntimeSourceSeamViolations());

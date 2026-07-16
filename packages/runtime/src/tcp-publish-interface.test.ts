@@ -7,6 +7,14 @@ import * as BigDecimal from "effect/BigDecimal";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import { makeViewServerRuntime } from "./index";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  makeGrpcRuntimeSourceAdapter,
+} from "./grpc-runtime-source";
+import {
+  makeDefaultKafkaRuntimeSourceDependencies,
+  makeKafkaRuntimeSourceAdapter,
+} from "./kafka-runtime-source";
 import { makeViewServerTcpPublishIngress } from "./tcp-publish-ingress";
 import {
   connectTcpPublishSocket,
@@ -2017,6 +2025,16 @@ describe("TCP publish Interface", () => {
       let tcpPublishOptionKeys: ReadonlyArray<string> = [];
       const dependencies: RuntimeDependencies = {
         ...makeDefaultRuntimeDependencies<MixedTopics>(),
+        sourceAdapters: [
+          makeKafkaRuntimeSourceAdapter({
+            ...makeDefaultKafkaRuntimeSourceDependencies<MixedTopics>(),
+            makeIngress: () => Effect.succeed({ close: Effect.void }),
+          }),
+          makeGrpcRuntimeSourceAdapter({
+            ...makeDefaultGrpcRuntimeSourceDependencies<MixedTopics>(),
+            makeIngress: () => Effect.succeed({ close: Effect.void }),
+          }),
+        ],
         makeServer: () =>
           Effect.succeed({
             url: "ws://127.0.0.1:0/rpc",
@@ -2024,8 +2042,6 @@ describe("TCP publish Interface", () => {
             metricsUrl: "http://127.0.0.1:0/metrics",
             close: Effect.void,
           }),
-        makeKafkaIngress: () => Effect.succeed({ close: Effect.void }),
-        makeGrpcIngress: () => Effect.succeed({ close: Effect.void }),
         makeTcpPublishIngress: (tcpConfig, _client, options) => {
           tcpPublishTopics = Object.keys(tcpConfig.topics);
           tcpPublishOptionKeys = Object.keys(options).sort();

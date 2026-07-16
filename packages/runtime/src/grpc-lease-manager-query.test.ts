@@ -3,9 +3,11 @@ import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-c
 import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
 import { Clock, Effect, Fiber, HashMap, Option, Queue, Schedule, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
-import { makeDefaultRuntimeDependencies } from "./internal";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "./grpc-runtime-source";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
 import { makeLeasedGrpcRuntimeHarness } from "../test-harness/grpc-runtime";
 
 import { grpcOrderValue } from "../test-harness/grpc-config";
@@ -1450,12 +1452,11 @@ describe("gRPC lease manager query translation", () => {
           longRunningGrpcStream([grpcOrderValue(`${region}-order-1`, 10)]),
       });
       const options = yield* resolveViewServerRuntimeOptions(feed);
-      const grpcOptions = yield* Effect.fromNullishOr(options.grpcOptions);
+      const grpcOptions = yield* Effect.fromNullishOr(options);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(feed, {});
-      const health = makeDefaultRuntimeDependencies<typeof feed.topics>().makeGrpcHealthLedger(
-        feed,
-        grpcOptions,
-      );
+      const health = makeDefaultGrpcRuntimeSourceDependencies<
+        typeof feed.topics
+      >().makeHealthLedger(feed, grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
         feed,
         runtimeCore.internalClient,
@@ -1524,12 +1525,11 @@ describe("gRPC lease manager query translation", () => {
           materializedReconnect: fastGrpcMaterializedReconnect,
         },
       });
-      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions.grpcOptions);
+      const grpcOptions = yield* Effect.fromNullishOr(resolvedOptions);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, {});
-      const health = makeDefaultRuntimeDependencies<typeof config.topics>().makeGrpcHealthLedger(
-        config,
-        grpcOptions,
-      );
+      const health = makeDefaultGrpcRuntimeSourceDependencies<
+        typeof config.topics
+      >().makeHealthLedger(config, grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
         config,
         runtimeCore.internalClient,

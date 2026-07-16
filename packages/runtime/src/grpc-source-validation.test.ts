@@ -6,7 +6,14 @@ import { Effect, Schema, Stream } from "effect";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
 import { ViewServerGrpcIngressError } from "./grpc-ingress";
-import { resolveViewServerRuntimeOptions, validateGrpcSourceFeeds } from "./runtime-options";
+import {
+  makeDefaultGrpcRuntimeSourceDependencies,
+  resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions,
+} from "./grpc-runtime-source";
+import {
+  resolveViewServerGrpcRuntimeOptions,
+  validateGrpcSourceFeeds,
+} from "./grpc-runtime-options";
 import {
   grpcAndKafkaViewServer,
   grpcClients,
@@ -158,14 +165,17 @@ describe("Runtime source composition and options", () => {
         value: "streamOrders",
       });
 
-      const invalidLifecycleError = yield* resolveViewServerRuntimeOptions(
+      const invalidLifecycleError = yield* resolveViewServerGrpcRuntimeOptions(
         invalidLifecycleViewServer,
+        {},
       ).pipe(Effect.flip);
-      const invalidRouteByError = yield* resolveViewServerRuntimeOptions(
+      const invalidRouteByError = yield* resolveViewServerGrpcRuntimeOptions(
         invalidRouteByViewServer,
+        {},
       ).pipe(Effect.flip);
-      const partialConcreteBindingError = yield* resolveViewServerRuntimeOptions(
+      const partialConcreteBindingError = yield* resolveViewServerGrpcRuntimeOptions(
         partialConcreteBindingViewServer,
+        {},
       ).pipe(Effect.flip);
       const invalidLifecycleGrpcError = yield* Schema.decodeUnknownEffect(
         ViewServerGrpcIngressError,
@@ -228,10 +238,9 @@ describe("Runtime source composition and options", () => {
         value: "missing",
       });
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(config, {});
-      const health = makeDefaultRuntimeDependencies<typeof config.topics>().makeGrpcHealthLedger(
-        config,
-        grpcOptions,
-      );
+      const health = makeDefaultGrpcRuntimeSourceDependencies<
+        typeof config.topics
+      >().makeHealthLedger(config, grpcOptions);
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 2_000);
 
       expect(Object.entries(currentHealth.grpc?.feeds ?? {})).toStrictEqual([]);
@@ -294,11 +303,11 @@ describe("Runtime source composition and options", () => {
         streamForRegion: () => Stream.never,
       });
       const options = yield* resolveViewServerRuntimeOptions(config);
-      yield* validateGrpcSourceFeeds(config, yield* Effect.fromNullishOr(options.grpcOptions));
+      yield* validateGrpcSourceFeeds(config, yield* Effect.fromNullishOr(options));
 
       expect({
-        feedTopic: options.grpcOptions?.feeds["orders"]?.topic,
-        routeBy: options.grpcOptions?.feeds["orders"]?.routeBy,
+        feedTopic: options?.feeds["orders"]?.topic,
+        routeBy: options?.feeds["orders"]?.routeBy,
       }).toStrictEqual({
         feedTopic: "orders",
         routeBy: ["region"],

@@ -8,7 +8,7 @@ import {
   processKafkaMessageBatch,
   ViewServerKafkaIngressError,
 } from "./kafka-ingress";
-import { resolveViewServerRuntimeOptions } from "./runtime-options";
+import { resolveKafkaRuntimeSourceOptions as resolveViewServerRuntimeOptions } from "./kafka-runtime-source";
 
 import {
   IncomingOrder,
@@ -51,7 +51,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-topic-owned-undefined-value",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -152,7 +152,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-topic-owned-null-key-tombstone",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -245,7 +245,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-topic-owned-keyless-tombstone-prefix",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -360,7 +360,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-topic-owned-mixed-tombstone-batch",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -443,7 +443,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-topic-owned-tombstone-contiguous-upsert-runs",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -570,7 +570,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-topic-owned-tombstone-then-row-batch",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(topicOwnedViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof topicOwnedViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -674,7 +674,7 @@ describe("Kafka tombstone batching contracts", () => {
           consumerGroupId: "view-server-mixed-direct-upsert-topic-owned-tombstone",
         },
       });
-      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+      const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(mixedSourceViewServer, {});
       const health = makeViewServerKafkaHealthLedger<typeof mixedSourceViewServer.topics>({
         regions: kafkaOptions.regions,
@@ -811,7 +811,7 @@ describe("Kafka tombstone batching contracts", () => {
             consumerGroupId: "view-server-direct-null-key-upsert",
           },
         });
-        const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved.kafkaOptions));
+        const kafkaOptions = Option.getOrThrow(Option.fromNullishOr(resolved));
         const runtimeCore = yield* makeViewServerRuntimeCoreInternal(kafkaBackedViewServer, {});
         const health = makeViewServerKafkaHealthLedger<typeof kafkaBackedViewServer.topics>({
           regions: kafkaOptions.regions,

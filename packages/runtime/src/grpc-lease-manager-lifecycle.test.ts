@@ -2633,4 +2633,78 @@ describe("gRPC lease manager lifecycle", () => {
       yield* runtimeCore.close;
     }),
   );
+
+  it.live("retires leased health before admitting a replacement for the same route", () =>
+    Effect.gen(function* () {
+      let acquireCount = 0;
+      const feed = grpcLeasedViewServer({
+        streamForRegion: () => {
+          acquireCount += 1;
+          return Stream.never;
+        },
+      });
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(feed, {});
+      const health = makeLeasedGrpcHealth(grpcOptions);
+      const retirementStarted = yield* Deferred.make<void>();
+      const allowRetirement = yield* Deferred.make<void>();
+      const delayedHealth = {
+        ...health,
+        leasedFeedRemoved: (feedKey: string) =>
+          Deferred.succeed(retirementStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(allowRetirement)),
+            Effect.andThen(health.leasedFeedRemoved(feedKey)),
+          ),
+      };
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        feed,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        delayedHealth,
+      );
+      const firstSubscription = yield* manager.liveClient.subscribe(
+        "orders",
+        leasedOrdersQuery("usa"),
+      );
+      const firstCloseFiber = yield* firstSubscription
+        .close()
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(retirementStarted);
+
+      const overlapError = yield* manager.liveClient
+        .subscribe("orders", leasedOrdersQuery("usa"))
+        .pipe(Effect.flip);
+      const acquireCountDuringRetirement = acquireCount;
+      yield* Deferred.succeed(allowRetirement, undefined);
+      yield* Fiber.join(firstCloseFiber);
+      const replacement = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
+      const replacementHealth = health.healthOverlay(yield* runtimeCore.client.health(), 2_000);
+
+      expect({
+        overlapError,
+        acquireCountDuringRetirement,
+        acquireCount,
+        subscriberCount:
+          replacementHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
+            ?.subscriberCount,
+      }).toStrictEqual({
+        overlapError: {
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          topic: "orders",
+          message:
+            "gRPC leased upstream is not accepting new subscribers after completion or failure.",
+        },
+        acquireCountDuringRetirement: 1,
+        acquireCount: 2,
+        subscriberCount: 1,
+      });
+      yield* replacement.close();
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
 });

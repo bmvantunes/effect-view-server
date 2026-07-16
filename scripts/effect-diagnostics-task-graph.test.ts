@@ -99,7 +99,7 @@ describe("strict Effect diagnostics task graph", () => {
       runtimeDiagnostics: {
         command:
           "effect-language-service diagnostics --project packages/runtime/tsconfig.json --format text --strict",
-        dependsOn: ["build:effect-declarations"],
+        dependsOn: ["build:effect-declarations:runtime"],
       },
       serverDependency: "workspace:*",
       uniqueBuildDirectories: buildDirectories,
@@ -135,14 +135,34 @@ describe("strict Effect diagnostics task graph", () => {
         .filter((dependency) => dependency.startsWith("check:effect:"))
         .map((dependency) => ({ dependency, name })),
     );
+    const broadPackageDiagnostics = diagnosticTasks
+      .filter(([, task]) => {
+        const command = taskCommand(task);
+        return typeof command === "string" && command.includes("--project packages/");
+      })
+      .filter(([, task]) => taskDependencies(task).includes("build:effect-declarations"))
+      .map(([name]) => name);
+    const incorrectlyScopedPackageDiagnostics = diagnosticTasks.flatMap(([name, task]) => {
+      const command = taskCommand(task);
+      if (typeof command !== "string") return [];
+      const match = command.match(/--project packages\/(.+)\/tsconfig\.json/);
+      if (match === null || match[1] === "config" || match[1] === "effect-utils") return [];
+      const expectedDependency =
+        match[1] === "effect-view-server"
+          ? "build:effect-declarations"
+          : `build:effect-declarations:${match[1]}`;
+      return taskDependencies(task).includes(expectedDependency) ? [] : [name];
+    });
 
     expect({
       appTask: tasks["check:effect:app"],
+      broadPackageDiagnostics,
       diagnosticProjects,
       examplesTask: tasks["examples:check:effect"],
       inMemoryExampleTask: tasks["check:effect:example:in-memory-react"],
       legacyCheckScript: rootPackage.scripts["check:effect"],
       legacyExamplesScript: rootPackage.scripts["examples:check:effect"],
+      incorrectlyScopedPackageDiagnostics,
       rootTask: tasks["check:effect"],
       serializedDiagnostics,
     }).toStrictEqual({
@@ -151,6 +171,7 @@ describe("strict Effect diagnostics task graph", () => {
           "effect-language-service diagnostics --project apps/example/tsconfig.json --format text --strict",
         dependsOn: ["build:effect-declarations"],
       },
+      broadPackageDiagnostics: ["check:effect:facade"],
       diagnosticProjects: discoveredProjects,
       examplesTask: {
         command: 'node --eval ""',
@@ -163,6 +184,7 @@ describe("strict Effect diagnostics task graph", () => {
       },
       legacyCheckScript: undefined,
       legacyExamplesScript: undefined,
+      incorrectlyScopedPackageDiagnostics: [],
       rootTask: {
         command: 'node --eval ""',
         dependsOn: diagnosticTaskNames,

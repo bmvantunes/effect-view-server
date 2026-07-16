@@ -61,62 +61,102 @@ const declarationTasks = Object.fromEntries(
 );
 
 const diagnosticsProjects = [
-  { name: "config", project: "packages/config", needsDeclarations: false },
-  { name: "effect-utils", project: "packages/effect-utils", needsDeclarations: false },
-  { name: "protocol", project: "packages/protocol", needsDeclarations: true },
-  { name: "client", project: "packages/client", needsDeclarations: true },
+  { name: "config", project: "packages/config", declarationTask: undefined },
+  { name: "effect-utils", project: "packages/effect-utils", declarationTask: undefined },
+  {
+    name: "protocol",
+    project: "packages/protocol",
+    declarationTask: declarationTaskName("protocol"),
+  },
+  {
+    name: "client",
+    project: "packages/client",
+    declarationTask: declarationTaskName("client"),
+  },
   {
     name: "column-live-view-engine",
     project: "packages/column-live-view-engine",
-    needsDeclarations: true,
+    declarationTask: declarationTaskName("column-live-view-engine"),
   },
-  { name: "runtime-core", project: "packages/runtime-core", needsDeclarations: true },
-  { name: "in-memory", project: "packages/in-memory", needsDeclarations: true },
-  { name: "server", project: "packages/server", needsDeclarations: true },
-  { name: "runtime", project: "packages/runtime", needsDeclarations: true },
-  { name: "react", project: "packages/react", needsDeclarations: true },
-  { name: "facade", project: "packages/effect-view-server", needsDeclarations: true },
-  { name: "example:kafka-react", project: "examples/kafka-react", needsDeclarations: true },
+  {
+    name: "runtime-core",
+    project: "packages/runtime-core",
+    declarationTask: declarationTaskName("runtime-core"),
+  },
+  {
+    name: "in-memory",
+    project: "packages/in-memory",
+    declarationTask: declarationTaskName("in-memory"),
+  },
+  {
+    name: "server",
+    project: "packages/server",
+    declarationTask: declarationTaskName("server"),
+  },
+  {
+    name: "runtime",
+    project: "packages/runtime",
+    declarationTask: declarationTaskName("runtime"),
+  },
+  {
+    name: "react",
+    project: "packages/react",
+    declarationTask: declarationTaskName("react"),
+  },
+  {
+    name: "facade",
+    project: "packages/effect-view-server",
+    declarationTask: declarationBuildTask,
+  },
+  {
+    name: "example:kafka-react",
+    project: "examples/kafka-react",
+    declarationTask: declarationBuildTask,
+  },
   {
     name: "example:grpc-leased-react",
     project: "examples/grpc-leased-react",
-    needsDeclarations: true,
+    declarationTask: declarationBuildTask,
   },
   {
     name: "example:grpc-materialized-react",
     project: "examples/grpc-materialized-react",
-    needsDeclarations: true,
+    declarationTask: declarationBuildTask,
   },
   {
     name: "example:combined-sources-react",
     project: "examples/combined-sources-react",
-    needsDeclarations: true,
+    declarationTask: declarationBuildTask,
   },
-  { name: "example:ssr-react", project: "examples/ssr-react", needsDeclarations: true },
+  {
+    name: "example:ssr-react",
+    project: "examples/ssr-react",
+    declarationTask: declarationBuildTask,
+  },
   {
     name: "example:tcp-publisher-react",
     project: "examples/tcp-publisher-react",
-    needsDeclarations: true,
+    declarationTask: declarationBuildTask,
   },
   {
     name: "example:in-memory-react",
     project: "examples/in-memory-react",
-    needsDeclarations: true,
+    declarationTask: declarationBuildTask,
   },
-  { name: "app", project: "apps/example", needsDeclarations: true },
+  { name: "app", project: "apps/example", declarationTask: declarationBuildTask },
 ] as const;
 
 const diagnosticsTaskName = (name: string) => `check:effect:${name}`;
 
-const effectDiagnosticsTask = (project: string, needsDeclarations: boolean) => ({
+const effectDiagnosticsTask = (project: string, declarationTask: string | undefined) => ({
   command: `effect-language-service diagnostics --project ${project}/tsconfig.json --format text --strict`,
-  dependsOn: needsDeclarations ? [declarationBuildTask] : [],
+  dependsOn: declarationTask === undefined ? [] : [declarationTask],
 });
 
 const diagnosticsTasks = Object.fromEntries(
-  diagnosticsProjects.map(({ name, project, needsDeclarations }) => [
+  diagnosticsProjects.map(({ name, project, declarationTask }) => [
     diagnosticsTaskName(name),
-    effectDiagnosticsTask(project, needsDeclarations),
+    effectDiagnosticsTask(project, declarationTask),
   ]),
 );
 

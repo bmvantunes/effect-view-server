@@ -95,6 +95,10 @@ export const BadJsonRow = Schema.Struct({
   id: Schema.String,
 });
 
+export const BadJsonRowEdge = Schema.Struct({
+  id: BadJsonField,
+});
+
 export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -120,18 +124,12 @@ export const safeEdgeViewServer = defineViewServerConfig({
     },
   },
 });
-Object.defineProperty(BadJsonRow.fields, "id", {
-  configurable: true,
-  enumerable: true,
-  value: BadJsonField,
-  writable: true,
-});
 export const edgeViewServer = {
   ...safeEdgeViewServer,
   topics: {
     badjson: {
       ...safeEdgeViewServer.topics.badjson,
-      schema: BadJsonRow,
+      schema: BadJsonRowEdge,
     },
   },
 };

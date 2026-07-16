@@ -112,7 +112,7 @@ describe("Real View Server RPC health", () => {
         Effect.exit,
         Effect.forkChild({ startImmediately: true }),
       );
-      yield* Deferred.await(readStarted);
+      yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       const second = yield* raw.rpc["ViewServer.Health"]().pipe(
         Effect.exit,
         Effect.forkChild({ startImmediately: true }),
@@ -177,7 +177,7 @@ describe("Real View Server RPC health", () => {
       const first = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
-      yield* Deferred.await(readStarted);
+      yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       const second = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
@@ -296,7 +296,7 @@ describe("Real View Server RPC health", () => {
       const leader = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
-      yield* Deferred.await(readStarted);
+      yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       const follower = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
@@ -342,7 +342,7 @@ describe("Real View Server RPC health", () => {
       const healthFiber = yield* handlers["ViewServer.Health"]().pipe(
         Effect.forkChild({ startImmediately: true }),
       );
-      yield* Deferred.await(readStarted);
+      yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
       yield* Scope.close(handlerScope, Exit.void).pipe(Effect.timeout("1 second"));
       yield* Deferred.await(readInterrupted).pipe(Effect.timeout("1 second"));
       const healthExit = yield* Fiber.await(healthFiber).pipe(Effect.timeout("1 second"));
@@ -383,7 +383,7 @@ describe("Real View Server RPC health", () => {
         const healthFiber = yield* handlers["ViewServer.Health"]().pipe(
           Effect.forkChild({ startImmediately: true }),
         );
-        yield* Deferred.await(readStarted);
+        yield* Deferred.await(readStarted).pipe(Effect.timeout("1 second"));
         yield* Scope.close(handlerScope, Exit.void).pipe(Effect.timeout("1 second"));
         const healthExit = yield* Fiber.await(healthFiber).pipe(Effect.timeout("1 second"));
         yield* Deferred.succeed(releaseRead, undefined);

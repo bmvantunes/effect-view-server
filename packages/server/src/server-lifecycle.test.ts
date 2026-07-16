@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, Logger, References } from "effect";
+import { Cause, Deferred, Effect, Fiber, Logger, References } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import { makeViewServerWebSocketServer } from "./index";
 import { closeTrackedSockets, makeTrackedSocket } from "./websocket-tracking";
@@ -75,16 +75,19 @@ describe("Real View Server lifecycle", () => {
         const inMemory = createServerTestRuntime(viewServer);
         const reservedPort = yield* reserveTcpPort();
 
-        const startupExit = yield* makeViewServerWebSocketServer(
-          viewServer,
-          {
-            liveClient: inMemory.liveClient,
-            runtime: inMemory.client,
-          },
-          { host: "127.0.0.1", port: reservedPort },
-        ).pipe(Effect.exit);
+        const startupError = yield* Effect.flip(
+          makeViewServerWebSocketServer(
+            viewServer,
+            {
+              liveClient: inMemory.liveClient,
+              runtime: inMemory.client,
+            },
+            { host: "127.0.0.1", port: reservedPort },
+          ),
+        );
 
-        expect(Exit.isFailure(startupExit)).toBe(true);
+        expect(startupError._tag).toBe("ServeError");
+        expect(startupError.cause).toHaveProperty("code", "EADDRINUSE");
         yield* inMemory.close;
       }),
     ),
@@ -114,10 +117,10 @@ describe("Real View Server lifecycle", () => {
       });
 
       const socket = yield* openRawWebSocket(server.url);
-      yield* Deferred.await(clientOpenedSignal);
+      yield* Deferred.await(clientOpenedSignal).pipe(Effect.timeout("1 second"));
       socket.close();
       const closeFiber = yield* server.close.pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Deferred.await(clientClosedSignal);
+      yield* Deferred.await(clientClosedSignal).pipe(Effect.timeout("1 second"));
       yield* Fiber.join(closeFiber);
 
       expect(openedClients).toBe(1);
@@ -172,7 +175,7 @@ describe("Real View Server lifecycle", () => {
       const socketFiber = yield* trackedSocket
         .runRaw(() => Effect.void)
         .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
-      yield* Deferred.await(socketOpened);
+      yield* Deferred.await(socketOpened).pipe(Effect.timeout("1 second"));
       expect(activeSocketClosers.size).toBe(1);
 
       yield* closeTrackedSockets(activeSocketClosers);
@@ -190,7 +193,7 @@ describe("Real View Server lifecycle", () => {
       expect(Cause.hasFails(logs[0]?.cause ?? Cause.empty)).toBe(true);
 
       yield* Fiber.interrupt(socketFiber);
-      yield* Deferred.await(socketClosed);
+      yield* Deferred.await(socketClosed).pipe(Effect.timeout("1 second"));
       expect(activeSocketClosers.size).toBe(0);
     }).pipe(
       Effect.provide(Logger.layer([logger])),
@@ -214,6 +217,7 @@ describe("Real View Server lifecycle", () => {
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
       let openedClients = 0;
+      let closedClients = 0;
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         auth: bearerAuth,
         liveClient: inMemory.liveClient,
@@ -222,13 +226,18 @@ describe("Real View Server lifecycle", () => {
           clientOpened: Effect.sync(() => {
             openedClients += 1;
           }),
+          clientClosed: Effect.sync(() => {
+            closedClients += 1;
+          }),
         },
       });
 
-      const socketExit = yield* Effect.exit(openRawWebSocket(server.url));
+      const socketError = yield* Effect.flip(openRawWebSocket(server.url));
 
-      expect(Exit.isFailure(socketExit)).toBe(true);
+      expect(socketError._tag).toBe("ServerTestWebSocketOpenError");
+      expect(socketError.cause).toBeInstanceOf(Event);
       expect(openedClients).toBe(0);
+      expect(closedClients).toBe(0);
 
       yield* server.close;
       yield* inMemory.close;

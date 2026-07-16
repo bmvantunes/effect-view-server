@@ -106,7 +106,7 @@ describe("Real View Server health route", () => {
       const health = yield* fetchJson(server.healthUrl);
 
       expect(health.response.status).toBe(500);
-      expect(health.value).toContain("Error: health defect");
+      expect(health.value).toMatch(/^Error: health defect(?:\n|$)/);
 
       yield* server.close;
       yield* inMemory.close;

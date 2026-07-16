@@ -16,5 +16,5 @@
     "noPropertyAccessFromIndexSignature": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts", "test-harness/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.test-d.ts", "test-harness/**/*.ts"]
 }

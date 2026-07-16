@@ -137,7 +137,7 @@ describe("Real View Server RPC subscription finalization", () => {
         totalRows: 1,
       });
 
-      yield* Deferred.await(closeStarted);
+      yield* Deferred.await(closeStarted).pipe(Effect.timeout("1 second"));
       expect(closeAttempts).toBe(1);
       expect(logs).toHaveLength(1);
       expect(logs[0]?.message).toStrictEqual(["RPC subscription close failed."]);
@@ -224,7 +224,7 @@ describe("Real View Server RPC subscription finalization", () => {
           Effect.flip,
         );
 
-        yield* Deferred.await(closeStarted);
+        yield* Deferred.await(closeStarted).pipe(Effect.timeout("1 second"));
         expect(Cause.hasDies(cause)).toBe(true);
         expect(Cause.hasFails(cause)).toBe(false);
         expect(closeAttempts).toBe(1);
@@ -295,7 +295,7 @@ describe("Real View Server RPC subscription finalization", () => {
         totalRows: 1,
       });
 
-      yield* Deferred.await(closeStarted);
+      yield* Deferred.await(closeStarted).pipe(Effect.timeout("1 second"));
       expect(closeAttempts).toBe(1);
       yield* raw.close;
       yield* server.close;

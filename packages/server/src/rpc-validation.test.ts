@@ -314,8 +314,12 @@ describe("Real View Server RPC validation and typed errors", () => {
           query: { select: ["id"] },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
-      expect(error.code).toBe("InvalidRow");
-      expect(error.message).toMatch(/Field id is not JSON-safe/);
+      expect(error).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: 'Field id is not JSON-safe: Unsupported JSON value type "symbol" at $.',
+        topic: "badjson",
+      });
 
       yield* raw.close;
       yield* server.close;

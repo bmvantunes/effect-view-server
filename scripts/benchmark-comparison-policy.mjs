@@ -762,6 +762,13 @@ export const compareBenchmarkArtifacts = ({
       baselineTask.grpcParameters,
       actualTask.grpcParameters,
     );
+    compareExactJson(
+      regressions,
+      taskLabel,
+      "measurementProtocol",
+      baselineTask.measurementProtocol,
+      actualTask.measurementProtocol,
+    );
     compareExact(
       regressions,
       taskLabel,

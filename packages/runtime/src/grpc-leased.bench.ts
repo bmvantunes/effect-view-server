@@ -113,10 +113,13 @@ if (benchOptions.time > 0 || benchOptions.warmupIterations > 0 || benchOptions.w
 }
 
 const samples: Array<GrpcLeasedBenchmarkSample> = [];
+const explicitGarbageCollection = grpcBenchmarkExplicitGcFromEnv(
+  process.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+);
 const memoryLifecycle = makeGrpcBenchmarkMemoryLifecycle({
   capture: memorySnapshot,
   collectGarbage: typeof gc === "function" ? gc : undefined,
-  explicitGc: grpcBenchmarkExplicitGcFromEnv(process.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"]),
+  explicitGc: explicitGarbageCollection,
   settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
 });
 
@@ -222,6 +225,9 @@ afterAll(async () => {
       before: memory.before,
       totalDelta: memoryDelta(memory.before, memory.afterCleanup),
     },
+    measurementProtocol: explicitGarbageCollection
+      ? { memoryCheckpoint: "settled-explicit-gc-after-cleanup" }
+      : undefined,
     mutationCount: cases.reduce((total, benchmarkCase) => total + benchmarkCase.mutationCount, 0),
     notes: [
       "Vitest latency includes a fresh Runtime Core, leased manager, deterministic sources, measured operation, health audit, and cleanup for each sample.",
@@ -229,7 +235,9 @@ afterAll(async () => {
       "Retained local-filter snapshot timing starts before subscription so its pooled throughput includes retained query evaluation and initial event delivery.",
       "Measured subscription-release cleanup is audited immediately after close and before the emergency whole-manager teardown.",
       "Every sample owns independent routes and emits separate raw measured-cleanup and emergency-teardown evidence, including the gRPC client active-feed ledger.",
-      "Endpoint RSS is captured after a settled explicit-GC checkpoint so closed sample runtimes do not contaminate retained-memory evidence.",
+      explicitGarbageCollection
+        ? "Endpoint RSS is captured after a settled explicit-GC checkpoint; the measurement protocol is structural baseline metadata."
+        : "Endpoint RSS is captured after cleanup and one event-loop settlement without explicit GC.",
     ],
     queuedEventCount,
     rowCount: rowsPerFeed,

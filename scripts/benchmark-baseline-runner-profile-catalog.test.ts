@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { profiles } from "./benchmark-baseline-profiles.mjs";
+import {
+  groupedWriteTask,
+  runtimeGrpcMaterializedTask,
+} from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
   it("defines active-query sharing fanout tasks", () => {
@@ -169,6 +173,7 @@ describe("benchmark baseline runner", () => {
         benchmarkScope: task.expectedBenchmarkScope,
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
         explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+        measurementProtocol: task.expectedMeasurementProtocol,
         nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
@@ -182,6 +187,7 @@ describe("benchmark baseline runner", () => {
         benchmarkScope: task.expectedBenchmarkScope,
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
         explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+        measurementProtocol: task.expectedMeasurementProtocol,
         nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
@@ -196,6 +202,7 @@ describe("benchmark baseline runner", () => {
         benchmarkScope: task.expectedBenchmarkScope,
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
         explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+        measurementProtocol: task.expectedMeasurementProtocol,
         nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SEED_ROWS"],
@@ -209,6 +216,9 @@ describe("benchmark baseline runner", () => {
           benchmarkScope: "runtime-grpc-leased",
           iterations: "5",
           explicitGc: "1",
+          measurementProtocol: {
+            memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+          },
           nodeOptions: "--expose-gc",
           outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-500retained.json",
           retainedRows: "500",
@@ -224,6 +234,9 @@ describe("benchmark baseline runner", () => {
           benchmarkScope: "runtime-grpc-leased",
           iterations: "5",
           explicitGc: "1",
+          measurementProtocol: {
+            memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+          },
           nodeOptions: "--expose-gc",
           outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-50000retained.json",
           retainedRows: "50000",
@@ -240,6 +253,9 @@ describe("benchmark baseline runner", () => {
           benchmarkScope: "runtime-grpc-materialized",
           iterations: "5",
           explicitGc: "1",
+          measurementProtocol: {
+            memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+          },
           nodeOptions: "--expose-gc",
           outputJsonPath: ".artifacts/grpc-materialized-1000seed-256batch.json",
           rowCount: "1000",
@@ -262,6 +278,7 @@ describe("benchmark baseline runner", () => {
     expect(
       groupedOrderNeutralTasks.map((task) => ({
         explicitGc: task.env["VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC"],
+        measurementProtocol: task.expectedMeasurementProtocol,
         nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         primingAppendBatches:
@@ -272,6 +289,7 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         explicitGc: undefined,
+        measurementProtocol: undefined,
         nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-order-neutral-100000rows-1mutations.json",
         primingAppendBatches: undefined,
@@ -280,6 +298,7 @@ describe("benchmark baseline runner", () => {
       },
       {
         explicitGc: undefined,
+        measurementProtocol: undefined,
         nodeOptions: undefined,
         outputJsonPath:
           ".artifacts/grouped-write-incremental-order-neutral-1000000rows-1mutations.json",
@@ -289,6 +308,10 @@ describe("benchmark baseline runner", () => {
       },
       {
         explicitGc: "1",
+        measurementProtocol: {
+          memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+          priming: "append-delete-restore-before-sampling",
+        },
         nodeOptions: "--expose-gc",
         outputJsonPath:
           ".artifacts/grouped-write-incremental-order-neutral-5000000rows-1mutations.json",
@@ -300,6 +323,7 @@ describe("benchmark baseline runner", () => {
     expect(
       smokeGroupedWriteTasks.map((task) => ({
         explicitGc: task.env["VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC"],
+        measurementProtocol: task.expectedMeasurementProtocol,
         nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         primingAppendBatches:
@@ -308,6 +332,7 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         explicitGc: undefined,
+        measurementProtocol: undefined,
         nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-1000rows-1mutations.json",
         primingAppendBatches: undefined,
@@ -316,6 +341,7 @@ describe("benchmark baseline runner", () => {
     expect(
       releaseGroupedWriteTasks.map((task) => ({
         explicitGc: task.env["VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC"],
+        measurementProtocol: task.expectedMeasurementProtocol,
         nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         primingAppendBatches:
@@ -324,23 +350,55 @@ describe("benchmark baseline runner", () => {
     ).toStrictEqual([
       {
         explicitGc: undefined,
+        measurementProtocol: undefined,
         nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-100000rows-1mutations.json",
         primingAppendBatches: undefined,
       },
       {
         explicitGc: undefined,
+        measurementProtocol: undefined,
         nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-1000000rows-1mutations.json",
         primingAppendBatches: undefined,
       },
       {
         explicitGc: undefined,
+        measurementProtocol: undefined,
         nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-5000000rows-1mutations.json",
         primingAppendBatches: undefined,
       },
     ]);
+  });
+
+  it("derives each supported measurement protocol combination from task environments", () => {
+    const commonGroupedEnvironment = {
+      VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "1",
+      VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
+    };
+
+    expect({
+      explicitGcOnly: groupedWriteTask("incremental", 1, {
+        ...commonGroupedEnvironment,
+        VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
+      }).expectedMeasurementProtocol,
+      noRuntimeProtocol: runtimeGrpcMaterializedTask(1, 1, {
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "1",
+      }).expectedMeasurementProtocol,
+      primingOnly: groupedWriteTask("incremental", 1, {
+        ...commonGroupedEnvironment,
+        VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES: "1",
+      }).expectedMeasurementProtocol,
+    }).toStrictEqual({
+      explicitGcOnly: {
+        memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+      },
+      noRuntimeProtocol: undefined,
+      primingOnly: {
+        priming: "append-delete-restore-before-sampling",
+      },
+    });
   });
 
   it("defines grouped key width smoke and release tasks", () => {

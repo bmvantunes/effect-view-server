@@ -72,6 +72,11 @@ export type BenchmarkGroupedKeyWidthParameters = {
   readonly windowLimit: number;
 };
 
+export type BenchmarkMeasurementProtocol = {
+  readonly memoryCheckpoint?: "settled-explicit-gc-after-cleanup";
+  readonly priming?: "append-delete-restore-before-sampling";
+};
+
 type BenchmarkArtifactFields = {
   readonly activeViewCountBeforeCleanup?: number;
   readonly artifactKind: "engine-benchmark-summary";
@@ -100,6 +105,7 @@ type BenchmarkArtifactFields = {
   readonly cleanupLeakCount: number;
   readonly groupedKeyWidthParameters?: BenchmarkGroupedKeyWidthParameters;
   readonly groupedWriteAdmission?: BenchmarkGroupedWriteAdmission;
+  readonly measurementProtocol?: BenchmarkMeasurementProtocol;
   readonly queuedEventCount: number;
   readonly health: unknown;
   readonly notes: ReadonlyArray<string>;
@@ -321,6 +327,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
         groupedWriteAdmission: input.groupedWriteAdmission,
         health: input.health,
         latency: input.latency,
+        measurementProtocol: input.measurementProtocol,
         memory: {
           afterBenchmark: input.memoryAfterBenchmark,
           afterSetup: input.memoryAfterSetup,

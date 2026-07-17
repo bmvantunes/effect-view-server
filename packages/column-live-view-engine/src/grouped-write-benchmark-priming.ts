@@ -8,41 +8,22 @@ export type GroupedWriteBenchmarkPrimingOperations = {
   readonly readRowCount: () => Promise<number>;
 };
 
-export const prepareGroupedWriteBenchmarkSetup = async ({
-  captureMemoryBaseline,
-  prepareMutationKeyIndexes,
-  prime,
-  settleMeasurementRuntime,
+export const groupedWriteBenchmarkGarbageCollector = ({
+  collectGarbage,
+  explicitGc,
 }: {
-  readonly captureMemoryBaseline: () => void;
-  readonly prepareMutationKeyIndexes: () => void;
-  readonly prime: (() => Promise<void>) | undefined;
-  readonly settleMeasurementRuntime: (() => void) | undefined;
-}): Promise<void> => {
-  prepareMutationKeyIndexes();
-  if (settleMeasurementRuntime !== undefined) {
-    settleMeasurementRuntime();
+  readonly collectGarbage: (() => void) | undefined;
+  readonly explicitGc: boolean;
+}): (() => void) | undefined => {
+  if (!explicitGc) {
+    return undefined;
   }
-  if (prime !== undefined) {
-    await prime();
+  if (collectGarbage === undefined) {
+    throw new Error(
+      "Grouped write explicit GC requires Node to start with NODE_OPTIONS=--expose-gc.",
+    );
   }
-  captureMemoryBaseline();
-};
-
-export const captureGroupedWriteBenchmarkAfterCleanup = async <Snapshot>({
-  captureMemoryAfterBenchmark,
-  releaseBenchmarkReferences,
-  settleCleanupRuntime,
-}: {
-  readonly captureMemoryAfterBenchmark: () => Snapshot;
-  readonly releaseBenchmarkReferences: () => Promise<void>;
-  readonly settleCleanupRuntime: (() => void) | undefined;
-}): Promise<Snapshot> => {
-  await releaseBenchmarkReferences();
-  if (settleCleanupRuntime !== undefined) {
-    settleCleanupRuntime();
-  }
-  return captureMemoryAfterBenchmark();
+  return collectGarbage;
 };
 
 export const primeGroupedWriteBenchmark = async ({

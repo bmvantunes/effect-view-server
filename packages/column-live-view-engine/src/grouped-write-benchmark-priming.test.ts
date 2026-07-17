@@ -1,103 +1,24 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
-  captureGroupedWriteBenchmarkAfterCleanup,
+  groupedWriteBenchmarkGarbageCollector,
   groupedWritePrimingAppendCase,
   groupedWritePrimingDeleteCase,
-  prepareGroupedWriteBenchmarkSetup,
   primeGroupedWriteBenchmark,
 } from "./grouped-write-benchmark-priming";
 
 describe("grouped write benchmark priming", () => {
-  it("settles after mutation key/index preparation, then primes before capturing memory", async () => {
-    const calls: Array<string> = [];
+  it("requires an exposed collector only when explicit collection is enabled", () => {
+    const collectGarbage = () => undefined;
 
-    await prepareGroupedWriteBenchmarkSetup({
-      captureMemoryBaseline: () => {
-        calls.push("capture-memory-after-setup");
-      },
-      prepareMutationKeyIndexes: () => {
-        calls.push("prepare-large-mutation-key-indexes");
-      },
-      prime: async () => {
-        calls.push("prime-grouped-write");
-      },
-      settleMeasurementRuntime: () => {
-        calls.push("settle-measurement-runtime");
-      },
-    });
-
-    expect(calls).toStrictEqual([
-      "prepare-large-mutation-key-indexes",
-      "settle-measurement-runtime",
-      "prime-grouped-write",
-      "capture-memory-after-setup",
-    ]);
-  });
-
-  it("prepares measured state and memory without priming when priming is disabled", async () => {
-    const calls: Array<string> = [];
-
-    await prepareGroupedWriteBenchmarkSetup({
-      captureMemoryBaseline: () => {
-        calls.push("capture-memory-after-setup");
-      },
-      prepareMutationKeyIndexes: () => {
-        calls.push("prepare-large-mutation-key-indexes");
-      },
-      prime: undefined,
-      settleMeasurementRuntime: undefined,
-    });
-
-    expect(calls).toStrictEqual([
-      "prepare-large-mutation-key-indexes",
-      "capture-memory-after-setup",
-    ]);
-  });
-
-  it("captures cleanup memory only after releasing references and settling", async () => {
-    const calls: Array<string> = [];
-
-    const memory = await captureGroupedWriteBenchmarkAfterCleanup({
-      captureMemoryAfterBenchmark: () => {
-        calls.push("capture-memory-after-cleanup");
-        return { rssBytes: 128 };
-      },
-      releaseBenchmarkReferences: async () => {
-        calls.push("release-benchmark-references");
-      },
-      settleCleanupRuntime: () => {
-        calls.push("settle-cleanup-runtime");
-      },
-    });
-
-    expect({ calls, memory }).toStrictEqual({
-      calls: [
-        "release-benchmark-references",
-        "settle-cleanup-runtime",
-        "capture-memory-after-cleanup",
-      ],
-      memory: { rssBytes: 128 },
-    });
-  });
-
-  it("captures cleanup memory after release when cleanup settling is disabled", async () => {
-    const calls: Array<string> = [];
-
-    const memory = await captureGroupedWriteBenchmarkAfterCleanup({
-      captureMemoryAfterBenchmark: () => {
-        calls.push("capture-memory-after-cleanup");
-        return { rssBytes: 256 };
-      },
-      releaseBenchmarkReferences: async () => {
-        calls.push("release-benchmark-references");
-      },
-      settleCleanupRuntime: undefined,
-    });
-
-    expect({ calls, memory }).toStrictEqual({
-      calls: ["release-benchmark-references", "capture-memory-after-cleanup"],
-      memory: { rssBytes: 256 },
-    });
+    expect(groupedWriteBenchmarkGarbageCollector({ collectGarbage, explicitGc: true })).toBe(
+      collectGarbage,
+    );
+    expect(
+      groupedWriteBenchmarkGarbageCollector({ collectGarbage: undefined, explicitGc: false }),
+    ).toBeUndefined();
+    expect(() =>
+      groupedWriteBenchmarkGarbageCollector({ collectGarbage: undefined, explicitGc: true }),
+    ).toThrow("Grouped write explicit GC requires Node to start with NODE_OPTIONS=--expose-gc.");
   });
 
   it("runs append, delta drain, exact-row deletion, delta drain, and cardinality proof in order", async () => {

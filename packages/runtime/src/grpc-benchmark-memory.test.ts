@@ -85,6 +85,24 @@ describe("gRPC benchmark memory lifecycle", () => {
     await expect(finished.captureAfterCleanup()).rejects.toThrow(
       "gRPC benchmark memory recording already finished.",
     );
+    await expect(finished.captureBefore()).rejects.toThrow(
+      "gRPC benchmark initial memory cannot be recorded after completion.",
+    );
+  });
+
+  it("supports undefined as a generic memory snapshot", async () => {
+    const lifecycle = makeGrpcBenchmarkMemoryLifecycle({
+      capture: () => undefined,
+      collectGarbage: undefined,
+      explicitGc: false,
+      settle: async () => undefined,
+    });
+
+    await lifecycle.captureBefore();
+    expect(await lifecycle.captureAfterCleanup()).toStrictEqual({
+      afterCleanup: undefined,
+      before: undefined,
+    });
   });
 
   it("accepts only the canonical explicit-GC environment values", () => {

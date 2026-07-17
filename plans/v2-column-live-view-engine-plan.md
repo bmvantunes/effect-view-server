@@ -1854,7 +1854,11 @@ That profile sets `VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE=order-n
 same 100k, 1M, and 5M grouped write row counts as the release grouped-write profile. It keeps only
 the field-ordered grouped subscription open, so `grouped patch aggregate values` isolates the
 order-neutral evaluation patch path instead of mixing it with an aggregate-ordered subscriber that
-must rebuild the grouped window. The default command compares fresh artifacts against
+must rebuild the grouped window. The 5M task additionally performs one append/delete restoration
+cycle after setup collection to prime the measured path, then captures endpoint memory after cleanup
+and explicit GC. Its summary and task catalog record both choices in structural
+`measurementProtocol` metadata; comparisons must reject baselines recorded under a different
+protocol. The 100k and 1M tasks retain the ordinary unprimed endpoint protocol. The default command compares fresh artifacts against
 `benchmarks/baselines/grouped-order-neutral.json`; use
 `vp run -w bench:baseline:grouped-order-neutral:update` only when accepting a new order-neutral
 baseline.

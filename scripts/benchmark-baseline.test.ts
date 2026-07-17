@@ -180,6 +180,36 @@ describe("benchmark baseline artifacts", () => {
     });
   });
 
+  it("reads and enforces structural measurement protocol metadata", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-protocol-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const measurementProtocol = {
+      memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+      priming: "append-delete-restore-before-sampling",
+    };
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({ ...summary, measurementProtocol })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(
+      readBenchmarkObservation({
+        ...taskPaths(summaryPath, outputJsonPath),
+        expectedMeasurementProtocol: measurementProtocol,
+      }),
+    ).toStrictEqual({
+      ...observation,
+      measurementProtocol,
+      outputJsonPath,
+      summaryPath,
+    });
+    expect(() =>
+      readBenchmarkObservation(taskPaths(summaryPath, outputJsonPath)),
+    ).toThrow("task a: measurementProtocol did not match the runner policy.");
+  });
+
   it("reads gRPC benchmark parameters from summary artifacts", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
     const summaryPath = join(directory, "actual.summary.json");
@@ -1521,6 +1551,14 @@ describe("benchmark baseline artifacts", () => {
     expect(() =>
       readBenchmarkObservation(taskPaths(rowCountSummaryPath, outputJsonPath)),
     ).toThrow("task a: rowCount changed from 100 to 101.");
+    expect(() =>
+      readBenchmarkObservation({
+        ...taskPaths(rowCountSummaryPath, outputJsonPath),
+        expectedMeasurementProtocol: {
+          memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+        },
+      }),
+    ).toThrow("task a: measurementProtocol did not match the runner policy.");
   });
 
   it("rejects summaries that point at a different Vitest output artifact", () => {
@@ -1558,6 +1596,82 @@ describe("benchmark baseline artifacts", () => {
 
   it("validates baseline manifests with the default diagnostic path", () => {
     const baseline = buildBenchmarkBaseline("smoke", [observation]);
+
+    expect(validateBenchmarkBaseline(baseline)).toStrictEqual(baseline);
+  });
+
+  it("rejects unsupported measurement protocol values in baselines", () => {
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...observation,
+            measurementProtocol: {
+              memoryCheckpoint: "immediate-after-cleanup",
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol.memoryCheckpoint must be settled-explicit-gc-after-cleanup.",
+    );
+  });
+
+  it("rejects empty and unknown measurement protocol metadata in baselines", () => {
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...observation,
+            measurementProtocol: {},
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol must contain one or more of these keys only: memoryCheckpoint, priming.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...observation,
+            measurementProtocol: {
+              unknown: "protocol",
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol must contain one or more of these keys only: memoryCheckpoint, priming.",
+    );
+  });
+
+  it("rejects unsupported measurement priming protocols in baselines", () => {
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...observation,
+            measurementProtocol: {
+              priming: "append-without-restoring",
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol.priming must be append-delete-restore-before-sampling.",
+    );
+  });
+
+  it("accepts a priming-only measurement protocol in baselines", () => {
+    const baseline = buildBenchmarkBaseline("smoke", [
+      {
+        ...observation,
+        measurementProtocol: {
+          priming: "append-delete-restore-before-sampling",
+        },
+      },
+    ]);
 
     expect(validateBenchmarkBaseline(baseline)).toStrictEqual(baseline);
   });

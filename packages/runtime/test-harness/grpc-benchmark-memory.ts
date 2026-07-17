@@ -13,6 +13,11 @@ type GrpcBenchmarkMemoryLifecycleOptions<Memory> = {
   readonly settle: () => Promise<void>;
 };
 
+type GrpcBenchmarkMemoryState<Memory> =
+  | { readonly _tag: "Initial" }
+  | { readonly _tag: "Recorded"; readonly before: Memory }
+  | { readonly _tag: "Finished"; readonly before: Memory };
+
 export const grpcBenchmarkExplicitGcFromEnv = (raw: string | undefined): boolean => {
   if (raw === undefined || raw === "0") {
     return false;
@@ -32,8 +37,7 @@ export const makeGrpcBenchmarkMemoryLifecycle = <Memory>(
     );
   }
 
-  let before: Memory | undefined;
-  let finished = false;
+  let state: GrpcBenchmarkMemoryState<Memory> = { _tag: "Initial" };
 
   const settleAndCollect = async (): Promise<void> => {
     await options.settle();
@@ -44,13 +48,14 @@ export const makeGrpcBenchmarkMemoryLifecycle = <Memory>(
 
   return {
     captureAfterCleanup: async () => {
-      if (before === undefined) {
+      if (state._tag === "Initial") {
         throw new Error("gRPC benchmark memory cannot finish before its initial checkpoint.");
       }
-      if (finished) {
+      if (state._tag === "Finished") {
         throw new Error("gRPC benchmark memory recording already finished.");
       }
-      finished = true;
+      const before = state.before;
+      state = { _tag: "Finished", before };
       await settleAndCollect();
       return {
         afterCleanup: options.capture(),
@@ -58,14 +63,14 @@ export const makeGrpcBenchmarkMemoryLifecycle = <Memory>(
       };
     },
     captureBefore: async () => {
-      if (before !== undefined) {
+      if (state._tag === "Recorded") {
         throw new Error("gRPC benchmark initial memory was already recorded.");
       }
-      if (finished) {
+      if (state._tag === "Finished") {
         throw new Error("gRPC benchmark initial memory cannot be recorded after completion.");
       }
       await settleAndCollect();
-      before = options.capture();
+      state = { _tag: "Recorded", before: options.capture() };
     },
   };
 };

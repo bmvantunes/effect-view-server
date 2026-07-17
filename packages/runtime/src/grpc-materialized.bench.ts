@@ -111,10 +111,13 @@ if (benchOptions.time > 0 || benchOptions.warmupIterations > 0 || benchOptions.w
 }
 
 const samples: Array<GrpcMaterializedBenchmarkSample> = [];
+const explicitGarbageCollection = grpcBenchmarkExplicitGcFromEnv(
+  process.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+);
 const memoryLifecycle = makeGrpcBenchmarkMemoryLifecycle({
   capture: memorySnapshot,
   collectGarbage: typeof gc === "function" ? gc : undefined,
-  explicitGc: grpcBenchmarkExplicitGcFromEnv(process.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"]),
+  explicitGc: explicitGarbageCollection,
   settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
 });
 
@@ -232,6 +235,9 @@ afterAll(async () => {
       before: memory.before,
       totalDelta: memoryDelta(memory.before, memory.afterCleanup),
     },
+    measurementProtocol: explicitGarbageCollection
+      ? { memoryCheckpoint: "settled-explicit-gc-after-cleanup" }
+      : undefined,
     grpcParameters: {
       batchSize,
       seedRows,
@@ -241,7 +247,9 @@ afterAll(async () => {
       "Vitest latency includes fresh Runtime Core, source, deterministic seed, measured operation, health audit, and cleanup for each sample.",
       "Operation timers isolate the production materialized gRPC ingress, convergence, health-overlay, and snapshot work.",
       "Every sample owns an independently seeded runtime and emits raw state, timing, and cleanup evidence.",
-      "Endpoint RSS is captured after a settled explicit-GC checkpoint so closed sample runtimes do not contaminate retained-memory evidence.",
+      explicitGarbageCollection
+        ? "Endpoint RSS is captured after a settled explicit-GC checkpoint; the measurement protocol is structural baseline metadata."
+        : "Endpoint RSS is captured after cleanup and one event-loop settlement without explicit GC.",
     ],
     queuedEventCount,
     rowCount: seedRows,

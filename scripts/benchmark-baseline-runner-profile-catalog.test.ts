@@ -379,9 +379,10 @@ describe("benchmark baseline runner", () => {
     };
 
     expect({
-      explicitGcOnly: groupedWriteTask("incremental", 1, {
-        ...commonGroupedEnvironment,
-        VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
+      explicitGcOnly: runtimeGrpcMaterializedTask(1, 1, {
+        NODE_OPTIONS: "--expose-gc",
+        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "1",
       }).expectedMeasurementProtocol,
       noRuntimeProtocol: runtimeGrpcMaterializedTask(1, 1, {
         VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "1",
@@ -399,6 +400,16 @@ describe("benchmark baseline runner", () => {
         priming: "append-delete-restore-before-sampling",
       },
     });
+  });
+
+  it("rejects a grouped explicit-GC task without append priming", () => {
+    expect(() =>
+      groupedWriteTask("incremental", 1, {
+        VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
+        VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "1",
+        VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
+      }),
+    ).toThrow(/^Grouped write explicit GC requires append priming to be enabled\.$/u);
   });
 
   it("defines grouped key width smoke and release tasks", () => {

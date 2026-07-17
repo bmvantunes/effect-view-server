@@ -31,6 +31,7 @@ import {
   groupedWritePrimingAppendCase,
   groupedWritePrimingDeleteCase,
   primeGroupedWriteBenchmark,
+  settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint,
 } from "./grouped-write-benchmark-priming";
 import { memorySnapshot, type BenchmarkMemorySnapshot } from "./benchmark-memory-recorder";
 
@@ -969,7 +970,12 @@ afterAll(async () => {
   profile.nonAggregatePatchKeys = [];
   profile.sameGroupPatchKeys = [];
   profile.statusReader = undefined;
-  collectBenchmarkGarbage?.();
+  if (collectBenchmarkGarbage !== undefined) {
+    await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+      collectGarbage: collectBenchmarkGarbage,
+      settle: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+    });
+  }
   const memoryAfterBenchmark = memorySnapshot();
   const cleanupLeakCount = cleanupLeakCountFromEngineHealth(health);
   writeBenchmarkArtifact({

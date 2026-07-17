@@ -26,6 +26,17 @@ export const groupedWriteBenchmarkGarbageCollector = ({
   return collectGarbage;
 };
 
+export const settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint = async ({
+  collectGarbage,
+  settle,
+}: {
+  readonly collectGarbage: () => void;
+  readonly settle: () => Promise<void>;
+}): Promise<void> => {
+  await settle();
+  collectGarbage();
+};
+
 export const primeGroupedWriteBenchmark = async ({
   expectedRowCount,
   operations,

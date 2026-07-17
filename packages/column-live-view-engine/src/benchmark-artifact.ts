@@ -72,10 +72,15 @@ export type BenchmarkGroupedKeyWidthParameters = {
   readonly windowLimit: number;
 };
 
-export type BenchmarkMeasurementProtocol = {
-  readonly memoryCheckpoint?: "settled-explicit-gc-after-cleanup";
-  readonly priming?: "append-delete-restore-before-sampling";
-};
+export type BenchmarkMeasurementProtocol =
+  | {
+      readonly memoryCheckpoint: "settled-explicit-gc-after-cleanup";
+      readonly priming?: "append-delete-restore-before-sampling";
+    }
+  | {
+      readonly memoryCheckpoint?: "settled-explicit-gc-after-cleanup";
+      readonly priming: "append-delete-restore-before-sampling";
+    };
 
 type BenchmarkArtifactFields = {
   readonly activeViewCountBeforeCleanup?: number;

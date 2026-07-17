@@ -127,9 +127,9 @@ const measurementProtocolValue = (value, path) => {
     );
   }
   const memoryCheckpoint =
-    protocol.memoryCheckpoint === undefined
-      ? undefined
-      : stringValue(protocol.memoryCheckpoint, `${path}.memoryCheckpoint`);
+    Object.hasOwn(protocol, "memoryCheckpoint")
+      ? stringValue(protocol.memoryCheckpoint, `${path}.memoryCheckpoint`)
+      : undefined;
   if (
     memoryCheckpoint !== undefined &&
     memoryCheckpoint !== "settled-explicit-gc-after-cleanup"
@@ -139,9 +139,9 @@ const measurementProtocolValue = (value, path) => {
     );
   }
   const priming =
-    protocol.priming === undefined
-      ? undefined
-      : stringValue(protocol.priming, `${path}.priming`);
+    Object.hasOwn(protocol, "priming")
+      ? stringValue(protocol.priming, `${path}.priming`)
+      : undefined;
   if (priming !== undefined && priming !== "append-delete-restore-before-sampling") {
     throw new Error(
       `Benchmark artifact field ${path}.priming must be append-delete-restore-before-sampling.`,

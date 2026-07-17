@@ -4,6 +4,7 @@ import {
   groupedWritePrimingAppendCase,
   groupedWritePrimingDeleteCase,
   primeGroupedWriteBenchmark,
+  settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint,
 } from "./grouped-write-benchmark-priming";
 
 describe("grouped write benchmark priming", () => {
@@ -18,7 +19,24 @@ describe("grouped write benchmark priming", () => {
     ).toBeUndefined();
     expect(() =>
       groupedWriteBenchmarkGarbageCollector({ collectGarbage: undefined, explicitGc: true }),
-    ).toThrow("Grouped write explicit GC requires Node to start with NODE_OPTIONS=--expose-gc.");
+    ).toThrow(
+      /^Grouped write explicit GC requires Node to start with NODE_OPTIONS=--expose-gc\.$/u,
+    );
+  });
+
+  it("settles before collecting the endpoint memory checkpoint", async () => {
+    const calls: Array<string> = [];
+
+    await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+      collectGarbage: () => {
+        calls.push("collect");
+      },
+      settle: async () => {
+        calls.push("settle");
+      },
+    });
+
+    expect(calls).toStrictEqual(["settle", "collect"]);
   });
 
   it("runs append, delta drain, exact-row deletion, delta drain, and cardinality proof in order", async () => {
@@ -89,7 +107,7 @@ describe("grouped write benchmark priming", () => {
           },
         },
       }),
-    ).rejects.toThrow("Grouped write benchmark priming append must add at least one row.");
+    ).rejects.toThrow(/^Grouped write benchmark priming append must add at least one row\.$/u);
     expect(calls).toStrictEqual(["append"]);
   });
 
@@ -117,7 +135,7 @@ describe("grouped write benchmark priming", () => {
         },
       }),
     ).rejects.toThrow(
-      "Grouped write benchmark priming must restore 5000000 rows but found 5000001.",
+      /^Grouped write benchmark priming must restore 5000000 rows but found 5000001\.$/u,
     );
     expect(calls).toStrictEqual([
       "append:prime-1",

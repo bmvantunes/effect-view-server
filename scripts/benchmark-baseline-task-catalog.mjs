@@ -38,10 +38,13 @@ const runtimeMeasurementProtocolFromEnv = (env) =>
 const groupedWriteMeasurementProtocolFromEnv = (env) => {
   const explicitGc = env.VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC === "1";
   const priming = env.VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES === "1";
-  return explicitGc || priming
+  if (explicitGc && !priming) {
+    throw new Error("Grouped write explicit GC requires append priming to be enabled.");
+  }
+  return priming
     ? {
         ...(explicitGc ? explicitGcMeasurementProtocol : {}),
-        ...(priming ? { priming: "append-delete-restore-before-sampling" } : {}),
+        priming: "append-delete-restore-before-sampling",
       }
     : undefined;
 };

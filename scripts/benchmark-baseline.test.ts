@@ -1646,6 +1646,39 @@ describe("benchmark baseline artifacts", () => {
     );
   });
 
+  it("rejects explicitly undefined measurement protocol fields in baselines", () => {
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...observation,
+            measurementProtocol: {
+              memoryCheckpoint: undefined,
+              priming: "append-delete-restore-before-sampling",
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      /^Benchmark artifact field baseline\.tasks\[0\]\.measurementProtocol\.memoryCheckpoint must be a non-empty string\.$/u,
+    );
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...observation,
+            measurementProtocol: {
+              memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+              priming: undefined,
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      /^Benchmark artifact field baseline\.tasks\[0\]\.measurementProtocol\.priming must be a non-empty string\.$/u,
+    );
+  });
+
   it("rejects unsupported measurement priming protocols in baselines", () => {
     expect(() =>
       validateBenchmarkBaseline(

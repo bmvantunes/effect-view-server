@@ -168,6 +168,8 @@ describe("benchmark baseline runner", () => {
         artifactKind: task.expectedArtifactKind,
         benchmarkScope: task.expectedBenchmarkScope,
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
+        explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+        nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
         routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT"],
@@ -179,6 +181,8 @@ describe("benchmark baseline runner", () => {
         artifactKind: task.expectedArtifactKind,
         benchmarkScope: task.expectedBenchmarkScope,
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
+        explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+        nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         retainedRows: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS"],
         routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT"],
@@ -191,6 +195,8 @@ describe("benchmark baseline runner", () => {
         batchSize: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_BATCH_SIZE"],
         benchmarkScope: task.expectedBenchmarkScope,
         iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
+        explicitGc: task.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+        nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
         rowCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SEED_ROWS"],
         task: task.args,
@@ -202,6 +208,8 @@ describe("benchmark baseline runner", () => {
           artifactKind: "runtime-benchmark-summary",
           benchmarkScope: "runtime-grpc-leased",
           iterations: "5",
+          explicitGc: "1",
+          nodeOptions: "--expose-gc",
           outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-500retained.json",
           retainedRows: "500",
           routeCount: "25",
@@ -215,6 +223,8 @@ describe("benchmark baseline runner", () => {
           artifactKind: "runtime-benchmark-summary",
           benchmarkScope: "runtime-grpc-leased",
           iterations: "5",
+          explicitGc: "1",
+          nodeOptions: "--expose-gc",
           outputJsonPath: ".artifacts/grpc-leased-50rows-25routes-50000retained.json",
           retainedRows: "50000",
           routeCount: "25",
@@ -229,6 +239,8 @@ describe("benchmark baseline runner", () => {
           batchSize: "256",
           benchmarkScope: "runtime-grpc-materialized",
           iterations: "5",
+          explicitGc: "1",
+          nodeOptions: "--expose-gc",
           outputJsonPath: ".artifacts/grpc-materialized-1000seed-256batch.json",
           rowCount: "1000",
           task: ["run", "--no-cache", "runtime#bench:grpc-materialized"],
@@ -249,38 +261,85 @@ describe("benchmark baseline runner", () => {
 
     expect(
       groupedOrderNeutralTasks.map((task) => ({
+        explicitGc: task.env["VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC"],
+        nodeOptions: task.env["NODE_OPTIONS"],
         outputJsonPath: task.packageOutputJsonPath,
+        primingAppendBatches:
+          task.env["VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES"],
         readerProfile: task.env["VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE"],
         rowCount: task.env["VIEW_SERVER_ENGINE_BENCH_ROWS"],
       })),
     ).toStrictEqual([
       {
+        explicitGc: undefined,
+        nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-order-neutral-100000rows-1mutations.json",
+        primingAppendBatches: undefined,
         readerProfile: "order-neutral",
         rowCount: "100000",
       },
       {
+        explicitGc: undefined,
+        nodeOptions: undefined,
         outputJsonPath:
           ".artifacts/grouped-write-incremental-order-neutral-1000000rows-1mutations.json",
+        primingAppendBatches: undefined,
         readerProfile: "order-neutral",
         rowCount: "1000000",
       },
       {
+        explicitGc: "1",
+        nodeOptions: "--expose-gc",
         outputJsonPath:
           ".artifacts/grouped-write-incremental-order-neutral-5000000rows-1mutations.json",
+        primingAppendBatches: "1",
         readerProfile: "order-neutral",
         rowCount: "5000000",
       },
     ]);
     expect(
-      smokeGroupedWriteTasks.map((task) => task.packageOutputJsonPath),
-    ).toStrictEqual([".artifacts/grouped-write-incremental-1000rows-1mutations.json"]);
-    expect(
-      releaseGroupedWriteTasks.map((task) => task.packageOutputJsonPath),
+      smokeGroupedWriteTasks.map((task) => ({
+        explicitGc: task.env["VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC"],
+        nodeOptions: task.env["NODE_OPTIONS"],
+        outputJsonPath: task.packageOutputJsonPath,
+        primingAppendBatches:
+          task.env["VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES"],
+      })),
     ).toStrictEqual([
-      ".artifacts/grouped-write-incremental-100000rows-1mutations.json",
-      ".artifacts/grouped-write-incremental-1000000rows-1mutations.json",
-      ".artifacts/grouped-write-incremental-5000000rows-1mutations.json",
+      {
+        explicitGc: undefined,
+        nodeOptions: undefined,
+        outputJsonPath: ".artifacts/grouped-write-incremental-1000rows-1mutations.json",
+        primingAppendBatches: undefined,
+      },
+    ]);
+    expect(
+      releaseGroupedWriteTasks.map((task) => ({
+        explicitGc: task.env["VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC"],
+        nodeOptions: task.env["NODE_OPTIONS"],
+        outputJsonPath: task.packageOutputJsonPath,
+        primingAppendBatches:
+          task.env["VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES"],
+      })),
+    ).toStrictEqual([
+      {
+        explicitGc: undefined,
+        nodeOptions: undefined,
+        outputJsonPath: ".artifacts/grouped-write-incremental-100000rows-1mutations.json",
+        primingAppendBatches: undefined,
+      },
+      {
+        explicitGc: undefined,
+        nodeOptions: undefined,
+        outputJsonPath: ".artifacts/grouped-write-incremental-1000000rows-1mutations.json",
+        primingAppendBatches: undefined,
+      },
+      {
+        explicitGc: undefined,
+        nodeOptions: undefined,
+        outputJsonPath: ".artifacts/grouped-write-incremental-5000000rows-1mutations.json",
+        primingAppendBatches: undefined,
+      },
     ]);
   });
 

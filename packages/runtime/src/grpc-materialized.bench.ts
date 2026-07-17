@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, bench, describe } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
@@ -10,6 +10,12 @@ import {
   type GrpcMaterializedBenchmarkSample,
   type GrpcMaterializedBenchmarkWorkload,
 } from "../test-harness/grpc-materialized-benchmark";
+import {
+  grpcBenchmarkExplicitGcFromEnv,
+  makeGrpcBenchmarkMemoryLifecycle,
+} from "../test-harness/grpc-benchmark-memory";
+
+declare const gc: (() => void) | undefined;
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -42,7 +48,6 @@ const defaultSeedRows = 1_000;
 const defaultWarmupIterations = 0;
 const defaultWarmupTimeMs = 0;
 const convergenceTimeout = "10 seconds";
-const memoryBefore = memorySnapshot();
 
 const positiveIntegerFromEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];
@@ -106,6 +111,12 @@ if (benchOptions.time > 0 || benchOptions.warmupIterations > 0 || benchOptions.w
 }
 
 const samples: Array<GrpcMaterializedBenchmarkSample> = [];
+const memoryLifecycle = makeGrpcBenchmarkMemoryLifecycle({
+  capture: memorySnapshot,
+  collectGarbage: typeof gc === "function" ? gc : undefined,
+  explicitGc: grpcBenchmarkExplicitGcFromEnv(process.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"]),
+  settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
+});
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
   const memory = process.memoryUsage();
@@ -178,7 +189,9 @@ const benchmarkCases: ReadonlyArray<BenchmarkCase> = [
   },
 ];
 
-afterAll(() => {
+beforeAll(() => memoryLifecycle.captureBefore());
+
+afterAll(async () => {
   const cases = benchmarkCases.map((benchmarkCase) =>
     summarizeGrpcMaterializedBenchmarkSamples(samples, benchmarkCase.name, benchOptions.iterations),
   );
@@ -199,7 +212,7 @@ afterAll(() => {
     (total, sample) => total + sample.queuedEventCount,
     0,
   );
-  const memoryAfterBenchmark = memorySnapshot();
+  const memory = await memoryLifecycle.captureAfterCleanup();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
     artifactKind: "runtime-benchmark-summary",
     backpressureCount,
@@ -215,9 +228,9 @@ afterAll(() => {
       source: "vitest-output-json",
     },
     memory: {
-      afterBenchmark: memoryAfterBenchmark,
-      before: memoryBefore,
-      totalDelta: memoryDelta(memoryBefore, memoryAfterBenchmark),
+      afterBenchmark: memory.afterCleanup,
+      before: memory.before,
+      totalDelta: memoryDelta(memory.before, memory.afterCleanup),
     },
     grpcParameters: {
       batchSize,
@@ -228,6 +241,7 @@ afterAll(() => {
       "Vitest latency includes fresh Runtime Core, source, deterministic seed, measured operation, health audit, and cleanup for each sample.",
       "Operation timers isolate the production materialized gRPC ingress, convergence, health-overlay, and snapshot work.",
       "Every sample owns an independently seeded runtime and emits raw state, timing, and cleanup evidence.",
+      "Endpoint RSS is captured after a settled explicit-GC checkpoint so closed sample runtimes do not contaminate retained-memory evidence.",
     ],
     queuedEventCount,
     rowCount: seedRows,

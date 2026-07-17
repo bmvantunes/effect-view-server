@@ -5,7 +5,8 @@ import { playwright } from "@vitest/browser-playwright";
 import { defineTanStackReactExampleConfig } from "../vite.config.shared";
 
 export default defineTanStackReactExampleConfig({
-  plugins: [tailwindcss(), tanstackStart(), viteReact()],
+  createTanStackStartPlugins: tanstackStart,
+  plugins: (tanStackStartPlugins) => [tailwindcss(), tanStackStartPlugins, viteReact()],
   browserProvider: playwright(),
   enforceAllSourceCoverage: true,
   optimizeDepsInclude: [

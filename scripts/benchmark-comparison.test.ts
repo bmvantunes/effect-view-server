@@ -117,14 +117,15 @@ describe("benchmark artifact compatibility", () => {
     const withMeasurementProtocol = {
       ...simpleObservation,
       measurementProtocol: {
-        memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+        memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        postGcEventLoopTurns: 8,
       },
     };
 
     expect(compare([withMeasurementProtocol], [simpleObservation])).toStrictEqual({
       ok: false,
       regressions: [
-        'task a: measurementProtocol changed from {"memoryCheckpoint":"settled-explicit-gc-after-cleanup"} to undefined.',
+        'task a: measurementProtocol changed from {"memoryCheckpoint":"settled-explicit-gc-plus-post-gc-turns-after-cleanup","postGcEventLoopTurns":8} to undefined.',
       ],
     });
   });

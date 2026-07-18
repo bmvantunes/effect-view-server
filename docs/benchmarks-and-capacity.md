@@ -72,6 +72,16 @@ observations and associated policy metadata. Preserve reference values for
 unchanged mutation, fanout, retained-delta, write, and browser workloads.
 The comparator retains every sample and fails the first run; do not trim
 outliers, retry, or select a best result.
+
+The 5M grouped order-neutral task uses a fixed endpoint-memory protocol. Cleanup must first produce a
+zero ledger for active subscriptions, active views, queued events, and pending mutation batches. The
+worker then settles once, performs exactly one explicit GC, captures turn zero, and captures one
+additional sample after each of eight event-loop turns. The artifact retains all nine samples in
+order, but comparison always uses the fixed turn-eight endpoint. The decoder rejects missing,
+reordered, non-zero-ledger, negative, or endpoint-mismatched samples. It never chooses a minimum,
+median, or best result. This protocol is structural metadata, so adopting it requires a scoped
+protocol migration for the affected 5M task.
+
 The ordinary `--update-baseline` mode replaces the entire profile; use repeated
 `--update-baseline-task='<task label>'` arguments for a scoped protocol
 migration. A scoped update executes only those named tasks and merges their fresh observations into

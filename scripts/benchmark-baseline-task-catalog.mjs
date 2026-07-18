@@ -29,6 +29,10 @@ const reactArtifactName = (name) => `.artifacts/${name}`;
 const explicitGcMeasurementProtocol = {
   memoryCheckpoint: "settled-explicit-gc-after-cleanup",
 };
+const groupedWritePostGcEventLoopTurns = 8;
+const groupedWriteExplicitGcMeasurementProtocol = {
+  memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+};
 
 const runtimeMeasurementProtocolFromEnv = (env) =>
   env.VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC === "1"
@@ -38,12 +42,26 @@ const runtimeMeasurementProtocolFromEnv = (env) =>
 const groupedWriteMeasurementProtocolFromEnv = (env) => {
   const explicitGc = env.VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC === "1";
   const priming = env.VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES === "1";
+  const rawPostGcEventLoopTurns = env.VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS;
   if (explicitGc && !priming) {
     throw new Error("Grouped write explicit GC requires append priming to be enabled.");
   }
+  if (!explicitGc && rawPostGcEventLoopTurns !== undefined) {
+    throw new Error("Grouped write post-GC event-loop turns require explicit GC.");
+  }
+  if (explicitGc && rawPostGcEventLoopTurns === undefined) {
+    throw new Error("Grouped write explicit GC requires post-GC event-loop turns.");
+  }
+  const postGcEventLoopTurns = Number(rawPostGcEventLoopTurns);
+  if (explicitGc && postGcEventLoopTurns !== groupedWritePostGcEventLoopTurns) {
+    throw new Error(
+      `Grouped write post-GC event-loop turns must be ${groupedWritePostGcEventLoopTurns}.`,
+    );
+  }
   return priming
-    ? {
-        ...(explicitGc ? explicitGcMeasurementProtocol : {}),
+      ? {
+        ...(explicitGc ? groupedWriteExplicitGcMeasurementProtocol : {}),
+        ...(explicitGc ? { postGcEventLoopTurns } : {}),
         priming: "append-delete-restore-before-sampling",
       }
     : undefined;

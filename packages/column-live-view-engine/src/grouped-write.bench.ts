@@ -23,11 +23,15 @@ import {
   groupedFullEvaluationCountFromEngineHealth,
   groupedPatchedEvaluationCountFromEngineHealth,
   isBenchmarkEngineHealth,
+  pendingMutationBatchCountFromEngineHealth,
   queuedEventCountFromEngineHealth,
+  type BenchmarkMeasurementProtocol,
   writeBenchmarkArtifact,
 } from "./benchmark-artifact";
 import {
   groupedWriteBenchmarkGarbageCollector,
+  groupedWriteBenchmarkPostGcEventLoopTurns,
+  groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv,
   groupedWritePrimingAppendCase,
   groupedWritePrimingDeleteCase,
   primeGroupedWriteBenchmark,
@@ -39,6 +43,7 @@ declare const process: {
   readonly env: Record<string, string | undefined>;
 };
 declare const gc: (() => void) | undefined;
+declare const setImmediate: (callback: () => void) => void;
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -320,6 +325,10 @@ if (
 if (explicitGarbageCollection === 1 && primingAppendBatches !== 1) {
   throw new Error("Grouped write explicit GC requires append priming to be enabled.");
 }
+const postGcEventLoopTurns = groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv(
+  process.env["VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS"],
+  explicitGarbageCollection === 1,
+);
 
 const collectBenchmarkGarbage = groupedWriteBenchmarkGarbageCollector({
   collectGarbage: typeof gc === "function" ? gc : undefined,
@@ -940,6 +949,12 @@ afterAll(async () => {
   let health: unknown = {
     status: "not-started",
   };
+  let cleanupLedger = {
+    activeSubscriptions: 0,
+    activeViews: 0,
+    pendingMutationBatches: 0,
+    queuedEvents: 0,
+  };
   if (profile.statusSubscription !== undefined) {
     await Effect.runPromise(profile.statusSubscription.close());
     profile.statusSubscription = undefined;
@@ -958,7 +973,15 @@ afterAll(async () => {
   }
   if (profile.engine !== undefined) {
     health = await Effect.runPromise(profile.engine.health());
-    expect(isBenchmarkEngineHealth(health)).toBe(true);
+    if (!isBenchmarkEngineHealth(health)) {
+      throw new Error("Grouped write benchmark cleanup health was invalid.");
+    }
+    cleanupLedger = {
+      activeSubscriptions: health.activeSubscriptions,
+      activeViews: activeViewCountFromEngineHealth(health),
+      pendingMutationBatches: pendingMutationBatchCountFromEngineHealth(health, ["orders"]),
+      queuedEvents: health.queuedEvents,
+    };
     await Effect.runPromise(profile.engine.close());
     profile.engine = undefined;
   }
@@ -970,14 +993,45 @@ afterAll(async () => {
   profile.nonAggregatePatchKeys = [];
   profile.sameGroupPatchKeys = [];
   profile.statusReader = undefined;
-  if (collectBenchmarkGarbage !== undefined) {
-    await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+  const cleanupLeakCount =
+    cleanupLeakCountFromEngineHealth(health) + cleanupLedger.pendingMutationBatches;
+  failOnBenchmarkCleanupLeaks(cleanupLeakCount);
+  let postGcEventLoopSamples:
+    | ReadonlyArray<{
+        readonly cleanupLedger: {
+          readonly activeSubscriptions: number;
+          readonly activeViews: number;
+          readonly pendingMutationBatches: number;
+          readonly queuedEvents: number;
+        };
+        readonly eventLoopTurn: number;
+        readonly memory: BenchmarkMemorySnapshot;
+      }>
+    | undefined;
+  let memoryAfterBenchmark: BenchmarkMemorySnapshot;
+  if (collectBenchmarkGarbage === undefined) {
+    memoryAfterBenchmark = memorySnapshot();
+  } else {
+    const checkpoint = await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+      capture: memorySnapshot,
+      cleanupLedger,
       collectGarbage: collectBenchmarkGarbage,
-      settle: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+      postGcEventLoopTurns,
+      settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
     });
+    memoryAfterBenchmark = checkpoint.endpoint;
+    postGcEventLoopSamples = checkpoint.samples;
   }
-  const memoryAfterBenchmark = memorySnapshot();
-  const cleanupLeakCount = cleanupLeakCountFromEngineHealth(health);
+  const measurementProtocol: BenchmarkMeasurementProtocol | undefined =
+    explicitGarbageCollection === 1
+      ? {
+          memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+          postGcEventLoopTurns: groupedWriteBenchmarkPostGcEventLoopTurns,
+          priming: "append-delete-restore-before-sampling",
+        }
+      : primingAppendBatches === 1
+        ? { priming: "append-delete-restore-before-sampling" }
+        : undefined;
   writeBenchmarkArtifact({
     artifactKind: "engine-benchmark-summary",
     backpressureCount: backpressureCountFromEngineHealth(health),
@@ -1018,18 +1072,7 @@ afterAll(async () => {
       outputJsonPath,
       source: "vitest-output-json",
     },
-    ...(primingAppendBatches === 0 && explicitGarbageCollection === 0
-      ? {}
-      : {
-          measurementProtocol: {
-            ...(explicitGarbageCollection === 1
-              ? { memoryCheckpoint: "settled-explicit-gc-after-cleanup" as const }
-              : {}),
-            ...(primingAppendBatches === 1
-              ? { priming: "append-delete-restore-before-sampling" as const }
-              : {}),
-          },
-        }),
+    ...(measurementProtocol === undefined ? {} : { measurementProtocol }),
     memoryAfterBenchmark,
     memoryAfterSetup,
     memoryBefore,
@@ -1052,7 +1095,7 @@ afterAll(async () => {
         : []),
       ...(explicitGarbageCollection === 1
         ? [
-            "Endpoint RSS is captured after cleanup and an explicit-GC checkpoint; the measurement protocol is structural baseline metadata.",
+            `Endpoint RSS is the fixed final sample after cleanup, explicit GC, and ${postGcEventLoopTurns} post-GC event-loop turns; every ordered sample is retained for diagnostics and the measurement protocol is structural baseline metadata.`,
           ]
         : []),
       groupedWriteMode === "incremental"
@@ -1062,13 +1105,13 @@ afterAll(async () => {
       "The grouped patch non-aggregate values case is expected to produce no grouped result delta.",
     ],
     outputJsonPath,
+    ...(postGcEventLoopSamples === undefined ? {} : { postGcEventLoopSamples }),
     preCleanupHealth,
     queuedEventCount: queuedEventCountFromEngineHealth(health),
     rowCount: profile.rowCount,
     subscriberCount: groupedReaderCount,
     topics: ["orders"],
   });
-  failOnBenchmarkCleanupLeaks(cleanupLeakCount);
 }, 0);
 
 describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {

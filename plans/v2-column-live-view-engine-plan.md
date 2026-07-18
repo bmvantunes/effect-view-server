@@ -1855,10 +1855,17 @@ same 100k, 1M, and 5M grouped write row counts as the release grouped-write prof
 the field-ordered grouped subscription open, so `grouped patch aggregate values` isolates the
 order-neutral evaluation patch path instead of mixing it with an aggregate-ordered subscriber that
 must rebuild the grouped window. The 5M task additionally performs one append/delete restoration
-cycle after setup collection to prime the measured path, then captures endpoint memory after cleanup
-and explicit GC. Its summary and task catalog record both choices in structural
-`measurementProtocol` metadata; comparisons must reject baselines recorded under a different
-protocol. The 100k and 1M tasks retain the ordinary unprimed endpoint protocol. The default command compares fresh artifacts against
+cycle after setup collection to prime the measured path. After cleanup, it requires a frozen zero
+ledger for active subscriptions, active views, queued events, and pending mutation batches before
+memory sampling can begin. The task then settles once, performs exactly one explicit GC, records turn
+zero, and records one sample after each of eight further event-loop turns. All nine ordered samples
+remain in the artifact for diagnosis, while the fixed turn-eight sample is always the endpoint; the
+runner must never select a minimum, median, or otherwise favorable sample. Its summary and task
+catalog record priming, the checkpoint identity, and the exact turn count in structural
+`measurementProtocol` metadata. The artifact decoder validates the zero ledger, sample count and
+order, non-negative memory values, and exact equality between the final sample and endpoint.
+Comparisons must reject baselines recorded under a different protocol. The 100k and 1M tasks retain
+the ordinary unprimed endpoint protocol. The default command compares fresh artifacts against
 `benchmarks/baselines/grouped-order-neutral.json`; use
 `vp run -w bench:baseline:grouped-order-neutral:update` only when accepting a new order-neutral
 baseline.

@@ -210,6 +210,191 @@ describe("benchmark baseline artifacts", () => {
     ).toThrow("task a: measurementProtocol did not match the runner policy.");
   });
 
+  it("validates ordered post-GC samples and their fixed final endpoint", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-post-gc-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const measurementProtocol = {
+      memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+      postGcEventLoopTurns: 8,
+      priming: "append-delete-restore-before-sampling",
+    };
+    const cleanupLedger = {
+      activeSubscriptions: 0,
+      activeViews: 0,
+      pendingMutationBatches: 0,
+      queuedEvents: 0,
+    };
+    const checkpointMemory = (value: number) => ({
+      arrayBuffersBytes: value,
+      externalBytes: value + 1,
+      heapTotalBytes: value + 2,
+      heapUsedBytes: value + 3,
+      rssBytes: value + 4,
+    });
+    const beforeMemory = {
+      arrayBuffersBytes: 10,
+      externalBytes: 20,
+      heapTotalBytes: 30,
+      heapUsedBytes: 40,
+      rssBytes: 50,
+    };
+    const finalMemory = {
+      arrayBuffersBytes: 18,
+      externalBytes: 29,
+      heapTotalBytes: 40,
+      heapUsedBytes: 51,
+      rssBytes: 62,
+    };
+    const postGcEventLoopSamples = Array.from({ length: 9 }, (_value, eventLoopTurn) => ({
+      cleanupLedger,
+      eventLoopTurn,
+      memory: eventLoopTurn === 8 ? finalMemory : checkpointMemory(eventLoopTurn),
+    }));
+    const validMemory = {
+      ...summary.memory,
+      afterBenchmark: finalMemory,
+      before: beforeMemory,
+      postGcEventLoopSamples,
+      totalDelta: {
+        arrayBuffersBytes: 8,
+        externalBytes: 9,
+        heapTotalBytes: 10,
+        heapUsedBytes: 11,
+        rssBytes: 12,
+      },
+    };
+    const paths = {
+      ...taskPaths(summaryPath, outputJsonPath),
+      expectedMeasurementProtocol: measurementProtocol,
+    };
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({ ...summary, measurementProtocol, memory: validMemory })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(readBenchmarkObservation(paths)).toStrictEqual({
+      ...observation,
+      measurementProtocol,
+      memoryRssTotalDeltaBytes: 12,
+      outputJsonPath,
+      summaryPath,
+    });
+
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        measurementProtocol,
+        memory: {
+          ...validMemory,
+          postGcEventLoopSamples: postGcEventLoopSamples.slice(0, 8),
+        },
+      })}\n`,
+    );
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.postGcEventLoopSamples must contain 9 samples.`,
+    );
+
+    const wrongOrdinalSamples = postGcEventLoopSamples.map((sample) => ({ ...sample }));
+    wrongOrdinalSamples[3] = { ...wrongOrdinalSamples[3], eventLoopTurn: 2 };
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        measurementProtocol,
+        memory: { ...validMemory, postGcEventLoopSamples: wrongOrdinalSamples },
+      })}\n`,
+    );
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.postGcEventLoopSamples[3].eventLoopTurn must be 3.`,
+    );
+
+    const nonZeroLedgerSamples = postGcEventLoopSamples.map((sample) => ({ ...sample }));
+    nonZeroLedgerSamples[4] = {
+      ...nonZeroLedgerSamples[4],
+      cleanupLedger: { ...cleanupLedger, activeViews: 1 },
+    };
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        measurementProtocol,
+        memory: { ...validMemory, postGcEventLoopSamples: nonZeroLedgerSamples },
+      })}\n`,
+    );
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.postGcEventLoopSamples[4].cleanupLedger must contain only zero counts.`,
+    );
+
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        measurementProtocol,
+        memory: { ...validMemory, afterBenchmark: checkpointMemory(9) },
+      })}\n`,
+    );
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.afterBenchmark must equal the final post-GC event-loop sample.`,
+    );
+
+    const memoryFields = [
+      "arrayBuffersBytes",
+      "externalBytes",
+      "heapTotalBytes",
+      "heapUsedBytes",
+      "rssBytes",
+    ] as const;
+    for (const memoryField of memoryFields) {
+      writeFileSync(
+        summaryPath,
+        `${JSON.stringify({
+          ...summary,
+          measurementProtocol,
+          memory: {
+            ...validMemory,
+            totalDelta: {
+              ...validMemory.totalDelta,
+              [memoryField]: validMemory.totalDelta[memoryField] + 1,
+            },
+          },
+        })}\n`,
+      );
+      expect(() => readBenchmarkObservation(paths)).toThrow(
+        `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+      );
+    }
+
+    const negativeMetricSamples = postGcEventLoopSamples.map((sample) => ({ ...sample }));
+    negativeMetricSamples[0] = {
+      ...negativeMetricSamples[0],
+      memory: { ...checkpointMemory(0), externalBytes: -1 },
+    };
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({
+        ...summary,
+        measurementProtocol,
+        memory: { ...validMemory, postGcEventLoopSamples: negativeMetricSamples },
+      })}\n`,
+    );
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.postGcEventLoopSamples[0].memory.externalBytes must be a non-negative integer.`,
+    );
+
+    writeFileSync(
+      summaryPath,
+      `${JSON.stringify({ ...summary, memory: validMemory })}\n`,
+    );
+    expect(() =>
+      readBenchmarkObservation(taskPaths(summaryPath, outputJsonPath)),
+    ).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.postGcEventLoopSamples requires postGcEventLoopTurns protocol metadata.`,
+    );
+  });
+
   it("reads gRPC benchmark parameters from summary artifacts", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-observation-"));
     const summaryPath = join(directory, "actual.summary.json");
@@ -1613,7 +1798,54 @@ describe("benchmark baseline artifacts", () => {
         ]),
       ),
     ).toThrow(
-      "Benchmark artifact field baseline.tasks[0].measurementProtocol.memoryCheckpoint must be settled-explicit-gc-after-cleanup.",
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol.memoryCheckpoint must be settled-explicit-gc-after-cleanup or settled-explicit-gc-plus-post-gc-turns-after-cleanup.",
+    );
+  });
+
+  it("requires exactly eight turns with the post-GC checkpoint protocol", () => {
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("grouped-order-neutral", [
+          {
+            ...observation,
+            measurementProtocol: {
+              memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol.postGcEventLoopTurns is required for the settled-explicit-gc-plus-post-gc-turns-after-cleanup checkpoint.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("grouped-order-neutral", [
+          {
+            ...observation,
+            measurementProtocol: {
+              memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+              postGcEventLoopTurns: 7,
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol.postGcEventLoopTurns must be 8.",
+    );
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("grouped-order-neutral", [
+          {
+            ...observation,
+            measurementProtocol: {
+              memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+              postGcEventLoopTurns: 8,
+            },
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol.postGcEventLoopTurns requires the settled-explicit-gc-plus-post-gc-turns-after-cleanup checkpoint.",
     );
   });
 
@@ -1628,7 +1860,7 @@ describe("benchmark baseline artifacts", () => {
         ]),
       ),
     ).toThrow(
-      "Benchmark artifact field baseline.tasks[0].measurementProtocol must contain one or more of these keys only: memoryCheckpoint, priming.",
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol must contain one or more of these keys only: memoryCheckpoint, postGcEventLoopTurns, priming.",
     );
     expect(() =>
       validateBenchmarkBaseline(
@@ -1642,7 +1874,7 @@ describe("benchmark baseline artifacts", () => {
         ]),
       ),
     ).toThrow(
-      "Benchmark artifact field baseline.tasks[0].measurementProtocol must contain one or more of these keys only: memoryCheckpoint, priming.",
+      "Benchmark artifact field baseline.tasks[0].measurementProtocol must contain one or more of these keys only: memoryCheckpoint, postGcEventLoopTurns, priming.",
     );
   });
 

@@ -356,6 +356,7 @@ export const profiles = new Map([
         NODE_OPTIONS: "--expose-gc",
         VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
         VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE: "order-neutral",
+        VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS: "8",
         VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES: "1",
       }),
     ],

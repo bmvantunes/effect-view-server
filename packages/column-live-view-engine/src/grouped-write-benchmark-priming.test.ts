@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   groupedWriteBenchmarkGarbageCollector,
+  groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv,
   groupedWritePrimingAppendCase,
   groupedWritePrimingDeleteCase,
   primeGroupedWriteBenchmark,
@@ -24,19 +25,114 @@ describe("grouped write benchmark priming", () => {
     );
   });
 
-  it("settles before collecting the endpoint memory checkpoint", async () => {
+  it("records a fixed endpoint after ordered post-GC event-loop turns", async () => {
     const calls: Array<string> = [];
+    const cleanupLedger = {
+      activeSubscriptions: 0,
+      activeViews: 0,
+      pendingMutationBatches: 0,
+      queuedEvents: 0,
+    };
 
-    await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+    const checkpoint = await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+      capture: () => {
+        const sample = `sample-${calls.length}`;
+        calls.push(`capture:${sample}`);
+        return sample;
+      },
+      cleanupLedger,
       collectGarbage: () => {
         calls.push("collect");
       },
+      postGcEventLoopTurns: 8,
       settle: async () => {
         calls.push("settle");
       },
     });
 
-    expect(calls).toStrictEqual(["settle", "collect"]);
+    expect({ calls, checkpoint }).toStrictEqual({
+      calls: [
+        "settle",
+        "collect",
+        "capture:sample-2",
+        "settle",
+        "capture:sample-4",
+        "settle",
+        "capture:sample-6",
+        "settle",
+        "capture:sample-8",
+        "settle",
+        "capture:sample-10",
+        "settle",
+        "capture:sample-12",
+        "settle",
+        "capture:sample-14",
+        "settle",
+        "capture:sample-16",
+        "settle",
+        "capture:sample-18",
+      ],
+      checkpoint: {
+        endpoint: "sample-18",
+        samples: [
+          { cleanupLedger, eventLoopTurn: 0, memory: "sample-2" },
+          { cleanupLedger, eventLoopTurn: 1, memory: "sample-4" },
+          { cleanupLedger, eventLoopTurn: 2, memory: "sample-6" },
+          { cleanupLedger, eventLoopTurn: 3, memory: "sample-8" },
+          { cleanupLedger, eventLoopTurn: 4, memory: "sample-10" },
+          { cleanupLedger, eventLoopTurn: 5, memory: "sample-12" },
+          { cleanupLedger, eventLoopTurn: 6, memory: "sample-14" },
+          { cleanupLedger, eventLoopTurn: 7, memory: "sample-16" },
+          { cleanupLedger, eventLoopTurn: 8, memory: "sample-18" },
+        ],
+      },
+    });
+  });
+
+  it("rejects a non-zero cleanup ledger before settling or sampling", async () => {
+    const calls: Array<string> = [];
+
+    await expect(
+      settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+        capture: () => {
+          calls.push("capture");
+          return "memory";
+        },
+        cleanupLedger: {
+          activeSubscriptions: 1,
+          activeViews: 0,
+          pendingMutationBatches: 0,
+          queuedEvents: 0,
+        },
+        collectGarbage: () => {
+          calls.push("collect");
+        },
+        postGcEventLoopTurns: 8,
+        settle: async () => {
+          calls.push("settle");
+        },
+      }),
+    ).rejects.toThrow(
+      /^Grouped write benchmark cleanup ledger must be zero before memory sampling\.$/u,
+    );
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("requires a bounded positive post-GC event-loop turn count with explicit GC", () => {
+    expect(groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv(undefined, false)).toBe(0);
+    expect(groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv("8", true)).toBe(8);
+    expect(() => groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv(undefined, true)).toThrow(
+      /^Grouped write explicit GC requires VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS\.$/u,
+    );
+    expect(() => groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv("8", false)).toThrow(
+      /^VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS requires explicit GC\.$/u,
+    );
+    expect(() => groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv("7", true)).toThrow(
+      /^VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS must be 8\.$/u,
+    );
+    expect(() => groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv("1.5", true)).toThrow(
+      /^VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS must be 8\.$/u,
+    );
   });
 
   it("runs append, delta drain, exact-row deletion, delta drain, and cardinality proof in order", async () => {

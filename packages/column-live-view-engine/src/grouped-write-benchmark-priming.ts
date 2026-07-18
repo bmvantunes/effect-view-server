@@ -1,5 +1,19 @@
 export const groupedWritePrimingAppendCase = "grouped write priming append";
 export const groupedWritePrimingDeleteCase = "grouped write priming delete";
+export const groupedWriteBenchmarkPostGcEventLoopTurns = 8;
+
+export type GroupedWriteBenchmarkCleanupLedger = {
+  readonly activeSubscriptions: number;
+  readonly activeViews: number;
+  readonly pendingMutationBatches: number;
+  readonly queuedEvents: number;
+};
+
+export type GroupedWriteBenchmarkMemoryCheckpointSample<Memory> = {
+  readonly cleanupLedger: GroupedWriteBenchmarkCleanupLedger;
+  readonly eventLoopTurn: number;
+  readonly memory: Memory;
+};
 
 export type GroupedWriteBenchmarkPrimingOperations = {
   readonly appendBatch: () => Promise<ReadonlyArray<string>>;
@@ -26,15 +40,66 @@ export const groupedWriteBenchmarkGarbageCollector = ({
   return collectGarbage;
 };
 
-export const settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint = async ({
+export const groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv = (
+  raw: string | undefined,
+  explicitGc: boolean,
+): number => {
+  if (!explicitGc) {
+    if (raw !== undefined) {
+      throw new Error("VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS requires explicit GC.");
+    }
+    return 0;
+  }
+  if (raw === undefined) {
+    throw new Error(
+      "Grouped write explicit GC requires VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS.",
+    );
+  }
+  const turns = Number(raw);
+  if (!Number.isInteger(turns) || turns !== groupedWriteBenchmarkPostGcEventLoopTurns) {
+    throw new Error(
+      `VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS must be ${groupedWriteBenchmarkPostGcEventLoopTurns}.`,
+    );
+  }
+  return turns;
+};
+
+export const settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint = async <Memory>({
+  capture,
+  cleanupLedger,
   collectGarbage,
+  postGcEventLoopTurns,
   settle,
 }: {
+  readonly capture: () => Memory;
+  readonly cleanupLedger: GroupedWriteBenchmarkCleanupLedger;
   readonly collectGarbage: () => void;
+  readonly postGcEventLoopTurns: number;
   readonly settle: () => Promise<void>;
-}): Promise<void> => {
+}): Promise<{
+  readonly endpoint: Memory;
+  readonly samples: ReadonlyArray<GroupedWriteBenchmarkMemoryCheckpointSample<Memory>>;
+}> => {
+  if (
+    cleanupLedger.activeSubscriptions !== 0 ||
+    cleanupLedger.activeViews !== 0 ||
+    cleanupLedger.pendingMutationBatches !== 0 ||
+    cleanupLedger.queuedEvents !== 0
+  ) {
+    throw new Error("Grouped write benchmark cleanup ledger must be zero before memory sampling.");
+  }
   await settle();
   collectGarbage();
+  let endpoint = capture();
+  const samples: Array<GroupedWriteBenchmarkMemoryCheckpointSample<Memory>> = [
+    { cleanupLedger, eventLoopTurn: 0, memory: endpoint },
+  ];
+  for (let eventLoopTurn = 1; eventLoopTurn <= postGcEventLoopTurns; eventLoopTurn += 1) {
+    await settle();
+    endpoint = capture();
+    samples.push({ cleanupLedger, eventLoopTurn, memory: endpoint });
+  }
+  return { endpoint, samples };
 };
 
 export const primeGroupedWriteBenchmark = async ({

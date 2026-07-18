@@ -120,7 +120,7 @@ const measurementProtocolValue = (value, path) => {
   }
   const protocol = objectValue(value, path);
   const keys = Object.keys(protocol).sort();
-  const supportedKeys = ["memoryCheckpoint", "priming"];
+  const supportedKeys = ["memoryCheckpoint", "postGcEventLoopTurns", "priming"];
   if (keys.length === 0 || keys.some((key) => !supportedKeys.includes(key))) {
     throw new Error(
       `Benchmark artifact field ${path} must contain one or more of these keys only: ${supportedKeys.join(", ")}.`,
@@ -132,10 +132,33 @@ const measurementProtocolValue = (value, path) => {
       : undefined;
   if (
     memoryCheckpoint !== undefined &&
-    memoryCheckpoint !== "settled-explicit-gc-after-cleanup"
+    memoryCheckpoint !== "settled-explicit-gc-after-cleanup" &&
+    memoryCheckpoint !== "settled-explicit-gc-plus-post-gc-turns-after-cleanup"
   ) {
     throw new Error(
-      `Benchmark artifact field ${path}.memoryCheckpoint must be settled-explicit-gc-after-cleanup.`,
+      `Benchmark artifact field ${path}.memoryCheckpoint must be settled-explicit-gc-after-cleanup or settled-explicit-gc-plus-post-gc-turns-after-cleanup.`,
+    );
+  }
+  const postGcEventLoopTurns = Object.hasOwn(protocol, "postGcEventLoopTurns")
+    ? positiveInteger(protocol.postGcEventLoopTurns, `${path}.postGcEventLoopTurns`)
+    : undefined;
+  if (
+    postGcEventLoopTurns !== undefined &&
+    memoryCheckpoint !== "settled-explicit-gc-plus-post-gc-turns-after-cleanup"
+  ) {
+    throw new Error(
+      `Benchmark artifact field ${path}.postGcEventLoopTurns requires the settled-explicit-gc-plus-post-gc-turns-after-cleanup checkpoint.`,
+    );
+  }
+  if (postGcEventLoopTurns !== undefined && postGcEventLoopTurns !== 8) {
+    throw new Error(`Benchmark artifact field ${path}.postGcEventLoopTurns must be 8.`);
+  }
+  if (
+    memoryCheckpoint === "settled-explicit-gc-plus-post-gc-turns-after-cleanup" &&
+    postGcEventLoopTurns === undefined
+  ) {
+    throw new Error(
+      `Benchmark artifact field ${path}.postGcEventLoopTurns is required for the settled-explicit-gc-plus-post-gc-turns-after-cleanup checkpoint.`,
     );
   }
   const priming =
@@ -149,8 +172,131 @@ const measurementProtocolValue = (value, path) => {
   }
   return {
     ...(memoryCheckpoint === undefined ? {} : { memoryCheckpoint }),
+    ...(postGcEventLoopTurns === undefined ? {} : { postGcEventLoopTurns }),
     ...(priming === undefined ? {} : { priming }),
   };
+};
+
+const memoryCheckpointSnapshotValue = (value, path) => {
+  const snapshot = exactObjectValue(value, path, [
+    "arrayBuffersBytes",
+    "externalBytes",
+    "heapTotalBytes",
+    "heapUsedBytes",
+    "rssBytes",
+  ]);
+  return {
+    arrayBuffersBytes: nonNegativeInteger(snapshot.arrayBuffersBytes, `${path}.arrayBuffersBytes`),
+    externalBytes: nonNegativeInteger(snapshot.externalBytes, `${path}.externalBytes`),
+    heapTotalBytes: nonNegativeInteger(snapshot.heapTotalBytes, `${path}.heapTotalBytes`),
+    heapUsedBytes: nonNegativeInteger(snapshot.heapUsedBytes, `${path}.heapUsedBytes`),
+    rssBytes: nonNegativeInteger(snapshot.rssBytes, `${path}.rssBytes`),
+  };
+};
+
+const memoryCheckpointDeltaValue = (value, path) => {
+  const delta = exactObjectValue(value, path, [
+    "arrayBuffersBytes",
+    "externalBytes",
+    "heapTotalBytes",
+    "heapUsedBytes",
+    "rssBytes",
+  ]);
+  return {
+    arrayBuffersBytes: finiteNumber(delta.arrayBuffersBytes, `${path}.arrayBuffersBytes`),
+    externalBytes: finiteNumber(delta.externalBytes, `${path}.externalBytes`),
+    heapTotalBytes: finiteNumber(delta.heapTotalBytes, `${path}.heapTotalBytes`),
+    heapUsedBytes: finiteNumber(delta.heapUsedBytes, `${path}.heapUsedBytes`),
+    rssBytes: finiteNumber(delta.rssBytes, `${path}.rssBytes`),
+  };
+};
+
+const zeroCleanupLedgerValue = (value, path) => {
+  const ledger = exactObjectValue(value, path, [
+    "activeSubscriptions",
+    "activeViews",
+    "pendingMutationBatches",
+    "queuedEvents",
+  ]);
+  const decoded = {
+    activeSubscriptions: nonNegativeInteger(
+      ledger.activeSubscriptions,
+      `${path}.activeSubscriptions`,
+    ),
+    activeViews: nonNegativeInteger(ledger.activeViews, `${path}.activeViews`),
+    pendingMutationBatches: nonNegativeInteger(
+      ledger.pendingMutationBatches,
+      `${path}.pendingMutationBatches`,
+    ),
+    queuedEvents: nonNegativeInteger(ledger.queuedEvents, `${path}.queuedEvents`),
+  };
+  if (Object.values(decoded).some((count) => count !== 0)) {
+    throw new Error(`Benchmark artifact field ${path} must contain only zero counts.`);
+  }
+  return decoded;
+};
+
+const validatePostGcEventLoopSamples = (memory, measurementProtocol, path) => {
+  const samplesValue = memory.postGcEventLoopSamples;
+  const postGcEventLoopTurns = measurementProtocol?.postGcEventLoopTurns;
+  if (postGcEventLoopTurns === undefined) {
+    if (samplesValue !== undefined) {
+      throw new Error(
+        `Benchmark artifact field ${path}.postGcEventLoopSamples requires postGcEventLoopTurns protocol metadata.`,
+      );
+    }
+    return;
+  }
+  const samples = arrayValue(samplesValue, `${path}.postGcEventLoopSamples`);
+  const expectedSampleCount = postGcEventLoopTurns + 1;
+  if (samples.length !== expectedSampleCount) {
+    throw new Error(
+      `Benchmark artifact field ${path}.postGcEventLoopSamples must contain ${expectedSampleCount} samples.`,
+    );
+  }
+  const decodedSamples = samples.map((value, index) => {
+    const samplePath = `${path}.postGcEventLoopSamples[${index}]`;
+    const sample = exactObjectValue(value, samplePath, [
+      "cleanupLedger",
+      "eventLoopTurn",
+      "memory",
+    ]);
+    const eventLoopTurn = nonNegativeInteger(sample.eventLoopTurn, `${samplePath}.eventLoopTurn`);
+    if (eventLoopTurn !== index) {
+      throw new Error(
+        `Benchmark artifact field ${samplePath}.eventLoopTurn must be ${index}.`,
+      );
+    }
+    return {
+      cleanupLedger: zeroCleanupLedgerValue(sample.cleanupLedger, `${samplePath}.cleanupLedger`),
+      eventLoopTurn,
+      memory: memoryCheckpointSnapshotValue(sample.memory, `${samplePath}.memory`),
+    };
+  });
+  const endpoint = memoryCheckpointSnapshotValue(
+    memory.afterBenchmark,
+    `${path}.afterBenchmark`,
+  );
+  const finalSample = decodedSamples[postGcEventLoopTurns];
+  if (JSON.stringify(finalSample?.memory) !== JSON.stringify(endpoint)) {
+    throw new Error(
+      `Benchmark artifact field ${path}.afterBenchmark must equal the final post-GC event-loop sample.`,
+    );
+  }
+  const before = memoryCheckpointSnapshotValue(memory.before, `${path}.before`);
+  const totalDelta = memoryCheckpointDeltaValue(memory.totalDelta, `${path}.totalDelta`);
+  const expectedTotalDelta = {
+    arrayBuffersBytes: endpoint.arrayBuffersBytes - before.arrayBuffersBytes,
+    externalBytes: endpoint.externalBytes - before.externalBytes,
+    heapTotalBytes: endpoint.heapTotalBytes - before.heapTotalBytes,
+    heapUsedBytes: endpoint.heapUsedBytes - before.heapUsedBytes,
+    rssBytes: endpoint.rssBytes - before.rssBytes,
+  };
+  if (JSON.stringify(totalDelta) !== JSON.stringify(expectedTotalDelta)) {
+    throw new Error(
+      `Benchmark artifact field ${path}.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+    );
+  }
 };
 
 const comparableBenchmark = (groupName, benchmark) => ({
@@ -715,6 +861,11 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
   if (JSON.stringify(measurementProtocol) !== JSON.stringify(expectedMeasurementProtocol)) {
     throw new Error(`${task.label}: measurementProtocol did not match the runner policy.`);
   }
+  validatePostGcEventLoopSamples(
+    memory,
+    measurementProtocol,
+    `${task.summaryPath}.memory`,
+  );
   const rowCount = finiteNumber(summary.rowCount, `${task.summaryPath}.rowCount`);
   if (task.expectedRowCount !== undefined && rowCount !== task.expectedRowCount) {
     throw new Error(`${task.label}: rowCount changed from ${task.expectedRowCount} to ${rowCount}.`);

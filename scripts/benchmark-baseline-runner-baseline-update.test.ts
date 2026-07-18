@@ -270,8 +270,27 @@ describe("benchmark baseline runner", () => {
     });
     const initialBaseline = readBenchmarkBaseline(baselineFile);
     const measurementProtocol = {
-      memoryCheckpoint: "settled-explicit-gc-after-cleanup" as const,
+      memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup" as const,
+      postGcEventLoopTurns: 8 as const,
     };
+    const cleanupLedger = {
+      activeSubscriptions: 0,
+      activeViews: 0,
+      pendingMutationBatches: 0,
+      queuedEvents: 0,
+    };
+    const checkpointMemory = (value: number) => ({
+      arrayBuffersBytes: value,
+      externalBytes: value + 1,
+      heapTotalBytes: value + 2,
+      heapUsedBytes: value + 3,
+      rssBytes: value + 4,
+    });
+    const postGcEventLoopSamples = Array.from({ length: 9 }, (_value, eventLoopTurn) => ({
+      cleanupLedger,
+      eventLoopTurn,
+      memory: checkpointMemory(eventLoopTurn),
+    }));
     const migratedFirstTask = {
       ...firstTask,
       expectedMeasurementProtocol: measurementProtocol,
@@ -293,6 +312,19 @@ describe("benchmark baseline runner", () => {
         writeArtifacts(currentTask, {
           ...summary,
           measurementProtocol,
+          memory: {
+            ...summary.memory,
+            afterBenchmark: checkpointMemory(8),
+            before: checkpointMemory(0),
+            postGcEventLoopSamples,
+            totalDelta: {
+              arrayBuffersBytes: 8,
+              externalBytes: 8,
+              heapTotalBytes: 8,
+              heapUsedBytes: 8,
+              rssBytes: 8,
+            },
+          },
         });
         return 0;
       },
@@ -309,6 +341,7 @@ describe("benchmark baseline runner", () => {
       migratedTask: {
         ...initialBaseline.tasks.find((task) => task.taskLabel === "task a"),
         measurementProtocol,
+        memoryRssTotalDeltaBytes: 8,
       },
       preservedTask: initialBaseline.tasks.find((task) => task.taskLabel === "task b"),
       thresholds: initialBaseline.thresholds,

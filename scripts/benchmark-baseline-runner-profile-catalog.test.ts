@@ -283,6 +283,8 @@ describe("benchmark baseline runner", () => {
         outputJsonPath: task.packageOutputJsonPath,
         primingAppendBatches:
           task.env["VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES"],
+        postGcEventLoopTurns:
+          task.env["VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS"],
         readerProfile: task.env["VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE"],
         rowCount: task.env["VIEW_SERVER_ENGINE_BENCH_ROWS"],
       })),
@@ -293,6 +295,7 @@ describe("benchmark baseline runner", () => {
         nodeOptions: undefined,
         outputJsonPath: ".artifacts/grouped-write-incremental-order-neutral-100000rows-1mutations.json",
         primingAppendBatches: undefined,
+        postGcEventLoopTurns: undefined,
         readerProfile: "order-neutral",
         rowCount: "100000",
       },
@@ -303,19 +306,22 @@ describe("benchmark baseline runner", () => {
         outputJsonPath:
           ".artifacts/grouped-write-incremental-order-neutral-1000000rows-1mutations.json",
         primingAppendBatches: undefined,
+        postGcEventLoopTurns: undefined,
         readerProfile: "order-neutral",
         rowCount: "1000000",
       },
       {
         explicitGc: "1",
         measurementProtocol: {
-          memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+          memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+          postGcEventLoopTurns: 8,
           priming: "append-delete-restore-before-sampling",
         },
         nodeOptions: "--expose-gc",
         outputJsonPath:
           ".artifacts/grouped-write-incremental-order-neutral-5000000rows-1mutations.json",
         primingAppendBatches: "1",
+        postGcEventLoopTurns: "8",
         readerProfile: "order-neutral",
         rowCount: "5000000",
       },
@@ -410,6 +416,33 @@ describe("benchmark baseline runner", () => {
         VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
       }),
     ).toThrow(/^Grouped write explicit GC requires append priming to be enabled\.$/u);
+  });
+
+  it("requires exactly eight post-GC event-loop turns for grouped explicit-GC tasks", () => {
+    expect(() =>
+      groupedWriteTask("incremental", 1, {
+        VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
+        VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "1",
+        VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES: "1",
+        VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
+      }),
+    ).toThrow(/^Grouped write explicit GC requires post-GC event-loop turns\.$/u);
+    expect(() =>
+      groupedWriteTask("incremental", 1, {
+        VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
+        VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "1",
+        VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS: "7",
+        VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES: "1",
+        VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
+      }),
+    ).toThrow(/^Grouped write post-GC event-loop turns must be 8\.$/u);
+    expect(() =>
+      groupedWriteTask("incremental", 1, {
+        VIEW_SERVER_ENGINE_BENCH_ITERATIONS: "1",
+        VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS: "8",
+        VIEW_SERVER_ENGINE_BENCH_WRITE_BATCH_SIZE: "1",
+      }),
+    ).toThrow(/^Grouped write post-GC event-loop turns require explicit GC\.$/u);
   });
 
   it("defines grouped key width smoke and release tasks", () => {

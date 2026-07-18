@@ -45,8 +45,10 @@ const updateBaselineTaskArgument = "--update-baseline-task";
 const updateBaselineTaskArgumentPrefix = `${updateBaselineTaskArgument}=`;
 const scopedMutableTaskFields = new Set([
   "benchmarks",
+  "measurementProtocol",
   "memoryRssTotalDeltaBytes",
   "minimumSampleCount",
+  "runtimeOperationCases",
   "samplingPolicy",
 ]);
 

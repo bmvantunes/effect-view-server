@@ -23,14 +23,27 @@ import {
   groupedFullEvaluationCountFromEngineHealth,
   groupedPatchedEvaluationCountFromEngineHealth,
   isBenchmarkEngineHealth,
+  pendingMutationBatchCountFromEngineHealth,
   queuedEventCountFromEngineHealth,
+  type BenchmarkArtifactMeasurementInput,
   writeBenchmarkArtifact,
 } from "./benchmark-artifact";
+import {
+  groupedWriteBenchmarkGarbageCollector,
+  groupedWriteBenchmarkPostGcEventLoopTurns,
+  groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv,
+  groupedWritePrimingAppendCase,
+  groupedWritePrimingDeleteCase,
+  primeGroupedWriteBenchmark,
+  settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint,
+} from "./grouped-write-benchmark-priming";
 import { memorySnapshot, type BenchmarkMemorySnapshot } from "./benchmark-memory-recorder";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
 };
+declare const gc: (() => void) | undefined;
+declare const setImmediate: (callback: () => void) => void;
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -79,6 +92,7 @@ type BenchmarkProfile = {
   engine: Engine | undefined;
   extremeReplaceIndexes: ReadonlyArray<number>;
   groupMoveKeys: ReadonlyArray<string>;
+  measuredInitialVersion: number;
   memoryAfterSetup: BenchmarkMemorySnapshot | undefined;
   nextAppendIndex: number;
   nextDeleteKeyIndex: number;
@@ -87,6 +101,8 @@ type BenchmarkProfile = {
   nextNonAggregatePatchKeyIndex: number;
   nextSameGroupPatchKeyIndex: number;
   nonAggregatePatchKeys: ReadonlyArray<string>;
+  primingGroupedFullEvaluationCount: number;
+  primingGroupedPatchedEvaluationCount: number;
   regionStatusReader: GroupedEventReader | undefined;
   regionStatusScope: Scope.Closeable | undefined;
   regionStatusSubscription: GroupedSubscription | undefined;
@@ -274,6 +290,14 @@ const benchOptions = {
     defaultWarmupTimeMs,
   ),
 };
+const primingAppendBatches = nonNegativeIntegerFromEnv(
+  "VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES",
+  0,
+);
+const explicitGarbageCollection = nonNegativeIntegerFromEnv(
+  "VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC",
+  0,
+);
 if (benchOptions.time > 0) {
   throw new Error("Grouped write benchmark mutates shared engine state; time must stay disabled.");
 }
@@ -282,6 +306,34 @@ if (benchOptions.warmupIterations > 0 || benchOptions.warmupTime > 0) {
     "Grouped write benchmark mutates shared engine state; warmup must stay disabled.",
   );
 }
+if (primingAppendBatches > 1) {
+  throw new Error("VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES must be 0 or 1.");
+}
+if (explicitGarbageCollection > 1) {
+  throw new Error("VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC must be 0 or 1.");
+}
+if (
+  primingAppendBatches === 1 &&
+  (groupedWriteMode !== "incremental" ||
+    groupedReaderProfile !== "order-neutral" ||
+    mutationBatchSize !== 1)
+) {
+  throw new Error(
+    "Grouped write append priming requires incremental mode, the order-neutral reader profile, and a one-row mutation batch.",
+  );
+}
+if (explicitGarbageCollection === 1 && primingAppendBatches !== 1) {
+  throw new Error("Grouped write explicit GC requires append priming to be enabled.");
+}
+const postGcEventLoopTurns = groupedWriteBenchmarkPostGcEventLoopTurnsFromEnv(
+  process.env["VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS"],
+  explicitGarbageCollection === 1,
+);
+
+const collectBenchmarkGarbage = groupedWriteBenchmarkGarbageCollector({
+  collectGarbage: typeof gc === "function" ? gc : undefined,
+  explicitGc: explicitGarbageCollection === 1,
+});
 
 const profile: BenchmarkProfile = {
   rowCount: benchmarkRowCount,
@@ -291,6 +343,7 @@ const profile: BenchmarkProfile = {
   engine: undefined,
   extremeReplaceIndexes: [],
   groupMoveKeys: [],
+  measuredInitialVersion: expectedInitialVersion,
   memoryAfterSetup: undefined,
   nextAppendIndex: benchmarkRowCount,
   nextDeleteKeyIndex: 0,
@@ -299,6 +352,8 @@ const profile: BenchmarkProfile = {
   nextNonAggregatePatchKeyIndex: 0,
   nextSameGroupPatchKeyIndex: 0,
   nonAggregatePatchKeys: [],
+  primingGroupedFullEvaluationCount: 0,
+  primingGroupedPatchedEvaluationCount: 0,
   regionStatusReader: undefined,
   regionStatusScope: undefined,
   regionStatusSubscription: undefined,
@@ -696,6 +751,74 @@ const expectGroupedAdmission = (counts: {
   expect(counts.activeIncrementalGroupedViews).toBe(0);
 };
 
+const primeGroupedWriteProfile = async (
+  engine: Engine,
+  setupCounts: ReturnType<typeof activeGroupedViewCounts>,
+): Promise<void> => {
+  const primingResult = await primeGroupedWriteBenchmark({
+    expectedRowCount: benchmarkRowCount,
+    operations: {
+      appendBatch: async () => {
+        const startIndex = profile.nextAppendIndex;
+        const rows = appendedRows(startIndex, startIndex);
+        profile.nextAppendIndex += rows.length;
+        await Effect.runPromise(engine.publishMany("orders", rows));
+        return rows.map((row) => row.id);
+      },
+      deleteRow: async (key) => {
+        await Effect.runPromise(engine.delete("orders", key));
+      },
+      drainDelta: async (caseName) => {
+        await drainDeltas(profile, caseName);
+      },
+      readRowCount: async () => {
+        const snapshot = await Effect.runPromise(
+          engine.snapshot("orders", {
+            select: ["id"],
+            limit: 1,
+          }),
+        );
+        return snapshot.totalRows;
+      },
+    },
+  });
+  expect(primingResult).toStrictEqual({
+    appendedRowCount: 1,
+    deltaVersionCount: 2,
+    restoredRowCount: benchmarkRowCount,
+  });
+  expect(
+    profile.deltaRecords.map(({ caseName, fromVersion, readerName, toVersion }) => ({
+      caseName,
+      fromVersion,
+      readerName,
+      toVersion,
+    })),
+  ).toStrictEqual([
+    {
+      caseName: groupedWritePrimingAppendCase,
+      fromVersion: expectedInitialVersion,
+      readerName: "primary",
+      toVersion: expectedInitialVersion + 1,
+    },
+    {
+      caseName: groupedWritePrimingDeleteCase,
+      fromVersion: expectedInitialVersion + 1,
+      readerName: "primary",
+      toVersion: expectedInitialVersion + 2,
+    },
+  ]);
+  const primedHealth = await Effect.runPromise(engine.health());
+  const primedCounts = activeGroupedViewCounts(primedHealth, "after priming");
+  expectGroupedAdmission(primedCounts);
+  profile.measuredInitialVersion = expectedInitialVersion + primingResult.deltaVersionCount;
+  profile.primingGroupedFullEvaluationCount =
+    primedCounts.groupedFullEvaluationCount - setupCounts.groupedFullEvaluationCount;
+  profile.primingGroupedPatchedEvaluationCount =
+    primedCounts.groupedPatchedEvaluationCount - setupCounts.groupedPatchedEvaluationCount;
+  profile.deltaRecords = [];
+};
+
 beforeAll(async () => {
   const engine = Effect.runSync(
     createColumnLiveViewEngine({
@@ -743,19 +866,18 @@ beforeAll(async () => {
   const setupCounts = activeGroupedViewCounts(setupHealth, "after setup");
   expectGroupedAdmission(setupCounts);
 
+  profile.engine = engine;
   profile.deleteKeys = matchingSeedKeysForStatus(
     Math.floor(benchmarkRowCount * 0.66),
     requiredMutationKeys,
     "open",
   );
-  profile.engine = engine;
   profile.extremeReplaceIndexes = matchingSeedIndexesForGroup(requiredMutationKeys, "open", "emea");
   profile.groupMoveKeys = matchingSeedKeysForStatus(
     Math.floor(benchmarkRowCount * 0.33),
     requiredMutationKeys,
     "open",
   );
-  profile.memoryAfterSetup = memorySnapshot();
   profile.sameGroupPatchKeys = matchingSeedKeysForStatus(0, requiredMutationKeys, "open");
   profile.nonAggregatePatchKeys = matchingSeedKeysForStatusExcluding(
     Math.floor(benchmarkRowCount * 0.5),
@@ -773,13 +895,18 @@ beforeAll(async () => {
   profile.setupActiveViews = setupCounts.activeViews;
   profile.setupGroupedFullEvaluationCount = setupCounts.groupedFullEvaluationCount;
   profile.setupGroupedPatchedEvaluationCount = setupCounts.groupedPatchedEvaluationCount;
+  collectBenchmarkGarbage?.();
+  if (primingAppendBatches === 1) {
+    await primeGroupedWriteProfile(engine, setupCounts);
+  }
+  profile.memoryAfterSetup = memorySnapshot();
 }, 0);
 
 afterAll(async () => {
   const expectedMutationDeltaEvents = profile.deltaVersionCount * groupedReaderCount;
   const expectedFromVersions = Array.from(
     { length: profile.deltaVersionCount },
-    (_value, index) => expectedInitialVersion + index,
+    (_value, index) => profile.measuredInitialVersion + index,
   );
   const statusFromVersions = profile.deltaRecords
     .filter((record) => record.readerName === "primary")
@@ -814,9 +941,20 @@ afterAll(async () => {
     activeFallbackGroupedViewsBeforeCleanup = preCleanupCounts.activeFallbackGroupedViews;
     activeIncrementalGroupedViewsBeforeCleanup = preCleanupCounts.activeIncrementalGroupedViews;
     activeViewsBeforeCleanup = preCleanupCounts.activeViews;
-    groupedFullEvaluationCountBeforeCleanup = preCleanupCounts.groupedFullEvaluationCount;
-    groupedPatchedEvaluationCountBeforeCleanup = preCleanupCounts.groupedPatchedEvaluationCount;
+    groupedFullEvaluationCountBeforeCleanup =
+      preCleanupCounts.groupedFullEvaluationCount - profile.primingGroupedFullEvaluationCount;
+    groupedPatchedEvaluationCountBeforeCleanup =
+      preCleanupCounts.groupedPatchedEvaluationCount - profile.primingGroupedPatchedEvaluationCount;
   }
+  let health: unknown = {
+    status: "not-started",
+  };
+  let cleanupLedger = {
+    activeSubscriptions: 0,
+    activeViews: 0,
+    pendingMutationBatches: 0,
+    queuedEvents: 0,
+  };
   if (profile.statusSubscription !== undefined) {
     await Effect.runPromise(profile.statusSubscription.close());
     profile.statusSubscription = undefined;
@@ -833,12 +971,17 @@ afterAll(async () => {
     await Effect.runPromise(Scope.close(profile.regionStatusScope, Exit.void));
     profile.regionStatusScope = undefined;
   }
-  let health: unknown = {
-    status: "not-started",
-  };
   if (profile.engine !== undefined) {
     health = await Effect.runPromise(profile.engine.health());
-    expect(isBenchmarkEngineHealth(health)).toBe(true);
+    if (!isBenchmarkEngineHealth(health)) {
+      throw new Error("Grouped write benchmark cleanup health was invalid.");
+    }
+    cleanupLedger = {
+      activeSubscriptions: health.activeSubscriptions,
+      activeViews: activeViewCountFromEngineHealth(health),
+      pendingMutationBatches: pendingMutationBatchCountFromEngineHealth(health, ["orders"]),
+      queuedEvents: health.queuedEvents,
+    };
     await Effect.runPromise(profile.engine.close());
     profile.engine = undefined;
   }
@@ -850,9 +993,41 @@ afterAll(async () => {
   profile.nonAggregatePatchKeys = [];
   profile.sameGroupPatchKeys = [];
   profile.statusReader = undefined;
-  const memoryAfterBenchmark = memorySnapshot();
-  const cleanupLeakCount = cleanupLeakCountFromEngineHealth(health);
+  const cleanupLeakCount =
+    cleanupLeakCountFromEngineHealth(health) + cleanupLedger.pendingMutationBatches;
+  failOnBenchmarkCleanupLeaks(cleanupLeakCount);
+  let memoryAfterBenchmark: BenchmarkMemorySnapshot;
+  let artifactMeasurement: BenchmarkArtifactMeasurementInput;
+  if (collectBenchmarkGarbage === undefined) {
+    memoryAfterBenchmark = memorySnapshot();
+    artifactMeasurement =
+      primingAppendBatches === 1
+        ? {
+            measurementProtocol: {
+              priming: "append-delete-restore-before-sampling",
+            },
+          }
+        : {};
+  } else {
+    const checkpoint = await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
+      capture: memorySnapshot,
+      cleanupLedger,
+      collectGarbage: collectBenchmarkGarbage,
+      postGcEventLoopTurns,
+      settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
+    });
+    memoryAfterBenchmark = checkpoint.endpoint;
+    artifactMeasurement = {
+      measurementProtocol: {
+        memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        postGcEventLoopTurns: groupedWriteBenchmarkPostGcEventLoopTurns,
+        priming: "append-delete-restore-before-sampling",
+      },
+      postGcEventLoopSamples: checkpoint.samples,
+    };
+  }
   writeBenchmarkArtifact({
+    ...artifactMeasurement,
     artifactKind: "engine-benchmark-summary",
     backpressureCount: backpressureCountFromEngineHealth(health),
     benchmarkCases: [
@@ -907,6 +1082,16 @@ afterAll(async () => {
       `Grouped write mode: ${groupedWriteMode}.`,
       `Grouped reader profile: ${groupedReaderProfile}.`,
       `Expected grouped admission: ${expectedGroupedAdmission}.`,
+      ...(primingAppendBatches === 1
+        ? [
+            "Before timed samples, one append/delete cycle primes the grouped write path and proves the original row cardinality is restored.",
+          ]
+        : []),
+      ...(explicitGarbageCollection === 1
+        ? [
+            `Endpoint RSS is the fixed final sample after cleanup, explicit GC, and ${postGcEventLoopTurns} post-GC event-loop turns; every ordered sample is retained for diagnostics and the measurement protocol is structural baseline metadata.`,
+          ]
+        : []),
       groupedWriteMode === "incremental"
         ? `Incremental mode price threshold: ${incrementalPriceThreshold(benchmarkRowCount)}.`
         : "Fallback mode has no selective price threshold.",
@@ -920,7 +1105,6 @@ afterAll(async () => {
     subscriberCount: groupedReaderCount,
     topics: ["orders"],
   });
-  failOnBenchmarkCleanupLeaks(cleanupLeakCount);
 }, 0);
 
 describe(`grouped write engine benchmark: ${profile.rowCount} rows`, () => {

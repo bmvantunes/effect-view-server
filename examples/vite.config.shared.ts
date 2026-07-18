@@ -1,8 +1,33 @@
-import { defineConfig, type PluginOption, type TestUserConfig } from "vite-plus";
+import { defineConfig, lazyPlugins, type PluginOption, type TestUserConfig } from "vite-plus";
 import type { BrowserProviderOption } from "vite-plus/test/node";
 
+interface ExampleRouteGenerationRuntime {
+  readonly command: "build" | "serve";
+  readonly mode: string;
+}
+
+type TanStackStartPluginFactory = (options: {
+  readonly router: {
+    readonly enableRouteGeneration: boolean;
+  };
+}) => Array<PluginOption>;
+
+const shouldGenerateExampleRoutes = ({ command, mode }: ExampleRouteGenerationRuntime): boolean =>
+  !(command === "serve" && mode === "test");
+
+const createExampleTanStackStartPlugins = (
+  tanstackStart: TanStackStartPluginFactory,
+  environment: ExampleRouteGenerationRuntime,
+): Array<PluginOption> =>
+  tanstackStart({
+    router: {
+      enableRouteGeneration: shouldGenerateExampleRoutes(environment),
+    },
+  });
+
 interface TanStackReactExampleConfigOptions {
-  readonly plugins: Array<PluginOption>;
+  readonly createTanStackStartPlugins: TanStackStartPluginFactory;
+  readonly plugins: (tanStackStartPlugins: Array<PluginOption>) => Array<PluginOption>;
   readonly browserProvider: BrowserProviderOption;
   readonly enforceAllSourceCoverage?: boolean;
   readonly includeNodeTests?: boolean;
@@ -27,13 +52,14 @@ const exactAllSourceCoverage = {
 } satisfies NonNullable<TestUserConfig["coverage"]>;
 
 export const defineTanStackReactExampleConfig = ({
+  createTanStackStartPlugins,
   plugins,
   browserProvider,
   enforceAllSourceCoverage,
   includeNodeTests,
   optimizeDepsInclude,
 }: TanStackReactExampleConfigOptions) =>
-  defineConfig({
+  defineConfig((environment) => ({
     optimizeDeps: {
       include: [
         "@effect/vitest",
@@ -44,7 +70,9 @@ export const defineTanStackReactExampleConfig = ({
       ],
       exclude: ["@tanstack/react-router", "@tanstack/react-start", "@tanstack/router-plugin"],
     },
-    plugins,
+    plugins: lazyPlugins(() =>
+      plugins(createExampleTanStackStartPlugins(createTanStackStartPlugins, environment)),
+    ),
     test: {
       include: ["src/**/*.test.ts"],
       typecheck: {
@@ -105,4 +133,4 @@ export const defineTanStackReactExampleConfig = ({
       },
     },
     fmt: {},
-  });
+  }));

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import {
   memoryDelta,
   type BenchmarkArtifactMemoryInput,
+  type BenchmarkMemorySnapshot,
   type BenchmarkProcessPeakRss,
 } from "./benchmark-memory-recorder";
 
@@ -25,6 +26,7 @@ export type BenchmarkTopicHealth = {
   readonly activeViews: number;
   readonly groupedFullEvaluationCount?: number;
   readonly groupedPatchedEvaluationCount?: number;
+  readonly pendingMutationBatches: number;
 };
 
 export type BenchmarkGroupedWriteAdmission = {
@@ -72,6 +74,52 @@ export type BenchmarkGroupedKeyWidthParameters = {
   readonly windowLimit: number;
 };
 
+type BenchmarkExplicitGcMeasurementProtocol = {
+  readonly memoryCheckpoint: "settled-explicit-gc-after-cleanup";
+  readonly postGcEventLoopTurns?: never;
+  readonly priming?: "append-delete-restore-before-sampling";
+};
+
+type BenchmarkPostGcEventLoopMeasurementProtocol = {
+  readonly memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup";
+  readonly postGcEventLoopTurns: 8;
+  readonly priming?: "append-delete-restore-before-sampling";
+};
+
+type BenchmarkPrimingMeasurementProtocol = {
+  readonly memoryCheckpoint?: never;
+  readonly postGcEventLoopTurns?: never;
+  readonly priming: "append-delete-restore-before-sampling";
+};
+
+export type BenchmarkMeasurementProtocol =
+  | BenchmarkExplicitGcMeasurementProtocol
+  | BenchmarkPostGcEventLoopMeasurementProtocol
+  | BenchmarkPrimingMeasurementProtocol;
+
+type BenchmarkPostGcEventLoopSample = {
+  readonly cleanupLedger: {
+    readonly activeSubscriptions: number;
+    readonly activeViews: number;
+    readonly pendingMutationBatches: number;
+    readonly queuedEvents: number;
+  };
+  readonly eventLoopTurn: number;
+  readonly memory: BenchmarkMemorySnapshot;
+};
+
+export type BenchmarkArtifactMeasurementInput =
+  | {
+      readonly measurementProtocol: BenchmarkPostGcEventLoopMeasurementProtocol;
+      readonly postGcEventLoopSamples: ReadonlyArray<BenchmarkPostGcEventLoopSample>;
+    }
+  | {
+      readonly measurementProtocol?:
+        | BenchmarkExplicitGcMeasurementProtocol
+        | BenchmarkPrimingMeasurementProtocol;
+      readonly postGcEventLoopSamples?: never;
+    };
+
 type BenchmarkArtifactFields = {
   readonly activeViewCountBeforeCleanup?: number;
   readonly artifactKind: "engine-benchmark-summary";
@@ -106,7 +154,9 @@ type BenchmarkArtifactFields = {
   readonly preCleanupHealth?: unknown;
 };
 
-export type BenchmarkArtifactInput = BenchmarkArtifactFields & BenchmarkArtifactMemoryInput;
+export type BenchmarkArtifactInput = BenchmarkArtifactFields &
+  BenchmarkArtifactMemoryInput &
+  BenchmarkArtifactMeasurementInput;
 
 const processPeakRssSummary = (initialCurrentRssBytes: number, peak: BenchmarkProcessPeakRss) => {
   if (
@@ -212,11 +262,19 @@ export const isBenchmarkEngineHealth = (value: unknown): value is BenchmarkEngin
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
+const isNonNegativeInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+
 const isOptionalFiniteNumber = (value: unknown): value is number | undefined =>
   value === undefined || isFiniteNumber(value);
 
 const isBenchmarkTopicHealth = (value: unknown): value is BenchmarkTopicHealth => {
-  if (typeof value !== "object" || value === null || !("activeViews" in value)) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("activeViews" in value) ||
+    !("pendingMutationBatches" in value)
+  ) {
     return false;
   }
   const activeFallbackGroupedViews =
@@ -232,7 +290,8 @@ const isBenchmarkTopicHealth = (value: unknown): value is BenchmarkTopicHealth =
     isOptionalFiniteNumber(activeFallbackGroupedViews) &&
     isOptionalFiniteNumber(activeIncrementalGroupedViews) &&
     isOptionalFiniteNumber(groupedFullEvaluationCount) &&
-    isOptionalFiniteNumber(groupedPatchedEvaluationCount)
+    isOptionalFiniteNumber(groupedPatchedEvaluationCount) &&
+    isNonNegativeInteger(value.pendingMutationBatches)
   );
 };
 
@@ -299,6 +358,32 @@ export const groupedPatchedEvaluationCountFromEngineHealth = (
   return groupedPatchedEvaluationCount;
 };
 
+export const pendingMutationBatchCountFromEngineHealth = (
+  health: BenchmarkEngineHealth,
+  expectedTopics: ReadonlyArray<string>,
+): number => {
+  if (health.topics === undefined) {
+    throw new Error(
+      "Benchmark engine health must include topic health to prove pending mutation batches are zero.",
+    );
+  }
+  if (expectedTopics.length === 0) {
+    throw new Error("Benchmark pending-mutation proof must name at least one expected topic.");
+  }
+  for (const expectedTopic of expectedTopics) {
+    if (!Object.hasOwn(health.topics, expectedTopic)) {
+      throw new Error(
+        `Benchmark engine health must include expected topic ${expectedTopic} to prove pending mutation batches are zero.`,
+      );
+    }
+  }
+  let pendingMutationBatchCount = 0;
+  for (const topic of Object.values(health.topics)) {
+    pendingMutationBatchCount += topic.pendingMutationBatches;
+  }
+  return pendingMutationBatchCount;
+};
+
 export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
   const summaryPath = benchmarkSummaryPath(input.outputJsonPath);
   const processPeakRss =
@@ -321,11 +406,13 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
         groupedWriteAdmission: input.groupedWriteAdmission,
         health: input.health,
         latency: input.latency,
+        measurementProtocol: input.measurementProtocol,
         memory: {
           afterBenchmark: input.memoryAfterBenchmark,
           afterSetup: input.memoryAfterSetup,
           before: input.memoryBefore,
           benchmarkDelta: memoryDelta(input.memoryAfterSetup, input.memoryAfterBenchmark),
+          postGcEventLoopSamples: input.postGcEventLoopSamples,
           ...(processPeakRss === undefined ? {} : { processPeakRss }),
           setupDelta: memoryDelta(input.memoryBefore, input.memoryAfterSetup),
           totalDelta: memoryDelta(input.memoryBefore, input.memoryAfterBenchmark),

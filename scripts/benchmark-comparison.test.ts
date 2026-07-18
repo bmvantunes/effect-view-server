@@ -112,6 +112,23 @@ describe("benchmark artifact compatibility", () => {
       regressions: ["task a: missing benchmark task in actual run."],
     });
   });
+
+  it("rejects measurement protocol changes as structural incompatibilities", () => {
+    const withMeasurementProtocol = {
+      ...simpleObservation,
+      measurementProtocol: {
+        memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        postGcEventLoopTurns: 8,
+      },
+    };
+
+    expect(compare([withMeasurementProtocol], [simpleObservation])).toStrictEqual({
+      ok: false,
+      regressions: [
+        'task a: measurementProtocol changed from {"memoryCheckpoint":"settled-explicit-gc-plus-post-gc-turns-after-cleanup","postGcEventLoopTurns":8} to undefined.',
+      ],
+    });
+  });
 });
 
 describe("benchmark threshold direction", () => {

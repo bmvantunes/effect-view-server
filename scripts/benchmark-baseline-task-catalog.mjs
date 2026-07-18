@@ -26,11 +26,53 @@ const engineArtifactName = (name) => `.artifacts/${name}`;
 
 const reactArtifactName = (name) => `.artifacts/${name}`;
 
+const explicitGcMeasurementProtocol = {
+  memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+};
+const groupedWritePostGcEventLoopTurns = 8;
+const groupedWriteExplicitGcMeasurementProtocol = {
+  memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+};
+
+const runtimeMeasurementProtocolFromEnv = (env) =>
+  env.VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC === "1"
+    ? explicitGcMeasurementProtocol
+    : undefined;
+
+const groupedWriteMeasurementProtocolFromEnv = (env) => {
+  const explicitGc = env.VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC === "1";
+  const priming = env.VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES === "1";
+  const rawPostGcEventLoopTurns = env.VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS;
+  if (explicitGc && !priming) {
+    throw new Error("Grouped write explicit GC requires append priming to be enabled.");
+  }
+  if (!explicitGc && rawPostGcEventLoopTurns !== undefined) {
+    throw new Error("Grouped write post-GC event-loop turns require explicit GC.");
+  }
+  if (explicitGc && rawPostGcEventLoopTurns === undefined) {
+    throw new Error("Grouped write explicit GC requires post-GC event-loop turns.");
+  }
+  const postGcEventLoopTurns = Number(rawPostGcEventLoopTurns);
+  if (explicitGc && postGcEventLoopTurns !== groupedWritePostGcEventLoopTurns) {
+    throw new Error(
+      `Grouped write post-GC event-loop turns must be ${groupedWritePostGcEventLoopTurns}.`,
+    );
+  }
+  return priming
+      ? {
+        ...(explicitGc ? groupedWriteExplicitGcMeasurementProtocol : {}),
+        ...(explicitGc ? { postGcEventLoopTurns } : {}),
+        priming: "append-delete-restore-before-sampling",
+      }
+    : undefined;
+};
+
 const task = ({
   artifactKind,
   benchmarkScope,
   env,
   expectedMutationCount,
+  expectedMeasurementProtocol,
   label,
   minimumSampleCount,
   outputJsonPath,
@@ -44,6 +86,7 @@ const task = ({
   env,
   expectedArtifactKind: artifactKind,
   expectedBenchmarkScope: benchmarkScope,
+  expectedMeasurementProtocol,
   expectedMutationCount,
   expectedRowCount: rowCount,
   label,
@@ -340,6 +383,7 @@ export const groupedWriteTask = (mode, rowCount, env) => {
       VIEW_SERVER_ENGINE_BENCH_ROWS: String(rowCount),
       ...env,
     },
+    expectedMeasurementProtocol: groupedWriteMeasurementProtocolFromEnv(env),
     label: `grouped write ${mode}${readerProfileLabel} ${rowCount} rows ${writeBatchSize} mutations${labelSuffix}`,
     minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
     outputJsonPath,
@@ -455,6 +499,7 @@ export const runtimeGrpcMaterializedTask = (seedRows, batchSize, env) => {
       VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
       ...env,
     },
+    expectedMeasurementProtocol: runtimeMeasurementProtocolFromEnv(env),
     label: `gRPC materialized ${seedRows} seed rows ${batchSize} batch`,
     minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
     outputJsonPath,
@@ -476,6 +521,7 @@ export const runtimeGrpcLeasedTask = (rowsPerFeed, routeCount, retainedRows, env
       VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
       ...env,
     },
+    expectedMeasurementProtocol: runtimeMeasurementProtocolFromEnv(env),
     label: `gRPC leased ${rowsPerFeed} rows per feed ${routeCount} routes ${retainedRows} retained rows`,
     minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
     outputJsonPath,

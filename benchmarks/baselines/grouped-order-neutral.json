@@ -222,56 +222,56 @@
       "benchmarks": [
         {
           "groupName": "src/grouped-write.bench.ts > grouped write engine benchmark: 5000000 rows",
-          "maxMs": 1.1053329999995185,
-          "meanMs": 0.5684583333301513,
-          "minMs": 0.2901669999992009,
+          "maxMs": 0.6957090000069002,
+          "meanMs": 0.49234733333287295,
+          "minMs": 0.3674579999933485,
           "name": "grouped publishMany append batch",
-          "p99Ms": 1.1053329999995185,
+          "p99Ms": 0.6957090000069002,
           "sampleCount": 3
         },
         {
           "groupName": "src/grouped-write.bench.ts > grouped write engine benchmark: 5000000 rows",
-          "maxMs": 0.4807500000024447,
-          "meanMs": 0.35031933333084453,
-          "minMs": 0.21408299999893643,
+          "maxMs": 0.8410420000000158,
+          "meanMs": 0.6269029999966733,
+          "minMs": 0.40499999999883585,
           "name": "grouped publishMany replace extrema batch",
-          "p99Ms": 0.4807500000024447,
+          "p99Ms": 0.8410420000000158,
           "sampleCount": 3
         },
         {
           "groupName": "src/grouped-write.bench.ts > grouped write engine benchmark: 5000000 rows",
-          "maxMs": 0.42770899999595713,
-          "meanMs": 0.277791666672177,
-          "minMs": 0.19137500000942964,
+          "maxMs": 0.79395900000236,
+          "meanMs": 0.5170000000022507,
+          "minMs": 0.37133300000277814,
           "name": "grouped patch aggregate values",
-          "p99Ms": 0.42770899999595713,
+          "p99Ms": 0.79395900000236,
           "sampleCount": 3
         },
         {
           "groupName": "src/grouped-write.bench.ts > grouped write engine benchmark: 5000000 rows",
-          "maxMs": 0.3224169999884907,
-          "meanMs": 0.26248633332822163,
-          "minMs": 0.21679199999198318,
+          "maxMs": 0.69391600000381,
+          "meanMs": 0.5043886666680919,
+          "minMs": 0.40758299999288283,
           "name": "grouped patch group moves",
-          "p99Ms": 0.3224169999884907,
+          "p99Ms": 0.69391600000381,
           "sampleCount": 3
         },
         {
           "groupName": "src/grouped-write.bench.ts > grouped write engine benchmark: 5000000 rows",
-          "maxMs": 0.34991699999955017,
-          "meanMs": 0.21154199999970538,
-          "minMs": 0.14033399999607354,
+          "maxMs": 0.48875000000407454,
+          "meanMs": 0.32302766666786437,
+          "minMs": 0.23720800000592135,
           "name": "grouped delete existing rows",
-          "p99Ms": 0.34991699999955017,
+          "p99Ms": 0.48875000000407454,
           "sampleCount": 3
         },
         {
           "groupName": "src/grouped-write.bench.ts > grouped write engine benchmark: 5000000 rows",
-          "maxMs": 0.15237499999057036,
-          "meanMs": 0.11559766666323412,
-          "minMs": 0.09095899999374524,
+          "maxMs": 0.2838340000016615,
+          "meanMs": 0.24963900000147987,
+          "minMs": 0.22100000000500586,
           "name": "grouped patch non-aggregate values",
-          "p99Ms": 0.15237499999057036,
+          "p99Ms": 0.2838340000016615,
           "sampleCount": 3
         }
       ],
@@ -312,7 +312,12 @@
         "writeBatchSize": 1
       },
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 3153690624,
+      "measurementProtocol": {
+        "memoryCheckpoint": "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        "postGcEventLoopTurns": 8,
+        "priming": "append-delete-restore-before-sampling"
+      },
+      "memoryRssTotalDeltaBytes": 2390802432,
       "minimumSampleCount": 3,
       "mutationCount": 5000018,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/grouped-write-incremental-order-neutral-5000000rows-1mutations.json",

@@ -72,12 +72,23 @@ observations and associated policy metadata. Preserve reference values for
 unchanged mutation, fanout, retained-delta, write, and browser workloads.
 The comparator retains every sample and fails the first run; do not trim
 outliers, retry, or select a best result.
+
+The 5M grouped order-neutral task uses a fixed endpoint-memory protocol. Cleanup must first produce a
+zero ledger for active subscriptions, active views, queued events, and pending mutation batches. The
+worker then settles once, performs exactly one explicit GC, captures turn zero, and captures one
+additional sample after each of eight event-loop turns. The artifact retains all nine samples in
+order, but comparison always uses the fixed turn-eight endpoint. The decoder rejects missing,
+reordered, non-zero-ledger, negative, or endpoint-mismatched samples. It never chooses a minimum,
+median, or best result. This protocol is structural metadata, so adopting it requires a scoped
+protocol migration for the affected 5M task.
+
 The ordinary `--update-baseline` mode replaces the entire profile; use repeated
 `--update-baseline-task='<task label>'` arguments for a scoped protocol
 migration. A scoped update executes only those named tasks and merges their fresh observations into
 the existing baseline. It requires an unchanged task catalog and rejects selected-task workload or
-structural drift; only measurement samples, RSS, minimum sample counts, and sampling-policy metadata
-may change. The exact smoke and raw-read/write commands are documented in
+structural drift; only latency samples, nested runtime-operation samples, RSS, minimum sample
+counts, sampling-policy metadata, and an explicitly accepted `measurementProtocol` migration may
+change. The exact smoke and raw-read/write commands are documented in
 `benchmarks/README.md`.
 
 ## What To Measure
@@ -104,6 +115,9 @@ Benchmark artifacts are written under package-local `.artifacts/` directories.
 Each named execution writes a validated `profile-<name>.json` run artifact containing its profile
 identity and fresh task observations, but no comparison thresholds. Stable baseline updates and
 comparisons are managed separately by `scripts/run-benchmark-baseline.mjs`.
+Tasks that use priming or explicit endpoint GC also emit structural `measurementProtocol` metadata.
+The runner derives the expected protocol from the task environment, and baseline comparison rejects
+missing or changed protocol metadata before comparing latency or memory values.
 Noisy maximum latency should stay report-only unless repeated runs prove the
 threshold is stable enough to gate CI.
 

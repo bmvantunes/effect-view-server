@@ -15,11 +15,12 @@ const combinedProtocol: BenchmarkMeasurementProtocol = {
   postGcEventLoopTurns: 8,
   priming: "append-delete-restore-before-sampling",
 };
+const postGcProtocol: BenchmarkMeasurementProtocol = {
+  memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+  postGcEventLoopTurns: 8,
+};
 const postGcArtifactMeasurement: BenchmarkArtifactMeasurementInput = {
-  measurementProtocol: {
-    memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
-    postGcEventLoopTurns: 8,
-  },
+  measurementProtocol: postGcProtocol,
   postGcEventLoopSamples: [],
 };
 const primingArtifactMeasurement: BenchmarkArtifactMeasurementInput = {
@@ -68,10 +69,7 @@ const postGcCheckpointWithWrongTurns: BenchmarkMeasurementProtocol = {
 
 // @ts-expect-error A post-GC checkpoint protocol must include its diagnostic samples.
 const postGcArtifactWithoutSamples: BenchmarkArtifactMeasurementInput = {
-  measurementProtocol: {
-    memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
-    postGcEventLoopTurns: 8,
-  } as const,
+  measurementProtocol: postGcProtocol,
 };
 
 // @ts-expect-error Post-GC diagnostic samples require the post-GC checkpoint protocol.

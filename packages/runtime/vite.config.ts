@@ -15,6 +15,7 @@ export default defineConfig({
       provider: "istanbul",
       include: [
         "src/**/*.ts",
+        "test-harness/grpc-benchmark-memory.ts",
         "test-harness/grpc-materialized-benchmark.ts",
         "test-harness/grpc-leased-benchmark*.ts",
       ],

@@ -208,6 +208,40 @@ describe("benchmark profile execution", () => {
     });
   });
 
+  it("appends task Node options without replacing caller Node options", async () => {
+    const directory = makeDirectory();
+    const baseTask = makeTask(directory);
+    const task = {
+      ...baseTask,
+      env: {
+        ...baseTask.env,
+        NODE_OPTIONS: "--expose-gc",
+      },
+    };
+    const profile = resolveBenchmarkProfile("tiny", new Map([["tiny", [task]]]));
+    const memory = makeMemoryArtifactIo();
+    const { logger } = silentLogger();
+    let childNodeOptions: string | undefined;
+
+    const result = await runBenchmarkProfile({
+      artifactIo: memory.io,
+      environment: { NODE_OPTIONS: "--max-old-space-size=12288 --trace-warnings" },
+      logger,
+      profile,
+      repeatCount: 1,
+      runTask: async (currentTask) => {
+        childNodeOptions = currentTask.env.NODE_OPTIONS;
+        writeTaskArtifacts(memory.files, currentTask);
+        return 0;
+      },
+    });
+
+    expect(childNodeOptions).toBe(
+      "--max-old-space-size=12288 --trace-warnings --expose-gc",
+    );
+    expect(result.exitCode).toBe(0);
+  });
+
   it("uses the filesystem artifact Adapter by default", async () => {
     const directory = makeDirectory();
     const task = makeTask(directory);

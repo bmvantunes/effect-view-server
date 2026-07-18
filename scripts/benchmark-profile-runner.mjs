@@ -21,6 +21,19 @@ export const cleanBenchmarkEnvironment = (environment) =>
     Object.entries(environment).filter(([key]) => !isBenchmarkEnvironmentKey(key)),
   );
 
+const mergeTaskEnvironment = (parentEnvironment, taskEnvironment) => {
+  const environment = {
+    ...parentEnvironment,
+    ...taskEnvironment,
+  };
+  const parentNodeOptions = parentEnvironment.NODE_OPTIONS;
+  const taskNodeOptions = taskEnvironment.NODE_OPTIONS;
+  if (parentNodeOptions !== undefined && taskNodeOptions !== undefined) {
+    environment.NODE_OPTIONS = `${parentNodeOptions} ${taskNodeOptions}`;
+  }
+  return environment;
+};
+
 export const removeTaskArtifacts = (artifactIo, currentTask) => {
   artifactIo.remove(currentTask.outputJsonPath);
   artifactIo.remove(currentTask.summaryPath);
@@ -57,10 +70,7 @@ export const runBenchmarkProfile = async ({
       removeTaskArtifacts(artifactIo, currentTask);
       const exitCode = await runTask({
         ...currentTask,
-        env: {
-          ...parentEnvironment,
-          ...currentTask.env,
-        },
+        env: mergeTaskEnvironment(parentEnvironment, currentTask.env),
       });
       if (exitCode !== 0) {
         return {

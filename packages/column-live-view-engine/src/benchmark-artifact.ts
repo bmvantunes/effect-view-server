@@ -74,21 +74,50 @@ export type BenchmarkGroupedKeyWidthParameters = {
   readonly windowLimit: number;
 };
 
+type BenchmarkExplicitGcMeasurementProtocol = {
+  readonly memoryCheckpoint: "settled-explicit-gc-after-cleanup";
+  readonly postGcEventLoopTurns?: never;
+  readonly priming?: "append-delete-restore-before-sampling";
+};
+
+type BenchmarkPostGcEventLoopMeasurementProtocol = {
+  readonly memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup";
+  readonly postGcEventLoopTurns: 8;
+  readonly priming?: "append-delete-restore-before-sampling";
+};
+
+type BenchmarkPrimingMeasurementProtocol = {
+  readonly memoryCheckpoint?: never;
+  readonly postGcEventLoopTurns?: never;
+  readonly priming: "append-delete-restore-before-sampling";
+};
+
 export type BenchmarkMeasurementProtocol =
+  | BenchmarkExplicitGcMeasurementProtocol
+  | BenchmarkPostGcEventLoopMeasurementProtocol
+  | BenchmarkPrimingMeasurementProtocol;
+
+type BenchmarkPostGcEventLoopSample = {
+  readonly cleanupLedger: {
+    readonly activeSubscriptions: number;
+    readonly activeViews: number;
+    readonly pendingMutationBatches: number;
+    readonly queuedEvents: number;
+  };
+  readonly eventLoopTurn: number;
+  readonly memory: BenchmarkMemorySnapshot;
+};
+
+export type BenchmarkArtifactMeasurementInput =
   | {
-      readonly memoryCheckpoint: "settled-explicit-gc-after-cleanup";
-      readonly postGcEventLoopTurns?: never;
-      readonly priming?: "append-delete-restore-before-sampling";
+      readonly measurementProtocol: BenchmarkPostGcEventLoopMeasurementProtocol;
+      readonly postGcEventLoopSamples: ReadonlyArray<BenchmarkPostGcEventLoopSample>;
     }
   | {
-      readonly memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup";
-      readonly postGcEventLoopTurns: 8;
-      readonly priming?: "append-delete-restore-before-sampling";
-    }
-  | {
-      readonly memoryCheckpoint?: never;
-      readonly postGcEventLoopTurns?: never;
-      readonly priming: "append-delete-restore-before-sampling";
+      readonly measurementProtocol?:
+        | BenchmarkExplicitGcMeasurementProtocol
+        | BenchmarkPrimingMeasurementProtocol;
+      readonly postGcEventLoopSamples?: never;
     };
 
 type BenchmarkArtifactFields = {
@@ -119,24 +148,15 @@ type BenchmarkArtifactFields = {
   readonly cleanupLeakCount: number;
   readonly groupedKeyWidthParameters?: BenchmarkGroupedKeyWidthParameters;
   readonly groupedWriteAdmission?: BenchmarkGroupedWriteAdmission;
-  readonly measurementProtocol?: BenchmarkMeasurementProtocol;
-  readonly postGcEventLoopSamples?: ReadonlyArray<{
-    readonly cleanupLedger: {
-      readonly activeSubscriptions: number;
-      readonly activeViews: number;
-      readonly pendingMutationBatches: number;
-      readonly queuedEvents: number;
-    };
-    readonly eventLoopTurn: number;
-    readonly memory: BenchmarkMemorySnapshot;
-  }>;
   readonly queuedEventCount: number;
   readonly health: unknown;
   readonly notes: ReadonlyArray<string>;
   readonly preCleanupHealth?: unknown;
 };
 
-export type BenchmarkArtifactInput = BenchmarkArtifactFields & BenchmarkArtifactMemoryInput;
+export type BenchmarkArtifactInput = BenchmarkArtifactFields &
+  BenchmarkArtifactMemoryInput &
+  BenchmarkArtifactMeasurementInput;
 
 const processPeakRssSummary = (initialCurrentRssBytes: number, peak: BenchmarkProcessPeakRss) => {
   if (

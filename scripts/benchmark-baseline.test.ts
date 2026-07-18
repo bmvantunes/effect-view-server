@@ -56,6 +56,107 @@ import {
   runtimeTaskPaths,
 } from "./benchmark-baseline-test-fixtures.ts";
 
+type PostGcMemoryField =
+  | "arrayBuffersBytes"
+  | "externalBytes"
+  | "heapTotalBytes"
+  | "heapUsedBytes"
+  | "rssBytes";
+
+const postGcObservationFixture = () => {
+  const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-post-gc-"));
+  const summaryPath = join(directory, "actual.summary.json");
+  const outputJsonPath = join(directory, "actual.json");
+  const measurementProtocol = {
+    memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+    postGcEventLoopTurns: 8,
+    priming: "append-delete-restore-before-sampling",
+  } as const;
+  const cleanupLedger = {
+    activeSubscriptions: 0,
+    activeViews: 0,
+    pendingMutationBatches: 0,
+    queuedEvents: 0,
+  };
+  const checkpointMemory = (value: number) => ({
+    arrayBuffersBytes: value,
+    externalBytes: value + 1,
+    heapTotalBytes: value + 2,
+    heapUsedBytes: value + 3,
+    rssBytes: value + 4,
+  });
+  const beforeMemory = {
+    arrayBuffersBytes: 10,
+    externalBytes: 20,
+    heapTotalBytes: 30,
+    heapUsedBytes: 40,
+    rssBytes: 50,
+  };
+  const finalMemory = {
+    arrayBuffersBytes: 18,
+    externalBytes: 29,
+    heapTotalBytes: 40,
+    heapUsedBytes: 51,
+    rssBytes: 62,
+  };
+  const postGcEventLoopSamples = Array.from({ length: 9 }, (_value, eventLoopTurn) => ({
+    cleanupLedger,
+    eventLoopTurn,
+    memory: eventLoopTurn === 8 ? finalMemory : checkpointMemory(eventLoopTurn),
+  }));
+  const validMemory = {
+    ...summary.memory,
+    afterBenchmark: finalMemory,
+    before: beforeMemory,
+    postGcEventLoopSamples,
+    totalDelta: {
+      arrayBuffersBytes: 8,
+      externalBytes: 9,
+      heapTotalBytes: 10,
+      heapUsedBytes: 11,
+      rssBytes: 12,
+    },
+  };
+  const paths = {
+    ...taskPaths(summaryPath, outputJsonPath),
+    expectedMeasurementProtocol: measurementProtocol,
+  };
+  writeFileSync(
+    summaryPath,
+    `${JSON.stringify({ ...summary, measurementProtocol, memory: validMemory })}\n`,
+  );
+  writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+  return {
+    checkpointMemory,
+    cleanupLedger,
+    measurementProtocol,
+    outputJsonPath,
+    paths,
+    postGcEventLoopSamples,
+    summaryPath,
+    validMemory,
+  };
+};
+
+const invalidPostGcTotalDeltaFixture = (memoryField: PostGcMemoryField) => {
+  const fixture = postGcObservationFixture();
+  writeFileSync(
+    fixture.summaryPath,
+    `${JSON.stringify({
+      ...summary,
+      measurementProtocol: fixture.measurementProtocol,
+      memory: {
+        ...fixture.validMemory,
+        totalDelta: {
+          ...fixture.validMemory.totalDelta,
+          [memoryField]: fixture.validMemory.totalDelta[memoryField] + 1,
+        },
+      },
+    })}\n`,
+  );
+  return fixture;
+};
+
 describe("benchmark baseline artifacts", () => {
   it("extracts comparable benchmark metrics from Vitest output", () => {
     expect(comparableBenchmarksFromVitestOutput(vitestOutput)).toStrictEqual([
@@ -211,68 +312,16 @@ describe("benchmark baseline artifacts", () => {
   });
 
   it("validates ordered post-GC samples and their fixed final endpoint", () => {
-    const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-post-gc-"));
-    const summaryPath = join(directory, "actual.summary.json");
-    const outputJsonPath = join(directory, "actual.json");
-    const measurementProtocol = {
-      memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
-      postGcEventLoopTurns: 8,
-      priming: "append-delete-restore-before-sampling",
-    };
-    const cleanupLedger = {
-      activeSubscriptions: 0,
-      activeViews: 0,
-      pendingMutationBatches: 0,
-      queuedEvents: 0,
-    };
-    const checkpointMemory = (value: number) => ({
-      arrayBuffersBytes: value,
-      externalBytes: value + 1,
-      heapTotalBytes: value + 2,
-      heapUsedBytes: value + 3,
-      rssBytes: value + 4,
-    });
-    const beforeMemory = {
-      arrayBuffersBytes: 10,
-      externalBytes: 20,
-      heapTotalBytes: 30,
-      heapUsedBytes: 40,
-      rssBytes: 50,
-    };
-    const finalMemory = {
-      arrayBuffersBytes: 18,
-      externalBytes: 29,
-      heapTotalBytes: 40,
-      heapUsedBytes: 51,
-      rssBytes: 62,
-    };
-    const postGcEventLoopSamples = Array.from({ length: 9 }, (_value, eventLoopTurn) => ({
+    const {
+      checkpointMemory,
       cleanupLedger,
-      eventLoopTurn,
-      memory: eventLoopTurn === 8 ? finalMemory : checkpointMemory(eventLoopTurn),
-    }));
-    const validMemory = {
-      ...summary.memory,
-      afterBenchmark: finalMemory,
-      before: beforeMemory,
+      measurementProtocol,
+      outputJsonPath,
+      paths,
       postGcEventLoopSamples,
-      totalDelta: {
-        arrayBuffersBytes: 8,
-        externalBytes: 9,
-        heapTotalBytes: 10,
-        heapUsedBytes: 11,
-        rssBytes: 12,
-      },
-    };
-    const paths = {
-      ...taskPaths(summaryPath, outputJsonPath),
-      expectedMeasurementProtocol: measurementProtocol,
-    };
-    writeFileSync(
       summaryPath,
-      `${JSON.stringify({ ...summary, measurementProtocol, memory: validMemory })}\n`,
-    );
-    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+      validMemory,
+    } = postGcObservationFixture();
 
     expect(readBenchmarkObservation(paths)).toStrictEqual({
       ...observation,
@@ -340,33 +389,6 @@ describe("benchmark baseline artifacts", () => {
       `Benchmark artifact field ${summaryPath}.memory.afterBenchmark must equal the final post-GC event-loop sample.`,
     );
 
-    const memoryFields = [
-      "arrayBuffersBytes",
-      "externalBytes",
-      "heapTotalBytes",
-      "heapUsedBytes",
-      "rssBytes",
-    ] as const;
-    for (const memoryField of memoryFields) {
-      writeFileSync(
-        summaryPath,
-        `${JSON.stringify({
-          ...summary,
-          measurementProtocol,
-          memory: {
-            ...validMemory,
-            totalDelta: {
-              ...validMemory.totalDelta,
-              [memoryField]: validMemory.totalDelta[memoryField] + 1,
-            },
-          },
-        })}\n`,
-      );
-      expect(() => readBenchmarkObservation(paths)).toThrow(
-        `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
-      );
-    }
-
     const negativeMetricSamples = postGcEventLoopSamples.map((sample) => ({ ...sample }));
     negativeMetricSamples[0] = {
       ...negativeMetricSamples[0],
@@ -392,6 +414,41 @@ describe("benchmark baseline artifacts", () => {
       readBenchmarkObservation(taskPaths(summaryPath, outputJsonPath)),
     ).toThrow(
       `Benchmark artifact field ${summaryPath}.memory.postGcEventLoopSamples requires postGcEventLoopTurns protocol metadata.`,
+    );
+  });
+
+  it("rejects a post-GC array-buffer total delta not derived from the fixed endpoint", () => {
+    const { paths, summaryPath } = invalidPostGcTotalDeltaFixture("arrayBuffersBytes");
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+    );
+  });
+
+  it("rejects a post-GC external-memory total delta not derived from the fixed endpoint", () => {
+    const { paths, summaryPath } = invalidPostGcTotalDeltaFixture("externalBytes");
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+    );
+  });
+
+  it("rejects a post-GC heap-total delta not derived from the fixed endpoint", () => {
+    const { paths, summaryPath } = invalidPostGcTotalDeltaFixture("heapTotalBytes");
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+    );
+  });
+
+  it("rejects a post-GC heap-used delta not derived from the fixed endpoint", () => {
+    const { paths, summaryPath } = invalidPostGcTotalDeltaFixture("heapUsedBytes");
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+    );
+  });
+
+  it("rejects a post-GC RSS total delta not derived from the fixed endpoint", () => {
+    const { paths, summaryPath } = invalidPostGcTotalDeltaFixture("rssBytes");
+    expect(() => readBenchmarkObservation(paths)).toThrow(
+      `Benchmark artifact field ${summaryPath}.memory.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
     );
   });
 

@@ -1,5 +1,8 @@
 import { expectTypeOf } from "@effect/vitest";
-import type { BenchmarkMeasurementProtocol } from "./benchmark-artifact";
+import type {
+  BenchmarkArtifactMeasurementInput,
+  BenchmarkMeasurementProtocol,
+} from "./benchmark-artifact";
 
 const memoryCheckpointProtocol: BenchmarkMeasurementProtocol = {
   memoryCheckpoint: "settled-explicit-gc-after-cleanup",
@@ -12,10 +15,24 @@ const combinedProtocol: BenchmarkMeasurementProtocol = {
   postGcEventLoopTurns: 8,
   priming: "append-delete-restore-before-sampling",
 };
+const postGcArtifactMeasurement: BenchmarkArtifactMeasurementInput = {
+  measurementProtocol: {
+    memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+    postGcEventLoopTurns: 8,
+  },
+  postGcEventLoopSamples: [],
+};
+const primingArtifactMeasurement: BenchmarkArtifactMeasurementInput = {
+  measurementProtocol: {
+    priming: "append-delete-restore-before-sampling",
+  },
+};
 
 expectTypeOf(memoryCheckpointProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
 expectTypeOf(primingProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
 expectTypeOf(combinedProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+expectTypeOf(postGcArtifactMeasurement).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+expectTypeOf(primingArtifactMeasurement).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
 
 // @ts-expect-error A measurement protocol must contain at least one supported protocol field.
 const emptyProtocol: BenchmarkMeasurementProtocol = {};
@@ -49,6 +66,27 @@ const postGcCheckpointWithWrongTurns: BenchmarkMeasurementProtocol = {
   postGcEventLoopTurns: 7,
 };
 
+// @ts-expect-error A post-GC checkpoint protocol must include its diagnostic samples.
+const postGcArtifactWithoutSamples: BenchmarkArtifactMeasurementInput = {
+  measurementProtocol: {
+    memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+    postGcEventLoopTurns: 8,
+  } as const,
+};
+
+// @ts-expect-error Post-GC diagnostic samples require the post-GC checkpoint protocol.
+const postGcSamplesWithoutProtocol: BenchmarkArtifactMeasurementInput = {
+  postGcEventLoopSamples: [],
+};
+
+// @ts-expect-error The original explicit-GC checkpoint does not emit post-GC samples.
+const postGcSamplesWithOriginalCheckpoint: BenchmarkArtifactMeasurementInput = {
+  measurementProtocol: {
+    memoryCheckpoint: "settled-explicit-gc-after-cleanup",
+  },
+  postGcEventLoopSamples: [],
+};
+
 expectTypeOf(emptyProtocol).toMatchTypeOf<BenchmarkMeasurementProtocol>();
 expectTypeOf(undefinedMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
 expectTypeOf(undefinedPriming).toMatchTypeOf<BenchmarkMeasurementProtocol>();
@@ -56,3 +94,8 @@ expectTypeOf(postGcTurnsWithoutMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurem
 expectTypeOf(postGcTurnsWithOriginalMemoryCheckpoint).toMatchTypeOf<BenchmarkMeasurementProtocol>();
 expectTypeOf(postGcCheckpointWithoutTurns).toMatchTypeOf<BenchmarkMeasurementProtocol>();
 expectTypeOf(postGcCheckpointWithWrongTurns).toMatchTypeOf<BenchmarkMeasurementProtocol>();
+expectTypeOf(postGcArtifactWithoutSamples).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+expectTypeOf(postGcSamplesWithoutProtocol).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+expectTypeOf(
+  postGcSamplesWithOriginalCheckpoint,
+).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();

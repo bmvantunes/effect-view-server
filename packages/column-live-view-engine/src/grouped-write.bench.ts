@@ -25,7 +25,7 @@ import {
   isBenchmarkEngineHealth,
   pendingMutationBatchCountFromEngineHealth,
   queuedEventCountFromEngineHealth,
-  type BenchmarkMeasurementProtocol,
+  type BenchmarkArtifactMeasurementInput,
   writeBenchmarkArtifact,
 } from "./benchmark-artifact";
 import {
@@ -996,21 +996,18 @@ afterAll(async () => {
   const cleanupLeakCount =
     cleanupLeakCountFromEngineHealth(health) + cleanupLedger.pendingMutationBatches;
   failOnBenchmarkCleanupLeaks(cleanupLeakCount);
-  let postGcEventLoopSamples:
-    | ReadonlyArray<{
-        readonly cleanupLedger: {
-          readonly activeSubscriptions: number;
-          readonly activeViews: number;
-          readonly pendingMutationBatches: number;
-          readonly queuedEvents: number;
-        };
-        readonly eventLoopTurn: number;
-        readonly memory: BenchmarkMemorySnapshot;
-      }>
-    | undefined;
   let memoryAfterBenchmark: BenchmarkMemorySnapshot;
+  let artifactMeasurement: BenchmarkArtifactMeasurementInput;
   if (collectBenchmarkGarbage === undefined) {
     memoryAfterBenchmark = memorySnapshot();
+    artifactMeasurement =
+      primingAppendBatches === 1
+        ? {
+            measurementProtocol: {
+              priming: "append-delete-restore-before-sampling",
+            },
+          }
+        : {};
   } else {
     const checkpoint = await settleAndCollectGroupedWriteBenchmarkMemoryCheckpoint({
       capture: memorySnapshot,
@@ -1020,19 +1017,17 @@ afterAll(async () => {
       settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
     });
     memoryAfterBenchmark = checkpoint.endpoint;
-    postGcEventLoopSamples = checkpoint.samples;
+    artifactMeasurement = {
+      measurementProtocol: {
+        memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        postGcEventLoopTurns: groupedWriteBenchmarkPostGcEventLoopTurns,
+        priming: "append-delete-restore-before-sampling",
+      },
+      postGcEventLoopSamples: checkpoint.samples,
+    };
   }
-  const measurementProtocol: BenchmarkMeasurementProtocol | undefined =
-    explicitGarbageCollection === 1
-      ? {
-          memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
-          postGcEventLoopTurns: groupedWriteBenchmarkPostGcEventLoopTurns,
-          priming: "append-delete-restore-before-sampling",
-        }
-      : primingAppendBatches === 1
-        ? { priming: "append-delete-restore-before-sampling" }
-        : undefined;
   writeBenchmarkArtifact({
+    ...artifactMeasurement,
     artifactKind: "engine-benchmark-summary",
     backpressureCount: backpressureCountFromEngineHealth(health),
     benchmarkCases: [
@@ -1072,7 +1067,6 @@ afterAll(async () => {
       outputJsonPath,
       source: "vitest-output-json",
     },
-    ...(measurementProtocol === undefined ? {} : { measurementProtocol }),
     memoryAfterBenchmark,
     memoryAfterSetup,
     memoryBefore,
@@ -1105,7 +1099,6 @@ afterAll(async () => {
       "The grouped patch non-aggregate values case is expected to produce no grouped result delta.",
     ],
     outputJsonPath,
-    ...(postGcEventLoopSamples === undefined ? {} : { postGcEventLoopSamples }),
     preCleanupHealth,
     queuedEventCount: queuedEventCountFromEngineHealth(health),
     rowCount: profile.rowCount,

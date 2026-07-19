@@ -4,6 +4,7 @@ type QueryGraphValue =
   | readonly ["null"]
   | readonly ["string", string]
   | readonly ["boolean", boolean]
+  | readonly ["negativeZero"]
   | readonly ["number", number]
   | readonly ["reference", number];
 
@@ -138,7 +139,7 @@ export const encodeQueryGraph = (input: unknown): string => {
       return ["boolean", value];
     }
     if (typeof value === "number" && Number.isFinite(value)) {
-      return ["number", Object.is(value, -0) ? 0 : value];
+      return Object.is(value, -0) ? ["negativeZero"] : ["number", value];
     }
     if (typeof value !== "object") {
       throw new TypeError("Query values must be JSON-safe.");
@@ -252,6 +253,9 @@ const decodeQueryGraphValue = (input: unknown, nodeCount: number): DecodedQueryG
   }
   if (tag === "boolean" && value.length === 2 && typeof value[1] === "boolean") {
     return { _tag: "value", value: value[1] };
+  }
+  if (tag === "negativeZero" && value.length === 1) {
+    return { _tag: "value", value: -0 };
   }
   if (
     tag === "number" &&

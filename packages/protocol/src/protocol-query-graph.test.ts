@@ -23,9 +23,15 @@ describe("subscription query graph codec", () => {
       nil: null,
       text: "value",
       enabled: true,
-      count: 0,
+      count: -0,
       values: [{ value: "shared" }, { value: "shared" }],
     });
+    expect(
+      typeof decoded === "object" &&
+        decoded !== null &&
+        "count" in decoded &&
+        Object.is(decoded.count, -0),
+    ).toBe(true);
     expect(
       typeof decoded === "object" &&
         decoded !== null &&
@@ -37,6 +43,7 @@ describe("subscription query graph codec", () => {
     expect(decodeQueryGraph(encodeQueryGraph("root"))).toBe("root");
     expect(decodeQueryGraph(encodeQueryGraph(false))).toBe(false);
     expect(decodeQueryGraph(encodeQueryGraph(42))).toBe(42);
+    expect(Object.is(decodeQueryGraph(encodeQueryGraph(-0)), -0)).toBe(true);
   });
 
   it("rejects cyclic, non-JSON, and hostile query graphs during encoding", () => {
@@ -100,6 +107,7 @@ describe("subscription query graph codec", () => {
         }),
         graphEnvelope(["reference", 0], [["invalid", []]]),
         graphEnvelope(["invalid"], []),
+        graphEnvelope(["negativeZero", 0], []),
         graphEnvelope(["reference", 1], [["array", []]]),
         graphEnvelope(["reference", 0], [["array", {}]]),
         graphEnvelope(["reference", 0], [["record", {}]]),

@@ -16,5 +16,6 @@ This example demonstrates:
 - A topic-owned binding from the View Server topic to the generated gRPC client
   method.
 - Runtime startup stream acquisition.
-- React querying an already-retained View Server topic.
+- React querying an already-retained View Server topic with canonical typed
+  `where` arrays.
 - Health summary for runtime/source status.

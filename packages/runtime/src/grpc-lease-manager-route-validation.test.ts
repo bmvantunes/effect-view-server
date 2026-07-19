@@ -1,18 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import {
+  defineViewServerConfig,
+  type ViewServerRuntimeError,
+  type ViewServerTransportError,
+} from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import { Effect, Fiber, Queue, Schema, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 import { resolveGrpcRuntimeSourceOptions as resolveViewServerRuntimeOptions } from "./grpc-runtime-source";
 
-import {
-  grpcClients,
-  grpcOrderValue,
-  grpcTopicSources,
-  type GrpcOrderValueMessage,
-} from "../test-harness/grpc-config";
+import { grpcClients, grpcTopicSources } from "../test-harness/grpc-config";
 import { resolveLeasedGrpcRuntimeOptions } from "../test-harness/grpc-materialized";
 import {
   grpcLeasedViewServer,
@@ -42,7 +41,53 @@ const cloneWithMutableOrdersGrpcSource = <
 });
 
 describe("gRPC lease manager route validation", () => {
-  it.live("rejects leased gRPC subscriptions without exact route equality", () =>
+  it.live("rejects routeBy on ordinary topics before the manager strips routing", () =>
+    Effect.gen(function* () {
+      const leased = grpcLeasedViewServer({ streamForRegion: () => Stream.never });
+      const sourceConfig = {
+        ...leased,
+        topics: {
+          ...leased.topics,
+          positions: {
+            schema: leased.topics.orders.schema,
+            key: leased.topics.orders.key,
+          },
+        },
+      };
+      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(sourceConfig);
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(sourceConfig, {});
+      const health = makeViewServerGrpcHealthLedger<typeof sourceConfig.topics>({
+        clients: grpcOptions.clientBaseUrls,
+        feeds: {},
+      });
+      const manager = yield* makeViewServerGrpcLeaseManager(
+        sourceConfig,
+        runtimeCore.internalClient,
+        runtimeCore.liveClient,
+        runtimeCore.internalLiveClient,
+        Effect.void,
+        grpcOptions,
+        health,
+      );
+      const subscribe: Effect.Effect<unknown, ViewServerRuntimeError | ViewServerTransportError> =
+        Reflect.apply(manager.liveClient.subscribeRuntime, manager.liveClient, [
+          "positions",
+          { routeBy: { region: "AbÇ" }, select: ["id"] },
+        ]);
+
+      expect(yield* Effect.flip(subscribe)).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "positions",
+        message: "Topic positions does not accept routeBy.",
+      });
+
+      yield* manager.close;
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.live("rejects leased gRPC subscriptions without routeBy", () =>
     Effect.gen(function* () {
       const feed = grpcLeasedViewServer({
         streamForRegion: () => Stream.never,
@@ -63,9 +108,7 @@ describe("gRPC lease manager route validation", () => {
       const error = yield* Effect.flip(
         manager.liveClient.subscribeRuntime("orders", {
           select: ["id"],
-          where: {
-            region: { startsWith: "u" },
-          },
+          where: [{ field: "region", type: "startsWith", filter: "u" }],
           limit: 10,
         }),
       );
@@ -74,7 +117,7 @@ describe("gRPC lease manager route validation", () => {
         _tag: "ViewServerRuntimeError",
         code: "InvalidQuery",
         topic: "orders",
-        message: "Leased topic orders route field region must use an exact eq filter.",
+        message: "Leased topic orders requires routeBy fields: region.",
       });
       yield* manager.close;
       yield* runtimeCore.close;
@@ -171,23 +214,22 @@ describe("gRPC lease manager route validation", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { accountId: 7n },
         select: ["id", "accountId", "customerId"],
-        where: {
-          accountId: { eq: 7n },
-        },
+        where: [{ field: "accountId", type: "equals", filter: 7n }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
       const snapshot = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+      const encodedRouteQuery: object = {
+        routeBy: { accountId: "7" },
+        select: ["id", "accountId"],
+        where: [{ field: "accountId", type: "equals", filter: 7n }],
+        limit: 10,
+      };
       const encodedRouteError = yield* Effect.flip(
-        manager.liveClient.subscribeRuntime("orders", {
-          select: ["id", "accountId"],
-          where: {
-            // @ts-expect-error Runtime validation also protects untyped encoded route values.
-            accountId: { eq: "7" },
-          },
-          limit: 10,
-        }),
+        // @ts-expect-error hostile runtime route values are rejected.
+        manager.liveClient.subscribeRuntime("orders", encodedRouteQuery),
       );
 
       expect({
@@ -273,10 +315,9 @@ describe("gRPC lease manager route validation", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribeRuntime(identityName, {
+        routeBy: { [identityName]: "route" },
         select: ["id", identityName],
-        where: {
-          [identityName]: { eq: "route" },
-        },
+        where: [{ field: identityName, type: "equals", filter: "route" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -291,9 +332,13 @@ describe("gRPC lease manager route validation", () => {
   it.live("captures decoded leased gRPC route values before subscribeRuntime returns", () =>
     Effect.gen(function* () {
       let acquiredRegion: string | null = null;
+      let requestedRegion: string | null = null;
       const feed = grpcLeasedViewServer({
         acquired: (region) => {
           acquiredRegion = region;
+        },
+        requested: (region) => {
+          requestedRegion = region;
         },
         streamForRegion: () => Stream.never,
       });
@@ -309,20 +354,19 @@ describe("gRPC lease manager route validation", () => {
         grpcOptions,
         health,
       );
-      const delayedRuntimeQuery = leasedOrdersQuery("usa");
+      const delayedRuntimeQuery = leasedOrdersQuery("AbÇDEfgh");
       const subscribeRuntimeEffect = manager.liveClient.subscribeRuntime(
         "orders",
         delayedRuntimeQuery,
       );
-      Object.defineProperty(delayedRuntimeQuery.where.region, "eq", {
-        value: 123,
-      });
+      Object.defineProperty(delayedRuntimeQuery.routeBy, "region", { value: "changed" });
 
       const subscription = yield* subscribeRuntimeEffect;
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
 
-      expect({ acquiredRegion, events }).toStrictEqual({
-        acquiredRegion: "usa",
+      expect({ acquiredRegion, requestedRegion, events }).toStrictEqual({
+        acquiredRegion: "AbÇDEfgh",
+        requestedRegion: "AbÇDEfgh",
         events: [
           {
             type: "snapshot",
@@ -336,84 +380,6 @@ describe("gRPC lease manager route validation", () => {
         ],
       });
       yield* subscription.close();
-      yield* manager.close;
-      yield* runtimeCore.close;
-    }),
-  );
-
-  it.live("fails a leased gRPC feed when a mapped route value has no canonical identity", () =>
-    Effect.gen(function* () {
-      const UnknownRouteOrder = Schema.Struct({
-        id: Schema.String,
-        route: Schema.Unknown,
-      });
-      const upstream = yield* Queue.unbounded<GrpcOrderValueMessage>();
-      const localViewServer = defineViewServerConfig({
-        grpc: { clients: grpcClients },
-        topics: {
-          orders: grpcTopicSources.leased({
-            schema: UnknownRouteOrder,
-            key: "id",
-            client: "orders",
-            method: "streamOrders",
-            routeBy: ["route"],
-            request: () => ({ orderId: "stable-route" }),
-            acquire: () => Stream.fromQueue(upstream),
-            map: ({ value }) => ({
-              id: value.customerId,
-              route: new Map([["key", "value"]]),
-            }),
-          }),
-        },
-      });
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
-      const health = makeLeasedGrpcHealth(grpcOptions);
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        localViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-
-      const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
-        select: ["id", "route"],
-        where: {
-          route: { eq: "stable-route" },
-        },
-        limit: 10,
-      });
-      const eventQueue = yield* Queue.unbounded<unknown>();
-      const eventsFiber = yield* subscription.events.pipe(
-        Stream.runForEach((event) => Queue.offer(eventQueue, event)),
-        Effect.forkChild,
-      );
-      const initial = yield* Queue.take(eventQueue);
-      yield* Queue.offer(upstream, grpcOrderValue("bad-route", 10));
-      const terminal = yield* Queue.take(eventQueue);
-
-      expect(initial).toStrictEqual({
-        type: "snapshot",
-        topic: "orders",
-        queryId: "query-0",
-        version: 0,
-        keys: [],
-        rows: [],
-        totalRows: 0,
-      });
-      expect(terminal).toStrictEqual({
-        type: "status",
-        topic: "orders",
-        queryId: "query-0",
-        status: "error",
-        code: "RuntimeUnavailable",
-        message: "gRPC leased upstream failed.",
-      });
-      yield* subscription.close();
-      yield* Fiber.interrupt(eventsFiber);
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -449,26 +415,22 @@ describe("gRPC lease manager route validation", () => {
         health,
       );
 
-      const missingWhereError = yield* manager.liveClient
+      const missingRouteError = yield* manager.liveClient
         .subscribeRuntime("orders", {
           select: ["id"],
           limit: 10,
         })
         .pipe(Effect.flip);
       const missingFieldQuery = leasedOrdersQuery("usa");
-      Object.defineProperty(missingFieldQuery.where, "missing", {
-        enumerable: true,
-        value: { eq: "usa" },
-      });
       const missingFieldError = yield* manager.liveClient
         .subscribeRuntime("orders", missingFieldQuery)
         .pipe(Effect.flip);
 
       expect({
-        missingWhereError,
+        missingRouteError,
         missingFieldError,
       }).toStrictEqual({
-        missingWhereError: {
+        missingRouteError: {
           _tag: "ViewServerRuntimeError",
           code: "RuntimeUnavailable",
           topic: "orders",
@@ -512,37 +474,35 @@ describe("gRPC lease manager route validation", () => {
         health,
       );
 
-      const missingWhereError = yield* manager.liveClient
+      const missingRouteError = yield* manager.liveClient
         .subscribeRuntime("orders", {
           select: ["id"],
           limit: 10,
         })
         .pipe(Effect.flip);
-      const nonExactRouteError = yield* manager.liveClient
+      const filteredWithoutRouteError = yield* manager.liveClient
         .subscribeRuntime("orders", {
           select: ["id"],
-          where: {
-            region: { startsWith: "u" },
-          },
+          where: [{ field: "region", type: "startsWith", filter: "u" }],
           limit: 10,
         })
         .pipe(Effect.flip);
 
       expect({
-        missingWhereError,
-        nonExactRouteError,
+        missingRouteError,
+        filteredWithoutRouteError,
       }).toStrictEqual({
-        missingWhereError: {
+        missingRouteError: {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
-          message: "Leased topic orders requires exact equality filters for route fields: region.",
+          message: "Leased topic orders requires routeBy fields: region.",
         },
-        nonExactRouteError: {
+        filteredWithoutRouteError: {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
-          message: "Leased topic orders route field region must use an exact eq filter.",
+          message: "Leased topic orders requires routeBy fields: region.",
         },
       });
       yield* manager.close;
@@ -576,37 +536,35 @@ describe("gRPC lease manager route validation", () => {
         value: undefined,
       });
 
-      const missingWhereError = yield* manager.liveClient
+      const missingRouteError = yield* manager.liveClient
         .subscribeRuntime("orders", {
           select: ["id"],
           limit: 10,
         })
         .pipe(Effect.flip);
-      const nonExactRouteError = yield* manager.liveClient
+      const filteredWithoutRouteError = yield* manager.liveClient
         .subscribeRuntime("orders", {
           select: ["id"],
-          where: {
-            region: "usa",
-          },
+          where: [{ field: "region", type: "equals", filter: "usa" }],
           limit: 10,
         })
         .pipe(Effect.flip);
 
       expect({
-        missingWhereError,
-        nonExactRouteError,
+        missingRouteError,
+        filteredWithoutRouteError,
       }).toStrictEqual({
-        missingWhereError: {
+        missingRouteError: {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
-          message: "Leased topic orders requires exact equality filters for route fields: region.",
+          message: "Leased topic orders requires routeBy fields: region.",
         },
-        nonExactRouteError: {
+        filteredWithoutRouteError: {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
-          message: "Leased topic orders route field region must use an exact eq filter.",
+          message: "Leased topic orders requires routeBy fields: region.",
         },
       });
       yield* manager.close;

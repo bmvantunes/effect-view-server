@@ -7,6 +7,36 @@ import { makeEngine, position, Position } from "../test-harness/public-engine";
 import { normalizeDecimalAndBigIntFields } from "../test-harness/rows";
 
 describe("Grouped query compilation and evaluation", () => {
+  it.effect("reports canonical and hostile grouped filter failures", () =>
+    Effect.gen(function* () {
+      const metadata = rawQueryCompilerMetadata(Position);
+      const invalid = yield* Effect.flip(
+        prepareRuntimeGroupedQuery("positions", metadata, {
+          groupBy: ["symbol"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [{ field: "missing", type: "equals", filter: "x" }],
+        }),
+      );
+      const hostileWhere = new Proxy<Array<unknown>>([], {
+        getPrototypeOf: () => {
+          throw new Error("hostile prototype");
+        },
+      });
+      const hostile = yield* Effect.flip(
+        prepareRuntimeGroupedQuery("positions", metadata, {
+          groupBy: ["symbol"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: hostileWhere,
+        }),
+      );
+
+      expect(invalid.message).toBe(
+        "Filter condition references unknown or non-filterable field: missing.",
+      );
+      expect(hostile.message).toBe("Grouped query where contains an unsupported query value.");
+    }),
+  );
+
   it.effect("evaluates bounded grouped windows without changing ordered aggregate results", () =>
     Effect.gen(function* () {
       const rows = new Map<string, object>(
@@ -78,9 +108,7 @@ describe("Grouped query compilation and evaluation", () => {
           aggregates: {
             rowCount: { aggFunc: "count" },
           },
-          where: {
-            symbol: "AAPL",
-          },
+          where: [{ field: "symbol", type: "equals", filter: "AAPL" }],
           orderBy: [{ field: "symbol", direction: "asc" }],
           offset: 10_000,
           limit: 0,
@@ -530,10 +558,6 @@ describe("Grouped query compilation and evaluation", () => {
             aggregates: { total: { aggFunc: "sum", field: "missing" } },
           },
           message: "unknown field: missing",
-        },
-        {
-          query: { groupBy: ["status"], aggregates: { rowCount: { aggFunc: "count" } }, where: [] },
-          message: "where",
         },
         {
           query: {

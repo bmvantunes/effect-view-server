@@ -22,6 +22,7 @@ import {
   type RuntimeCoreHealthOverlay,
   type RuntimeCoreTransportHealth,
 } from "./health";
+import { engineQueryWithoutRoute } from "./engine-query";
 import { engineErrorToRuntimeError, invalidRuntimeQueryError } from "./runtime-error";
 import {
   makeRuntimeCoreMutationPipeline,
@@ -107,7 +108,7 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
         engine,
         requestHealthRefresh(),
       );
-      const snapshot = <
+      function snapshot<
         Topic extends Extract<keyof Topics, string>,
         const Query extends
           | RawQuery<TopicRow<Topics, Topic>>
@@ -118,16 +119,22 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
       ): Effect.Effect<
         LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError
-      > =>
-        Effect.suspend(() => {
+      >;
+      function snapshot<Topic extends Extract<keyof Topics, string>>(
+        topic: Topic,
+        query: Readonly<Record<string, unknown>>,
+      ): Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError> {
+        return Effect.suspend(() => {
           const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
           if (routeError !== undefined) {
             return Effect.fail(invalidRuntimeQueryError(topic, routeError));
           }
+          const engineQuery = engineQueryWithoutRoute(query);
           return engine
-            .snapshot<Topic, Query>(topic, query)
+            .snapshotRuntime(topic, engineQuery)
             .pipe(Effect.mapError(engineErrorToRuntimeError));
         });
+      }
       const internalClient: ViewServerRuntimeCoreInternalClient<Topics> = {
         ...mutationPipeline.internalMutations,
         snapshot,

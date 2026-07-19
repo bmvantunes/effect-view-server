@@ -247,9 +247,8 @@ describe("@effect-view-server/in-memory", () => {
       const inMemory = yield* makeInMemoryViewServerTesting(leasedViewServer, {});
       const subscription = yield* inMemory.liveClient.subscribe("orders", {
         select: ["id", "price"],
-        where: {
-          id: { eq: "order-1" },
-        },
+        where: [{ field: "id", type: "equals", filter: "order-1" }],
+        routeBy: { id: "order-1" },
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);

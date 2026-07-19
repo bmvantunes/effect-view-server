@@ -1394,7 +1394,7 @@ describe("@effect-view-server/server", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { missing: { eq: "x" } },
+            where: [{ field: "missing", type: "equals", filter: "x" }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -1462,7 +1462,7 @@ describe("@effect-view-server/server", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { price: { gt: "bad" } },
+            where: [{ field: "price", type: "greaterThan", filter: "bad" }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -1473,7 +1473,7 @@ describe("@effect-view-server/server", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { price: { startsWith: "1" } },
+            where: [{ field: "price", type: "startsWith", filter: "1" }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -1484,7 +1484,7 @@ describe("@effect-view-server/server", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { price: { startsWith: 1 } },
+            where: [{ field: "price", type: "startsWith", filter: 1 }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -1496,12 +1496,16 @@ describe("@effect-view-server/server", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: {
-              id: {
-                startsWith: "a",
-                raw: "value",
+            where: [
+              {
+                field: "id",
+                type: "equals",
+                filter: {
+                  startsWith: "a",
+                  raw: "value",
+                },
               },
-            },
+            ],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -1511,13 +1515,11 @@ describe("@effect-view-server/server", () => {
         topic: "orders",
         query: {
           select: ["id", "price"],
-          where: {
-            id: {
-              in: ["a", "b"],
-              startsWith: "a",
-            },
-            price: 10,
-          },
+          where: [
+            { field: "id", type: "in", filter: ["a", "b"] },
+            { field: "id", type: "startsWith", filter: "a" },
+            { field: "price", type: "equals", filter: 10 },
+          ],
           offset: 0,
         },
       }).pipe(Stream.take(1), Stream.runCollect);
@@ -1909,9 +1911,7 @@ describe("@effect-view-server/server", () => {
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("trades", {
-        where: {
-          quantity: { gte: 10n },
-        },
+        where: [{ field: "quantity", type: "greaterThanOrEqual", filter: 10n }],
         select: ["id", "quantity"],
         orderBy: [{ field: "quantity", direction: "asc" }],
         limit: 10,
@@ -1966,9 +1966,7 @@ describe("@effect-view-server/server", () => {
       });
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       const subscription = yield* client.subscribe("quotes", {
-        where: {
-          price: { gte: fromStringUnsafe("10.50") },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: fromStringUnsafe("10.50") }],
         select: ["id", "price"],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
@@ -2574,20 +2572,24 @@ describe("@effect-view-server/server", () => {
 
       const unknownWhere = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          where: {
-            // @ts-expect-error hostile callers can still send unknown filter fields.
-            missing: { eq: "x" },
-          },
+          where: [
+            {
+              // @ts-expect-error hostile callers can still send unknown filter fields.
+              field: "missing",
+              type: "equals",
+              filter: "x",
+            },
+          ],
         }),
       );
       expect(unknownWhere.code).toBe("InvalidQuery");
-      expect(unknownWhere.message).toBe("Query references an unknown field for topic: orders");
+      expect(unknownWhere.message).toBe(
+        "Query references an unknown or non-filterable field: missing",
+      );
 
       const unknownOrderBy = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
           orderBy: [
             {

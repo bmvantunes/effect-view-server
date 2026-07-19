@@ -174,6 +174,9 @@ it("uses typed column values for ordered slot bound indexes", () => {
   const generic = createTopicColumnValuesFromArray("unknown", metadata, ["closed", "open"]);
 
   expect(orderedSlotBoundIndex([0, 1, 2], status, "open", (comparison) => comparison >= 0)).toBe(1);
+  expect(
+    orderedSlotBoundIndex([0, 1, 2], status, "aardvark", (comparison) => comparison >= 0),
+  ).toBe(0);
   expect(orderedSlotBoundIndex([0, 1, 2], status, "open", (comparison) => comparison > 0)).toBe(3);
   expect(orderedSlotBoundIndex([0, 1], sparseStatus, "open", (comparison) => comparison >= 0)).toBe(
     1,

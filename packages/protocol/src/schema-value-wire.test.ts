@@ -96,31 +96,24 @@ const requireDeltaEvent = Effect.fn("ViewServerProtocol.test.requireDelta")(func
 });
 
 describe("Schema value wire semantics", () => {
-  it.effect("round-trips Schema.Class equality filters through canonical JSON", () =>
+  it.effect("round-trips statically named scalar paths inside Schema.Class fields", () =>
     Effect.gen(function* () {
-      const venue = Venue.make({ code: "XNYS" });
       const encoded = yield* viewServerEncodeRawQuery(semanticViewServer, "semantic", {
         select: ["id"],
-        where: {
-          venue: { eq: venue },
-        },
+        where: [{ field: "venue.code", type: "equals", filter: "XNYS" }],
       });
       expect(encoded).toStrictEqual({
         select: ["id"],
-        where: {
-          venue: { eq: { code: "XNYS" } },
-        },
+        where: [{ field: "venue.code", type: "equals", filter: "XNYS" }],
       });
 
       const jsonText = yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)(encoded);
       const transported = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(jsonText);
       const decoded = yield* viewServerDecodeRawQuery(semanticViewServer, "semantic", transported);
-      const decodedVenue = Reflect.get(Object(decoded.where?.["venue"]), "eq");
 
-      expect(decoded.where).toStrictEqual({
-        venue: { eq: venue },
-      });
-      expect(decodedVenue).toBeInstanceOf(Venue);
+      expect(decoded.where).toStrictEqual([
+        { field: "venue.code", type: "equals", filter: "XNYS" },
+      ]);
     }),
   );
 

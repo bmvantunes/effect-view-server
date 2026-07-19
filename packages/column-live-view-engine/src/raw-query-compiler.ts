@@ -21,6 +21,7 @@ import {
   runtimeRawQueryResultSemantics,
   type TopicStorageProjectableQueryResultSemantics,
 } from "./query-result-semantics";
+import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 
 type RowObject = object;
 const compiledRawQueryBrand: unique symbol = Symbol("CompiledRawQuery");
@@ -54,8 +55,14 @@ const compileRawQuery = <SchemaRow extends RowObject, ResultRow extends RowObjec
   metadata: RawQueryCompilerMetadata<SchemaRow>,
   query: RuntimeRawQuery,
   resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
+  partition?: ColumnLiveViewEngineQueryPartition,
 ): CompiledRawQuery<RowObject, ResultRow> => {
-  const plan = makeRawQueryPlan<RowObject, ResultRow, SchemaRow>(metadata, query, resultSemantics);
+  const plan = makeRawQueryPlan<RowObject, ResultRow, SchemaRow>(
+    metadata,
+    query,
+    resultSemantics,
+    partition,
+  );
   return Object.freeze({
     [compiledRawQueryBrand]: true,
     plan,
@@ -81,6 +88,7 @@ export const prepareRuntimeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.p
     topic: string,
     metadata: RawQueryCompilerMetadata<Row>,
     query: unknown,
+    partition?: ColumnLiveViewEngineQueryPartition,
   ) {
     yield* ensureRawQueryCompilerMetadata(topic, metadata);
     const decoded = yield* decodeRawQuery(topic, metadata, query);
@@ -89,6 +97,19 @@ export const prepareRuntimeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.p
       metadata,
       decoded,
       runtimeRawQueryResultSemantics(metadata.valueSemantics, decoded.select),
+      partition,
     );
   },
 );
+
+export const compileDecodedRuntimeRawQuery = <Row extends RowObject>(
+  metadata: RawQueryCompilerMetadata<Row>,
+  decoded: RuntimeRawQuery,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) =>
+  compileRawQuery(
+    metadata,
+    decoded,
+    runtimeRawQueryResultSemantics(metadata.valueSemantics, decoded.select),
+    partition,
+  );

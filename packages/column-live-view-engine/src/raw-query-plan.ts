@@ -1,17 +1,20 @@
-import { isBigDecimal, Order as orderBigDecimal } from "effect/BigDecimal";
+import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { isBigDecimal } from "effect/BigDecimal";
 import { compareQueryValue, stableQueryValueString } from "./query-value";
 import { compileRawPredicate, type CompiledRawPredicate } from "./raw-predicate-compiler";
 import type { RuntimeRawQuery } from "./raw-query-decoder";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
-import { canonicalRawQueryFilterKey } from "./raw-query-value-semantics";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
 import type { TopicStorageProjectableQueryResultSemantics } from "./query-result-semantics";
+import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 import { trustedFieldValue } from "./row-values";
 
 type RowObject = object;
 
-type QueryCacheToken = readonly ["raw", string, string];
+type QueryCacheToken =
+  | readonly ["raw", string, string]
+  | readonly ["raw", string, string, readonly ["partition", string]];
 type QueryWindowCacheToken = readonly ["window", string, string];
 
 export type RawQueryPlanWindow = {
@@ -21,6 +24,8 @@ export type RawQueryPlanWindow = {
 };
 
 export type RawQueryPlan<Row extends RowObject, ResultRow extends RowObject> = {
+  readonly candidateStorageKeys?: () => Iterable<string>;
+  readonly partitionKey?: string;
   readonly queryCacheKey: string;
   readonly selectedFields: ReadonlyArray<string>;
   readonly predicate: CompiledRawPredicate<Row>;
@@ -38,29 +43,15 @@ type RawRowOrderColumn<Row extends RowObject> = {
 };
 
 const rawQueryShapeCacheKey = (
-  metadata: RawQueryCompilerMetadata,
   query: RuntimeRawQuery,
+  partition: ColumnLiveViewEngineQueryPartition | undefined,
 ): string => {
   const orderBy: ReadonlyArray<readonly [string, "asc" | "desc"]> =
     query.orderBy === undefined ? [] : query.orderBy.map((entry) => [entry.field, entry.direction]);
-  const where =
-    query.where === undefined
-      ? []
-      : Object.entries(query.where)
-          .toSorted(([left], [right]) => Number(left > right) - Number(left < right))
-          .map(([field, filter]) => [
-            field,
-            canonicalRawQueryFilterKey(
-              metadata.valueSemantics.field(field),
-              metadata.structuredFieldNames.has(field),
-              filter,
-            ),
-          ]);
-  const token: QueryCacheToken = [
-    "raw",
-    stableQueryValueString(where),
-    stableQueryValueString(orderBy),
-  ];
+  const where = query.where?.key ?? null;
+  const base = ["raw", stableQueryValueString(where), stableQueryValueString(orderBy)] as const;
+  const token: QueryCacheToken =
+    partition === undefined ? base : ["raw", base[1], base[2], ["partition", partition.key]];
   return JSON.stringify(token);
 };
 
@@ -135,7 +126,10 @@ const compareBigDecimalRowFieldValues = <Row extends RowObject>(
   const leftValue = trustedFieldValue(left, field);
   const rightValue = trustedFieldValue(right, field);
   if (isBigDecimal(leftValue) && isBigDecimal(rightValue)) {
-    return orderBigDecimal(leftValue, rightValue);
+    const comparison = compareWireSafeBigDecimal(leftValue, rightValue);
+    if (comparison !== undefined) {
+      return comparison;
+    }
   }
   return compareQueryValue(leftValue, rightValue);
 };
@@ -214,6 +208,7 @@ export const makeRawQueryPlan = <
   metadata: RawQueryCompilerMetadata<SchemaRow>,
   query: RuntimeRawQuery,
   resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
+  partition?: ColumnLiveViewEngineQueryPartition,
 ): RawQueryPlan<Row, ResultRow> => {
   const orderBy = Object.freeze(
     (query.orderBy ?? []).map((order) =>
@@ -225,10 +220,24 @@ export const makeRawQueryPlan = <
   );
   const rowOrderBy = compiledRawRowOrder<Row>(metadata, orderBy);
   const selectedFields = Object.freeze([...query.select]);
-  const predicate = compileRawPredicate<Row>(metadata, query.where);
+  const localPredicate = compileRawPredicate<Row>(metadata, query.where);
+  const predicate: CompiledRawPredicate<Row> =
+    partition === undefined
+      ? localPredicate
+      : Object.freeze({
+          plan: Object.freeze({
+            filters: localPredicate.plan.filters,
+            callbackRequired: true,
+            callbackSkippable: false,
+          }),
+          matches: (row: Row, storageKey?: string) =>
+            partition.matches(row, storageKey) && localPredicate.matches(row, storageKey),
+        });
   const storageOrder = storageOrderBy(metadata, orderBy);
   return Object.freeze({
-    queryCacheKey: rawQueryShapeCacheKey(metadata, query),
+    ...(partition === undefined ? {} : { candidateStorageKeys: partition.ownedStorageKeys }),
+    ...(partition === undefined ? {} : { partitionKey: partition.key }),
+    queryCacheKey: rawQueryShapeCacheKey(query, partition),
     selectedFields,
     predicate,
     orderBy,
@@ -244,6 +253,9 @@ export const rawQueryWindowScanPlan = <Row extends RowObject, ResultRow extends 
   plan: RawQueryPlan<Row, ResultRow>,
   window: RawQueryPlanWindow,
 ): TopicRawWindowScanPlan<Row> => ({
+  ...(plan.candidateStorageKeys === undefined
+    ? {}
+    : { candidateStorageKeys: plan.candidateStorageKeys }),
   predicate: plan.predicate.plan,
   orderBy: plan.orderBy,
   ...(plan.storageOrderBy === undefined ? {} : { storageOrderBy: plan.storageOrderBy }),

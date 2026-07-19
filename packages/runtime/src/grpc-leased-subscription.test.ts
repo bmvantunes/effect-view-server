@@ -21,7 +21,7 @@ describe("leased gRPC Subscription", () => {
         }),
       );
       const identity = yield* Effect.fromResult(
-        identityContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+        identityContract.leaseFromQuery({ routeBy: { region: "usa" } }),
       );
       const parentScope = yield* Scope.make("sequential");
       const counters = {
@@ -42,7 +42,7 @@ describe("leased gRPC Subscription", () => {
           Effect.sync(() => {
             counters.cleanup += 1;
             expect(Array.from(keys)).toStrictEqual([
-              '["leased-row","orders/orders/leased/region=%22usa%22","order-1"]',
+              JSON.stringify(["leased-row", identity.feedKey, "order-1"]),
             ]);
           }),
         onCleanupFailure: () => Effect.die("cleanup must succeed"),
@@ -114,7 +114,7 @@ describe("leased gRPC Subscription", () => {
         }),
       );
       const identity = yield* Effect.fromResult(
-        identityContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+        identityContract.leaseFromQuery({ routeBy: { region: "usa" } }),
       );
       const parentScope = yield* Scope.make("sequential");
       const stoppingStarted = yield* Deferred.make<void>();
@@ -185,7 +185,7 @@ describe("leased gRPC Subscription", () => {
         }),
       );
       const identity = yield* Effect.fromResult(
-        identityContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+        identityContract.leaseFromQuery({ routeBy: { region: "usa" } }),
       );
       const parentScope = yield* Scope.make("sequential");
       const cleanupReported = yield* Deferred.make<void>();
@@ -262,7 +262,7 @@ describe("leased gRPC Subscription", () => {
         }),
       );
       const identity = yield* Effect.fromResult(
-        identityContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+        identityContract.leaseFromQuery({ routeBy: { region: "usa" } }),
       );
       const parentScope = yield* Scope.make("sequential");
       let cleaned = 0;

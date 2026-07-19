@@ -19,6 +19,8 @@ import {
 
 import type { GrpcOrderValueMessage } from "../test-harness/grpc-config";
 
+const usaFeedKey = "orders/orders/leased/region=%5B%22string%22%2C%22usa%22%5D";
+
 const cloneWithMutableOrdersGrpcSource = <
   const Config extends {
     readonly topics: {
@@ -112,8 +114,7 @@ describe("gRPC lease manager cleanup", () => {
           releaseCountAfterFreshClose,
           failedLeaseKeys: Object.keys(afterFailedAcquire.grpc?.feeds.orders?.leased ?? {}),
           freshSubscriberCount:
-            afterFreshAcquire.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
-              ?.subscriberCount,
+            afterFreshAcquire.grpc?.feeds.orders?.leased[usaFeedKey]?.subscriberCount,
           freshCloseSucceeded: Exit.isSuccess(freshCloseExit),
           managerCloseSucceeded: Exit.isSuccess(managerCloseExit),
         }).toStrictEqual({
@@ -264,10 +265,9 @@ describe("gRPC lease manager cleanup", () => {
       yield* subscription.close();
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
-      expect(
-        currentHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-          ?.lastError,
-      ).toBe("gRPC leased feed row cleanup failed for orders");
+      expect(currentHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.lastError).toBe(
+        "gRPC leased feed row cleanup failed for orders",
+      );
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -408,7 +408,7 @@ describe("gRPC lease manager cleanup", () => {
       );
       const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
       yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 1);
-      Object.defineProperty(runtimeCore.internalClient, "delete", {
+      Object.defineProperty(runtimeCore.internalClient, "deleteStorageKey", {
         value: () => "not-an-effect",
       });
 
@@ -417,15 +417,14 @@ describe("gRPC lease manager cleanup", () => {
 
       expect({
         released,
-        leasedFeed:
-          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"],
+        leasedFeed: idleHealth.grpc?.feeds["orders"]?.leased[usaFeedKey],
       }).toStrictEqual({
         released: 1,
         leasedFeed: {
           status: "degraded",
           lifecycle: "leased",
           feedName: "orders",
-          feedKey: "orders/orders/leased/region=%22usa%22",
+          feedKey: usaFeedKey,
           topic: "orders",
           subscriberCount: 0,
           rowCount: 1,
@@ -435,9 +434,7 @@ describe("gRPC lease manager cleanup", () => {
           mappingFailuresPerSecond: 0,
           publishFailuresPerSecond: 0,
           reconnects: 0,
-          lastMessageAt:
-            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-              ?.lastMessageAt,
+          lastMessageAt: idleHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.lastMessageAt,
           lastError: "gRPC leased feed row cleanup failed for orders",
         },
       });
@@ -470,7 +467,7 @@ describe("gRPC lease manager cleanup", () => {
       );
       const subscription = yield* manager.liveClient.subscribe("orders", leasedOrdersQuery("usa"));
       yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 1);
-      Object.defineProperty(runtimeCore.internalClient, "delete", {
+      Object.defineProperty(runtimeCore.internalClient, "deleteStorageKey", {
         value: () =>
           Effect.fail(
             new RuntimeTestFailure({
@@ -484,15 +481,14 @@ describe("gRPC lease manager cleanup", () => {
 
       expect({
         released,
-        leasedFeed:
-          idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"],
+        leasedFeed: idleHealth.grpc?.feeds["orders"]?.leased[usaFeedKey],
       }).toStrictEqual({
         released: 1,
         leasedFeed: {
           status: "degraded",
           lifecycle: "leased",
           feedName: "orders",
-          feedKey: "orders/orders/leased/region=%22usa%22",
+          feedKey: usaFeedKey,
           topic: "orders",
           subscriberCount: 0,
           rowCount: 1,
@@ -502,9 +498,7 @@ describe("gRPC lease manager cleanup", () => {
           mappingFailuresPerSecond: 0,
           publishFailuresPerSecond: 0,
           reconnects: 0,
-          lastMessageAt:
-            idleHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-              ?.lastMessageAt,
+          lastMessageAt: idleHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.lastMessageAt,
           lastError: "gRPC leased feed row cleanup failed for orders",
         },
       });
@@ -543,10 +537,9 @@ describe("gRPC lease manager cleanup", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         select: ["id"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         limit: 10,
       });
       yield* Deferred.succeed(firstValue, grpcOrderValue("numeric-key", 10));
@@ -836,25 +829,24 @@ describe("gRPC lease manager cleanup", () => {
     }),
   );
 
-  it.live("cleans a leased gRPC feed when mapping returns an invalid row", () =>
+  it.live("cleans a leased gRPC feed when mapping returns a non-object row", () =>
     Effect.gen(function* () {
-      const feed = grpcLeasedViewServerFromCallbacks({
-        request: ({ region }) => ({ orderId: region }),
-        acquire: () =>
-          Stream.make(grpcOrderValue("invalid-row", 10)).pipe(Stream.concat(Stream.never)),
-        map: ({ value, route }) => {
-          const row = {
+      const feed = cloneWithMutableOrdersGrpcSource(
+        grpcLeasedViewServerFromCallbacks({
+          request: ({ region }) => ({ orderId: region }),
+          acquire: () =>
+            Stream.make(grpcOrderValue("invalid-row", 10)).pipe(Stream.concat(Stream.never)),
+          map: ({ value, route }) => ({
             id: `${route.region}:${value.customerId}`,
             customerId: value.customerId,
             status: value.status,
             price: value.price,
             region: route.region,
             updatedAt: value.updatedAt,
-          };
-          Object.defineProperty(row, "status", { value: "not-a-status" });
-          return row;
-        },
-      });
+          }),
+        }),
+      );
+      Object.defineProperty(feed.topics.orders.grpcSource, "map", { value: () => null });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
       const degradationMessages: Array<string> = [];
@@ -1081,7 +1073,7 @@ describe("gRPC lease manager cleanup", () => {
       );
       const snapshot = yield* Queue.take(eventQueue);
       const insertDelta = yield* Queue.take(eventQueue);
-      Object.defineProperty(runtimeCore.internalClient, "delete", {
+      Object.defineProperty(runtimeCore.internalClient, "deleteStorageKey", {
         value: () =>
           Effect.fail(
             new RuntimeTestFailure({
@@ -1136,14 +1128,12 @@ describe("gRPC lease manager cleanup", () => {
         Effect.repeat({
           schedule: Schedule.addDelay(Schedule.recurs(50), () => Effect.succeed("5 millis")),
           until: (currentHealth) =>
-            currentHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-              ?.rowCount === 1,
+            currentHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.rowCount === 1,
         }),
       );
-      expect(
-        degradedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-          ?.lastError,
-      ).toContain("gRPC leased feed row cleanup failed for orders");
+      expect(degradedHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.lastError).toContain(
+        "gRPC leased feed row cleanup failed for orders",
+      );
 
       yield* subscription.close();
       yield* Fiber.interrupt(eventsFiber);

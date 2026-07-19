@@ -10,11 +10,11 @@ export function InMemoryExampleApp(props: {
   const health = useViewServerHealthSummary();
   const openOrders = useLiveQuery("orders", {
     select: ["id", "customerId", "price", "status", "region"],
-    where: {
-      status: { eq: "open" },
-      customerId: { startsWith: "customer-" },
-      price: { gte: 0 },
-    },
+    where: [
+      { field: "status", type: "equals", filter: "open" },
+      { field: "customerId", type: "startsWith", filter: "customer-" },
+      { field: "price", type: "greaterThanOrEqual", filter: 0 },
+    ],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 20,
   });

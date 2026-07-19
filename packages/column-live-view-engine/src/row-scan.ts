@@ -62,7 +62,26 @@ export type TopicRowChangeBatch<Row extends RowObject> = {
 };
 
 export type TopicRowScan<Row extends RowObject> = {
-  readonly changesSince: (version: number) => ReadonlyArray<TopicRowChangeBatch<Row>> | undefined;
+  readonly changesSince: (
+    version: number,
+    partitionKey?: string,
+  ) => ReadonlyArray<TopicRowChangeBatch<Row>> | undefined;
   readonly scanRows: (visitor: TopicRowVisitor<Row>) => void;
+  readonly scanRowsByStorageKeys?: (
+    storageKeys: Iterable<string>,
+    visitor: TopicRowVisitor<Row>,
+  ) => void;
   readonly version: () => number;
+};
+
+export const scanTopicRows = <Row extends RowObject>(
+  store: TopicRowScan<Row>,
+  ownedStorageKeys: (() => Iterable<string>) | undefined,
+  visitor: TopicRowVisitor<Row>,
+): void => {
+  if (ownedStorageKeys === undefined || store.scanRowsByStorageKeys === undefined) {
+    store.scanRows(visitor);
+    return;
+  }
+  store.scanRowsByStorageKeys(ownedStorageKeys(), visitor);
 };

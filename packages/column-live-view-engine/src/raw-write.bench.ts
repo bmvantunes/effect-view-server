@@ -265,42 +265,38 @@ const warmReadPathState = Effect.fn("ColumnLiveViewEngine.bench.rawWrite.warmRea
     ] as const;
     yield* engine.snapshot("orders", {
       select,
-      where: {
-        customerId: { eq: "customer-1" },
-      },
+      where: [{ field: "customerId", type: "equals", filter: "customer-1" }],
       limit: 50,
     });
     yield* engine.snapshot("orders", {
       select,
-      where: {
-        status: { eq: "open" },
-      },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       limit: 50,
     });
     yield* engine.snapshot("orders", {
       select,
-      where: {
-        price: { gte: 0 },
-        status: { eq: "open" },
-      },
+      where: [
+        { field: "price", type: "greaterThanOrEqual", filter: 0 },
+        { field: "status", type: "equals", filter: "open" },
+      ],
       orderBy: [{ field: "price", direction: "asc" }],
       limit: 50,
     });
     yield* engine.snapshot("orders", {
       select,
-      where: {
-        quantity: { gte: 0n },
-        status: { eq: "open" },
-      },
+      where: [
+        { field: "quantity", type: "greaterThanOrEqual", filter: 0n },
+        { field: "status", type: "equals", filter: "open" },
+      ],
       orderBy: [{ field: "quantity", direction: "asc" }],
       limit: 50,
     });
     yield* engine.snapshot("orders", {
       select,
-      where: {
-        decimalPrice: { gte: fromStringUnsafe("0") },
-        status: { eq: "open" },
-      },
+      where: [
+        { field: "decimalPrice", type: "greaterThanOrEqual", filter: fromStringUnsafe("0") },
+        { field: "status", type: "equals", filter: "open" },
+      ],
       orderBy: [{ field: "decimalPrice", direction: "asc" }],
       limit: 50,
     });
@@ -421,9 +417,7 @@ describe(`raw write engine benchmark: ${profile.rowCount} rows`, () => {
               await Effect.runPromise(
                 engine.snapshot("orders", {
                   select: ["id", "price", "updatedAt"],
-                  where: {
-                    price: { gte: 0 },
-                  },
+                  where: [{ field: "price", type: "greaterThanOrEqual", filter: 0 }],
                   orderBy: [{ field: "price", direction: "asc" }],
                   limit: 50,
                 }),
@@ -445,9 +439,7 @@ describe(`raw write engine benchmark: ${profile.rowCount} rows`, () => {
               await Effect.runPromise(
                 engine.snapshot("orders", {
                   select: ["id", "price", "updatedAt"],
-                  where: {
-                    price: { gte: 0 },
-                  },
+                  where: [{ field: "price", type: "greaterThanOrEqual", filter: 0 }],
                   orderBy: [{ field: "price", direction: "asc" }],
                   limit: 50,
                 }),

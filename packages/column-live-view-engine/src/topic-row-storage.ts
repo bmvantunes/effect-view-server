@@ -112,6 +112,8 @@ export class TopicRowStorage {
   private readonly orderedSlotIndexes = new Map<string, OrderedSlotIndex>();
   private readonly scalarPredicateIndexes = createScalarPredicateIndexes();
   private readonly rowChangeJournal: TopicRowChangeJournal<object>;
+  private readonly partitionChangeJournals = new Map<string, TopicRowChangeJournal<object>>();
+  private readonly rowChangeJournalLimits: TopicRowChangeJournalLimits | undefined;
   private readonly rowPreparation: TopicRowPreparationContext;
   private readonly rawWindowScanState: TopicRawWindowScanState;
   private versionValue = 0;
@@ -122,11 +124,13 @@ export class TopicRowStorage {
     keyField: string,
     rowChangeJournalLimits?: TopicRowChangeJournalLimits,
   ) {
+    this.rowChangeJournalLimits = rowChangeJournalLimits;
     this.rowChangeJournal = new TopicRowChangeJournal<object>(rowChangeJournalLimits);
     this.rawQueryMetadata = rawQueryCompilerMetadata(schema);
     this.valueSemantics = this.rawQueryMetadata.valueSemantics;
     this.rawWindowScanState = {
       columns: this.columns,
+      keyToSlot: this.keyToSlot,
       orderedSlotIndexes: this.orderedSlotIndexes,
       rawPredicateSlotMatchers: this.rawPredicateSlotMatchers,
       rawQueryMetadata: this.rawQueryMetadata,
@@ -154,7 +158,7 @@ export class TopicRowStorage {
     }
     this.queryInterface = {
       topic,
-      changesSince: (version) => this.changesSince(version),
+      changesSince: (version, partitionKey) => this.changesSince(version, partitionKey),
       compareRawSlots: (plan) => this.compareRawSlots(plan),
       keyAtSlot: (slot) => this.keyAtSlot(slot),
       storageProjection: makeTopicStorageProjectionCapability(
@@ -164,9 +168,11 @@ export class TopicRowStorage {
           return (slot) => this.#projectRawRow(slot, projectionPlan);
         },
       ),
-      releaseChanges: () => this.releaseChanges(),
-      retainChanges: () => this.retainChanges(),
+      releaseChanges: (partitionKey) => this.releaseChanges(partitionKey),
+      retainChanges: (partitionKey) => this.retainChanges(partitionKey),
       scanRows: (visitor) => this.scanRows(visitor),
+      scanRowsByStorageKeys: (storageKeys, visitor) =>
+        this.scanRowsByStorageKeys(storageKeys, visitor),
       scanRawWindow: (plan) => this.scanRawWindow(plan),
       slotForKey: (key) => this.slotForKey(key),
       version: () => this.versionValue,
@@ -181,9 +187,16 @@ export class TopicRowStorage {
     return this.versionValue;
   }
 
-  advanceVersion(): number {
+  advanceVersion(partitionKey?: string): number {
     this.versionValue += 1;
     this.rowChangeJournal.commit(this.versionValue);
+    if (partitionKey === undefined) {
+      for (const journal of this.partitionChangeJournals.values()) {
+        journal.commit(this.versionValue);
+      }
+    } else {
+      this.partitionChangeJournals.get(partitionKey)?.commit(this.versionValue);
+    }
     return this.versionValue;
   }
 
@@ -193,13 +206,16 @@ export class TopicRowStorage {
     this.orderedSlotIndexes.clear();
     this.scalarPredicateIndexes.clear();
     this.rowChangeJournal.clear(this.versionValue);
+    for (const journal of this.partitionChangeJournals.values()) {
+      journal.clear(this.versionValue);
+    }
     for (const column of this.columns.values()) {
       column.clear();
     }
     this.versionValue = 0;
   }
 
-  setPrepared(prepared: PreparedTopicRow): number {
+  setPrepared(prepared: PreparedTopicRow, partitionKey?: string): number {
     assertAuthenticPreparedTopicRow(prepared, this.rowPreparation);
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
@@ -211,7 +227,7 @@ export class TopicRowStorage {
       this.removeSlotFromReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordPreparedReplacementChange(prepared, replacement);
+      this.recordPreparedReplacementChange(prepared, replacement, partitionKey);
       this.insertSlotIntoReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       return 1;
     }
@@ -220,16 +236,19 @@ export class TopicRowStorage {
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
     this.addSlotToScalarIndexes(slot);
-    this.recordRowChange({
-      key: prepared.key,
-      previous: undefined,
-      next: prepared.row,
-    });
+    this.recordRowChange(
+      {
+        key: prepared.key,
+        previous: undefined,
+        next: prepared.row,
+      },
+      partitionKey,
+    );
     this.insertSlotIntoOrderedIndexes(slot);
     return 1;
   }
 
-  setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>): number {
+  setPreparedMany(preparedRows: ReadonlyArray<PreparedTopicRow>, partitionKey?: string): number {
     for (const prepared of preparedRows) {
       assertAuthenticPreparedTopicRow(prepared, this.rowPreparation);
     }
@@ -242,6 +261,7 @@ export class TopicRowStorage {
           preparedRows[index]!,
           appendReservation,
           index,
+          partitionKey,
         );
       }
       return rowsChanged;
@@ -249,12 +269,17 @@ export class TopicRowStorage {
 
     let rowsChanged = 0;
     for (let index = 0; index < preparedRows.length; index += 1) {
-      rowsChanged += this.setPreparedInBatch(preparedRows[index]!, appendReservation, index);
+      rowsChanged += this.setPreparedInBatch(
+        preparedRows[index]!,
+        appendReservation,
+        index,
+        partitionKey,
+      );
     }
     return rowsChanged;
   }
 
-  delete(key: string): number {
+  delete(key: string, partitionKey?: string): number {
     const deletion = deleteCompactingTopicRowSlot(
       {
         addSlotToScalarIndexes: (slot) => this.addSlotToScalarIndexes(slot),
@@ -271,20 +296,43 @@ export class TopicRowStorage {
       return 0;
     }
 
-    this.recordRowChange({
-      key,
-      previous: deletion.previous,
-      next: undefined,
-    });
+    this.recordRowChange(
+      {
+        key,
+        previous: deletion.previous,
+        next: undefined,
+      },
+      partitionKey,
+    );
     return 1;
   }
 
-  changesSince(version: number): ReadonlyArray<TopicRowChangeBatch<object>> | undefined {
-    return this.rowChangeJournal.changesSince(version, this.versionValue);
+  changesSince(
+    version: number,
+    partitionKey?: string,
+  ): ReadonlyArray<TopicRowChangeBatch<object>> | undefined {
+    return (
+      partitionKey === undefined
+        ? this.rowChangeJournal
+        : this.partitionChangeJournals.get(partitionKey)
+    )?.changesSince(version, this.versionValue);
   }
 
   scanRows(visitor: TopicRowVisitor<object>): void {
     for (let slot = 0; slot < this.slots.length; slot += 1) {
+      const entry = this.slots[slot]!;
+      if (visitor(entry.key, entry.row) === false) {
+        break;
+      }
+    }
+  }
+
+  scanRowsByStorageKeys(storageKeys: Iterable<string>, visitor: TopicRowVisitor<object>): void {
+    for (const key of storageKeys) {
+      const slot = this.keyToSlot.get(key);
+      if (slot === undefined) {
+        continue;
+      }
       const entry = this.slots[slot]!;
       if (visitor(entry.key, entry.row) === false) {
         break;
@@ -511,6 +559,7 @@ export class TopicRowStorage {
     prepared: PreparedTopicRow,
     appendReservation: AppendBatchReservation,
     batchIndex: number,
+    partitionKey?: string,
   ): number {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
@@ -522,7 +571,7 @@ export class TopicRowStorage {
       this.removeSlotFromReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordPreparedReplacementChange(prepared, replacement);
+      this.recordPreparedReplacementChange(prepared, replacement, partitionKey);
       this.insertSlotIntoReplacementOrderedIndexes(existingSlot, replacement.changedFields);
       return 1;
     }
@@ -532,11 +581,14 @@ export class TopicRowStorage {
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
     this.addSlotToScalarIndexes(slot);
-    this.recordRowChange({
-      key: prepared.key,
-      previous: undefined,
-      next: prepared.row,
-    });
+    this.recordRowChange(
+      {
+        key: prepared.key,
+        previous: undefined,
+        next: prepared.row,
+      },
+      partitionKey,
+    );
     this.insertSlotIntoOrderedIndexes(slot);
     return 1;
   }
@@ -582,6 +634,7 @@ export class TopicRowStorage {
     prepared: PreparedTopicRow,
     appendReservation: AppendBatchReservation,
     batchIndex: number,
+    partitionKey?: string,
   ): number {
     const existingSlot = this.keyToSlot.get(prepared.key);
     if (existingSlot !== undefined) {
@@ -592,7 +645,7 @@ export class TopicRowStorage {
       this.removeSlotFromScalarIndexes(existingSlot);
       this.writeSlot(existingSlot, prepared);
       this.addSlotToScalarIndexes(existingSlot);
-      this.recordPreparedReplacementChange(prepared, replacement);
+      this.recordPreparedReplacementChange(prepared, replacement, partitionKey);
       return 1;
     }
 
@@ -601,11 +654,14 @@ export class TopicRowStorage {
     this.keyToSlot.set(prepared.key, slot);
     this.writeSlot(slot, prepared);
     this.addSlotToScalarIndexes(slot);
-    this.recordRowChange({
-      key: prepared.key,
-      previous: undefined,
-      next: prepared.row,
-    });
+    this.recordRowChange(
+      {
+        key: prepared.key,
+        previous: undefined,
+        next: prepared.row,
+      },
+      partitionKey,
+    );
     return 1;
   }
 
@@ -634,28 +690,42 @@ export class TopicRowStorage {
     };
   }
 
-  private recordRowChange(change: TopicRowChange<object>): void {
+  private recordRowChange(change: TopicRowChange<object>, partitionKey?: string): void {
     this.rowChangeJournal.record(change, this.versionValue);
+    if (partitionKey === undefined) {
+      for (const journal of this.partitionChangeJournals.values()) {
+        journal.record(change, this.versionValue);
+      }
+      return;
+    }
+    this.partitionChangeJournals.get(partitionKey)?.record(change, this.versionValue);
   }
 
   private recordPreparedReplacementChange(
     prepared: PreparedTopicRow,
     replacement: PreparedTopicRowReplacement,
+    partitionKey?: string,
   ): void {
     if (replacement.changedFields === undefined) {
-      this.recordRowChange({
+      this.recordRowChange(
+        {
+          key: prepared.key,
+          previous: replacement.previous,
+          next: prepared.row,
+        },
+        partitionKey,
+      );
+      return;
+    }
+    this.recordRowChange(
+      {
+        changedFields: replacement.changedFields,
         key: prepared.key,
         previous: replacement.previous,
         next: prepared.row,
-      });
-      return;
-    }
-    this.recordRowChange({
-      changedFields: replacement.changedFields,
-      key: prepared.key,
-      previous: replacement.previous,
-      next: prepared.row,
-    });
+      },
+      partitionKey,
+    );
   }
 
   private addSlotToScalarIndexes(slot: number): void {
@@ -666,12 +736,28 @@ export class TopicRowStorage {
     removeSlotFromScalarPredicateIndexes(this.scalarPredicateIndexes, this.columns, slot);
   }
 
-  private releaseChanges(): void {
-    this.rowChangeJournal.release(this.versionValue);
+  private releaseChanges(partitionKey?: string): void {
+    if (partitionKey === undefined) {
+      this.rowChangeJournal.release(this.versionValue);
+      return;
+    }
+    const journal = this.partitionChangeJournals.get(partitionKey);
+    if (journal?.release(this.versionValue) === true) {
+      this.partitionChangeJournals.delete(partitionKey);
+    }
   }
 
-  private retainChanges(): void {
-    this.rowChangeJournal.retain(this.versionValue);
+  private retainChanges(partitionKey?: string): void {
+    if (partitionKey === undefined) {
+      this.rowChangeJournal.retain(this.versionValue);
+      return;
+    }
+    let journal = this.partitionChangeJournals.get(partitionKey);
+    if (journal === undefined) {
+      journal = new TopicRowChangeJournal<object>(this.rowChangeJournalLimits, true);
+      this.partitionChangeJournals.set(partitionKey, journal);
+    }
+    journal.retain(this.versionValue);
   }
 
   private rowForKey(key: string): object | undefined {

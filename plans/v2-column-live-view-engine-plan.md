@@ -225,9 +225,7 @@ import { useLiveQuery } from "./view-server.config";
 
 export function OrdersGrid() {
   const orders = useLiveQuery("orders", {
-    where: {
-      status: "open",
-    },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     select: ["id", "customerId", "status", "price", "region", "updatedAt"],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 50,
@@ -424,7 +422,7 @@ import { createInMemoryViewServer, useLiveQuery } from "./view-server.config";
 
 function Orders() {
   const result = useLiveQuery("manualOrders", {
-    where: { status: "open" },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     select: ["id", "price"],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 50,
@@ -895,7 +893,7 @@ The engine should expose a direct subscription API independent of WebSockets:
 ```ts
 const subscription = await Effect.runPromise(
   engine.subscribe("orders", {
-    where: { status: "open" },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     select: ["id", "price"],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 50,

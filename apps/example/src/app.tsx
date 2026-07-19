@@ -22,9 +22,7 @@ function RuntimeHealth() {
 function OrdersTable() {
   const orders = useLiveQuery("orders", {
     select: ["id", "price", "status"],
-    where: {
-      status: { eq: "open" },
-    },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 20,
   });

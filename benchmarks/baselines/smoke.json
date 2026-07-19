@@ -8,125 +8,125 @@
       "benchmarks": [
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.9524999999999864,
-          "meanMs": 0.2267492783318247,
-          "minMs": 0.16499999999996362,
-          "name": "equality filter + top-k sort",
-          "p99Ms": 0.42745800000000145,
-          "sampleCount": 1103
-        },
-        {
-          "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.959374999999909,
-          "meanMs": 0.12395357610312233,
+          "maxMs": 0.5507920000000013,
+          "meanMs": 0.11220868043088253,
           "minMs": 0.10300000000006548,
-          "name": "selective equality filter + fallback top-k sort",
-          "p99Ms": 0.1962079999998423,
-          "sampleCount": 2017
+          "name": "equality filter + top-k sort",
+          "p99Ms": 0.16029100000002927,
+          "sampleCount": 2228
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.9626670000000104,
-          "meanMs": 0.11933685727923943,
-          "minMs": 0.0955829999998059,
+          "maxMs": 0.6593329999999469,
+          "meanMs": 0.07078464722536817,
+          "minMs": 0.06554099999993923,
+          "name": "selective equality filter + different ordered index",
+          "p99Ms": 0.09212500000001,
+          "sampleCount": 3532
+        },
+        {
+          "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
+          "maxMs": 0.8164999999999054,
+          "meanMs": 0.0698135889416336,
+          "minMs": 0.06395900000006804,
           "name": "ordered equality filter + indexed seek",
-          "p99Ms": 0.2081660000001193,
-          "sampleCount": 2095
+          "p99Ms": 0.0886249999998654,
+          "sampleCount": 3581
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 1.1011670000000322,
-          "meanMs": 0.14300346369353326,
-          "minMs": 0.11329099999966274,
+          "maxMs": 0.9069999999999254,
+          "meanMs": 0.08120383663527282,
+          "minMs": 0.07445800000004965,
           "name": "ordered in filter + indexed seek",
-          "p99Ms": 0.28770899999972244,
-          "sampleCount": 1749
+          "p99Ms": 0.10804199999984121,
+          "sampleCount": 3079
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 1.7670830000001843,
-          "meanMs": 0.11015952334801794,
-          "minMs": 0.08966599999985192,
+          "maxMs": 16.178207999999813,
+          "meanMs": 0.07629746139761999,
+          "minMs": 0.06024999999999636,
           "name": "range filter + top-k sort",
-          "p99Ms": 0.21075000000018917,
-          "sampleCount": 2270
+          "p99Ms": 0.13983299999995324,
+          "sampleCount": 3277
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.9111669999997503,
-          "meanMs": 0.11202553181003842,
-          "minMs": 0.09304099999963,
+          "maxMs": 0.8007090000000971,
+          "meanMs": 0.06655464413095485,
+          "minMs": 0.06141600000000835,
           "name": "bigint range filter + indexed seek",
-          "p99Ms": 0.21149999999988722,
-          "sampleCount": 2232
+          "p99Ms": 0.08254100000021936,
+          "sampleCount": 3757
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 1.0734590000001845,
-          "meanMs": 0.12285286093367168,
-          "minMs": 0.0946670000002996,
+          "maxMs": 3.940958000000137,
+          "meanMs": 0.07383351949202359,
+          "minMs": 0.061208000000078755,
           "name": "BigDecimal range filter + indexed seek",
-          "p99Ms": 0.2482919999997648,
-          "sampleCount": 2035
+          "p99Ms": 0.25212499999997817,
+          "sampleCount": 3386
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 1.6518329999998969,
-          "meanMs": 0.23093722160664493,
-          "minMs": 0.18079200000011042,
+          "maxMs": 0.546291999999994,
+          "meanMs": 0.13738752692307837,
+          "minMs": 0.13112499999988358,
           "name": "selective range filter + fallback top-k sort",
-          "p99Ms": 0.5279999999997926,
-          "sampleCount": 1083
+          "p99Ms": 0.2169579999999769,
+          "sampleCount": 1820
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.8584590000000389,
-          "meanMs": 0.16853660849056476,
-          "minMs": 0.14049999999997453,
+          "maxMs": 0.6599580000001879,
+          "meanMs": 0.07660256096813273,
+          "minMs": 0.07133299999986775,
           "name": "compound filter + top-k sort",
-          "p99Ms": 0.31579099999999016,
-          "sampleCount": 1484
+          "p99Ms": 0.09404200000017227,
+          "sampleCount": 3264
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.7947500000000218,
-          "meanMs": 0.36397866400001294,
-          "minMs": 0.3271249999997963,
+          "maxMs": 1.8308329999999842,
+          "meanMs": 0.17211513076394055,
+          "minMs": 0.16220799999973678,
           "name": "narrow scalar projection + top-k sort",
-          "p99Ms": 0.6945839999998498,
-          "sampleCount": 1000
+          "p99Ms": 0.4579169999997248,
+          "sampleCount": 1453
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 1.6526249999997162,
-          "meanMs": 1.1790035749999879,
-          "minMs": 0.9720829999996567,
+          "maxMs": 1.0644159999992553,
+          "meanMs": 0.7335164409999916,
+          "minMs": 0.7011249999995925,
           "name": "wide scalar projection + top-k sort",
-          "p99Ms": 1.4924590000000535,
+          "p99Ms": 1.0073329999995622,
           "sampleCount": 1000
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 0.8593329999994239,
-          "meanMs": 0.14212024602273604,
-          "minMs": 0.11650000000008731,
+          "maxMs": 0.6552499999997963,
+          "meanMs": 0.07150194795538137,
+          "minMs": 0.06662499999947613,
           "name": "filtered totalRows via zero-row window",
-          "p99Ms": 0.26924999999937427,
-          "sampleCount": 1760
+          "p99Ms": 0.08833400000003166,
+          "sampleCount": 3497
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
-          "maxMs": 3.118540999999823,
-          "meanMs": 1.2843996000001425,
-          "minMs": 0.7327080000004571,
+          "maxMs": 1.7152080000005299,
+          "meanMs": 0.6172583999999915,
+          "minMs": 0.32150000000001455,
           "name": "live subscription delta after publish",
-          "p99Ms": 3.118540999999823,
+          "p99Ms": 1.7152080000005299,
           "sampleCount": 5
         }
       ],
       "benchmarkCases": [
         "equality filter + top-k sort",
-        "selective equality filter + fallback top-k sort",
+        "selective equality filter + different ordered index",
         "ordered equality filter + indexed seek",
         "ordered in filter + indexed seek",
         "range filter + top-k sort",
@@ -143,7 +143,7 @@
       "benchmarkScope": "engine-raw-snapshot",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 123060224,
+      "memoryRssTotalDeltaBytes": 156893184,
       "minimumSampleCount": 5,
       "mutationCount": 1005,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/raw-snapshot-1000rows.json",

@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { stableQueryValueString } from "./raw-query-compiler";
 import {
+  cloneUnknown,
   cloneRecord,
   fieldValue,
   scalarEqualityKey,
@@ -145,6 +146,16 @@ describe("Row value semantics", () => {
     expect(cloneRecord({ payload: new Map([["venue", "xnys"]]) })).toStrictEqual({
       payload: new Map([["venue", "xnys"]]),
     });
+  });
+
+  it("clones arrays and plain records while preserving BigDecimal identity", () => {
+    const amount = fromStringUnsafe("1.25");
+    const source = [{ nested: { amount } }];
+    const cloned = cloneUnknown(source);
+
+    expect(cloned).toStrictEqual(source);
+    expect(cloned === source).toBe(false);
+    expect(cloneUnknown(amount)).toBe(amount);
   });
 
   it("compares array and plain-record values structurally", () => {

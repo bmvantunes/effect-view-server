@@ -6,12 +6,15 @@ import {
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
 import type {
+  ExactLiveQueryInputForTopic,
+  ExactLiveQuery,
   GrpcRuntimeClients,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
+  TopicRow,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
 import type { Stream } from "effect";
@@ -23,6 +26,11 @@ const Order = Schema.Struct({
   price: Schema.Number,
 });
 
+const Position = Schema.Struct({
+  id: Schema.String,
+  quantity: Schema.Number,
+});
+
 declare const grpcRuntimeClients: GrpcRuntimeClients;
 declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
 
@@ -32,6 +40,19 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
+      key: "id",
+    },
+  },
+});
+
+const heterogeneousViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+    },
+    positions: {
+      schema: Position,
       key: "id",
     },
   },
@@ -83,10 +104,74 @@ const mixedSourceViewServer = defineViewServerConfig({
   },
 });
 
+const mismatchedLeasedViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
+  topics: {
+    orders: grpcTopicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({ id: route.id, price: 0 }),
+    }),
+    positions: grpcTopicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["price"],
+      request: ({ price }) => ({ price }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({ id: "position", price: route.price }),
+    }),
+  },
+});
+
+const identicalLeasedViewServer = defineViewServerConfig({
+  grpc: {
+    clients: grpcRuntimeClients,
+  },
+  topics: {
+    orders: grpcTopicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({ id: route.id, price: 0 }),
+    }),
+    positions: grpcTopicSources.leased({
+      schema: Order,
+      key: "id",
+      client: "orders",
+      method: "streamOrders",
+      routeBy: ["id"],
+      request: ({ id }) => ({ id }),
+      acquire: () => grpcRuntimeStream,
+      map: ({ route }) => ({ id: route.id, price: 0 }),
+    }),
+  },
+});
+
 declare const client: ViewServerLiveClient<typeof viewServer.topics>;
+declare const heterogeneousClient: ViewServerLiveClient<typeof heterogeneousViewServer.topics>;
+declare const heterogeneousTopic: "orders" | "positions";
 declare const leasedClient: ViewServerLiveClient<typeof leasedViewServer.topics>;
 declare const mixedSourceClient: ViewServerLiveClient<typeof mixedSourceViewServer.topics>;
 declare const mixedSourceTopic: "orders" | "positions";
+declare const mismatchedLeasedClient: ViewServerLiveClient<
+  typeof mismatchedLeasedViewServer.topics
+>;
+declare const mismatchedLeasedTopic: "orders" | "positions";
+declare const identicalLeasedClient: ViewServerLiveClient<typeof identicalLeasedViewServer.topics>;
+declare const identicalLeasedTopic: "orders" | "positions";
 
 describe("client type contracts", () => {
   it("preserves selected row types through live subscriptions", () => {
@@ -119,11 +204,56 @@ describe("client type contracts", () => {
     expectTypeOf(nullSelectedField).not.toBeAny();
   });
 
-  it("requires leased gRPC route predicates in live subscriptions", () => {
+  it("requires dynamic topic-union queries to be valid for every possible topic", () => {
+    const commonSubscription = heterogeneousClient.subscribe(heterogeneousTopic, {
+      select: ["id"],
+      where: [{ field: "id", type: "equals", filter: "row-1" }],
+    });
+    const topicSpecificFilter = {
+      select: ["id"],
+      where: [{ field: "price", type: "greaterThan", filter: 10 }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [
+        { readonly field: "price"; readonly type: "greaterThan"; readonly filter: 10 },
+      ];
+    };
+    // @ts-expect-error positions do not have a price filter field.
+    const invalidExactLiveQuery: ExactLiveQuery<
+      TopicRow<typeof heterogeneousViewServer.topics, "positions">,
+      typeof topicSpecificFilter
+    > = topicSpecificFilter;
+    // @ts-expect-error positions do not have a price filter field.
+    const invalidExactInput: ExactLiveQueryInputForTopic<
+      typeof heterogeneousViewServer.topics,
+      "positions",
+      typeof topicSpecificFilter
+    > = topicSpecificFilter;
+    // @ts-expect-error a topic union requires filters valid for every member.
+    const invalidUnionExactInput: ExactLiveQueryInputForTopic<
+      typeof heterogeneousViewServer.topics,
+      "orders" | "positions",
+      typeof topicSpecificFilter
+    > = topicSpecificFilter;
+    const invalidSubscription = heterogeneousClient.subscribe(
+      heterogeneousTopic,
+      // @ts-expect-error dynamic topic-union filters must exist on every possible topic.
+      topicSpecificFilter,
+    );
+
+    expectTypeOf<Effect.Success<typeof commonSubscription>>().toEqualTypeOf<
+      ViewServerLiveSubscription<{ readonly id: string }>
+    >();
+    expectTypeOf(invalidSubscription).not.toBeAny();
+    expectTypeOf(invalidExactLiveQuery).not.toBeAny();
+    expectTypeOf(invalidExactInput).not.toBeAny();
+    expectTypeOf(invalidUnionExactInput).not.toBeAny();
+  });
+
+  it("requires leased gRPC route values in live subscriptions", () => {
     const routedSubscription = leasedClient.subscribe("orders", {
-      where: {
-        id: { eq: "order-1" },
-      },
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
+      routeBy: { id: "Order-Á" },
       select: ["id", "price"],
     });
     const missingRouteQuery = {
@@ -131,21 +261,17 @@ describe("client type contracts", () => {
     } satisfies {
       readonly select: readonly ["id"];
     };
-    const shorthandRouteQuery = {
-      where: {
-        id: "order-1",
-      },
+    const wrongRouteValueQuery = {
+      routeBy: { id: 1 },
       select: ["id"],
     } satisfies {
-      readonly where: {
-        readonly id: "order-1";
-      };
+      readonly routeBy: { readonly id: 1 };
       readonly select: readonly ["id"];
     };
-    // @ts-expect-error leased gRPC subscriptions require exact eq route filters.
+    // @ts-expect-error leased gRPC subscriptions require routeBy.
     const missingRouteSubscription = leasedClient.subscribe("orders", missingRouteQuery);
-    // @ts-expect-error leased gRPC route filters must not use shorthand equality.
-    const shorthandRouteSubscription = leasedClient.subscribe("orders", shorthandRouteQuery);
+    // @ts-expect-error leased gRPC routeBy values must match their configured fields.
+    const wrongRouteValueSubscription = leasedClient.subscribe("orders", wrongRouteValueQuery);
 
     expectTypeOf<Effect.Success<typeof routedSubscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
@@ -154,37 +280,64 @@ describe("client type contracts", () => {
       }>
     >();
     expectTypeOf(missingRouteSubscription).not.toBeAny();
-    expectTypeOf(shorthandRouteSubscription).not.toBeAny();
+    expectTypeOf(wrongRouteValueSubscription).not.toBeAny();
   });
 
-  it("keeps leased gRPC route predicates when the topic is a union", () => {
-    const routedUnionSubscription = mixedSourceClient.subscribe(mixedSourceTopic, {
-      where: {
-        id: { eq: "order-1" },
-      },
+  it("rejects ambiguous route ownership until a topic union is narrowed", () => {
+    const routedUnionQuery = {
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
+      routeBy: { id: "Order-Á" },
       select: ["id"],
-    });
+    } satisfies {
+      readonly where: readonly [
+        { readonly field: "id"; readonly type: "equals"; readonly filter: "order-1" },
+      ];
+      readonly routeBy: { readonly id: "Order-Á" };
+      readonly select: readonly ["id"];
+    };
     const missingRouteQuery = {
       select: ["id"],
     } satisfies {
       readonly select: readonly ["id"];
     };
 
+    const routedUnionSubscription = mixedSourceClient.subscribe(
+      mixedSourceTopic,
+      // @ts-expect-error dynamic topic unions cannot safely correlate leased and ordinary routes.
+      routedUnionQuery,
+    );
     const missingRouteSubscription = mixedSourceClient.subscribe(
       mixedSourceTopic,
-      // @ts-expect-error dynamic topic unions that include a leased topic still require route filters.
+      // @ts-expect-error dynamic topic unions cannot safely correlate leased and ordinary routes.
       missingRouteQuery,
     );
 
-    expectTypeOf<Effect.Success<typeof routedUnionSubscription>>().toEqualTypeOf<
-      ViewServerLiveSubscription<{
-        readonly id: string;
-      }>
-    >();
-    expectTypeOf<Effect.Error<typeof routedUnionSubscription>>().toEqualTypeOf<
-      ViewServerRuntimeError | ViewServerTransportError
-    >();
+    expectTypeOf(routedUnionSubscription).not.toBeAny();
     expectTypeOf(missingRouteSubscription).not.toBeAny();
+  });
+
+  it("correlates leased topic unions only when their route contracts are identical", () => {
+    const combinedRoute = {
+      routeBy: { id: "order-1", price: 10 },
+      select: ["id"],
+    } satisfies {
+      readonly routeBy: { readonly id: "order-1"; readonly price: 10 };
+      readonly select: readonly ["id"];
+    };
+    const mismatched = mismatchedLeasedClient.subscribe(
+      mismatchedLeasedTopic,
+      // @ts-expect-error leased topic unions with different route contracts cannot be correlated.
+      combinedRoute,
+    );
+    const identical = identicalLeasedClient.subscribe(identicalLeasedTopic, {
+      routeBy: { id: "Order-Á" },
+      select: ["id"],
+    });
+
+    expectTypeOf(mismatched).not.toBeAny();
+    expectTypeOf<Effect.Success<typeof identical>>().toEqualTypeOf<
+      ViewServerLiveSubscription<{ readonly id: string }>
+    >();
   });
 
   it("exposes health as a read-only ref", () => {

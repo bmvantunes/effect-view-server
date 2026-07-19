@@ -23,6 +23,7 @@ type MakeLiveSubscriptionOptions<ResultRow extends RowObject> = {
   readonly queueCapacity: number;
   readonly execution: LiveQueryExecution<ResultRow>;
   readonly permit: TopicStoreSubscriptionPermit;
+  readonly partitionKey?: string;
   readonly release: Effect.Effect<void>;
   readonly terminalObserver: ColumnLiveViewTerminalObserver;
 };
@@ -128,6 +129,7 @@ export const makeLiveSubscription = Effect.fn("ColumnLiveViewEngine.liveSubscrip
     const subscriber: LiveTopicSubscriber = {
       topic: store.topic,
       queryId,
+      ...(options.partitionKey === undefined ? {} : { partitionKey: options.partitionKey }),
       notify: () =>
         notifyLiveSubscription(
           queryId,

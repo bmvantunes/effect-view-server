@@ -1,28 +1,19 @@
-import {
-  viewServerSchemaFieldMetadata,
-  type ViewServerRuntimeError,
-} from "@effect-view-server/config";
-import {
-  isRawQueryFilterOperatorKey,
-  isRawQueryRangeFilterOperatorKey,
-  rawQueryFilterOperatorKeys,
-} from "@effect-view-server/config/internal";
-import { Effect, Schema } from "effect";
+import type { RowSchema, ViewServerRuntimeError } from "@effect-view-server/config";
+import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { Effect } from "effect";
+import { isBigDecimal } from "effect/BigDecimal";
 import {
   decodeTopicNamedJsonFieldValue,
   encodeTopicNamedJsonFieldValue,
   type JsonFieldSchema,
 } from "./protocol-json-field-codec";
+import {
+  protocolFilterFieldSchema,
+  protocolNumericOperandSchema,
+} from "./protocol-filter-field-schema";
+import { requireProtocolJsonArray } from "./protocol-json-value";
 
-export const filterOperatorKeys = rawQueryFilterOperatorKeys;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-export const isFilterObject = (value: unknown): value is Record<string, unknown> =>
-  isRecord(value) &&
-  Object.keys(value).length > 0 &&
-  Object.keys(value).every(isRawQueryFilterOperatorKey);
+type Direction = "encode" | "decode";
 
 const invalidQuery = (topic: string, message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
@@ -37,158 +28,337 @@ const filterJsonFieldContext = {
   notJsonSafePrefix: "Filter",
 };
 
-const encodeStringFilterValue = Effect.fn("ViewServerProtocol.filter.string.encode")(function* (
-  topic: string,
-  field: string,
-  _schema: JsonFieldSchema,
-  value: unknown,
-) {
-  if (typeof value !== "string") {
-    return yield* Effect.fail(invalidQuery(topic, `Invalid filter for ${field}: expected string`));
-  }
-  return value;
-});
+const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Object.prototype;
 
-const decodeStringFilterValue = Effect.fn("ViewServerProtocol.filter.string.decode")(function* (
-  topic: string,
-  field: string,
-  _schema: JsonFieldSchema,
-  value: unknown,
-) {
-  if (typeof value !== "string") {
-    return yield* Effect.fail(invalidQuery(topic, `Invalid filter for ${field}: expected string`));
-  }
-  return value;
-});
+const ownValue = (value: Readonly<Record<string, unknown>>, key: string): unknown => {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && descriptor.enumerable && "value" in descriptor
+    ? descriptor.value
+    : undefined;
+};
 
-const validateOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.validate")(
-  function* (
-    topic: string,
-    field: string,
-    schema: JsonFieldSchema,
-    value: Record<string, unknown>,
-  ) {
-    const metadata = viewServerSchemaFieldMetadata(schema);
-    const keys = Object.keys(value);
-    if (keys.includes("startsWith") && !metadata.isString) {
-      return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support startsWith`));
+const exactKeys = (
+  value: Readonly<Record<string, unknown>>,
+  allowed: ReadonlySet<string>,
+): boolean =>
+  Object.getOwnPropertySymbols(value).length === 0 &&
+  Object.getOwnPropertyNames(value).every(
+    (key) => allowed.has(key) && Object.getOwnPropertyDescriptor(value, key)?.enumerable === true,
+  );
+
+const denseArray = (value: unknown): ReadonlyArray<unknown> | undefined => {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    return undefined;
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    return undefined;
+  }
+  const output: Array<unknown> = [];
+  const allowed = new Set(["length"]);
+  for (let index = 0; index < value.length; index += 1) {
+    const key = String(index);
+    allowed.add(key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
+      return undefined;
     }
-    if (keys.some(isRawQueryRangeFilterOperatorKey) && !metadata.isNumeric) {
+    output.push(descriptor.value);
+  }
+  return Object.getOwnPropertyNames(value).every((key) => allowed.has(key)) ? output : undefined;
+};
+
+const uniqueValues = (values: ReadonlyArray<unknown>): ReadonlyArray<unknown> => {
+  const unique: Array<unknown> = [];
+  const seen = new Set<unknown>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique;
+};
+
+const transformFieldValue = Effect.fn("ViewServerProtocol.filter.fieldValue.transform")(function* (
+  direction: Direction,
+  topic: string,
+  field: string,
+  schema: JsonFieldSchema,
+  value: unknown,
+) {
+  if (isBigDecimal(value) && !isWireSafeBigDecimal(value)) {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Filter condition ${field} BigDecimal operand is not wire-safe`),
+    );
+  }
+  const transformed =
+    direction === "encode"
+      ? yield* encodeTopicNamedJsonFieldValue(topic, field, schema, value, filterJsonFieldContext)
+      : yield* decodeTopicNamedJsonFieldValue(topic, field, schema, value, filterJsonFieldContext);
+  if (isBigDecimal(transformed) && !isWireSafeBigDecimal(transformed)) {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Filter condition ${field} BigDecimal operand is not wire-safe`),
+    );
+  }
+  return transformed;
+});
+
+type TransformFrame =
+  | { readonly _tag: "enter"; readonly value: unknown }
+  | {
+      readonly _tag: "exit";
+      readonly source: Readonly<Record<string, unknown>>;
+      readonly type: "AND" | "OR" | "NOT";
+      readonly childCount: number;
+    };
+
+type TransformState = {
+  readonly active: WeakSet<object>;
+  readonly memo: WeakMap<object, unknown>;
+};
+
+const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transform")(function* (
+  direction: Direction,
+  topic: string,
+  rowSchema: RowSchema,
+  condition: Readonly<Record<string, unknown>>,
+) {
+  const field = ownValue(condition, "field");
+  const type = ownValue(condition, "type");
+  if (typeof field !== "string" || typeof type !== "string") {
+    return yield* Effect.fail(invalidQuery(topic, "Filter conditions require field and type"));
+  }
+  const resolved = protocolFilterFieldSchema(rowSchema, field);
+  if (resolved === undefined) {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Query references an unknown or non-filterable field: ${field}`),
+    );
+  }
+  const blank = type === "blank" || type === "notBlank";
+  const inRange = type === "inRange";
+  const text =
+    type === "contains" || type === "notContains" || type === "startsWith" || type === "endsWith";
+  const equality = type === "equals" || type === "notEqual" || type === "in";
+  const supportsTextMatching = text || (equality && resolved.supportsText);
+  const numeric =
+    type === "greaterThan" ||
+    type === "greaterThanOrEqual" ||
+    type === "lessThan" ||
+    type === "lessThanOrEqual" ||
+    inRange;
+  if (!blank && !text && !equality && !numeric) {
+    return yield* Effect.fail(invalidQuery(topic, `Unsupported filter condition type: ${type}`));
+  }
+  const allowed = new Set(["field", "type"]);
+  if (!blank) {
+    allowed.add("filter");
+  }
+  if (inRange) {
+    allowed.add("filterTo");
+  }
+  if (supportsTextMatching) {
+    allowed.add("caseSensitive");
+    allowed.add("accentSensitive");
+  }
+  if (!exactKeys(condition, allowed)) {
+    return yield* Effect.fail(invalidQuery(topic, `Filter condition ${field} has invalid keys`));
+  }
+  const output: Record<string, unknown> = { field, type };
+  if (Object.hasOwn(condition, "caseSensitive")) {
+    const caseSensitive = ownValue(condition, "caseSensitive");
+    if (typeof caseSensitive !== "boolean") {
       return yield* Effect.fail(
-        invalidQuery(topic, `Filter ${field} does not support range operators`),
+        invalidQuery(topic, `Filter condition ${field} caseSensitive must be a boolean`),
       );
     }
-  },
-);
-
-const encodeOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.encode")(function* (
-  topic: string,
-  field: string,
-  schema: JsonFieldSchema,
-  value: Record<string, unknown>,
-) {
-  yield* validateOperatorFilterValue(topic, field, schema, value);
-  const output: Record<string, Schema.Json> = {};
-  for (const [operator, operatorValue] of Object.entries(value)) {
-    if (operator === "in" && Array.isArray(operatorValue)) {
-      output[operator] = yield* Effect.forEach(operatorValue, (entry) =>
-        encodeTopicNamedJsonFieldValue(topic, field, schema, entry, filterJsonFieldContext),
-      );
-    } else if (operator === "startsWith") {
-      output[operator] = yield* encodeStringFilterValue(topic, field, schema, operatorValue);
-    } else {
-      output[operator] = yield* encodeTopicNamedJsonFieldValue(
-        topic,
-        field,
-        schema,
-        operatorValue,
-        filterJsonFieldContext,
-      );
-    }
+    output["caseSensitive"] = caseSensitive;
   }
-  return output;
-});
-
-const decodeOperatorFilterValue = Effect.fn("ViewServerProtocol.filter.operator.decode")(function* (
-  topic: string,
-  field: string,
-  schema: JsonFieldSchema,
-  value: Record<string, unknown>,
-) {
-  yield* validateOperatorFilterValue(topic, field, schema, value);
-  const output: Record<string, unknown> = {};
-  for (const [operator, operatorValue] of Object.entries(value)) {
-    if (operator === "in" && Array.isArray(operatorValue)) {
-      output[operator] = yield* Effect.forEach(operatorValue, (entry) =>
-        decodeTopicNamedJsonFieldValue(topic, field, schema, entry, filterJsonFieldContext),
-      );
-    } else if (operator === "startsWith") {
-      output[operator] = yield* decodeStringFilterValue(topic, field, schema, operatorValue);
-    } else {
-      output[operator] = yield* decodeTopicNamedJsonFieldValue(
-        topic,
-        field,
-        schema,
-        operatorValue,
-        filterJsonFieldContext,
+  if (Object.hasOwn(condition, "accentSensitive")) {
+    const accentSensitive = ownValue(condition, "accentSensitive");
+    if (typeof accentSensitive !== "boolean") {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Filter condition ${field} accentSensitive must be a boolean`),
       );
     }
+    output["accentSensitive"] = accentSensitive;
   }
-  return output;
-});
-
-export const encodeFilterValue = Effect.fn("ViewServerProtocol.filter.encode")(function* (
-  topic: string,
-  field: string,
-  schema: JsonFieldSchema,
-  value: unknown,
-) {
-  if (!isFilterObject(value)) {
-    return yield* encodeTopicNamedJsonFieldValue(
-      topic,
-      field,
-      schema,
-      value,
-      filterJsonFieldContext,
+  if (blank) {
+    return Object.freeze(output);
+  }
+  const filter = ownValue(condition, "filter");
+  if (type === "in") {
+    const candidates = denseArray(filter);
+    if (candidates === undefined) {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Filter condition ${field} in must be an array`),
+      );
+    }
+    output["filter"] = Object.freeze(
+      yield* Effect.forEach(candidates, (candidate) =>
+        transformFieldValue(direction, topic, field, resolved.schema, candidate),
+      ),
+    );
+    return Object.freeze(output);
+  }
+  if (text) {
+    if (!resolved.supportsText) {
+      return yield* Effect.fail(invalidQuery(topic, `Filter ${field} does not support ${type}`));
+    }
+    if (typeof filter !== "string") {
+      return yield* Effect.fail(
+        invalidQuery(topic, `Filter condition ${field} ${type} requires a string`),
+      );
+    }
+    output["filter"] = filter;
+    return Object.freeze(output);
+  }
+  if (numeric && resolved.numericKinds.size === 0) {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Filter ${field} does not support range operators`),
     );
   }
-  return yield* Effect.matchEffect(encodeOperatorFilterValue(topic, field, schema, value), {
-    onFailure: (operatorError) =>
-      Effect.matchEffect(
-        encodeTopicNamedJsonFieldValue(topic, field, schema, value, filterJsonFieldContext),
-        {
-          onFailure: () => Effect.fail(operatorError),
-          onSuccess: Effect.succeed,
-        },
-      ),
-    onSuccess: Effect.succeed,
-  });
-});
-
-export const decodeFilterValue = Effect.fn("ViewServerProtocol.filter.decode")(function* (
-  topic: string,
-  field: string,
-  schema: JsonFieldSchema,
-  value: unknown,
-) {
-  if (!isFilterObject(value)) {
-    return yield* decodeTopicNamedJsonFieldValue(
+  const operandSchema = numeric ? protocolNumericOperandSchema(resolved) : resolved.schema;
+  const transformedFilter = yield* transformFieldValue(
+    direction,
+    topic,
+    field,
+    operandSchema,
+    filter,
+  );
+  output["filter"] = transformedFilter;
+  if (inRange) {
+    const filterTo = ownValue(condition, "filterTo");
+    const transformedFilterTo = yield* transformFieldValue(
+      direction,
       topic,
       field,
-      schema,
-      value,
-      filterJsonFieldContext,
+      operandSchema,
+      filterTo,
     );
+    output["filterTo"] = transformedFilterTo;
   }
-  return yield* Effect.matchEffect(decodeOperatorFilterValue(topic, field, schema, value), {
-    onFailure: (operatorError) =>
-      Effect.matchEffect(
-        decodeTopicNamedJsonFieldValue(topic, field, schema, value, filterJsonFieldContext),
-        {
-          onFailure: () => Effect.fail(operatorError),
-          onSuccess: Effect.succeed,
-        },
-      ),
-    onSuccess: Effect.succeed,
-  });
+  return Object.freeze(output);
+});
+
+const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.transform")(function* (
+  direction: Direction,
+  topic: string,
+  rowSchema: RowSchema,
+  input: unknown,
+  state: TransformState,
+) {
+  const frames: Array<TransformFrame> = [{ _tag: "enter", value: input }];
+  const results: Array<unknown> = [];
+  while (frames.length > 0) {
+    const frame = frames.pop()!;
+    if (frame._tag === "exit") {
+      const children = results.splice(results.length - frame.childCount, frame.childCount);
+      const uniqueChildren = frame.type === "NOT" ? children : uniqueValues(children);
+      const output =
+        frame.type === "NOT"
+          ? Object.freeze({ type: "NOT", condition: children[0] })
+          : Object.freeze({ type: frame.type, conditions: Object.freeze(uniqueChildren) });
+      state.active.delete(frame.source);
+      state.memo.set(frame.source, output);
+      results.push(output);
+      continue;
+    }
+    const expression = frame.value;
+    if (!isPlainRecord(expression)) {
+      return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
+    }
+    const cached = state.memo.get(expression);
+    if (cached !== undefined) {
+      results.push(cached);
+      continue;
+    }
+    if (state.active.has(expression)) {
+      return yield* Effect.fail(invalidQuery(topic, "Filter expressions must not contain cycles"));
+    }
+    const type = ownValue(expression, "type");
+    if (type === "AND" || type === "OR") {
+      if (!exactKeys(expression, new Set(["type", "conditions"]))) {
+        return yield* Effect.fail(invalidQuery(topic, `Filter group ${type} has invalid keys`));
+      }
+      const children = denseArray(ownValue(expression, "conditions"));
+      if (children === undefined) {
+        return yield* Effect.fail(
+          invalidQuery(topic, `Filter group ${type} conditions must be an array`),
+        );
+      }
+      state.active.add(expression);
+      frames.push({
+        _tag: "exit",
+        source: expression,
+        type,
+        childCount: children.length,
+      });
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        frames.push({ _tag: "enter", value: children[index] });
+      }
+      continue;
+    }
+    if (type === "NOT") {
+      if (!exactKeys(expression, new Set(["type", "condition"]))) {
+        return yield* Effect.fail(invalidQuery(topic, "Filter NOT has invalid keys"));
+      }
+      state.active.add(expression);
+      frames.push({ _tag: "exit", source: expression, type: "NOT", childCount: 1 });
+      frames.push({ _tag: "enter", value: ownValue(expression, "condition") });
+      continue;
+    }
+    const transformed = yield* transformCondition(direction, topic, rowSchema, expression);
+    state.memo.set(expression, transformed);
+    results.push(transformed);
+  }
+  return results[0];
+});
+
+const transformWhere = Effect.fn("ViewServerProtocol.filter.where.transform")(function* (
+  direction: Direction,
+  topic: string,
+  rowSchema: RowSchema,
+  where: ReadonlyArray<unknown> | undefined,
+) {
+  if (where === undefined) {
+    return undefined;
+  }
+  const roots = denseArray(where);
+  if (roots === undefined) {
+    return yield* Effect.fail(invalidQuery(topic, "Query where must be an array"));
+  }
+  const state: TransformState = {
+    active: new WeakSet(),
+    memo: new WeakMap(),
+  };
+  const transformed: Array<unknown> = [];
+  for (const expression of roots) {
+    transformed.push(yield* transformExpression(direction, topic, rowSchema, expression, state));
+  }
+  return Object.freeze(transformed);
+});
+
+export const encodeWhere = Effect.fn("ViewServerProtocol.filter.where.encode")(function* (
+  topic: string,
+  rowSchema: RowSchema,
+  where: ReadonlyArray<unknown> | undefined,
+) {
+  const encoded = yield* transformWhere("encode", topic, rowSchema, where);
+  if (encoded === undefined) {
+    return undefined;
+  }
+  return yield* requireProtocolJsonArray(topic, encoded);
+});
+
+export const decodeWhere = Effect.fn("ViewServerProtocol.filter.where.decode")(function* (
+  topic: string,
+  rowSchema: RowSchema,
+  where: ReadonlyArray<unknown> | undefined,
+) {
+  return yield* transformWhere("decode", topic, rowSchema, where);
 });

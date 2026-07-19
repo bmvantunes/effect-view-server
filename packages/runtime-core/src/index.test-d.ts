@@ -210,16 +210,16 @@ describe("runtime-core type contracts", () => {
 
   it("rejects leased gRPC topics from public runtime-core clients", () => {
     const leasedQuery = {
-      where: {
-        id: { eq: "order-1" },
-      },
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
       select: ["id"],
     } satisfies {
-      readonly where: {
-        readonly id: {
-          readonly eq: "order-1";
-        };
-      };
+      readonly where: readonly [
+        {
+          readonly field: "id";
+          readonly type: "equals";
+          readonly filter: "order-1";
+        },
+      ];
       readonly select: readonly ["id"];
     };
     // @ts-expect-error public runtime-core clients reject direct leased gRPC snapshots.

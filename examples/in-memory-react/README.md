@@ -11,7 +11,8 @@ vp run @effect-view-server/example-in-memory-react#dev
 
 This example demonstrates:
 
-- `useLiveQuery` with explicit `select`, filters, sorting, and grouped aggregates.
+- `useLiveQuery` with explicit `select`, canonical `where` arrays, sorting, and
+  grouped aggregates.
 - `useViewServerHealthSummary`.
 - Publishing rows through the in-memory client while the UI uses the same hook as
   production.

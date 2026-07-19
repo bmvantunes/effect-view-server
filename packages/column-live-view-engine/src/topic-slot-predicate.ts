@@ -1,7 +1,7 @@
 import type { TopicRawPredicateFilterPlan } from "./raw-predicate-plan";
+import { normalizeFilterText } from "./filter-expression";
 import { valuesEqual } from "./row-values";
 import {
-  columnValueDoesNotEqual,
   compareExactRangeColumnValue,
   compareRangeColumnValue,
   isComparableRangeValue,
@@ -23,8 +23,9 @@ export const rawPredicateSlotFilterMatcher = (
   filters: ReadonlyArray<TopicRawPredicateFilterPlan>,
   columns: ReadonlyMap<string, TopicColumnValues>,
   exact: boolean,
+  excludedFilters?: ReadonlySet<TopicRawPredicateFilterPlan>,
 ): SlotFilterMatcher => {
-  const filterMatchers = slotFilterMatchers(filters, columns, exact);
+  const filterMatchers = slotFilterMatchers(filters, columns, exact, excludedFilters);
   return (slot) => {
     for (const matcher of filterMatchers) {
       if (!matcher(slot)) {
@@ -39,9 +40,13 @@ const slotFilterMatchers = (
   filters: ReadonlyArray<TopicRawPredicateFilterPlan>,
   columns: ReadonlyMap<string, TopicColumnValues>,
   exact: boolean,
+  excludedFilters: ReadonlySet<TopicRawPredicateFilterPlan> | undefined,
 ): ReadonlyArray<SlotFilterMatcher> => {
   const matchers: Array<SlotFilterMatcher> = [];
   for (const filter of filters) {
+    if (excludedFilters?.has(filter) === true) {
+      continue;
+    }
     matchers.push(slotFilterMatcher(filter, columns, exact));
   }
   return matchers;
@@ -78,34 +83,6 @@ const slotFilterMatcher = (
       return (slot) => valuesEqual(columnValue(column, slot), filter.value);
     }
     case "neq": {
-      if (exact) {
-        if (column.kind === "string" && typeof filter.value === "string") {
-          return (slot) => {
-            const value = column.stringAt(slot);
-            return value !== undefined && value !== filter.value;
-          };
-        }
-        if (column.kind === "number" && typeof filter.value === "number") {
-          return (slot) => {
-            const value = column.numberAt(slot);
-            return value !== undefined && value !== filter.value;
-          };
-        }
-        if (column.kind === "bigint" && typeof filter.value === "bigint") {
-          return (slot) => {
-            const value = column.bigintAt(slot);
-            return value !== undefined && value !== filter.value;
-          };
-        }
-        if (column.kind === "bigDecimal" && isBigDecimal(filter.value)) {
-          const expected = filter.value;
-          return (slot) => {
-            const value = column.bigDecimalAt(slot);
-            return value !== undefined && !bigDecimalEquals(value, expected);
-          };
-        }
-        return (slot) => columnValueDoesNotEqual(columnValue(column, slot), filter.value);
-      }
       return (slot) => !valuesEqual(columnValue(column, slot), filter.value);
     }
     case "in": {
@@ -119,6 +96,26 @@ const slotFilterMatcher = (
       return (slot) => {
         const value = columnValue(column, slot);
         return filter.values.some((candidate) => valuesEqual(value, candidate));
+      };
+    }
+    case "textEq": {
+      const expected = filter.value;
+      return (slot) => {
+        const value = columnValue(column, slot);
+        return (
+          typeof value === "string" &&
+          normalizeFilterText(value, filter.caseSensitive, filter.accentSensitive) === expected
+        );
+      };
+    }
+    case "textIn": {
+      const expected = filter.valueSet;
+      return (slot) => {
+        const value = columnValue(column, slot);
+        return (
+          typeof value === "string" &&
+          expected.has(normalizeFilterText(value, filter.caseSensitive, filter.accentSensitive))
+        );
       };
     }
     case "startsWith": {

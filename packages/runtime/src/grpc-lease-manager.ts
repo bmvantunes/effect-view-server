@@ -4,34 +4,24 @@ import type {
   GroupedQuery,
   LiveQueryRow,
   RawQuery,
-  RowSchema,
   TopicRow,
   ViewServerTopicConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "@effect-view-server/config";
-import { validateDecodedRow } from "@effect-view-server/config/internal";
+import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
 } from "@effect-view-server/effect-utils";
 import type {
   ViewServerRuntimeLiveClient,
   ViewServerLiveSubscription,
 } from "@effect-view-server/client";
-import {
-  Cause,
-  Clock,
-  Effect,
-  Exit,
-  Option,
-  Result,
-  Schema,
-  Scope,
-  Semaphore,
-  Stream,
-} from "effect";
+import { Cause, Clock, Effect, Exit, Option, Result, Scope, Semaphore } from "effect";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import {
   makeGrpcLeasedIdentityContract,
@@ -40,12 +30,14 @@ import {
 } from "./grpc-leased-identity";
 import {
   makeGrpcLeasedSubscription,
-  type GrpcLeasedSubscription,
   type GrpcLeasedSubscriptionLease,
-  type GrpcLeasedUpstreamTerminal,
 } from "./grpc-leased-subscription";
 import {
-  callLeasedGrpcSourceAcquire,
+  makeGrpcLeasedRowLifecycle,
+  type GrpcLeasedActiveLease,
+  type RuntimeLeasedFeedDefinition,
+} from "./grpc-leased-row-lifecycle";
+import {
   callLeasedGrpcSourceRelease,
   callLeasedGrpcSourceRequest,
   makeGrpcSourceInput,
@@ -53,49 +45,27 @@ import {
   makeViewServerGrpcSourceError,
   ViewServerGrpcIngressError,
   type ViewServerGrpcClientFactory,
-  type ViewServerGrpcRuntimeCallable,
   type ViewServerGrpcSourceInput,
 } from "./grpc-source-lifecycle";
 import type { ResolvedViewServerGrpcRuntimeOptions } from "./grpc-runtime-options";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
-import { snapshotLeasedGrpcQuery } from "./grpc-leased-query-snapshot";
 import {
+  engineQueryWithoutRoute,
   makeSourceOwnershipPolicy,
+  type ViewServerRuntimeCoreQueryPartition,
   type ViewServerRuntimeCoreInternalClient,
   type ViewServerRuntimeCoreInternalLiveClient,
 } from "@effect-view-server/runtime-core/internal";
 
 type ViewServerGrpcHealthRefreshRequest = Effect.Effect<void>;
 
-type RuntimeLeasedFeedDefinition = {
-  readonly lifecycle: "leased";
-  readonly topic: string;
-  readonly client: string;
-  readonly routeBy: ReadonlyArray<string>;
-  readonly request: ViewServerGrpcRuntimeCallable;
-  readonly acquire: ViewServerGrpcRuntimeCallable;
-  readonly release?: ViewServerGrpcRuntimeCallable;
-  readonly map: ViewServerGrpcRuntimeCallable;
-};
-
 const isRuntimeLeasedFeed = (feed: {
   readonly lifecycle: string;
 }): feed is RuntimeLeasedFeedDefinition => feed.lifecycle === "leased";
 
-type RuntimeTopicDefinition = {
-  readonly schema: RowSchema & Schema.Codec<object, unknown, never, unknown>;
-  readonly key: string;
-};
-
 type LeasedFeedRoute = Readonly<Record<string, unknown>>;
 
 type LeasedFeedRuntimeInput = ViewServerGrpcSourceInput<LeasedFeedRoute>;
-
-type ActiveLease = {
-  readonly feedName: string;
-  readonly feed: RuntimeLeasedFeedDefinition;
-  readonly subscription: GrpcLeasedSubscription<ViewServerGrpcIngressError>;
-};
 
 /**
  * @internal One-shot, read-only construction observer for the intentionally private grouped-key
@@ -105,6 +75,7 @@ type ActiveLease = {
 type ViewServerGrpcGroupedKeyRetentionObserver = GrpcLeasedGroupedKeyRetentionObserver;
 
 type AcquiredLease = {
+  readonly enginePartition: ViewServerRuntimeCoreQueryPartition;
   readonly subscriptionLease: GrpcLeasedSubscriptionLease;
 };
 
@@ -113,12 +84,6 @@ export type ViewServerGrpcLeaseManager<Topics extends ViewServerRuntimeTopicDefi
   readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
   readonly close: Effect.Effect<void>;
 };
-
-const grpcMessageBatchSize = 256;
-const grpcMessageBatchFlushInterval = "2 millis";
-
-const isRuntimeMutationEffect = (value: unknown): value is Effect.Effect<unknown, unknown, never> =>
-  Effect.isEffect(value);
 
 const ignoreGrpcFeedReleaseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
   "Ignoring leased gRPC feed release failure.",
@@ -165,358 +130,11 @@ const callFeedRequest = (
   route: LeasedFeedRoute,
 ) => callLeasedGrpcSourceRequest(feedName, feed, route);
 
-const callFeedAcquire = (
-  feedName: string,
-  feed: RuntimeLeasedFeedDefinition,
-  input: LeasedFeedRuntimeInput,
-) => callLeasedGrpcSourceAcquire(feedName, feed, input);
-
 const callFeedRelease = (
   feedName: string,
   feed: RuntimeLeasedFeedDefinition,
   input: LeasedFeedRuntimeInput,
 ) => callLeasedGrpcSourceRelease(feedName, feed, input);
-
-const topicDefinitionFor = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerTopicConfig<Topics>,
-  topic: string,
-  feedName: string,
-): Effect.Effect<RuntimeTopicDefinition, ViewServerGrpcIngressError> =>
-  Effect.suspend(() => {
-    const topicDefinition = config.topics[topic];
-    if (topicDefinition !== undefined) {
-      return Effect.succeed(topicDefinition);
-    }
-    return grpcLeaseError({
-      message: `gRPC leased feed ${feedName} references unknown topic ${topic}`,
-      cause: topic,
-      phase: "configuration",
-      feedName,
-      topic,
-    });
-  });
-
-const isRuntimeTopic = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerTopicConfig<Topics>,
-  topic: string,
-): topic is Extract<keyof Topics, string> => Object.hasOwn(config.topics, topic);
-
-const runtimeTopicFor = <const Topics extends ViewServerRuntimeTopicDefinitions>(
-  config: ViewServerTopicConfig<Topics>,
-  topic: string,
-  feedName: string,
-): Effect.Effect<Extract<keyof Topics, string>, ViewServerGrpcIngressError> =>
-  Effect.suspend(() => {
-    if (isRuntimeTopic(config, topic)) {
-      return Effect.succeed(topic);
-    }
-    return grpcLeaseError({
-      message: `gRPC leased feed ${feedName} references unknown topic ${topic}`,
-      cause: topic,
-      phase: "configuration",
-      feedName,
-      topic,
-    });
-  });
-
-const mapLeasedValue = Effect.fn("ViewServerRuntime.grpc.leased.map")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  config: ViewServerTopicConfig<Topics>,
-  feedName: string,
-  feed: RuntimeLeasedFeedDefinition,
-  route: LeasedFeedRoute,
-  value: unknown,
-) {
-  const topicDefinition = yield* topicDefinitionFor(config, feed.topic, feedName);
-  const row = yield* Effect.try({
-    try: () =>
-      Reflect.apply(feed.map, undefined, [
-        {
-          value,
-          route,
-          schema: topicDefinition.schema,
-        },
-      ]),
-    catch: (cause) =>
-      grpcLeaseError({
-        message: `gRPC leased feed mapping failed for ${feedName}`,
-        cause,
-        phase: "mapping",
-        feedName,
-        topic: feed.topic,
-      }),
-  });
-  const decoded = yield* validateDecodedRow(topicDefinition.schema, row).pipe(
-    Effect.mapError((cause) =>
-      grpcLeaseError({
-        message: `gRPC leased feed mapping produced an invalid row for ${feedName}`,
-        cause,
-        phase: "mapping",
-        feedName,
-        topic: feed.topic,
-      }),
-    ),
-  );
-  return decoded;
-});
-
-type LeasedRowWithStorageKey = {
-  readonly storageKey: string;
-  readonly row: object;
-};
-
-const internalizeLeasedRow = Effect.fn("ViewServerRuntime.grpc.leased.row.internalize")(function* <
-  Row extends object,
->(lease: ActiveLease, row: Row) {
-  const internalKey = yield* Effect.fromResult(lease.subscription.internalizeRowKey(row)).pipe(
-    Effect.mapError((error) =>
-      grpcLeaseError({
-        message: error.message,
-        cause: error.cause,
-        phase: "mapping",
-        feedName: lease.feedName,
-        topic: lease.feed.topic,
-      }),
-    ),
-  );
-  return {
-    storageKey: internalKey.storageKey,
-    row,
-  } satisfies LeasedRowWithStorageKey;
-});
-
-const validateLeasedRowRoute = Effect.fn("ViewServerRuntime.grpc.leased.row.validateRoute")(
-  function* <Row extends object>(lease: ActiveLease, row: Row) {
-    return yield* Effect.fromResult(lease.subscription.validateRowRoute(row)).pipe(
-      Effect.mapError((error) =>
-        grpcLeaseError({
-          message: error.message,
-          cause: error.cause,
-          phase: "mapping",
-          feedName: lease.feedName,
-          topic: lease.feed.topic,
-        }),
-      ),
-    );
-  },
-);
-
-const resetLeaseRowCount = Effect.fn("ViewServerRuntime.grpc.leased.health.rowCount.reset")(
-  function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
-    requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
-    health: ViewServerGrpcHealthLedger<Topics>,
-    feedKey: string,
-  ) {
-    const nowMillis = yield* Clock.currentTimeMillis;
-    yield* health.rowsPublished(feedKey, {
-      messages: 0,
-      rows: 0,
-      rowCount: 0,
-      nowMillis,
-    });
-    yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
-  },
-);
-
-const callRuntimePublishMany = Effect.fn(
-  "ViewServerRuntime.grpc.leased.runtime.publishManyDecoded",
-)(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Topic extends Extract<keyof Topics, string>,
->(
-  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-  topic: Topic,
-  rows: ReadonlyArray<LeasedRowWithStorageKey>,
-  feedName: string,
-) {
-  const effect = runtimeClient.publishManyDecodedRowsWithStorageKeys(topic, rows);
-  if (!isRuntimeMutationEffect(effect)) {
-    return yield* grpcLeaseError({
-      message: `Runtime publishManyDecodedRowsWithStorageKeys did not return an Effect for leased gRPC feed ${feedName}`,
-      cause: effect,
-      phase: "publish",
-      feedName,
-      topic,
-    });
-  }
-  yield* effect.pipe(
-    Effect.asVoid,
-    Effect.mapError((cause) =>
-      grpcLeaseError({
-        message: `gRPC leased feed publish failed for ${feedName}`,
-        cause,
-        phase: "publish",
-        feedName,
-        topic,
-      }),
-    ),
-  );
-});
-
-const callRuntimeDelete = Effect.fn("ViewServerRuntime.grpc.leased.runtime.delete")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Topic extends Extract<keyof Topics, string>,
->(
-  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-  topic: Topic,
-  key: string,
-  feedName: string,
-) {
-  const effect = runtimeClient.delete(topic, key);
-  if (!isRuntimeMutationEffect(effect)) {
-    return yield* grpcLeaseError({
-      message: `Runtime delete did not return an Effect for leased gRPC feed ${feedName}`,
-      cause: effect,
-      phase: "release",
-      feedName,
-      topic,
-    });
-  }
-  yield* effect.pipe(
-    Effect.asVoid,
-    Effect.mapError((cause) =>
-      grpcLeaseError({
-        message: `gRPC leased feed row cleanup failed for ${feedName}`,
-        cause,
-        phase: "release",
-        feedName,
-        topic,
-      }),
-    ),
-  );
-});
-
-const publishLeasedBatch = Effect.fn("ViewServerRuntime.grpc.leased.publishBatch")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  config: ViewServerTopicConfig<Topics>,
-  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-  requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
-  health: ViewServerGrpcHealthLedger<Topics>,
-  lease: ActiveLease,
-  values: ReadonlyArray<unknown>,
-) {
-  const rows = yield* Effect.forEach(values, (value) =>
-    Effect.gen(function* () {
-      const route = lease.subscription.materializeRoute();
-      const row = yield* mapLeasedValue(config, lease.feedName, lease.feed, route, value);
-      return yield* validateLeasedRowRoute(lease, row);
-    }).pipe(
-      Effect.tapError((error) =>
-        Clock.currentTimeMillis.pipe(
-          Effect.flatMap((nowMillis) =>
-            health.mappingFailed(lease.subscription.feedKey, {
-              message: error.message,
-              nowMillis,
-            }),
-          ),
-        ),
-      ),
-    ),
-  );
-  const internalRows = yield* Effect.forEach(rows, (row) => internalizeLeasedRow(lease, row));
-  const topic = yield* runtimeTopicFor(config, lease.feed.topic, lease.feedName);
-  yield* callRuntimePublishMany(runtimeClient, topic, internalRows, lease.feedName).pipe(
-    Effect.tapError((error) =>
-      Clock.currentTimeMillis.pipe(
-        Effect.flatMap((nowMillis) =>
-          health.publishFailed(lease.subscription.feedKey, {
-            message: error.message,
-            nowMillis,
-          }),
-        ),
-      ),
-    ),
-  );
-  const nowMillis = yield* Clock.currentTimeMillis;
-  yield* health.rowsPublished(lease.subscription.feedKey, {
-    messages: values.length,
-    rows: rows.length,
-    rowCount: lease.subscription.retainedRowCount(),
-    nowMillis,
-  });
-  yield* ignoreGrpcHealthRefreshFailure(requestHealthRefresh);
-});
-
-const internalFeedFailureMessage = (feedName: string, cause: Cause.Cause<unknown>): string =>
-  `gRPC leased feed ${feedName} failed: ${Cause.pretty(cause)}`;
-
-const acquireLeaseStream = Effect.fn("ViewServerRuntime.grpc.leased.stream.acquire")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  config: ViewServerTopicConfig<Topics>,
-  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-  requestHealthRefresh: ViewServerGrpcHealthRefreshRequest,
-  health: ViewServerGrpcHealthLedger<Topics>,
-  lease: ActiveLease,
-  grpcClient: unknown,
-  request: unknown,
-) {
-  const acquireRoute = lease.subscription.materializeRoute();
-  const stream = yield* callFeedAcquire(
-    lease.feedName,
-    lease.feed,
-    makeGrpcSourceInput(grpcClient, request, acquireRoute),
-  );
-  const runFeed = stream.pipe(
-    Stream.mapError((cause) =>
-      grpcLeaseError({
-        message: `gRPC leased feed stream failed for ${lease.feedName}`,
-        cause,
-        phase: "stream",
-        feedName: lease.feedName,
-        topic: lease.feed.topic,
-      }),
-    ),
-    Stream.groupedWithin(grpcMessageBatchSize, grpcMessageBatchFlushInterval),
-    Stream.runForEach((values) =>
-      publishLeasedBatch(config, runtimeClient, requestHealthRefresh, health, lease, values),
-    ),
-    Effect.exit,
-    Effect.map((exit): GrpcLeasedUpstreamTerminal => {
-      if (Exit.isSuccess(exit)) {
-        return {
-          message: "gRPC leased upstream completed unexpectedly.",
-          healthMessage: `gRPC leased feed ${lease.feedName} completed unexpectedly.`,
-        };
-      }
-      if (Cause.hasInterruptsOnly(exit.cause)) {
-        return {
-          message: "gRPC leased upstream interrupted unexpectedly.",
-          healthMessage: `gRPC leased feed ${lease.feedName} interrupted unexpectedly.`,
-        };
-      }
-      return {
-        message: "gRPC leased upstream failed.",
-        healthMessage: internalFeedFailureMessage(lease.feedName, exit.cause),
-      };
-    }),
-  );
-  // The Subscription must receive runFeed as a value so it can fork and own the worker.
-  // Strict Effect diagnostics treat direct nested-Effect returns as accidental, so wrap it
-  // to make the intentional Effect<Effect<GrpcLeasedUpstreamTerminal>> explicit.
-  return yield* Effect.succeed(runFeed);
-});
-
-const closeLeaseRows = Effect.fn("ViewServerRuntime.grpc.leased.rows.close")(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
->(
-  config: ViewServerTopicConfig<Topics>,
-  runtimeClient: ViewServerRuntimeCoreInternalClient<Topics>,
-  feedName: string,
-  feed: RuntimeLeasedFeedDefinition,
-  storageKeys: ReadonlySet<string>,
-) {
-  const topic = yield* runtimeTopicFor(config, feed.topic, feedName);
-  yield* Effect.forEach(
-    storageKeys,
-    (key) => callRuntimeDelete(runtimeClient, topic, key, feedName),
-    {
-      discard: true,
-    },
-  );
-});
 
 const leasedFeedsByTopic = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
@@ -569,36 +187,28 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
   makeClient: ViewServerGrpcClientFactory = makeDefaultGrpcClient,
   groupedKeyRetentionObserver?: ViewServerGrpcGroupedKeyRetentionObserver,
 ) {
-  const leases = new Map<string, ActiveLease>();
+  const leases = new Map<string, GrpcLeasedActiveLease>();
   const feedsByTopic = leasedFeedsByTopic(options);
   const identityContracts = new Map<string, GrpcLeasedIdentityContract>();
   const sourceOwnership = makeSourceOwnershipPolicy(config);
+  const rowLifecycle = makeGrpcLeasedRowLifecycle(
+    config,
+    runtimeClient,
+    requestHealthRefresh,
+    health,
+  );
   const lock = yield* Semaphore.make(1);
   const managerScope = yield* Scope.make("sequential");
   let closed = false;
 
-  const captureLeasedQuery = <
-    const Topic extends Extract<keyof Topics, string>,
-    Query extends Readonly<Record<string, unknown>>,
-  >(
-    topic: Topic,
-    query: Query,
-  ) =>
-    Result.try(() => {
-      if (!feedsByTopic.has(topic)) {
-        return query;
-      }
-      const topicDefinition = config.topics[topic];
-      return topicDefinition === undefined
-        ? query
-        : snapshotLeasedGrpcQuery(topicDefinition.schema, query);
-    });
+  const captureQuery = <Query extends object>(query: Query) =>
+    Result.try(() => snapshotViewServerQuery<Query>(query));
 
-  const leasedQuerySnapshotError = (topic: string, cause: unknown): ViewServerRuntimeError =>
+  const querySnapshotError = (topic: string): ViewServerRuntimeError =>
     runtimeError({
       code: "InvalidQuery",
       topic,
-      message: `Leased gRPC query could not be snapshotted before acquisition: ${String(cause)}`,
+      message: viewServerQuerySnapshotErrorMessage,
     });
 
   const identityContractFor = Effect.fn("ViewServerRuntime.grpc.leased.identity.contract")(
@@ -607,7 +217,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       if (existing !== undefined) {
         return existing;
       }
-      const topicDefinition = yield* topicDefinitionFor(config, topic, feedName).pipe(
+      const topicDefinition = yield* rowLifecycle.topicDefinitionFor(topic, feedName).pipe(
         Effect.mapError((error) =>
           runtimeError({
             code: "RuntimeUnavailable",
@@ -689,6 +299,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
         );
       }
       return Option.some({
+        enginePartition: existing.enginePartition,
         subscriptionLease: subscriptionLease.value,
       });
     }
@@ -747,7 +358,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
       identity,
       ...(groupedKeyRetentionObserver === undefined ? {} : { groupedKeyRetentionObserver }),
       cleanupRows: (storageKeys) =>
-        closeLeaseRows(config, runtimeClient, feedName, feed, storageKeys),
+        rowLifecycle.cleanupRows(feedName, feed, storageKeys, identity.enginePartition.key),
       onCleanupFailure: (cause) =>
         runAllFinalizers([
           ignoreLeasedReleaseFailure(Effect.failCause(cause)),
@@ -755,7 +366,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           health.clientDegraded(feed.client, `gRPC leased feed row cleanup failed for ${feedName}`),
           ignoreGrpcHealthRefreshFailure(requestHealthRefresh),
         ]),
-      onRowsCleared: resetLeaseRowCount(requestHealthRefresh, health, feedKey),
+      onRowsCleared: rowLifecycle.resetRowCount(feedKey),
       onStopping: health
         .feedStopping(feedKey)
         .pipe(Effect.andThen(ignoreGrpcHealthRefreshFailure(requestHealthRefresh))),
@@ -774,9 +385,10 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           Effect.andThen(ignoreGrpcHealthRefreshFailure(requestHealthRefresh)),
         ),
     });
-    const lease: ActiveLease = {
+    const lease: GrpcLeasedActiveLease = {
       feedName,
       feed,
+      enginePartition: identity.enginePartition,
       subscription,
     };
     return yield* Effect.uninterruptibleMask((restore) =>
@@ -796,15 +408,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
         const releaseRoute = subscription.materializeRoute();
         const startExit = yield* restore(
           subscription.start({
-            acquire: acquireLeaseStream(
-              config,
-              runtimeClient,
-              requestHealthRefresh,
-              health,
-              lease,
-              grpcClient,
-              request,
-            ),
+            acquire: rowLifecycle.acquireStream(lease, grpcClient, request),
             release: callFeedRelease(
               feedName,
               feed,
@@ -830,6 +434,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           return yield* Effect.failCause(normalizeAcquireLeaseCause(topic)(cause));
         }
         return Option.some({
+          enginePartition: lease.enginePartition,
           subscriptionLease,
         });
       }),
@@ -856,10 +461,10 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
   > {
-    const capturedQuery = captureLeasedQuery(topic, query);
+    const capturedQuery = captureQuery<ExactLiveQueryInputForTopic<Topics, Topic, Query>>(query);
     return Effect.gen(function* () {
       if (Result.isFailure(capturedQuery)) {
-        return yield* Effect.fail(leasedQuerySnapshotError(topic, capturedQuery.failure));
+        return yield* Effect.fail(querySnapshotError(topic));
       }
       const ownedQuery = capturedQuery.success;
       const lease = yield* lock
@@ -878,6 +483,7 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
               topic,
               ownedQuery,
               acquired.subscriptionLease.terminalObserver,
+              acquired.enginePartition,
             ),
           );
           return yield* acquired.subscriptionLease.attach({
@@ -893,19 +499,28 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
     topic,
     query,
   ) => {
-    const capturedQuery = captureLeasedQuery(topic, query);
+    const capturedQuery = captureQuery(query);
     return Effect.gen(function* () {
       if (Result.isFailure(capturedQuery)) {
-        return yield* Effect.fail(leasedQuerySnapshotError(topic, capturedQuery.failure));
+        return yield* Effect.fail(querySnapshotError(topic));
       }
       const ownedQuery = capturedQuery.success;
+      if (!feedsByTopic.has(topic)) {
+        const routeError = validateLiveQuerySourceRoute(config.topics, topic, ownedQuery);
+        if (routeError !== undefined) {
+          return yield* Effect.fail(
+            runtimeError({ code: "InvalidQuery", topic, message: routeError }),
+          );
+        }
+      }
+      const engineQuery = engineQueryWithoutRoute(ownedQuery);
       const lease = yield* lock
         .withPermit(acquireLease(topic, ownedQuery))
         .pipe(
           Effect.catchCause((cause) => Effect.failCause(normalizeAcquireLeaseCause(topic)(cause))),
         );
       if (Option.isNone(lease)) {
-        return yield* internalLiveClient.subscribeRuntimeInternal(topic, ownedQuery);
+        return yield* internalLiveClient.subscribeRuntimeInternal(topic, engineQuery);
       }
       const acquired = lease.value;
       return yield* Effect.uninterruptibleMask((restore) =>
@@ -913,8 +528,9 @@ export const makeViewServerGrpcLeaseManager = Effect.fn(
           const subscription = yield* restore(
             internalLiveClient.subscribeRuntimeObservedInternal(
               topic,
-              ownedQuery,
+              engineQuery,
               acquired.subscriptionLease.terminalObserver,
+              acquired.enginePartition,
             ),
           );
           return yield* acquired.subscriptionLease.attach({

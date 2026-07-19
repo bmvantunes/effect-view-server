@@ -434,10 +434,10 @@ const setupBenchmark = Effect.fn("ViewServerRuntime.websocketFirehose.bench.setu
     (index) =>
       client.subscribe("orders", {
         select: ["id", "customerId", "status", "price", "region", "updatedAt"],
-        where: {
-          price: { gte: 0 },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "price", type: "greaterThanOrEqual", filter: 0 },
+          { field: "status", type: "equals", filter: "open" },
+        ],
         orderBy: [{ field: "updatedAt", direction: "desc" }],
         offset: windowOffset(index),
         limit: 50,

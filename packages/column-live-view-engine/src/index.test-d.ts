@@ -33,6 +33,11 @@ const Order = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
+const Position = Schema.Struct({
+  id: Schema.String,
+  quantity: Schema.Number,
+});
+
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -46,7 +51,28 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const heterogeneousViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      key: "id",
+    },
+    positions: {
+      schema: Position,
+      key: "id",
+    },
+  },
+});
+
 type Topics = typeof viewServer.topics;
+type LeasedEngineTopics = {
+  readonly orders: Topics["orders"] & {
+    readonly grpcSource: {
+      readonly lifecycle: "leased";
+      readonly routeBy: readonly ["region"];
+    };
+  };
+};
 type Engine = ColumnLiveViewEngine<Topics>;
 type OrderRow = typeof Order.Type;
 type EffectSuccess<Value> =
@@ -58,6 +84,9 @@ type StreamEvent<Value> =
   Value extends ColumnLiveViewSubscription<infer _Row> ? Stream.Success<Value["events"]> : never;
 
 declare const engine: Engine;
+declare const heterogeneousEngine: ColumnLiveViewEngine<typeof heterogeneousViewServer.topics>;
+declare const heterogeneousTopic: "orders" | "positions";
+declare const leasedEngine: ColumnLiveViewEngine<LeasedEngineTopics>;
 declare const dynamicSingleField: "id" | "price";
 declare const optionalNarrowFieldsQuery: {
   readonly select?: readonly ["id"];
@@ -154,6 +183,69 @@ describe("ColumnLiveViewEngine type contract", () => {
     expectTypeOf<HealthTopics["orders"]["topic"]>().toEqualTypeOf<"orders">();
   });
 
+  it("requires dynamic topic-union queries to be valid for every possible topic", () => {
+    const commonSnapshot = heterogeneousEngine.snapshot(heterogeneousTopic, {
+      select: ["id"],
+      where: [{ field: "id", type: "equals", filter: "row-1" }],
+    });
+    const commonSubscription = heterogeneousEngine.subscribe(heterogeneousTopic, {
+      select: ["id"],
+      where: [{ field: "id", type: "equals", filter: "row-1" }],
+    });
+    const topicSpecificFilter = {
+      select: ["id"],
+      where: [{ field: "price", type: "greaterThan", filter: 10 }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [
+        { readonly field: "price"; readonly type: "greaterThan"; readonly filter: 10 },
+      ];
+    };
+    const invalidSnapshot = heterogeneousEngine.snapshot(
+      heterogeneousTopic,
+      // @ts-expect-error dynamic topic-union filters must exist on every possible topic.
+      topicSpecificFilter,
+    );
+    const invalidSubscription = heterogeneousEngine.subscribe(
+      heterogeneousTopic,
+      // @ts-expect-error dynamic topic-union filters must exist on every possible topic.
+      topicSpecificFilter,
+    );
+
+    expectTypeOf<EffectSuccess<typeof commonSnapshot>>().toEqualTypeOf<
+      LiveQueryResult<{ readonly id: string }>
+    >();
+    expectTypeOf<EffectSuccess<typeof commonSubscription>>().toEqualTypeOf<
+      ColumnLiveViewSubscription<{ readonly id: string }>
+    >();
+    expectTypeOf(invalidSnapshot).not.toBeAny();
+    expectTypeOf(invalidSubscription).not.toBeAny();
+  });
+
+  it("keeps source routing policy outside engine queries", () => {
+    const routeFreeSnapshot = leasedEngine.snapshot("orders", {
+      select: ["id"],
+      where: [{ field: "region", type: "equals", filter: "usa" }],
+    });
+    const routedQuery = {
+      routeBy: { region: "usa" },
+      select: ["id"],
+    } satisfies {
+      readonly routeBy: { readonly region: "usa" };
+      readonly select: readonly ["id"];
+    };
+    const invalidRoutedSnapshot = leasedEngine.snapshot(
+      "orders",
+      // @ts-expect-error the engine query seam is source-agnostic and does not accept routeBy.
+      routedQuery,
+    );
+
+    expectTypeOf<EffectSuccess<typeof routeFreeSnapshot>>().toEqualTypeOf<
+      LiveQueryResult<{ readonly id: string }>
+    >();
+    expectTypeOf(invalidRoutedSnapshot).not.toBeAny();
+  });
+
   it("types valid mutation calls", () => {
     const validPublish = engine.publish("orders", {
       id: "order-1",
@@ -187,12 +279,12 @@ describe("ColumnLiveViewEngine type contract", () => {
 
     const invalidWhereFieldQuery = {
       select: ["id"],
-      where: {
-        missing: "value",
-      },
+      where: [{ field: "missing", type: "equals", filter: "value" }],
     } satisfies {
       readonly select: readonly ["id"];
-      readonly where: { readonly missing: "value" };
+      readonly where: readonly [
+        { readonly field: "missing"; readonly type: "equals"; readonly filter: "value" },
+      ];
     };
     // @ts-expect-error invalid where field is rejected.
     const _invalidWhereField = engine.snapshot("orders", invalidWhereFieldQuery);
@@ -224,36 +316,44 @@ describe("ColumnLiveViewEngine type contract", () => {
 
     const extraWhereField = {
       select: ["id"],
-      where: {
-        status: "open",
-        missing: "x",
-      },
+      where: [
+        { field: "status", type: "equals", filter: "open" },
+        { field: "missing", type: "equals", filter: "x" },
+      ],
     } satisfies {
       readonly select: readonly ["id"];
-      readonly where: {
-        readonly status: "open";
-        readonly missing: "x";
-      };
+      readonly where: readonly [
+        { readonly field: "status"; readonly type: "equals"; readonly filter: "open" },
+        { readonly field: "missing"; readonly type: "equals"; readonly filter: "x" },
+      ];
     };
     // @ts-expect-error extra where fields are rejected through variables.
     const _invalidExtraWhereField = engine.snapshot("orders", extraWhereField);
 
     const extraFilterOperator = {
       select: ["id"],
-      where: {
-        status: {
-          eq: "open",
-          typo: true,
+      where: [
+        {
+          field: "status",
+          type: "equals",
+          filter: {
+            eq: "open",
+            typo: true,
+          },
         },
-      },
+      ],
     } satisfies {
       readonly select: readonly ["id"];
-      readonly where: {
-        readonly status: {
-          readonly eq: "open";
-          readonly typo: true;
-        };
-      };
+      readonly where: readonly [
+        {
+          readonly field: "status";
+          readonly type: "equals";
+          readonly filter: {
+            readonly eq: "open";
+            readonly typo: true;
+          };
+        },
+      ];
     };
     // @ts-expect-error extra filter operator keys are rejected through variables.
     const _invalidExtraFilterOperator = engine.snapshot("orders", extraFilterOperator);
@@ -305,7 +405,7 @@ describe("ColumnLiveViewEngine type contract", () => {
 
     // @ts-expect-error raw queries must explicitly select projected fields.
     const broadRawQueryWithoutFields: RawQuery<OrderRow> = {
-      where: { status: "open" },
+      where: [{ field: "status", type: "equals", filter: "open" }],
     };
     const _invalidOptionalNarrowFieldsSnapshot = engine.snapshot(
       "orders",

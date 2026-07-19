@@ -5,6 +5,7 @@ import type {
 } from "@effect-view-server/column-live-view-engine";
 import type {
   ColumnLiveViewEngineInternal,
+  ColumnLiveViewEngineQueryPartition,
   ColumnLiveViewTerminalObserver,
 } from "@effect-view-server/column-live-view-engine/internal";
 import type {
@@ -15,6 +16,8 @@ import type {
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
 } from "@effect-view-server/effect-utils";
 import type {
   ExactLiveQueryInput,
@@ -35,10 +38,12 @@ import {
   VIEW_SERVER_HEALTH_TOPIC,
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
+  validateLiveQuerySourceRoute,
 } from "@effect-view-server/config";
-import { Cause, Clock, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect";
+import { Cause, Clock, Effect, Exit, Queue, Result, Scope, Semaphore, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
-import { engineErrorToRuntimeError } from "./runtime-error";
+import { engineQueryWithoutRoute } from "./engine-query";
+import { engineErrorToRuntimeError, invalidRuntimeQueryError } from "./runtime-error";
 import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 const runtimeClosedError: ViewServerRuntimeError = {
@@ -66,6 +71,7 @@ export type ViewServerRuntimeCoreEngineQueryInput<
 > = ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>;
 
 export type ViewServerRuntimeCoreTerminalObserver = ColumnLiveViewTerminalObserver;
+export type ViewServerRuntimeCoreQueryPartition = ColumnLiveViewEngineQueryPartition;
 
 export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopicDefinitions> = {
   readonly subscribeInternal: <
@@ -85,6 +91,7 @@ export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopi
     topic: Topic,
     query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
     terminalObserver: ColumnLiveViewTerminalObserver,
+    partition?: ViewServerRuntimeCoreQueryPartition,
   ) => Effect.Effect<
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
@@ -100,6 +107,7 @@ export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopi
     topic: Topic,
     query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
     terminalObserver: ColumnLiveViewTerminalObserver,
+    partition?: ViewServerRuntimeCoreQueryPartition,
   ) => Effect.Effect<
     ViewServerLiveSubscription<object>,
     ViewServerRuntimeError | ViewServerTransportError
@@ -133,6 +141,17 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
       ViewServerRuntimeLiveClient<Topics> & ViewServerRuntimeCoreInternalLiveClient<Topics>
     >(() => {
       const sourceOwnership = makeSourceOwnershipPolicy(config);
+      const captureQuery = <Query extends Readonly<Record<string, unknown>>>(query: Query) =>
+        Result.try(() => snapshotViewServerQuery(query));
+      const querySnapshotError = (topic: string): ViewServerRuntimeError =>
+        invalidRuntimeQueryError(topic, viewServerQuerySnapshotErrorMessage);
+      const validateSourceRoute = (
+        topic: string,
+        query: Readonly<Record<string, unknown>>,
+      ): ViewServerRuntimeError | undefined => {
+        const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
+        return routeError === undefined ? undefined : invalidRuntimeQueryError(topic, routeError);
+      };
       function wrapEngineSubscription<Row>(
         acquisition: Effect.Effect<ColumnLiveViewSubscription<Row>, ColumnLiveViewEngineError>,
       ): Effect.Effect<ViewServerLiveSubscription<Row>, ViewServerRuntimeError> {
@@ -174,10 +193,23 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         topic: Topic,
         query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
       ): Effect.Effect<
-        ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+        ViewServerLiveSubscription<object>,
         ViewServerRuntimeError | ViewServerTransportError
       > {
-        return wrapEngineSubscription(engine.subscribe<Topic, Query>(topic, query));
+        const capturedQuery = captureQuery(query);
+        return Effect.gen(function* () {
+          if (Result.isFailure(capturedQuery)) {
+            return yield* Effect.fail(querySnapshotError(topic));
+          }
+          const ownedQuery = capturedQuery.success;
+          const routeError = validateSourceRoute(topic, ownedQuery);
+          if (routeError !== undefined) {
+            return yield* Effect.fail(routeError);
+          }
+          return yield* wrapEngineSubscription(
+            engine.subscribeRuntime(topic, engineQueryWithoutRoute(ownedQuery)),
+          );
+        });
       }
       function subscribeObservedInternal<
         Topic extends Extract<keyof Topics, string>,
@@ -188,6 +220,7 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         topic: Topic,
         query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
         terminalObserver: ColumnLiveViewTerminalObserver,
+        partition?: ViewServerRuntimeCoreQueryPartition,
       ): Effect.Effect<
         ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError | ViewServerTransportError
@@ -201,19 +234,86 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         topic: Topic,
         query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
         terminalObserver: ColumnLiveViewTerminalObserver,
+        partition?: ViewServerRuntimeCoreQueryPartition,
       ): Effect.Effect<
-        ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+        ViewServerLiveSubscription<object>,
         ViewServerRuntimeError | ViewServerTransportError
       > {
-        return wrapEngineSubscription(
-          engine.subscribeObserved<Topic, Query>(topic, query, terminalObserver),
-        );
+        return subscribeObservedQuery(topic, query, terminalObserver, partition);
       }
+      const subscribeObservedQuery = <Topic extends Extract<keyof Topics, string>>(
+        topic: Topic,
+        query: Readonly<Record<string, unknown>>,
+        terminalObserver: ColumnLiveViewTerminalObserver,
+        partition?: ViewServerRuntimeCoreQueryPartition,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<object>,
+        ViewServerRuntimeError | ViewServerTransportError
+      > => {
+        const capturedQuery = captureQuery(query);
+        return Effect.gen(function* () {
+          if (Result.isFailure(capturedQuery)) {
+            return yield* Effect.fail(querySnapshotError(topic));
+          }
+          const ownedQuery = capturedQuery.success;
+          const routeError = validateSourceRoute(topic, ownedQuery);
+          if (routeError !== undefined) {
+            return yield* Effect.fail(routeError);
+          }
+          const engineQuery = engineQueryWithoutRoute(ownedQuery);
+          return yield* wrapEngineSubscription(
+            partition === undefined
+              ? engine.subscribeRuntimeObserved(topic, engineQuery, terminalObserver)
+              : engine.subscribeRuntimeObservedPartitioned(
+                  topic,
+                  engineQuery,
+                  partition,
+                  terminalObserver,
+                ),
+          );
+        });
+      };
       const subscribeRuntimeInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeInternal"] =
-        (topic, query) => wrapEngineSubscription(engine.subscribeRuntime(topic, query));
+        (topic, query) => {
+          const capturedQuery = captureQuery(query);
+          return Effect.gen(function* () {
+            if (Result.isFailure(capturedQuery)) {
+              return yield* Effect.fail(querySnapshotError(topic));
+            }
+            return yield* wrapEngineSubscription(
+              engine.subscribeRuntime(topic, capturedQuery.success),
+            );
+          });
+        };
       const subscribeRuntimeObservedInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeObservedInternal"] =
-        (topic, query, terminalObserver) =>
-          wrapEngineSubscription(engine.subscribeRuntimeObserved(topic, query, terminalObserver));
+        (topic, query, terminalObserver, partition) =>
+          subscribeRuntimeObservedQuery(topic, query, terminalObserver, partition);
+      const subscribeRuntimeObservedQuery = <Topic extends Extract<keyof Topics, string>>(
+        topic: Topic,
+        query: Readonly<Record<string, unknown>>,
+        terminalObserver: ColumnLiveViewTerminalObserver,
+        partition?: ViewServerRuntimeCoreQueryPartition,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<object>,
+        ViewServerRuntimeError | ViewServerTransportError
+      > => {
+        const capturedQuery = captureQuery(query);
+        return Effect.gen(function* () {
+          if (Result.isFailure(capturedQuery)) {
+            return yield* Effect.fail(querySnapshotError(topic));
+          }
+          return yield* wrapEngineSubscription(
+            partition === undefined
+              ? engine.subscribeRuntimeObserved(topic, capturedQuery.success, terminalObserver)
+              : engine.subscribeRuntimeObservedPartitioned(
+                  topic,
+                  capturedQuery.success,
+                  partition,
+                  terminalObserver,
+                ),
+          );
+        });
+      };
       function subscribe<
         Topic extends Extract<keyof Topics, string>,
         const Query extends
@@ -238,17 +338,31 @@ export const makeRuntimeCoreLiveClient = Effect.fn("ViewServerRuntimeCore.liveCl
         ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
         ViewServerRuntimeError | ViewServerTransportError
       > {
+        const acquisition = subscribeInternal<Topic, Query>(topic, query);
         return sourceOwnership
           .requirePublicReadAllowed(topic, "runtimeCore")
-          .pipe(Effect.flatMap(() => subscribeInternal<Topic, Query>(topic, query)));
+          .pipe(Effect.flatMap(() => acquisition));
       }
       const subscribeRuntime: ViewServerRuntimeLiveClient<Topics>["subscribeRuntime"] = (
         topic,
         query,
-      ) =>
-        sourceOwnership
+      ) => {
+        const capturedQuery = captureQuery(query);
+        const acquisition = Effect.gen(function* () {
+          if (Result.isFailure(capturedQuery)) {
+            return yield* Effect.fail(querySnapshotError(topic));
+          }
+          const ownedQuery = capturedQuery.success;
+          const routeError = validateSourceRoute(topic, ownedQuery);
+          if (routeError !== undefined) {
+            return yield* Effect.fail(routeError);
+          }
+          return yield* subscribeRuntimeInternal(topic, engineQueryWithoutRoute(ownedQuery));
+        });
+        return sourceOwnership
           .requirePublicReadAllowed(topic, "runtimeCore")
-          .pipe(Effect.flatMap(() => subscribeRuntimeInternal(topic, query)));
+          .pipe(Effect.flatMap(() => acquisition));
+      };
       type ActiveHealthSubscription = {
         close: Effect.Effect<void>;
         claimClosed: () => boolean;

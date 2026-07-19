@@ -16,4 +16,5 @@ This example demonstrates:
 
 - The page shell can be server-rendered.
 - The View Server WebSocket provider is optional and mounted only in the browser.
-- Live query hooks stay behind the browser-only provider boundary.
+- Live query hooks retain the canonical typed query Interface behind the
+  browser-only provider boundary, including optional `where` expression arrays.

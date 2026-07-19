@@ -13,6 +13,48 @@ import {
 import { BadJsonField, viewServer } from "../test-harness/protocol";
 
 describe("Invalid query wire inputs", () => {
+  it.effect("rejects non-record and hostile query shells without invoking accessors", () =>
+    Effect.gen(function* () {
+      const nullQuery = yield* Effect.flip(viewServerEncodeRawQuery(viewServer, "orders", null));
+      expect(nullQuery.code).toBe("InvalidQuery");
+
+      const hiddenQuery = { select: ["id"] };
+      Object.defineProperty(hiddenQuery, "hidden", { enumerable: false, value: true });
+      const accessorQuery = {};
+      Object.defineProperty(accessorQuery, "select", {
+        enumerable: true,
+        get: () => ["id"],
+      });
+      const symbolicQuery = { select: ["id"] };
+      Object.defineProperty(symbolicQuery, Symbol("metadata"), {
+        enumerable: true,
+        value: true,
+      });
+      const disappearingDescriptorQuery = new Proxy(
+        { select: ["id"] },
+        {
+          getOwnPropertyDescriptor: () => undefined,
+          ownKeys: () => ["select"],
+        },
+      );
+
+      for (const query of [
+        hiddenQuery,
+        accessorQuery,
+        symbolicQuery,
+        disappearingDescriptorQuery,
+      ]) {
+        const error = yield* Effect.flip(viewServerEncodeRawQuery(viewServer, "orders", query));
+        expect(error).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          message: "Query input could not be inspected",
+          topic: "orders",
+        });
+      }
+    }),
+  );
+
   it.effect("rejects invalid topics, query shapes, and filters", () =>
     Effect.gen(function* () {
       const missingTopic = yield* Effect.flip(viewServerDecodeTopic(viewServer, "missing"));
@@ -40,8 +82,8 @@ describe("Invalid query wire inputs", () => {
         ],
         [{ select: ["missing"] }, "Query references an unknown field for topic: orders"],
         [
-          { select: ["id"], where: { missing: "x" } },
-          "Query references an unknown field for topic: orders",
+          { select: ["id"], where: [{ field: "missing", type: "equals", filter: "x" }] },
+          "Query references an unknown or non-filterable field: missing",
         ],
         [
           { select: ["id"], orderBy: [{ field: "missing", direction: "asc" }] },
@@ -74,6 +116,21 @@ describe("Invalid query wire inputs", () => {
       );
 
       expect(decodeExtraKey.code).toBe("InvalidQuery");
+
+      const prototypeKeyQuery = { select: ["id"] };
+      Object.defineProperty(prototypeKeyQuery, "__proto__", {
+        enumerable: true,
+        value: null,
+      });
+      const prototypeKeyEncode = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", prototypeKeyQuery),
+      );
+      const prototypeKeyDecode = yield* Effect.flip(
+        viewServerDecodeRawQuery(viewServer, "orders", prototypeKeyQuery),
+      );
+
+      expect(prototypeKeyEncode.code).toBe("InvalidQuery");
+      expect(prototypeKeyDecode.code).toBe("InvalidQuery");
 
       const malformedGroupedEncode = yield* Effect.flip(
         viewServerEncodeGroupedQuery(viewServer, "orders", {
@@ -128,9 +185,9 @@ describe("Invalid query wire inputs", () => {
           {
             groupBy: ["id"],
             aggregates: { rowCount: { aggFunc: "count" } },
-            where: { missing: "x" },
+            where: [{ field: "missing", type: "equals", filter: "x" }],
           },
-          "Query references an unknown field for topic: orders",
+          "Query references an unknown or non-filterable field: missing",
         ],
         [
           {
@@ -263,7 +320,7 @@ describe("Invalid query wire inputs", () => {
       const invalidFilter = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { price: { gt: "nope" } },
+          where: [{ field: "price", type: "greaterThan", filter: "nope" }],
         }),
       );
 
@@ -274,7 +331,7 @@ describe("Invalid query wire inputs", () => {
       const invalidEncodeStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { price: { startsWith: 1 } },
+          where: [{ field: "price", type: "startsWith", filter: 1 }],
         }),
       );
 
@@ -283,16 +340,18 @@ describe("Invalid query wire inputs", () => {
       const invalidStringStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { id: { startsWith: 1 } },
+          where: [{ field: "id", type: "startsWith", filter: 1 }],
         }),
       );
 
-      expect(invalidStringStartsWith.message).toBe("Invalid filter for id: expected string");
+      expect(invalidStringStartsWith.message).toBe(
+        "Filter condition id startsWith requires a string",
+      );
 
       const invalidDecodeStartsWith = yield* Effect.flip(
         viewServerDecodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { price: { startsWith: 1 } },
+          where: [{ field: "price", type: "startsWith", filter: 1 }],
         }),
       );
 
@@ -301,11 +360,59 @@ describe("Invalid query wire inputs", () => {
       const invalidDecodedStringStartsWith = yield* Effect.flip(
         viewServerDecodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { id: { startsWith: 1 } },
+          where: [{ field: "id", type: "startsWith", filter: 1 }],
         }),
       );
 
-      expect(invalidDecodedStringStartsWith.message).toBe("Invalid filter for id: expected string");
+      expect(invalidDecodedStringStartsWith.message).toBe(
+        "Filter condition id startsWith requires a string",
+      );
+
+      const numericTextOptions = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: [
+            {
+              field: "price",
+              type: "equals",
+              filter: 1,
+              caseSensitive: true,
+            },
+          ],
+        }),
+      );
+      const nonBooleanTextOption = yield* Effect.flip(
+        viewServerDecodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: [
+            {
+              field: "id",
+              type: "equals",
+              filter: "a",
+              accentSensitive: "yes",
+            },
+          ],
+        }),
+      );
+      const inValues = ["a"];
+      Object.defineProperty(inValues, "extra", {
+        configurable: true,
+        enumerable: true,
+        value: "b",
+        writable: true,
+      });
+      const decoratedIn = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: [{ field: "id", type: "in", filter: inValues }],
+        }),
+      );
+
+      expect(numericTextOptions.message).toBe("Filter condition price has invalid keys");
+      expect(nonBooleanTextOption.message).toBe(
+        "Filter condition id accentSensitive must be a boolean",
+      );
+      expect(decoratedIn.message).toBe("Filter condition id in must be an array");
 
       const trimmedViewServer = defineViewServerConfig({
         topics: {
@@ -323,13 +430,13 @@ describe("Invalid query wire inputs", () => {
         "trimmed",
         {
           select: ["id"],
-          where: { id: { startsWith: "  abc  " } },
+          where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
         },
       );
 
       expect(encodedTrimmedStartsWith).toStrictEqual({
         select: ["id"],
-        where: { id: { startsWith: "  abc  " } },
+        where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
       });
 
       const decodedTrimmedStartsWith = yield* viewServerDecodeRawQuery(
@@ -337,23 +444,23 @@ describe("Invalid query wire inputs", () => {
         "trimmed",
         {
           select: ["id"],
-          where: { id: { startsWith: "  abc  " } },
+          where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
         },
       );
 
       expect(decodedTrimmedStartsWith).toStrictEqual({
         select: ["id"],
-        where: { id: { startsWith: "  abc  " } },
+        where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
       });
 
       const badJsonStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "badjson", {
           select: ["id"],
-          where: { id: { startsWith: 1 } },
+          where: [{ field: "id", type: "startsWith", filter: 1 }],
         }),
       );
 
-      expect(badJsonStartsWith.message).toBe("Invalid filter for id: expected string");
+      expect(badJsonStartsWith.message).toBe("Filter condition id startsWith requires a string");
 
       const refinedStringViewServer = defineViewServerConfig({
         topics: {
@@ -371,13 +478,13 @@ describe("Invalid query wire inputs", () => {
         "refined",
         {
           select: ["id"],
-          where: { id: { startsWith: "x" } },
+          where: [{ field: "id", type: "startsWith", filter: "x" }],
         },
       );
 
       expect(encodedRefinedStartsWith).toStrictEqual({
         select: ["id"],
-        where: { id: { startsWith: "x" } },
+        where: [{ field: "id", type: "startsWith", filter: "x" }],
       });
 
       const decodedRefinedStartsWith = yield* viewServerDecodeRawQuery(
@@ -385,101 +492,109 @@ describe("Invalid query wire inputs", () => {
         "refined",
         {
           select: ["id"],
-          where: { id: { startsWith: "x" } },
+          where: [{ field: "id", type: "startsWith", filter: "x" }],
         },
       );
 
       expect(decodedRefinedStartsWith).toStrictEqual({
         select: ["id"],
-        where: { id: { startsWith: "x" } },
+        where: [{ field: "id", type: "startsWith", filter: "x" }],
       });
 
       const encodedLiteralStartsWith = yield* viewServerEncodeRawQuery(viewServer, "orders", {
         select: ["status"],
-        where: { status: { startsWith: "op" } },
+        where: [{ field: "status", type: "startsWith", filter: "op" }],
       });
 
       expect(encodedLiteralStartsWith).toStrictEqual({
         select: ["status"],
-        where: { status: { startsWith: "op" } },
+        where: [{ field: "status", type: "startsWith", filter: "op" }],
       });
 
       const structuredEncodeStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: {
-            metadata: {
-              startsWith: {
+          where: [
+            {
+              field: "metadata",
+              type: "startsWith",
+              filter: {
                 _viewServerScalar: "kind",
                 value: "x",
               },
             },
-          },
+          ],
         }),
       );
 
       expect(structuredEncodeStartsWith.message).toBe(
-        "Filter metadata does not support startsWith",
+        "Query references an unknown or non-filterable field: metadata",
       );
 
       const structuredDecodeStartsWith = yield* Effect.flip(
         viewServerDecodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: {
-            metadata: {
-              startsWith: {
+          where: [
+            {
+              field: "metadata",
+              type: "startsWith",
+              filter: {
                 _viewServerScalar: "kind",
                 value: "x",
               },
             },
-          },
+          ],
         }),
       );
 
       expect(structuredDecodeStartsWith.message).toBe(
-        "Filter metadata does not support startsWith",
+        "Query references an unknown or non-filterable field: metadata",
       );
 
       const structuredEncodeRange = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: {
-            metadata: {
-              gt: {
+          where: [
+            {
+              field: "metadata",
+              type: "greaterThan",
+              filter: {
                 _viewServerScalar: "kind",
                 value: "x",
               },
             },
-          },
+          ],
         }),
       );
 
       expect(structuredEncodeRange.message).toBe(
-        "Filter metadata does not support range operators",
+        "Query references an unknown or non-filterable field: metadata",
       );
 
       const structuredDecodeRange = yield* Effect.flip(
         viewServerDecodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: {
-            metadata: {
-              gt: {
+          where: [
+            {
+              field: "metadata",
+              type: "greaterThan",
+              filter: {
                 _viewServerScalar: "kind",
                 value: "x",
               },
             },
-          },
+          ],
         }),
       );
 
       expect(structuredDecodeRange.message).toBe(
-        "Filter metadata does not support range operators",
+        "Query references an unknown or non-filterable field: metadata",
       );
 
       const invalidRangeOperator = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { id: { gt: "a" } },
+          where: [{ field: "id", type: "greaterThan", filter: "a" }],
         }),
       );
 
@@ -512,7 +627,7 @@ describe("Invalid query wire inputs", () => {
       const nonJsonFilter = yield* Effect.flip(
         viewServerEncodeRawQuery(unsafeHostileFilterViewServer, "badjson", {
           select: ["id"],
-          where: { id: { eq: "x" } },
+          where: [{ field: "id", type: "equals", filter: "x" }],
         }),
       );
 
@@ -523,7 +638,7 @@ describe("Invalid query wire inputs", () => {
       const badDecodedField = yield* Effect.flip(
         viewServerDecodeRawQuery(viewServer, "orders", {
           select: ["id"],
-          where: { price: { gt: "nope" } },
+          where: [{ field: "price", type: "greaterThan", filter: "nope" }],
         }),
       );
 

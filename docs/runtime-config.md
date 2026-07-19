@@ -102,12 +102,14 @@ The topic-owned source binding provides:
 - `release`: optional cleanup after the acquired stream closes.
 - `map`: the decoded gRPC value to topic row mapping.
 
-For leased sources, the `routeBy` fields are required in public live queries,
-passed to the source `request` callback, and used to share one upstream gRPC
-stream for subscribers requesting the same route. Concrete `client` and
-`method` bindings are validated when the View Server config is defined. Leased
-streams still stay lazy: the upstream stream is opened only when the first
-matching subscription arrives.
+For leased sources, public Live Queries require an exact `routeBy` object with
+all and only the configured Route Fields. Those values are passed to the source
+`request` callback without text normalization and identify the one shared
+upstream gRPC stream for subscribers requesting the same Feed Route. Local
+`where` filters remain independent canonical expression arrays. Concrete
+`client` and `method` bindings are validated when the View Server config is
+defined. Leased streams still stay lazy: the upstream stream is opened only
+when the first matching subscription arrives.
 
 ## Source Ownership
 

@@ -7,6 +7,11 @@ export {
 } from "./strict-json-materialization";
 export { makeSchemaJsonIdentity, type SchemaJsonIdentity } from "./schema-json-identity";
 export {
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
+} from "./query-input-snapshot";
+export { ownViewServerQuerySnapshot } from "./query-input-snapshot";
+export {
   compileGroupedKeyIdentity,
   type CompiledGroupedKeyIdentity,
   type GroupedKeyIdentityField,
@@ -17,6 +22,7 @@ export {
   schemaValuePresenceKey,
   type SchemaValuePresenceToken,
 } from "./schema-value-presence";
+export { compareWireSafeBigDecimal, isWireSafeBigDecimal } from "./wire-safe-big-decimal";
 
 const isNonTypedFailureReason = <E>(
   reason: Cause.Reason<E>,

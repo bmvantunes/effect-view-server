@@ -48,9 +48,7 @@ describe("TCP publish Interface", () => {
       const tcpPublishUrl = yield* Effect.fromNullishOr(runtime.tcpPublishUrl);
       const subscription = yield* runtime.liveClient.subscribe("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 10 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 10 }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });

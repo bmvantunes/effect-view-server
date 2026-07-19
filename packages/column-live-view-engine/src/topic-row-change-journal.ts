@@ -26,13 +26,15 @@ export class TopicRowChangeJournal<Row extends RowObject> {
   private refs = 0;
   private readonly maxEntries: number;
   private readonly maxVersions: number;
+  private readonly sparseVersions: boolean;
 
-  constructor(limits?: TopicRowChangeJournalLimits) {
+  constructor(limits?: TopicRowChangeJournalLimits, sparseVersions = false) {
     this.maxEntries = positiveSafeIntegerOrDefault(limits?.maxEntries, maxRowChangeJournalEntries);
     this.maxVersions = positiveSafeIntegerOrDefault(
       limits?.maxVersions,
       maxRowChangeJournalVersions,
     );
+    this.sparseVersions = sparseVersions;
   }
 
   changesSince(
@@ -49,10 +51,10 @@ export class TopicRowChangeJournal<Row extends RowObject> {
       return undefined;
     }
     if (this.batches.length === 0) {
-      return undefined;
+      return this.sparseVersions ? [] : undefined;
     }
     const firstBatch = this.batches[0]!;
-    if (version < firstBatch.version - 1) {
+    if (!this.sparseVersions && version < firstBatch.version - 1) {
       return undefined;
     }
     const batches: Array<TopicRowChangeBatch<Row>> = [];
@@ -103,11 +105,12 @@ export class TopicRowChangeJournal<Row extends RowObject> {
     this.pendingChanges.push(change);
   }
 
-  release(currentVersion: number): void {
+  release(currentVersion: number): boolean {
     this.refs = Math.max(0, this.refs - 1);
     if (this.refs === 0) {
       this.clear(currentVersion);
     }
+    return this.refs === 0;
   }
 
   retain(currentVersion: number): void {
@@ -126,6 +129,9 @@ export class TopicRowChangeJournal<Row extends RowObject> {
     while (this.batches.length > this.maxVersions) {
       const removed = this.batches.shift()!;
       this.changeCount -= removed.changes.length;
+      if (this.sparseVersions) {
+        this.invalidBeforeVersion = Math.max(this.invalidBeforeVersion, removed.version);
+      }
     }
     if (this.changeCount > this.maxEntries) {
       this.invalidate(currentVersion);

@@ -1,3 +1,4 @@
+import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import type { TopicRawPredicateFilterPlan } from "./raw-predicate-plan";
 import type { TopicRawOrderByPlan } from "./raw-window-scan";
 import {
@@ -7,7 +8,7 @@ import {
 } from "./raw-query-compiler";
 import { scalarEqualityKey } from "./row-values";
 import { columnValue, type TopicColumnValues } from "./topic-column-vector";
-import { Order as orderBigDecimal, isBigDecimal } from "effect/BigDecimal";
+import { isBigDecimal } from "effect/BigDecimal";
 
 export type RawStorageOrderColumn = {
   readonly compareSlots: (left: number, right: number) => number;
@@ -104,7 +105,12 @@ export const predicateFiltersAreOrderedIndexAdmissible = (
   orderField: string,
 ): boolean => {
   for (const filter of filters) {
-    if (filter.operator === "eq" || filter.operator === "in") {
+    if (
+      filter.operator === "eq" ||
+      filter.operator === "in" ||
+      filter.operator === "textEq" ||
+      filter.operator === "textIn"
+    ) {
       continue;
     }
     if (isRangeFilterPlan(filter) && filter.field === orderField) {
@@ -131,13 +137,7 @@ export const orderedEqualityValuesForField = (
     }
     hasEqualityFilter = true;
     const nextValues: Array<unknown> = [];
-    if (filter.operator === "eq") {
-      if (isEqualitySeekPlanValue(field, filter.value, metadata)) {
-        nextValues.push(filter.value);
-      } else {
-        hasUnsafeEqualityFilter = true;
-      }
-    } else {
+    if (filter.operator === "in") {
       const seekValues = orderedInSeekValues(filter, field, metadata);
       if (seekValues === undefined) {
         hasUnsafeEqualityFilter = true;
@@ -146,6 +146,10 @@ export const orderedEqualityValuesForField = (
       } else {
         nextValues.push(...seekValues);
       }
+    } else if (isEqualitySeekPlanValue(field, filter.value, metadata)) {
+      nextValues.push(filter.value);
+    } else {
+      hasUnsafeEqualityFilter = true;
     }
     if (nextValues.length > 0) {
       if (!hasSafeEqualityFilter) {
@@ -273,7 +277,10 @@ const compareOrderedSlotRangeValue = (
   if (column.kind === "bigDecimal" && isBigDecimal(value)) {
     const slotValue = column.bigDecimalAt(slot);
     if (slotValue !== undefined) {
-      return orderBigDecimal(slotValue, value);
+      const comparison = compareWireSafeBigDecimal(slotValue, value);
+      if (comparison !== undefined) {
+        return comparison;
+      }
     }
   }
   return compareOrderedRangeValue(columnValue(column, slot), value);

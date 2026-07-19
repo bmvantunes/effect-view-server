@@ -29,20 +29,22 @@ describe("Raw live wire codec", () => {
 
       const richWireQuery = yield* viewServerEncodeRawQuery(viewServer, "orders", {
         select: ["id", "price"],
-        where: {
-          id: { in: ["a", "b"], startsWith: "a" },
-          price: { gt: 1 },
-        },
+        where: [
+          { field: "id", type: "in", filter: ["a", "b"] },
+          { field: "id", type: "startsWith", filter: "a" },
+          { field: "price", type: "greaterThan", filter: 1 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 0,
         limit: 10,
       });
       expect(richWireQuery).toStrictEqual({
         select: ["id", "price"],
-        where: {
-          id: { in: ["a", "b"], startsWith: "a" },
-          price: { gt: 1 },
-        },
+        where: [
+          { field: "id", type: "in", filter: ["a", "b"] },
+          { field: "id", type: "startsWith", filter: "a" },
+          { field: "price", type: "greaterThan", filter: 1 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 0,
         limit: 10,
@@ -50,11 +52,11 @@ describe("Raw live wire codec", () => {
 
       const scalarWireQuery = yield* viewServerEncodeRawQuery(viewServer, "orders", {
         select: ["id"],
-        where: { price: 10 },
+        where: [{ field: "price", type: "equals", filter: 10 }],
       });
       expect(scalarWireQuery).toStrictEqual({
         select: ["id"],
-        where: { price: 10 },
+        where: [{ field: "price", type: "equals", filter: 10 }],
       });
       const minimalWireQuery = yield* viewServerEncodeRawQuery(viewServer, "orders", {
         select: ["id"],
@@ -73,11 +75,11 @@ describe("Raw live wire codec", () => {
       expect(decodedNoWhere).toStrictEqual({ select: ["id"] });
       const decodedScalarWhere = yield* viewServerDecodeRawQuery(viewServer, "orders", {
         select: ["id"],
-        where: { price: 10 },
+        where: [{ field: "price", type: "equals", filter: 10 }],
       });
       expect(decodedScalarWhere).toStrictEqual({
         select: ["id"],
-        where: { price: 10 },
+        where: [{ field: "price", type: "equals", filter: 10 }],
       });
 
       const idQuery = { select: ["id"] };
@@ -215,16 +217,25 @@ describe("Raw live wire codec", () => {
   it.effect("rejects non-own Topic Row fields in raw where encoding and decoding", () =>
     Effect.gen(function* () {
       for (const field of nonOwnTopicRowFields) {
-        const query = { select: ["id"], where: { [field]: "x" } };
+        const query = {
+          select: ["id"],
+          where: [{ field, type: "equals", filter: "x" }],
+        };
+        const unknownFilterFieldError = {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          message: `Query references an unknown or non-filterable field: ${field}`,
+          topic: "orders",
+        };
         const encodeError = yield* Effect.flip(
           viewServerEncodeRawQuery(viewServer, "orders", query),
         );
-        expect(encodeError).toStrictEqual(unknownTopicRowFieldError);
+        expect(encodeError).toStrictEqual(unknownFilterFieldError);
 
         const decodeError = yield* Effect.flip(
           viewServerDecodeRawQuery(viewServer, "orders", query),
         );
-        expect(decodeError).toStrictEqual(unknownTopicRowFieldError);
+        expect(decodeError).toStrictEqual(unknownFilterFieldError);
       }
     }),
   );

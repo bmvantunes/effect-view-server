@@ -8,125 +8,125 @@
       "benchmarks": [
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 1.6668330000002243,
-          "meanMs": 1.0274973630000022,
-          "minMs": 0.9467920000006416,
+          "maxMs": 0.5897500000000946,
+          "meanMs": 0.11985570997123805,
+          "minMs": 0.10833300000012969,
           "name": "equality filter + top-k sort",
-          "p99Ms": 1.3024169999998776,
-          "sampleCount": 1000
+          "p99Ms": 0.34837500000003274,
+          "sampleCount": 2086
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 1.066041000000041,
-          "meanMs": 0.11457075950525976,
-          "minMs": 0.09674999999970169,
-          "name": "selective equality filter + fallback top-k sort",
-          "p99Ms": 0.21450000000004366,
-          "sampleCount": 2183
+          "maxMs": 0.7332079999996495,
+          "meanMs": 0.07412195315743038,
+          "minMs": 0.06666700000005221,
+          "name": "selective equality filter + different ordered index",
+          "p99Ms": 0.09970799999973678,
+          "sampleCount": 3373
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 1.00774999999976,
-          "meanMs": 0.11527978792069504,
-          "minMs": 0.09699999999975262,
+          "maxMs": 0.9250829999996313,
+          "meanMs": 0.07244482899305703,
+          "minMs": 0.06658299999980954,
           "name": "ordered equality filter + indexed seek",
-          "p99Ms": 0.19920799999999872,
-          "sampleCount": 2169
+          "p99Ms": 0.0907919999999649,
+          "sampleCount": 3456
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 1.1947500000005675,
-          "meanMs": 0.14973110898204386,
-          "minMs": 0.11458399999992253,
+          "maxMs": 0.8230409999996482,
+          "meanMs": 0.08323765379494025,
+          "minMs": 0.07725000000027649,
           "name": "ordered in filter + indexed seek",
-          "p99Ms": 0.3117500000007567,
-          "sampleCount": 1670
+          "p99Ms": 0.1077499999992142,
+          "sampleCount": 3004
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 2.081000000000131,
-          "meanMs": 0.11786009048067855,
-          "minMs": 0.09749999999985448,
+          "maxMs": 0.7397089999994932,
+          "meanMs": 0.0655207324423432,
+          "minMs": 0.06070799999997689,
           "name": "range filter + top-k sort",
-          "p99Ms": 0.21808299999975134,
-          "sampleCount": 2122
+          "p99Ms": 0.07562499999949068,
+          "sampleCount": 3816
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 1.4292080000004717,
-          "meanMs": 0.11952257648183982,
-          "minMs": 0.10183400000005349,
+          "maxMs": 0.7780000000002474,
+          "meanMs": 0.06555739826953191,
+          "minMs": 0.06070799999997689,
           "name": "bigint range filter + indexed seek",
-          "p99Ms": 0.22674999999981083,
-          "sampleCount": 2092
+          "p99Ms": 0.08666700000048877,
+          "sampleCount": 3814
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 29.114542000000256,
-          "meanMs": 0.16996918558803936,
-          "minMs": 0.11499999999978172,
+          "maxMs": 0.7505000000001019,
+          "meanMs": 0.0674772412955405,
+          "minMs": 0.06262499999957072,
           "name": "BigDecimal range filter + indexed seek",
-          "p99Ms": 0.43683299999975134,
-          "sampleCount": 1471
+          "p99Ms": 0.08412500000031287,
+          "sampleCount": 3705
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 0.8470409999999902,
-          "meanMs": 0.2570976599999822,
-          "minMs": 0.2139580000002752,
+          "maxMs": 0.594625000000633,
+          "meanMs": 0.13814727900551899,
+          "minMs": 0.13145799999983865,
           "name": "selective range filter + fallback top-k sort",
-          "p99Ms": 0.4639579999993657,
-          "sampleCount": 1000
+          "p99Ms": 0.16924999999991996,
+          "sampleCount": 1810
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 14.872917000000598,
-          "meanMs": 1.7588119679999854,
-          "minMs": 1.4111250000005384,
+          "maxMs": 26.843917000000147,
+          "meanMs": 0.09092822545454593,
+          "minMs": 0.07370800000080635,
           "name": "compound filter + top-k sort",
-          "p99Ms": 2.7190840000002936,
-          "sampleCount": 1000
+          "p99Ms": 0.13712499999928696,
+          "sampleCount": 2750
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 47.410125000002154,
-          "meanMs": 13.770087411000057,
-          "minMs": 12.068959000000177,
+          "maxMs": 0.6042079999997441,
+          "meanMs": 0.18609471130952282,
+          "minMs": 0.17820899999969697,
           "name": "narrow scalar projection + top-k sort",
-          "p99Ms": 17.663625000001048,
-          "sampleCount": 1000
+          "p99Ms": 0.26224999999976717,
+          "sampleCount": 1344
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 44.86333300000115,
-          "meanMs": 15.05997129699992,
-          "minMs": 12.823374999999942,
+          "maxMs": 1.2293339999996533,
+          "meanMs": 0.7694379990000197,
+          "minMs": 0.7304579999999987,
           "name": "wide scalar projection + top-k sort",
-          "p99Ms": 17.968124999999418,
+          "p99Ms": 1.0537500000000364,
           "sampleCount": 1000
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 1.324124999999185,
-          "meanMs": 0.6802119380000077,
-          "minMs": 0.6178329999966081,
+          "maxMs": 0.6263330000001588,
+          "meanMs": 0.07227788811796527,
+          "minMs": 0.06837500000074215,
           "name": "filtered totalRows via zero-row window",
-          "p99Ms": 1.0342920000039157,
-          "sampleCount": 1000
+          "p99Ms": 0.08145799999965675,
+          "sampleCount": 3459
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 100000 rows",
-          "maxMs": 3.565458999997645,
-          "meanMs": 0.45628984999893873,
-          "minMs": 0.2210419999973965,
+          "maxMs": 3.282583000000159,
+          "meanMs": 0.41721050000001014,
+          "minMs": 0.19708400000035908,
           "name": "live subscription delta after publish",
-          "p99Ms": 3.565458999997645,
+          "p99Ms": 3.282583000000159,
           "sampleCount": 20
         }
       ],
       "benchmarkCases": [
         "equality filter + top-k sort",
-        "selective equality filter + fallback top-k sort",
+        "selective equality filter + different ordered index",
         "ordered equality filter + indexed seek",
         "ordered in filter + indexed seek",
         "range filter + top-k sort",
@@ -143,7 +143,7 @@
       "benchmarkScope": "engine-raw-snapshot",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 332595200,
+      "memoryRssTotalDeltaBytes": 264830976,
       "minimumSampleCount": 20,
       "mutationCount": 100020,
       "outputJsonPath": "packages/column-live-view-engine/.artifacts/raw-snapshot-100000rows.json",

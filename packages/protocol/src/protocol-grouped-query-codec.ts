@@ -13,13 +13,16 @@ import { Effect, Schema } from "effect";
 import type { JsonFieldSchema } from "./protocol-json-field-codec";
 import {
   decodeWhere,
+  decodeRouteBy,
   encodeWhere,
-  hasOnlyKnownFields,
+  encodeRouteBy,
   hasOwnField,
   hasTopic,
   invalidQuery,
   invalidTopic,
+  shallowWhereQueryInput,
   strictParseOptions,
+  validateSourceRoute,
   validateWindow,
   viewServerDecodeTopic,
 } from "./protocol-query-common";
@@ -33,6 +36,7 @@ type TrustedGroupedQuery<Row> = {
   readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
   readonly aggregates: Aggregates<Row>;
   readonly where?: Where<Row>;
+  readonly routeBy?: Readonly<Record<string, unknown>>;
   readonly orderBy?: ReadonlyArray<GroupedOrderBy<Row>>;
   readonly offset?: number;
   readonly limit?: number;
@@ -94,11 +98,6 @@ const validateGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.validate
       );
     }
   }
-  if (decoded.where !== undefined && !hasOnlyKnownFields(schema, Object.keys(decoded.where))) {
-    return yield* Effect.fail(
-      invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
-    );
-  }
   if (decoded.orderBy !== undefined) {
     for (const entry of decoded.orderBy) {
       if ("field" in entry && !decoded.groupBy.includes(entry.field)) {
@@ -125,17 +124,25 @@ export const viewServerEncodeGroupedQuery = Effect.fn("ViewServerProtocol.groupe
     if (!hasTopic(config, topic)) {
       return yield* Effect.fail(invalidTopic(topic));
     }
-    const decoded = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
-      query,
+    const shallowQuery = yield* shallowWhereQueryInput(topic, query);
+    const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
+      shallowQuery.input,
       strictParseOptions,
     ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+    const decoded =
+      shallowQuery.where === undefined
+        ? decodedShell
+        : { ...decodedShell, where: shallowQuery.where };
     const topicSchema = config.topics[topic]!.schema;
+    yield* validateSourceRoute(config, topic, decoded);
     yield* validateGroupedQuery(topic, topicSchema, decoded);
     const where = yield* encodeWhere(config, topic, decoded.where);
+    const routeBy = yield* encodeRouteBy(config, topic, decoded.routeBy);
     const wireQuery: ViewServerWireGroupedQuery = {
       groupBy: decoded.groupBy,
       aggregates: decoded.aggregates,
       ...(where === undefined ? {} : { where }),
+      ...(routeBy === undefined ? {} : { routeBy }),
       ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
       ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
       ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
@@ -166,19 +173,28 @@ export const viewServerDecodeGroupedQuery: <
   Topic extends Extract<keyof Topics, string>,
 >(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
   const decodedTopic = yield* viewServerDecodeTopic(config, topic);
-  const decoded = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
-    query,
+  const shallowQuery = yield* shallowWhereQueryInput(topic, query);
+  const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
+    shallowQuery.input,
     strictParseOptions,
   ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+  const decoded =
+    shallowQuery.where === undefined
+      ? decodedShell
+      : { ...decodedShell, where: shallowQuery.where };
   const topicSchema = config.topics[decodedTopic]!.schema;
   yield* validateGroupedQuery(topic, topicSchema, decoded);
   const where = yield* decodeWhere(topic, topicSchema, decoded.where);
-  return validatedGroupedQuery<TopicRow<Topics, Topic>>({
+  const routeBy = yield* decodeRouteBy(topic, topicSchema, decoded.routeBy);
+  const trusted = validatedGroupedQuery<TopicRow<Topics, Topic>>({
     groupBy: decoded.groupBy,
     aggregates: decoded.aggregates,
     ...(where === undefined ? {} : { where }),
+    ...(routeBy === undefined ? {} : { routeBy }),
     ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
     ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
     ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
   });
+  yield* validateSourceRoute(config, topic, trusted);
+  return trusted;
 });

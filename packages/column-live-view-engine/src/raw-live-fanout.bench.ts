@@ -290,10 +290,14 @@ const makeSubscriptions = Effect.fn("ColumnLiveViewEngine.bench.rawLiveFanout.su
       (index) =>
         engine.subscribe("orders", {
           select: ["id", "customerId", "status", "price", "region", "updatedAt"],
-          where: {
-            price: { gte: fanoutCaseMinimumPrice(caseName, index) },
-            status: { eq: "open" },
-          },
+          where: [
+            {
+              field: "price",
+              type: "greaterThanOrEqual",
+              filter: fanoutCaseMinimumPrice(caseName, index),
+            },
+            { field: "status", type: "equals", filter: "open" },
+          ],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           offset: windowOffset(index),
           limit: 50,

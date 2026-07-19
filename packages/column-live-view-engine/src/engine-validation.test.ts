@@ -40,14 +40,6 @@ describe("ColumnLiveViewEngine validation", () => {
           },
         },
       });
-      const emptyObjectKeywordFilter = yield* engine.snapshot("payloads", {
-        select: ["id"],
-        where: {
-          payload: { venue: "xlon" },
-        },
-      });
-      expect(emptyObjectKeywordFilter.rows).toStrictEqual([]);
-
       const mapError = yield* Effect.flip(
         engine.publish("payloads", {
           id: "1",
@@ -73,24 +65,10 @@ describe("ColumnLiveViewEngine validation", () => {
         totalRows: 1,
         version: 1,
       });
-
-      const objectFilter = yield* engine.snapshot("payloads", {
-        select: ["id", "payload"],
-        where: {
-          payload: { venue: "xlon" },
-        },
-      });
-      expect(objectFilter).toStrictEqual({
-        rows: [{ id: "2", payload: { venue: "xlon" } }],
-        status: "ready",
-        statusCode: "Ready",
-        totalRows: 1,
-        version: 1,
-      });
     }),
   );
 
-  it.effect("rejects non-cloneable object rows and query filters through typed errors", () =>
+  it.effect("rejects non-cloneable object rows", () =>
     Effect.gen(function* () {
       const WithPayload = Schema.Struct({
         id: Schema.String,
@@ -109,71 +87,6 @@ describe("ColumnLiveViewEngine validation", () => {
         engine.publish("payloads", { id: "1", payload: new WeakMap() }),
       );
       expect(rowError._tag).toBe("InvalidRowError");
-
-      yield* engine.publish("payloads", { id: "2", payload: { venue: "xnys" } });
-      const queryError = yield* Effect.flip(
-        engine.snapshot("payloads", {
-          select: ["id"],
-          where: {
-            payload: new WeakMap(),
-          },
-        }),
-      );
-      expect(queryError._tag).toBe("InvalidQueryError");
-    }),
-  );
-
-  it.effect("matches schema-backed record filters with a null prototype", () =>
-    Effect.gen(function* () {
-      const WithPayload = Schema.Struct({
-        id: Schema.String,
-        payload: Schema.Record(Schema.String, Schema.String),
-      });
-      const engine = yield* createColumnLiveViewEngine({
-        topics: {
-          payloads: {
-            schema: WithPayload,
-            key: "id",
-          },
-        },
-      });
-      yield* engine.publish("payloads", {
-        id: "1",
-        payload: { venue: "xnys" },
-      });
-      yield* engine.publish("payloads", {
-        id: "2",
-        payload: { venue: "xlon" },
-      });
-
-      const filter: Record<string, string> = Object.create(null);
-      filter["venue"] = "xnys";
-      const snapshot = yield* engine.snapshot("payloads", {
-        select: ["id", "payload"],
-        where: { payload: filter },
-      });
-      const grouped = yield* engine.snapshot("payloads", {
-        groupBy: ["payload"],
-        aggregates: { rowCount: { aggFunc: "count" } },
-        where: { payload: filter },
-      });
-
-      expect({ grouped, snapshot }).toStrictEqual({
-        grouped: {
-          rows: [{ payload: { venue: "xnys" }, rowCount: 1n }],
-          status: "ready",
-          statusCode: "Ready",
-          totalRows: 1,
-          version: 2,
-        },
-        snapshot: {
-          rows: [{ id: "1", payload: { venue: "xnys" } }],
-          status: "ready",
-          statusCode: "Ready",
-          totalRows: 1,
-          version: 2,
-        },
-      });
     }),
   );
 
@@ -453,15 +366,11 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("where"),
       });
 
-      const invalidWhereArrayQuery: object = {
+      const emptyWhere = yield* engine.snapshot("orders", {
         select: ["id"],
         where: [],
-      };
-      const invalidWhereArray = yield* Effect.flip(
-        // @ts-expect-error malformed runtime query where array must be rejected.
-        engine.snapshot("orders", invalidWhereArrayQuery),
-      );
-      expect(invalidWhereArray._tag).toBe("InvalidQueryError");
+      });
+      expect(emptyWhere.rows).toStrictEqual([{ id: "1" }]);
 
       // @ts-expect-error runtime validation still rejects hostile untyped inputs.
       const invalidTopLevelArray = yield* Effect.flip(engine.snapshot("orders", []));
@@ -487,9 +396,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
       const unknownTopLevelRawQuery: object = {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         whre: {
           status: "closed",
         },
@@ -691,9 +598,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
       const unknownWhereFieldQuery: object = {
         select: ["id"],
-        where: {
-          prcie: 10,
-        },
+        where: [{ field: "prcie", type: "equals", filter: 10 }],
       };
       const unknownWhereField = yield* Effect.flip(
         // @ts-expect-error runtime query unknown where fields must be rejected.
@@ -701,36 +606,7 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(unknownWhereField).toMatchObject({
         _tag: "InvalidQueryError",
-        message: expect.stringContaining("where"),
-      });
-
-      const unknownFilterOperatorQuery: object = {
-        select: ["id"],
-        where: {
-          status: { equals: "open" },
-        },
-      };
-      const unknownFilterOperator = yield* Effect.flip(
-        // @ts-expect-error runtime query unknown filter operators must be rejected.
-        engine.snapshot("orders", unknownFilterOperatorQuery),
-      );
-      expect(unknownFilterOperator).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported filter operator"),
-      });
-
-      const mixedKnownAndUnknownFilterOperator = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          where: {
-            // @ts-expect-error runtime query unknown filter operators must be rejected.
-            status: { eq: "open", typo: true },
-          },
-        }),
-      );
-      expect(mixedKnownAndUnknownFilterOperator).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported filter operator"),
+        message: expect.stringContaining("unknown or non-filterable field"),
       });
 
       const invalidOrderByDirectionQuery: object = {

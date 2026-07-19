@@ -19,4 +19,6 @@ This example demonstrates:
 - Materialized gRPC-owned `strategies`.
 - Topic-owned gRPC bindings that connect those topics to concrete generated
   client methods.
+- Canonical typed `where` arrays for local filtering, with exact `routeBy`
+  objects on leased-topic queries.
 - Summary and detailed health in the same UI.

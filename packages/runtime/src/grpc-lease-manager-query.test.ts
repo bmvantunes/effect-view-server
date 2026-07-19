@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
-import { Clock, Effect, Fiber, HashMap, Option, Queue, Schedule, Stream } from "effect";
+import { Clock, Effect, Fiber, Queue, Schedule, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import {
   makeDefaultGrpcRuntimeSourceDependencies,
@@ -21,19 +21,70 @@ import {
   grpcLeasedViewServerFromCallbacks,
   grpcPublicKeyLeasedViewServer,
   grpcRouteEncodingLeasedViewServer,
-  grpcSemanticRouteLeasedViewServer,
   leasedGrpcViewServer,
   leasedOrdersQuery,
   longRunningGrpcStream,
   makeLeasedGrpcHealth,
   routeEncodingValues,
-  SemanticRouteClass,
   waitForLeasedGrpcSnapshotRows,
 } from "../test-harness/grpc-leased";
 
 import type { GrpcOrderValueMessage } from "../test-harness/grpc-config";
 
+const usaFeedKey = "orders/orders/leased/region=%5B%22string%22%2C%22usa%22%5D";
+const euFeedKey = "orders/orders/leased/region=%5B%22string%22%2C%22eu%22%5D";
+
 describe("gRPC lease manager query translation", () => {
+  it.live("rejects unsnapshotable typed and runtime leased queries before acquisition", () =>
+    Effect.gen(function* () {
+      let acquired = 0;
+      const feed = grpcLeasedViewServer({
+        acquired: () => {
+          acquired += 1;
+        },
+        streamForRegion: () => Stream.never,
+      });
+      const harness = yield* makeLeasedGrpcRuntimeHarness({ config: feed });
+      const hostileThrownValue = {
+        toString: () => {
+          throw new Error("hostile toString must never run");
+        },
+      };
+      const hostileHandler = {
+        ownKeys: () => {
+          throw hostileThrownValue;
+        },
+      };
+      const typedQuery = new Proxy(leasedOrdersQuery("usa"), hostileHandler);
+      const runtimeQuery = new Proxy(leasedOrdersQuery("usa"), hostileHandler);
+
+      const typedError = yield* harness.manager.liveClient
+        .subscribe("orders", typedQuery)
+        .pipe(Effect.flip);
+      const runtimeError = yield* harness.manager.liveClient
+        .subscribeRuntime("orders", runtimeQuery)
+        .pipe(Effect.flip);
+
+      expect({ acquired, runtimeError, typedError }).toStrictEqual({
+        acquired: 0,
+        runtimeError: {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Query input could not be snapshotted at subscribe.",
+        },
+        typedError: {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Query input could not be snapshotted at subscribe.",
+        },
+      });
+      yield* harness.manager.close;
+      yield* harness.runtimeCore.close;
+    }),
+  );
+
   it.live("opens a leased gRPC feed on first subscriber and removes rows after last close", () =>
     Effect.gen(function* () {
       let acquired = 0;
@@ -107,15 +158,13 @@ describe("gRPC lease manager query translation", () => {
         },
       ]);
       expect(Object.keys(readyHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/orders/leased/region=%22usa%22",
+        usaFeedKey,
       ]);
-      expect(
-        readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"],
-      ).toStrictEqual({
+      expect(readyHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]).toStrictEqual({
         status: "ready",
         lifecycle: "leased",
         feedName: "orders",
-        feedKey: "orders/orders/leased/region=%22usa%22",
+        feedKey: usaFeedKey,
         topic: "orders",
         subscriberCount: 1,
         rowCount: 2,
@@ -125,9 +174,7 @@ describe("gRPC lease manager query translation", () => {
         mappingFailuresPerSecond: 0,
         publishFailuresPerSecond: 0,
         reconnects: 0,
-        lastMessageAt:
-          readyHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-            ?.lastMessageAt,
+        lastMessageAt: readyHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.lastMessageAt,
         lastError: null,
       });
       expect(emptySnapshot).toStrictEqual({
@@ -173,14 +220,8 @@ describe("gRPC lease manager query translation", () => {
 
       expect(acquired).toBe(1);
       expect(released).toBe(1);
-      expect(
-        sharedHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-          ?.subscriberCount,
-      ).toBe(2);
-      expect(
-        afterFirstClose.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-          ?.subscriberCount,
-      ).toBe(1);
+      expect(sharedHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.subscriberCount).toBe(2);
+      expect(afterFirstClose.grpc?.feeds["orders"]?.leased[usaFeedKey]?.subscriberCount).toBe(1);
       yield* harness.close;
     }),
   );
@@ -249,10 +290,9 @@ describe("gRPC lease manager query translation", () => {
       const { manager } = harness;
 
       const subscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -315,10 +355,9 @@ describe("gRPC lease manager query translation", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { id: "order-1" },
         select: ["id", "customerId", "price"],
-        where: {
-          id: { eq: "order-1" },
-        },
+        where: [{ field: "id", type: "equals", filter: "order-1" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -381,187 +420,25 @@ describe("gRPC lease manager query translation", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
-        select: ["id"],
-        where: {
-          amount: { eq: routeEncodingValues.amount },
-          count: { eq: routeEncodingValues.count },
-          disabled: { eq: routeEncodingValues.disabled },
-          flag: { eq: routeEncodingValues.flag },
-          meta: { eq: routeEncodingValues.meta },
-          none: { eq: routeEncodingValues.none },
-          plainScore: { eq: routeEncodingValues.plainScore },
-          score: { eq: routeEncodingValues.score },
-          tags: { eq: routeEncodingValues.tags },
-          text: { eq: routeEncodingValues.text },
-          weird: { eq: routeEncodingValues.weird },
+        routeBy: {
+          amount: routeEncodingValues.amount,
+          count: routeEncodingValues.count,
+          disabled: routeEncodingValues.disabled,
+          flag: routeEncodingValues.flag,
+          none: routeEncodingValues.none,
+          plainScore: routeEncodingValues.plainScore,
+          score: routeEncodingValues.score,
+          text: routeEncodingValues.text,
         },
+        select: ["id"],
         limit: 10,
       });
       const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
 
       expect(Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/orders/leased/amount=%22123.45%22&count=%229007199254740993%22&disabled=false&flag=true&meta=%7B%22desk%22%3A%22equities%22%7D&none=null&plainScore=42&score=0&tags=%5B%22fast%22%2C%22shared%22%5D&text=%22route%22&weird=%7B%22alpha%22%3A%22first%22%2C%22stable%22%3A%22route%22%7D",
+        "orders/orders/leased/amount=%5B%22bigDecimal%22%2C%2212345%22%2C%222%22%5D&count=%5B%22bigint%22%2C%229007199254740993%22%5D&disabled=%5B%22boolean%22%2Cfalse%5D&flag=%5B%22boolean%22%2Ctrue%5D&none=%5B%22null%22%5D&plainScore=%5B%22number%22%2C%2242%22%5D&score=%5B%22number%22%2C%22-0%22%5D&text=%5B%22string%22%2C%22route%22%5D",
       ]);
       yield* subscription.close();
-      yield* manager.close;
-      yield* runtimeCore.close;
-    }),
-  );
-
-  it.live(
-    "shares semantic Class, Option, and collision-node HashMap routes by schema identity",
-    () =>
-      Effect.gen(function* () {
-        const feed = grpcSemanticRouteLeasedViewServer();
-        const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-        const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-        const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
-          clients: {
-            orders: "https://orders.example.test",
-          },
-          feeds: {},
-        });
-        const manager = yield* makeViewServerGrpcLeaseManager(
-          grpcOptions.sourceConfig,
-          runtimeCore.internalClient,
-          runtimeCore.liveClient,
-          runtimeCore.internalLiveClient,
-          Effect.void,
-          grpcOptions,
-          health,
-        );
-        const collisionLeft = "8ocpIaaa";
-        const collisionRight = "GpcpIaaa";
-        const firstRouteOption = yield* Effect.succeed(Option.some("route")).pipe(
-          Effect.filterOrFail(Option.isSome),
-        );
-        const equivalentRouteOption = yield* Effect.succeed(Option.some("route")).pipe(
-          Effect.filterOrFail(Option.isSome),
-        );
-        const firstRoute = {
-          routeClass: SemanticRouteClass.make({ value: "route" }),
-          routeOption: firstRouteOption,
-          routeHashMap: HashMap.make([collisionLeft, "left"], [collisionRight, "right"]),
-        };
-        const equivalentRoute = {
-          routeClass: SemanticRouteClass.make({ value: "route" }),
-          routeOption: equivalentRouteOption,
-          routeHashMap: HashMap.make([collisionRight, "right"], [collisionLeft, "left"]),
-        };
-        const first = yield* manager.liveClient.subscribeRuntime("orders", {
-          select: ["id"],
-          where: {
-            routeClass: { eq: firstRoute.routeClass },
-            routeOption: { eq: firstRoute.routeOption },
-            routeHashMap: { eq: firstRoute.routeHashMap },
-          },
-          limit: 10,
-        });
-        const second = yield* manager.liveClient.subscribeRuntime("orders", {
-          select: ["id"],
-          where: {
-            routeClass: { eq: equivalentRoute.routeClass },
-            routeOption: { eq: equivalentRoute.routeOption },
-            routeHashMap: { eq: equivalentRoute.routeHashMap },
-          },
-          limit: 10,
-        });
-        const currentHealth = health.healthOverlay(yield* runtimeCore.client.health(), 1_000);
-        const feedKeys = Object.keys(currentHealth.grpc?.feeds["orders"]?.leased ?? {});
-
-        expect(feedKeys).toHaveLength(1);
-        expect(currentHealth.grpc?.feeds["orders"]?.leased[feedKeys[0]!]?.subscriberCount).toBe(2);
-        yield* first.close();
-        yield* second.close();
-        yield* manager.close;
-        yield* runtimeCore.close;
-      }),
-  );
-
-  it.live("rejects non-canonical leased gRPC route values instead of sharing a fallback key", () =>
-    Effect.gen(function* () {
-      const feed = grpcRouteEncodingLeasedViewServer();
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const health = makeViewServerGrpcHealthLedger<typeof grpcOptions.sourceConfig.topics>({
-        clients: {
-          orders: "https://orders.example.test",
-        },
-        feeds: {},
-      });
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        grpcOptions.sourceConfig,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
-
-      const symbolError = yield* manager.liveClient
-        .subscribeRuntime("orders", {
-          select: ["id"],
-          where: {
-            amount: { eq: routeEncodingValues.amount },
-            count: { eq: routeEncodingValues.count },
-            disabled: { eq: routeEncodingValues.disabled },
-            flag: { eq: routeEncodingValues.flag },
-            meta: { eq: routeEncodingValues.meta },
-            none: { eq: routeEncodingValues.none },
-            plainScore: { eq: routeEncodingValues.plainScore },
-            score: { eq: routeEncodingValues.score },
-            tags: { eq: routeEncodingValues.tags },
-            text: { eq: routeEncodingValues.text },
-            weird: { eq: Symbol("leased-route") },
-          },
-          limit: 1,
-        })
-        .pipe(Effect.flip);
-      const objectError = yield* manager.liveClient
-        .subscribeRuntime("orders", {
-          select: ["id"],
-          where: {
-            amount: { eq: routeEncodingValues.amount },
-            count: { eq: routeEncodingValues.count },
-            disabled: { eq: routeEncodingValues.disabled },
-            flag: { eq: routeEncodingValues.flag },
-            meta: { eq: routeEncodingValues.meta },
-            none: { eq: routeEncodingValues.none },
-            plainScore: { eq: routeEncodingValues.plainScore },
-            score: { eq: routeEncodingValues.score },
-            tags: { eq: routeEncodingValues.tags },
-            text: { eq: routeEncodingValues.text },
-            weird: { eq: new Map([["stable", "route"]]) },
-          },
-          limit: 1,
-        })
-        .pipe(Effect.flip);
-
-      expect({
-        symbolError,
-        objectError,
-        leasedFeeds: Object.keys(
-          health.healthOverlay(yield* runtimeCore.client.health(), 1_000).grpc?.feeds["orders"]
-            ?.leased ?? {},
-        ),
-      }).toStrictEqual({
-        symbolError: {
-          _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
-          topic: "orders",
-          message:
-            "Leased topic orders route field weird value does not match the topic schema or cannot be used as a stable leased gRPC route key.",
-        },
-        objectError: {
-          _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
-          topic: "orders",
-          message:
-            "Leased topic orders route field weird value does not match the topic schema or cannot be used as a stable leased gRPC route key.",
-        },
-        leasedFeeds: [],
-      });
       yield* manager.close;
       yield* runtimeCore.close;
     }),
@@ -618,8 +495,8 @@ describe("gRPC lease manager query translation", () => {
         },
       ]);
       expect(Object.keys(routeHealth.grpc?.feeds["orders"]?.leased ?? {})).toStrictEqual([
-        "orders/orders/leased/region=%22usa%22",
-        "orders/orders/leased/region=%22eu%22",
+        usaFeedKey,
+        euFeedKey,
       ]);
       yield* usa.close();
       yield* eu.close();
@@ -735,19 +612,21 @@ describe("gRPC lease manager query translation", () => {
       yield* Queue.offer(values, grpcOrderValue("order-2", 20));
       yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 2);
       const arrayFilterSubscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price"],
-        where: {
-          region: { eq: "usa" },
-          id: { in: ["usa:order-2"] },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "id", type: "in", filter: ["usa:order-2"] },
+        ],
         limit: 10,
       });
       const scalarFilterSubscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price"],
-        where: {
-          region: { eq: "usa" },
-          id: "usa:order-1",
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "id", type: "equals", filter: "usa:order-1" },
+        ],
         limit: 10,
       });
       const arrayFilterEvents = yield* arrayFilterSubscription.events.pipe(
@@ -827,10 +706,9 @@ describe("gRPC lease manager query translation", () => {
       yield* Queue.offer(values, grpcOrderValue("order-1", 10));
       yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 1);
       const subscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 1,
       });
@@ -1013,11 +891,12 @@ describe("gRPC lease manager query translation", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price"],
-        where: {
-          region: { eq: "usa" },
-          id: { eq: "usa:order-1" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "id", type: "equals", filter: "usa:order-1" },
+        ],
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
@@ -1114,26 +993,26 @@ describe("gRPC lease manager query translation", () => {
       );
       type LeasedOrdersRuntimeKeyQuery = {
         readonly select: readonly ["id", "price"];
-        readonly where: {
-          readonly region: {
-            readonly eq: string;
-          };
-          readonly id: {
-            readonly eq: string;
-          };
-        };
+        readonly routeBy: { readonly region: string };
+        readonly where: readonly [
+          { readonly field: "region"; readonly type: "equals"; readonly filter: string },
+          { readonly field: "id"; readonly type: "equals"; readonly filter: string },
+        ];
         readonly limit: 10;
       };
+      const idCondition = {
+        field: "id",
+        type: "equals",
+        filter: "usa:order-1",
+      } satisfies LeasedOrdersRuntimeKeyQuery["where"][1];
       const query = {
         select: ["id", "price"],
-        where: {
-          region: { eq: "usa" },
-          id: { eq: "usa:order-1" },
-        },
+        routeBy: { region: "usa" },
+        where: [{ field: "region", type: "equals", filter: "usa" }, idCondition],
         limit: 10,
       } satisfies LeasedOrdersRuntimeKeyQuery;
       const subscribeEffect = manager.liveClient.subscribeRuntime("orders", query);
-      Object.defineProperty(query.where.id, "eq", { value: 123 });
+      Object.defineProperty(idCondition, "filter", { value: 123 });
 
       const subscription = yield* subscribeEffect;
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
@@ -1146,7 +1025,7 @@ describe("gRPC lease manager query translation", () => {
           status: "ready",
           code: "Ready",
           message:
-            '{"select":["id","price"],"where":{"region":{"eq":"usa"},"id":{"eq":"usa:order-1"}},"limit":10}',
+            '{"select":["id","price"],"where":[{"field":"region","type":"equals","filter":"usa"},{"field":"id","type":"equals","filter":"usa:order-1"}],"limit":10}',
         },
       ]);
       yield* subscription.close();
@@ -1267,10 +1146,9 @@ describe("gRPC lease manager query translation", () => {
       yield* Queue.offer(euQueue, grpcOrderValue("shared-order", 10));
       const euRouteMismatchedEvent = yield* Queue.take(euEvents);
       const routeMismatchSnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
+        routeBy: { region: "eu" },
         select: ["id", "region"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -1374,30 +1252,33 @@ describe("gRPC lease manager query translation", () => {
       );
 
       const cheap = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price", "region"],
-        where: {
-          region: { eq: "usa" },
-          price: { lte: 20 },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "price", type: "lessThanOrEqual", filter: 20 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
       const expensive = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "price", "region"],
-        where: {
-          region: { eq: "usa" },
-          price: { gte: 50 },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "price", type: "greaterThanOrEqual", filter: 50 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
       const cheapSnapshot = yield* runtimeCore.internalClient
         .snapshot("orders", {
+          routeBy: { region: "usa" },
           select: ["id", "price", "region"],
-          where: {
-            region: { eq: "usa" },
-            price: { lte: 20 },
-          },
+          where: [
+            { field: "region", type: "equals", filter: "usa" },
+            { field: "price", type: "lessThanOrEqual", filter: 20 },
+          ],
           orderBy: [{ field: "price", direction: "asc" }],
           limit: 10,
         })
@@ -1409,11 +1290,12 @@ describe("gRPC lease manager query translation", () => {
         );
       const expensiveSnapshot = yield* runtimeCore.internalClient
         .snapshot("orders", {
+          routeBy: { region: "usa" },
           select: ["id", "price", "region"],
-          where: {
-            region: { eq: "usa" },
-            price: { gte: 50 },
-          },
+          where: [
+            { field: "region", type: "equals", filter: "usa" },
+            { field: "price", type: "greaterThanOrEqual", filter: 50 },
+          ],
           orderBy: [{ field: "price", direction: "asc" }],
           limit: 10,
         })
@@ -1467,19 +1349,17 @@ describe("gRPC lease manager query translation", () => {
         health,
       );
       const firstSubscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "customerId", "price", "region"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
       yield* waitForLeasedGrpcSnapshotRows(runtimeCore.internalClient, "usa", 1);
       const subscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "customerId", "price", "region"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -1541,10 +1421,9 @@ describe("gRPC lease manager query translation", () => {
       );
 
       const subscription = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         select: ["id", "customerId", "region"],
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });

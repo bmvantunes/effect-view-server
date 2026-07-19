@@ -187,9 +187,7 @@ describe("Grouped incremental query execution", () => {
           aggregates: {
             rowCount: { aggFunc: "count" },
           },
-          where: {
-            region: "emea",
-          },
+          where: [{ field: "region", type: "equals", filter: "emea" }],
           orderBy: [{ field: "status", direction: "asc" }],
         },
       );
@@ -727,9 +725,7 @@ describe("Grouped incremental query execution", () => {
           aggregates: {
             totalPrice: { aggFunc: "sum", field: "price" },
           },
-          where: {
-            region: "emea",
-          },
+          where: [{ field: "region", type: "equals", filter: "emea" }],
           offset: 10_000,
           limit: 0,
         },
@@ -1083,9 +1079,7 @@ describe("Grouped incremental query execution", () => {
           aggregates: {
             rowCount: { aggFunc: "count" },
           },
-          where: {
-            region: "emea",
-          },
+          where: [{ field: "region", type: "equals", filter: "emea" }],
           limit: 0,
         },
       );

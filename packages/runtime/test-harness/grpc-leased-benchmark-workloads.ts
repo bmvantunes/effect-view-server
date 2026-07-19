@@ -9,6 +9,7 @@ import {
   activeGrpcLeasedFeedCount,
   auditGrpcLeasedMeasuredCleanup,
   closeGrpcLeasedSubscriptions,
+  grpcLeasedClientActiveFeedCount,
   grpcLeasedOpenRows,
   grpcLeasedRows,
   observeGrpcLeasedBenchmarkHealth,
@@ -149,8 +150,9 @@ const runSubscriptionCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.subsc
     return yield* Effect.gen(function* () {
       if (input.preOpenSubscriber) {
         const subscription = yield* context.harness.manager.liveClient.subscribe("orders", {
+          routeBy: { region: input.region },
           select: ["id", "price", "status", "region"],
-          where: { region: { eq: input.region } },
+          where: [{ field: "region", type: "equals", filter: input.region }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 100,
         });
@@ -161,8 +163,9 @@ const runSubscriptionCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.subsc
         Array.from({ length: input.additionalSubscriberCount }),
         () =>
           context.harness.manager.liveClient.subscribe("orders", {
+            routeBy: { region: input.region },
             select: ["id", "price", "status", "region"],
-            where: { region: { eq: input.region } },
+            where: [{ field: "region", type: "equals", filter: input.region }],
             orderBy: [{ field: "updatedAt", direction: "desc" }],
             limit: 100,
           }),
@@ -197,12 +200,13 @@ const runLocalFilterCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.localF
     return yield* Effect.gen(function* () {
       const beforeSubscribe = performance.now();
       const subscription = yield* context.harness.manager.liveClient.subscribe("orders", {
+        routeBy: { region: "live-filter" },
         select: ["id", "price", "status", "region"],
-        where: {
-          region: { eq: "live-filter" },
-          status: { eq: "open" },
-          price: { gte: 10 },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "live-filter" },
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThanOrEqual", filter: 10 },
+        ],
         orderBy: [{ field: "updatedAt", direction: "desc" }],
         limit: context.options.rowsPerFeed,
       });
@@ -233,42 +237,95 @@ const runRetainedLocalFilterCase = Effect.fn(
 )(function* (context: GrpcLeasedBenchmarkContext) {
   const tracked: Array<WatchedGrpcLeasedSubscription> = [];
   return yield* Effect.gen(function* () {
+    const unrelatedRouteCount = Math.min(
+      Math.max(0, context.options.routeCount - 1),
+      Math.max(0, context.options.retainedRows - 1),
+    );
+    const targetRowCount =
+      unrelatedRouteCount === 0
+        ? context.options.retainedRows
+        : Math.min(context.options.rowsPerFeed, context.options.retainedRows - unrelatedRouteCount);
+    const unrelatedRows = Array.from(
+      { length: context.options.retainedRows - targetRowCount },
+      (_value, index) => {
+        const region = `retained-unrelated-${(index % unrelatedRouteCount) + 1}`;
+        return {
+          storageKey: `benchmark-unrelated:${index}`,
+          row: {
+            id: `${region}:order-${index}`,
+            customerId: `order-${index}`,
+            status: "open" as const,
+            price: 10 + index,
+            region,
+            updatedAt: index,
+          },
+        };
+      },
+    );
+    yield* context.harness.runtimeCore.internalClient.publishManyDecodedRowsWithStorageKeys(
+      "orders",
+      unrelatedRows,
+    );
     const holderSubscription = yield* context.harness.manager.liveClient.subscribe("orders", {
+      routeBy: { region: "retained-filter" },
       select: ["id", "price", "status", "region"],
-      where: { region: { eq: "retained-filter" } },
       orderBy: [{ field: "updatedAt", direction: "desc" }],
       limit: 100,
     });
     const holder = yield* watchAndTrack(tracked, holderSubscription);
-    const rows = grpcLeasedOpenRows("retained-filter", context.options.retainedRows);
-    yield* offerGrpcLeasedRows(queueForGrpcLeasedRoute(context, "retained-filter"), rows);
-    yield* waitForGrpcLeasedRows(holder, rows.length, context.options.convergenceTimeout);
+    yield* offerGrpcLeasedRows(
+      queueForGrpcLeasedRoute(context, "retained-filter"),
+      grpcLeasedOpenRows("retained-filter", targetRowCount),
+    );
+    yield* waitForGrpcLeasedRows(holder, targetRowCount, context.options.convergenceTimeout);
 
     const beforeSnapshot = performance.now();
     const beforeSubscribe = beforeSnapshot;
     const subscription = yield* context.harness.manager.liveClient.subscribe("orders", {
+      routeBy: { region: "retained-filter" },
       select: ["id", "price", "status", "region"],
-      where: {
-        region: { eq: "retained-filter" },
-        status: { eq: "open" },
-        price: { gte: 10 },
-      },
+      where: [
+        { field: "status", type: "equals", filter: "open" },
+        { field: "price", type: "greaterThanOrEqual", filter: 10 },
+      ],
       orderBy: [{ field: "updatedAt", direction: "desc" }],
       limit: 100,
     });
     const afterSubscribe = performance.now();
     const watched = yield* watchAndTrack(tracked, subscription);
-    yield* waitForGrpcLeasedRows(watched, rows.length, context.options.convergenceTimeout);
+    yield* waitForGrpcLeasedRows(watched, targetRowCount, context.options.convergenceTimeout);
     const afterSnapshot = performance.now();
     const health = yield* observeGrpcLeasedBenchmarkHealth(context);
-    const cleanup = yield* measureTrackedCleanup(context, tracked);
+    const beforeCleanup = performance.now();
+    yield* closeTracked(tracked);
+    const leaseCleanupHealth = yield* readHealthyGrpcLeasedBenchmarkState(context);
+    const leaseCleanupTopic = leaseCleanupHealth.engine.topics.orders;
+    if (
+      activeGrpcLeasedFeedCount(leaseCleanupHealth) !== 0 ||
+      grpcLeasedClientActiveFeedCount(leaseCleanupHealth) !== 0 ||
+      leaseCleanupTopic.activeSubscriptions !== 0 ||
+      leaseCleanupTopic.activeViews !== 0 ||
+      leaseCleanupTopic.queuedEvents !== 0 ||
+      leaseCleanupTopic.rowCount !== unrelatedRows.length
+    ) {
+      return yield* new GrpcLeasedBenchmarkStateError({
+        message:
+          "gRPC leased retained benchmark did not release exactly its route-owned rows and subscriptions.",
+      });
+    }
+    yield* context.harness.runtimeCore.internalClient.reset();
+    const afterCleanup = performance.now();
+    const cleanup = {
+      cleanupMs: afterCleanup - beforeCleanup,
+      measuredCleanup: yield* auditGrpcLeasedMeasuredCleanup(context),
+    };
     return subscriptionMeasurement({
       cleanup,
       health,
       mutationCount: 0,
       name: "gRPC leased retained local-filter snapshot",
-      rows: rows.length,
-      seedMutationCount: rows.length,
+      rows: context.options.retainedRows,
+      seedMutationCount: context.options.retainedRows,
       snapshotMs: afterSnapshot - beforeSnapshot,
       subscriptionMs: afterSubscribe - beforeSubscribe,
     });
@@ -283,8 +340,9 @@ const runDeltaFanoutCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.deltaF
       const beforeSubscribe = performance.now();
       const subscriptions = yield* Effect.forEach(Array.from({ length: subscriberCount }), () =>
         context.harness.manager.liveClient.subscribe("orders", {
+          routeBy: { region: "delta-fanout" },
           select: ["id", "price", "status", "region"],
-          where: { region: { eq: "delta-fanout" } },
+          where: [{ field: "region", type: "equals", filter: "delta-fanout" }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 100,
         }),
@@ -333,8 +391,9 @@ const runPartitionedWriteCase = Effect.fn(
     const beforeSubscribe = performance.now();
     const subscriptions = yield* Effect.forEach(regions, (region) =>
       context.harness.manager.liveClient.subscribe("orders", {
+        routeBy: { region },
         select: ["id", "price", "status", "region"],
-        where: { region: { eq: region } },
+        where: [{ field: "region", type: "equals", filter: region }],
         orderBy: [{ field: "updatedAt", direction: "desc" }],
         limit: context.options.rowsPerFeed,
       }),
@@ -381,8 +440,9 @@ const runHealthRefreshCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.heal
       const regions = routeRegions(context.options);
       const subscriptions = yield* Effect.forEach(regions, (region) =>
         context.harness.manager.liveClient.subscribe("orders", {
+          routeBy: { region },
           select: ["id", "price", "status", "region"],
-          where: { region: { eq: region } },
+          where: [{ field: "region", type: "equals", filter: region }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 10,
         }),
@@ -436,8 +496,9 @@ const runCleanupLatencyCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.cle
     return yield* Effect.gen(function* () {
       const beforeSubscribe = performance.now();
       const subscription = yield* context.harness.manager.liveClient.subscribe("orders", {
+        routeBy: { region: "cleanup-latency" },
         select: ["id", "price", "status", "region"],
-        where: { region: { eq: "cleanup-latency" } },
+        where: [{ field: "region", type: "equals", filter: "cleanup-latency" }],
         orderBy: [{ field: "updatedAt", direction: "desc" }],
         limit: 100,
       });
@@ -471,8 +532,9 @@ const runManyRoutesCase = Effect.fn("ViewServerRuntime.grpc.leased.bench.manyRou
       const beforeSubscribe = performance.now();
       const subscriptions = yield* Effect.forEach(regions, (region) =>
         context.harness.manager.liveClient.subscribe("orders", {
+          routeBy: { region },
           select: ["id", "price", "status", "region"],
-          where: { region: { eq: region } },
+          where: [{ field: "region", type: "equals", filter: region }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 10,
         }),

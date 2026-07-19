@@ -64,10 +64,12 @@ type RuntimeCorePublicReset<Topics extends TopicDefinitions> = [
 
 type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
   Topic extends RuntimeCoreReadableTopic<Topics>,
-  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
 >(
   topic: Topic,
-  query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => Effect.Effect<
   LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
   ViewServerRuntimeError
@@ -75,10 +77,12 @@ type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
 
 type RuntimeCorePublicSubscribe<Topics extends TopicDefinitions> = <
   Topic extends RuntimeCoreReadableTopic<Topics>,
-  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
 >(
   topic: Topic,
-  query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => Effect.Effect<
   ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
   ViewServerRuntimeError | ViewServerTransportError

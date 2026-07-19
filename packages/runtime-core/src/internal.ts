@@ -40,6 +40,7 @@ export {
   topicGrpcSourceMetadataFromUnknown,
 } from "./source-binding-resolution";
 export { makeRuntimeCoreMutationPipeline } from "./source-mutation-pipeline";
+export { engineQueryWithoutRoute } from "./engine-query";
 export type {
   TopicDefinitionHasRequiredDefinedObjectProperty,
   TopicDefinitionHasSourceOwner,
@@ -69,6 +70,7 @@ export type {
 
 export type {
   ViewServerRuntimeCoreInternalLiveClient,
+  ViewServerRuntimeCoreQueryPartition,
   ViewServerRuntimeCoreTerminalObserver,
 } from "./live-client";
 export type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";

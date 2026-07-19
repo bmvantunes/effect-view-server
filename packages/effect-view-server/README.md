@@ -26,11 +26,35 @@ viewSchema.admitClass(Profile);
 
 Class methods remain domain behavior and are not exposed as Topic Row columns.
 
+Live-query filters use one canonical recursive format. The root `where` value is
+an implicit-`AND` array; cross-field Boolean logic uses explicit nested groups:
+
+```ts
+const orders = react.useLiveQuery("orders", {
+  select: ["id", "status", "price"],
+  where: [
+    { field: "status", type: "equals", filter: "open" },
+    {
+      type: "OR",
+      conditions: [
+        { field: "customerId", type: "startsWith", filter: "customer-" },
+        { field: "price", type: "greaterThanOrEqual", filter: 100 },
+      ],
+    },
+  ],
+});
+```
+
+An omitted `where`, `where: []`, and empty generated groups mean no filter.
+Field-keyed `where` objects and shorthand operators are invalid. Leased topics
+also require their exact, independently typed `routeBy` object.
+
 React applications should install the package and compatible peer dependencies:
 
 ```sh
 npm install effect-view-server effect react react-dom @effect/atom-react
 ```
 
-See the repository README and Public API guide for schema admission, Kafka,
-gRPC, TCP publishing, in-memory testing, and React usage.
+See the repository README, Public API guide, and Query Semantics guide for
+schema admission, canonical filters, Kafka, gRPC, TCP publishing, in-memory
+testing, and React usage.

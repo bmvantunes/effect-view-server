@@ -74,27 +74,27 @@ describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
 
       const positiveEq = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { eq: 0 } },
+        where: [{ field: "value", type: "equals", filter: 0 }],
       });
       const negativeEq = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { eq: -0 } },
+        where: [{ field: "value", type: "equals", filter: -0 }],
       });
       const positiveNeq = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { neq: 0 } },
+        where: [{ field: "value", type: "notEqual", filter: 0 }],
       });
       const negativeNeq = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { neq: -0 } },
+        where: [{ field: "value", type: "notEqual", filter: -0 }],
       });
       const positiveIn = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { in: [0] } },
+        where: [{ field: "value", type: "in", filter: [0] }],
       });
       const negativeIn = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { in: [-0] } },
+        where: [{ field: "value", type: "in", filter: [-0] }],
       });
 
       const zeroSnapshot = {
@@ -143,7 +143,7 @@ describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
 
       const inSubscription = yield* engine.subscribe("numberRows", {
         ...orderedIdQuery,
-        where: { value: { in: [-0] } },
+        where: [{ field: "value", type: "in", filter: [-0] }],
       });
       const readIn = yield* makeEventReader(inSubscription);
       const inInitial = firstEvent(yield* readIn(1));
@@ -167,7 +167,7 @@ describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
 
       const afterSignOnlyReplacement = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { in: [0] } },
+        where: [{ field: "value", type: "in", filter: [0] }],
       });
       const noOpHealth = yield* engine.health();
       expect(afterSignOnlyReplacement).toStrictEqual({
@@ -201,15 +201,15 @@ describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
 
       const equalAfterChange = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { eq: 0 } },
+        where: [{ field: "value", type: "equals", filter: 0 }],
       });
       const notEqualAfterChange = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { neq: -0 } },
+        where: [{ field: "value", type: "notEqual", filter: -0 }],
       });
       const inAfterChange = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { in: [0] } },
+        where: [{ field: "value", type: "in", filter: [0] }],
       });
       expect(inState).toStrictEqual({
         keys: ["negative-zero"],
@@ -262,11 +262,11 @@ describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
 
       const restoredPositiveEq = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { eq: 0 } },
+        where: [{ field: "value", type: "equals", filter: 0 }],
       });
       const restoredNegativeEq = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { eq: -0 } },
+        where: [{ field: "value", type: "equals", filter: -0 }],
       });
       expect({ inState, restoredPositiveEq, restoredNegativeEq }).toStrictEqual({
         inState: {
@@ -292,15 +292,15 @@ describe("ColumnLiveViewEngine Schema.Number zero semantics", () => {
       yield* engine.publish("numberRows", { id: "positive-zero", value: 0 });
       const finalEqual = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { eq: -0 } },
+        where: [{ field: "value", type: "equals", filter: -0 }],
       });
       const finalNotEqual = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { neq: 0 } },
+        where: [{ field: "value", type: "notEqual", filter: 0 }],
       });
       const finalIn = yield* engine.snapshot("numberRows", {
         ...orderedIdQuery,
-        where: { value: { in: [-0] } },
+        where: [{ field: "value", type: "in", filter: [-0] }],
       });
       const finalHealth = yield* engine.health();
       expect(inState).toStrictEqual({

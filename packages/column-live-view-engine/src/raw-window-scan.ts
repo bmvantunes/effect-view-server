@@ -10,6 +10,7 @@ export type TopicRawOrderByPlan = {
 };
 
 export type TopicRawWindowScanPlan<Row extends RowObject> = {
+  readonly candidateStorageKeys?: () => Iterable<string>;
   readonly predicate: TopicRawPredicatePlan;
   readonly orderBy: ReadonlyArray<TopicRawOrderByPlan>;
   /**
@@ -17,7 +18,7 @@ export type TopicRawWindowScanPlan<Row extends RowObject> = {
    * source of truth for custom scan plans unless this hint is present.
    */
   readonly storageOrderBy?: ReadonlyArray<TopicRawOrderByPlan>;
-  readonly matches: (row: Row) => boolean;
+  readonly matches: (row: Row, storageKey?: string) => boolean;
   readonly compare: (left: TopicRowEntry<Row>, right: TopicRowEntry<Row>) => number;
   readonly offset: number;
   readonly limit: number | undefined;

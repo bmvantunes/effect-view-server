@@ -11,10 +11,8 @@ import {
   defineViewServerConfig,
   grpc,
   type LiveQueryResult,
-  type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Schema, Stream } from "effect";
 import * as Http2 from "node:http2";
@@ -118,16 +116,6 @@ const ConnectOrder = Schema.Struct({
   price: Schema.Number,
   region: Schema.String,
   updatedAt: Schema.Number,
-});
-
-const materializedViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: ConnectOrder,
-      key: "id",
-      grpcSource: grpcSourceMarkers.materialized(),
-    },
-  },
 });
 
 const orderEvent = (input: ConnectRuntimeOrderRow): ConnectOrderEventMessage =>
@@ -303,7 +291,10 @@ const readDirectConnectRows = Effect.fn("ViewServerRuntime.grpc.connectRpc.direc
 const waitForMaterializedSnapshot = Effect.fn(
   "ViewServerRuntime.grpc.connectRpc.materialized.snapshot.wait",
 )(function* (
-  client: Pick<ViewServerRuntimeClient<typeof materializedViewServer.topics>, "snapshot">,
+  snapshotEffect: Effect.Effect<
+    LiveQueryResult<Pick<ConnectRuntimeOrderRow, "id" | "price" | "region">>,
+    ViewServerRuntimeError
+  >,
   expectedTotalRows: number,
 ) {
   const poll = (
@@ -312,27 +303,21 @@ const waitForMaterializedSnapshot = Effect.fn(
     LiveQueryResult<Pick<ConnectRuntimeOrderRow, "id" | "price" | "region">>,
     ConnectRpcIntegrationError | ViewServerRuntimeError
   > =>
-    client
-      .snapshot("orders", {
-        select: ["id", "price", "region"],
-        orderBy: [{ field: "price", direction: "asc" }],
-        limit: 10,
-      })
-      .pipe(
-        Effect.flatMap((snapshot) => {
-          if (snapshot.totalRows === expectedTotalRows) {
-            return Effect.succeed(snapshot);
-          }
-          if (remainingAttempts === 0) {
-            return Effect.fail(
-              new ConnectRpcIntegrationError({
-                message: `Materialized ConnectRPC snapshot did not reach ${expectedTotalRows} rows.`,
-              }),
-            );
-          }
-          return Effect.sleep("5 millis").pipe(Effect.andThen(poll(remainingAttempts - 1)));
-        }),
-      );
+    snapshotEffect.pipe(
+      Effect.flatMap((snapshot) => {
+        if (snapshot.totalRows === expectedTotalRows) {
+          return Effect.succeed(snapshot);
+        }
+        if (remainingAttempts === 0) {
+          return Effect.fail(
+            new ConnectRpcIntegrationError({
+              message: `Materialized ConnectRPC snapshot did not reach ${expectedTotalRows} rows.`,
+            }),
+          );
+        }
+        return Effect.sleep("5 millis").pipe(Effect.andThen(poll(remainingAttempts - 1)));
+      }),
+    );
   return yield* poll(100);
 });
 
@@ -453,7 +438,14 @@ describe("@effect-view-server/runtime ConnectRPC gRPC integration", () => {
           (runtime) => runtime.close,
         );
 
-        const snapshot = yield* waitForMaterializedSnapshot(runtime.client, 2);
+        const snapshot = yield* waitForMaterializedSnapshot(
+          runtime.client.snapshot("orders", {
+            select: ["id", "price", "region"],
+            orderBy: [{ field: "price", direction: "asc" }],
+            limit: 10,
+          }),
+          2,
+        );
         expect({
           rows: snapshot.rows,
           totalRows: snapshot.totalRows,
@@ -526,10 +518,9 @@ describe("@effect-view-server/runtime ConnectRPC gRPC integration", () => {
         );
         const firstSubscription = yield* Effect.acquireRelease(
           runtime.liveClient.subscribe("orders", {
+            routeBy: { region: "usa" },
             select: ["id", "price", "region"],
-            where: {
-              region: { eq: "usa" },
-            },
+            where: [{ field: "region", type: "equals", filter: "usa" }],
             orderBy: [{ field: "price", direction: "asc" }],
             limit: 10,
           }),
@@ -537,11 +528,12 @@ describe("@effect-view-server/runtime ConnectRPC gRPC integration", () => {
         );
         const secondSubscription = yield* Effect.acquireRelease(
           runtime.liveClient.subscribe("orders", {
+            routeBy: { region: "usa" },
             select: ["id", "price", "region"],
-            where: {
-              region: { eq: "usa" },
-              price: { gte: 20 },
-            },
+            where: [
+              { field: "region", type: "equals", filter: "usa" },
+              { field: "price", type: "greaterThanOrEqual", filter: 20 },
+            ],
             orderBy: [{ field: "price", direction: "asc" }],
             limit: 10,
           }),

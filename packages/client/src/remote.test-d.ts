@@ -41,10 +41,10 @@ describe("remote client type contracts", () => {
   it("preserves read-only subscription topic and result typing", () => {
     const subscription = client.subscribe("orders", {
       select: ["id", "price"],
-      where: {
-        customerId: { startsWith: "customer-" },
-        price: { gte: 10 },
-      },
+      where: [
+        { field: "customerId", type: "startsWith", filter: "customer-" },
+        { field: "price", type: "greaterThanOrEqual", filter: 10 },
+      ],
       orderBy: [{ field: "price", direction: "desc" }],
     });
 
@@ -74,27 +74,26 @@ describe("remote client type contracts", () => {
     });
 
     const invalidWhere = client.subscribe("orders", {
-      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
-      where: {
-        // @ts-expect-error remote subscribe where fields must exist on the topic row.
-        prcie: 10,
-      },
+      where: [
+        {
+          // @ts-expect-error remote subscribe where fields must exist on the topic row.
+          field: "prcie",
+          type: "equals",
+          filter: 10,
+        },
+      ],
     });
 
     const invalidOperator = client.subscribe("orders", {
-      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
-      where: {
-        price: {
-          // @ts-expect-error numeric fields do not support string filters.
-          startsWith: "10",
-        },
-      },
+      where: [
+        // @ts-expect-error numeric fields do not support string operators.
+        { field: "price", type: "startsWith", filter: "10" },
+      ],
     });
 
     const invalidOrderBy = client.subscribe("orders", {
-      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
       orderBy: [
         {

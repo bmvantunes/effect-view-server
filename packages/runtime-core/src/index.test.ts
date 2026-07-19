@@ -5,6 +5,7 @@ import {
   defineViewServerConfig,
   kafka,
   type ViewServerRuntimeError,
+  type ViewServerTransportError,
 } from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { Clock, Deferred, Effect, Fiber, Option, Queue, Schema, Stream, Tracer } from "effect";
@@ -550,6 +551,166 @@ describe("@effect-view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("captures ordinary subscription queries when subscribe is called", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCore(viewServer, {});
+      yield* runtimeCore.client.publishMany("orders", [
+        order("open-low", 10),
+        order("open-high", 20),
+        { ...order("closed", 30), status: "closed" },
+      ]);
+      const query = {
+        where: [{ field: "status", type: "equals", filter: "open" }],
+        select: ["id", "price"],
+        orderBy: [{ field: "price", direction: "asc" }],
+        offset: 0,
+        limit: 1,
+      } satisfies {
+        where: [{ field: "status"; type: "equals"; filter: "open" | "closed" }];
+        select: ["id", "price"];
+        orderBy: [{ field: "price"; direction: "asc" | "desc" }];
+        offset: number;
+        limit: number;
+      };
+      const subscribe = runtimeCore.liveClient.subscribe("orders", query);
+      expect(Reflect.set(query.where[0], "filter", "closed")).toBe(true);
+      expect(Reflect.set(query.orderBy[0], "direction", "desc")).toBe(true);
+      expect(Reflect.set(query, "offset", 1)).toBe(true);
+      expect(Reflect.set(query, "limit", 2)).toBe(true);
+
+      const subscription = yield* subscribe;
+      const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect(events[0]).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 1,
+        keys: ["open-low"],
+        rows: [{ id: "open-low", price: 10 }],
+        totalRows: 2,
+      });
+
+      yield* subscription.close();
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("rejects routeBy on ordinary internal subscriptions", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      const observer = {
+        onQueryRegistered: () => Effect.void,
+        onTerminalOccurrence: () => Effect.void,
+        onTerminalReady: () => Effect.void,
+      };
+      const subscribe: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
+        runtimeCore.internalLiveClient.subscribeInternal,
+        runtimeCore.internalLiveClient,
+        ["orders", { routeBy: { region: "UsÁ" }, select: ["id"] }],
+      );
+      const observedSubscribe: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
+        runtimeCore.internalLiveClient.subscribeObservedInternal,
+        runtimeCore.internalLiveClient,
+        ["orders", { routeBy: { region: "UsÁ" }, select: ["id"] }, observer],
+      );
+
+      expect(yield* Effect.flip(subscribe)).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Topic orders does not accept routeBy.",
+      });
+      expect(yield* Effect.flip(observedSubscribe)).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Topic orders does not accept routeBy.",
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("rejects unsnapshotable queries at every runtime-core subscription entrypoint", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      const hostileThrownValue = {
+        toString: () => {
+          throw new Error("hostile toString must never run");
+        },
+      };
+      const hostileQuery = new Proxy(
+        { select: ["id"] },
+        {
+          ownKeys: () => {
+            throw hostileThrownValue;
+          },
+        },
+      );
+      const observer = {
+        onQueryRegistered: () => Effect.void,
+        onTerminalOccurrence: () => Effect.void,
+        onTerminalReady: () => Effect.void,
+      };
+      const subscriptions: ReadonlyArray<Effect.Effect<unknown, ViewServerRuntimeError>> = [
+        Reflect.apply(
+          runtimeCore.internalLiveClient.subscribeInternal,
+          runtimeCore.internalLiveClient,
+          ["orders", hostileQuery],
+        ),
+        Reflect.apply(
+          runtimeCore.internalLiveClient.subscribeObservedInternal,
+          runtimeCore.internalLiveClient,
+          ["orders", hostileQuery, observer],
+        ),
+        Reflect.apply(
+          runtimeCore.internalLiveClient.subscribeRuntimeInternal,
+          runtimeCore.internalLiveClient,
+          ["orders", hostileQuery],
+        ),
+        Reflect.apply(
+          runtimeCore.internalLiveClient.subscribeRuntimeObservedInternal,
+          runtimeCore.internalLiveClient,
+          ["orders", hostileQuery, observer],
+        ),
+        Reflect.apply(runtimeCore.liveClient.subscribeRuntime, runtimeCore.liveClient, [
+          "orders",
+          hostileQuery,
+        ]),
+      ];
+
+      for (const subscription of subscriptions) {
+        const error = yield* Effect.flip(subscription);
+        expect(error.code).toBe("InvalidQuery");
+        expect(error.topic).toBe("orders");
+        expect(error.message).toBe("Query input could not be snapshotted at subscribe.");
+      }
+
+      yield* runtimeCore.close;
+    }),
+  );
+
+  it.effect("rejects routeBy on ordinary public runtime subscriptions", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      const subscribe: Effect.Effect<unknown, ViewServerRuntimeError | ViewServerTransportError> =
+        Reflect.apply(runtimeCore.liveClient.subscribeRuntime, runtimeCore.liveClient, [
+          "orders",
+          { routeBy: { region: "UsÁ" }, select: ["id"] },
+        ]);
+
+      expect(yield* Effect.flip(subscribe)).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Topic orders does not accept routeBy.",
+      });
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("exposes route-bypassing internals only through the internal factory", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
@@ -616,9 +777,7 @@ describe("@effect-view-server/runtime-core", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
       const missingRouteQuery = {
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         select: ["id"],
         limit: 1,
       } as const;
@@ -645,10 +804,10 @@ describe("@effect-view-server/runtime-core", () => {
         [
           "orders",
           {
-            where: {
-              region: { eq: "usa" },
-              status: { in: ["open"] },
-            },
+            where: [
+              { field: "region", type: "equals", filter: "usa" },
+              { field: "status", type: "in", filter: ["open"] },
+            ],
             select: ["id"],
             limit: 1,
           },
@@ -665,10 +824,10 @@ describe("@effect-view-server/runtime-core", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
       const leasedQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
         select: ["id", "region", "status"],
         limit: 1,
       } as const;
@@ -845,10 +1004,10 @@ describe("@effect-view-server/runtime-core", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedGrpcSourceViewServer, {});
       const leasedQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
         select: ["id", "region", "status"],
         limit: 1,
       } as const;
@@ -882,20 +1041,22 @@ describe("@effect-view-server/runtime-core", () => {
       ]);
 
       const snapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-a" },
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "customerId", type: "equals", filter: "customer-a" },
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id", "region", "status"],
         limit: 1,
       });
       const storageKeySnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-public-b" },
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "customerId", type: "equals", filter: "customer-public-b" },
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id", "region", "status"],
         limit: 1,
       });
@@ -903,9 +1064,7 @@ describe("@effect-view-server/runtime-core", () => {
         Reflect.apply(runtimeCore.internalClient.snapshot, runtimeCore.internalClient, [
           "orders",
           {
-            where: {
-              region: { eq: "usa" },
-            },
+            where: [{ field: "region", type: "equals", filter: "usa" }],
             select: ["id"],
             limit: 1,
           },
@@ -913,21 +1072,22 @@ describe("@effect-view-server/runtime-core", () => {
       const invalidRouteSnapshot = yield* Effect.flip(invalidRouteSnapshotEffect);
       const publicRuntimeSubscribe = yield* Effect.flip(
         runtimeCore.liveClient.subscribeRuntime("orders", {
-          where: {
-            customerId: { eq: "customer-a" },
-            region: { eq: "usa" },
-            status: { eq: "open" },
-          },
+          where: [
+            { field: "customerId", type: "equals", filter: "customer-a" },
+            { field: "region", type: "equals", filter: "usa" },
+            { field: "status", type: "equals", filter: "open" },
+          ],
           select: ["id"],
           limit: 1,
         }),
       );
       const subscription = yield* runtimeCore.internalLiveClient.subscribeInternal("orders", {
-        where: {
-          customerId: { eq: "customer-a" },
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "customerId", type: "equals", filter: "customer-a" },
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id"],
         limit: 1,
       });
@@ -963,7 +1123,7 @@ describe("@effect-view-server/runtime-core", () => {
         _tag: "ViewServerRuntimeError",
         code: "InvalidQuery",
         topic: "orders",
-        message: "Leased topic orders route field status must use an exact eq filter.",
+        message: "Leased topic orders requires routeBy fields: region, status.",
       });
       expect(publicRuntimeSubscribe).toStrictEqual(publicLeasedRuntimeAccessError);
       expect(events[0]).toStrictEqual({
@@ -993,16 +1153,12 @@ describe("@effect-view-server/runtime-core", () => {
       ]);
 
       const decodedSnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-decoded" },
-        },
+        where: [{ field: "customerId", type: "equals", filter: "customer-decoded" }],
         select: ["id", "price"],
         limit: 1,
       });
       const storageKeySnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-public-decoded" },
-        },
+        where: [{ field: "customerId", type: "equals", filter: "customer-public-decoded" }],
         select: ["id", "price"],
         limit: 1,
       });
@@ -1055,21 +1211,17 @@ describe("@effect-view-server/runtime-core", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
       const delayedSubscribeQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
         select: ["id"],
         limit: 1,
       } satisfies {
-        readonly where: {
-          readonly region: {
-            readonly eq: "usa";
-          };
-          readonly status: {
-            readonly eq: "open";
-          };
-        };
+        readonly where: readonly [
+          { readonly field: "region"; readonly type: "equals"; readonly filter: "usa" },
+          { readonly field: "status"; readonly type: "equals"; readonly filter: "open" },
+        ];
         readonly select: readonly ["id"];
         readonly limit: 1;
       };
@@ -1078,31 +1230,23 @@ describe("@effect-view-server/runtime-core", () => {
         runtimeCore.liveClient,
         ["orders", delayedSubscribeQuery],
       );
-      expect(Reflect.deleteProperty(delayedSubscribeQuery.where.status, "eq")).toBe(true);
-      Object.defineProperty(delayedSubscribeQuery.where.status, "in", {
-        enumerable: true,
-        value: ["open"],
-      });
+      expect(Reflect.set(delayedSubscribeQuery.where[1]!, "filter", "closed")).toBe(true);
 
       const subscribeRouteError = yield* Effect.flip(subscribeEffect);
       expect(subscribeRouteError).toStrictEqual(publicLeasedRuntimeAccessError);
 
       const delayedRuntimeQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
         select: ["id"],
         limit: 1,
       } satisfies {
-        readonly where: {
-          readonly region: {
-            readonly eq: "usa";
-          };
-          readonly status: {
-            readonly eq: "open";
-          };
-        };
+        readonly where: readonly [
+          { readonly field: "region"; readonly type: "equals"; readonly filter: "usa" },
+          { readonly field: "status"; readonly type: "equals"; readonly filter: "open" },
+        ];
         readonly select: readonly ["id"];
         readonly limit: 1;
       };
@@ -1111,11 +1255,7 @@ describe("@effect-view-server/runtime-core", () => {
         runtimeCore.liveClient,
         ["orders", delayedRuntimeQuery],
       );
-      expect(Reflect.deleteProperty(delayedRuntimeQuery.where.status, "eq")).toBe(true);
-      Object.defineProperty(delayedRuntimeQuery.where.status, "in", {
-        enumerable: true,
-        value: ["open"],
-      });
+      expect(Reflect.set(delayedRuntimeQuery.where[1]!, "filter", "closed")).toBe(true);
 
       const subscribeRuntimeRouteError = yield* Effect.flip(subscribeRuntimeEffect);
       expect(subscribeRuntimeRouteError).toStrictEqual(publicLeasedRuntimeAccessError);

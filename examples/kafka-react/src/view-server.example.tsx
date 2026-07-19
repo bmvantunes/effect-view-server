@@ -12,7 +12,7 @@ export function KafkaExampleApp() {
   const health = useViewServerHealth();
   const orders = useLiveQuery("orders", {
     select: ["id", "customerId", "status", "price", "region"],
-    where: { status: { eq: "open" } },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     orderBy: [{ field: "updatedAt", direction: "desc" }],
     limit: 20,
   });

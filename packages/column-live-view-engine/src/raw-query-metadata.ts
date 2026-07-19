@@ -1,6 +1,7 @@
 import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
 import { Schema, SchemaAST } from "effect";
 import { immutableReadonlyMap, immutableReadonlySet } from "./immutable-readonly-collection";
+import { makeFilterFieldMetadata, type FilterFieldMetadata } from "./filter-field-metadata";
 import { isRecord } from "./row-values";
 import {
   makeTopicRowValueSemantics,
@@ -25,6 +26,7 @@ export type RawQueryCompilerMetadata<Row extends object = object> = {
   readonly fieldNames: ReadonlySet<string>;
   readonly fieldOrder: ReadonlyArray<string>;
   readonly fieldMetadata: ReadonlyMap<string, ReturnType<typeof viewServerSchemaFieldMetadata>>;
+  readonly filterFields: ReadonlyMap<string, FilterFieldMetadata>;
   readonly structuredFieldNames: ReadonlySet<string>;
   readonly structuredObjectFieldNames: ReadonlySet<string>;
   readonly stringFieldNames: ReadonlySet<string>;
@@ -317,6 +319,7 @@ export const rawQueryCompilerMetadata = <
     fieldNames: immutableReadonlySet(schemaFieldNames(schema)),
     fieldOrder: Object.freeze([...schemaFieldOrder(schema)]),
     fieldMetadata: immutableReadonlyMap(schemaFieldMetadata(schema)),
+    filterFields: makeFilterFieldMetadata(schema),
     structuredFieldNames: immutableReadonlySet(schemaStructuredFieldNames(schema)),
     structuredObjectFieldNames: immutableReadonlySet(schemaStructuredObjectFieldNames(schema)),
     stringFieldNames: immutableReadonlySet(schemaStringFieldNames(schema)),

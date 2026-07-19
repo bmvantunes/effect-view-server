@@ -30,18 +30,14 @@ describe("Public wire schemas", () => {
 
       const query = yield* Schema.decodeUnknownEffect(ViewServerWireRawQuerySchema)({
         select: ["id", "quantity"],
-        where: {
-          quantity: { gte: "10" },
-        },
+        where: [{ field: "quantity", type: "greaterThanOrEqual", filter: "10" }],
         orderBy: [{ field: "quantity", direction: "asc" }],
         offset: 0,
         limit: 10,
       });
       expect(query).toStrictEqual({
         select: ["id", "quantity"],
-        where: {
-          quantity: { gte: "10" },
-        },
+        where: [{ field: "quantity", type: "greaterThanOrEqual", filter: "10" }],
         orderBy: [{ field: "quantity", direction: "asc" }],
         offset: 0,
         limit: 10,
@@ -53,9 +49,7 @@ describe("Public wire schemas", () => {
           rowCount: { aggFunc: "count" },
           totalPrice: { aggFunc: "sum", field: "price" },
         },
-        where: {
-          price: { gte: 10 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 10 }],
         orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
         offset: 0,
         limit: 10,
@@ -66,9 +60,7 @@ describe("Public wire schemas", () => {
           rowCount: { aggFunc: "count" },
           totalPrice: { aggFunc: "sum", field: "price" },
         },
-        where: {
-          price: { gte: 10 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 10 }],
         orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
         offset: 0,
         limit: 10,
@@ -296,11 +288,17 @@ describe("Public wire schemas", () => {
       });
       expect(error.type).toBe("status");
 
-      const subscribePayload = yield* Schema.decodeUnknownEffect(ViewServerSubscribePayloadSchema)({
+      const encodedSubscribePayload = yield* Schema.encodeUnknownEffect(
+        ViewServerSubscribePayloadSchema,
+      )({
         topic: "orders",
         query,
       });
+      const subscribePayload = yield* Schema.decodeUnknownEffect(ViewServerSubscribePayloadSchema)(
+        encodedSubscribePayload,
+      );
       expect(subscribePayload.topic).toBe("orders");
+      expect(subscribePayload.query).toStrictEqual(query);
 
       const backpressure = yield* Schema.decodeUnknownEffect(ViewServerBackpressureErrorSchema)({
         _tag: "ViewServerBackpressureError",

@@ -434,27 +434,21 @@ const profile: BenchmarkProfile = {
 
 const topKQuery = {
   select: ["id", "score", "status", "updatedAt"] as const,
-  where: {
-    status: { eq: "open" },
-  },
+  where: [{ field: "status", type: "equals", filter: "open" }],
   orderBy: [{ field: "score", direction: "desc" }] as const,
   limit: retainedWindowLimit,
 } as const;
 
 const countOnlyQuery = {
   select: ["id", "score", "status", "updatedAt"],
-  where: {
-    status: { eq: "open" },
-  },
+  where: [{ field: "status", type: "equals", filter: "open" }],
   orderBy: [{ field: "score", direction: "desc" }],
   limit: 0,
 } as const;
 
 const visibleDeleteBatchNarrowQuery = {
   select: ["id", "score", "status", "updatedAt"] as const,
-  where: {
-    status: { eq: "open" },
-  },
+  where: [{ field: "status", type: "equals", filter: "open" }],
   orderBy: [{ field: "score", direction: "desc" }] as const,
   limit: replacementBatchSize,
 } as const;

@@ -81,4 +81,6 @@ export type ValidateLiveQuery<Query> = RejectAggregateAliasCollisions<Query> &
 
 export type ExactLiveQueryInput<Row, Query> = Query &
   ExactLiveQuery<Row, Query> &
-  ValidateLiveQuery<Query>;
+  ValidateLiveQuery<Query> & {
+    readonly routeBy?: never;
+  };

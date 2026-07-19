@@ -18,6 +18,8 @@ import {
 
 import type { GrpcOrderValueMessage } from "../test-harness/grpc-config";
 
+const usaFeedKey = "orders/orders/leased/region=%5B%22string%22%2C%22usa%22%5D";
+
 describe("gRPC lease manager lifecycle", () => {
   it.live(
     "keeps the first engine terminal and releases a stalled leased gRPC consumer automatically",
@@ -214,8 +216,7 @@ describe("gRPC lease manager lifecycle", () => {
           until: (currentHealth) =>
             currentHealth.engine.topics.orders.activeSubscriptions === 1 &&
             currentHealth.engine.topics.orders.backpressureEvents === 1 &&
-            currentHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
-              ?.subscriberCount === 1,
+            currentHealth.grpc?.feeds.orders?.leased[usaFeedKey]?.subscriberCount === 1,
         }),
         Effect.timeout("1 second"),
       );
@@ -254,9 +255,7 @@ describe("gRPC lease manager lifecycle", () => {
         ),
         activeSubscriptions: isolatedHealth.engine.topics.orders.activeSubscriptions,
         retainedRows: isolatedHealth.engine.topics.orders.rowCount,
-        subscriberCount:
-          isolatedHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
-            ?.subscriberCount,
+        subscriberCount: isolatedHealth.grpc?.feeds.orders?.leased[usaFeedKey]?.subscriberCount,
         releaseCount,
         upstreamFinalizedWithPeerActive,
       }).toStrictEqual({
@@ -1032,12 +1031,12 @@ describe("gRPC lease manager lifecycle", () => {
       });
       const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(feed);
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(grpcOptions.sourceConfig, {});
-      const runtimeDelete = runtimeCore.internalClient.delete;
-      Object.defineProperty(runtimeCore.internalClient, "delete", {
-        value: (topic: "orders", key: string) =>
+      const runtimeDeleteStorageKey = runtimeCore.internalClient.deleteStorageKey;
+      Object.defineProperty(runtimeCore.internalClient, "deleteStorageKey", {
+        value: (topic: "orders", key: string, partitionKey: string) =>
           Effect.sync(() => {
             deleteCount += 1;
-          }).pipe(Effect.andThen(runtimeDelete(topic, key))),
+          }).pipe(Effect.andThen(runtimeDeleteStorageKey(topic, key, partitionKey))),
       });
       const health = makeLeasedGrpcHealth(grpcOptions);
       const manager = yield* makeViewServerGrpcLeaseManager(
@@ -1909,13 +1908,12 @@ describe("gRPC lease manager lifecycle", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["customerId"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         limit: 10,
       });
 
@@ -2006,13 +2004,12 @@ describe("gRPC lease manager lifecycle", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["customerId"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         limit: 10,
       });
 
@@ -2118,13 +2115,12 @@ describe("gRPC lease manager lifecycle", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["customerId"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         limit: 10,
       });
       const eventsFiber = yield* subscription.events.pipe(
@@ -2233,13 +2229,12 @@ describe("gRPC lease manager lifecycle", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["customerId"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         limit: 10,
       });
       const eventsFiber = yield* subscription.events.pipe(
@@ -2527,9 +2522,7 @@ describe("gRPC lease manager lifecycle", () => {
       expect({
         secondSubscribeError,
         released,
-        subscriberCount:
-          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-            ?.subscriberCount,
+        subscriberCount: activeHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.subscriberCount,
       }).toStrictEqual({
         secondSubscribeError: subscriptionFailure,
         released: 0,
@@ -2604,9 +2597,7 @@ describe("gRPC lease manager lifecycle", () => {
 
       expect({
         released,
-        subscriberCount:
-          activeHealth.grpc?.feeds["orders"]?.leased["orders/orders/leased/region=%22usa%22"]
-            ?.subscriberCount,
+        subscriberCount: activeHealth.grpc?.feeds["orders"]?.leased[usaFeedKey]?.subscriberCount,
       }).toStrictEqual({
         released: 0,
         subscriberCount: 1,
@@ -2687,9 +2678,7 @@ describe("gRPC lease manager lifecycle", () => {
         overlapError,
         acquireCountDuringRetirement,
         acquireCount,
-        subscriberCount:
-          replacementHealth.grpc?.feeds.orders?.leased["orders/orders/leased/region=%22usa%22"]
-            ?.subscriberCount,
+        subscriberCount: replacementHealth.grpc?.feeds.orders?.leased[usaFeedKey]?.subscriberCount,
       }).toStrictEqual({
         overlapError: {
           _tag: "ViewServerRuntimeError",

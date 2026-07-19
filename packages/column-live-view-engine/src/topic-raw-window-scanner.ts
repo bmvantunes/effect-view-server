@@ -1,5 +1,5 @@
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
-import type { TopicRawPredicatePlan } from "./raw-predicate-plan";
+import type { TopicRawPredicateFilterPlan, TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type {
   TopicRawWindowEntry,
   TopicRawWindowScanPlan,
@@ -30,6 +30,7 @@ type RowObject = object;
 
 export type TopicRawWindowScanState = {
   readonly columns: ReadonlyMap<string, TopicColumnValues>;
+  readonly keyToSlot?: ReadonlyMap<string, number>;
   readonly orderedSlotIndexes: Map<string, OrderedSlotIndex>;
   readonly rawQueryMetadata: RawQueryCompilerMetadata;
   readonly rawPredicateSlotMatchers?: WeakMap<TopicRawPredicatePlan, SlotFilterMatcher>;
@@ -43,7 +44,7 @@ const maxMaterializedPredicateCandidateSlots = maxRetainedScalarPredicateBucketS
 const materializedPredicateCandidateSlotBudget = maxMaterializedPredicateCandidateSlots + 1;
 
 type BoundedRawWindowStrategy = {
-  readonly kind: "heap" | "sorted";
+  readonly kind: "heap" | "quickselect" | "sorted";
   readonly windowEnd: number;
 };
 
@@ -51,25 +52,68 @@ export const scanTopicRawWindow = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
 ): TopicRawWindowScanResult<object> => {
-  const matchesSlot = rawPredicateMatchesSlot(state, plan);
+  const storageKeyCandidates = ownedStorageKeyCandidateSlots(state, plan.candidateStorageKeys);
+  if (storageKeyCandidates !== undefined) {
+    const matchesSlot = rawPredicateMatchesSlot(state, plan);
+    if (plan.limit === 0) {
+      return countRawWindowCandidateSlots(state, matchesSlot, storageKeyCandidates);
+    }
+    const compareSlots =
+      rawWindowSlotComparator(state, plan) ??
+      ((left, right) => plan.compare(state.slots[left]!, state.slots[right]!));
+    return scanRawWindowCandidateSlots(
+      state,
+      plan,
+      compareSlots,
+      matchesSlot,
+      storageKeyCandidates,
+    );
+  }
   if (plan.limit === 0) {
-    return countRawWindowSlots(state, plan, matchesSlot);
+    return countRawWindowSlots(state, plan);
   }
 
   const orderedWindow = rawWindowOrderedWindow(state, plan);
   if (orderedWindow !== undefined) {
     const orderedSlotCount = orderedRawWindowSlotCount(orderedWindow);
     const candidateSlots = selectedPredicateCandidateSlots(state, plan.predicate.filters, {
-      allowScalarIndexBuild: false,
+      allowScalarIndexBuild: true,
       exactRangeCandidates: plan.predicate.callbackSkippable === true,
       excludedField: orderedWindow.candidateExcludedField,
       maxSlotCount: Math.min(orderedSlotCount, materializedPredicateCandidateSlotBudget),
     });
     if (candidateSlots !== undefined && candidateSlots.slots.length < orderedSlotCount) {
+      if (
+        plan.predicate.callbackSkippable === true &&
+        candidateSlots.coveredFilters.size === plan.predicate.filters.length
+      ) {
+        if (exactCandidatesShouldUseOrderedScan(candidateSlots.slots.length, orderedSlotCount)) {
+          return scanExactCandidateSlotsInOrderedWindow(state, plan, orderedWindow, candidateSlots);
+        }
+        const compareSlots = rawWindowSlotComparator(state, plan)!;
+        return scanRawWindowCandidateSlots(
+          state,
+          plan,
+          compareSlots,
+          rawPredicateMatchesSlot(state, plan, candidateSlots.coveredFilters),
+          candidateSlots,
+        );
+      }
       const compareSlots = rawWindowSlotComparator(state, plan)!;
-      return scanRawWindowCandidateSlots(state, plan, compareSlots, matchesSlot, candidateSlots);
+      return scanRawWindowCandidateSlots(
+        state,
+        plan,
+        compareSlots,
+        rawPredicateMatchesSlot(state, plan, candidateSlots.coveredFilters),
+        candidateSlots,
+      );
     }
-    return scanRawWindowOrderedSlots(state, plan, matchesSlot, orderedWindow);
+    return scanRawWindowOrderedSlots(
+      state,
+      plan,
+      rawPredicateMatchesSlot(state, plan),
+      orderedWindow,
+    );
   }
 
   const compareSlots =
@@ -81,9 +125,37 @@ export const scanTopicRawWindow = (
     maxSlotCount: Math.min(state.slots.length, materializedPredicateCandidateSlotBudget),
   });
   if (candidateSlots !== undefined) {
-    return scanRawWindowCandidateSlots(state, plan, compareSlots, matchesSlot, candidateSlots);
+    return scanRawWindowCandidateSlots(
+      state,
+      plan,
+      compareSlots,
+      rawPredicateMatchesSlot(state, plan, candidateSlots.coveredFilters),
+      candidateSlots,
+    );
   }
-  return scanRawWindowSlots(state, plan, compareSlots, matchesSlot);
+  return scanRawWindowSlots(state, plan, compareSlots, rawPredicateMatchesSlot(state, plan));
+};
+
+const noCoveredPredicateFilters: ReadonlySet<TopicRawPredicateFilterPlan> = new Set();
+
+const ownedStorageKeyCandidateSlots = (
+  state: TopicRawWindowScanState,
+  candidateStorageKeys: (() => Iterable<string>) | undefined,
+): PredicateCandidateSlots | undefined => {
+  if (candidateStorageKeys === undefined || state.keyToSlot === undefined) {
+    return undefined;
+  }
+  const slots: Array<number> = [];
+  for (const key of candidateStorageKeys()) {
+    const slot = state.keyToSlot.get(key);
+    if (slot !== undefined) {
+      slots.push(slot);
+    }
+  }
+  return {
+    coveredFilters: noCoveredPredicateFilters,
+    slots,
+  };
 };
 
 export { insertSlotIntoRawWindowIndexes };
@@ -96,7 +168,6 @@ export {
 const countRawWindowSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
-  matchesSlot: (slot: number) => boolean,
 ): TopicRawWindowScanResult<object> => {
   const candidateSlots = selectedPredicateCandidateSlots(state, plan.predicate.filters, {
     allowScalarIndexBuild: true,
@@ -104,9 +175,14 @@ const countRawWindowSlots = (
     maxSlotCount: Math.min(state.slots.length, materializedPredicateCandidateSlotBudget),
   });
   if (candidateSlots !== undefined) {
-    return countRawWindowCandidateSlots(state, matchesSlot, candidateSlots);
+    return countRawWindowCandidateSlots(
+      state,
+      rawPredicateMatchesSlot(state, plan, candidateSlots.coveredFilters),
+      candidateSlots,
+    );
   }
 
+  const matchesSlot = rawPredicateMatchesSlot(state, plan);
   let totalRows = 0;
   for (let slot = 0; slot < state.slots.length; slot += 1) {
     if (matchesSlot(slot)) {
@@ -155,6 +231,58 @@ const scanRawWindowOrderedSlots = (
   return rawWindowScanResult(state, windowSlots, totalRows);
 };
 
+const candidateSlotsContain = (slots: ReadonlyArray<number>, candidate: number): boolean => {
+  let low = 0;
+  let high = slots.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const current = slots[middle]!;
+    if (current === candidate) {
+      return true;
+    }
+    if (current < candidate) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return false;
+};
+
+const exactCandidatesShouldUseOrderedScan = (
+  candidateCount: number,
+  orderedSlotCount: number,
+): boolean =>
+  candidateCount > 0 &&
+  candidateCount * Math.max(1, Math.ceil(Math.log2(candidateCount + 1))) >= orderedSlotCount;
+
+const scanExactCandidateSlotsInOrderedWindow = (
+  state: TopicRawWindowScanState,
+  plan: TopicRawWindowScanPlan<object>,
+  orderedWindow: OrderedRawWindow,
+  candidateSlots: PredicateCandidateSlots,
+): TopicRawWindowScanResult<object> => {
+  const windowSlots: Array<number> = [];
+  const windowEnd = plan.offset + orderedWindow.limit;
+  let matchIndex = 0;
+  for (const span of orderedWindow.spans) {
+    for (let index = span.startIndex; index < span.endIndex; index += 1) {
+      const slot = orderedWindow.slots[index]!;
+      if (!candidateSlotsContain(candidateSlots.slots, slot)) {
+        continue;
+      }
+      if (matchIndex >= plan.offset) {
+        windowSlots.push(slot);
+      }
+      matchIndex += 1;
+      if (matchIndex >= windowEnd) {
+        return rawWindowScanResult(state, windowSlots, candidateSlots.slots.length);
+      }
+    }
+  }
+  return rawWindowScanResult(state, windowSlots, candidateSlots.slots.length);
+};
+
 const scanRawWindowCandidateSlots = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
@@ -162,7 +290,17 @@ const scanRawWindowCandidateSlots = (
   matchesSlot: (slot: number) => boolean,
   candidateSlots: PredicateCandidateSlots,
 ): TopicRawWindowScanResult<object> => {
-  const boundedWindow = boundedRawWindowStrategy(plan, candidateSlots.slots.length);
+  const boundedWindow = boundedRawWindowStrategy(plan, candidateSlots.slots.length, true);
+  if (boundedWindow?.kind === "quickselect") {
+    return scanRawWindowBoundedQuickselectSlotCandidates(
+      state,
+      plan,
+      compareSlots,
+      matchesSlot,
+      boundedWindow.windowEnd,
+      candidateSlots,
+    );
+  }
   if (boundedWindow?.kind === "sorted") {
     return scanRawWindowBoundedSortedSlotCandidates(
       state,
@@ -346,6 +484,80 @@ const scanRawWindowBoundedHeapSlotCandidates = (
   return rawWindowScanResult(state, heap.slice(plan.offset), totalRows);
 };
 
+const scanRawWindowBoundedQuickselectSlotCandidates = (
+  state: TopicRawWindowScanState,
+  plan: TopicRawWindowScanPlan<object>,
+  compareSlots: (left: number, right: number) => number,
+  matchesSlot: (slot: number) => boolean,
+  windowEnd: number,
+  candidateSlots: PredicateCandidateSlots,
+): TopicRawWindowScanResult<object> => {
+  let totalRows = 0;
+  const filteredSlots: Array<number> = [];
+  for (const slot of candidateSlots.slots) {
+    if (!matchesSlot(slot)) {
+      continue;
+    }
+    totalRows += 1;
+    filteredSlots.push(slot);
+  }
+  const compareStableSlots = stableRawWindowSlotComparator(compareSlots);
+  if (filteredSlots.length > windowEnd) {
+    retainLowestRawWindowSlots(filteredSlots, windowEnd, compareStableSlots);
+    filteredSlots.length = windowEnd;
+  }
+  filteredSlots.sort(compareStableSlots);
+  return rawWindowScanResult(state, filteredSlots.slice(plan.offset), totalRows);
+};
+
+const retainLowestRawWindowSlots = (
+  slots: Array<number>,
+  count: number,
+  compareSlots: (left: number, right: number) => number,
+): void => {
+  let left = 0;
+  let right = slots.length - 1;
+  const target = count - 1;
+  while (left < right) {
+    const rangeSize = right - left + 1;
+    const pivot = partitionRawWindowSlots(slots, left, right, compareSlots);
+    if (pivot === target) {
+      return;
+    }
+    if (target < pivot) {
+      right = pivot - 1;
+    } else {
+      left = pivot + 1;
+    }
+    const retainedSize = right - left + 1;
+    if (retainedSize * 8 > rangeSize * 7) {
+      slots.sort(compareSlots);
+      return;
+    }
+  }
+};
+
+const partitionRawWindowSlots = (
+  slots: Array<number>,
+  left: number,
+  right: number,
+  compareSlots: (left: number, right: number) => number,
+): number => {
+  const pivotIndex = left + Math.floor((right - left) / 2);
+  swapRawWindowHeapSlots(slots, pivotIndex, right);
+  const pivot = slots[right]!;
+  let nextLower = left;
+  for (let index = left; index < right; index += 1) {
+    if (compareSlots(slots[index]!, pivot) >= 0) {
+      continue;
+    }
+    swapRawWindowHeapSlots(slots, nextLower, index);
+    nextLower += 1;
+  }
+  swapRawWindowHeapSlots(slots, nextLower, right);
+  return nextLower;
+};
+
 const stableRawWindowSlotComparator =
   (compareSlots: (left: number, right: number) => number) =>
   (left: number, right: number): number => {
@@ -420,20 +632,33 @@ const swapRawWindowHeapSlots = (heap: Array<number>, left: number, right: number
 const rawPredicateMatchesSlot = (
   state: TopicRawWindowScanState,
   plan: TopicRawWindowScanPlan<object>,
+  excludedFilters?: ReadonlySet<TopicRawPredicateFilterPlan>,
 ): ((slot: number) => boolean) => {
   if (plan.predicate.callbackSkippable !== true) {
     const matchesFilters = rawPredicateSlotFilterMatcher(
       plan.predicate.filters,
       state.columns,
       false,
+      excludedFilters,
     );
-    return (slot) => matchesFilters(slot) && plan.matches(state.slots[slot]!.row);
+    return (slot) => {
+      const entry = state.slots[slot]!;
+      return matchesFilters(slot) && plan.matches(entry.row, entry.key);
+    };
   }
 
-  let matchesSlot = state.rawPredicateSlotMatchers?.get(plan.predicate);
+  let matchesSlot =
+    excludedFilters === undefined ? state.rawPredicateSlotMatchers?.get(plan.predicate) : undefined;
   if (matchesSlot === undefined) {
-    matchesSlot = rawPredicateSlotFilterMatcher(plan.predicate.filters, state.columns, true);
-    state.rawPredicateSlotMatchers?.set(plan.predicate, matchesSlot);
+    matchesSlot = rawPredicateSlotFilterMatcher(
+      plan.predicate.filters,
+      state.columns,
+      true,
+      excludedFilters,
+    );
+    if (excludedFilters === undefined) {
+      state.rawPredicateSlotMatchers?.set(plan.predicate, matchesSlot);
+    }
   }
   return matchesSlot;
 };
@@ -457,6 +682,7 @@ const rawWindowScanResult = (
 const boundedRawWindowStrategy = (
   plan: TopicRawWindowScanPlan<object>,
   candidateCount: number,
+  preferQuickselectForLargeCandidateSet = false,
 ): BoundedRawWindowStrategy | undefined => {
   if (plan.limit === undefined || plan.limit <= 0) {
     return undefined;
@@ -467,6 +693,17 @@ const boundedRawWindowStrategy = (
   const windowEnd = plan.offset + plan.limit;
   if (!Number.isSafeInteger(windowEnd)) {
     return undefined;
+  }
+  if (
+    preferQuickselectForLargeCandidateSet &&
+    windowEnd <= maxSortedBoundedRawWindowEnd &&
+    windowEnd <= maxHeapBoundedRawWindowEnd &&
+    windowEnd * 4 <= candidateCount
+  ) {
+    return {
+      kind: "quickselect",
+      windowEnd,
+    };
   }
   if (windowEnd <= maxSortedBoundedRawWindowEnd) {
     return {

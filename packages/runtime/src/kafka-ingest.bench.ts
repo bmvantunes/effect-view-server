@@ -784,9 +784,7 @@ const readJsonSnapshotTimed = async (): Promise<{
     Effect.runPromise(
       startedRuntime().client.snapshot("jsonOrders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 0 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 0 }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 25,
       }),
@@ -806,9 +804,7 @@ const readProtobufSnapshotTimed = async (): Promise<{
     Effect.runPromise(
       startedRuntime().client.snapshot("protobufOrders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 0 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 0 }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 25,
       }),

@@ -117,10 +117,12 @@ export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
   readonly subscribe: {
     <
       Topic extends Extract<keyof Topics, string>,
-      const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+      const Query extends
+        | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+        | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
     >(
       topic: Topic,
-      query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+      query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
     ): Effect.Effect<
       ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
       ViewServerRuntimeError | ViewServerTransportError
@@ -150,7 +152,9 @@ export type ViewServerRuntimeLiveClient<Topics extends TopicDefinitions> =
   ViewServerLiveClient<Topics> & {
     readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>>(
       topic: Topic,
-      query: LiveQuery<TopicRow<Topics, Topic>>,
+      query: LiveQuery<TopicRow<Topics, Topic>> & {
+        readonly routeBy?: Readonly<Record<string, unknown>>;
+      },
     ) => Effect.Effect<
       ViewServerLiveSubscription<object>,
       ViewServerRuntimeError | ViewServerTransportError

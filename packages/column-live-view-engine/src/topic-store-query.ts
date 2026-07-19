@@ -24,6 +24,7 @@ import {
 } from "./raw-query-compiler";
 import { InvalidQueryError } from "./raw-query-decoder";
 import type { QueryEvaluation } from "./query-result";
+import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 import { topicStoreQueryResources, type TopicStore } from "./topic-store-state";
 
 type RowObject = object;
@@ -57,11 +58,12 @@ export const prepareTopicStoreRawQuery = Effect.fn(
 
 export const prepareTopicStoreRuntimeRawQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.raw.prepareRuntime",
-)(function* (store: TopicStore, query: unknown) {
+)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
   return yield* prepareRuntimeRawQuery(
     store.topic,
     topicStoreQueryResources(store).metadata,
     query,
+    partition,
   );
 });
 
@@ -78,11 +80,12 @@ export const prepareTopicStoreGroupedQuery = Effect.fn(
 
 export const prepareTopicStoreRuntimeGroupedQuery = Effect.fn(
   "ColumnLiveViewEngine.topicStore.query.grouped.prepareRuntime",
-)(function* (store: TopicStore, query: unknown) {
+)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
   return yield* prepareRuntimeGroupedQuery(
     store.topic,
     topicStoreQueryResources(store).metadata,
     query,
+    partition,
   );
 });
 
@@ -134,6 +137,7 @@ export const acquireTopicStoreMaterializedQueryExecution = Effect.fn(
         releaseRetainedChanges,
         groupedIncrementalAdmissionLimits,
       ),
+    compiled.partitionKey,
   );
 });
 

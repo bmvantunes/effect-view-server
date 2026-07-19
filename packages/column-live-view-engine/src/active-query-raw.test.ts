@@ -48,9 +48,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -124,9 +122,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -185,9 +181,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -262,9 +256,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -337,9 +329,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
         },
       );
@@ -415,9 +405,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id", "score"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             orderBy: [{ field: "score", direction: "desc" }],
           },
         );
@@ -508,9 +496,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 3,
         },
@@ -600,9 +586,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -676,9 +660,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -754,9 +736,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -830,9 +810,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -896,9 +874,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -970,9 +946,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             limit: 0,
           },
         );
@@ -1039,9 +1013,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1105,9 +1077,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1166,9 +1136,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1229,9 +1197,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1300,9 +1266,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id", "score"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             orderBy: [{ field: "score", direction: "desc" }],
             limit: 2,
           },
@@ -1387,9 +1351,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1462,9 +1424,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1517,9 +1477,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1624,9 +1582,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id", "score"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             orderBy: [{ field: "score", direction: "desc" }],
             limit: 2,
           },
@@ -1744,9 +1700,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id", "score"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             orderBy: [{ field: "score", direction: "desc" }],
             limit: 2,
           },
@@ -1808,9 +1762,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             limit: 0,
           },
         );
@@ -1878,9 +1830,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -1954,9 +1904,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -2046,9 +1994,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 128,
         },
@@ -2058,9 +2004,7 @@ describe("column-live-view-engine Active Query raw", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -2168,9 +2112,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id", "score"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             orderBy: [{ field: "score", direction: "desc" }],
             limit: 128,
           },
@@ -2180,9 +2122,7 @@ describe("column-live-view-engine Active Query raw", () => {
           activeQueryTestMetadata(store),
           {
             select: ["id", "score"],
-            where: {
-              status: "open",
-            },
+            where: [{ field: "status", type: "equals", filter: "open" }],
             orderBy: [{ field: "score", direction: "desc" }],
             limit: 2,
           },

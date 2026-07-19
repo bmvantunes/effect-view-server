@@ -53,6 +53,8 @@ export class TopicStore {
   ) {
     const storage = new TopicRowStorage(topic, schema, keyField);
     const subscribers = new Set<LiveTopicSubscriber>();
+    const partitionedSubscribers = new Map<string, Set<LiveTopicSubscriber>>();
+    const unpartitionedSubscribers = new Set<LiveTopicSubscriber>();
     const queryResources: TopicStoreQueryResources = Object.freeze({
       activeQueries: createActiveQueryRegistry(),
       metadata: storage.rawQueryMetadata,
@@ -62,6 +64,8 @@ export class TopicStore {
       storage,
       queryResources,
       subscribers,
+      partitionedSubscribers,
+      unpartitionedSubscribers,
       mutationSemaphore: Semaphore.makeUnsafe(1),
       notificationSemaphore: Semaphore.makeUnsafe(1),
       healthLedger: createTopicHealthLedger(),
@@ -91,6 +95,16 @@ export const openTopicStoreSubscriber = (
   const state = topicStoreState(permit.store);
   state.healthLedger.openSubscription(subscriber);
   state.subscribers.add(subscriber);
+  if (subscriber.partitionKey === undefined) {
+    state.unpartitionedSubscribers.add(subscriber);
+    return;
+  }
+  const partition = state.partitionedSubscribers.get(subscriber.partitionKey);
+  if (partition === undefined) {
+    state.partitionedSubscribers.set(subscriber.partitionKey, new Set([subscriber]));
+  } else {
+    partition.add(subscriber);
+  }
 };
 
 export const closeTopicStoreSubscriber = (
@@ -100,6 +114,15 @@ export const closeTopicStoreSubscriber = (
   const state = topicStoreState(store);
   state.healthLedger.closeSubscription(subscriber);
   state.subscribers.delete(subscriber);
+  if (subscriber.partitionKey === undefined) {
+    state.unpartitionedSubscribers.delete(subscriber);
+    return;
+  }
+  const partition = state.partitionedSubscribers.get(subscriber.partitionKey);
+  partition?.delete(subscriber);
+  if (partition?.size === 0) {
+    state.partitionedSubscribers.delete(subscriber.partitionKey);
+  }
 };
 
 export const updateTopicStoreSubscriberQueueDepth = (

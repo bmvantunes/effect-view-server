@@ -1,7 +1,14 @@
-import { format, isBigDecimal, normalize } from "effect/BigDecimal";
+import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { Result } from "effect";
+import { format, isBigDecimal, normalize, type BigDecimal } from "effect/BigDecimal";
+import { canonicalWhereKey } from "./query-where-key";
 
 type StableObjectEntry = readonly [string, StableQueryToken];
 type StableMapEntry = readonly [StableQueryToken, StableQueryToken];
+
+type StableBigDecimalToken =
+  | readonly ["bigDecimal", string]
+  | readonly ["bigDecimalExact", string, string];
 
 type StableQueryToken =
   | readonly ["null"]
@@ -10,7 +17,7 @@ type StableQueryToken =
   | readonly ["number", string]
   | readonly ["string", string]
   | readonly ["bigint", string]
-  | readonly ["bigDecimal", string]
+  | StableBigDecimalToken
   | readonly ["unsupported", string]
   | readonly ["cycle"]
   | readonly ["array", ReadonlyArray<StableQueryToken>]
@@ -20,7 +27,49 @@ type StableQueryToken =
 
 const isPlainObject = (value: object): boolean => {
   const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  return prototype === Object.prototype;
+};
+
+const plainObjectEntries = (value: object): ReadonlyArray<readonly [string, unknown]> => {
+  if (!isPlainObject(value) || Object.getOwnPropertySymbols(value).length > 0) {
+    throw new TypeError("Stable query objects must be plain data objects.");
+  }
+  const entries: Array<readonly [string, unknown]> = [];
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
+      throw new TypeError("Stable query object fields must be own enumerable data properties.");
+    }
+    entries.push([key, descriptor.value]);
+  }
+  return entries;
+};
+
+const denseArrayValues = (value: ReadonlyArray<unknown>): ReadonlyArray<unknown> => {
+  if (
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    Object.getOwnPropertySymbols(value).length > 0
+  ) {
+    throw new TypeError("Stable query arrays must be plain data arrays.");
+  }
+  // Array.isArray plus the exact Array prototype guarantees the non-configurable data descriptor.
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length")!;
+  const length: number = lengthDescriptor.value;
+  const values: Array<unknown> = [];
+  const allowed = new Set(["length"]);
+  for (let index = 0; index < length; index += 1) {
+    const key = String(index);
+    allowed.add(key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
+      throw new TypeError("Stable query arrays must be dense data arrays.");
+    }
+    values.push(descriptor.value);
+  }
+  if (Object.getOwnPropertyNames(value).some((key) => !allowed.has(key))) {
+    throw new TypeError("Stable query arrays must not contain extra properties.");
+  }
+  return values;
 };
 
 const stableNumberValue = (value: number): string => {
@@ -30,10 +79,7 @@ const stableNumberValue = (value: number): string => {
   return String(value);
 };
 
-const stableObjectName = (value: object): string => {
-  const constructor = value.constructor;
-  return typeof constructor === "function" && constructor.name !== "" ? constructor.name : "Object";
-};
+const stableObjectName = (_value: object): string => "object";
 
 const stableTokenSortKey = (value: StableQueryToken): string => JSON.stringify(value);
 
@@ -53,7 +99,21 @@ const withCycleTracking = <T extends object>(
   }
 };
 
-const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryToken => {
+type BigDecimalIdentity = "semantic" | "exact";
+
+const stableBigDecimalToken = (
+  value: BigDecimal,
+  identity: BigDecimalIdentity,
+): StableBigDecimalToken =>
+  identity === "exact"
+    ? ["bigDecimalExact", value.value.toString(), stableNumberValue(value.scale)]
+    : ["bigDecimal", format(normalize(value))];
+
+const stableQueryValue = (
+  value: unknown,
+  active: WeakSet<object>,
+  bigDecimalIdentity: BigDecimalIdentity,
+): StableQueryToken => {
   if (value === null) {
     return ["null"];
   }
@@ -73,7 +133,9 @@ const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryT
     return ["bigint", value.toString()];
   }
   if (isBigDecimal(value)) {
-    return ["bigDecimal", format(normalize(value))];
+    return isWireSafeBigDecimal(value)
+      ? stableBigDecimalToken(value, bigDecimalIdentity)
+      : ["unsupported", "bigDecimal"];
   }
   if (typeof value === "symbol") {
     return ["unsupported", "symbol"];
@@ -84,14 +146,17 @@ const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryT
   if (Array.isArray(value)) {
     return withCycleTracking(value, active, () => [
       "array",
-      value.map((entry) => stableQueryValue(entry, active)),
+      denseArrayValues(value).map((entry) => stableQueryValue(entry, active, bigDecimalIdentity)),
     ]);
   }
   if (value instanceof Map) {
     return withCycleTracking(value, active, () => {
       const entries: Array<StableMapEntry> = [];
       for (const [key, entry] of value.entries()) {
-        entries.push([stableQueryValue(key, active), stableQueryValue(entry, active)]);
+        entries.push([
+          stableQueryValue(key, active, bigDecimalIdentity),
+          stableQueryValue(entry, active, bigDecimalIdentity),
+        ]);
       }
       return [
         "map",
@@ -105,7 +170,7 @@ const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryT
     return withCycleTracking(value, active, () => {
       const entries: Array<StableQueryToken> = [];
       for (const entry of value.values()) {
-        entries.push(stableQueryValue(entry, active));
+        entries.push(stableQueryValue(entry, active, bigDecimalIdentity));
       }
       return [
         "set",
@@ -120,11 +185,267 @@ const stableQueryValue = (value: unknown, active: WeakSet<object>): StableQueryT
   }
   return withCycleTracking(value, active, () => [
     "object",
-    Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, stableQueryValue(entry, active)]),
+    plainObjectEntries(value)
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, stableQueryValue(entry, active, bigDecimalIdentity)]),
   ]);
 };
 
-export const stableQueryKey = (query: object): string =>
-  JSON.stringify(stableQueryValue(query, new WeakSet<object>()));
+type StableGraphValue =
+  | readonly ["null"]
+  | readonly ["undefined"]
+  | readonly ["boolean", boolean]
+  | readonly ["number", string]
+  | readonly ["string", string]
+  | readonly ["bigint", string]
+  | StableBigDecimalToken
+  | readonly ["unsupported", string]
+  | readonly ["cycle"]
+  | readonly ["reference", number]
+  | readonly ["embedded", StableQueryToken];
+
+type StableGraphSlot = {
+  value: StableGraphValue | undefined;
+};
+
+type StableGraphNode =
+  | {
+      readonly type: "array";
+      readonly values: ReadonlyArray<StableGraphSlot>;
+    }
+  | {
+      readonly type: "object";
+      readonly entries: ReadonlyArray<{
+        readonly key: string;
+        readonly slot: StableGraphSlot;
+      }>;
+    };
+
+type StableGraphObjectState =
+  | { readonly status: "active" }
+  | { readonly status: "complete"; readonly nodeId: number };
+
+type StableGraphWork =
+  | {
+      readonly type: "visit";
+      readonly input: unknown;
+      readonly slot: StableGraphSlot;
+      readonly bigDecimalIdentity: BigDecimalIdentity;
+      readonly isRoot: boolean;
+    }
+  | {
+      readonly type: "complete";
+      readonly input: object;
+      readonly node: StableGraphNode;
+      readonly slot: StableGraphSlot;
+      readonly bigDecimalIdentity: BigDecimalIdentity;
+    };
+
+type StableGraphWorkStack = {
+  readonly current: StableGraphWork;
+  readonly next: StableGraphWorkStack | undefined;
+};
+
+const stableGraphQueryValue = (
+  query: object,
+): readonly ["graph", StableGraphSlot, ReadonlyArray<StableGraphNode>] => {
+  const root: StableGraphSlot = { value: undefined };
+  const nodes: Array<StableGraphNode> = [];
+  const semanticNodesByValue = new WeakMap<object, StableGraphObjectState>();
+  const exactNodesByValue = new WeakMap<object, StableGraphObjectState>();
+  const canonicalNodeIds = new Map<string, number>();
+  const semanticActive = new WeakSet<object>();
+  const exactActive = new WeakSet<object>();
+  let work: StableGraphWorkStack | undefined = {
+    current: {
+      type: "visit",
+      input: query,
+      slot: root,
+      bigDecimalIdentity: "semantic",
+      isRoot: true,
+    },
+    next: undefined,
+  };
+  const push = (current: StableGraphWork): void => {
+    work = { current, next: work };
+  };
+
+  while (work !== undefined) {
+    const current = work.current;
+    work = work.next;
+
+    if (current.type === "complete") {
+      const active = current.bigDecimalIdentity === "exact" ? exactActive : semanticActive;
+      active.delete(current.input);
+      const nodeKey = JSON.stringify(current.node);
+      const existingNodeId = canonicalNodeIds.get(nodeKey);
+      const nodeId = existingNodeId ?? nodes.length;
+      if (existingNodeId === undefined) {
+        canonicalNodeIds.set(nodeKey, nodeId);
+        nodes.push(current.node);
+      }
+      const nodesByValue =
+        current.bigDecimalIdentity === "exact" ? exactNodesByValue : semanticNodesByValue;
+      nodesByValue.set(current.input, { status: "complete", nodeId });
+      current.slot.value = ["reference", nodeId];
+      continue;
+    }
+
+    const value = current.input;
+    if (value === null) {
+      current.slot.value = ["null"];
+      continue;
+    }
+    if (value === undefined) {
+      current.slot.value = ["undefined"];
+      continue;
+    }
+    if (typeof value === "boolean") {
+      current.slot.value = ["boolean", value];
+      continue;
+    }
+    if (typeof value === "number") {
+      current.slot.value = ["number", stableNumberValue(value)];
+      continue;
+    }
+    if (typeof value === "string") {
+      current.slot.value = ["string", value];
+      continue;
+    }
+    if (typeof value === "bigint") {
+      current.slot.value = ["bigint", value.toString()];
+      continue;
+    }
+    if (isBigDecimal(value)) {
+      current.slot.value = isWireSafeBigDecimal(value)
+        ? stableBigDecimalToken(value, current.bigDecimalIdentity)
+        : ["unsupported", "bigDecimal"];
+      continue;
+    }
+    if (typeof value === "symbol") {
+      current.slot.value = ["unsupported", "symbol"];
+      continue;
+    }
+    if (typeof value === "function") {
+      current.slot.value = ["unsupported", "function"];
+      continue;
+    }
+    if (value instanceof Map || value instanceof Set) {
+      const active = current.bigDecimalIdentity === "exact" ? exactActive : semanticActive;
+      current.slot.value = [
+        "embedded",
+        stableQueryValue(value, active, current.bigDecimalIdentity),
+      ];
+      continue;
+    }
+    if (!Array.isArray(value) && !isPlainObject(value)) {
+      current.slot.value = ["unsupported", stableObjectName(value)];
+      continue;
+    }
+
+    const nodesByValue =
+      current.bigDecimalIdentity === "exact" ? exactNodesByValue : semanticNodesByValue;
+    const active = current.bigDecimalIdentity === "exact" ? exactActive : semanticActive;
+    const state = nodesByValue.get(value);
+    if (state?.status === "active") {
+      current.slot.value = ["cycle"];
+      continue;
+    }
+    if (state?.status === "complete") {
+      current.slot.value = ["reference", state.nodeId];
+      continue;
+    }
+
+    nodesByValue.set(value, { status: "active" });
+    active.add(value);
+    if (Array.isArray(value)) {
+      const children = denseArrayValues(value).map((input) => ({
+        input,
+        slot: { value: undefined } satisfies StableGraphSlot,
+      }));
+      const node: StableGraphNode = {
+        type: "array",
+        values: children.map(({ slot }) => slot),
+      };
+      push({
+        type: "complete",
+        input: value,
+        node,
+        slot: current.slot,
+        bigDecimalIdentity: current.bigDecimalIdentity,
+      });
+      children.reverse();
+      for (const child of children) {
+        push({
+          type: "visit",
+          input: child.input,
+          slot: child.slot,
+          bigDecimalIdentity: current.bigDecimalIdentity,
+          isRoot: false,
+        });
+      }
+      continue;
+    }
+
+    const entries = plainObjectEntries(value)
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => ({ key, entry, slot: { value: undefined } }));
+    const node: StableGraphNode = {
+      type: "object",
+      entries: entries.map(({ key, slot }) => ({ key, slot })),
+    };
+    push({
+      type: "complete",
+      input: value,
+      node,
+      slot: current.slot,
+      bigDecimalIdentity: current.bigDecimalIdentity,
+    });
+    entries.reverse();
+    for (const entry of entries) {
+      push({
+        type: "visit",
+        input: entry.entry,
+        slot: entry.slot,
+        bigDecimalIdentity:
+          current.isRoot && entry.key === "routeBy" ? "exact" : current.bigDecimalIdentity,
+        isRoot: false,
+      });
+    }
+  }
+
+  return ["graph", root, nodes];
+};
+
+const canonicalQueryInput = (query: object): object => {
+  const canonical: Record<string, unknown> = {};
+  for (const [key, value] of plainObjectEntries(query)) {
+    if (key === "where") {
+      const whereKey = canonicalWhereKey(value);
+      if (whereKey === undefined) {
+        continue;
+      }
+      Object.defineProperty(canonical, key, {
+        configurable: true,
+        enumerable: true,
+        value: Object.freeze({ canonicalWhere: whereKey }),
+        writable: true,
+      });
+      continue;
+    }
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+  }
+  return canonical;
+};
+
+const invalidQueryKey = JSON.stringify(["invalidQuery"]);
+
+export const stableQueryKey = (query: object): string => {
+  const key = Result.try(() => JSON.stringify(stableGraphQueryValue(canonicalQueryInput(query))));
+  return Result.isFailure(key) ? invalidQueryKey : key.success;
+};

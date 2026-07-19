@@ -30,10 +30,11 @@ describe("Grouped live wire codec", () => {
           maxPrice: { aggFunc: "max", field: "price" },
           distinctPrice: { aggFunc: "countDistinct", field: "price" },
         },
-        where: {
-          id: { startsWith: "a" },
-          price: { in: [10, 11], gte: 10 },
-        },
+        where: [
+          { field: "id", type: "startsWith", filter: "a" },
+          { field: "price", type: "in", filter: [10, 11] },
+          { field: "price", type: "greaterThanOrEqual", filter: 10 },
+        ],
         orderBy: [
           { field: "id", direction: "asc" },
           { aggregate: "totalPrice", direction: "desc" },

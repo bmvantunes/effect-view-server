@@ -1,4 +1,5 @@
-import { format as formatBigDecimal, isBigDecimal, normalize, Order } from "effect/BigDecimal";
+import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { format as formatBigDecimal, isBigDecimal, normalize } from "effect/BigDecimal";
 import { isPlainRecord } from "./row-values";
 
 type StableQueryObjectEntry = readonly [string, StableQueryValueToken];
@@ -145,7 +146,7 @@ export const compareFilterValue = (left: unknown, right: unknown): number | unde
     return left === right ? 0 : left < right ? -1 : 1;
   }
   if (isBigDecimal(left) && isBigDecimal(right)) {
-    return Order(left, right);
+    return compareWireSafeBigDecimal(left, right);
   }
   return undefined;
 };

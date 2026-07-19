@@ -63,6 +63,7 @@ export const acquireMaterializedQueryExecution = Effect.fn(
   cacheKey: string,
   resultSemantics: QueryResultSemantics<ResultRow>,
   makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution,
+  partitionKey?: string,
 ) {
   return Effect.sync(() => {
     const map = getActiveMaterializedQueryMap(registry);
@@ -79,12 +80,12 @@ export const acquireMaterializedQueryExecution = Effect.fn(
         return;
       }
       retainedChanges = false;
-      store.releaseChanges();
+      store.releaseChanges(partitionKey);
     };
     const execution = makeExecution(releaseRetainedChanges);
     if (execution.incremental) {
       retainedChanges = true;
-      store.retainChanges();
+      store.retainChanges(partitionKey);
     }
     map.set(cacheKey, {
       execution,

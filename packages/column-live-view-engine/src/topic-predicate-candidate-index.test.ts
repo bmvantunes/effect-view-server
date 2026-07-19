@@ -3,6 +3,8 @@ import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { InvalidRowError } from "./index";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
+import type { TopicRawPredicateFilterPlan } from "./raw-predicate-plan";
+import { normalizeFilterText } from "./filter-expression";
 import { fieldValue, scalarEqualityKey } from "./row-values";
 import { scanTopicRawWindow } from "./topic-raw-window-scanner";
 import {
@@ -12,6 +14,7 @@ import {
   removeSlotFromScalarPredicateIndexes,
   selectedPredicateCandidateSlots,
 } from "./topic-predicate-candidate-index";
+import { rawPredicateSlotFilterMatcher } from "./topic-slot-predicate";
 import {
   columnValue,
   createTopicColumnValuesFromArray,
@@ -28,7 +31,708 @@ import { topicStoreTestQueryInterface } from "../test-harness/topic-store";
 import { makeColumns } from "../test-harness/columns";
 import { order, Order, position, Position } from "../test-harness/public-engine";
 
+const TextRow = Schema.Struct({
+  id: Schema.String,
+  status: Schema.String,
+  price: Schema.Number,
+  updatedAt: Schema.Number,
+});
+
 describe("Topic predicate candidate index", () => {
+  it.effect("rebuilds an exact scalar bucket after its last row is deleted", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      const readModel = topicStoreTestQueryInterface(store);
+      const scanOpen = () =>
+        readModel.scanRawWindow({
+          predicate: {
+            filters: [{ field: "status", operator: "eq", value: "open" }],
+            callbackRequired: false,
+            callbackSkippable: true,
+          },
+          orderBy: [],
+          matches: () => {
+            throw new Error("complete exact predicates should not call row callbacks");
+          },
+          compare: (left, right) => left.key.localeCompare(right.key),
+          offset: 0,
+          limit: undefined,
+        });
+
+      yield* publishTopicStoreRow(store, order("first", "open", 1, 1), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      expect(scanOpen().keys).toStrictEqual(["first"]);
+      yield* deleteTopicStoreRow(store, "first");
+      yield* publishTopicStoreRow(store, order("second", "open", 2, 2), (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+
+      expect(scanOpen().keys).toStrictEqual(["second"]);
+    }),
+  );
+
+  it.effect("quickselects small ordered windows from large filtered candidate sets", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      const prices = [9, 3, 8, 10, 7, 4, 6, 2, 1, 0];
+      const priceByKey = new Map(prices.map((price, index) => [`open-${index}`, price]));
+      yield* publishTopicStoreRows(
+        store,
+        [
+          ...prices.map((price, index) => order(`open-${index}`, "open", price, index)),
+          order("closed-1", "closed", 10, 10),
+          order("closed-2", "closed", 11, 11),
+        ],
+        (topic, message) => InvalidRowError.make({ topic, message }),
+      );
+
+      const result = topicStoreTestQueryInterface(store).scanRawWindow({
+        predicate: {
+          filters: [
+            {
+              field: "status",
+              operator: "in",
+              values: ["open"],
+              valueKeys: new Set(["string:4:open"]),
+            },
+            { field: "price", operator: "gt", value: 1 },
+          ],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("complete quickselect predicates should not call row callbacks");
+        },
+        compare: (left, right) => priceByKey.get(left.key)! - priceByKey.get(right.key)!,
+        offset: 1,
+        limit: 1,
+      });
+
+      expect(result.keys).toStrictEqual(["open-1"]);
+      expect(result.totalRows).toBe(8);
+
+      const alreadyBounded = topicStoreTestQueryInterface(store).scanRawWindow({
+        predicate: {
+          filters: [
+            {
+              field: "status",
+              operator: "in",
+              values: ["open"],
+              valueKeys: new Set(["string:4:open"]),
+            },
+            { field: "price", operator: "gt", value: 8 },
+          ],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("bounded quickselect predicates should not call row callbacks");
+        },
+        compare: (left, right) => priceByKey.get(left.key)! - priceByKey.get(right.key)!,
+        offset: 1,
+        limit: 1,
+      });
+
+      expect(alreadyBounded.keys).toStrictEqual(["open-3"]);
+      expect(alreadyBounded.totalRows).toBe(2);
+    }),
+  );
+
+  it.effect("falls back from adversarial quickselect partitions with bounded comparisons", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("orders", Order, "id", () => {});
+      const rowCount = 4_096;
+      const pivotSlot = Math.floor((rowCount - 1) / 2);
+      const prices = Array.from({ length: rowCount }, (_value, index) =>
+        index === pivotSlot ? 1_000_000 : index,
+      );
+      const priceByKey = new Map(prices.map((price, index) => [`open-${index}`, price]));
+      yield* publishTopicStoreRows(
+        store,
+        [
+          ...prices.map((price, index) => order(`open-${index}`, "open", price, index)),
+          order("closed", "closed", -1, rowCount),
+        ],
+        (topic, message) => InvalidRowError.make({ topic, message }),
+      );
+
+      let comparisons = 0;
+      const result = topicStoreTestQueryInterface(store).scanRawWindow({
+        predicate: {
+          filters: [
+            {
+              field: "status",
+              operator: "in",
+              values: ["open"],
+              valueKeys: new Set(["string:4:open"]),
+            },
+          ],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("complete adversarial predicates should not call row callbacks");
+        },
+        compare: (left, right) => {
+          comparisons += 1;
+          return priceByKey.get(left.key)! - priceByKey.get(right.key)!;
+        },
+        offset: 0,
+        limit: 10,
+      });
+
+      expect(result.keys).toStrictEqual(
+        Array.from({ length: 10 }, (_value, index) => `open-${index}`),
+      );
+      expect(result.totalRows).toBe(rowCount);
+      expect(comparisons).toBeLessThan(rowCount * 40);
+    }),
+  );
+
+  it("does not build normalized text indexes when index creation is disabled", () => {
+    const rows = [
+      { id: "row", status: "Résumé", price: 10, updatedAt: 1 },
+      { id: "other", status: "other", price: 20, updatedAt: 2 },
+    ];
+    const metadata = rawQueryCompilerMetadata(TextRow);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["status", rows.map((row) => row.status)],
+        ["price", rows.map((row) => row.price)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+
+    const candidate = selectedPredicateCandidateSlots(
+      state,
+      [
+        {
+          field: "status",
+          operator: "textEq",
+          value: "resume",
+          caseSensitive: false,
+          accentSensitive: false,
+        },
+      ],
+      {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+      },
+    );
+
+    expect(candidate).toBeUndefined();
+    expect(state.scalarPredicateIndexes.size).toBe(0);
+
+    const nonStringCandidate = selectedPredicateCandidateSlots(
+      state,
+      [
+        {
+          field: "price",
+          operator: "textEq",
+          value: "10",
+          caseSensitive: false,
+          accentSensitive: false,
+        },
+      ],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+      },
+    );
+    const missingCandidate = selectedPredicateCandidateSlots(
+      state,
+      [
+        {
+          field: "missing",
+          operator: "textEq",
+          value: "resume",
+          caseSensitive: false,
+          accentSensitive: false,
+        },
+      ],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+      },
+    );
+
+    expect(nonStringCandidate).toBeUndefined();
+    expect(missingCandidate).toBeUndefined();
+
+    const sensitivityCandidates = [
+      {
+        caseSensitive: true,
+        accentSensitive: false,
+        value: normalizeFilterText("Résumé", true, false),
+      },
+      {
+        caseSensitive: false,
+        accentSensitive: true,
+        value: normalizeFilterText("Résumé", false, true),
+      },
+      {
+        caseSensitive: true,
+        accentSensitive: true,
+        value: normalizeFilterText("Résumé", true, true),
+      },
+    ].map((mode) =>
+      selectedPredicateCandidateSlots(
+        state,
+        [
+          {
+            field: "status",
+            operator: "textEq",
+            value: mode.value,
+            caseSensitive: mode.caseSensitive,
+            accentSensitive: mode.accentSensitive,
+          },
+        ],
+        {
+          allowScalarIndexBuild: true,
+          exactRangeCandidates: true,
+        },
+      ),
+    );
+    const repeatedCandidate = selectedPredicateCandidateSlots(
+      state,
+      [
+        {
+          field: "status",
+          operator: "textEq",
+          value: normalizeFilterText("Résumé", true, false),
+          caseSensitive: true,
+          accentSensitive: false,
+        },
+      ],
+      {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+      },
+    );
+
+    expect(sensitivityCandidates.map((entry) => entry?.slots)).toStrictEqual([[0], [0], [0]]);
+    expect(repeatedCandidate?.slots).toBe(sensitivityCandidates[0]?.slots);
+  });
+
+  it("maintains every normalized text sensitivity index and ignores missing strings", () => {
+    const metadata = rawQueryCompilerMetadata(TextRow);
+    const value = "Résumé";
+    const modes = [
+      { caseSensitive: false, accentSensitive: false },
+      { caseSensitive: true, accentSensitive: false },
+      { caseSensitive: false, accentSensitive: true },
+      { caseSensitive: true, accentSensitive: true },
+    ];
+    const buckets = new Map<string, Set<number>>();
+    const normalizedStringBuckets = new Map<
+      string,
+      {
+        readonly caseSensitive: boolean;
+        readonly accentSensitive: boolean;
+        readonly normalizedValue: string;
+      }
+    >();
+    for (const mode of modes) {
+      const normalizedValue = normalizeFilterText(value, mode.caseSensitive, mode.accentSensitive);
+      const key = `normalized-string:${mode.caseSensitive ? 1 : 0}:${mode.accentSensitive ? 1 : 0}:${normalizedValue.length}:${normalizedValue}`;
+      buckets.set(key, new Set());
+      normalizedStringBuckets.set(key, { ...mode, normalizedValue });
+    }
+    const indexes = createScalarPredicateIndexes();
+    indexes.set("status", {
+      buckets,
+      indexedKeys: new Set(buckets.keys()),
+      normalizedStringBuckets,
+      normalizedStringModes: new Map(
+        modes.map((mode) => [
+          `${mode.caseSensitive ? 1 : 0}:${mode.accentSensitive ? 1 : 0}`,
+          { ...mode, count: 1 },
+        ]),
+      ),
+      orderedBucketSlots: new Map(),
+    });
+    const valueColumn = createTopicColumnValuesFromArray("status", metadata, [value]);
+    const missingColumn = createTopicColumnValuesFromArray("status", metadata, [undefined]);
+
+    addSlotToScalarPredicateIndexes(indexes, new Map([["status", missingColumn]]), 0);
+    removeSlotFromScalarPredicateIndexes(indexes, new Map([["status", missingColumn]]), 0);
+    addSlotToScalarPredicateIndexes(indexes, new Map([["status", valueColumn]]), 0);
+    expect([...buckets.values()].map((bucket) => [...bucket])).toStrictEqual([[0], [0], [0], [0]]);
+
+    removeSlotFromScalarPredicateIndexes(indexes, new Map([["status", valueColumn]]), 0);
+    expect(buckets.size).toBe(0);
+    expect(indexes.size).toBe(0);
+  });
+
+  it("retains shared normalized modes until their final bucket is removed", () => {
+    const rows = [
+      { id: "resume", status: "Résumé", price: 10, updatedAt: 1 },
+      { id: "other", status: "other", price: 20, updatedAt: 2 },
+      { id: "excluded", status: "excluded", price: 30, updatedAt: 3 },
+    ];
+    const metadata = rawQueryCompilerMetadata(TextRow);
+    const columns = makeColumns(metadata, [
+      ["id", rows.map((row) => row.id)],
+      ["status", rows.map((row) => row.status)],
+      ["price", rows.map((row) => row.price)],
+    ]);
+    const state = {
+      columns,
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+    const resume = normalizeFilterText("Résumé", false, false);
+    const other = normalizeFilterText("other", false, false);
+
+    expect(
+      selectedPredicateCandidateSlots(
+        state,
+        [
+          {
+            field: "status",
+            operator: "textIn",
+            values: [resume, other],
+            valueSet: new Set([resume, other]),
+            caseSensitive: false,
+            accentSensitive: false,
+          },
+        ],
+        { allowScalarIndexBuild: true, exactRangeCandidates: true },
+      )?.slots,
+    ).toStrictEqual([0, 1]);
+
+    const index = state.scalarPredicateIndexes.get("status")!;
+    expect(index.normalizedStringModes.get("0:0")?.count).toBe(2);
+    removeSlotFromScalarPredicateIndexes(state.scalarPredicateIndexes, columns, 0);
+    expect(index.normalizedStringModes.get("0:0")?.count).toBe(1);
+    removeSlotFromScalarPredicateIndexes(state.scalarPredicateIndexes, columns, 1);
+    expect(state.scalarPredicateIndexes.has("status")).toBe(false);
+  });
+
+  it("matches exact string equality directly and does not build missing buckets when disabled", () => {
+    const rows = [
+      { id: "open", status: "open", price: 10, updatedAt: 1 },
+      { id: "closed", status: "closed", price: 20, updatedAt: 2 },
+    ];
+    const metadata = rawQueryCompilerMetadata(TextRow);
+    const columns = makeColumns(metadata, [
+      ["id", rows.map((row) => row.id)],
+      ["status", rows.map((row) => row.status)],
+      ["price", rows.map((row) => row.price)],
+    ]);
+    const matcher = rawPredicateSlotFilterMatcher(
+      [{ field: "status", operator: "eq", value: "open" }],
+      columns,
+      true,
+    );
+    expect([matcher(0), matcher(1)]).toStrictEqual([true, false]);
+
+    const state = {
+      columns,
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+    expect(
+      selectedPredicateCandidateSlots(
+        state,
+        [{ field: "status", operator: "eq", value: "missing" }],
+        { allowScalarIndexBuild: false, exactRangeCandidates: true },
+      ),
+    ).toBeUndefined();
+    expect(
+      selectedPredicateCandidateSlots(state, [{ field: "status", operator: "eq", value: "open" }], {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+      })?.slots,
+    ).toStrictEqual([0]);
+    expect(
+      selectedPredicateCandidateSlots(
+        state,
+        [{ field: "status", operator: "eq", value: "missing" }],
+        { allowScalarIndexBuild: false, exactRangeCandidates: true },
+      ),
+    ).toBeUndefined();
+  });
+
+  it.effect("indexes ordered normalized text equality across row mutations", () =>
+    Effect.gen(function* () {
+      const store = new TopicStore("textRows", TextRow, "id", () => {});
+      yield* publishTopicStoreRows(
+        store,
+        [
+          { id: "accented", status: "Résumé", price: 10, updatedAt: 1 },
+          { id: "plain", status: "resume", price: 20, updatedAt: 2 },
+          { id: "other", status: "closed", price: 30, updatedAt: 3 },
+        ],
+        (topic, message) => InvalidRowError.make({ topic, message }),
+      );
+      const readModel = topicStoreTestQueryInterface(store);
+      const plan = {
+        predicate: {
+          filters: [
+            {
+              field: "status",
+              operator: "textEq" as const,
+              value: "resume",
+              caseSensitive: false,
+              accentSensitive: false,
+            },
+          ],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [{ field: "updatedAt", direction: "asc" as const }],
+        storageOrderBy: [{ field: "updatedAt", direction: "asc" as const }],
+        matches: () => {
+          throw new Error("normalized text candidates should not call row callbacks");
+        },
+        compare: (left: { readonly key: string }, right: { readonly key: string }) =>
+          left.key.localeCompare(right.key),
+        offset: 0,
+        limit: undefined,
+      };
+
+      expect(readModel.scanRawWindow(plan).keys).toStrictEqual(["accented", "plain"]);
+
+      yield* publishTopicStoreRow(
+        store,
+        { id: "added", status: "RÉSUMÉ", price: 40, updatedAt: 4 },
+        (topic, message) => InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(
+        store,
+        { id: "other", status: "résumé", price: 30, updatedAt: 5 },
+        (topic, message) => InvalidRowError.make({ topic, message }),
+      );
+      yield* deleteTopicStoreRow(store, "plain");
+
+      expect(readModel.scanRawWindow(plan).keys).toStrictEqual(["accented", "added", "other"]);
+    }),
+  );
+
+  it("plans repeated same-field ranges in linear filter reads", () => {
+    const rows = Array.from({ length: 1_000 }, (_value, index) => ({
+      id: `row-${index}`,
+      status: "open",
+      price: index,
+      updatedAt: index,
+    }));
+    const metadata = rawQueryCompilerMetadata(TextRow);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+    scanTopicRawWindow(state, {
+      predicate: { filters: [], callbackRequired: false, callbackSkippable: true },
+      orderBy: [{ field: "price", direction: "asc" }],
+      storageOrderBy: [{ field: "price", direction: "asc" }],
+      matches: () => {
+        throw new Error("ordered-index warmup should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 10,
+    });
+
+    const filters: ReadonlyArray<TopicRawPredicateFilterPlan> = Array.from(
+      { length: 200 },
+      (): TopicRawPredicateFilterPlan => ({ field: "price", operator: "gte", value: 900 }),
+    );
+    let numericReads = 0;
+    const countedFilters = new Proxy(filters, {
+      get: (target, property, receiver) => {
+        if (typeof property === "string" && /^\d+$/u.test(property)) {
+          numericReads += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const result = scanTopicRawWindow(state, {
+      predicate: {
+        filters: countedFilters,
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [],
+      matches: () => {
+        throw new Error("consolidated range candidates should not call row callbacks");
+      },
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: undefined,
+    });
+
+    expect(result.totalRows).toBe(100);
+    expect(numericReads).toBeLessThan(1_000);
+  });
+
+  it("stops repeated scalar planning after the first empty candidate", () => {
+    const rowCount = 1_000;
+    const statusValues = Array.from({ length: rowCount }, () => "open");
+    let scalarReads = 0;
+    const statusColumn: TopicColumnValues = {
+      kind: "string",
+      length: rowCount,
+      get: (slot) => {
+        scalarReads += 1;
+        return statusValues[slot];
+      },
+      stringAt: (slot) => {
+        scalarReads += 1;
+        return statusValues[slot];
+      },
+    };
+    const rows = statusValues.map((status, index) => ({
+      id: `row-${index}`,
+      status,
+      price: index,
+      updatedAt: index,
+    }));
+    const state = {
+      columns: new Map<string, TopicColumnValues>([["status", statusColumn]]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: rawQueryCompilerMetadata(TextRow),
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+    const filters: ReadonlyArray<TopicRawPredicateFilterPlan> = Array.from(
+      { length: 200 },
+      (_value, index) => ({ field: "status", operator: "eq", value: `missing-${index}` }),
+    );
+
+    const candidate = selectedPredicateCandidateSlots(state, filters, {
+      allowScalarIndexBuild: true,
+      exactRangeCandidates: true,
+    });
+
+    expect(candidate?.slots).toStrictEqual([]);
+    expect(scalarReads).toBeLessThan(rowCount * 2);
+  });
+
+  it("intersects contradictory present scalar candidates before planning later filters", () => {
+    const rowCount = 1_000;
+    const statusValues = Array.from({ length: rowCount }, (_value, index) => `status-${index}`);
+    let scalarReads = 0;
+    const statusColumn: TopicColumnValues = {
+      kind: "string",
+      length: rowCount,
+      get: (slot) => statusValues[slot],
+      stringAt: (slot) => {
+        scalarReads += 1;
+        return statusValues[slot];
+      },
+    };
+    const rows = statusValues.map((status, index) => ({
+      id: `row-${index}`,
+      status,
+      price: index,
+      updatedAt: index,
+    }));
+    const state = {
+      columns: new Map<string, TopicColumnValues>([["status", statusColumn]]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: rawQueryCompilerMetadata(TextRow),
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+    const filters: ReadonlyArray<TopicRawPredicateFilterPlan> = Array.from(
+      { length: 200 },
+      (_value, index) => ({ field: "status", operator: "eq", value: `status-${index}` }),
+    );
+
+    const candidate = selectedPredicateCandidateSlots(state, filters, {
+      allowScalarIndexBuild: true,
+      exactRangeCandidates: true,
+    });
+
+    expect(candidate?.slots).toStrictEqual([]);
+    expect(scalarReads).toBeLessThan(rowCount * 3);
+  });
+
+  it("sorts sparse exact candidates instead of scanning a different ordered index", () => {
+    const rowCount = 10_000;
+    const rows = Array.from({ length: rowCount }, (_value, index) => ({
+      id: `row-${index}`,
+      status: index === rowCount - 1 ? "rare" : "open",
+      price: index,
+      updatedAt: rowCount - index,
+    }));
+    const metadata = rawQueryCompilerMetadata(TextRow);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["status", rows.map((row) => row.status)],
+        ["updatedAt", rows.map((row) => row.updatedAt)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+    const orderedPlan = {
+      predicate: {
+        filters: [],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      orderBy: [{ field: "updatedAt", direction: "asc" as const }],
+      storageOrderBy: [{ field: "updatedAt", direction: "asc" as const }],
+      matches: () => true,
+      compare: (left: { readonly key: string }, right: { readonly key: string }) =>
+        left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 10,
+    };
+    scanTopicRawWindow(state, orderedPlan);
+    const orderedIndex = [...state.orderedSlotIndexes.values()][0]!;
+    const orderedSlots = orderedIndex.slots;
+    let orderedSlotReads = 0;
+    Object.defineProperty(orderedIndex, "slots", {
+      value: new Proxy(orderedSlots, {
+        get: (target, property, receiver) => {
+          if (typeof property === "string" && /^\d+$/u.test(property)) {
+            orderedSlotReads += 1;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+    });
+
+    const result = scanTopicRawWindow(state, {
+      ...orderedPlan,
+      predicate: {
+        filters: [{ field: "status", operator: "eq", value: "rare" }],
+        callbackRequired: false,
+        callbackSkippable: true,
+      },
+      matches: () => {
+        throw new Error("exact sparse candidates should not call row callbacks");
+      },
+    });
+
+    expect(result.keys).toStrictEqual([`row-${rowCount - 1}`]);
+    expect(result.totalRows).toBe(1);
+    expect(orderedSlotReads).toBeLessThan(100);
+  });
+
   it.effect("skips row callbacks for complete column predicate plans", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});
@@ -80,8 +784,8 @@ describe("Topic predicate candidate index", () => {
         limit: undefined,
       });
 
-      expect(optionalNotEqual.keys).toStrictEqual(["matched-note"]);
-      expect(optionalNotEqual.totalRows).toBe(1);
+      expect(optionalNotEqual.keys).toStrictEqual(["matched-note", "missing-note"]);
+      expect(optionalNotEqual.totalRows).toBe(2);
     }),
   );
 
@@ -1348,7 +2052,7 @@ describe("Topic predicate candidate index", () => {
 
     expect(countClosedRows.keys).toStrictEqual([]);
     expect(countClosedRows.totalRows).toBe(1);
-    expect(statusReadCount).toBe(1);
+    expect(statusReadCount).toBe(0);
   });
 
   it("keeps exact candidate scans aligned with bounded and ordered raw windows", () => {
@@ -1589,7 +2293,7 @@ describe("Topic predicate candidate index", () => {
 
     expect(orderedCandidate.keys).toStrictEqual(["high"]);
     expect(orderedCandidate.totalRows).toBe(1);
-    expect(state.scalarPredicateIndexes.size).toBe(0);
+    expect(state.scalarPredicateIndexes.has("symbol")).toBe(true);
 
     const openScalarBucket = selectedPredicateCandidateSlots(
       state,
@@ -1658,6 +2362,9 @@ describe("Topic predicate candidate index", () => {
     scalarPredicateIndexes.set("missing", {
       buckets: new Map([["string:4:open", new Set([0])]]),
       indexedKeys: new Set(["string:4:open"]),
+      normalizedStringBuckets: new Map(),
+      normalizedStringModes: new Map(),
+      orderedBucketSlots: new Map(),
     });
 
     addSlotToScalarPredicateIndexes(scalarPredicateIndexes, new Map(), 0);
@@ -1897,6 +2604,81 @@ describe("Topic predicate candidate index", () => {
     expect(rangeNotSmallerThanBudget).toBeUndefined();
   });
 
+  it("abandons scalar and range candidates as soon as they exceed the scan budget", () => {
+    const rows = [
+      order("a", "open", 1, 1),
+      order("b", "open", 2, 2),
+      order("c", "closed", 3, 3),
+      order("d", "cancelled", 4, 4),
+    ];
+    const metadata = rawQueryCompilerMetadata(Order);
+    const state = {
+      columns: makeColumns(metadata, [
+        ["id", rows.map((row) => row.id)],
+        ["price", rows.map((row) => row.price)],
+        ["status", rows.map((row) => row.status)],
+      ]),
+      orderedSlotIndexes: new Map(),
+      rawQueryMetadata: metadata,
+      scalarPredicateIndexes: createScalarPredicateIndexes(),
+      slots: rows.map((row) => ({ key: row.id, row })),
+    };
+
+    expect(
+      selectedPredicateCandidateSlots(state, [{ field: "status", operator: "eq", value: "open" }], {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: rows.length,
+      })?.slots,
+    ).toStrictEqual([0, 1]);
+    expect(
+      selectedPredicateCandidateSlots(state, [{ field: "status", operator: "eq", value: "open" }], {
+        allowScalarIndexBuild: true,
+        exactRangeCandidates: true,
+        maxSlotCount: 1,
+      }),
+    ).toBeUndefined();
+    expect(
+      selectedPredicateCandidateSlots(
+        state,
+        [{ field: "status", operator: "eq", value: "closed" }],
+        {
+          allowScalarIndexBuild: true,
+          exactRangeCandidates: true,
+          maxSlotCount: 0,
+        },
+      ),
+    ).toBeUndefined();
+    expect(
+      selectedPredicateCandidateSlots(
+        state,
+        [{ field: "status", operator: "in", values: ["closed", "cancelled"] }],
+        {
+          allowScalarIndexBuild: true,
+          exactRangeCandidates: true,
+          maxSlotCount: 1,
+        },
+      ),
+    ).toBeUndefined();
+
+    scanTopicRawWindow(state, {
+      predicate: { filters: [], callbackRequired: false, callbackSkippable: true },
+      orderBy: [{ field: "price", direction: "asc" }],
+      storageOrderBy: [{ field: "price", direction: "asc" }],
+      matches: () => true,
+      compare: (left, right) => left.key.localeCompare(right.key),
+      offset: 0,
+      limit: 1,
+    });
+    expect(
+      selectedPredicateCandidateSlots(state, [{ field: "price", operator: "gte", value: 2 }], {
+        allowScalarIndexBuild: false,
+        exactRangeCandidates: true,
+        maxSlotCount: 2,
+      }),
+    ).toBeUndefined();
+  });
+
   it("does not materialize broad scalar candidate buckets during raw scans", () => {
     const openKey = scalarEqualityKey("open");
     const rows = [
@@ -1948,24 +2730,45 @@ describe("Topic predicate candidate index", () => {
     expect(state.scalarPredicateIndexes.has("status")).toBe(false);
   });
 
-  it("evicts scalar predicate buckets that grow past the retained budget", () => {
+  it("evicts exact and normalized predicate buckets that grow past the retained budget", () => {
     const openKey = scalarEqualityKey("open");
+    const normalizedOpenKey = "normalized-string:0:0:4:open";
     const rows = Array.from(
       { length: maxRetainedScalarPredicateBucketSlots + 1 },
       (_value, index) => order(`open-${index}`, "open", index, index),
     );
     const metadata = rawQueryCompilerMetadata(Order);
     const scalarPredicateIndexes = createScalarPredicateIndexes();
+    const broadBucket = new Set(
+      Array.from({ length: maxRetainedScalarPredicateBucketSlots }, (_value, index) => index),
+    );
     scalarPredicateIndexes.set("status", {
       buckets: new Map([
+        [openKey, broadBucket],
+        [normalizedOpenKey, broadBucket],
+      ]),
+      indexedKeys: new Set([openKey, normalizedOpenKey]),
+      normalizedStringBuckets: new Map([
         [
-          openKey,
-          new Set(
-            Array.from({ length: maxRetainedScalarPredicateBucketSlots }, (_value, index) => index),
-          ),
+          normalizedOpenKey,
+          {
+            normalizedValue: "open",
+            caseSensitive: false,
+            accentSensitive: false,
+          },
         ],
       ]),
-      indexedKeys: new Set([openKey]),
+      normalizedStringModes: new Map([
+        [
+          "0:0",
+          {
+            accentSensitive: false,
+            caseSensitive: false,
+            count: 1,
+          },
+        ],
+      ]),
+      orderedBucketSlots: new Map(),
     });
 
     addSlotToScalarPredicateIndexes(
@@ -2082,6 +2885,9 @@ describe("Topic predicate candidate index", () => {
         ],
       ]),
       indexedKeys: new Set([openKey]),
+      normalizedStringBuckets: new Map(),
+      normalizedStringModes: new Map(),
+      orderedBucketSlots: new Map(),
     });
 
     const candidate = selectedPredicateCandidateSlots(
@@ -2138,6 +2944,9 @@ describe("Topic predicate candidate index", () => {
         [closedKey, new Set([maxRetainedScalarPredicateBucketSlots + 1])],
       ]),
       indexedKeys: new Set([openKey, closedKey]),
+      normalizedStringBuckets: new Map(),
+      normalizedStringModes: new Map(),
+      orderedBucketSlots: new Map(),
     });
 
     const candidate = selectedPredicateCandidateSlots(
@@ -2522,6 +3331,37 @@ describe("Topic predicate candidate index", () => {
       });
       expect(exactNumberNotEqual.keys).toStrictEqual(["cheap", "expensive"]);
       expect(exactNumberNotEqual.totalRows).toBe(2);
+
+      const MixedScalar = Schema.Struct({
+        id: Schema.String,
+        value: Schema.optionalKey(Schema.Union([Schema.Number, Schema.BigInt])),
+      });
+      const mixedStore = new TopicStore("mixed-scalars", MixedScalar, "id", () => {});
+      yield* publishTopicStoreRow(mixedStore, { id: "missing" }, (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(mixedStore, { id: "matching", value: 1 }, (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      yield* publishTopicStoreRow(mixedStore, { id: "different", value: 2n }, (topic, message) =>
+        InvalidRowError.make({ topic, message }),
+      );
+      const mixedNotEqual = topicStoreTestQueryInterface(mixedStore).scanRawWindow({
+        predicate: {
+          filters: [{ field: "value", operator: "neq", value: 1 }],
+          callbackRequired: false,
+          callbackSkippable: true,
+        },
+        orderBy: [],
+        matches: () => {
+          throw new Error("exact mixed-union not-equal predicates should not call row callbacks");
+        },
+        compare: (left, right) => left.key.localeCompare(right.key),
+        offset: 0,
+        limit: undefined,
+      });
+      expect(mixedNotEqual.keys).toStrictEqual(["different", "missing"]);
+      expect(mixedNotEqual.totalRows).toBe(2);
 
       const manualRangeHint = orderReadModel.scanRawWindow({
         predicate: {

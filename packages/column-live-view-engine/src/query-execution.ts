@@ -21,6 +21,7 @@ import {
   type TopicStoreSubscriptionPermit,
 } from "./topic-store";
 import type { RawQueryCompilerMetadata } from "./raw-query-compiler";
+import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 
 type RowObject = object;
 
@@ -72,15 +73,15 @@ export const prepareGroupedExecutableQuery = Effect.fn(
 
 export const prepareRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.prepareRuntime",
-)(function* (store: TopicStore, query: unknown) {
+)(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
   if (isGroupedQuery(query)) {
-    const compiled = yield* prepareTopicStoreRuntimeGroupedQuery(store, query);
+    const compiled = yield* prepareTopicStoreRuntimeGroupedQuery(store, query, partition);
     return Object.freeze({
       kind: "grouped",
       compiled,
     } satisfies ExecutableQuery<RowObject>);
   }
-  const compiled = yield* prepareTopicStoreRuntimeRawQuery(store, query);
+  const compiled = yield* prepareTopicStoreRuntimeRawQuery(store, query, partition);
   return Object.freeze({
     kind: "raw",
     compiled,
@@ -110,6 +111,18 @@ export const snapshotGroupedExecutableQuery = Effect.fn(
     evaluateTopicStoreGroupedQuery(store, executable.compiled),
     executable.compiled.plan.resultSemantics,
   );
+});
+
+export const snapshotRuntimeExecutableQuery = Effect.fn(
+  "ColumnLiveViewEngine.queryExecution.snapshotRuntime",
+)(function* (store: TopicStore, query: unknown) {
+  const executable = yield* prepareRuntimeExecutableQuery(store, query);
+  return executable.kind === "raw"
+    ? evaluateTopicStoreRawQueryResult(store, executable.compiled)
+    : liveQueryResultFromOwnedEvaluation(
+        evaluateTopicStoreGroupedQuery(store, executable.compiled),
+        executable.compiled.plan.resultSemantics,
+      );
 });
 
 type SubscribeExecutableQueryInput = {
@@ -166,15 +179,20 @@ export const subscribeGroupedExecutableQuery = Effect.fn(
 
 export const subscribeRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.subscribeRuntime",
-)(function* (query: unknown, input: SubscribeExecutableQueryInput) {
+)(function* (
+  query: unknown,
+  input: SubscribeExecutableQueryInput,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) {
   const { store } = input.permit;
-  const executable = yield* prepareRuntimeExecutableQuery(store, query);
+  const executable = yield* prepareRuntimeExecutableQuery(store, query, partition);
   if (executable.kind === "raw") {
     const execution = yield* acquireTopicStoreRawQueryExecution(store, executable.compiled);
     return yield* makeLiveSubscription({
       permit: input.permit,
       queryId: input.queryId,
       execution,
+      ...(partition === undefined ? {} : { partitionKey: partition.key }),
       queueCapacity: input.queueCapacity,
       release: releaseTopicStoreRawQueryExecution(store, executable.compiled),
       terminalObserver: input.terminalObserver,
@@ -190,6 +208,7 @@ export const subscribeRuntimeExecutableQuery = Effect.fn(
     permit: input.permit,
     queryId: input.queryId,
     execution,
+    ...(partition === undefined ? {} : { partitionKey: partition.key }),
     queueCapacity: input.queueCapacity,
     release: releaseTopicStoreMaterializedQueryExecution(store, executable.compiled),
     terminalObserver: input.terminalObserver,

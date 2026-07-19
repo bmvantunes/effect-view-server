@@ -2,6 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import {
   defineViewServerConfig,
+  type RawQuery,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
@@ -1173,29 +1174,33 @@ describe("remote ViewServer client", () => {
       const server = yield* makeTestRpcServer();
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
 
-      const richQuery = yield* client.subscribe("orders", {
-        select: ["id", "price"],
-        where: {
-          id: {
-            in: ["a", "b"],
-            startsWith: "a",
-          },
-          price: { gt: 1 },
-        },
+      const richSelect: ["id", "price"] = ["id", "price"];
+      const richQueryInput = {
+        select: richSelect,
+        where: [
+          { field: "id", type: "in", filter: ["a", "b"] },
+          { field: "id", type: "startsWith", filter: "a" },
+          { field: "price", type: "greaterThan", filter: 1 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 1,
         limit: 10,
-      });
+      } satisfies RawQuery<typeof Order.Type>;
+      const richQueryEffect = client.subscribe("orders", richQueryInput);
+      expect(Reflect.set(richQueryInput.select, 0, "status")).toBe(true);
+      expect(Reflect.set(richQueryInput.where[0]!, "filter", ["changed"])).toBe(true);
+      expect(Reflect.set(richQueryInput.orderBy[0]!, "direction", "asc")).toBe(true);
+      richQueryInput.offset = 99;
+      richQueryInput.limit = 99;
+      const richQuery = yield* richQueryEffect;
       yield* server.awaitSubscriptionCount(1);
       expect(server.lastSubscribeQuery()).toStrictEqual({
         select: ["id", "price"],
-        where: {
-          id: {
-            in: ["a", "b"],
-            startsWith: "a",
-          },
-          price: { gt: 1 },
-        },
+        where: [
+          { field: "id", type: "in", filter: ["a", "b"] },
+          { field: "id", type: "startsWith", filter: "a" },
+          { field: "price", type: "greaterThan", filter: 1 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 1,
         limit: 10,
@@ -1205,17 +1210,13 @@ describe("remote ViewServer client", () => {
 
       const scalarFilter = yield* client.subscribe("orders", {
         select: ["id"],
-        where: {
-          price: 10,
-        },
+        where: [{ field: "price", type: "equals", filter: 10 }],
         limit: 10,
       });
       yield* server.awaitSubscriptionCount(1);
       expect(server.lastSubscribeQuery()).toStrictEqual({
         select: ["id"],
-        where: {
-          price: 10,
-        },
+        where: [{ field: "price", type: "equals", filter: 10 }],
         limit: 10,
       });
       yield* scalarFilter.close();
@@ -1259,7 +1260,6 @@ describe("remote ViewServer client", () => {
 
       const unknownOrderBy = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
           orderBy: [
             {
@@ -1275,55 +1275,59 @@ describe("remote ViewServer client", () => {
 
       const unknownWhere = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          where: {
-            // @ts-expect-error hostile callers can still send unknown filter fields.
-            missing: { eq: "x" },
-          },
+          where: [
+            {
+              // @ts-expect-error hostile callers can still send unknown filter fields.
+              field: "missing",
+              type: "equals",
+              filter: "x",
+            },
+          ],
         }),
       );
       expect(unknownWhere.code).toBe("InvalidQuery");
-      expect(unknownWhere.message).toBe("Query references an unknown field for topic: orders");
+      expect(unknownWhere.message).toBe(
+        "Query references an unknown or non-filterable field: missing",
+      );
 
       const invalidFilter = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          where: {
-            price: {
-              // @ts-expect-error hostile callers can still send malformed filter values.
-              gt: "nope",
+          where: [
+            {
+              field: "price",
+              type: "greaterThan",
+              // @ts-expect-error hostile callers can still send an invalid filter value.
+              filter: "nope",
             },
-          },
+          ],
         }),
       );
       expect(invalidFilter.code).toBe("InvalidQuery");
 
       const invalidStartsWith = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          where: {
-            id: {
-              // @ts-expect-error hostile callers can still send non-JSON filter values.
-              startsWith: 1n,
+          where: [
+            {
+              field: "id",
+              type: "startsWith",
+              // @ts-expect-error hostile callers can still send an invalid string filter value.
+              filter: 1n,
             },
-          },
+          ],
         }),
       );
       expect(invalidStartsWith.code).toBe("InvalidQuery");
 
       const invalidNumericStartsWith = yield* Effect.flip(
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          where: {
-            price: {
-              // @ts-expect-error hostile callers can still send string operators to numeric fields.
-              startsWith: 1,
-            },
-          },
+          where: [
+            // @ts-expect-error numeric fields do not support startsWith.
+            { field: "price", type: "startsWith", filter: 1 },
+          ],
         }),
       );
       expect(invalidNumericStartsWith.code).toBe("InvalidQuery");
@@ -1332,13 +1336,14 @@ describe("remote ViewServer client", () => {
       const invalidUnknownOperator = yield* Effect.flip(
         client.subscribe("orders", {
           select: ["id"],
-          where: {
-            id: {
-              startsWith: "a",
+          where: [
+            {
+              field: "id",
               // @ts-expect-error hostile callers can still send unknown filter operators.
-              weird: 1n,
+              type: "weird",
+              filter: "a",
             },
-          },
+          ],
         }),
       );
       expect(invalidUnknownOperator.code).toBe("InvalidQuery");
@@ -1395,7 +1400,7 @@ describe("remote ViewServer client", () => {
       const badFilter = yield* Effect.flip(
         client.subscribe("badjson", {
           select: ["id"],
-          where: { id: { eq: "x" } },
+          where: [{ field: "id", type: "equals", filter: "x" }],
         }),
       );
       expect(badFilter.code).toBe("InvalidQuery");
@@ -1403,18 +1408,19 @@ describe("remote ViewServer client", () => {
 
       const badStartsWith = yield* Effect.flip(
         client.subscribe("badjson", {
-          // @ts-expect-error hostile callers can still send invalid selected fields.
           select: ["id"],
-          where: {
-            id: {
-              // @ts-expect-error hostile callers can still send non-string startsWith filters.
-              startsWith: 1,
+          where: [
+            {
+              field: "id",
+              type: "startsWith",
+              // @ts-expect-error hostile callers can still send invalid filter values.
+              filter: 1,
             },
-          },
+          ],
         }),
       );
       expect(badStartsWith.code).toBe("InvalidQuery");
-      expect(badStartsWith.message).toBe("Invalid filter for id: expected string");
+      expect(badStartsWith.message).toBe("Filter condition id startsWith requires a string");
 
       yield* client.close;
       yield* server.close;
@@ -1428,6 +1434,131 @@ describe("remote ViewServer client", () => {
       );
 
       expect(error.code).toBe("TransportError");
+    }),
+  );
+
+  it.live("rejects an unsnapshotable query before opening a remote subscription", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+      const cyclicQuery: Record<string, unknown> = { select: ["id"] };
+      cyclicQuery["cycle"] = cyclicQuery;
+      const error = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still submit cyclic query objects.
+        client.subscribe("orders", cyclicQuery),
+      );
+      const hostileThrownValue = {
+        toString: () => {
+          throw new Error("hostile toString must never run");
+        },
+      };
+      const hostileQuery = new Proxy(
+        { select: ["id"] },
+        {
+          ownKeys: () => {
+            throw hostileThrownValue;
+          },
+        },
+      );
+      const hostileError = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still submit proxy query objects.
+        client.subscribe("orders", hostileQuery),
+      );
+      let getterReads = 0;
+      const accessorQuery = {
+        select: ["id"],
+      } satisfies { readonly select: readonly ["id"] };
+      Object.defineProperty(accessorQuery, "where", {
+        enumerable: true,
+        get: () => {
+          getterReads += 1;
+          return [];
+        },
+      });
+      const accessorError = yield* Effect.flip(client.subscribe("orders", accessorQuery));
+      const sparseWhere: Array<unknown> = [];
+      sparseWhere.length = 1;
+      const sparseQuery = {
+        select: ["id"],
+      } satisfies { readonly select: readonly ["id"] };
+      Object.defineProperty(sparseQuery, "where", {
+        enumerable: true,
+        value: sparseWhere,
+      });
+      const sparseError = yield* Effect.flip(client.subscribe("orders", sparseQuery));
+      const symbolicQuery = {
+        select: ["id"],
+      } satisfies { readonly select: readonly ["id"] };
+      Object.defineProperty(symbolicQuery, Symbol("query"), {
+        enumerable: true,
+        value: true,
+      });
+      const symbolicError = yield* Effect.flip(client.subscribe("orders", symbolicQuery));
+
+      expect(error.code).toBe("InvalidQuery");
+      expect(error.message).toBe("Query input could not be snapshotted at subscribe.");
+      expect(hostileError.code).toBe("InvalidQuery");
+      expect(hostileError.message).toBe("Query input could not be snapshotted at subscribe.");
+      expect(accessorError.code).toBe("InvalidQuery");
+      expect(accessorError.message).toBe("Query input could not be snapshotted at subscribe.");
+      expect(sparseError.code).toBe("InvalidQuery");
+      expect(sparseError.message).toBe("Query input could not be snapshotted at subscribe.");
+      expect(symbolicError.code).toBe("InvalidQuery");
+      expect(symbolicError.message).toBe("Query input could not be snapshotted at subscribe.");
+      expect(getterReads).toBe(0);
+      yield* server.awaitSubscriptionCount(0);
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("transports deeply nested and shared filter graphs without stack or size blowups", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      const client = yield* makeViewServerClient(viewServer, { url: server.url });
+
+      let deep: unknown = { field: "id", type: "equals", filter: "deep" };
+      for (let depth = 0; depth < 5_000; depth += 1) {
+        deep = { type: depth % 2 === 0 ? "AND" : "OR", conditions: [deep] };
+      }
+      const deepSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        // @ts-expect-error adversarial depth is intentionally assembled dynamically.
+        where: [deep],
+      });
+      const deepEvents = yield* deepSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.timeout("10 seconds"),
+      );
+      expect(Array.from(deepEvents).length).toBe(1);
+      expect(server.activeSubscriptions()).toBe(1);
+      yield* deepSubscription.close();
+      yield* server.awaitSubscriptionCount(0);
+
+      let shared: unknown = { field: "id", type: "equals", filter: "shared" };
+      for (let depth = 0; depth < 100; depth += 1) {
+        shared = { type: "AND", conditions: [shared, shared] };
+      }
+      const sharedSubscription = yield* client.subscribe("orders", {
+        select: ["id"],
+        // @ts-expect-error adversarial sharing is intentionally assembled dynamically.
+        where: [shared],
+      });
+      const sharedEvents = yield* sharedSubscription.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.timeout("10 seconds"),
+      );
+      expect(Array.from(sharedEvents).length).toBe(1);
+      expect(server.activeSubscriptions()).toBe(1);
+
+      expect(JSON.stringify(server.lastSubscribeQuery()).length).toBeLessThan(10_000);
+
+      yield* sharedSubscription.close();
+      yield* server.awaitSubscriptionCount(0);
+      yield* client.close;
+      yield* server.close;
     }),
   );
 

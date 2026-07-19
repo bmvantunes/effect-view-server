@@ -83,6 +83,7 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         groupBy: [
           "semanticClass",
           "semanticOption",
@@ -93,9 +94,7 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.take(2), Stream.runCollect);
@@ -166,6 +165,7 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         health,
       );
       const rawSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         select: [
           "id",
           "semanticClass",
@@ -174,9 +174,7 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
           "semanticHashMap",
           "semanticPlain",
         ],
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const rawEventQueue = yield* Queue.unbounded<unknown>();
@@ -187,6 +185,7 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
       const rawSnapshot = yield* Queue.take(rawEventQueue);
       const rawDelta = yield* Queue.take(rawEventQueue);
       const groupedSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         groupBy: [
           "semanticClass",
           "semanticOption",
@@ -197,9 +196,7 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const groupedEvents = yield* groupedSubscription.events.pipe(
@@ -304,13 +301,12 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         groupBy: ["optionalValue"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.take(2), Stream.runCollect);
@@ -397,10 +393,9 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         health,
       );
       const rawSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         select: ["id", "semanticHashMap"],
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const rawEventQueue = yield* Queue.unbounded<unknown>();
@@ -411,13 +406,12 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
       yield* Queue.take(rawEventQueue);
       yield* Queue.take(rawEventQueue);
       const groupedSubscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         groupBy: ["semanticHashMap"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const groupedEvents = yield* groupedSubscription.events.pipe(
@@ -499,13 +493,12 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["customerId"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.runCollect);
@@ -569,13 +562,12 @@ describe("gRPC lease manager semantic route and grouped identity", () => {
         health,
       );
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         groupBy: ["weird"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.runCollect);

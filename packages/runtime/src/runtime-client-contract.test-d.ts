@@ -92,9 +92,8 @@ describe("Runtime client and source ownership contracts", () => {
     });
 
     const leasedSubscribe = leasedRuntime.liveClient.subscribe("orders", {
-      where: {
-        id: { eq: "order-1" },
-      },
+      routeBy: { id: "order-1" },
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
       select: ["id"],
     });
 
@@ -119,18 +118,6 @@ describe("Runtime client and source ownership contracts", () => {
     const missingRouteQuery = {
       select: ["id"],
     } satisfies {
-      readonly select: readonly ["id"];
-    };
-
-    const shorthandRouteQuery = {
-      where: {
-        id: "order-1",
-      },
-      select: ["id"],
-    } satisfies {
-      readonly where: {
-        readonly id: "order-1";
-      };
       readonly select: readonly ["id"];
     };
 
@@ -187,8 +174,8 @@ describe("Runtime client and source ownership contracts", () => {
 
     const invalidLeasedSubscribe = leasedRuntime.liveClient.subscribe(
       "orders",
-      // @ts-expect-error leased gRPC route filters must be exact eq predicates.
-      shorthandRouteQuery,
+      // @ts-expect-error leased gRPC topics require routeBy.
+      missingRouteQuery,
     );
 
     expectTypeOf(invalidLeasedSnapshot).not.toBeAny();
@@ -237,12 +224,11 @@ describe("Runtime client and source ownership contracts", () => {
     );
 
     const invalidSnapshot = runtime.client.snapshot("orders", {
-      // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
       select: ["id"],
-      where: {
-        // @ts-expect-error runtime query client rejects unknown filter fields.
-        prcie: { gte: 10 },
-      },
+      where: [
+        // @ts-expect-error filters reject fields outside the Topic Row.
+        { field: "prcie", type: "greaterThanOrEqual", filter: 10 },
+      ],
     });
 
     expectTypeOf(invalidPublish).not.toBeAny();

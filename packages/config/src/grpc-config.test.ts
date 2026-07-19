@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Stream } from "effect";
+import { BigDecimal, Effect, Schema, Stream } from "effect";
 import { defineViewServerConfig, grpc, validateLiveQuerySourceRoute } from "./index";
 import { grpcSourceMarkers } from "./internal";
 import {
@@ -16,7 +16,7 @@ describe("gRPC configuration runtime behavior", () => {
     expect(grpcSourceMarkers.leased({ routeBy: ["region"] }).routeBy).toStrictEqual(["region"]);
   });
 
-  it("validates leased gRPC route predicates at runtime", () => {
+  it("validates exact leased gRPC route values independently from filters", () => {
     const grpcViewServer = defineViewServerConfig({
       grpc: {
         clients: grpcTestClients,
@@ -55,43 +55,100 @@ describe("gRPC configuration runtime behavior", () => {
     );
 
     expect(validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {})).toBe(
-      "Leased topic orders requires exact equality filters for route fields: region, status.",
+      "Leased topic orders requires routeBy fields: region, status.",
     );
 
     expect(
       validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
-        where: {
-          region: { eq: "usa" },
-        },
+        routeBy: { region: "UsÁ" },
       }),
-    ).toBe("Leased topic orders route field status must use an exact eq filter.");
+    ).toBe("Leased topic orders routeBy must contain all and only: region, status.");
 
     expect(
       validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open", neq: "closed" },
-        },
+        routeBy: { region: "UsÁ", status: "open", desk: "equities" },
       }),
-    ).toBe("Leased topic orders route field status must use an exact eq filter.");
+    ).toBe("Leased topic orders routeBy must contain all and only: region, status.");
 
     expect(
       validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
-        where: {
-          region: { eq: "usa" },
-          status: { neq: "closed" },
-        },
+        routeBy: { region: "UsÁ", status: "missing" },
       }),
-    ).toBe("Leased topic orders route field status must use an exact eq filter.");
+    ).toBe("Leased topic orders routeBy field status does not satisfy its configured schema.");
 
     expect(
       validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
+        routeBy: { region: { value: "UsÁ" }, status: "open" },
+      }),
+    ).toBe("Leased topic orders routeBy field region must be a supported scalar value.");
+
+    const routeByWithSymbol = { region: "UsÁ", status: "open" };
+    Object.defineProperty(routeByWithSymbol, Symbol("metadata"), {
+      enumerable: true,
+      value: true,
+    });
+    expect(
+      validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
+        routeBy: routeByWithSymbol,
+      }),
+    ).toBe("Leased topic orders routeBy contains unsupported symbol properties.");
+
+    const ScalarRouteRow = Schema.Struct({
+      id: Schema.String,
+      nil: Schema.Null,
+      text: Schema.String,
+      count: Schema.BigInt,
+      enabled: Schema.Boolean,
+      amount: Schema.BigDecimal,
+      score: Schema.Number,
+    });
+    const scalarRouteTopic = {
+      scalarRoute: {
+        schema: ScalarRouteRow,
+        key: "id",
+        grpcSource: {
+          kind: "grpc",
+          lifecycle: "leased",
+          routeBy: ["nil", "text", "count", "enabled", "amount", "score"],
         },
+      },
+    };
+    const scalarRoute = {
+      nil: null,
+      text: "AbÇ",
+      count: 1n,
+      enabled: true,
+      amount: BigDecimal.make(1230n, 3),
+      score: -0,
+    };
+    expect(
+      validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", { routeBy: scalarRoute }),
+    ).toBe(undefined);
+    expect(
+      validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
+        routeBy: { ...scalarRoute, score: Number.POSITIVE_INFINITY },
+      }),
+    ).toBe("Leased topic scalarRoute routeBy field score must be a supported scalar value.");
+    for (const scale of [Number.POSITIVE_INFINITY, Number.NaN, 1.5]) {
+      expect(
+        validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
+          routeBy: { ...scalarRoute, amount: BigDecimal.make(123n, scale) },
+        }),
+      ).toBe("Leased topic scalarRoute routeBy field amount must be a supported scalar value.");
+    }
+
+    expect(
+      validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
+        routeBy: { region: "UsÁ", status: "open" },
+        where: [{ field: "status", type: "notEqual", filter: "closed" }],
       }),
     ).toBeUndefined();
+
+    expect(
+      validateLiveQuerySourceRoute(grpcRouteValidationViewServer.topics, "positions", {
+        routeBy: { region: "UsÁ" },
+      }),
+    ).toBe("Topic positions does not accept routeBy.");
 
     expect(
       validateLiveQuerySourceRoute(
@@ -120,6 +177,41 @@ describe("gRPC configuration runtime behavior", () => {
         {},
       ),
     ).toBe("Leased topic malformed has invalid route metadata.");
+    expect(
+      validateLiveQuerySourceRoute(
+        {
+          malformed: {
+            schema: Order,
+            key: "id",
+            grpcSource: { kind: "grpc", lifecycle: "leased", routeBy: ["missing"] },
+          },
+        },
+        "malformed",
+        { routeBy: { missing: "value" } },
+      ),
+    ).toBe("Leased topic malformed routeBy field missing does not satisfy its configured schema.");
+
+    const DefectiveRouteRow = Schema.Struct({
+      id: Schema.String,
+      route: Schema.String.check(
+        Schema.makeFilter(() => {
+          throw new Error("route predicate defect");
+        }),
+      ),
+    });
+    expect(
+      validateLiveQuerySourceRoute(
+        {
+          defective: {
+            schema: DefectiveRouteRow,
+            key: "id",
+            grpcSource: { kind: "grpc", lifecycle: "leased", routeBy: ["route"] },
+          },
+        },
+        "defective",
+        { routeBy: { route: "AbÇ" } },
+      ),
+    ).toBe("Leased topic defective routeBy field route does not satisfy its configured schema.");
   });
 
   it("rejects malformed gRPC source metadata and preserves runtime source shape", () => {

@@ -51,9 +51,7 @@ describe("Topic Store plan semantics", () => {
         rawQueryCompilerMetadata(CaseInsensitiveRows),
         {
           select: ["id"],
-          where: {
-            label: { eq: "alpha" },
-          },
+          where: [{ field: "label", type: "equals", filter: "alpha" }],
           orderBy: [{ field: "label", direction: "asc" }],
         },
       );

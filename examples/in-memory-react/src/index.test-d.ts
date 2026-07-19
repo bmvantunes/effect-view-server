@@ -8,7 +8,7 @@ describe("in-memory example type contracts", () => {
   it("preserves selected raw row types", () => {
     const result = useLiveQuery("orders", {
       select: ["id", "price"],
-      where: { status: { eq: "open" } },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       orderBy: [{ field: "price", direction: "desc" }],
       limit: 20,
     });
@@ -43,7 +43,10 @@ describe("in-memory example type contracts", () => {
 
   it("rejects implicit all-column raw queries", () => {
     // @ts-expect-error raw queries must explicitly select columns.
-    useLiveQuery("orders", { where: { status: { eq: "open" } }, limit: 20 });
+    useLiveQuery("orders", {
+      where: [{ field: "status", type: "equals", filter: "open" }],
+      limit: 20,
+    });
   });
 
   it("exposes a typed in-memory client", () => {

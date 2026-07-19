@@ -46,13 +46,20 @@ export type {
   ComparableAggregate,
   CountAggregate,
   CountDistinctAggregate,
-  EqualityFilter,
+  BlankCondition,
   ExactGroupedQuery,
   ExactLiveQuery,
   ExactLiveQueryInput,
   ExactPatch,
   ExactRawQuery,
-  FieldFilter,
+  EqualsCondition,
+  FieldCondition,
+  FieldConditionForPath,
+  FilterableFieldPath,
+  FilterableFieldValue,
+  FilterableScalar,
+  FilterExpression,
+  FilterGroup,
   FieldKey,
   GroupedOrderBy,
   GroupedQuery,
@@ -64,7 +71,13 @@ export type {
   OrderBy,
   OrderByField,
   PickRawFields,
-  RangeFilter,
+  InCondition,
+  InRangeCondition,
+  NegationExpression,
+  NotEqualCondition,
+  NumericComparisonCondition,
+  RouteFieldKey,
+  RouteFieldValue,
   RawQuery,
   RowFromSchema,
   RowSchema,
@@ -72,7 +85,8 @@ export type {
   Simplify,
   SortDirection,
   StringFieldKey,
-  StringFilter,
+  TextMatchingOptions,
+  TextSearchCondition,
   SumAggregate,
   TopicDefinition,
   TopicDefinitions,
@@ -692,7 +706,12 @@ export function defineViewServerConfig(
       throw new Error(`View Server topic ${topic} row schema must be an Effect Schema Struct.`);
     }
     for (const field of Object.keys(schema.fields)) {
-      if (field === "__proto__" || field === "prototype" || field === "constructor") {
+      if (
+        field === "__proto__" ||
+        field === "prototype" ||
+        field === "constructor" ||
+        field.includes(".")
+      ) {
         throw new Error(`View Server topic ${topic} uses a reserved row field name: ${field}`);
       }
       const fieldSchema = schema.fields[field];

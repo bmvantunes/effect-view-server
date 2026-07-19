@@ -167,7 +167,7 @@ const updateBaseEvaluationFromRetainedChanges = (
   queryWindow: RawQueryPlanWindow,
 ): ActiveQueryBaseEvaluation<object> | undefined => {
   const currentVersion = store.version();
-  const batches = store.changesSince(evaluation.version);
+  const batches = store.changesSince(evaluation.version, compiled.plan.partitionKey);
   if (batches === undefined) {
     return undefined;
   }
@@ -183,8 +183,10 @@ const updateBaseEvaluationFromRetainedChanges = (
   for (const batch of batches) {
     for (const change of batch.changes) {
       const previousMatches =
-        change.previous !== undefined && compiled.plan.predicate.matches(change.previous);
-      const nextMatches = change.next !== undefined && compiled.plan.predicate.matches(change.next);
+        change.previous !== undefined &&
+        compiled.plan.predicate.matches(change.previous, change.key);
+      const nextMatches =
+        change.next !== undefined && compiled.plan.predicate.matches(change.next, change.key);
 
       if (queryWindow.limit === 0) {
         if (previousMatches && !nextMatches) {
@@ -609,10 +611,10 @@ export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
     acquireRawQueryWindow(windows, compiled.plan.window);
     const execution = yield* makeRawQueryExecution(store, compiled, windows);
     return yield* Effect.sync(() => {
-      store.retainChanges();
+      store.retainChanges(compiled.plan.partitionKey);
       map.set(key, {
         execution,
-        releaseRetainedChanges: () => store.releaseChanges(),
+        releaseRetainedChanges: () => store.releaseChanges(compiled.plan.partitionKey),
         windows,
         refs: 1,
       });

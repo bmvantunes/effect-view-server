@@ -38,12 +38,12 @@ export type {
 
 export { grpcSourceMarkers } from "./grpc-contract";
 export {
-  isRawQueryFilterOperatorKey,
-  isRawQueryRangeFilterOperatorKey,
-  rawQueryFilterOperatorKeys,
-  rawQueryRangeFilterOperatorKeys,
-} from "./raw-query-filter-operators";
-export { schemaAstChildren } from "./schema-ast-children";
+  viewServerFilterFieldContract,
+  viewServerFilterFieldContracts,
+  type ViewServerFilterFieldContract,
+  type ViewServerFilterNumericKind,
+} from "./filter-field-contract";
+export { schemaAstChildren, schemaAstIsClass } from "./schema-ast-children";
 export {
   snapshotViewServerRowSchema,
   snapshotViewServerTopics,

@@ -1,13 +1,8 @@
-import {
-  isBigDecimal,
-  make as makeBigDecimal,
-  normalize as normalizeBigDecimal,
-  type BigDecimal,
-} from "effect/BigDecimal";
+import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
 import { immutableReadonlySet } from "./immutable-readonly-collection";
-import { filterOperatorKeys, isDenseArray } from "./raw-query-filter";
-import type { RangeValueKind, RawQueryCompilerMetadata } from "./raw-query-metadata";
-import { isPlainRecord, scalarEqualityKey, type ScalarEqualityKeyValue } from "./row-values";
+import type { RuntimeFilterCondition, RuntimeFilterScalar } from "./filter-expression";
+import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
+import { scalarEqualityKey, type ScalarEqualityKeyValue } from "./row-values";
 
 export type TopicRawPredicateFilterPlan =
   | {
@@ -20,24 +15,26 @@ export type TopicRawPredicateFilterPlan =
       readonly operator: "in";
       readonly values: ReadonlyArray<unknown>;
       readonly valueKeys?: ReadonlySet<string>;
+    }
+  | {
+      readonly accentSensitive: boolean;
+      readonly caseSensitive: boolean;
+      readonly field: string;
+      readonly operator: "textEq";
+      readonly value: string;
+    }
+  | {
+      readonly accentSensitive: boolean;
+      readonly caseSensitive: boolean;
+      readonly field: string;
+      readonly operator: "textIn";
+      readonly values: ReadonlyArray<string>;
+      readonly valueSet: ReadonlySet<string>;
     };
 
 export type TopicRawPredicatePlan = {
-  /**
-   * Safe scalar hints that storage can use to narrow a raw scan.
-   * `matches` remains the correctness guard unless an adapter implements a
-   * proven equivalent for every emitted hint.
-   */
   readonly filters: ReadonlyArray<TopicRawPredicateFilterPlan>;
-  /**
-   * True when the compiler intentionally omitted part of the predicate from
-   * `filters`, for example structured fields or malformed runtime filters.
-   */
   readonly callbackRequired: boolean;
-  /**
-   * True when the compiler proved that `filters` fully represent `matches`.
-   * Hand-written plans omit this and stay guarded by the row callback.
-   */
   readonly callbackSkippable?: boolean;
 };
 
@@ -46,23 +43,15 @@ export type PredicateFieldPlan = {
   readonly callbackRequired: boolean;
 };
 
-const rangeValueKind = (value: unknown): RangeValueKind | undefined => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return "number";
-  }
-  if (typeof value === "bigint") {
-    return "bigint";
-  }
-  if (isBigDecimal(value)) {
-    return "bigDecimal";
-  }
-  return undefined;
-};
-
-const isScalarPlanValue = (value: unknown): value is ScalarEqualityKeyValue =>
+const isScalarPlanValue = (value: RuntimeFilterScalar): value is ScalarEqualityKeyValue =>
   value === null ||
   typeof value === "string" ||
   typeof value === "boolean" ||
+  typeof value === "bigint" ||
+  isBigDecimal(value) ||
+  (typeof value === "number" && Number.isFinite(value));
+
+const isNumericPlanValue = (value: RuntimeFilterScalar): value is number | bigint | BigDecimal =>
   typeof value === "bigint" ||
   isBigDecimal(value) ||
   (typeof value === "number" && Number.isFinite(value));
@@ -72,61 +61,21 @@ export const isRangePlanValue = (
   value: unknown,
   metadata: RawQueryCompilerMetadata,
 ): value is number | bigint | BigDecimal => {
-  const kind = rangeValueKind(value);
+  const kind =
+    typeof value === "number" && Number.isFinite(value)
+      ? "number"
+      : typeof value === "bigint"
+        ? "bigint"
+        : isBigDecimal(value)
+          ? "bigDecimal"
+          : undefined;
   const fieldKinds = metadata.rangeValueKinds.get(field);
   return kind !== undefined && fieldKinds?.size === 1 && fieldKinds.has(kind);
 };
 
-const isEqualityPlanValue = (value: unknown): value is ScalarEqualityKeyValue =>
-  isScalarPlanValue(value);
-
-const immutableBigDecimal = (value: BigDecimal): BigDecimal => {
-  const owned = makeBigDecimal(value.value, value.scale);
-  const normalized = normalizeBigDecimal(makeBigDecimal(value.value, value.scale));
-  const normalizedOwned = makeBigDecimal(normalized.value, normalized.scale);
-  Object.defineProperty(normalizedOwned, "normalized", {
-    configurable: false,
-    enumerable: false,
-    value: normalizedOwned,
-    writable: false,
-  });
-  Object.freeze(normalizedOwned);
-  Object.defineProperty(owned, "normalized", {
-    configurable: false,
-    enumerable: false,
-    value:
-      owned.value === normalizedOwned.value && owned.scale === normalizedOwned.scale
-        ? owned
-        : normalizedOwned,
-    writable: false,
-  });
-  return Object.freeze(owned);
-};
-
-const immutableScalarPlanValue = (value: ScalarEqualityKeyValue): ScalarEqualityKeyValue =>
-  isBigDecimal(value) ? immutableBigDecimal(value) : value;
-
-const isNotEqualPlanValue = (
-  field: string,
-  value: unknown,
-  metadata: RawQueryCompilerMetadata,
-): value is ScalarEqualityKeyValue => {
-  if (!isEqualityPlanValue(value)) {
-    return false;
-  }
-  if (metadata.numericFieldNames.has(field)) {
-    return isRangePlanValue(field, value, metadata);
-  }
-  if (metadata.stringFieldNames.has(field)) {
-    return typeof value === "string";
-  }
-  return false;
-};
-
-const isInPlanValues = (value: unknown): value is ReadonlyArray<ScalarEqualityKeyValue> =>
-  Array.isArray(value) &&
-  isDenseArray(value) &&
-  value.every((candidate) => isEqualityPlanValue(candidate));
+const isScalarArray = (
+  value: RuntimeFilterScalar | ReadonlyArray<RuntimeFilterScalar>,
+): value is ReadonlyArray<RuntimeFilterScalar> => Array.isArray(value);
 
 const scalarEqualityKeys = (values: ReadonlyArray<ScalarEqualityKeyValue>): ReadonlySet<string> => {
   const keys = new Set<string>();
@@ -136,151 +85,112 @@ const scalarEqualityKeys = (values: ReadonlyArray<ScalarEqualityKeyValue>): Read
   return immutableReadonlySet(keys);
 };
 
+const stringValueSet = (values: ReadonlyArray<string>): ReadonlySet<string> =>
+  immutableReadonlySet(new Set(values));
+
+const unsupportedPlan = (): PredicateFieldPlan =>
+  Object.freeze({ filters: Object.freeze([]), callbackRequired: true });
+
+const onePlan = (filter: TopicRawPredicateFilterPlan): PredicateFieldPlan =>
+  Object.freeze({ filters: Object.freeze([Object.freeze(filter)]), callbackRequired: false });
+
 export const predicateFilterPlans = (
-  field: string,
-  filter: unknown,
+  condition: RuntimeFilterCondition,
   metadata: RawQueryCompilerMetadata,
 ): PredicateFieldPlan => {
+  const field = metadata.filterFields.get(condition.field);
   if (
-    metadata.structuredFieldNames.has(field) ||
-    !metadata.exactScalarEqualityFieldNames.has(field) ||
-    filter === undefined
+    field === undefined ||
+    field.segments.length !== 1 ||
+    !metadata.exactScalarEqualityFieldNames.has(condition.field)
   ) {
-    return Object.freeze({
-      filters: Object.freeze([]),
-      callbackRequired: true,
+    return unsupportedPlan();
+  }
+  const filter = condition.filter;
+  if (condition.type === "equals" || condition.type === "notEqual") {
+    if (filter === undefined || isScalarArray(filter) || !isScalarPlanValue(filter)) {
+      return unsupportedPlan();
+    }
+    if (typeof filter === "string") {
+      return condition.type === "notEqual"
+        ? unsupportedPlan()
+        : onePlan({
+            field: condition.field,
+            operator: "textEq",
+            value: filter,
+            caseSensitive: condition.caseSensitive,
+            accentSensitive: condition.accentSensitive,
+          });
+    }
+    return onePlan({
+      field: condition.field,
+      operator: condition.type === "equals" ? "eq" : "neq",
+      value: filter,
     });
   }
-  if (!isPlainRecord(filter) || isBigDecimal(filter)) {
-    if (!isScalarPlanValue(filter)) {
-      return Object.freeze({
-        filters: Object.freeze([]),
-        callbackRequired: true,
+  if (condition.type === "in") {
+    if (filter === undefined || !isScalarArray(filter)) {
+      return unsupportedPlan();
+    }
+    if (filter.every((candidate): candidate is string => typeof candidate === "string")) {
+      return onePlan({
+        field: condition.field,
+        operator: "textIn",
+        values: filter,
+        valueSet: stringValueSet(filter),
+        caseSensitive: condition.caseSensitive,
+        accentSensitive: condition.accentSensitive,
       });
+    }
+    if (
+      filter.some((candidate) => typeof candidate === "string" || !isScalarPlanValue(candidate))
+    ) {
+      return unsupportedPlan();
+    }
+    return onePlan({
+      field: condition.field,
+      operator: "in",
+      values: filter,
+      valueKeys: scalarEqualityKeys(filter),
+    });
+  }
+  if (
+    condition.type === "greaterThan" ||
+    condition.type === "greaterThanOrEqual" ||
+    condition.type === "lessThan" ||
+    condition.type === "lessThanOrEqual"
+  ) {
+    if (filter === undefined || isScalarArray(filter) || !isNumericPlanValue(filter)) {
+      return unsupportedPlan();
+    }
+    const operator =
+      condition.type === "greaterThan"
+        ? "gt"
+        : condition.type === "greaterThanOrEqual"
+          ? "gte"
+          : condition.type === "lessThan"
+            ? "lt"
+            : "lte";
+    return onePlan({ field: condition.field, operator, value: filter });
+  }
+  if (condition.type === "inRange") {
+    const filterTo = condition.filterTo;
+    if (
+      filter === undefined ||
+      isScalarArray(filter) ||
+      !isNumericPlanValue(filter) ||
+      filterTo === undefined ||
+      !isNumericPlanValue(filterTo)
+    ) {
+      return unsupportedPlan();
     }
     return Object.freeze({
       filters: Object.freeze([
-        Object.freeze({
-          field,
-          operator: "eq",
-          value: immutableScalarPlanValue(filter),
-        }),
+        Object.freeze({ field: condition.field, operator: "gte", value: filter }),
+        Object.freeze({ field: condition.field, operator: "lt", value: filterTo }),
       ]),
       callbackRequired: false,
     });
   }
-
-  const operatorKeys = Object.keys(filter).filter((key) => filterOperatorKeys.has(key));
-  let callbackRequired = operatorKeys.length === 0;
-  const plans: Array<TopicRawPredicatePlan["filters"][number]> = [];
-  if ("eq" in filter) {
-    if (isEqualityPlanValue(filter["eq"])) {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "eq",
-          value: immutableScalarPlanValue(filter["eq"]),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("neq" in filter) {
-    if (isNotEqualPlanValue(field, filter["neq"], metadata)) {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "neq",
-          value: immutableScalarPlanValue(filter["neq"]),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("in" in filter) {
-    if (isInPlanValues(filter["in"])) {
-      const values = Object.freeze(filter["in"].map(immutableScalarPlanValue));
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "in",
-          values,
-          valueKeys: scalarEqualityKeys(values),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("gt" in filter) {
-    if (isRangePlanValue(field, filter["gt"], metadata)) {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "gt",
-          value: immutableScalarPlanValue(filter["gt"]),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("gte" in filter) {
-    if (isRangePlanValue(field, filter["gte"], metadata)) {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "gte",
-          value: immutableScalarPlanValue(filter["gte"]),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("lt" in filter) {
-    if (isRangePlanValue(field, filter["lt"], metadata)) {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "lt",
-          value: immutableScalarPlanValue(filter["lt"]),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("lte" in filter) {
-    if (isRangePlanValue(field, filter["lte"], metadata)) {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "lte",
-          value: immutableScalarPlanValue(filter["lte"]),
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  if ("startsWith" in filter) {
-    if (typeof filter["startsWith"] === "string") {
-      plans.push(
-        Object.freeze({
-          field,
-          operator: "startsWith",
-          value: filter["startsWith"],
-        }),
-      );
-    } else {
-      callbackRequired = true;
-    }
-  }
-  return Object.freeze({
-    filters: Object.freeze(plans),
-    callbackRequired,
-  });
+  return unsupportedPlan();
 };

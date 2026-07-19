@@ -37,6 +37,8 @@ const drainTopicStoreSubscribersForReset = (
     subscriber.closed = true;
   }
   state.subscribers.clear();
+  state.partitionedSubscribers.clear();
+  state.unpartitionedSubscribers.clear();
   state.healthLedger.reset();
   return closingSubscribers;
 };
@@ -50,6 +52,8 @@ const drainTopicStoreSubscribersForClose = (
     state.healthLedger.closeSubscription(subscriber);
   }
   state.subscribers.clear();
+  state.partitionedSubscribers.clear();
+  state.unpartitionedSubscribers.clear();
   return closingSubscribers;
 };
 

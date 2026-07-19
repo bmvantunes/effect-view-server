@@ -68,17 +68,17 @@ const ignoreSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNonTyped
 export type UseLiveQueryHook<Topics extends TopicDefinitions> = {
   <
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>;
   <
     Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>;
 };
 
@@ -174,24 +174,26 @@ export const createViewServerReact = <
 
   function useLiveQuery<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>;
   function useLiveQuery<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>;
   function useLiveQuery<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends
+      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>> {
     const client = useClient();
     type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;

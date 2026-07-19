@@ -116,9 +116,7 @@ describe("Topic Store query execution", () => {
       ];
       const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [
           {
             field: "price",
@@ -133,8 +131,10 @@ describe("Topic Store query execution", () => {
               filters: [
                 {
                   field: "status",
-                  operator: "eq",
+                  operator: "textEq",
                   value: "open",
+                  caseSensitive: false,
+                  accentSensitive: false,
                 },
               ],
               callbackRequired: false,
@@ -206,9 +206,7 @@ describe("Topic Store query execution", () => {
         rawQueryCompilerMetadata(Order),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "price", direction: "asc" }],
         },
       );
@@ -255,23 +253,17 @@ describe("Topic Store query execution", () => {
     Effect.gen(function* () {
       const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
         select: ["id"],
-        where: {
-          status: {
-            neq: "cancelled",
-            in: ["open", "closed"],
-          },
-          price: {
-            neq: 50,
-            gt: 1,
-            gte: 2,
-            lt: 100,
-            lte: 99,
-          },
-          customerId: {
-            startsWith: "customer-",
-          },
-          region: "emea",
-        },
+        where: [
+          { field: "status", type: "notEqual", filter: "cancelled" },
+          { field: "status", type: "in", filter: ["open", "closed"] },
+          { field: "price", type: "notEqual", filter: 50 },
+          { field: "price", type: "greaterThan", filter: 1 },
+          { field: "price", type: "greaterThanOrEqual", filter: 2 },
+          { field: "price", type: "lessThan", filter: 100 },
+          { field: "price", type: "lessThanOrEqual", filter: 99 },
+          { field: "customerId", type: "startsWith", filter: "customer-" },
+          { field: "region", type: "equals", filter: "emea" },
+        ],
         orderBy: [
           {
             field: "region",
@@ -294,26 +286,15 @@ describe("Topic Store query execution", () => {
                       ...filter,
                       valueKeys: [...(filter.valueKeys ?? [])],
                     }
-                  : filter,
+                  : filter.operator === "textIn"
+                    ? {
+                        ...filter,
+                        valueSet: [...filter.valueSet],
+                      }
+                    : filter,
               ),
             }).toStrictEqual({
               filters: [
-                {
-                  field: "status",
-                  operator: "neq",
-                  value: "cancelled",
-                },
-                {
-                  field: "status",
-                  operator: "in",
-                  values: ["open", "closed"],
-                  valueKeys: ["string:4:open", "string:6:closed"],
-                },
-                {
-                  field: "price",
-                  operator: "neq",
-                  value: 50,
-                },
                 {
                   field: "price",
                   operator: "gt",
@@ -335,18 +316,28 @@ describe("Topic Store query execution", () => {
                   value: 99,
                 },
                 {
-                  field: "customerId",
-                  operator: "startsWith",
-                  value: "customer-",
+                  field: "price",
+                  operator: "neq",
+                  value: 50,
                 },
                 {
                   field: "region",
-                  operator: "eq",
+                  operator: "textEq",
                   value: "emea",
+                  caseSensitive: false,
+                  accentSensitive: false,
+                },
+                {
+                  field: "status",
+                  operator: "textIn",
+                  values: ["closed", "open"],
+                  valueSet: ["closed", "open"],
+                  caseSensitive: false,
+                  accentSensitive: false,
                 },
               ],
-              callbackRequired: false,
-              callbackSkippable: true,
+              callbackRequired: true,
+              callbackSkippable: false,
             });
             expect(plan.orderBy).toStrictEqual([
               {
@@ -386,17 +377,11 @@ describe("Topic Store query execution", () => {
         rawQueryCompilerMetadata(Position),
         {
           select: ["id"],
-          where: {
-            active: {
-              in: [true],
-            },
-            quantity: {
-              in: [20n],
-            },
-            price: {
-              in: [matchedPrice],
-            },
-          },
+          where: [
+            { field: "active", type: "in", filter: [true] },
+            { field: "quantity", type: "in", filter: [20n] },
+            { field: "price", type: "in", filter: [matchedPrice] },
+          ],
         },
       );
 
@@ -425,16 +410,16 @@ describe("Topic Store query execution", () => {
                   valueKeys: ["boolean:true"],
                 },
                 {
-                  field: "quantity",
-                  operator: "in",
-                  values: [20n],
-                  valueKeys: ["bigint:20"],
-                },
-                {
                   field: "price",
                   operator: "in",
                   values: ["1"],
                   valueKeys: ["bigDecimal:1"],
+                },
+                {
+                  field: "quantity",
+                  operator: "in",
+                  values: [20n],
+                  valueKeys: ["bigint:20"],
                 },
               ],
               callbackRequired: false,
@@ -469,11 +454,7 @@ describe("Topic Store query execution", () => {
         rawQueryCompilerMetadata(NullableMetric),
         {
           select: ["id"],
-          where: {
-            note: {
-              in: [null, "x"],
-            },
-          },
+          where: [{ field: "note", type: "in", filter: [null, "x"] }],
         },
       );
 
@@ -491,16 +472,9 @@ describe("Topic Store query execution", () => {
                   : filter,
               ),
             }).toStrictEqual({
-              filters: [
-                {
-                  field: "note",
-                  operator: "in",
-                  values: [null, "x"],
-                  valueKeys: ["null", "string:1:x"],
-                },
-              ],
-              callbackRequired: false,
-              callbackSkippable: true,
+              filters: [],
+              callbackRequired: true,
+              callbackSkippable: false,
             });
             expect(plan.matches({ id: "null", note: null })).toBe(true);
             expect(plan.matches({ id: "x", note: "x" })).toBe(true);
@@ -532,15 +506,11 @@ describe("Topic Store query execution", () => {
         rawQueryCompilerMetadata(Position),
         {
           select: ["id"],
-          where: {
-            quantity: {
-              gte: 10n,
-            },
-            price: {
-              neq: excludedPrice,
-              lt: maxPrice,
-            },
-          },
+          where: [
+            { field: "quantity", type: "greaterThanOrEqual", filter: 10n },
+            { field: "price", type: "notEqual", filter: excludedPrice },
+            { field: "price", type: "lessThan", filter: maxPrice },
+          ],
         },
       );
       const evaluation = evaluateRawQuery(
@@ -559,9 +529,9 @@ describe("Topic Store query execution", () => {
             }).toStrictEqual({
               filters: [
                 {
-                  field: "quantity",
-                  operator: "gte",
-                  value: 10n,
+                  field: "price",
+                  operator: "lt",
+                  value: "100",
                 },
                 {
                   field: "price",
@@ -569,9 +539,9 @@ describe("Topic Store query execution", () => {
                   value: "0",
                 },
                 {
-                  field: "price",
-                  operator: "lt",
-                  value: "100",
+                  field: "quantity",
+                  operator: "gte",
+                  value: 10n,
                 },
               ],
               callbackRequired: false,
@@ -609,14 +579,10 @@ describe("Topic Store query execution", () => {
         rawQueryCompilerMetadata(LiteralMetrics),
         {
           select: ["id"],
-          where: {
-            score: {
-              gte: 1,
-            },
-            bucket: {
-              lte: 1n,
-            },
-          },
+          where: [
+            { field: "score", type: "greaterThanOrEqual", filter: 1 },
+            { field: "bucket", type: "lessThanOrEqual", filter: 1n },
+          ],
         },
       );
       const evaluation = evaluateRawQuery(
@@ -625,14 +591,14 @@ describe("Topic Store query execution", () => {
             expect(plan.predicate).toStrictEqual({
               filters: [
                 {
-                  field: "score",
-                  operator: "gte",
-                  value: 1,
-                },
-                {
                   field: "bucket",
                   operator: "lte",
                   value: 1n,
+                },
+                {
+                  field: "score",
+                  operator: "gte",
+                  value: 1,
                 },
               ],
               callbackRequired: false,
@@ -656,242 +622,33 @@ describe("Topic Store query execution", () => {
     }),
   );
 
-  it.effect("keeps malformed scalar operators callback-only in the storage scan plan", () =>
+  it.effect("rejects malformed scalar operands before storage planning", () =>
     Effect.gen(function* () {
-      const compiled = yield* prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
-        select: ["id"],
-        where: {
-          status: {
-            eq: undefined,
-            in: [undefined],
-          },
-          price: {
-            gt: undefined,
-            gte: "9",
-            lt: Number.NaN,
-            lte: fromStringUnsafe("50"),
-          },
-          customerId: {
-            startsWith: 1,
-          },
-          note: undefined,
-        },
-      });
-      const evaluation = evaluateRawQuery(
-        {
-          scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
-              filters: [],
-              callbackRequired: true,
-              callbackSkippable: false,
-            });
-            expect(plan.matches(order("open", "open", 10, 1))).toBe(false);
-            return {
-              keys: [],
-              window: [],
-              totalRows: 0,
-            };
-          },
-          version: () => 14,
-        },
-        compiled,
-      );
-
-      expect(evaluation.keys).toStrictEqual([]);
-      expect(evaluation.rows).toStrictEqual([]);
-      expect(evaluation.totalRows).toBe(0);
-      expect(evaluation.version).toBe(14);
-
-      const structuredScalarCompiled = yield* prepareRuntimeRawQuery(
-        "orders",
-        rawQueryCompilerMetadata(Order),
-        {
+      const error = yield* Effect.flip(
+        prepareRuntimeRawQuery("orders", rawQueryCompilerMetadata(Order), {
           select: ["id"],
-          where: {
-            status: ["open"],
-            customerId: {
-              eq: ["customer-open"],
-            },
-            region: {
-              in: [["emea"]],
-            },
-            price: Number.NaN,
-          },
-        },
-      );
-      const structuredScalarEvaluation = evaluateRawQuery(
-        {
-          scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
-              filters: [],
-              callbackRequired: true,
-              callbackSkippable: false,
-            });
-            expect(plan.matches(order("open", "open", 10, 1))).toBe(false);
-            return {
-              keys: [],
-              window: [],
-              totalRows: 0,
-            };
-          },
-          version: () => 17,
-        },
-        structuredScalarCompiled,
-      );
-
-      expect(structuredScalarEvaluation.keys).toStrictEqual([]);
-      expect(structuredScalarEvaluation.rows).toStrictEqual([]);
-      expect(structuredScalarEvaluation.totalRows).toBe(0);
-      expect(structuredScalarEvaluation.version).toBe(17);
-
-      const bigintCompiled = yield* prepareRuntimeRawQuery(
-        "positions",
-        rawQueryCompilerMetadata(Position),
-        {
-          select: ["id"],
-          where: {
-            quantity: {
-              neq: 1,
-            },
-          },
-        },
-      );
-      const bigintEvaluation = evaluateRawQuery(
-        {
-          scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
-              filters: [],
-              callbackRequired: true,
-              callbackSkippable: false,
-            });
-            expect(plan.matches(position("bad", "BAD", 10n, "10"))).toBe(false);
-            return {
-              keys: [],
-              window: [],
-              totalRows: 0,
-            };
-          },
-          version: () => 15,
-        },
-        bigintCompiled,
-      );
-
-      expect(bigintEvaluation.keys).toStrictEqual([]);
-      expect(bigintEvaluation.rows).toStrictEqual([]);
-      expect(bigintEvaluation.totalRows).toBe(0);
-      expect(bigintEvaluation.version).toBe(15);
-
-      const bigDecimalCompiled = yield* prepareRuntimeRawQuery(
-        "positions",
-        rawQueryCompilerMetadata(Position),
-        {
-          select: ["id"],
-          where: {
-            price: {
-              lt: 100,
-            },
-          },
-        },
-      );
-      const bigDecimalEvaluation = evaluateRawQuery(
-        {
-          scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
-              filters: [],
-              callbackRequired: true,
-              callbackSkippable: false,
-            });
-            expect(plan.matches(position("bad-price", "BAD", 10n, "10"))).toBe(false);
-            return {
-              keys: [],
-              window: [],
-              totalRows: 0,
-            };
-          },
-          version: () => 16,
-        },
-        bigDecimalCompiled,
-      );
-
-      expect(bigDecimalEvaluation.keys).toStrictEqual([]);
-      expect(bigDecimalEvaluation.rows).toStrictEqual([]);
-      expect(bigDecimalEvaluation.totalRows).toBe(0);
-      expect(bigDecimalEvaluation.version).toBe(16);
-
-      const booleanCompiled = yield* prepareRuntimeRawQuery(
-        "positions",
-        rawQueryCompilerMetadata(Position),
-        {
-          select: ["id"],
-          where: {
-            active: {
-              neq: true,
-            },
-          },
-        },
-      );
-      const booleanEvaluation = evaluateRawQuery(
-        {
-          scanRawWindow: (plan) => {
-            expect(plan.predicate).toStrictEqual({
-              filters: [],
-              callbackRequired: true,
-              callbackSkippable: false,
-            });
-            expect(plan.matches(position("active", "ACT", 10n, "10", true))).toBe(false);
-            expect(plan.matches(position("inactive", "INA", 10n, "10", false))).toBe(true);
-            return {
-              keys: [],
-              window: [],
-              totalRows: 0,
-            };
-          },
-          version: () => 19,
-        },
-        booleanCompiled,
-      );
-
-      expect(booleanEvaluation.keys).toStrictEqual([]);
-      expect(booleanEvaluation.rows).toStrictEqual([]);
-      expect(booleanEvaluation.totalRows).toBe(0);
-      expect(booleanEvaluation.version).toBe(19);
-
-      const MixedNumeric = Schema.Struct({
-        id: Schema.String,
-        amount: Schema.Union([Schema.Number, Schema.BigInt, Schema.BigDecimal]),
-      });
-      const mixedNumericRangeError = yield* Effect.flip(
-        prepareRuntimeRawQuery("mixedNumeric", rawQueryCompilerMetadata(MixedNumeric), {
-          select: ["id"],
-          where: {
-            amount: {
-              gt: 1,
-            },
-          },
+          where: [{ field: "status", type: "equals", filter: undefined }],
         }),
       );
-      expect(mixedNumericRangeError.message).toBe(
-        "Raw query where field amount does not support range operators.",
-      );
+
+      expect(error).toMatchObject({
+        _tag: "InvalidQueryError",
+        message: "Filter operands must not be undefined.",
+      });
     }),
   );
 
-  it.effect("keeps structured object predicates callback-only in the storage scan plan", () =>
+  it.effect("filters statically named scalar paths inside structured fields", () =>
     Effect.gen(function* () {
       const compiled = yield* prepareRuntimeRawQuery(
         "instruments",
         rawQueryCompilerMetadata(Instrument),
         {
           select: ["id"],
-          where: {
-            operatorLike: {
-              eq: "xnys",
-            },
-            operatorRangeLike: {
-              gte: 2,
-            },
-            tags: ["equity"],
-          },
+          where: [
+            { field: "operatorLike.eq", type: "equals", filter: "xnys" },
+            { field: "operatorRangeLike.gte", type: "greaterThanOrEqual", filter: 2 },
+          ],
         },
       );
       const evaluation = evaluateRawQuery(
@@ -908,12 +665,7 @@ describe("Topic Store query execution", () => {
             expect(plan.matches(directMatch)).toBe(true);
             return {
               keys: ["3"],
-              window: [
-                {
-                  key: "3",
-                  row: directMatch,
-                },
-              ],
+              window: [{ key: "3", row: directMatch }],
               totalRows: 1,
             };
           },
@@ -922,14 +674,13 @@ describe("Topic Store query execution", () => {
         compiled,
       );
 
-      expect(evaluation.keys).toStrictEqual(["3"]);
-      expect(evaluation.rows).toStrictEqual([
-        {
-          id: "3",
-        },
-      ]);
-      expect(evaluation.totalRows).toBe(1);
-      expect(evaluation.version).toBe(13);
+      expect(evaluation).toStrictEqual({
+        keys: ["3"],
+        rows: [{ id: "3" }],
+        window: [{ key: "3", row: { id: "3" } }],
+        totalRows: 1,
+        version: 13,
+      });
     }),
   );
 });

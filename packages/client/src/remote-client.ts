@@ -20,7 +20,11 @@ import {
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
-import { runAllFinalizers } from "@effect-view-server/effect-utils";
+import {
+  runAllFinalizers,
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
+} from "@effect-view-server/effect-utils";
 import {
   ViewServerRpcs,
   viewServerDecodeHealth,
@@ -34,7 +38,7 @@ import {
   type ViewServerWireHealth,
   type ViewServerWireLiveQuery,
 } from "@effect-view-server/protocol";
-import { Context, Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
+import { Context, Effect, Exit, Layer, ManagedRuntime, Result, Scope, Stream } from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type {
@@ -219,7 +223,7 @@ export const makeViewServerClient: <
   const subscribeLive = Effect.fn("ViewServerClient.remote.subscribe")(function* <
     Topic extends Extract<keyof Topics, string>,
     const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(topic: Topic, query: Query) {
+  >(topic: Topic, query: ExactLiveQueryInputForTopic<Topics, Topic, Query>) {
     type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
     const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, query);
     const stream = subscribeRpc<Row>(topic, wireQuery, (event) =>
@@ -261,7 +265,17 @@ export const makeViewServerClient: <
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRemoteClientError
   > {
-    return subscribeLive(topic, query);
+    const capturedQuery = Result.try(() =>
+      snapshotViewServerQuery<ExactLiveQueryInputForTopic<Topics, Topic, Query>>(query),
+    );
+    return Result.isFailure(capturedQuery)
+      ? Effect.fail({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          message: viewServerQuerySnapshotErrorMessage,
+          topic,
+        })
+      : subscribeLive<Topic, Query>(topic, capturedQuery.success);
   }
 
   const subscribeHealthSummary = Effect.fn("ViewServerClient.remote.healthSummary.subscribe")(

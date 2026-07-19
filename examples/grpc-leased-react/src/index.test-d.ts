@@ -8,13 +8,14 @@ import type {
 import { grpcClients, useLiveQuery, viewServer } from "./view-server.config";
 
 describe("leased gRPC example type contracts", () => {
-  it("requires leased route filters and preserves selected row types", () => {
+  it("requires leased route values and preserves selected row types", () => {
     const result = useLiveQuery("orders", {
       select: ["id", "strategyId", "region"],
-      where: {
-        strategyId: { eq: "strategy-alpha" },
-        region: { eq: "usa" },
-      },
+      where: [
+        { field: "strategyId", type: "equals", filter: "strategy-alpha" },
+        { field: "region", type: "equals", filter: "usa" },
+      ],
+      routeBy: { strategyId: "strategy-alpha", region: "usa" },
       limit: 20,
     });
 
@@ -30,19 +31,17 @@ describe("leased gRPC example type contracts", () => {
   it("rejects leased queries missing required route fields", () => {
     const missingRouteQuery = {
       select: ["id", "region"],
-      where: { region: { eq: "usa" } },
+      where: [{ field: "region", type: "equals", filter: "usa" }],
       limit: 20,
     } satisfies {
       readonly select: readonly ["id", "region"];
-      readonly where: {
-        readonly region: {
-          readonly eq: "usa";
-        };
-      };
+      readonly where: readonly [
+        { readonly field: "region"; readonly type: "equals"; readonly filter: "usa" },
+      ];
       readonly limit: 20;
     };
     type Topics = typeof viewServer.topics;
-    // @ts-expect-error leased gRPC order queries must include the strategyId route filter.
+    // @ts-expect-error leased gRPC order queries must include the exact routeBy object.
     const invalidRouteQuery: RawQuery<TopicRow<Topics, "orders">> &
       ExactLiveQueryInputForTopic<Topics, "orders", typeof missingRouteQuery> = missingRouteQuery;
 

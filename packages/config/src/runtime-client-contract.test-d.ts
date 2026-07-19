@@ -10,6 +10,8 @@ import {
 import { viewServer } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
 
+declare const dynamicRuntimeTopic: "orders" | "trades";
+
 describe("Runtime client and configuration generic contracts", () => {
   it("accepts valid contracts and rejects invalid contracts", () => {
     const assertRuntimeContracts = (runtime: ViewServerRuntimeClient<typeof viewServer.topics>) => {
@@ -23,9 +25,7 @@ describe("Runtime client and configuration generic contracts", () => {
       });
       const snapshotEffect = runtime.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       });
       const patchEffect = runtime.patch("orders", "order-1", {
         price: 43,
@@ -80,13 +80,34 @@ describe("Runtime client and configuration generic contracts", () => {
       );
 
       const invalidSnapshotFilter = runtime.snapshot("orders", {
-        // @ts-expect-error invalid query collapse keeps selected fields from being accepted
         select: ["id"],
-        where: {
-          // @ts-expect-error snapshot filters must use values from the selected topic row
-          price: "not-a-number",
-        },
+        where: [
+          // @ts-expect-error filter values must match their Topic Row fields.
+          { field: "price", type: "equals", filter: "not-a-number" },
+        ],
       });
+      const commonDynamicSnapshot = runtime.snapshot(dynamicRuntimeTopic, {
+        select: ["id"],
+        where: [{ field: "id", type: "equals", filter: "row-1" }],
+      });
+      const orderOnlyQuery = {
+        select: ["id"],
+        where: [{ field: "status", type: "equals", filter: "open" }],
+      } satisfies {
+        readonly select: readonly ["id"];
+        readonly where: readonly [
+          { readonly field: "status"; readonly type: "equals"; readonly filter: "open" },
+        ];
+      };
+      const invalidDynamicSnapshot = runtime.snapshot(
+        dynamicRuntimeTopic,
+        // @ts-expect-error dynamic topic-union queries must be valid for every possible topic.
+        orderOnlyQuery,
+      );
+      expectTypeOf<
+        Effect.Error<typeof commonDynamicSnapshot>
+      >().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf(invalidDynamicSnapshot).not.toBeAny();
       expectTypeOf<
         Effect.Error<typeof invalidPublishWrongField>
       >().toEqualTypeOf<ViewServerRuntimeError>();

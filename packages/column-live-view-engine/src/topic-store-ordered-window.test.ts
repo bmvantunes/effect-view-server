@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { make as makeBigDecimal } from "effect/BigDecimal";
 import { InvalidRowError } from "./index";
 import { TopicRowStorage } from "./topic-row-storage";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
@@ -12,13 +13,122 @@ import {
   TopicStore,
 } from "./topic-store";
 import { topicStoreTestQueryInterface } from "../test-harness/topic-store";
+import { createTopicColumnValuesFromArray } from "./topic-column-vector";
 import { rawWindowOrderedSlotIndex } from "./topic-raw-ordered-window-index";
+import {
+  distinctOrderedEqualityValues,
+  orderedEqualityValuesForField,
+  orderedSlotBoundIndex,
+} from "./topic-ordered-window";
 import { numericRowField } from "../test-harness/columns";
 import { expectDefined } from "../test-harness/events";
-import { makeEngine, order, Order } from "../test-harness/public-engine";
+import { makeEngine, order, Order, position, Position } from "../test-harness/public-engine";
 import { rowField, rowIds } from "../test-harness/rows";
 
 describe("Topic Store ordered-window execution", () => {
+  it.effect("scans only existing owned storage keys and supports early termination", () =>
+    Effect.gen(function* () {
+      const storage = new TopicRowStorage("orders", Order, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      storage.setPrepared(yield* storage.prepareRow(order("a", "open", 10, 1), invalidRow));
+      storage.setPrepared(yield* storage.prepareRow(order("b", "open", 20, 2), invalidRow));
+
+      const visited: Array<string> = [];
+      storage.scanRowsByStorageKeys(["missing", "a", "b"], (key) => {
+        visited.push(key);
+        return false;
+      });
+
+      expect(visited).toStrictEqual(["a"]);
+    }),
+  );
+
+  it.effect("uses owned storage-key candidates for raw windows and zero-limit counts", () =>
+    Effect.gen(function* () {
+      const storage = new TopicRowStorage("orders", Order, "id");
+      const invalidRow = (topic: string, message: string) =>
+        InvalidRowError.make({ topic, message });
+      storage.setPrepared(yield* storage.prepareRow(order("a", "open", 10, 1), invalidRow));
+      storage.setPrepared(yield* storage.prepareRow(order("b", "open", 20, 2), invalidRow));
+      const basePlan = {
+        candidateStorageKeys: () => ["missing", "b", "a"],
+        predicate: {
+          callbackRequired: true,
+          callbackSkippable: false,
+          filters: [],
+        },
+        orderBy: [],
+        matches: () => true,
+        compare: (
+          left: { readonly key: string; readonly row: object },
+          right: { readonly key: string; readonly row: object },
+        ) => left.key.localeCompare(right.key),
+        offset: 0,
+      };
+
+      const window = storage.scanRawWindow({ ...basePlan, limit: undefined });
+      const count = storage.scanRawWindow({ ...basePlan, limit: 0 });
+
+      expect(window.keys).toStrictEqual(["a", "b"]);
+      expect(window.totalRows).toBe(2);
+      expect(count.keys).toStrictEqual([]);
+      expect(count.totalRows).toBe(2);
+    }),
+  );
+
+  it("keeps defensive BigDecimal column comparisons total for malformed scales", () => {
+    const metadata = rawQueryCompilerMetadata(Position);
+    const malformed = makeBigDecimal(1n, Number.NaN);
+    const valid = makeBigDecimal(1n, 0);
+    const priceColumn = createTopicColumnValuesFromArray("price", metadata, [malformed, valid]);
+    const bound = orderedSlotBoundIndex([0], priceColumn, valid, (comparison) => comparison >= 0);
+    const index = rawWindowOrderedSlotIndex(
+      {
+        columns: new Map([["price", priceColumn]]),
+        orderedSlotIndexes: new Map(),
+        rawQueryMetadata: metadata,
+        slots: [
+          { key: "malformed", row: { ...position("malformed", "BAD", 1n, "1"), price: malformed } },
+          { key: "valid", row: position("valid", "GOOD", 1n, "1") },
+        ],
+      },
+      [{ field: "price", direction: "asc" }],
+    );
+
+    expect(Number.isSafeInteger(bound)).toBe(true);
+    expect(index.slots.toSorted((left, right) => left - right)).toStrictEqual([0, 1]);
+  });
+
+  it("treats an empty indexed in-filter as an empty candidate set", () => {
+    expect(
+      orderedEqualityValuesForField(
+        [{ field: "price", operator: "in", values: [] }],
+        "price",
+        rawQueryCompilerMetadata(Order),
+      ),
+    ).toStrictEqual([]);
+    expect(distinctOrderedEqualityValues([2, 1, 2])).toStrictEqual([1, 2]);
+  });
+
+  it("admits safe scalar equality seeks and rejects unsafe values", () => {
+    const metadata = rawQueryCompilerMetadata(Order);
+    expect(
+      orderedEqualityValuesForField(
+        [{ field: "price", operator: "eq", value: 10 }],
+        "price",
+        metadata,
+      ),
+    ).toStrictEqual([10]);
+    expect(
+      orderedEqualityValuesForField(
+        [{ field: "price", operator: "eq", value: { amount: 10 } }],
+        "price",
+        metadata,
+      ),
+    ).toBeUndefined();
+  });
+
   it.effect("keeps deleted slots out of scans and handles hostile plans conservatively", () =>
     Effect.gen(function* () {
       const store = new TopicStore("orders", Order, "id", () => {});

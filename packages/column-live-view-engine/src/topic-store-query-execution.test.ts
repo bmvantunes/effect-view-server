@@ -320,7 +320,7 @@ describe("Topic Store query execution", () => {
                   field: "price",
                   operator: "in",
                   values: ["1"],
-                  valueKeys: ["bigDecimal:1"],
+                  valueKeys: ['bigDecimal:["1","0"]'],
                 },
                 {
                   field: "quantity",

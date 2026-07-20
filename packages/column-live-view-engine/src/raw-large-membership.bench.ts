@@ -54,7 +54,7 @@ beforeAll(() => {
       ],
     }),
   );
-  compiled = compileRawPredicate<RowValue>(metadata, query.where);
+  compiled = compileRawPredicate<RowValue>(metadata, query.where, { trustedRows: true });
   expect(compiled.plan.callbackRequired).toBe(true);
 });
 

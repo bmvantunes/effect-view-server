@@ -7,6 +7,16 @@ export {
 } from "./strict-json-materialization";
 export { makeSchemaJsonIdentity, type SchemaJsonIdentity } from "./schema-json-identity";
 export {
+  compareWireSafeBigDecimal,
+  compareTrustedWireSafeBigDecimal,
+  inspectWireSafeBigDecimal,
+  isTrustedWireSafeBigDecimal,
+  isWireSafeBigDecimal,
+  trustedWireSafeBigDecimalSemanticKey,
+  type WireSafeBigDecimalInspection,
+  wireSafeBigDecimalSemanticKey,
+} from "./wire-safe-big-decimal";
+export {
   snapshotViewServerQuery,
   viewServerQuerySnapshotErrorMessage,
 } from "./query-input-snapshot";
@@ -22,7 +32,6 @@ export {
   schemaValuePresenceKey,
   type SchemaValuePresenceToken,
 } from "./schema-value-presence";
-export { compareWireSafeBigDecimal, isWireSafeBigDecimal } from "./wire-safe-big-decimal";
 export {
   collectCanonicalFilterGraphLeaves,
   compareCanonicalFilterGraphs,
@@ -31,6 +40,18 @@ export {
   type CanonicalFilterComparisonNode,
   type CanonicalFilterGraphStep,
 } from "./canonical-filter-expression";
+export {
+  hasPlainRecordPrototype,
+  inspectDenseArrayData,
+  inspectPlainRecordData,
+  inspectPlainRecordShape,
+  type DenseArrayInspection,
+  type PlainRecordDataInspection,
+  type PlainRecordInspection,
+  type PlainRecordShapeInspection,
+  type PlainRecordShapeSnapshot,
+  type PlainRecordSnapshot,
+} from "./structural-data";
 
 const isNonTypedFailureReason = <E>(
   reason: Cause.Reason<E>,

@@ -54,6 +54,16 @@ describe("raw query decoder", () => {
       );
 
       expect(error.message).toBe("Raw query where contains an unsupported query value.");
+
+      const nonPlainQuery = yield* Effect.flip(
+        decodeRawQuery("rows", rawQueryCompilerMetadata(Row), new Map()),
+      );
+      expect(nonPlainQuery.message).toBe("Raw query must be a plain object.");
+
+      const missingQuery = yield* Effect.flip(
+        decodeRawQuery("rows", rawQueryCompilerMetadata(Row), undefined),
+      );
+      expect(missingQuery.message).toBe("Raw query select must be a non-empty array of strings.");
     }),
   );
 });

@@ -55,6 +55,10 @@ condition to opt into exact handling for that dimension. `blank` means `""`,
 `null`, `undefined`, a missing leaf field, or a missing intermediate field in a
 dot path; `notBlank` is its exact complement.
 
+BigDecimal operands must have an injective round trip through Effect's
+BigDecimal JSON codec. Values whose formatted exponent loses scale precision
+are rejected before query identity or wire encoding.
+
 Statically named nested scalar fields use dot paths such as
 `profile.country`. Structured objects, arrays, maps, sets, dynamic record keys,
 and other deep values are not filterable.

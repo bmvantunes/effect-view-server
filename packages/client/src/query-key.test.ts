@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Schema } from "effect";
 import { fromStringUnsafe, make } from "effect/BigDecimal";
-import { stableQueryKey } from "./query-key";
+import { stableQueryKey, stableQueryKeyForRowSchema } from "./query-key";
 import { canonicalWhereKey, compareCanonicalWhereExpressions } from "./query-where-key";
 
 type FilterNode =
@@ -15,6 +16,14 @@ type FilterNode =
     };
 
 const leaf = (): FilterNode => ({ field: "name", type: "equals", filter: "Ada" });
+
+const FilterRow = Schema.Struct({
+  name: Schema.String,
+  quantity: Schema.Number,
+  mixed: Schema.Union([Schema.String, Schema.Number]),
+  status: Schema.Literals(["open", "closed"]),
+  label: Schema.Literal("resume"),
+});
 
 const deeplyNestedQuery = (depth: number): object => {
   let condition = leaf();
@@ -183,7 +192,6 @@ describe("stableQueryKey", () => {
             condition: { field: "region", type: "equals", filter: "USÁ" },
           },
         },
-        { field: "name", type: "in", filter: [] },
       ],
     };
     const canonical = {
@@ -251,10 +259,27 @@ describe("stableQueryKey", () => {
         select: ["name"],
         where: [{ field: "mixed", type: "equals", filter: 1, caseSensitive: true }],
       }),
-    ).toBe(
+    ).not.toBe(
       stableQueryKey({
         select: ["name"],
         where: [{ field: "mixed", type: "equals", filter: 1 }],
+      }),
+    );
+    expect(
+      stableQueryKey({
+        select: ["name"],
+        where: [{ field: "doesNotExist", type: "in", filter: [] }],
+      }),
+    ).not.toBe(stableQueryKey({ select: ["name"] }));
+    expect(
+      stableQueryKey({
+        select: ["name"],
+        where: [{ field: "quantity", type: "in", filter: [1n], accentSensitive: true }],
+      }),
+    ).not.toBe(
+      stableQueryKey({
+        select: ["name"],
+        where: [{ field: "quantity", type: "in", filter: [1n] }],
       }),
     );
   });
@@ -284,6 +309,144 @@ describe("stableQueryKey", () => {
         where: [{ field: "name", type: "contains", filter: "different" }],
       }),
     );
+  });
+
+  it("uses row schemas to collapse only valid validation-sensitive no-ops", () => {
+    const noWhere = { select: ["name"] };
+    const knownEmptyIn = {
+      select: ["name"],
+      where: [{ field: "name", type: "in", filter: [] }],
+    };
+    const mixedEmptyInWithTextOption = {
+      select: ["name"],
+      where: [{ field: "mixed", type: "in", filter: [], caseSensitive: true }],
+    };
+    const mixedNumericWithTextOption = {
+      select: ["name"],
+      where: [{ field: "mixed", type: "equals", filter: 1, caseSensitive: true }],
+    };
+    const mixedNumeric = {
+      select: ["name"],
+      where: [{ field: "mixed", type: "equals", filter: 1 }],
+    };
+    const unknownEmptyIn = {
+      select: ["name"],
+      where: [{ field: "doesNotExist", type: "in", filter: [] }],
+    };
+    const invalidNumericOption = {
+      select: ["name"],
+      where: [{ field: "quantity", type: "equals", filter: 1, accentSensitive: true }],
+    };
+    const invalidNumericEmptyInOption = {
+      select: ["name"],
+      where: [{ field: "quantity", type: "in", filter: [], accentSensitive: true }],
+    };
+    const numeric = {
+      select: ["name"],
+      where: [{ field: "quantity", type: "equals", filter: 1 }],
+    };
+
+    expect(stableQueryKeyForRowSchema(knownEmptyIn, FilterRow)).toBe(
+      stableQueryKeyForRowSchema(noWhere, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(mixedEmptyInWithTextOption, FilterRow)).toBe(
+      stableQueryKeyForRowSchema(noWhere, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(mixedNumericWithTextOption, FilterRow)).toBe(
+      stableQueryKeyForRowSchema(mixedNumeric, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(unknownEmptyIn, FilterRow)).not.toBe(
+      stableQueryKeyForRowSchema(noWhere, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(invalidNumericOption, FilterRow)).not.toBe(
+      stableQueryKeyForRowSchema(numeric, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(invalidNumericEmptyInOption, FilterRow)).not.toBe(
+      stableQueryKeyForRowSchema(noWhere, FilterRow),
+    );
+  });
+
+  it("keeps schema-rejected equality operands distinct from valid normalized values", () => {
+    const validLiteral = {
+      select: ["name"],
+      where: [{ field: "status", type: "equals", filter: "open" }],
+    };
+    const invalidCaseVariant = {
+      select: ["name"],
+      where: [{ field: "status", type: "equals", filter: "OPEN" }],
+    };
+    const validAccentLiteral = {
+      select: ["name"],
+      where: [{ field: "label", type: "notEqual", filter: "resume" }],
+    };
+    const invalidAccentVariant = {
+      select: ["name"],
+      where: [{ field: "label", type: "notEqual", filter: "résumé" }],
+    };
+    const validMembership = {
+      select: ["name"],
+      where: [{ field: "status", type: "in", filter: ["open", "closed"] }],
+    };
+    const invalidMembership = {
+      select: ["name"],
+      where: [{ field: "status", type: "in", filter: ["OPEN", "closed", "OPEN"] }],
+    };
+
+    expect(stableQueryKeyForRowSchema(invalidCaseVariant, FilterRow)).not.toBe(
+      stableQueryKeyForRowSchema(validLiteral, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(invalidAccentVariant, FilterRow)).not.toBe(
+      stableQueryKeyForRowSchema(validAccentLiteral, FilterRow),
+    );
+    expect(stableQueryKeyForRowSchema(invalidMembership, FilterRow)).not.toBe(
+      stableQueryKeyForRowSchema(validMembership, FilterRow),
+    );
+    expect(
+      stableQueryKeyForRowSchema(
+        {
+          select: ["name"],
+          where: [{ field: "status", type: "equals", filter: "OPEN" }],
+        },
+        FilterRow,
+      ),
+    ).toBe(stableQueryKeyForRowSchema(invalidCaseVariant, FilterRow));
+
+    const rejectedScalarKeys = [null, true, -0, 1, 1n, fromStringUnsafe("1.00")].map((filter) =>
+      stableQueryKeyForRowSchema(
+        {
+          select: ["name"],
+          where: [{ field: "status", type: "equals", filter }],
+        },
+        FilterRow,
+      ),
+    );
+    expect(new Set(rejectedScalarKeys).size).toBe(rejectedScalarKeys.length);
+
+    const invalidQueryKey = stableQueryKey({ where: undefined });
+    expect(
+      stableQueryKeyForRowSchema(
+        {
+          select: ["name"],
+          where: [{ field: "status", type: "equals", filter: {} }],
+        },
+        FilterRow,
+      ),
+    ).toBe(invalidQueryKey);
+    expect(
+      stableQueryKeyForRowSchema(
+        {
+          select: ["name"],
+          where: [
+            {
+              field: "status",
+              type: "equals",
+              filter: make(1n, Number.POSITIVE_INFINITY),
+            },
+          ],
+        },
+        FilterRow,
+      ),
+    ).toBe(invalidQueryKey);
   });
 
   it("canonicalizes every supported operator and scalar domain", () => {
@@ -637,7 +800,10 @@ describe("stableQueryKey", () => {
 
   it("uses a deterministic unsupported token for malformed BigDecimal values", () => {
     const invalidScale = make(150n, Number.POSITIVE_INFINITY);
+    const firstCodecCollision = make(111n, Number.MIN_SAFE_INTEGER);
+    const secondCodecCollision = make(111n, Number.MIN_SAFE_INTEGER + 1);
     const semanticCollection = new Map([["amount", invalidScale]]);
+    const invalidWhereKey = stableQueryKey({ where: undefined });
 
     expect(() => stableQueryKey({ routeBy: { amount: invalidScale } })).not.toThrow();
     expect(stableQueryKey({ routeBy: { amount: invalidScale } })).toBe(
@@ -646,6 +812,16 @@ describe("stableQueryKey", () => {
     expect(stableQueryKey({ value: semanticCollection })).toBe(
       stableQueryKey({ value: new Map([["amount", make(150n, Number.NaN)]]) }),
     );
+    expect(
+      stableQueryKey({
+        where: [{ field: "amount", type: "in", filter: [firstCodecCollision] }],
+      }),
+    ).toBe(invalidWhereKey);
+    expect(
+      stableQueryKey({
+        where: [{ field: "amount", type: "in", filter: [secondCodecCollision] }],
+      }),
+    ).toBe(invalidWhereKey);
   });
 
   it("preserves canonical nested collection values and their cycle markers", () => {

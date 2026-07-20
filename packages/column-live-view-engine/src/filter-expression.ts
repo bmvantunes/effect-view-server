@@ -2,7 +2,10 @@ import {
   collectCanonicalFilterGraphLeaves,
   compareCanonicalFilterGraphs,
   complementCanonicalFilterType,
+  inspectDenseArrayData,
+  inspectPlainRecordShape,
   isWireSafeBigDecimal,
+  type PlainRecordShapeSnapshot,
 } from "@effect-view-server/effect-utils";
 import {
   isBigDecimal,
@@ -13,7 +16,6 @@ import {
 import { Result } from "effect";
 import type { FilterFieldMetadata, FilterNumericKind } from "./filter-field-metadata";
 import { compareFilterValue, stableQueryValueString } from "./query-value";
-import { isPlainRecord } from "./row-values";
 
 export type RuntimeFilterConditionType =
   | "equals"
@@ -122,28 +124,38 @@ const fail = (message: string): never => {
   throw new FilterExpressionError(message);
 };
 
-const requirePlainRecord = (value: unknown): Readonly<Record<string, unknown>> =>
-  isPlainRecord(value) ? value : fail("Every filter expression must be a plain object.");
-
-const ownEnumerableDataValue = (
-  record: Readonly<Record<string, unknown>>,
-  key: string,
-): unknown => {
-  const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-    return fail(`Filter expression property ${key} must be an own enumerable data property.`);
+const requirePlainRecord = (value: unknown): PlainRecordShapeSnapshot => {
+  const inspection = inspectPlainRecordShape(value);
+  if (inspection._tag === "Success") {
+    return inspection.snapshot;
   }
-  return descriptor.value;
+  if (inspection.reason === "invalidRecord") {
+    return fail("Every filter expression must be a plain object.");
+  }
+  throw new TypeError("Filter expression record could not be inspected.");
+};
+
+const ownEnumerableDataValue = (record: PlainRecordShapeSnapshot, key: string): unknown => {
+  const inspection = record.inspectData(key);
+  switch (inspection._tag) {
+    case "Data":
+      return inspection.value;
+    case "ReflectionFailure":
+      throw new TypeError(`Filter expression property ${key} could not be inspected.`);
+    case "Missing":
+    case "InvalidProperty":
+      return fail(`Filter expression property ${key} must be an own enumerable data property.`);
+  }
 };
 
 const validateExactRecordKeys = (
-  record: Readonly<Record<string, unknown>>,
+  record: PlainRecordShapeSnapshot,
   allowed: ReadonlySet<string>,
 ): void => {
-  if (Object.getOwnPropertySymbols(record).length > 0) {
+  if (record.symbolKeys.length > 0) {
     fail("Filter expressions must not contain symbol properties.");
   }
-  for (const key of Object.getOwnPropertyNames(record)) {
+  for (const key of record.stringKeys) {
     if (!allowed.has(key)) {
       fail(`Filter expression contains unsupported property: ${key}.`);
     }
@@ -152,29 +164,22 @@ const validateExactRecordKeys = (
 };
 
 const denseArraySnapshot = (value: unknown, label: string): ReadonlyArray<unknown> => {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+  const inspection = inspectDenseArrayData(value);
+  if (inspection._tag === "Success") {
+    return inspection.values;
+  }
+  if (inspection.reason === "invalidArray") {
     return fail(`${label} must be an array.`);
   }
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    return fail(`${label} must not contain symbol properties.`);
+  if (inspection.reason === "invalidReflection") {
+    throw new TypeError(`${label} could not be inspected.`);
   }
-  const allowed = new Set<string>(["length"]);
-  const snapshot: Array<unknown> = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return fail(`${label} must be a dense array of data values.`);
-    }
-    snapshot.push(descriptor.value);
+  if (inspection.reason === "invalidEntry") {
+    return fail(`${label} must be a dense array of data values.`);
   }
-  for (const key of Object.getOwnPropertyNames(value)) {
-    if (!allowed.has(key)) {
-      return fail(`${label} contains unsupported property: ${key}.`);
-    }
-  }
-  return snapshot;
+  return typeof inspection.key === "symbol"
+    ? fail(`${label} must not contain symbol properties.`)
+    : fail(`${label} contains unsupported property: ${inspection.key}.`);
 };
 
 const immutableBigDecimal = (value: BigDecimal): BigDecimal => {
@@ -219,7 +224,25 @@ const ownScalar = (value: unknown): RuntimeFilterScalar => {
   return fail("Filter operands must be supported scalar values.");
 };
 
+const normalizedAsciiText = (value: string, caseSensitive: boolean): string | undefined => {
+  let hasUppercase = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code > 127) {
+      return undefined;
+    }
+    if (code >= 65 && code <= 90) {
+      hasUppercase = true;
+    }
+  }
+  return caseSensitive || !hasUppercase ? value : value.toLowerCase();
+};
+
 const normalizeText = (value: string, caseSensitive: boolean, accentSensitive: boolean): string => {
+  const ascii = normalizedAsciiText(value, caseSensitive);
+  if (ascii !== undefined) {
+    return ascii;
+  }
   let normalized = value.normalize("NFD");
   if (!accentSensitive) {
     normalized = normalized.replace(/\p{M}+/gu, "");
@@ -228,12 +251,12 @@ const normalizeText = (value: string, caseSensitive: boolean, accentSensitive: b
 };
 
 const textOptions = (
-  record: Readonly<Record<string, unknown>>,
+  record: PlainRecordShapeSnapshot,
 ): { readonly caseSensitive: boolean; readonly accentSensitive: boolean } => {
-  const caseSensitive = Object.hasOwn(record, "caseSensitive")
+  const caseSensitive = record.stringKeys.includes("caseSensitive")
     ? ownEnumerableDataValue(record, "caseSensitive")
     : false;
-  const accentSensitive = Object.hasOwn(record, "accentSensitive")
+  const accentSensitive = record.stringKeys.includes("accentSensitive")
     ? ownEnumerableDataValue(record, "accentSensitive")
     : false;
   if (typeof caseSensitive !== "boolean" || typeof accentSensitive !== "boolean") {
@@ -330,7 +353,7 @@ const conditionAllowedKeys = (
 };
 
 const makeCondition = (
-  record: Readonly<Record<string, unknown>>,
+  record: PlainRecordShapeSnapshot,
   fields: ReadonlyMap<string, FilterFieldMetadata>,
 ): RuntimeFilterCondition | undefined => {
   const fieldName = ownEnumerableDataValue(record, "field");
@@ -780,19 +803,22 @@ const normalizeExpression = (
       results.push(normalized);
       continue;
     }
-    const source = requirePlainRecord(frame.value);
-    if (completed.has(source)) {
-      results.push(memo.get(source));
-      continue;
+    if (typeof frame.value === "object" && frame.value !== null) {
+      if (completed.has(frame.value)) {
+        results.push(memo.get(frame.value));
+        continue;
+      }
+      if (active.has(frame.value)) {
+        fail("Filter expressions must not contain cycles.");
+      }
     }
-    if (active.has(source)) {
-      fail("Filter expressions must not contain cycles.");
-    }
-    const type = ownEnumerableDataValue(source, "type");
+    const record = requirePlainRecord(frame.value);
+    const source = record.source;
+    const type = ownEnumerableDataValue(record, "type");
     if (type === "AND" || type === "OR") {
-      validateExactRecordKeys(source, new Set(["type", "conditions"]));
+      validateExactRecordKeys(record, new Set(["type", "conditions"]));
       const children = denseArraySnapshot(
-        ownEnumerableDataValue(source, "conditions"),
+        ownEnumerableDataValue(record, "conditions"),
         `Filter group ${type}.conditions`,
       );
       active.add(source);
@@ -808,14 +834,14 @@ const normalizeExpression = (
       continue;
     }
     if (type === "NOT") {
-      validateExactRecordKeys(source, new Set(["type", "condition"]));
-      const child = ownEnumerableDataValue(source, "condition");
+      validateExactRecordKeys(record, new Set(["type", "condition"]));
+      const child = ownEnumerableDataValue(record, "condition");
       active.add(source);
       frames.push({ _tag: "exit", source, kind: "NOT", childCount: 1 });
       frames.push({ _tag: "enter", value: child });
       continue;
     }
-    const normalized = makeCondition(source, fields);
+    const normalized = makeCondition(record, fields);
     if (normalized !== undefined) {
       identities.identityFor(normalized);
     }

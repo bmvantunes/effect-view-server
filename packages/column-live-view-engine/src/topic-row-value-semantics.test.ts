@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Schema } from "effect";
+import { BigDecimal, Schema } from "effect";
 import { makeTopicRowValueSemantics } from "./topic-row-value-semantics";
 
 describe("Topic Row value semantics", () => {
@@ -48,5 +48,28 @@ describe("Topic Row value semantics", () => {
       "Topic Row field id must be an own data property.",
     );
     expect(descriptorReads).toBe(1);
+  });
+
+  it("compares absent optional objects before nested BigDecimal canonicalization", () => {
+    const semantics = makeTopicRowValueSemantics(
+      Schema.Struct({
+        id: Schema.String,
+        meta: Schema.optionalKey(Schema.Struct({ amount: Schema.BigDecimal })),
+      }),
+    );
+
+    expect(semantics.equivalentField("meta", undefined, undefined)).toBe(true);
+    expect(
+      semantics.equivalentField("meta", undefined, {
+        amount: BigDecimal.fromStringUnsafe("1.0"),
+      }),
+    ).toBe(false);
+    expect(
+      semantics.equivalentField(
+        "meta",
+        { amount: BigDecimal.fromStringUnsafe("1.0") },
+        { amount: BigDecimal.fromStringUnsafe("1.00") },
+      ),
+    ).toBe(true);
   });
 });

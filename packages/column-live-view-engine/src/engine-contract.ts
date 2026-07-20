@@ -4,12 +4,8 @@ import type {
   ExactLiveQuery,
   ExactPatch,
   ExactRawQuery,
-  GroupedQuery,
-  GroupedResult,
   LiveQueryRow,
   LiveQueryResult,
-  PickRawFields,
-  RawQuery,
   RowFromSchema,
   RowSchema,
   SnapshotEvent,
@@ -82,12 +78,14 @@ type ExactEngineQueryInputForTopic<
   Query,
   Kind extends EngineQueryKind,
 > = Query &
-  ExactEngineQueryForTopics<Topics, Topic, Query, Kind> &
-  RejectInvalidEngineTopicUnionQuery<
-    Topic,
-    TopicsRejectingEngineQuery<Topics, Topic, Query, Kind>
-  > &
-  ValidateLiveQuery<Query>;
+  NoInfer<
+    ExactEngineQueryForTopics<Topics, Topic, Query, Kind> &
+      RejectInvalidEngineTopicUnionQuery<
+        Topic,
+        TopicsRejectingEngineQuery<Topics, Topic, Query, Kind>
+      > &
+      ValidateLiveQuery<Query>
+  >;
 
 export type ExactEngineLiveQueryInputForTopic<
   Topics extends DecodableTopicDefinitions,
@@ -144,113 +142,39 @@ export type ColumnLiveViewTerminalObserver = {
   readonly onTerminalReady: (event: StatusEvent) => Effect.Effect<void, never>;
 };
 
-type EngineSnapshot<Topics extends DecodableTopicDefinitions> = {
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends
-      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
-      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): Effect.Effect<
-    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineGroupedQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): Effect.Effect<
-    LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineRawQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): Effect.Effect<
-    LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-};
+type EngineSnapshot<Topics extends DecodableTopicDefinitions> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query,
+>(
+  topic: Topic,
+  query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+) => Effect.Effect<
+  LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+  ColumnLiveViewEngineError
+>;
 
-type EngineSubscribe<Topics extends DecodableTopicDefinitions> = {
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends
-      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
-      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineGroupedQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineRawQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-};
+type EngineSubscribe<Topics extends DecodableTopicDefinitions> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query,
+>(
+  topic: Topic,
+  query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+) => Effect.Effect<
+  ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+  ColumnLiveViewEngineError
+>;
 
-type EngineSubscribeObserved<Topics extends DecodableTopicDefinitions> = {
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends
-      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
-      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-    observer: ColumnLiveViewTerminalObserver,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineGroupedQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-    observer: ColumnLiveViewTerminalObserver,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactEngineRawQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-    observer: ColumnLiveViewTerminalObserver,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-};
+type EngineSubscribeObserved<Topics extends DecodableTopicDefinitions> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query,
+>(
+  topic: Topic,
+  query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+  observer: ColumnLiveViewTerminalObserver,
+) => Effect.Effect<
+  ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+  ColumnLiveViewEngineError
+>;
 
 export type AnyTopicRow<Topics extends DecodableTopicDefinitions> = TopicRow<
   Topics,

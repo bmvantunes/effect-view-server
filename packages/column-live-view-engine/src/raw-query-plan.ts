@@ -1,4 +1,4 @@
-import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { isBigDecimal } from "effect/BigDecimal";
 import { compareQueryValue, stableQueryValueString } from "./query-value";
 import { compileRawPredicate, type CompiledRawPredicate } from "./raw-predicate-compiler";
@@ -126,7 +126,7 @@ const compareBigDecimalRowFieldValues = <Row extends RowObject>(
   const leftValue = trustedFieldValue(left, field);
   const rightValue = trustedFieldValue(right, field);
   if (isBigDecimal(leftValue) && isBigDecimal(rightValue)) {
-    const comparison = compareWireSafeBigDecimal(leftValue, rightValue);
+    const comparison = compareTrustedWireSafeBigDecimal(leftValue, rightValue);
     if (comparison !== undefined) {
       return comparison;
     }
@@ -220,7 +220,7 @@ export const makeRawQueryPlan = <
   );
   const rowOrderBy = compiledRawRowOrder<Row>(metadata, orderBy);
   const selectedFields = Object.freeze([...query.select]);
-  const localPredicate = compileRawPredicate<Row>(metadata, query.where);
+  const localPredicate = compileRawPredicate<Row>(metadata, query.where, { trustedRows: true });
   const predicate: CompiledRawPredicate<Row> =
     partition === undefined
       ? localPredicate

@@ -289,6 +289,7 @@ export const failingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
   publishManyWithStorageKeys: () => Effect.fail(runtimeUnavailable),
   reset: () => Effect.fail(runtimeUnavailable),
   snapshot: () => Effect.fail(runtimeUnavailable),
+  snapshotRuntimeInternal: () => Effect.fail(runtimeUnavailable),
 };
 
 export async function* failingKafkaStream(): AsyncIterable<KafkaMessage> {

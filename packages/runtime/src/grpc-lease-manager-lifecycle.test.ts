@@ -1,7 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type ViewServerRuntimeError } from "@effect-view-server/config";
+import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
+import type {
+  ViewServerRuntimeCoreInternalLiveClient,
+  ViewServerRuntimeCoreTerminalObserver,
+} from "@effect-view-server/runtime-core/internal";
 import { Cause, Deferred, Effect, Exit, Fiber, Queue, Schedule, Stream } from "effect";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
 
@@ -421,7 +424,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           Effect.gen(function* () {
             yield* Deferred.succeed(subscribeStarted, undefined);
             yield* Deferred.await(releaseSubscribe);
@@ -527,7 +530,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           Effect.gen(function* () {
             yield* Deferred.succeed(subscribeStarted, undefined);
             yield* Deferred.await(releaseSubscribe);
@@ -599,7 +602,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           observer.onQueryRegistered("overlapping-subscription-close").pipe(
             Effect.as({
               events: Stream.never,
@@ -690,7 +693,7 @@ describe("gRPC lease manager lifecycle", () => {
           typeof leasedGrpcViewServer.topics
         > = {
           ...runtimeCore.internalLiveClient,
-          subscribeObservedInternal: (_topic, _query, observer) =>
+          subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
             observer.onQueryRegistered("subscription-manager-overlap").pipe(
               Effect.as({
                 events: Stream.never,
@@ -1109,7 +1112,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           observer.onQueryRegistered("raw-close-defect").pipe(
             Effect.as({
               events: Stream.never,
@@ -1195,7 +1198,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           observer.onQueryRegistered("overlapping-manager-close").pipe(
             Effect.as({
               events: Stream.never,
@@ -1271,7 +1274,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           observer.onQueryRegistered("lease-release-defect").pipe(
             Effect.as({
               events: Stream.fromQueue(rawEvents),
@@ -1388,7 +1391,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           Effect.gen(function* () {
             const currentSubscribe = subscribeCount;
             subscribeCount += 1;
@@ -1638,7 +1641,11 @@ describe("gRPC lease manager lifecycle", () => {
             events: controlledRuntimeEvents,
             close: () => Deferred.succeed(rawSubscriptionClosed, undefined).pipe(Effect.asVoid),
           }),
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeObservedInternal: (
+          _topic: string,
+          _query: unknown,
+          observer: ViewServerRuntimeCoreTerminalObserver,
+        ) =>
           observer.onQueryRegistered(initialSnapshot.queryId).pipe(
             Effect.as({
               events: Stream.make(initialSnapshot).pipe(
@@ -1781,7 +1788,7 @@ describe("gRPC lease manager lifecycle", () => {
         typeof leasedGrpcViewServer.topics
       > = {
         ...runtimeCore.internalLiveClient,
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeRuntimeObservedInternal: (_topic, _query, observer) =>
           Effect.gen(function* () {
             yield* observer.onQueryRegistered(engineTerminalStatus.queryId);
             yield* observer.onTerminalOccurrence(engineTerminalStatus);
@@ -2351,7 +2358,11 @@ describe("gRPC lease manager lifecycle", () => {
             events: Stream.empty,
             close: () => Effect.void,
           }),
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeObservedInternal: (
+          _topic: string,
+          _query: unknown,
+          observer: ViewServerRuntimeCoreTerminalObserver,
+        ) =>
           observer.onQueryRegistered("empty-query").pipe(
             Effect.as({
               events: Stream.empty,
@@ -2498,7 +2509,7 @@ describe("gRPC lease manager lifecycle", () => {
       > = {
         ...runtimeCore.internalLiveClient,
         subscribeInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
-        subscribeObservedInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
+        subscribeRuntimeObservedInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
         grpcOptions.sourceConfig,
@@ -2573,7 +2584,7 @@ describe("gRPC lease manager lifecycle", () => {
       const fakeInternalLiveClient: ViewServerRuntimeCoreInternalLiveClient<typeof feed.topics> = {
         ...runtimeCore.internalLiveClient,
         subscribeInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
-        subscribeObservedInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
+        subscribeRuntimeObservedInternal: () => Queue.take(subscribeResults).pipe(Effect.flatten),
       };
       const manager = yield* makeViewServerGrpcLeaseManager(
         feed,

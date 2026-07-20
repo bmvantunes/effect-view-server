@@ -161,6 +161,32 @@ describe("leased route wire codec", () => {
         enumerable: true,
         get: () => "usa",
       });
+      const revokedRoute = Proxy.revocable({ region: "usa" }, {});
+      revokedRoute.revoke();
+      const prototypeFailureRoute = new Proxy(
+        { region: "usa" },
+        {
+          getPrototypeOf: () => {
+            throw new Error("route prototype reflection failed");
+          },
+        },
+      );
+      const keysFailureRoute = new Proxy(
+        { region: "usa" },
+        {
+          ownKeys: () => {
+            throw new Error("route key reflection failed");
+          },
+        },
+      );
+      const descriptorFailureRoute = new Proxy(
+        { region: "usa" },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("route descriptor reflection failed");
+          },
+        },
+      );
       const taggedSymbol = {
         "$effect-view-server/route-scalar": "negativeZero",
       };
@@ -168,10 +194,19 @@ describe("leased route wire codec", () => {
         enumerable: true,
         value: true,
       });
+      const revokedEnvelope = Proxy.revocable(
+        { "$effect-view-server/route-scalar": "bigint", value: "1" },
+        {},
+      );
+      revokedEnvelope.revoke();
 
       const encodeCases: ReadonlyArray<readonly [Readonly<Record<string, unknown>>, string]> = [
         [symbolicRoute, "Query routeBy must be a plain object"],
-        [accessorRoute, "Invalid routeBy field: region"],
+        [accessorRoute, "Query routeBy must be a plain object"],
+        [revokedRoute.proxy, "Query routeBy must be a plain object"],
+        [prototypeFailureRoute, "Query routeBy must be a plain object"],
+        [keysFailureRoute, "Query routeBy must be a plain object"],
+        [descriptorFailureRoute, "Query routeBy must be a plain object"],
         [{ missing: "usa" }, "Invalid routeBy field: missing"],
         [
           { region: { value: "usa" } },
@@ -193,6 +228,14 @@ describe("leased route wire codec", () => {
           { amount: BigDecimal.make(1n, 1.5) },
           "routeBy field amount does not satisfy its configured scalar schema",
         ],
+        [
+          { amount: BigDecimal.make(111n, Number.MIN_SAFE_INTEGER) },
+          "routeBy field amount does not satisfy its configured scalar schema",
+        ],
+        [
+          { amount: BigDecimal.make(111n, Number.MIN_SAFE_INTEGER + 1) },
+          "routeBy field amount does not satisfy its configured scalar schema",
+        ],
         [{ rank: "1" }, "routeBy field rank does not satisfy its configured scalar schema"],
       ];
       for (const [routeBy, message] of encodeCases) {
@@ -203,6 +246,10 @@ describe("leased route wire codec", () => {
       const decodeCases: ReadonlyArray<readonly [Readonly<Record<string, unknown>>, string]> = [
         [{ sequence: [] }, "routeBy field sequence does not satisfy its configured scalar schema"],
         [{ sequence: {} }, "routeBy field sequence does not satisfy its configured scalar schema"],
+        [
+          { sequence: revokedEnvelope.proxy },
+          "routeBy field sequence does not satisfy its configured scalar schema",
+        ],
         [
           { sequence: { "$effect-view-server/route-scalar": "unknown" } },
           "routeBy field sequence does not satisfy its configured scalar schema",
@@ -274,11 +321,125 @@ describe("leased route wire codec", () => {
       }
 
       const arrayRoute: Array<unknown> = [];
-      const arrayError = yield* Effect.flip(
-        // @ts-expect-error hostile wire callers can provide values outside the declared boundary.
-        decodeRouteBy("orders", RouteRow, arrayRoute),
-      );
+      const arrayError = yield* Effect.flip(decodeRouteBy("orders", RouteRow, arrayRoute));
       expect(arrayError.message).toBe("Query routeBy must be a plain object");
+    }),
+  );
+
+  it.effect("uses one immutable route snapshot for field values", () =>
+    Effect.gen(function* () {
+      let regionDescriptorReads = 0;
+      const routeBy = new Proxy(
+        { region: "first" },
+        {
+          getOwnPropertyDescriptor: (target, key) => {
+            const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+            if (key !== "region" || descriptor === undefined) {
+              return descriptor;
+            }
+            regionDescriptorReads += 1;
+            return {
+              ...descriptor,
+              value: regionDescriptorReads === 1 ? "first" : "mutated",
+            };
+          },
+        },
+      );
+
+      const encoded = yield* encodeRouteBy(leasedViewServer, "orders", routeBy);
+
+      expect(encoded).toStrictEqual({ region: "first" });
+      expect(regionDescriptorReads).toBe(1);
+    }),
+  );
+
+  it.effect("owns a stateful BigDecimal route from one descriptor capture", () =>
+    Effect.gen(function* () {
+      let coefficientDescriptorReads = 0;
+      let scaleDescriptorReads = 0;
+      const amount = new Proxy(BigDecimal.make(123n, 2), {
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === "value") {
+            coefficientDescriptorReads += 1;
+            if (coefficientDescriptorReads > 1) {
+              throw new Error("coefficient descriptor was read twice");
+            }
+          }
+          if (key === "scale") {
+            scaleDescriptorReads += 1;
+            if (scaleDescriptorReads > 1) {
+              throw new Error("scale descriptor was read twice");
+            }
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+
+      const encoded = yield* encodeRouteBy(leasedViewServer, "orders", { amount });
+
+      expect(encoded).toStrictEqual({
+        amount: {
+          "$effect-view-server/route-scalar": "bigDecimal",
+          coefficient: "123",
+          scale: "2",
+        },
+      });
+      expect(coefficientDescriptorReads).toBe(1);
+      expect(scaleDescriptorReads).toBe(1);
+    }),
+  );
+
+  it.effect("rejects hostile route values before public query schemas inspect them", () =>
+    Effect.gen(function* () {
+      const revoked = Proxy.revocable({ region: "usa" }, {});
+      revoked.revoke();
+      const rawQuery = { select: ["id"], routeBy: revoked.proxy };
+      const groupedQuery = {
+        groupBy: ["region"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        routeBy: revoked.proxy,
+      };
+      const rawEncodeError = yield* Effect.flip(
+        viewServerEncodeRawQuery(leasedViewServer, "orders", rawQuery),
+      );
+      const rawDecodeError = yield* Effect.flip(
+        viewServerDecodeRawQuery(leasedViewServer, "orders", rawQuery),
+      );
+      const groupedEncodeError = yield* Effect.flip(
+        viewServerEncodeGroupedQuery(leasedViewServer, "orders", groupedQuery),
+      );
+      const groupedDecodeError = yield* Effect.flip(
+        viewServerDecodeGroupedQuery(leasedViewServer, "orders", groupedQuery),
+      );
+
+      for (const error of [
+        rawEncodeError,
+        rawDecodeError,
+        groupedEncodeError,
+        groupedDecodeError,
+      ]) {
+        expect(error).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          message: "Query input could not be inspected",
+          topic: "orders",
+        });
+      }
+
+      const explicitUndefined = yield* Effect.flip(
+        viewServerEncodeRawQuery(leasedViewServer, "orders", {
+          select: ["id"],
+          routeBy: undefined,
+        }),
+      );
+      const arrayRoute = yield* Effect.flip(
+        viewServerEncodeRawQuery(leasedViewServer, "orders", {
+          select: ["id"],
+          routeBy: [],
+        }),
+      );
+      expect(explicitUndefined.message).toBe("Query input could not be inspected");
+      expect(arrayRoute.message).toBe("Query routeBy must be a plain object");
     }),
   );
 

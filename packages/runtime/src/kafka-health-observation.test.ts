@@ -47,6 +47,8 @@ describe("Kafka health observation", () => {
         "1 minute",
       );
 
+      yield* TestClock.adjust("1 minute");
+      expect(immediateRefreshes).toBe(0);
       yield* observer.regionStopped("local");
       yield* observer.close;
 

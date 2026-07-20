@@ -4,7 +4,7 @@ import type {
   ViewServerRuntimeCoreInternalClient,
   ViewServerRuntimeCoreInternalLiveClient,
 } from "@effect-view-server/runtime-core/internal";
-import { Effect } from "effect";
+import { Effect, Semaphore } from "effect";
 import type { ViewServerGrpcHealthLedger } from "./grpc-health";
 import { assembleGrpcLeaseClient } from "./grpc-lease-client-assembly";
 import { assembleGrpcLeaseLiveClient } from "./grpc-lease-live-client-assembly";
@@ -35,6 +35,7 @@ export const makeViewServerGrpcLeaseManager = <
   health: ViewServerGrpcHealthLedger<Topics>,
   makeClient: ViewServerGrpcClientFactory = makeDefaultGrpcClient,
   groupedKeyRetentionObserver?: ViewServerGrpcGroupedKeyRetentionObserver,
+  acquisitionLock?: Semaphore.Semaphore,
 ): Effect.Effect<ViewServerGrpcLeaseManager<Topics>> =>
   makeViewServerGrpcLeaseManagerSubstrate(
     config,
@@ -46,16 +47,14 @@ export const makeViewServerGrpcLeaseManager = <
     health,
     makeClient,
     groupedKeyRetentionObserver,
+    acquisitionLock,
   ).pipe(
     Effect.map((substrate) =>
       assembleViewServerGrpcLeaseManager<Topics>({
         client: assembleGrpcLeaseClient(substrate),
         liveClient: assembleGrpcLeaseLiveClient<Topics>({
           liveClient: substrate.liveClient,
-          internalLiveClient: substrate.internalLiveClient,
           subscribeRuntimeQuery: substrate.subscribeRuntimeQuery,
-          acquireQueryLease: substrate.acquireQueryLease,
-          querySnapshotError: substrate.querySnapshotError,
           close: substrate.close,
         }),
         close: substrate.close,

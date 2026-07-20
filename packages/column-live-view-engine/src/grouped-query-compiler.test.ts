@@ -34,6 +34,11 @@ describe("Grouped query compilation and evaluation", () => {
         "Filter condition references unknown or non-filterable field: missing.",
       );
       expect(hostile.message).toBe("Grouped query where contains an unsupported query value.");
+
+      const nonPlainQuery = yield* Effect.flip(
+        prepareRuntimeGroupedQuery("positions", metadata, new Map()),
+      );
+      expect(nonPlainQuery.message).toBe("Grouped query must be a plain object.");
     }),
   );
 
@@ -475,6 +480,10 @@ describe("Grouped query compilation and evaluation", () => {
       const engine = yield* makeEngine();
       const sparseGroupBy = Array<string>();
       sparseGroupBy[1] = "status";
+      const decoratedGroupBy = ["status"];
+      Object.defineProperty(decoratedGroupBy, "metadata", { enumerable: true, value: true });
+      const decoratedOrderBy = [{ field: "status", direction: "asc" }];
+      Object.defineProperty(decoratedOrderBy, "metadata", { enumerable: true, value: true });
       const nonPlainGroupedQuery: object = Object.assign(new Map(), {
         groupBy: ["status"],
         aggregates: { rowCount: { aggFunc: "count" } },
@@ -483,8 +492,8 @@ describe("Grouped query compilation and evaluation", () => {
         readonly query: unknown;
         readonly message: string;
       }> = [
-        { query: null, message: "plain object" },
-        { query: nonPlainGroupedQuery, message: "plain object" },
+        { query: null, message: "snapshotted" },
+        { query: nonPlainGroupedQuery, message: "snapshotted" },
         {
           query: {
             groupBy: ["status"],
@@ -507,6 +516,13 @@ describe("Grouped query compilation and evaluation", () => {
         },
         {
           query: { groupBy: sparseGroupBy, aggregates: { rowCount: { aggFunc: "count" } } },
+          message: "snapshotted",
+        },
+        {
+          query: {
+            groupBy: decoratedGroupBy,
+            aggregates: { rowCount: { aggFunc: "count" } },
+          },
           message: "groupBy",
         },
         {
@@ -571,6 +587,14 @@ describe("Grouped query compilation and evaluation", () => {
           query: {
             groupBy: ["status"],
             aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: decoratedOrderBy,
+          },
+          message: "orderBy",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
             orderBy: ["bad"],
           },
           message: "plain objects",
@@ -628,6 +652,14 @@ describe("Grouped query compilation and evaluation", () => {
             groupBy: ["status"],
             aggregates: { rowCount: { aggFunc: "count" } },
             offset: -1,
+          },
+          message: "offset",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            offset: 0.5,
           },
           message: "offset",
         },

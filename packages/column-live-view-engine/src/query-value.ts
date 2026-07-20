@@ -1,5 +1,8 @@
-import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
-import { format as formatBigDecimal, isBigDecimal, normalize } from "effect/BigDecimal";
+import {
+  compareTrustedWireSafeBigDecimal,
+  trustedWireSafeBigDecimalSemanticKey,
+} from "@effect-view-server/effect-utils";
+import { isBigDecimal } from "effect/BigDecimal";
 import { isPlainRecord } from "./row-values";
 
 type StableQueryObjectEntry = readonly [string, StableQueryValueToken];
@@ -31,7 +34,8 @@ const compareStableQueryValueToken = (
 
 const stableQueryValueToken = (value: unknown, active: WeakSet<object>): StableQueryValueToken => {
   if (isBigDecimal(value)) {
-    return ["bigDecimal", formatBigDecimal(normalize(value))];
+    const semanticKey = trustedWireSafeBigDecimalSemanticKey(value);
+    return semanticKey === undefined ? ["unsupported", "bigDecimal"] : ["bigDecimal", semanticKey];
   }
   if (value === null) {
     return ["null"];
@@ -146,7 +150,7 @@ export const compareFilterValue = (left: unknown, right: unknown): number | unde
     return left === right ? 0 : left < right ? -1 : 1;
   }
   if (isBigDecimal(left) && isBigDecimal(right)) {
-    return compareWireSafeBigDecimal(left, right);
+    return compareTrustedWireSafeBigDecimal(left, right);
   }
   return undefined;
 };

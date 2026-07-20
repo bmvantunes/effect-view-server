@@ -1,4 +1,4 @@
-import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { compareQueryValue } from "./query-value";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
@@ -284,7 +284,7 @@ const compareBigDecimalColumnSlots = (
   const leftValue = column.bigDecimalAt(left);
   const rightValue = column.bigDecimalAt(right);
   if (leftValue !== undefined && rightValue !== undefined) {
-    const comparison = compareWireSafeBigDecimal(leftValue, rightValue);
+    const comparison = compareTrustedWireSafeBigDecimal(leftValue, rightValue);
     if (comparison !== undefined) {
       return comparison;
     }

@@ -4,6 +4,7 @@ import { Effect, HashMap, HashSet, Result, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
   makeGrpcLeasedIdentityContract,
+  type GrpcLeasedIdentityContract,
   type GrpcLeasedIdentityError,
 } from "./grpc-leased-identity";
 
@@ -32,6 +33,9 @@ const failure = <Success>(
     onSuccess: () => undefined,
   });
 
+const leaseFromQuery = (contract: GrpcLeasedIdentityContract, query: unknown) =>
+  Result.map(contract.resolveQueryRoute(query), contract.leaseFromRoute);
+
 const missingPresenceKey = JSON.stringify(["missing"]);
 
 const presentPresenceKey = (canonicalKey: string): string =>
@@ -40,6 +44,22 @@ const presentPresenceKey = (canonicalKey: string): string =>
 const groupedPublicKey = (
   entries: ReadonlyArray<readonly [field: string, presenceKey: string]>,
 ): string => JSON.stringify(entries);
+
+const withObjectPrototypeValue = <Value, Error, Requirements>(
+  field: string,
+  value: unknown,
+  effect: Effect.Effect<Value, Error, Requirements>,
+): Effect.Effect<Value, Error, Requirements> =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      Reflect.set(Object.prototype, field, value);
+    }),
+    () => effect,
+    () =>
+      Effect.sync(() => {
+        Reflect.deleteProperty(Object.prototype, field);
+      }),
+  );
 
 const makeGroupedLease = Effect.gen(function* () {
   const contract = yield* Effect.fromResult(
@@ -51,10 +71,65 @@ const makeGroupedLease = Effect.gen(function* () {
       keyField: "id",
     }),
   );
-  return yield* Effect.fromResult(contract.leaseFromQuery({ routeBy: { region: "usa" } }));
+  return yield* Effect.fromResult(leaseFromQuery(contract, { routeBy: { region: "usa" } }));
 });
 
 describe("leased gRPC identity contract", () => {
+  it.effect("ignores inherited route and grouping query fields", () =>
+    withObjectPrototypeValue(
+      "routeBy",
+      { region: "usa" },
+      Effect.gen(function* () {
+        const contract = yield* Effect.fromResult(
+          makeGrpcLeasedIdentityContract({
+            topic: "orders",
+            feedName: "orders",
+            routeBy: ["region"],
+            schema: IdentityRow,
+            keyField: "id",
+          }),
+        );
+        expect(failure(contract.resolveQueryRoute({}))?.kind).toBe("Route");
+        expect(failure(contract.resolveQueryRoute(null))?.kind).toBe("Route");
+        expect(
+          failure(
+            contract.resolveQueryRoute(
+              new Proxy(
+                {},
+                {
+                  getOwnPropertyDescriptor() {
+                    throw new Error("query fields cannot be inspected");
+                  },
+                },
+              ),
+            ),
+          )?.kind,
+        ).toBe("Route");
+
+        const lease = yield* Effect.fromResult(
+          leaseFromQuery(contract, { routeBy: { region: "usa" } }),
+        );
+        const row = { id: "order-1", region: "usa", desk: "equities" };
+        const internal = yield* Effect.fromResult(lease.internalizeRowKey(row));
+        const translated = yield* withObjectPrototypeValue(
+          "groupBy",
+          ["region"],
+          Effect.fromResult(
+            lease
+              .resultKeys<typeof row>({ select: ["id"] })
+              .translateSnapshot([internal.storageKey], [row]),
+          ),
+        );
+        const nullQueryTranslated = yield* Effect.fromResult(
+          lease.resultKeys<typeof row>(null).translateSnapshot([internal.storageKey], [row]),
+        );
+
+        expect(translated).toStrictEqual(["order-1"]);
+        expect(nullQueryTranslated).toStrictEqual(["order-1"]);
+      }),
+    ),
+  );
+
   it("compiles a total exact-route engine partition predicate", () => {
     const contract = Result.getOrThrow(
       makeGrpcLeasedIdentityContract({
@@ -65,8 +140,8 @@ describe("leased gRPC identity contract", () => {
         keyField: "id",
       }),
     );
-    const lease = Result.getOrThrow(contract.leaseFromQuery({ routeBy: { region: "UsÁ" } }));
-    const reacquired = Result.getOrThrow(contract.leaseFromQuery({ routeBy: { region: "UsÁ" } }));
+    const lease = Result.getOrThrow(leaseFromQuery(contract, { routeBy: { region: "UsÁ" } }));
+    const reacquired = Result.getOrThrow(leaseFromQuery(contract, { routeBy: { region: "UsÁ" } }));
     let hostileReads = 0;
     const hostileRow = new Proxy(
       { region: "UsÁ" },
@@ -113,24 +188,40 @@ describe("leased gRPC identity contract", () => {
         keyField: "id",
       }),
     );
-    const infinite = contract.leaseFromQuery({
+    const infinite = leaseFromQuery(contract, {
       routeBy: { amount: BigDecimal.make(1n, Number.POSITIVE_INFINITY) },
     });
-    const notANumber = contract.leaseFromQuery({
+    const notANumber = leaseFromQuery(contract, {
       routeBy: { amount: BigDecimal.make(1n, Number.NaN) },
     });
-    const fractional = contract.leaseFromQuery({
+    const fractional = leaseFromQuery(contract, {
       routeBy: { amount: BigDecimal.make(1n, 1.5) },
+    });
+    const firstCodecCollision = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(111n, Number.MIN_SAFE_INTEGER) },
+    });
+    const secondCodecCollision = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(111n, Number.MIN_SAFE_INTEGER + 1) },
     });
 
     expect({
       infinite: failure(infinite)?.kind,
       notANumber: failure(notANumber)?.kind,
       fractional: failure(fractional)?.kind,
-    }).toStrictEqual({ infinite: "Route", notANumber: "Route", fractional: "Route" });
+      firstCodecCollision: failure(firstCodecCollision)?.kind,
+      secondCodecCollision: failure(secondCodecCollision)?.kind,
+    }).toStrictEqual({
+      infinite: "Route",
+      notANumber: "Route",
+      fractional: "Route",
+      firstCodecCollision: "Route",
+      secondCodecCollision: "Route",
+    });
     expect(Result.isSuccess(infinite)).toBe(false);
     expect(Result.isSuccess(notANumber)).toBe(false);
     expect(Result.isSuccess(fractional)).toBe(false);
+    expect(Result.isSuccess(firstCodecCollision)).toBe(false);
+    expect(Result.isSuccess(secondCodecCollision)).toBe(false);
   });
 
   it("preserves negative-zero BigDecimal scales in exact route identity", () => {
@@ -148,13 +239,32 @@ describe("leased gRPC identity contract", () => {
       }),
     );
     const zeroScale = Result.getOrThrow(
-      contract.leaseFromQuery({ routeBy: { amount: BigDecimal.make(1n, 0) } }),
+      leaseFromQuery(contract, { routeBy: { amount: BigDecimal.make(1n, 0) } }),
     );
     const negativeZeroScale = Result.getOrThrow(
-      contract.leaseFromQuery({ routeBy: { amount: BigDecimal.make(1n, -0) } }),
+      leaseFromQuery(contract, { routeBy: { amount: BigDecimal.make(1n, -0) } }),
     );
     const materialized = negativeZeroScale.materializeRoute();
     const materializedAmount = materialized["amount"];
+    let hostileInspectionCount = 0;
+    const trustedDecodedAmount = new Proxy(BigDecimal.make(1n, -0), {
+      getOwnPropertyDescriptor(target, property) {
+        hostileInspectionCount += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      getPrototypeOf(target) {
+        hostileInspectionCount += 1;
+        return Reflect.getPrototypeOf(target);
+      },
+    });
+    const unreadableAmount = new Proxy(BigDecimal.make(1n, -0), {
+      get(target, property, receiver) {
+        if (property === "value") {
+          throw new Error("BigDecimal coefficient cannot be read");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
 
     expect(zeroScale.feedKey).not.toBe(negativeZeroScale.feedKey);
     expect(
@@ -179,6 +289,19 @@ describe("leased gRPC identity contract", () => {
     expect(
       negativeZeroScale.enginePartition.matches({ id: "positive", amount: BigDecimal.make(1n, 0) }),
     ).toBe(false);
+    expect(
+      Result.isSuccess(
+        negativeZeroScale.validateRowRoute({ id: "trusted", amount: trustedDecodedAmount }),
+      ),
+    ).toBe(true);
+    expect(
+      negativeZeroScale.enginePartition.matches({ id: "trusted", amount: trustedDecodedAmount }),
+    ).toBe(true);
+    expect(
+      failure(negativeZeroScale.validateRowRoute({ id: "unreadable", amount: unreadableAmount }))
+        ?.kind,
+    ).toBe("RouteMismatch");
+    expect(hostileInspectionCount).toBe(0);
   });
 
   it.effect("round-trips one canonical route and collision-resistant raw Row Keys", () =>
@@ -193,7 +316,7 @@ describe("leased gRPC identity contract", () => {
         }),
       );
       const lease = yield* Effect.fromResult(
-        contract.leaseFromQuery({
+        leaseFromQuery(contract, {
           routeBy: { region: "UsÁ&a=1/%", desk: "Equíties" },
         }),
       );
@@ -383,16 +506,17 @@ describe("leased gRPC identity contract", () => {
         keyField: "id",
       }),
     );
+    const loneSurrogateContract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "\ud800",
+        feedName: "orders",
+        routeBy: ["region"],
+        schema: IdentityRow,
+        keyField: "id",
+      }),
+    );
     const loneSurrogateLease = Result.getOrThrow(
-      Result.getOrThrow(
-        makeGrpcLeasedIdentityContract({
-          topic: "\ud800",
-          feedName: "orders",
-          routeBy: ["region"],
-          schema: IdentityRow,
-          keyField: "id",
-        }),
-      ).leaseFromQuery({ routeBy: { region: "usa" } }),
+      leaseFromQuery(loneSurrogateContract, { routeBy: { region: "usa" } }),
     );
 
     expect({
@@ -451,10 +575,11 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
-      missingRoute: failure(contract.leaseFromQuery({}))?.kind,
-      extraRoute: failure(contract.leaseFromQuery({ routeBy: { region: "usa", desk: "equities" } }))
-        ?.kind,
-      invalidValue: failure(contract.leaseFromQuery({ routeBy: { region: { value: "usa" } } }))
+      missingRoute: failure(contract.resolveQueryRoute({}))?.kind,
+      extraRoute: failure(
+        contract.resolveQueryRoute({ routeBy: { region: "usa", desk: "equities" } }),
+      )?.kind,
+      invalidValue: failure(contract.resolveQueryRoute({ routeBy: { region: { value: "usa" } } }))
         ?.kind,
     }).toStrictEqual({
       loneSurrogateFeedKey:
@@ -714,7 +839,7 @@ describe("leased gRPC identity contract", () => {
         }),
       );
       const hostileLease = yield* Effect.fromResult(
-        hostileContract.leaseFromQuery({ routeBy: { region: "usa" } }),
+        leaseFromQuery(hostileContract, { routeBy: { region: "usa" } }),
       );
       const hostileGrouping = hostileLease.resultKeys({ groupBy: ["hostile"] });
       const unreadableContract = yield* Effect.fromResult(
@@ -727,7 +852,7 @@ describe("leased gRPC identity contract", () => {
         }),
       );
       const unreadableLease = yield* Effect.fromResult(
-        unreadableContract.leaseFromQuery({ routeBy: { region: "usa" } }),
+        leaseFromQuery(unreadableContract, { routeBy: { region: "usa" } }),
       );
       const unreadableGrouping = unreadableLease.resultKeys({ groupBy: ["unreadable"] });
       const missingFieldError = yield* Effect.fromResult(

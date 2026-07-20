@@ -8,7 +8,11 @@ import type {
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
-import { Effect, type Duration } from "effect";
+import {
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
+} from "@effect-view-server/effect-utils";
+import { Effect, Result, type Duration } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import {
   makeHealthRefreshScheduler,
@@ -114,12 +118,22 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
         topic: Extract<keyof Topics, string>,
         query: Readonly<Record<string, unknown>>,
       ): Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError> => {
+        const capturedQuery = Result.try(() => snapshotViewServerQuery(query));
         return Effect.suspend(() => {
-          const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
+          if (Result.isFailure(capturedQuery)) {
+            return Effect.fail(
+              invalidRuntimeQueryError(topic, viewServerQuerySnapshotErrorMessage),
+            );
+          }
+          const routeError = validateLiveQuerySourceRoute(
+            config.topics,
+            topic,
+            capturedQuery.success,
+          );
           if (routeError !== undefined) {
             return Effect.fail(invalidRuntimeQueryError(topic, routeError));
           }
-          const engineQuery = engineQueryWithoutRoute(query);
+          const engineQuery = engineQueryWithoutRoute(capturedQuery.success);
           return engine
             .snapshotRuntime(topic, engineQuery)
             .pipe(Effect.mapError(engineErrorToRuntimeError));

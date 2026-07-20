@@ -456,6 +456,49 @@ describe("ColumnLiveViewEngine query result proof", () => {
       expect(
         grouped.plan.resultSemantics.projectRow({ status: "open", rowCount: 1n }),
       ).toStrictEqual({ status: "open", rowCount: 1n });
+
+      let arrayPropertyReads = 0;
+      let arrayEntryDescriptorReads = 0;
+      const inspectOnlyArray = <Values extends Array<unknown>>(values: Values): Values =>
+        new Proxy(values, {
+          get: () => {
+            arrayPropertyReads += 1;
+            throw new Error("decoded query arrays must not be read through properties");
+          },
+          getOwnPropertyDescriptor: (target, key) => {
+            if (key === "0") {
+              arrayEntryDescriptorReads += 1;
+            }
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        });
+      const rawSelect = inspectOnlyArray<["id"]>(["id"]);
+      const rawOrderBy = inspectOnlyArray<[{ field: "id"; direction: "asc" }]>([
+        { field: "id", direction: "asc" },
+      ]);
+      const groupedFields = inspectOnlyArray<["status"]>(["status"]);
+      const groupedOrderBy = inspectOnlyArray<[{ aggregate: "rowCount"; direction: "desc" }]>([
+        { aggregate: "rowCount", direction: "desc" },
+      ]);
+
+      const inspectedRaw = yield* prepareRawQuery("orders", metadata, {
+        select: rawSelect,
+        orderBy: rawOrderBy,
+      });
+      const inspectedGrouped = yield* prepareGroupedQuery("orders", metadata, {
+        groupBy: groupedFields,
+        aggregates: { rowCount: { aggFunc: "count" } },
+        orderBy: groupedOrderBy,
+      });
+
+      expect(inspectedRaw.plan.selectedFields).toStrictEqual(["id"]);
+      expect(inspectedRaw.plan.orderBy).toStrictEqual([{ field: "id", direction: "asc" }]);
+      expect(inspectedGrouped.plan.groupBy).toStrictEqual(["status"]);
+      expect(inspectedGrouped.plan.orderBy).toStrictEqual([
+        { aggregate: "rowCount", direction: "desc" },
+      ]);
+      expect(arrayPropertyReads).toBe(0);
+      expect(arrayEntryDescriptorReads).toBe(4);
     }),
   );
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { VIEW_SERVER_HEALTH_TOPIC } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
+  compileViewServerLiveEventCodec,
   ViewServerTrustedWireEventSchema,
   viewServerDecodeHealth,
   viewServerDecodeHealthQuery,
@@ -22,6 +23,44 @@ import {
 } from "../test-harness/protocol";
 
 describe("Raw live wire codec", () => {
+  it.effect("compiles and reuses one raw row contract across live events", () =>
+    Effect.gen(function* () {
+      const query = {
+        select: ["id"],
+      };
+      const codec = compileViewServerLiveEventCodec<
+        typeof viewServer.topics,
+        "orders",
+        Pick<typeof Order.Type, "id">
+      >(viewServer, "orders", query);
+      query.select.push("price");
+
+      const snapshot = yield* codec.encode({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "compiled-raw",
+        version: 1,
+        keys: ["a"],
+        rows: [{ id: "a" }],
+        totalRows: 1,
+      });
+      const delta = yield* codec.encode({
+        type: "delta",
+        topic: "orders",
+        queryId: "compiled-raw",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [{ type: "update", key: "a", row: { id: "a" }, index: 0 }],
+        totalRows: 1,
+      });
+      const decodedSnapshot = yield* codec.decodeTrusted(snapshot);
+      const decodedDelta = yield* codec.decodeTrusted(delta);
+
+      expect(decodedSnapshot).toStrictEqual(snapshot);
+      expect(decodedDelta).toStrictEqual(delta);
+    }),
+  );
+
   it.effect("encodes and decodes live wire codec operations", () =>
     Effect.gen(function* () {
       const topic = yield* viewServerDecodeTopic(viewServer, "orders");

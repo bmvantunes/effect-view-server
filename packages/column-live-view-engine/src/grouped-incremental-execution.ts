@@ -9,6 +9,7 @@ import {
   updateGroupAggregateState,
 } from "./grouped-aggregate-state";
 import type { GroupedQueryPlan } from "./grouped-query-plan";
+import { isRuntimeGroupedAggregateOrderBy } from "./grouped-query-decoder";
 import {
   emptyGroupedEvaluation,
   groupedEvaluationFromEntries,
@@ -356,7 +357,7 @@ const orderByUsesAggregate = <Row extends RowObject>(
   alias: string,
 ): boolean => {
   for (const order of plan.orderBy) {
-    if ("aggregate" in order && order.aggregate === alias) {
+    if (isRuntimeGroupedAggregateOrderBy(order) && order.aggregate === alias) {
       return true;
     }
   }

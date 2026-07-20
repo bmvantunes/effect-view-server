@@ -1,5 +1,5 @@
 import type { FieldKey, SortDirection } from "./query-core";
-import type { RejectExtraKeys } from "./query-exact";
+import type { RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
 
 export type OrderByField<Field extends string> = {
   readonly field: Field;
@@ -27,12 +27,14 @@ type ExactOrderByEntry<Entry, Field extends string> = Entry &
     ? { readonly direction: QueryDirection & SortDirection }
     : { readonly direction: SortDirection });
 
-export type ExactRawOrderBy<Row, Query> = Query extends {
-  readonly orderBy: ReadonlyArray<infer Entry>;
-}
-  ? {
-      readonly orderBy: ReadonlyArray<ExactOrderByEntry<Entry, FieldKey<Row>>>;
-    }
+export type ExactRawOrderBy<Row, Query> = Query extends { readonly orderBy: infer Candidate }
+  ? Candidate extends ReadonlyArray<infer Entry>
+    ? {
+        readonly orderBy: Candidate &
+          RejectArrayExtraKeys<Candidate> &
+          ReadonlyArray<ExactOrderByEntry<Entry, FieldKey<Row>>>;
+      }
+    : { readonly orderBy: never }
   : unknown;
 
 export type ExactGroupedOrderByEntry<Entry, Field extends string, Alias extends string> =

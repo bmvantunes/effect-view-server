@@ -1,5 +1,6 @@
 import { Effect, Result, Schema } from "effect";
 import type { RawQuery } from "@effect-view-server/config";
+import { inspectDenseArrayData } from "@effect-view-server/effect-utils";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import {
   FilterExpressionError,
@@ -48,17 +49,16 @@ export const typedRuntimeRawQueryMatchesSemantics = (
 
 const rawQueryKeys = new Set(["where", "orderBy", "offset", "limit", "select"]);
 
-export const isDenseArray = (value: ReadonlyArray<unknown>): boolean => {
-  for (let index = 0; index < value.length; index += 1) {
-    if (!(index in value)) {
-      return false;
-    }
-  }
-  return true;
+export const denseArraySnapshot = (value: unknown): ReadonlyArray<unknown> | undefined => {
+  const inspection = inspectDenseArrayData(value);
+  return inspection._tag === "Success" ? inspection.values : undefined;
 };
 
 const isValidWindowNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+const ownValue = (value: Readonly<Record<string, unknown>>, key: string): unknown =>
+  Object.hasOwn(value, key) ? value[key] : undefined;
 
 export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")((
   topic: string,
@@ -101,29 +101,25 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
     normalizedWhere = normalized.success;
   }
 
-  const orderBy = query["orderBy"];
-  if (Object.hasOwn(query, "orderBy") && !Array.isArray(orderBy)) {
+  const orderBy = ownValue(query, "orderBy");
+  const orderBySnapshot = denseArraySnapshot(orderBy);
+  if (Object.hasOwn(query, "orderBy") && orderBySnapshot === undefined) {
     return InvalidQueryError.make({
       topic,
-      message: "Raw query orderBy must be an array.",
+      message: "Raw query orderBy must be a dense array without extra properties.",
     });
   }
 
-  const select = query["select"];
-  if (!Array.isArray(select)) {
-    return InvalidQueryError.make({
-      topic,
-      message: "Raw query select must be a non-empty array of strings.",
-    });
-  }
-  if (select.length === 0 || !isDenseArray(select)) {
+  const select = ownValue(query, "select");
+  const selectSnapshot = denseArraySnapshot(select);
+  if (selectSnapshot === undefined || selectSnapshot.length === 0) {
     return InvalidQueryError.make({
       topic,
       message: "Raw query select must be a non-empty array of strings.",
     });
   }
   const selectedFields: Array<string> = [];
-  for (const field of select) {
+  for (const field of selectSnapshot) {
     if (typeof field !== "string") {
       return InvalidQueryError.make({
         topic,
@@ -139,7 +135,7 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
     selectedFields.push(field);
   }
 
-  const offset = query["offset"];
+  const offset = ownValue(query, "offset");
   if (Object.hasOwn(query, "offset") && !isValidWindowNumber(offset)) {
     return InvalidQueryError.make({
       topic,
@@ -147,7 +143,7 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
     });
   }
 
-  const limit = query["limit"];
+  const limit = ownValue(query, "limit");
   if (Object.hasOwn(query, "limit") && !isValidWindowNumber(limit)) {
     return InvalidQueryError.make({
       topic,
@@ -175,8 +171,8 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
     decoded.limit = limit;
   }
   const clonedOrderBy: Array<{ readonly field: string; readonly direction: "asc" | "desc" }> = [];
-  if (Array.isArray(orderBy)) {
-    for (const entry of orderBy) {
+  if (orderBySnapshot !== undefined) {
+    for (const entry of orderBySnapshot) {
       if (!isPlainRecord(entry)) {
         return InvalidQueryError.make({
           topic,
@@ -191,7 +187,7 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
           });
         }
       }
-      const field = entry["field"];
+      const field = ownValue(entry, "field");
       if (typeof field !== "string") {
         return InvalidQueryError.make({
           topic,
@@ -204,7 +200,7 @@ export const decodeRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.decode")(
           message: `Raw query orderBy contains unknown field: ${field}.`,
         });
       }
-      const direction = entry["direction"];
+      const direction = ownValue(entry, "direction");
       if (direction !== "asc" && direction !== "desc") {
         return InvalidQueryError.make({
           topic,

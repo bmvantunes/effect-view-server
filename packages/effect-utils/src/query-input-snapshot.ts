@@ -1,60 +1,46 @@
 import { make as makeBigDecimal } from "effect/BigDecimal";
-import { isWireSafeBigDecimal } from "./wire-safe-big-decimal";
+import {
+  hasPlainRecordPrototype,
+  inspectArrayData,
+  inspectPlainRecordData,
+} from "./structural-data";
+import { inspectWireSafeBigDecimal } from "./wire-safe-big-decimal";
 
 type QueryRecord = Readonly<Record<string, unknown>>;
 
 const ownedQuerySnapshots = new WeakSet<object>();
 
-export const viewServerQuerySnapshotErrorMessage =
-  "Query input could not be snapshotted at subscribe.";
+export const viewServerQuerySnapshotErrorMessage = "Query input could not be snapshotted.";
 
-const isPlainRecord = (value: unknown): value is QueryRecord =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  !isWireSafeBigDecimal(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
+const isPlainRecord = (value: unknown): value is QueryRecord => hasPlainRecordPrototype(value);
 
 const ownEntries = (value: QueryRecord): ReadonlyArray<readonly [string, unknown]> => {
-  if (Object.getOwnPropertySymbols(value).length > 0) {
+  const inspection = inspectPlainRecordData(value);
+  if (inspection._tag === "Success") {
+    return inspection.snapshot.entries;
+  }
+  if (inspection.reason === "invalidRecord") {
     throw new TypeError("Query input must not contain symbol properties.");
   }
-  const entries: Array<readonly [string, unknown]> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      throw new TypeError("Query input fields must be own enumerable data properties.");
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return entries;
+  throw new TypeError("Query input fields must be own enumerable data properties.");
 };
 
-const arrayValues = (value: ReadonlyArray<unknown>): ReadonlyArray<unknown> => {
+const arrayData = (value: ReadonlyArray<unknown>) => {
+  const inspection = inspectArrayData(value);
+  if (inspection._tag === "Success") {
+    return inspection.snapshot;
+  }
   if (
-    Object.getPrototypeOf(value) !== Array.prototype ||
-    Object.getOwnPropertySymbols(value).length > 0
+    inspection.reason === "invalidArray" ||
+    inspection.reason === "invalidReflection" ||
+    (inspection.reason === "invalidExtraProperty" && typeof inspection.key === "symbol")
   ) {
     throw new TypeError("Query input arrays must be plain arrays.");
   }
-  // Array.isArray plus the exact Array prototype guarantees the non-configurable data descriptor.
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length")!;
-  const length: number = lengthDescriptor.value;
-  const values: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      throw new TypeError("Query input arrays must be dense data arrays.");
-    }
-    values.push(descriptor.value);
+  if (inspection.reason === "invalidEntry") {
+    throw new TypeError("Query input arrays must be dense data arrays.");
   }
-  if (Object.getOwnPropertyNames(value).some((key) => !allowed.has(key))) {
-    throw new TypeError("Query input arrays must not contain extra properties.");
-  }
-  return values;
+  throw new TypeError("Query input arrays must contain enumerable data properties.");
 };
 
 type SnapshotFrame =
@@ -62,7 +48,8 @@ type SnapshotFrame =
   | {
       readonly _tag: "exitArray";
       readonly source: ReadonlyArray<unknown>;
-      readonly count: number;
+      readonly valueCount: number;
+      readonly extraKeys: ReadonlyArray<string>;
     }
   | {
       readonly _tag: "exitRecord";
@@ -78,7 +65,17 @@ const snapshotQueryValue = (input: unknown): unknown => {
   while (frames.length > 0) {
     const frame = frames.pop()!;
     if (frame._tag === "exitArray") {
-      const values = results.splice(results.length - frame.count, frame.count);
+      const count = frame.valueCount + frame.extraKeys.length;
+      const values = results.splice(results.length - count, count);
+      const extraValues = values.splice(frame.valueCount, frame.extraKeys.length);
+      for (const [index, key] of frame.extraKeys.entries()) {
+        Object.defineProperty(values, key, {
+          configurable: false,
+          enumerable: true,
+          value: extraValues[index],
+          writable: false,
+        });
+      }
       const snapshot = Object.freeze(values);
       active.delete(frame.source);
       completed.set(frame.source, snapshot);
@@ -103,9 +100,22 @@ const snapshotQueryValue = (input: unknown): unknown => {
       continue;
     }
     const value = frame.value;
-    if (isWireSafeBigDecimal(value)) {
-      results.push(makeBigDecimal(value.value, value.scale));
+    if (typeof value === "object" && value !== null) {
+      const cached = completed.get(value);
+      if (cached !== undefined) {
+        results.push(cached);
+        continue;
+      }
+    }
+    const decimal = inspectWireSafeBigDecimal(value);
+    if (decimal._tag === "Success") {
+      const snapshot = makeBigDecimal(decimal.coefficient, decimal.scale);
+      completed.set(decimal.source, snapshot);
+      results.push(snapshot);
       continue;
+    }
+    if (decimal._tag === "UnsafeBigDecimal" || decimal._tag === "ReflectionFailure") {
+      throw new TypeError("Query input contains an unsupported object value.");
     }
     if (typeof value !== "object" || value === null) {
       if (value === undefined || typeof value === "function" || typeof value === "symbol") {
@@ -117,20 +127,23 @@ const snapshotQueryValue = (input: unknown): unknown => {
       results.push(value);
       continue;
     }
-    const cached = completed.get(value);
-    if (cached !== undefined) {
-      results.push(cached);
-      continue;
-    }
     if (active.has(value)) {
       throw new TypeError("Query input contains a cycle.");
     }
     active.add(value);
     if (Array.isArray(value)) {
-      const values = arrayValues(value);
-      frames.push({ _tag: "exitArray", source: value, count: values.length });
-      for (let index = values.length - 1; index >= 0; index -= 1) {
-        frames.push({ _tag: "enter", value: values[index] });
+      const snapshot = arrayData(value);
+      frames.push({
+        _tag: "exitArray",
+        source: value,
+        valueCount: snapshot.values.length,
+        extraKeys: snapshot.extraEntries.map(([key]) => key),
+      });
+      for (let index = snapshot.extraEntries.length - 1; index >= 0; index -= 1) {
+        frames.push({ _tag: "enter", value: snapshot.extraEntries[index]![1] });
+      }
+      for (let index = snapshot.values.length - 1; index >= 0; index -= 1) {
+        frames.push({ _tag: "enter", value: snapshot.values[index] });
       }
       continue;
     }
@@ -151,7 +164,7 @@ const snapshotQueryValue = (input: unknown): unknown => {
 };
 
 export function snapshotViewServerQuery<Query extends object>(query: Query): Query;
-export function snapshotViewServerQuery(query: unknown): unknown;
+export function snapshotViewServerQuery(query: unknown): Readonly<Record<string, unknown>>;
 export function snapshotViewServerQuery(query: unknown): unknown {
   if (isPlainRecord(query) && ownedQuerySnapshots.has(query)) {
     return query;

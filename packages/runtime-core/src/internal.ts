@@ -40,6 +40,7 @@ export {
 } from "./source-binding-resolution";
 export { makeRuntimeCoreMutationPipeline } from "./source-mutation-pipeline";
 export { engineQueryWithoutRoute } from "./engine-query";
+export { adaptRuntimeQuerySubscriber } from "./runtime-query-subscriber";
 export type {
   TopicDefinitionHasRequiredDefinedObjectProperty,
   TopicDefinitionHasSourceOwner,

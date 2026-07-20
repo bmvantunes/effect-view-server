@@ -1,7 +1,7 @@
 import type { RowSchema, ViewServerRuntimeError } from "@effect-view-server/config";
-import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { inspectWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { Effect } from "effect";
-import { isBigDecimal } from "effect/BigDecimal";
+import { make as makeBigDecimal } from "effect/BigDecimal";
 import {
   decodeTopicNamedJsonFieldValue,
   encodeTopicNamedJsonFieldValue,
@@ -13,10 +13,11 @@ import {
 } from "./protocol-filter-field-schema";
 import { requireProtocolJsonArray } from "./protocol-json-value";
 import {
-  isProtocolPlainRecord,
   protocolDenseArray,
-  protocolHasOnlyDataKeys,
-  protocolOwnDataValue,
+  protocolRecordSnapshot,
+  protocolSnapshotDataValue,
+  protocolSnapshotHasExactDataKeys,
+  type ProtocolRecordSnapshot,
 } from "./protocol-structural-value";
 
 type Direction = "encode" | "decode";
@@ -34,14 +35,14 @@ const filterJsonFieldContext = {
   notJsonSafePrefix: "Filter",
 };
 
-const ownValue = (value: Readonly<Record<string, unknown>>, key: string): unknown => {
-  return protocolOwnDataValue(value, key).value;
-};
+const ownValue = (snapshot: ProtocolRecordSnapshot, key: string): unknown =>
+  protocolSnapshotDataValue(snapshot, key);
 
-const exactKeys = (
-  value: Readonly<Record<string, unknown>>,
-  allowed: ReadonlySet<string>,
-): boolean => protocolHasOnlyDataKeys(value, allowed);
+const hasKey = (snapshot: ProtocolRecordSnapshot, key: string): boolean =>
+  snapshot.entries.some(([entryKey]) => entryKey === key);
+
+const exactKeys = (snapshot: ProtocolRecordSnapshot, allowed: ReadonlySet<string>): boolean =>
+  protocolSnapshotHasExactDataKeys(snapshot, allowed);
 
 const uniqueValues = (values: ReadonlyArray<unknown>): ReadonlyArray<unknown> => {
   const unique: Array<unknown> = [];
@@ -56,6 +57,27 @@ const uniqueValues = (values: ReadonlyArray<unknown>): ReadonlyArray<unknown> =>
   return unique;
 };
 
+const ownFilterBigDecimal = Effect.fn("ViewServerProtocol.filter.bigDecimal.own")(function* (
+  topic: string,
+  field: string,
+  value: unknown,
+) {
+  const inspection = inspectWireSafeBigDecimal(value);
+  if (inspection._tag === "ReflectionFailure") {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Filter condition ${field} operand could not be inspected`),
+    );
+  }
+  if (inspection._tag === "UnsafeBigDecimal") {
+    return yield* Effect.fail(
+      invalidQuery(topic, `Filter condition ${field} BigDecimal operand is not wire-safe`),
+    );
+  }
+  return inspection._tag === "Success"
+    ? makeBigDecimal(inspection.coefficient, inspection.scale)
+    : value;
+});
+
 const transformFieldValue = Effect.fn("ViewServerProtocol.filter.fieldValue.transform")(function* (
   direction: Direction,
   topic: string,
@@ -63,21 +85,24 @@ const transformFieldValue = Effect.fn("ViewServerProtocol.filter.fieldValue.tran
   schema: JsonFieldSchema,
   value: unknown,
 ) {
-  if (isBigDecimal(value) && !isWireSafeBigDecimal(value)) {
-    return yield* Effect.fail(
-      invalidQuery(topic, `Filter condition ${field} BigDecimal operand is not wire-safe`),
-    );
-  }
+  const ownedValue = yield* ownFilterBigDecimal(topic, field, value);
   const transformed =
     direction === "encode"
-      ? yield* encodeTopicNamedJsonFieldValue(topic, field, schema, value, filterJsonFieldContext)
-      : yield* decodeTopicNamedJsonFieldValue(topic, field, schema, value, filterJsonFieldContext);
-  if (isBigDecimal(transformed) && !isWireSafeBigDecimal(transformed)) {
-    return yield* Effect.fail(
-      invalidQuery(topic, `Filter condition ${field} BigDecimal operand is not wire-safe`),
-    );
-  }
-  return transformed;
+      ? yield* encodeTopicNamedJsonFieldValue(
+          topic,
+          field,
+          schema,
+          ownedValue,
+          filterJsonFieldContext,
+        )
+      : yield* decodeTopicNamedJsonFieldValue(
+          topic,
+          field,
+          schema,
+          ownedValue,
+          filterJsonFieldContext,
+        );
+  return yield* ownFilterBigDecimal(topic, field, transformed);
 });
 
 type TransformFrame =
@@ -98,7 +123,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
   direction: Direction,
   topic: string,
   rowSchema: RowSchema,
-  condition: Readonly<Record<string, unknown>>,
+  condition: ProtocolRecordSnapshot,
 ) {
   const field = ownValue(condition, "field");
   const type = ownValue(condition, "type");
@@ -126,22 +151,26 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
   if (!blank && !text && !equality && !numeric) {
     return yield* Effect.fail(invalidQuery(topic, `Unsupported filter condition type: ${type}`));
   }
-  const allowed = new Set(["field", "type"]);
+  const expected = new Set(["field", "type"]);
   if (!blank) {
-    allowed.add("filter");
+    expected.add("filter");
   }
   if (inRange) {
-    allowed.add("filterTo");
+    expected.add("filterTo");
   }
   if (supportsTextMatching) {
-    allowed.add("caseSensitive");
-    allowed.add("accentSensitive");
+    if (hasKey(condition, "caseSensitive")) {
+      expected.add("caseSensitive");
+    }
+    if (hasKey(condition, "accentSensitive")) {
+      expected.add("accentSensitive");
+    }
   }
-  if (!exactKeys(condition, allowed)) {
+  if (!exactKeys(condition, expected)) {
     return yield* Effect.fail(invalidQuery(topic, `Filter condition ${field} has invalid keys`));
   }
   const output: Record<string, unknown> = { field, type };
-  if (Object.hasOwn(condition, "caseSensitive")) {
+  if (hasKey(condition, "caseSensitive")) {
     const caseSensitive = ownValue(condition, "caseSensitive");
     if (typeof caseSensitive !== "boolean") {
       return yield* Effect.fail(
@@ -150,7 +179,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
     }
     output["caseSensitive"] = caseSensitive;
   }
-  if (Object.hasOwn(condition, "accentSensitive")) {
+  if (hasKey(condition, "accentSensitive")) {
     const accentSensitive = ownValue(condition, "accentSensitive");
     if (typeof accentSensitive !== "boolean") {
       return yield* Effect.fail(
@@ -241,7 +270,7 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
       continue;
     }
     const expression = frame.value;
-    if (!isProtocolPlainRecord(expression)) {
+    if (typeof expression !== "object" || expression === null) {
       return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
     }
     const cached = state.memo.get(expression);
@@ -252,12 +281,16 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
     if (state.active.has(expression)) {
       return yield* Effect.fail(invalidQuery(topic, "Filter expressions must not contain cycles"));
     }
-    const type = ownValue(expression, "type");
+    const snapshot = protocolRecordSnapshot(expression);
+    if (snapshot === undefined) {
+      return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
+    }
+    const type = ownValue(snapshot, "type");
     if (type === "AND" || type === "OR") {
-      if (!exactKeys(expression, new Set(["type", "conditions"]))) {
+      if (!exactKeys(snapshot, new Set(["type", "conditions"]))) {
         return yield* Effect.fail(invalidQuery(topic, `Filter group ${type} has invalid keys`));
       }
-      const children = protocolDenseArray(ownValue(expression, "conditions"));
+      const children = protocolDenseArray(ownValue(snapshot, "conditions"));
       if (children === undefined) {
         return yield* Effect.fail(
           invalidQuery(topic, `Filter group ${type} conditions must be an array`),
@@ -266,7 +299,7 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
       state.active.add(expression);
       frames.push({
         _tag: "exit",
-        source: expression,
+        source: snapshot.source,
         type,
         childCount: children.length,
       });
@@ -276,15 +309,15 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
       continue;
     }
     if (type === "NOT") {
-      if (!exactKeys(expression, new Set(["type", "condition"]))) {
+      if (!exactKeys(snapshot, new Set(["type", "condition"]))) {
         return yield* Effect.fail(invalidQuery(topic, "Filter NOT has invalid keys"));
       }
       state.active.add(expression);
-      frames.push({ _tag: "exit", source: expression, type: "NOT", childCount: 1 });
-      frames.push({ _tag: "enter", value: ownValue(expression, "condition") });
+      frames.push({ _tag: "exit", source: snapshot.source, type: "NOT", childCount: 1 });
+      frames.push({ _tag: "enter", value: ownValue(snapshot, "condition") });
       continue;
     }
-    const transformed = yield* transformCondition(direction, topic, rowSchema, expression);
+    const transformed = yield* transformCondition(direction, topic, rowSchema, snapshot);
     state.memo.set(expression, transformed);
     results.push(transformed);
   }

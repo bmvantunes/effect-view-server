@@ -5,21 +5,16 @@ import type {
   LiveQueryRow,
   RawQuery,
   TopicRow,
+  ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { Effect } from "effect";
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
-export type GrpcLeaseSnapshotFacade<Topics extends ViewServerRuntimeTopicDefinitions> = <
-  Topic extends Extract<keyof Topics, string>,
-  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
->(
-  topic: Topic,
-  query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-) => Effect.Effect<
-  LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-  ViewServerRuntimeError
->;
+type RuntimeSnapshot = Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError>;
+
+export type GrpcLeaseSnapshotFacade<Topics extends ViewServerRuntimeTopicDefinitions> =
+  ViewServerRuntimeClient<Topics>["snapshot"];
 
 export const makeGrpcLeaseSnapshotFacade = <Topics extends ViewServerRuntimeTopicDefinitions>(
   snapshotRuntimeInternal: (
@@ -32,7 +27,17 @@ export const makeGrpcLeaseSnapshotFacade = <Topics extends ViewServerRuntimeTopi
 ): GrpcLeaseSnapshotFacade<Topics> => {
   function snapshot<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends RawQuery<TopicRow<Topics, Topic>>,
+  >(
+    topic: Topic,
+    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+  ): Effect.Effect<
+    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+    ViewServerRuntimeError
+  >;
+  function snapshot<
+    Topic extends Extract<keyof Topics, string>,
+    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
   >(
     topic: Topic,
     query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
@@ -43,13 +48,7 @@ export const makeGrpcLeaseSnapshotFacade = <Topics extends ViewServerRuntimeTopi
   function snapshot<
     Topic extends Extract<keyof Topics, string>,
     const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-  ): Effect.Effect<
-    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError
-  > {
+  >(topic: Topic, query: ExactLiveQueryInputForTopic<Topics, Topic, Query>): RuntimeSnapshot {
     const acquisition = snapshotRuntimeInternal(topic, query);
     return requirePublicReadAllowed(topic).pipe(Effect.flatMap(() => acquisition));
   }

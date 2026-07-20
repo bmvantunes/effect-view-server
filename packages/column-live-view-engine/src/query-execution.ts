@@ -37,7 +37,7 @@ export const isGroupedQuery = (
   typeof query === "object" &&
   query !== null &&
   !Array.isArray(query) &&
-  ("groupBy" in query || "aggregates" in query);
+  (Object.hasOwn(query, "groupBy") || Object.hasOwn(query, "aggregates"));
 
 export const prepareRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.prepareRuntime",

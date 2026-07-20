@@ -6,9 +6,11 @@ import type {
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
+import type { ViewServerRuntimeCoreServerLiveClient } from "@effect-view-server/runtime-core";
 import {
+  adaptRuntimeQuerySubscriber,
   makeViewServerRuntimeCoreInternal,
-  type ViewServerRuntimeCoreInternalInstance,
+  type ViewServerRuntimeCoreInternalLiveClient,
   type ViewServerRuntimeCoreInternalOptionsFor,
 } from "@effect-view-server/runtime-core/internal";
 import { Effect } from "effect";
@@ -17,6 +19,7 @@ import type { ViewServerInMemoryOptions, ViewServerInMemoryTopicDefinitions } fr
 export type ViewServerInMemoryTestingInstance<Topics extends ViewServerInMemoryTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
   readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
+  readonly serverLiveClient: ViewServerRuntimeCoreServerLiveClient<Topics>;
   readonly close: Effect.Effect<void>;
 };
 
@@ -34,19 +37,16 @@ const toRuntimeCoreInternalOptions = <const Topics extends ViewServerInMemoryTop
     : { healthRefreshCadence: input.healthRefreshCadence }),
 });
 
-const toInMemoryTestingInstance = <const Topics extends ViewServerInMemoryTopicDefinitions>(
-  runtimeCore: ViewServerRuntimeCoreInternalInstance<Topics>,
-): ViewServerInMemoryTestingInstance<Topics> => ({
-  client: runtimeCore.internalClient,
-  close: runtimeCore.close,
-  liveClient: {
-    close: runtimeCore.liveClient.close,
-    health: runtimeCore.liveClient.health,
-    subscribe: runtimeCore.internalLiveClient.subscribeInternal,
-    subscribeRuntime: runtimeCore.internalLiveClient.subscribeRuntimeInternal,
-    subscribeHealth: runtimeCore.liveClient.subscribeHealth,
-    subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
-  },
+const makeInMemoryTestingLiveClient = <Topics extends ViewServerInMemoryTopicDefinitions>(
+  liveClient: ViewServerRuntimeLiveClient<Topics>,
+  internalLiveClient: ViewServerRuntimeCoreInternalLiveClient<Topics>,
+): ViewServerRuntimeLiveClient<Topics> => ({
+  close: liveClient.close,
+  health: liveClient.health,
+  subscribe: (topic, query) => internalLiveClient.subscribeInternal(topic, query),
+  subscribeRuntime: adaptRuntimeQuerySubscriber(internalLiveClient.subscribeRuntimeRoutedInternal),
+  subscribeHealth: liveClient.subscribeHealth,
+  subscribeHealthSummary: liveClient.subscribeHealthSummary,
 });
 
 export const makeInMemoryViewServerTesting: <
@@ -58,19 +58,29 @@ export const makeInMemoryViewServerTesting: <
   input: ViewServerInMemoryOptions<Topics>,
 ) => Effect.Effect<ViewServerInMemoryTestingInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
   "ViewServerInMemory.testing.make",
-)(
-  <
-    const Topics extends ViewServerInMemoryTopicDefinitions,
-    const Regions extends RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients,
-  >(
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    input: ViewServerInMemoryOptions<Topics>,
-  ) =>
-    makeViewServerRuntimeCoreInternal(config, toRuntimeCoreInternalOptions(input)).pipe(
-      Effect.map(toInMemoryTestingInstance),
+)(function* <
+  const Topics extends ViewServerInMemoryTopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  input: ViewServerInMemoryOptions<Topics>,
+) {
+  const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
+    config,
+    toRuntimeCoreInternalOptions(input),
+  );
+  const testingInstance: ViewServerInMemoryTestingInstance<Topics> = {
+    client: runtimeCore.internalClient,
+    close: runtimeCore.close,
+    liveClient: makeInMemoryTestingLiveClient(
+      runtimeCore.liveClient,
+      runtimeCore.internalLiveClient,
     ),
-);
+    serverLiveClient: runtimeCore.serverLiveClient,
+  };
+  return testingInstance;
+});
 
 export const createInMemoryViewServerTesting = <
   const Topics extends ViewServerInMemoryTopicDefinitions,

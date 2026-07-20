@@ -4,6 +4,7 @@ import * as BigDecimal from "effect/BigDecimal";
 import { compileRawPredicate } from "./raw-predicate-compiler";
 import {
   compareRuntimeFilterExpressionStructure,
+  normalizeFilterText,
   type RuntimeFilterExpression,
 } from "./filter-expression";
 import { decodeRawQuery } from "./raw-query-decoder";
@@ -42,6 +43,15 @@ const expectGroup = (
 };
 
 describe("recursive filter expressions", () => {
+  it("normalizes ASCII and Unicode text with the same sensitivity semantics", () => {
+    expect(normalizeFilterText("already-lowercase", false, false)).toBe("already-lowercase");
+    expect(normalizeFilterText("MIXED-Case", false, false)).toBe("mixed-case");
+    expect(normalizeFilterText("MIXED-Case", true, false)).toBe("MIXED-Case");
+    expect(normalizeFilterText("Résumé", false, false)).toBe("resume");
+    expect(normalizeFilterText("Résumé", false, true)).toBe("résumé");
+    expect(normalizeFilterText("Résumé", true, true)).toBe("Résumé");
+  });
+
   it.effect("normalizes text and evaluates recursive Boolean expressions", () =>
     Effect.gen(function* () {
       const query = yield* decodeWhere([
@@ -91,6 +101,9 @@ describe("recursive filter expressions", () => {
 
       const rangePredicate = compileRawPredicate<typeof Row.Type>(metadata, range.where);
       const nestedPredicate = compileRawPredicate<object>(metadata, nested.where);
+      const trustedNestedPredicate = compileRawPredicate<object>(metadata, nested.where, {
+        trustedRows: true,
+      });
       expect(rangePredicate.matches({ id: "a", name: "x", age: 3 })).toBe(true);
       expect(rangePredicate.matches({ id: "b", name: "x", age: 4.999 })).toBe(true);
       expect(rangePredicate.matches({ id: "c", name: "x", age: 5 })).toBe(false);
@@ -101,6 +114,10 @@ describe("recursive filter expressions", () => {
       expect(
         nestedPredicate.matches({ id: "e", name: "x", age: 1, profile: { country: "PT" } }),
       ).toBe(false);
+      expect(trustedNestedPredicate.matches({ profile: 1 })).toBe(true);
+      expect(trustedNestedPredicate.matches({ profile: null })).toBe(true);
+      expect(trustedNestedPredicate.matches({ profile: () => undefined })).toBe(true);
+      expect(trustedNestedPredicate.matches({ profile: { country: "PT" } })).toBe(false);
     }),
   );
 
@@ -114,6 +131,15 @@ describe("recursive filter expressions", () => {
       const equals = compileRawPredicate<object>(metadata, equalsQuery.where);
       const blank = compileRawPredicate<object>(metadata, blankQuery.where);
       const notBlank = compileRawPredicate<object>(metadata, notBlankQuery.where);
+      const trustedEquals = compileRawPredicate<object>(metadata, equalsQuery.where, {
+        trustedRows: true,
+      });
+      const trustedBlank = compileRawPredicate<object>(metadata, blankQuery.where, {
+        trustedRows: true,
+      });
+      const trustedNotBlank = compileRawPredicate<object>(metadata, notBlankQuery.where, {
+        trustedRows: true,
+      });
       const inheritedProfile = Object.create({ country: "polluted" });
       const inheritedRow = { id: "inherited", name: "x", age: 1, profile: inheritedProfile };
       let accessorReads = 0;
@@ -136,6 +162,9 @@ describe("recursive filter expressions", () => {
       expect(equals.matches(inheritedRow)).toBe(false);
       expect(blank.matches(inheritedRow)).toBe(true);
       expect(notBlank.matches(inheritedRow)).toBe(false);
+      expect(trustedEquals.matches(inheritedRow)).toBe(false);
+      expect(trustedBlank.matches(inheritedRow)).toBe(true);
+      expect(trustedNotBlank.matches(inheritedRow)).toBe(false);
       expect(equals.matches(accessorRow)).toBe(false);
       expect(blank.matches(accessorRow)).toBe(true);
       expect(notBlank.matches(accessorRow)).toBe(false);
@@ -280,6 +309,42 @@ describe("recursive filter expressions", () => {
           mixed: 1,
         }),
       ).toBe(false);
+    }),
+  );
+
+  it.effect("compares BigDecimal equality without aligning extreme scales", () =>
+    Effect.gen(function* () {
+      const extremeScale = BigDecimal.make(1n, Number.MAX_SAFE_INTEGER);
+      const equalsQuery = yield* decodeWhere([
+        { field: "amount", type: "equals", filter: extremeScale },
+      ]);
+      const notEqualQuery = yield* decodeWhere([
+        { field: "amount", type: "notEqual", filter: extremeScale },
+      ]);
+      const equals = compileRawPredicate<typeof Row.Type>(metadata, equalsQuery.where);
+      const notEqual = compileRawPredicate<typeof Row.Type>(metadata, notEqualQuery.where);
+      const trustedEquals = compileRawPredicate<typeof Row.Type>(metadata, equalsQuery.where, {
+        trustedRows: true,
+      });
+      const ordinaryRow = {
+        id: "ordinary",
+        name: "ordinary",
+        age: 1,
+        active: true,
+        amount: BigDecimal.make(1n, 0),
+        mixed: 1,
+      };
+      const unsafeRow = {
+        ...ordinaryRow,
+        id: "unsafe",
+        amount: BigDecimal.make(1n, Number.NaN),
+      };
+
+      expect(equals.matches(ordinaryRow)).toBe(false);
+      expect(notEqual.matches(ordinaryRow)).toBe(true);
+      expect(trustedEquals.matches(ordinaryRow)).toBe(false);
+      expect(equals.matches(unsafeRow)).toBe(false);
+      expect(notEqual.matches(unsafeRow)).toBe(true);
     }),
   );
 
@@ -864,6 +929,35 @@ describe("recursive filter expressions", () => {
         enumerable: true,
         get: () => "name",
       });
+      let unsupportedAccessorReads = 0;
+      const unsupportedAccessorCondition = {
+        field: "name",
+        type: "equals",
+        filter: "alice",
+      };
+      Object.defineProperty(unsupportedAccessorCondition, "extra", {
+        enumerable: true,
+        get: () => {
+          unsupportedAccessorReads += 1;
+          throw new Error("unsupported accessor must not run");
+        },
+      });
+      const descriptorReflectionFailure = new Proxy(
+        { field: "name", type: "equals", filter: "alice" },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("descriptor reflection failed");
+          },
+        },
+      );
+      const shapeReflectionFailure = new Proxy(
+        { field: "name", type: "equals", filter: "alice" },
+        {
+          ownKeys: () => {
+            throw new Error("shape reflection failed");
+          },
+        },
+      );
       const cyclicAnd = { type: "AND", conditions: [] as Array<unknown> };
       cyclicAnd.conditions.push(cyclicAnd);
 
@@ -879,6 +973,10 @@ describe("recursive filter expressions", () => {
         [[symbolicCondition], "Filter expressions must not contain symbol properties."],
         [
           [accessorCondition],
+          "Filter expression property field must be an own enumerable data property.",
+        ],
+        [
+          [{ type: "equals", filter: "alice" }],
           "Filter expression property field must be an own enumerable data property.",
         ],
         [
@@ -953,6 +1051,16 @@ describe("recursive filter expressions", () => {
           [
             {
               field: "amount",
+              type: "in",
+              filter: [BigDecimal.make(111n, Number.MIN_SAFE_INTEGER)],
+            },
+          ],
+          "Filter operands must be supported scalar values.",
+        ],
+        [
+          [
+            {
+              field: "amount",
               type: "inRange",
               filter: BigDecimal.make(1n, 0),
               filterTo: BigDecimal.make(2n, 1.5),
@@ -977,12 +1085,54 @@ describe("recursive filter expressions", () => {
           [{ type: "NOT", condition: {}, extra: true }],
           "Filter expression contains unsupported property: extra.",
         ],
+        [[unsupportedAccessorCondition], "Filter expression contains unsupported property: extra."],
+        [[descriptorReflectionFailure], "Raw query where contains an unsupported query value."],
+        [[shapeReflectionFailure], "Raw query where contains an unsupported query value."],
       ];
 
       for (const [where, message] of cases) {
         const error = yield* Effect.flip(decodeWhere(where));
         expect(error.message).toBe(message);
       }
+      expect(unsupportedAccessorReads).toBe(0);
+
+      const descriptorReads = new Map<string, number>();
+      const statefulCondition = new Proxy(
+        { field: "name", type: "equals", filter: "alice" },
+        {
+          getOwnPropertyDescriptor: (target, key) => {
+            const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+            if (typeof key !== "string" || descriptor === undefined) {
+              return descriptor;
+            }
+            const reads = (descriptorReads.get(key) ?? 0) + 1;
+            descriptorReads.set(key, reads);
+            if (reads === 1) {
+              return descriptor;
+            }
+            return {
+              ...descriptor,
+              value: key === "type" ? "blank" : key === "filter" ? "changed" : "missing",
+            };
+          },
+        },
+      );
+
+      const stateful = yield* decodeWhere([statefulCondition]);
+
+      expect(stateful.where).toMatchObject({
+        _tag: "condition",
+        field: "name",
+        type: "equals",
+        filter: "alice",
+      });
+      expect(descriptorReads).toStrictEqual(
+        new Map([
+          ["type", 1],
+          ["field", 1],
+          ["filter", 1],
+        ]),
+      );
     }),
   );
 });

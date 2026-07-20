@@ -1,7 +1,7 @@
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema, Stream } from "effect";
-import { fromStringUnsafe } from "effect/BigDecimal";
+import { fromStringUnsafe, make as makeBigDecimal } from "effect/BigDecimal";
 import { createColumnLiveViewEngine } from "./index";
 
 const OptionalScalarRow = Schema.Struct({
@@ -25,6 +25,30 @@ const viewServer = defineViewServerConfig({
 const expectedRows = [{ id: "different" }, { id: "missing" }];
 
 describe("optional scalar notEqual semantics", () => {
+  it.effect("replaces and patches union BigDecimals without aligning extreme scales", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });
+      const tiny = makeBigDecimal(1n, Number.MAX_SAFE_INTEGER);
+      const huge = makeBigDecimal(1n, Number.MIN_SAFE_INTEGER);
+      yield* engine.publish("optionalScalars", { id: "extreme", amount: tiny });
+      yield* engine.publish("optionalScalars", { id: "extreme", amount: huge });
+
+      const replaced = yield* engine.snapshot("optionalScalars", {
+        select: ["id"],
+        where: [{ field: "amount", type: "equals", filter: huge }],
+      });
+      expect(replaced.rows).toStrictEqual([{ id: "extreme" }]);
+
+      yield* engine.patch("optionalScalars", "extreme", { amount: tiny });
+      const patched = yield* engine.snapshot("optionalScalars", {
+        select: ["id"],
+        where: [{ field: "amount", type: "equals", filter: tiny }],
+      });
+      expect(patched.rows).toStrictEqual([{ id: "extreme" }]);
+      yield* engine.close();
+    }),
+  );
+
   it.effect("keeps notEqual as the exact complement of equals across optimized paths", () =>
     Effect.gen(function* () {
       const engine = yield* createColumnLiveViewEngine({ topics: viewServer.topics });

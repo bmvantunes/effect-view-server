@@ -9,7 +9,7 @@ import type {
   SumAggregate,
 } from "./query-aggregate";
 import type { FieldKey, PickTupleFields, Simplify } from "./query-core";
-import type { RejectExtraKeys } from "./query-exact";
+import type { RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
 import type { ExactWhere, Where } from "./query-filter";
 import type { ExactGroupedOrderByEntry, GroupedOrderBy } from "./query-sort";
 
@@ -24,7 +24,10 @@ export type GroupedQuery<Row> = {
 };
 
 type NonEmptyFieldTuple<Row, Tuple> = Tuple extends readonly [unknown, ...Array<unknown>]
-  ? { readonly [Index in keyof Tuple]: Tuple[Index] & FieldKey<Row> }
+  ? Tuple &
+      RejectArrayExtraKeys<Tuple> & {
+        readonly [Index in keyof Tuple]: Tuple[Index] & FieldKey<Row>;
+      }
   : never;
 
 type ExactAggregate<Row, Candidate> = Candidate extends {
@@ -47,6 +50,8 @@ type ExactAggregate<Row, Candidate> = Candidate extends {
 
 type ExactAggregates<Row, Candidate> = {
   readonly [Alias in keyof Candidate]: ExactAggregate<Row, Candidate[Alias]>;
+} & {
+  readonly [Alias in Extract<keyof Candidate, symbol>]: never;
 };
 
 type GroupedOrderByField<Row, GroupBy> = Extract<
@@ -55,22 +60,26 @@ type GroupedOrderByField<Row, GroupBy> = Extract<
 >;
 
 type ExactGroupedOrderBy<Row, Query> = Query extends {
-  readonly orderBy: ReadonlyArray<infer Entry>;
+  readonly orderBy: infer Candidate;
   readonly groupBy: infer GroupBy;
   readonly aggregates: infer Aggregates;
 }
-  ? {
-      readonly orderBy: ReadonlyArray<
-        ExactGroupedOrderByEntry<
-          Entry,
-          GroupedOrderByField<Row, GroupBy>,
-          AggregateAliasesFromAggregates<Aggregates>
-        >
-      >;
-    }
+  ? Candidate extends ReadonlyArray<infer Entry>
+    ? {
+        readonly orderBy: Candidate &
+          RejectArrayExtraKeys<Candidate> &
+          ReadonlyArray<
+            ExactGroupedOrderByEntry<
+              Entry,
+              GroupedOrderByField<Row, GroupBy>,
+              AggregateAliasesFromAggregates<Aggregates>
+            >
+          >;
+      }
+    : { readonly orderBy: never }
   : unknown;
 
-export type ExactGroupedQuery<Row, Query> = Query &
+type ExactGroupedQueryMember<Row, Query> = Query &
   RejectExtraKeys<Query, GroupedQuery<Row>> & {
     readonly select?: never;
   } & ExactWhere<Row, Query> &
@@ -87,6 +96,22 @@ export type ExactGroupedQuery<Row, Query> = Query &
         readonly groupBy: readonly [FieldKey<Row>, ...Array<FieldKey<Row>>];
         readonly aggregates: Aggregates<Row>;
       });
+
+type InvalidExactGroupedQueryMember<Row, Query> = Query extends unknown
+  ? Query extends ExactGroupedQueryMember<Row, Query>
+    ? never
+    : Query
+  : never;
+
+type ExactGroupedQueryMembers<Row, Query> = Query extends unknown
+  ? ExactGroupedQueryMember<Row, Query>
+  : never;
+
+export type ExactGroupedQuery<Row, Query> = [InvalidExactGroupedQueryMember<Row, Query>] extends [
+  never,
+]
+  ? ExactGroupedQueryMembers<Row, Query>
+  : never;
 
 type GroupedAggregateResultFields<Row, AggregateSet> = AggregateSet extends unknown
   ? {

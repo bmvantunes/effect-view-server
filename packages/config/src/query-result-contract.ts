@@ -3,11 +3,7 @@ import type { ExactRawQuery, PickRawFields, RawQuery } from "./raw-query-contrac
 
 export type LiveQuery<Row> = RawQuery<Row> | GroupedQuery<Row>;
 
-export type ExactLiveQuery<Row, Query> = Query extends {
-  readonly groupBy: ReadonlyArray<unknown>;
-}
-  ? ExactGroupedQuery<Row, Query>
-  : ExactRawQuery<Row, Query>;
+export type ExactLiveQuery<Row, Query> = ExactRawQuery<Row, Query> | ExactGroupedQuery<Row, Query>;
 
 export type LiveQueryRow<Row, Query> = Query extends { readonly groupBy: ReadonlyArray<unknown> }
   ? GroupedResult<Row, Query>
@@ -74,13 +70,25 @@ type RejectDangerousAggregateAliases<Query> =
     ? unknown
     : { readonly aggregates: never };
 
-export type ValidateLiveQuery<Query> = RejectAggregateAliasCollisions<Query> &
+type ValidateLiveQueryMember<Query> = RejectAggregateAliasCollisions<Query> &
   RejectBroadAggregateAliases<Query> &
   RejectEmptyAggregates<Query> &
   RejectDangerousAggregateAliases<Query>;
 
+type InvalidLiveQueryMember<Query> = Query extends unknown
+  ? Query extends Query & ValidateLiveQueryMember<Query>
+    ? never
+    : Query
+  : never;
+
+export type ValidateLiveQuery<Query> = [InvalidLiveQueryMember<Query>] extends [never]
+  ? unknown
+  : never;
+
 export type ExactLiveQueryInput<Row, Query> = Query &
-  ExactLiveQuery<Row, Query> &
-  ValidateLiveQuery<Query> & {
-    readonly routeBy?: never;
-  };
+  NoInfer<
+    ExactLiveQuery<Row, Query> &
+      ValidateLiveQuery<Query> & {
+        readonly routeBy?: never;
+      }
+  >;

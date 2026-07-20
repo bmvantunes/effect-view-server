@@ -106,6 +106,7 @@ describe("gRPC lease manager route validation", () => {
       );
 
       const error = yield* Effect.flip(
+        // @ts-expect-error runtime validation deliberately exercises a missing leased route.
         manager.liveClient.subscribeRuntime("orders", {
           select: ["id"],
           where: [{ field: "region", type: "startsWith", filter: "u" }],
@@ -416,6 +417,7 @@ describe("gRPC lease manager route validation", () => {
       );
 
       const missingRouteError = yield* manager.liveClient
+        // @ts-expect-error runtime validation deliberately exercises a missing leased route.
         .subscribeRuntime("orders", {
           select: ["id"],
           limit: 10,
@@ -475,12 +477,14 @@ describe("gRPC lease manager route validation", () => {
       );
 
       const missingRouteError = yield* manager.liveClient
+        // @ts-expect-error runtime validation deliberately exercises a missing leased route.
         .subscribeRuntime("orders", {
           select: ["id"],
           limit: 10,
         })
         .pipe(Effect.flip);
       const filteredWithoutRouteError = yield* manager.liveClient
+        // @ts-expect-error runtime validation proves local filters cannot replace a leased route.
         .subscribeRuntime("orders", {
           select: ["id"],
           where: [{ field: "region", type: "startsWith", filter: "u" }],
@@ -537,12 +541,14 @@ describe("gRPC lease manager route validation", () => {
       });
 
       const missingRouteError = yield* manager.liveClient
+        // @ts-expect-error runtime validation deliberately exercises a missing leased route.
         .subscribeRuntime("orders", {
           select: ["id"],
           limit: 10,
         })
         .pipe(Effect.flip);
       const filteredWithoutRouteError = yield* manager.liveClient
+        // @ts-expect-error runtime validation proves local filters cannot replace a leased route.
         .subscribeRuntime("orders", {
           select: ["id"],
           where: [{ field: "region", type: "equals", filter: "usa" }],

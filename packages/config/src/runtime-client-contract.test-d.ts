@@ -2,6 +2,8 @@ import { describe, expectTypeOf, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import {
   defineViewServerConfig,
+  type FilterExpression,
+  type LiveQueryResult,
   type ViewServerBackpressureError,
   type ViewServerRuntimeClient,
   type ViewServerRuntimeError,
@@ -15,6 +17,11 @@ declare const dynamicRuntimeTopic: "orders" | "trades";
 describe("Runtime client and configuration generic contracts", () => {
   it("accepts valid contracts and rejects invalid contracts", () => {
     const assertRuntimeContracts = (runtime: ViewServerRuntimeClient<typeof viewServer.topics>) => {
+      const canonicalExpression: FilterExpression<typeof Order.Type> = {
+        field: "id",
+        type: "equals",
+        filter: "order-1",
+      };
       const publishEffect = runtime.publish("orders", {
         id: "order-1",
         customerId: "customer-1",
@@ -25,7 +32,11 @@ describe("Runtime client and configuration generic contracts", () => {
       });
       const snapshotEffect = runtime.snapshot("orders", {
         select: ["id"],
-        where: [{ field: "status", type: "equals", filter: "open" }],
+        where: [canonicalExpression],
+      });
+      const groupedSnapshotEffect = runtime.snapshot("orders", {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
       });
       const patchEffect = runtime.patch("orders", "order-1", {
         price: 43,
@@ -34,6 +45,15 @@ describe("Runtime client and configuration generic contracts", () => {
 
       expectTypeOf<Effect.Error<typeof publishEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
       expectTypeOf<Effect.Error<typeof snapshotEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
+      expectTypeOf<Effect.Success<typeof snapshotEffect>>().toEqualTypeOf<
+        LiveQueryResult<{ readonly id: string }>
+      >();
+      expectTypeOf<Effect.Success<typeof groupedSnapshotEffect>>().toEqualTypeOf<
+        LiveQueryResult<{
+          readonly status: "open" | "closed" | "cancelled";
+          readonly rowCount: bigint;
+        }>
+      >();
       expectTypeOf<Effect.Error<typeof patchEffect>>().toEqualTypeOf<ViewServerRuntimeError>();
 
       const invalidPublishWrongField = runtime.publish("orders", {
@@ -79,12 +99,10 @@ describe("Runtime client and configuration generic contracts", () => {
         {},
       );
 
+      // @ts-expect-error filter values must match their Topic Row fields.
       const invalidSnapshotFilter = runtime.snapshot("orders", {
         select: ["id"],
-        where: [
-          // @ts-expect-error filter values must match their Topic Row fields.
-          { field: "price", type: "equals", filter: "not-a-number" },
-        ],
+        where: [{ field: "price", type: "equals", filter: "not-a-number" }],
       });
       const commonDynamicSnapshot = runtime.snapshot(dynamicRuntimeTopic, {
         select: ["id"],
@@ -99,11 +117,8 @@ describe("Runtime client and configuration generic contracts", () => {
           { readonly field: "status"; readonly type: "equals"; readonly filter: "open" },
         ];
       };
-      const invalidDynamicSnapshot = runtime.snapshot(
-        dynamicRuntimeTopic,
-        // @ts-expect-error dynamic topic-union queries must be valid for every possible topic.
-        orderOnlyQuery,
-      );
+      // @ts-expect-error dynamic topic-union queries must be valid for every possible topic.
+      const invalidDynamicSnapshot = runtime.snapshot(dynamicRuntimeTopic, orderOnlyQuery);
       expectTypeOf<
         Effect.Error<typeof commonDynamicSnapshot>
       >().toEqualTypeOf<ViewServerRuntimeError>();

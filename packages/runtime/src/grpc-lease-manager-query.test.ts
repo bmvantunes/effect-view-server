@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import type { ViewServerRuntimeCoreInternalLiveClient } from "@effect-view-server/runtime-core/internal";
+import type {
+  ViewServerRuntimeCoreInternalLiveClient,
+  ViewServerRuntimeCoreTerminalObserver,
+} from "@effect-view-server/runtime-core/internal";
 import { Clock, Effect, Fiber, Queue, Schedule, Stream } from "effect";
 import { makeViewServerGrpcHealthLedger } from "./grpc-health";
 import {
@@ -71,13 +74,13 @@ describe("gRPC lease manager query translation", () => {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
-          message: "Query input could not be snapshotted at subscribe.",
+          message: "Query input could not be snapshotted.",
         },
         typedError: {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "orders",
-          message: "Query input could not be snapshotted at subscribe.",
+          message: "Query input could not be snapshotted.",
         },
       });
       yield* harness.manager.close;
@@ -797,7 +800,11 @@ describe("gRPC lease manager query translation", () => {
             events: Stream.make(statusEvent),
             close: () => Effect.void,
           }),
-        subscribeObservedInternal: (_topic, _query, observer) =>
+        subscribeObservedInternal: (
+          _topic: string,
+          _query: unknown,
+          observer: ViewServerRuntimeCoreTerminalObserver,
+        ) =>
           observer.onQueryRegistered(statusEvent.queryId).pipe(
             Effect.as({
               events: Stream.make(statusEvent),
@@ -941,7 +948,11 @@ describe("gRPC lease manager query translation", () => {
             }),
             close: () => Effect.void,
           }),
-        subscribeObservedInternal: (_topic, query, observer) =>
+        subscribeObservedInternal: (
+          _topic: string,
+          query: unknown,
+          observer: ViewServerRuntimeCoreTerminalObserver,
+        ) =>
           observer.onQueryRegistered("internal-query").pipe(
             Effect.as({
               events: Stream.make({

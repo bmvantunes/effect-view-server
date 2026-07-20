@@ -8,6 +8,8 @@ import {
 import type {
   ExactLiveQueryInputForTopic,
   ExactLiveQuery,
+  ExactRawQuery,
+  FilterExpression,
   GrpcRuntimeClients,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
@@ -19,6 +21,7 @@ import type {
 import type { Effect } from "effect";
 import type { Stream } from "effect";
 import { Schema } from "effect";
+import { stableQueryKeyForRowSchema } from "./index";
 import type { ViewServerLiveClient, ViewServerLiveSubscription } from "./index";
 
 const Order = Schema.Struct({
@@ -30,6 +33,19 @@ const Position = Schema.Struct({
   id: Schema.String,
   quantity: Schema.Number,
 });
+
+type ValidClientIdCondition = {
+  readonly field: "id";
+  readonly type: "equals";
+  readonly filter: "order-1";
+};
+
+type QueryUnionWithInvalidWhere =
+  | { readonly select: readonly ["id"] }
+  | {
+      readonly select: readonly ["id"];
+      readonly where: readonly [ValidClientIdCondition & { readonly unexpected: true }];
+    };
 
 declare const grpcRuntimeClients: GrpcRuntimeClients;
 declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
@@ -174,9 +190,22 @@ declare const identicalLeasedClient: ViewServerLiveClient<typeof identicalLeased
 declare const identicalLeasedTopic: "orders" | "positions";
 
 describe("client type contracts", () => {
+  it("types schema-aware stable query identity", () => {
+    expectTypeOf(stableQueryKeyForRowSchema({ select: ["id"] }, Order)).toEqualTypeOf<string>();
+
+    // @ts-expect-error schema-aware identity requires an admitted row schema.
+    stableQueryKeyForRowSchema({ select: ["id"] }, { fields: {} });
+  });
+
   it("preserves selected row types through live subscriptions", () => {
+    const canonicalExpression: FilterExpression<typeof Order.Type> = {
+      field: "id",
+      type: "equals",
+      filter: "order-1",
+    };
     const subscription = client.subscribe("orders", {
       select: ["id"],
+      where: [canonicalExpression],
     });
 
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
@@ -187,16 +216,28 @@ describe("client type contracts", () => {
     expectTypeOf<Effect.Error<typeof subscription>>().toEqualTypeOf<
       ViewServerRuntimeError | ViewServerTransportError
     >();
+
+    const rejectQueryUnion = (query: QueryUnionWithInvalidWhere) => {
+      // @ts-expect-error every whole-query union member must be exact.
+      const rejected = client.subscribe("orders", query);
+      expectTypeOf(rejected).not.toBeAny();
+    };
+    expectTypeOf(rejectQueryUnion).toBeFunction();
+    expectTypeOf<ExactRawQuery<typeof Order.Type, QueryUnionWithInvalidWhere>>().toBeNever();
+    expectTypeOf<ExactLiveQuery<typeof Order.Type, QueryUnionWithInvalidWhere>>().toBeNever();
+    expectTypeOf<
+      ExactLiveQueryInputForTopic<typeof viewServer.topics, "orders", QueryUnionWithInvalidWhere>
+    >().toBeNever();
   });
 
   it("rejects nullish selected fields", () => {
+    // @ts-expect-error selected fields must be topic field names, not undefined.
     const undefinedSelectedField = client.subscribe("orders", {
-      // @ts-expect-error selected fields must be topic field names, not undefined.
       select: [undefined],
     });
 
+    // @ts-expect-error selected fields must be topic field names, not null.
     const nullSelectedField = client.subscribe("orders", {
-      // @ts-expect-error selected fields must be topic field names, not null.
       select: [null],
     });
 
@@ -301,11 +342,8 @@ describe("client type contracts", () => {
       readonly select: readonly ["id"];
     };
 
-    const routedUnionSubscription = mixedSourceClient.subscribe(
-      mixedSourceTopic,
-      // @ts-expect-error dynamic topic unions cannot safely correlate leased and ordinary routes.
-      routedUnionQuery,
-    );
+    // @ts-expect-error dynamic topic unions cannot safely correlate leased and ordinary routes.
+    const routedUnionSubscription = mixedSourceClient.subscribe(mixedSourceTopic, routedUnionQuery);
     const missingRouteSubscription = mixedSourceClient.subscribe(
       mixedSourceTopic,
       // @ts-expect-error dynamic topic unions cannot safely correlate leased and ordinary routes.
@@ -324,11 +362,8 @@ describe("client type contracts", () => {
       readonly routeBy: { readonly id: "order-1"; readonly price: 10 };
       readonly select: readonly ["id"];
     };
-    const mismatched = mismatchedLeasedClient.subscribe(
-      mismatchedLeasedTopic,
-      // @ts-expect-error leased topic unions with different route contracts cannot be correlated.
-      combinedRoute,
-    );
+    // @ts-expect-error leased topic unions with different route contracts cannot be correlated.
+    const mismatched = mismatchedLeasedClient.subscribe(mismatchedLeasedTopic, combinedRoute);
     const identical = identicalLeasedClient.subscribe(identicalLeasedTopic, {
       routeBy: { id: "Order-Á" },
       select: ["id"],

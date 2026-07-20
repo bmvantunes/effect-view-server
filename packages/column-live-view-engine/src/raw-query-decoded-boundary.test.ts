@@ -92,11 +92,11 @@ describe("Raw query decoded value boundary", () => {
         status: "ready",
         statusCode: "Ready",
       });
-      expect(cyclicError.message).toBe("Query input could not be snapshotted at subscribe.");
+      expect(cyclicError.message).toBe("Query input could not be snapshotted.");
       expect(hostileError).toStrictEqual(
         InvalidQueryError.make({
           topic: "orders",
-          message: "Query input could not be snapshotted at subscribe.",
+          message: "Query input could not be snapshotted.",
         }),
       );
       yield* subscription.close();

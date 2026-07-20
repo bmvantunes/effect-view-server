@@ -7,6 +7,7 @@ import {
   viewServerDecodeRawQuery,
   viewServerDecodeTopic,
   viewServerEncodeGroupedQuery,
+  viewServerEncodeLiveQuery,
   viewServerEncodeRawQuery,
 } from "./index";
 
@@ -37,12 +38,42 @@ describe("Invalid query wire inputs", () => {
           ownKeys: () => ["select"],
         },
       );
+      const revokedQuery = Proxy.revocable({ select: ["id"] }, {});
+      revokedQuery.revoke();
+      const prototypeFailureQuery = new Proxy(
+        { select: ["id"] },
+        {
+          getPrototypeOf: () => {
+            throw new Error("query prototype reflection failed");
+          },
+        },
+      );
+      const keysFailureQuery = new Proxy(
+        { select: ["id"] },
+        {
+          ownKeys: () => {
+            throw new Error("query key reflection failed");
+          },
+        },
+      );
+      const descriptorFailureQuery = new Proxy(
+        { select: ["id"] },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("query descriptor reflection failed");
+          },
+        },
+      );
 
       for (const query of [
         hiddenQuery,
         accessorQuery,
         symbolicQuery,
         disappearingDescriptorQuery,
+        revokedQuery.proxy,
+        prototypeFailureQuery,
+        keysFailureQuery,
+        descriptorFailureQuery,
       ]) {
         const error = yield* Effect.flip(viewServerEncodeRawQuery(viewServer, "orders", query));
         expect(error).toStrictEqual({
@@ -52,6 +83,142 @@ describe("Invalid query wire inputs", () => {
           topic: "orders",
         });
       }
+    }),
+  );
+
+  it.effect("captures each public live-query shell field once", () =>
+    Effect.gen(function* () {
+      const makeStatefulQuery = () => {
+        let selectReads = 0;
+        let whereReads = 0;
+        const where: ReadonlyArray<unknown> = [];
+        const query = new Proxy(
+          { select: ["id"], where },
+          {
+            getOwnPropertyDescriptor: (target, key) => {
+              const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+              if (descriptor === undefined) {
+                return undefined;
+              }
+              if (key === "select") {
+                selectReads += 1;
+                return {
+                  ...descriptor,
+                  value: selectReads === 1 ? ["id"] : ["missing"],
+                };
+              }
+              if (key === "where") {
+                whereReads += 1;
+                return {
+                  ...descriptor,
+                  value:
+                    whereReads === 1
+                      ? []
+                      : [{ field: "missing", type: "equals", filter: "changed" }],
+                };
+              }
+              return descriptor;
+            },
+          },
+        );
+        return {
+          query,
+          selectReads: () => selectReads,
+          whereReads: () => whereReads,
+        };
+      };
+      const encodeInput = makeStatefulQuery();
+      const decodeInput = makeStatefulQuery();
+
+      const encoded = yield* viewServerEncodeLiveQuery(viewServer, "orders", encodeInput.query);
+      const decoded = yield* viewServerDecodeLiveQuery(viewServer, "orders", decodeInput.query);
+
+      expect(encoded).toStrictEqual({ select: ["id"], where: [] });
+      expect(decoded).toStrictEqual({ select: ["id"], where: [] });
+      expect(encodeInput.selectReads()).toBe(1);
+      expect(encodeInput.whereReads()).toBe(1);
+      expect(decodeInput.selectReads()).toBe(1);
+      expect(decodeInput.whereReads()).toBe(1);
+    }),
+  );
+
+  it.effect("rejects decorated query arrays before schema decoding", () =>
+    Effect.gen(function* () {
+      const decoratedSelect = ["id"];
+      const decoratedWhere: Array<unknown> = [];
+      const decoratedGroupBy = ["id"];
+      const decoratedOrderBy = [{ field: "id", direction: "asc" }];
+      for (const value of [decoratedSelect, decoratedWhere, decoratedGroupBy, decoratedOrderBy]) {
+        Object.defineProperty(value, "metadata", { enumerable: true, value: true });
+      }
+
+      const selectEncode = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", { select: decoratedSelect }),
+      );
+      const selectDecode = yield* Effect.flip(
+        viewServerDecodeRawQuery(viewServer, "orders", { select: decoratedSelect }),
+      );
+      const whereEncode = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: decoratedWhere,
+        }),
+      );
+      const whereDecode = yield* Effect.flip(
+        viewServerDecodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          where: decoratedWhere,
+        }),
+      );
+      const orderByEncode = yield* Effect.flip(
+        viewServerEncodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          orderBy: decoratedOrderBy,
+        }),
+      );
+      const orderByDecode = yield* Effect.flip(
+        viewServerDecodeRawQuery(viewServer, "orders", {
+          select: ["id"],
+          orderBy: decoratedOrderBy,
+        }),
+      );
+      const groupByEncode = yield* Effect.flip(
+        viewServerEncodeGroupedQuery(viewServer, "orders", {
+          groupBy: decoratedGroupBy,
+          aggregates: { rowCount: { aggFunc: "count" } },
+        }),
+      );
+      const groupByDecode = yield* Effect.flip(
+        viewServerDecodeGroupedQuery(viewServer, "orders", {
+          groupBy: decoratedGroupBy,
+          aggregates: { rowCount: { aggFunc: "count" } },
+        }),
+      );
+
+      expect(selectEncode.message).toBe(
+        "Query select must be a dense array without extra properties",
+      );
+      expect(selectDecode.message).toBe(
+        "Query select must be a dense array without extra properties",
+      );
+      expect(whereEncode.message).toBe(
+        "Query where must be a dense array without extra properties",
+      );
+      expect(whereDecode.message).toBe(
+        "Query where must be a dense array without extra properties",
+      );
+      expect(orderByEncode.message).toBe(
+        "Query orderBy must be a dense array without extra properties",
+      );
+      expect(orderByDecode.message).toBe(
+        "Query orderBy must be a dense array without extra properties",
+      );
+      expect(groupByEncode.message).toBe(
+        "Query groupBy must be a dense array without extra properties",
+      );
+      expect(groupByDecode.message).toBe(
+        "Query groupBy must be a dense array without extra properties",
+      );
     }),
   );
 

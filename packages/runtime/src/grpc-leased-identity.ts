@@ -7,7 +7,7 @@ import {
   type GroupedKeyIdentityField,
 } from "@effect-view-server/effect-utils";
 import { Result, Schema } from "effect";
-import { make as makeBigDecimal, type BigDecimal } from "effect/BigDecimal";
+import { isBigDecimal, make as makeBigDecimal, type BigDecimal } from "effect/BigDecimal";
 
 export class GrpcLeasedIdentityError extends Schema.TaggedErrorClass<GrpcLeasedIdentityError>()(
   "GrpcLeasedIdentityError",
@@ -57,10 +57,20 @@ export type GrpcLeasedIdentityLease = {
   ) => GrpcLeasedResultKeyTranslation<Row>;
 };
 
+const GrpcLeasedResolvedRouteTypeId: unique symbol = Symbol(
+  "@effect-view-server/runtime/GrpcLeasedResolvedRoute",
+);
+
+export type GrpcLeasedResolvedRoute = {
+  readonly feedKey: string;
+  readonly [GrpcLeasedResolvedRouteTypeId]: MaterializedRoute;
+};
+
 export type GrpcLeasedIdentityContract = {
-  readonly leaseFromQuery: (
+  readonly resolveQueryRoute: (
     query: unknown,
-  ) => Result.Result<GrpcLeasedIdentityLease, GrpcLeasedIdentityError>;
+  ) => Result.Result<GrpcLeasedResolvedRoute, GrpcLeasedIdentityError>;
+  readonly leaseFromRoute: (route: GrpcLeasedResolvedRoute) => GrpcLeasedIdentityLease;
 };
 
 type CompiledRouteField = {
@@ -95,15 +105,23 @@ const isRouteScalar = (value: unknown): value is RouteScalar =>
 const copyRouteScalar = (value: RouteScalar): RouteScalar =>
   isWireSafeBigDecimal(value) ? makeBigDecimal(value.value, value.scale) : value;
 
-const exactRouteScalarMatches = (actual: unknown, expected: RouteScalar): boolean => {
-  if (isWireSafeBigDecimal(expected)) {
-    return (
-      isWireSafeBigDecimal(actual) &&
-      actual.value === expected.value &&
-      Object.is(actual.scale, expected.scale)
-    );
+const compileExactRouteScalarMatcher = (expected: RouteScalar): ((actual: unknown) => boolean) => {
+  if (expected !== null && typeof expected === "object") {
+    const expectedValue = expected.value;
+    const expectedScale = expected.scale;
+    return (actual) => {
+      try {
+        return (
+          isBigDecimal(actual) &&
+          actual.value === expectedValue &&
+          Object.is(actual.scale, expectedScale)
+        );
+      } catch {
+        return false;
+      }
+    };
   }
-  return Object.is(actual, expected);
+  return (actual) => Object.is(actual, expected);
 };
 
 const exactRouteScalarKey = (value: RouteScalar): string => {
@@ -169,7 +187,12 @@ const materializeRoute = (
     values.push(owned.success.value);
     canonicalKeys.push(owned.success.canonicalKey);
   }
-  return Result.succeed({ canonicalKeys, values });
+  return Result.succeed(
+    Object.freeze({
+      canonicalKeys: Object.freeze(canonicalKeys),
+      values: Object.freeze(values),
+    }),
+  );
 };
 
 const internalRowKey = (feedKey: string, publicKey: string): string =>
@@ -380,8 +403,18 @@ const makeGroupedResultKeyTranslation = <Row extends object>(options: {
   };
 };
 
-const groupedFields = (query: unknown): ReadonlyArray<unknown> | undefined =>
-  isRecord(query) && Array.isArray(query["groupBy"]) ? query["groupBy"] : undefined;
+const groupedFields = (query: unknown): ReadonlyArray<unknown> | undefined => {
+  if (!isRecord(query)) {
+    return undefined;
+  }
+  const descriptor = Result.try(() => Object.getOwnPropertyDescriptor(query, "groupBy"));
+  return Result.isSuccess(descriptor) &&
+    descriptor.success?.enumerable === true &&
+    "value" in descriptor.success &&
+    Array.isArray(descriptor.success.value)
+    ? descriptor.success.value
+    : undefined;
+};
 
 const encodeIdentityComponent = (value: string): string => {
   const encoded = Result.try(() => encodeURIComponent(value));
@@ -456,10 +489,10 @@ export const makeGrpcLeasedIdentityContract = (input: {
   const encodedFeedName = encodeIdentityComponent(input.feedName);
   let leaseSequence = 0n;
 
-  const leaseFromQuery = (
+  const resolveQueryRoute = (
     query: unknown,
-  ): Result.Result<GrpcLeasedIdentityLease, GrpcLeasedIdentityError> => {
-    if (!isRecord(query) || !isRecord(query["routeBy"])) {
+  ): Result.Result<GrpcLeasedResolvedRoute, GrpcLeasedIdentityError> => {
+    if (!isRecord(query)) {
       return Result.fail(
         identityError(
           "Route",
@@ -468,7 +501,23 @@ export const makeGrpcLeasedIdentityContract = (input: {
         ),
       );
     }
-    const queryRoute = query["routeBy"];
+    const routeDescriptor = Result.try(() => Object.getOwnPropertyDescriptor(query, "routeBy"));
+    if (
+      Result.isFailure(routeDescriptor) ||
+      routeDescriptor.success === undefined ||
+      routeDescriptor.success.enumerable !== true ||
+      !("value" in routeDescriptor.success) ||
+      !isRecord(routeDescriptor.success.value)
+    ) {
+      return Result.fail(
+        identityError(
+          "Route",
+          `Leased topic ${input.topic} requires routeBy fields: ${routeBy.success.join(", ")}.`,
+          Result.isFailure(routeDescriptor) ? routeDescriptor.failure : query,
+        ),
+      );
+    }
+    const queryRoute = routeDescriptor.success.value;
     const actualFields = Object.getOwnPropertyNames(queryRoute);
     if (
       Object.getOwnPropertySymbols(queryRoute).length > 0 ||
@@ -512,9 +561,20 @@ export const makeGrpcLeasedIdentityContract = (input: {
           `${encodeIdentityComponent(routeField.field)}=${encodeIdentityComponent(materialized.success.canonicalKeys[index]!)}`,
       )
       .join("&")}`;
+    return Result.succeed(
+      Object.freeze({
+        feedKey,
+        [GrpcLeasedResolvedRouteTypeId]: materialized.success,
+      }),
+    );
+  };
+
+  const leaseFromRoute = (route: GrpcLeasedResolvedRoute): GrpcLeasedIdentityLease => {
+    const feedKey = route.feedKey;
     leaseSequence += 1n;
     const enginePartitionKey = `${feedKey}/lease:${leaseSequence}`;
-    const storedRoute = materialized.success.values;
+    const storedRoute = route[GrpcLeasedResolvedRouteTypeId].values;
+    const routeMatchers = storedRoute.map(compileExactRouteScalarMatcher);
     const publicKeysByStorageKey = new Map<string, string>();
 
     const materializeStoredRoute = (): Readonly<Record<string, unknown>> => {
@@ -546,7 +606,7 @@ export const makeGrpcLeasedIdentityContract = (input: {
           );
         }
         const rowValue = descriptor.success.value;
-        if (!exactRouteScalarMatches(rowValue, storedRoute[index]!)) {
+        if (!routeMatchers[index]!(rowValue)) {
           return Result.fail(
             identityError(
               "RouteMismatch",
@@ -567,7 +627,7 @@ export const makeGrpcLeasedIdentityContract = (input: {
         for (const [index, routeField] of frozenRouteFields.entries()) {
           if (
             !Object.hasOwn(row, routeField.field) ||
-            !exactRouteScalarMatches(Reflect.get(row, routeField.field), storedRoute[index]!)
+            !routeMatchers[index]!(Reflect.get(row, routeField.field))
           ) {
             return false;
           }
@@ -621,15 +681,15 @@ export const makeGrpcLeasedIdentityContract = (input: {
           });
     };
 
-    return Result.succeed({
+    return {
       feedKey,
       enginePartition,
       materializeRoute: materializeStoredRoute,
       validateRowRoute,
       internalizeRowKey,
       resultKeys,
-    });
+    };
   };
 
-  return Result.succeed({ leaseFromQuery });
+  return Result.succeed({ leaseFromRoute, resolveQueryRoute });
 };

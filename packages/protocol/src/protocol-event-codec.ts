@@ -14,6 +14,7 @@ import {
 } from "./protocol-event-schema";
 import type { ViewServerEventQuery } from "./protocol-query-schema";
 import {
+  compileViewServerGroupedRowContract,
   decodeGroupedRow,
   decodeProjectedRow,
   decodeSystemRow,
@@ -21,6 +22,7 @@ import {
   encodeProjectedRow,
   encodeSystemRow,
   isViewServerEventGroupedQuery,
+  type ViewServerGroupedRowContract,
 } from "./protocol-row-codec";
 
 export {
@@ -35,6 +37,41 @@ export type {
 } from "./protocol-event-schema";
 
 export type ViewServerProtocolEvent<Row> = SnapshotEvent<Row> | DeltaEvent<Row> | StatusEvent;
+
+type ViewServerEventRowContract =
+  | {
+      readonly _tag: "grouped";
+      readonly grouped: ViewServerGroupedRowContract;
+    }
+  | {
+      readonly _tag: "raw";
+      readonly selectedFields: ReadonlySet<string>;
+    };
+
+export type ViewServerLiveEventCodec<Row> = {
+  readonly decode: (
+    event: ViewServerWireEvent,
+  ) => Effect.Effect<ViewServerProtocolEvent<Row>, ViewServerRuntimeError>;
+  readonly decodeTrusted: (
+    event: ViewServerTrustedWireEvent,
+  ) => Effect.Effect<ViewServerProtocolEvent<Row>, ViewServerRuntimeError>;
+  readonly encode: (
+    event: ViewServerProtocolEvent<object>,
+  ) => Effect.Effect<ViewServerTrustedWireEvent, ViewServerRuntimeError>;
+};
+
+const compileViewServerEventRowContract = (
+  query: ViewServerEventQuery,
+): ViewServerEventRowContract =>
+  isViewServerEventGroupedQuery(query)
+    ? {
+        _tag: "grouped",
+        grouped: compileViewServerGroupedRowContract(query),
+      }
+    : {
+        _tag: "raw",
+        selectedFields: new Set(query.select),
+      };
 
 const invalidRow = (topic: string, message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
@@ -62,12 +99,12 @@ const encodeStatusEvent = Effect.fn("ViewServerProtocol.event.status.encode")(fu
   return yield* validateTrustedWireEvent(topic, wireEvent);
 });
 
-export const viewServerEncodeLiveEvent = Effect.fn("ViewServerProtocol.event.encode")(function* <
+const encodeLiveEventWithContract = Effect.fn("ViewServerProtocol.event.encode")(function* <
   const Topics extends TopicDefinitions,
 >(
   config: { readonly topics: Topics },
   expectedTopic: Extract<keyof Topics, string>,
-  query: ViewServerEventQuery,
+  rowContract: ViewServerEventRowContract,
   event: ViewServerProtocolEvent<object>,
 ) {
   if (event.topic !== expectedTopic) {
@@ -83,10 +120,10 @@ export const viewServerEncodeLiveEvent = Effect.fn("ViewServerProtocol.event.enc
   }
   if (event.type === "snapshot") {
     const rows = yield* Effect.forEach(event.rows, (row) => {
-      if (isViewServerEventGroupedQuery(query)) {
-        return encodeGroupedRow(config, expectedTopic, query, row);
+      if (rowContract._tag === "raw") {
+        return encodeProjectedRow(config, expectedTopic, rowContract.selectedFields, row);
       }
-      return encodeProjectedRow(config, expectedTopic, new Set<string>(query.select), row);
+      return encodeGroupedRow(config, expectedTopic, rowContract.grouped, row);
     });
     const wireEvent = {
       ...event,
@@ -101,9 +138,9 @@ export const viewServerEncodeLiveEvent = Effect.fn("ViewServerProtocol.event.enc
   const operations: Array<WireDeltaOperation> = [];
   for (const operation of event.operations) {
     if (operation.type === "insert" || operation.type === "update") {
-      const row = yield* isViewServerEventGroupedQuery(query)
-        ? encodeGroupedRow(config, expectedTopic, query, operation.row)
-        : encodeProjectedRow(config, expectedTopic, new Set<string>(query.select), operation.row);
+      const row = yield* rowContract._tag === "raw"
+        ? encodeProjectedRow(config, expectedTopic, rowContract.selectedFields, operation.row)
+        : encodeGroupedRow(config, expectedTopic, rowContract.grouped, operation.row);
       operations.push({
         ...operation,
         row,
@@ -135,7 +172,7 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
 >(
   config: { readonly topics: Topics },
   expectedTopic: Topic,
-  query: ViewServerEventQuery,
+  rowContract: ViewServerEventRowContract,
   wireEvent: ViewServerWireEvent,
 ) {
   if (wireEvent.topic !== expectedTopic) {
@@ -151,10 +188,10 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   }
   if (wireEvent.type === "snapshot") {
     const rows = yield* Effect.forEach(wireEvent.rows, (row) => {
-      if (isViewServerEventGroupedQuery(query)) {
-        return decodeGroupedRow(config, expectedTopic, query, row);
+      if (rowContract._tag === "raw") {
+        return decodeProjectedRow(config, expectedTopic, rowContract.selectedFields, row);
       }
-      return decodeProjectedRow(config, expectedTopic, new Set<string>(query.select), row);
+      return decodeGroupedRow(config, expectedTopic, rowContract.grouped, row);
     });
     return typedLiveEvent<Row>({
       ...wireEvent,
@@ -168,9 +205,9 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   const operations: Array<DecodedDeltaOperation> = [];
   for (const operation of wireEvent.operations) {
     if (operation.type === "insert" || operation.type === "update") {
-      const row = yield* isViewServerEventGroupedQuery(query)
-        ? decodeGroupedRow(config, expectedTopic, query, operation.row)
-        : decodeProjectedRow(config, expectedTopic, new Set<string>(query.select), operation.row);
+      const row = yield* rowContract._tag === "raw"
+        ? decodeProjectedRow(config, expectedTopic, rowContract.selectedFields, operation.row)
+        : decodeGroupedRow(config, expectedTopic, rowContract.grouped, operation.row);
       operations.push({
         ...operation,
         row,
@@ -185,14 +222,14 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   });
 });
 
-export const viewServerDecodeLiveEvent = Effect.fn("ViewServerProtocol.event.decode")(function* <
+const decodeLiveEventWithContract = Effect.fn("ViewServerProtocol.event.decode")(function* <
   const Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
   Row,
 >(
   config: { readonly topics: Topics },
   expectedTopic: Topic,
-  query: ViewServerEventQuery,
+  rowContract: ViewServerEventRowContract,
   event: ViewServerWireEvent,
 ) {
   const wireEvent = yield* Schema.decodeUnknownEffect(ViewServerWireEventSchema)(event).pipe(
@@ -201,25 +238,63 @@ export const viewServerDecodeLiveEvent = Effect.fn("ViewServerProtocol.event.dec
   return yield* decodeValidatedLiveEvent<Topics, Topic, Row>(
     config,
     expectedTopic,
-    query,
+    rowContract,
     wireEvent,
   );
 });
 
-export const viewServerDecodeTrustedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeTrusted")(
-  function* <
-    const Topics extends TopicDefinitions,
-    Topic extends Extract<keyof Topics, string>,
-    Row,
-  >(
-    config: { readonly topics: Topics },
-    expectedTopic: Topic,
-    query: ViewServerEventQuery,
-    event: ViewServerTrustedWireEvent,
-  ) {
-    return yield* decodeValidatedLiveEvent<Topics, Topic, Row>(config, expectedTopic, query, event);
-  },
-);
+export const compileViewServerLiveEventCodec = <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Row = object,
+>(
+  config: { readonly topics: Topics },
+  expectedTopic: Topic,
+  query: ViewServerEventQuery,
+): ViewServerLiveEventCodec<Row> => {
+  const rowContract = compileViewServerEventRowContract(query);
+  const encode: ViewServerLiveEventCodec<Row>["encode"] = (event) =>
+    encodeLiveEventWithContract(config, expectedTopic, rowContract, event);
+  const decode: ViewServerLiveEventCodec<Row>["decode"] = (event) =>
+    decodeLiveEventWithContract<Topics, Topic, Row>(config, expectedTopic, rowContract, event);
+  const decodeTrusted: ViewServerLiveEventCodec<Row>["decodeTrusted"] = (event) =>
+    decodeValidatedLiveEvent<Topics, Topic, Row>(config, expectedTopic, rowContract, event);
+  return Object.freeze({ decode, decodeTrusted, encode });
+};
+
+export const viewServerEncodeLiveEvent = <const Topics extends TopicDefinitions>(
+  config: { readonly topics: Topics },
+  expectedTopic: Extract<keyof Topics, string>,
+  query: ViewServerEventQuery,
+  event: ViewServerProtocolEvent<object>,
+): Effect.Effect<ViewServerTrustedWireEvent, ViewServerRuntimeError> =>
+  compileViewServerLiveEventCodec(config, expectedTopic, query).encode(event);
+
+export const viewServerDecodeLiveEvent = <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Row,
+>(
+  config: { readonly topics: Topics },
+  expectedTopic: Topic,
+  query: ViewServerEventQuery,
+  event: ViewServerWireEvent,
+): Effect.Effect<ViewServerProtocolEvent<Row>, ViewServerRuntimeError> =>
+  compileViewServerLiveEventCodec<Topics, Topic, Row>(config, expectedTopic, query).decode(event);
+
+export const viewServerDecodeTrustedLiveEvent = <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Row,
+>(
+  config: { readonly topics: Topics },
+  expectedTopic: Topic,
+  query: ViewServerEventQuery,
+  event: ViewServerTrustedWireEvent,
+): Effect.Effect<ViewServerProtocolEvent<Row>, ViewServerRuntimeError> =>
+  compileViewServerLiveEventCodec<Topics, Topic, Row>(config, expectedTopic, query).decodeTrusted(
+    event,
+  );
 
 export const encodeSystemLiveEvent = Effect.fn("ViewServerProtocol.system.event.encode")(function* <
   Row,

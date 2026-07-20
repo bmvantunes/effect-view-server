@@ -1,8 +1,4 @@
-import type {
-  ViewServerLiveClient,
-  ViewServerLiveSubscription,
-  ViewServerRuntimeLiveClient,
-} from "@effect-view-server/client";
+import type { ViewServerLiveClient, ViewServerLiveSubscription } from "@effect-view-server/client";
 import type {
   ExactLiveQueryInputForTopic,
   ExactPatch,
@@ -86,16 +82,6 @@ type RuntimeCorePublicSubscribe<Topics extends TopicDefinitions> = <
   query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => Effect.Effect<
   ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-  ViewServerRuntimeError | ViewServerTransportError
->;
-
-type RuntimeCorePublicSubscribeRuntime<Topics extends TopicDefinitions> = <
-  Topic extends RuntimeCoreReadableTopic<Topics>,
->(
-  topic: Topic,
-  query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-) => Effect.Effect<
-  ViewServerLiveSubscription<object>,
   ViewServerRuntimeError | ViewServerTransportError
 >;
 

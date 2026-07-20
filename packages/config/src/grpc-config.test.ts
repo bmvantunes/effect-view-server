@@ -50,6 +50,22 @@ describe("gRPC configuration runtime behavior", () => {
       validateLiveQuerySourceRoute(grpcRouteValidationViewServer.topics, "trades", {}),
     ).toBeUndefined();
 
+    const hostileOrdinaryQuery = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("query descriptor reflection failed");
+        },
+      },
+    );
+    expect(
+      validateLiveQuerySourceRoute(
+        grpcRouteValidationViewServer.topics,
+        "positions",
+        hostileOrdinaryQuery,
+      ),
+    ).toBe("Query for topic positions contains unsupported reflective properties.");
+
     expect(validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", null)).toBe(
       "Leased topic orders requires a query object.",
     );
@@ -57,6 +73,32 @@ describe("gRPC configuration runtime behavior", () => {
     expect(validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {})).toBe(
       "Leased topic orders requires routeBy fields: region, status.",
     );
+
+    const hostileLeasedQuery = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("leased query descriptor reflection failed");
+        },
+      },
+    );
+    expect(validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", hostileLeasedQuery)).toBe(
+      "Query for topic orders contains unsupported reflective properties.",
+    );
+
+    const hostileRouteKeys = new Proxy(
+      { region: "UsÁ", status: "open" },
+      {
+        ownKeys: () => {
+          throw new Error("route key reflection failed");
+        },
+      },
+    );
+    expect(
+      validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
+        routeBy: hostileRouteKeys,
+      }),
+    ).toBe("Query for topic orders contains unsupported reflective properties.");
 
     expect(
       validateLiveQuerySourceRoute(grpcViewServer.topics, "orders", {
@@ -126,15 +168,102 @@ describe("gRPC configuration runtime behavior", () => {
     ).toBe(undefined);
     expect(
       validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
+        routeBy: {
+          ...scalarRoute,
+          amount: BigDecimal.make(1n, Number.MIN_SAFE_INTEGER),
+        },
+      }),
+    ).toBe(undefined);
+    expect(
+      validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
         routeBy: { ...scalarRoute, score: Number.POSITIVE_INFINITY },
       }),
     ).toBe("Leased topic scalarRoute routeBy field score must be a supported scalar value.");
-    for (const scale of [Number.POSITIVE_INFINITY, Number.NaN, 1.5]) {
+    for (const scale of [
+      Number.POSITIVE_INFINITY,
+      Number.NaN,
+      1.5,
+      Number.MIN_SAFE_INTEGER,
+      Number.MIN_SAFE_INTEGER + 1,
+    ]) {
       expect(
         validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
           routeBy: { ...scalarRoute, amount: BigDecimal.make(123n, scale) },
         }),
       ).toBe("Leased topic scalarRoute routeBy field amount must be a supported scalar value.");
+    }
+
+    const supportedScalarError =
+      "Leased topic scalarRoute routeBy field amount must be a supported scalar value.";
+    expect(validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", { routeBy: null })).toBe(
+      "Leased topic scalarRoute requires routeBy fields: nil, text, count, enabled, amount, score.",
+    );
+    const hostileRouteBy = new Proxy(
+      {},
+      {
+        getPrototypeOf: () => {
+          throw new Error("route prototype reflection failed");
+        },
+      },
+    );
+    expect(
+      validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
+        routeBy: hostileRouteBy,
+      }),
+    ).toBe(
+      "Leased topic scalarRoute requires routeBy fields: nil, text, count, enabled, amount, score.",
+    );
+
+    const bigDecimalPrototype = Object.getPrototypeOf(BigDecimal.make(1n, 0));
+    const forgedBigDecimal = (
+      coefficient: PropertyDescriptor | undefined,
+      scale: PropertyDescriptor | undefined,
+    ): object => {
+      const value = Object.create(bigDecimalPrototype);
+      if (coefficient !== undefined) {
+        Object.defineProperty(value, "value", coefficient);
+      }
+      if (scale !== undefined) {
+        Object.defineProperty(value, "scale", scale);
+      }
+      return value;
+    };
+    const data = (value: unknown): PropertyDescriptor => ({ enumerable: true, value });
+    const invalidBigDecimals: ReadonlyArray<object> = [
+      Object.create(null),
+      Object.create({}),
+      Object.create(
+        Object.defineProperty({}, "~effect/BigDecimal", {
+          enumerable: false,
+          get: () => "~effect/BigDecimal",
+        }),
+      ),
+      Object.create(
+        Object.defineProperty({}, "~effect/BigDecimal", {
+          enumerable: false,
+          value: "wrong",
+        }),
+      ),
+      forgedBigDecimal(undefined, undefined),
+      forgedBigDecimal({ enumerable: false, value: 1n }, undefined),
+      forgedBigDecimal({ enumerable: true, get: () => 1n }, undefined),
+      forgedBigDecimal(data("1"), undefined),
+      forgedBigDecimal(data(1n), undefined),
+      forgedBigDecimal(data(1n), { enumerable: false, value: 0 }),
+      forgedBigDecimal(data(1n), { enumerable: true, get: () => 0 }),
+      forgedBigDecimal(data(1n), data("0")),
+      new Proxy(BigDecimal.make(1n, 0), {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("BigDecimal descriptor reflection failed");
+        },
+      }),
+    ];
+    for (const amount of invalidBigDecimals) {
+      expect(
+        validateLiveQuerySourceRoute(scalarRouteTopic, "scalarRoute", {
+          routeBy: { ...scalarRoute, amount },
+        }),
+      ).toBe(supportedScalarError);
     }
 
     expect(

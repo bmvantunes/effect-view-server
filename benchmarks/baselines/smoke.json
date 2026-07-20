@@ -89,6 +89,15 @@
         },
         {
           "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
+          "maxMs": 2.1102500000001783,
+          "meanMs": 0.32253158599999643,
+          "minMs": 0.30408399999987523,
+          "name": "nested OR filter + top-k sort",
+          "p99Ms": 0.6486250000002656,
+          "sampleCount": 1000
+        },
+        {
+          "groupName": "src/raw-snapshot.bench.ts > raw snapshot and delta engine benchmark: 1000 rows",
           "maxMs": 1.8308329999999842,
           "meanMs": 0.17211513076394055,
           "minMs": 0.16220799999973678,
@@ -134,6 +143,7 @@
         "BigDecimal range filter + indexed seek",
         "selective range filter + fallback top-k sort",
         "compound filter + top-k sort",
+        "nested OR filter + top-k sort",
         "narrow scalar projection + top-k sort",
         "wide scalar projection + top-k sort",
         "filtered totalRows via zero-row window",

@@ -1,78 +1,48 @@
-export const isProtocolPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
+import {
+  hasPlainRecordPrototype,
+  inspectDenseArrayData,
+  inspectPlainRecordData,
+  type PlainRecordSnapshot,
+} from "@effect-view-server/effect-utils";
 
-export type ProtocolOwnDataValue = {
-  readonly found: boolean;
-  readonly value: unknown;
+export const isProtocolPlainRecord = hasPlainRecordPrototype;
+
+export type ProtocolRecordSnapshot = PlainRecordSnapshot;
+
+export const protocolRecordSnapshot = (value: unknown): ProtocolRecordSnapshot | undefined => {
+  const inspection = inspectPlainRecordData(value);
+  return inspection._tag === "Success" ? inspection.snapshot : undefined;
 };
 
-export const protocolOwnDataValue = (
-  value: Readonly<Record<string, unknown>>,
+export const protocolSnapshotDataValue = (
+  snapshot: ProtocolRecordSnapshot,
   key: string,
-): ProtocolOwnDataValue => {
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return descriptor !== undefined && descriptor.enumerable && "value" in descriptor
-    ? { found: true, value: descriptor.value }
-    : { found: false, value: undefined };
+): unknown => {
+  for (const [entryKey, entryValue] of snapshot.entries) {
+    if (entryKey === key) {
+      return entryValue;
+    }
+  }
+  return undefined;
 };
 
 export const protocolRecordDataEntries = (
   value: Readonly<Record<string, unknown>>,
 ): ReadonlyArray<readonly [string, unknown]> | undefined => {
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    return undefined;
-  }
-  const entries: Array<readonly [string, unknown]> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const field = protocolOwnDataValue(value, key);
-    if (!field.found) {
-      return undefined;
-    }
-    entries.push([key, field.value]);
-  }
-  return entries;
+  return protocolRecordSnapshot(value)?.entries;
 };
 
-export const protocolHasOnlyDataKeys = (
-  value: Readonly<Record<string, unknown>>,
-  allowed: ReadonlySet<string>,
-): boolean => {
-  const entries = protocolRecordDataEntries(value);
-  return entries !== undefined && entries.every(([key]) => allowed.has(key));
-};
-
-export const protocolHasExactDataKeys = (
-  value: Readonly<Record<string, unknown>>,
+export const protocolSnapshotHasExactDataKeys = (
+  snapshot: ProtocolRecordSnapshot,
   expected: ReadonlySet<string>,
 ): boolean => {
-  const entries = protocolRecordDataEntries(value);
   return (
-    entries !== undefined &&
-    entries.length === expected.size &&
-    entries.every(([key]) => expected.has(key))
+    snapshot.entries.length === expected.size &&
+    snapshot.entries.every(([key]) => expected.has(key))
   );
 };
 
 export const protocolDenseArray = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    return undefined;
-  }
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    return undefined;
-  }
-  const output: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < value.length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    output.push(descriptor.value);
-  }
-  return Object.getOwnPropertyNames(value).every((key) => allowed.has(key)) ? output : undefined;
+  const inspection = inspectDenseArrayData(value);
+  return inspection._tag === "Success" ? inspection.values : undefined;
 };

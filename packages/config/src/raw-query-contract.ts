@@ -1,5 +1,5 @@
 import type { FieldKey, PickTupleFields } from "./query-core";
-import type { RejectExtraKeys } from "./query-exact";
+import type { RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
 import type { ExactWhere, Where } from "./query-filter";
 import type { ExactRawOrderBy, OrderBy } from "./query-sort";
 
@@ -26,12 +26,15 @@ type ExactRawSelectFields<Row, Select> =
 type ExactRawSelect<Row, Query> = Query extends {
   readonly select: infer Select;
 }
-  ? {
-      readonly select: Select &
-        RejectBroadSelect<Select> &
-        RejectEmptySelect<Select> &
-        ExactRawSelectFields<Row, Select>;
-    }
+  ? Select extends ReadonlyArray<unknown>
+    ? {
+        readonly select: Select &
+          RejectArrayExtraKeys<Select> &
+          RejectBroadSelect<Select> &
+          RejectEmptySelect<Select> &
+          ExactRawSelectFields<Row, Select>;
+      }
+    : { readonly select: never }
   : {
       readonly select: RawSelect<Row>;
     };
@@ -44,13 +47,27 @@ export type RawQuery<Row> = {
   readonly limit?: number;
 };
 
-export type ExactRawQuery<Row, Query> = Query &
+type ExactRawQueryMember<Row, Query> = Query &
   RejectExtraKeys<Query, RawQuery<Row>> & {
     readonly groupBy?: never;
     readonly aggregates?: never;
   } & ExactRawSelect<Row, Query> &
   ExactWhere<Row, Query> &
   ExactRawOrderBy<Row, Query>;
+
+type InvalidExactRawQueryMember<Row, Query> = Query extends unknown
+  ? Query extends ExactRawQueryMember<Row, Query>
+    ? never
+    : Query
+  : never;
+
+type ExactRawQueryMembers<Row, Query> = Query extends unknown
+  ? ExactRawQueryMember<Row, Query>
+  : never;
+
+export type ExactRawQuery<Row, Query> = [InvalidExactRawQueryMember<Row, Query>] extends [never]
+  ? ExactRawQueryMembers<Row, Query>
+  : never;
 
 export type ExactPatch<Row, Patch> = Patch & RejectExtraKeys<Patch, Partial<Row>>;
 

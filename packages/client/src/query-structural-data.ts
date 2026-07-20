@@ -1,31 +1,22 @@
-export type PlainRecordSnapshot = {
-  readonly source: object;
-  readonly entries: ReadonlyArray<readonly [string, unknown]>;
-};
+import {
+  hasPlainRecordPrototype,
+  inspectDenseArrayData,
+  inspectPlainRecordData,
+  type PlainRecordSnapshot,
+} from "@effect-view-server/effect-utils";
 
-export const hasPlainRecordPrototype = (value: unknown): value is object =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
+export { hasPlainRecordPrototype, type PlainRecordSnapshot };
 
 export const plainRecordSnapshot = (
   value: unknown,
   invalidRecord: () => never,
   invalidProperty: () => never,
 ): PlainRecordSnapshot => {
-  if (!hasPlainRecordPrototype(value) || Object.getOwnPropertySymbols(value).length > 0) {
-    return invalidRecord();
+  const inspection = inspectPlainRecordData(value);
+  if (inspection._tag === "Success") {
+    return inspection.snapshot;
   }
-  const entries: Array<readonly [string, unknown]> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return invalidProperty();
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return { source: value, entries };
+  return inspection.reason === "invalidRecord" ? invalidRecord() : invalidProperty();
 };
 
 export const denseArrayValues = (
@@ -34,29 +25,12 @@ export const denseArrayValues = (
   invalidEntry: () => never,
   invalidExtraProperty: () => never,
 ): ReadonlyArray<unknown> => {
-  if (
-    !Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Array.prototype ||
-    Object.getOwnPropertySymbols(value).length > 0
-  ) {
+  const inspection = inspectDenseArrayData(value);
+  if (inspection._tag === "Success") {
+    return inspection.values;
+  }
+  if (inspection.reason === "invalidArray" || inspection.reason === "invalidReflection") {
     return invalidArray();
   }
-  // An exact built-in Array prototype guarantees its non-configurable data descriptor.
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length")!;
-  const length: number = lengthDescriptor.value;
-  const values: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return invalidEntry();
-    }
-    values.push(descriptor.value);
-  }
-  if (Object.getOwnPropertyNames(value).some((key) => !allowed.has(key))) {
-    return invalidExtraProperty();
-  }
-  return values;
+  return inspection.reason === "invalidEntry" ? invalidEntry() : invalidExtraProperty();
 };

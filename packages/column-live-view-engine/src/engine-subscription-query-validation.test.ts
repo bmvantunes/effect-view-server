@@ -26,7 +26,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
           where: [{ field: "price", type: "greaterThan", filter: Number.NaN }],
         }),
       );
-      expect(nonFiniteError.message).toBe("Filter numbers must be finite.");
+      expect(nonFiniteError.message).toBe("Query input could not be snapshotted.");
 
       const nonArrayIn: object = {
         select: ["id"],
@@ -46,7 +46,7 @@ describe("ColumnLiveViewEngine subscription query validation", () => {
         // @ts-expect-error hostile untyped queries are rejected at runtime.
         engine.snapshot("orders", undefinedOperand),
       );
-      expect(undefinedOperandError.message).toBe("Filter operands must not be undefined.");
+      expect(undefinedOperandError.message).toBe("Query input could not be snapshotted.");
 
       const unknownField: object = {
         select: ["id"],

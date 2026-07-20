@@ -9,7 +9,11 @@ import {
   encodeTopicNamedJsonFieldValue,
   materializeJsonFieldValue,
 } from "./protocol-json-field-codec";
-import type { ViewServerEventGroupedQuery, ViewServerEventQuery } from "./protocol-query-schema";
+import type {
+  ViewServerEventGroupedQuery,
+  ViewServerEventQuery,
+  ViewServerWireAggregate,
+} from "./protocol-query-schema";
 
 const invalidRow = (topic: string, message: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
@@ -118,7 +122,43 @@ const materializeWireRow = Effect.fn("ViewServerProtocol.row.materializeWire")(f
 
 export const isViewServerEventGroupedQuery = (
   query: ViewServerEventQuery,
-): query is ViewServerEventGroupedQuery => "groupBy" in query;
+): query is ViewServerEventGroupedQuery => Object.hasOwn(query, "groupBy");
+
+export type ViewServerGroupedRowContract = {
+  readonly aggregateAliases: ReadonlySet<string>;
+  readonly aggregates: Readonly<Record<string, ViewServerWireAggregate | undefined>>;
+  readonly groupFields: ReadonlySet<string>;
+};
+
+const compileViewServerAggregate = (
+  aggregate: ViewServerWireAggregate | undefined,
+): ViewServerWireAggregate | undefined =>
+  aggregate === undefined
+    ? undefined
+    : aggregate.aggFunc === "count"
+      ? Object.freeze({ aggFunc: aggregate.aggFunc })
+      : Object.freeze({ aggFunc: aggregate.aggFunc, field: aggregate.field });
+
+const compileViewServerAggregates = (
+  aggregates: ViewServerEventGroupedQuery["aggregates"],
+): Readonly<Record<string, ViewServerWireAggregate | undefined>> => {
+  const compiled: Record<string, ViewServerWireAggregate | undefined> = {};
+  for (const [alias, aggregate] of Object.entries(aggregates)) {
+    defineEnumerableOwn(compiled, alias, compileViewServerAggregate(aggregate));
+  }
+  return Object.freeze(compiled);
+};
+
+export const compileViewServerGroupedRowContract = (
+  query: ViewServerEventGroupedQuery,
+): ViewServerGroupedRowContract => {
+  const aggregates = compileViewServerAggregates(query.aggregates);
+  return {
+    aggregateAliases: new Set(Object.keys(aggregates)),
+    aggregates,
+    groupFields: new Set(query.groupBy),
+  };
+};
 
 export const encodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.encode")(function* <
   const Topics extends TopicDefinitions,
@@ -197,12 +237,11 @@ export const encodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.encode
 >(
   config: { readonly topics: Topics },
   topic: Extract<keyof Topics, string>,
-  query: ViewServerEventGroupedQuery,
+  contract: ViewServerGroupedRowContract,
   row: object,
 ) {
   const topicSchema = config.topics[topic]!.schema;
-  const groupFields = new Set<string>(query.groupBy);
-  const aggregateAliases = new Set<string>(Object.keys(query.aggregates));
+  const { aggregateAliases, aggregates, groupFields } = contract;
   const output: Record<string, Schema.Json> = {};
   const inspected = yield* inspectRow(topic, "grouped row", row);
   for (const field of groupFields) {
@@ -232,7 +271,7 @@ export const encodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.encode
       );
       defineEnumerableOwn(output, field, encoded);
     } else if (aggregateAliases.has(field)) {
-      const aggregate = query.aggregates[field];
+      const aggregate = aggregates[field];
       if (aggregate === undefined) {
         return yield* Effect.fail(
           invalidRow(topic, `Missing grouped aggregate definition for topic ${topic}: ${field}`),
@@ -255,12 +294,11 @@ export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode
 >(
   config: { readonly topics: Topics },
   topic: Topic,
-  query: ViewServerEventGroupedQuery,
+  contract: ViewServerGroupedRowContract,
   row: ViewServerWireRow,
 ) {
   const topicSchema = config.topics[topic]!.schema;
-  const groupFields = new Set<string>(query.groupBy);
-  const aggregateAliases = new Set<string>(Object.keys(query.aggregates));
+  const { aggregateAliases, aggregates, groupFields } = contract;
   const output: Record<string, unknown> = {};
   const materialized = yield* materializeWireRow(topic, "grouped row", row);
   for (const field of groupFields) {
@@ -286,7 +324,7 @@ export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode
       });
       defineEnumerableOwn(output, field, decoded);
     } else if (aggregateAliases.has(field)) {
-      const aggregate = query.aggregates[field];
+      const aggregate = aggregates[field];
       if (aggregate === undefined) {
         return yield* Effect.fail(
           invalidRow(topic, `Missing grouped aggregate definition for topic ${topic}: ${field}`),

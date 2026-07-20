@@ -172,11 +172,8 @@ describe("Runtime client and source ownership contracts", () => {
       price: 10,
     });
 
-    const invalidLeasedSubscribe = leasedRuntime.liveClient.subscribe(
-      "orders",
-      // @ts-expect-error leased gRPC topics require routeBy.
-      missingRouteQuery,
-    );
+    // @ts-expect-error leased gRPC topics require routeBy.
+    const invalidLeasedSubscribe = leasedRuntime.liveClient.subscribe("orders", missingRouteQuery);
 
     expectTypeOf(invalidLeasedSnapshot).not.toBeAny();
 
@@ -209,8 +206,8 @@ describe("Runtime client and source ownership contracts", () => {
       prcie: 10,
     });
 
+    // @ts-expect-error runtime live client rejects fields outside the topic row.
     const invalidSubscribe = runtime.liveClient.subscribe("orders", {
-      // @ts-expect-error runtime live client rejects fields outside the topic row.
       select: ["prcie"],
     });
 
@@ -223,12 +220,10 @@ describe("Runtime client and source ownership contracts", () => {
       },
     );
 
+    // @ts-expect-error filters reject fields outside the Topic Row.
     const invalidSnapshot = runtime.client.snapshot("orders", {
       select: ["id"],
-      where: [
-        // @ts-expect-error filters reject fields outside the Topic Row.
-        { field: "prcie", type: "greaterThanOrEqual", filter: 10 },
-      ],
+      where: [{ field: "prcie", type: "greaterThanOrEqual", filter: 10 }],
     });
 
     expectTypeOf(invalidPublish).not.toBeAny();

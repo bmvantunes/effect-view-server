@@ -13,5 +13,6 @@ Live Query filtering uses one schema-derived language: `where` is an implicit-AN
 - This is an intentional breaking public and wire-contract change with no compatibility form for field-keyed filters.
 - Empty generated predicates normalize to no filter, while malformed conditions remain invalid.
 - Query validation, normalization, identity, and execution must agree on schema-derived scalar paths, exact complements, and wire-safe values.
+- BigDecimal semantic keys come from one shared injective representation; operands that Effect's JSON codec cannot round-trip without scale loss are invalid.
 - Subscription APIs take an owned query snapshot at call time; caller mutation after `subscribe` cannot alter validation, routing, identity, or execution.
 - External filter models remain Adapter inputs and never add third-party discriminators to the core query language.

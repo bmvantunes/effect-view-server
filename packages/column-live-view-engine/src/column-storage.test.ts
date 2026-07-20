@@ -121,7 +121,7 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
   expect(columnScalarEqualityKey(numberKeys, 3)).toBe("number:-Infinity");
   expect(columnScalarEqualityKey(quantity, 0)).toBe("bigint:1");
   expect(columnScalarEqualityKey(quantity, -1)).toBeUndefined();
-  expect(columnScalarEqualityKey(decimalPrice, 0)).toBe("bigDecimal:1.25");
+  expect(columnScalarEqualityKey(decimalPrice, 0)).toBe('bigDecimal:["125","2"]');
   expect(columnScalarEqualityKey(decimalPrice, 1)).toBeUndefined();
 
   generic.set(0, "generic");

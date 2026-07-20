@@ -33,10 +33,12 @@ export const makeRuntimeCoreSnapshotQueryFacade = <Topics extends DecodableTopic
 ): RuntimeCoreSnapshotQueryFacade<Topics> => {
   function snapshotInternal<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends
+      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): Effect.Effect<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError
@@ -50,25 +52,21 @@ export const makeRuntimeCoreSnapshotQueryFacade = <Topics extends DecodableTopic
 
   function snapshot<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends
+      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): Effect.Effect<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError
   >;
-  function snapshot<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-  ): Effect.Effect<
-    LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError
-  > {
-    const acquisition = snapshotInternal<Topic, Query>(topic, query);
+  function snapshot(
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
+  ): RuntimeSnapshot {
+    const acquisition = substrate.snapshotQuery(topic, query);
     return substrate.requirePublicReadAllowed(topic).pipe(Effect.flatMap(() => acquisition));
   }
 

@@ -437,17 +437,17 @@ describe("React type contracts", () => {
     >();
     expectTypeOf(invalidPatch).not.toBeAny();
 
+    // @ts-expect-error grouped orderBy field must be present in groupBy.
     useLiveQuery("orders", {
       groupBy: ["status"],
       aggregates: { rowCount: { aggFunc: "count" } },
-      // @ts-expect-error grouped orderBy field must be present in groupBy.
       orderBy: [{ field: "price", direction: "asc" }],
     });
 
+    // @ts-expect-error grouped orderBy aggregate must reference an aggregate alias.
     useLiveQuery("orders", {
       groupBy: ["status"],
       aggregates: { rowCount: { aggFunc: "count" } },
-      // @ts-expect-error grouped orderBy aggregate must reference an aggregate alias.
       orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
     });
   });
@@ -476,18 +476,18 @@ describe("React type contracts", () => {
       children: null,
     });
 
+    // @ts-expect-error consumer package imports still reject unknown selected fields.
     consumerReact.useLiveQuery("orders", {
-      // @ts-expect-error consumer package imports still reject unknown selected fields.
       select: ["prcie"],
     });
 
+    // @ts-expect-error consumer package imports still reject undefined selected fields.
     consumerReact.useLiveQuery("orders", {
-      // @ts-expect-error consumer package imports still reject undefined selected fields.
       select: [undefined],
     });
 
+    // @ts-expect-error consumer package imports still reject null selected fields.
     consumerReact.useLiveQuery("orders", {
-      // @ts-expect-error consumer package imports still reject null selected fields.
       select: [null],
     });
   });

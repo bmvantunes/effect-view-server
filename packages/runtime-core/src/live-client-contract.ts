@@ -29,39 +29,41 @@ export type ViewServerRuntimeCoreEngineQueryInput<
 export type ViewServerRuntimeCoreTerminalObserver = ColumnLiveViewTerminalObserver;
 export type ViewServerRuntimeCoreQueryPartition = ColumnLiveViewEngineQueryPartition;
 
+type ViewServerObservedQuerySubscriber<Topics extends DecodableTopicDefinitions> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
+>(
+  topic: Topic,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+  terminalObserver: ColumnLiveViewTerminalObserver,
+  partition?: ViewServerRuntimeCoreQueryPartition,
+) => Effect.Effect<
+  ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
+  ViewServerRuntimeError | ViewServerTransportError
+>;
+
 export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopicDefinitions> = {
-  readonly subscribeInternal: <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-  ) => Effect.Effect<
-    ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError | ViewServerTransportError
-  >;
-  readonly subscribeObservedInternal: <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-    terminalObserver: ColumnLiveViewTerminalObserver,
-    partition?: ViewServerRuntimeCoreQueryPartition,
-  ) => Effect.Effect<
-    ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError | ViewServerTransportError
-  >;
-  readonly subscribeRuntimeInternal: <Topic extends Extract<keyof Topics, string>>(
-    topic: Topic,
-    query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  readonly subscribeInternal: ViewServerRuntimeLiveClient<Topics>["subscribe"];
+  readonly subscribeObservedInternal: ViewServerObservedQuerySubscriber<Topics>;
+  readonly subscribeRuntimeInternal: (
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
   ) => Effect.Effect<
     ViewServerLiveSubscription<object>,
     ViewServerRuntimeError | ViewServerTransportError
   >;
-  readonly subscribeRuntimeObservedInternal: <Topic extends Extract<keyof Topics, string>>(
-    topic: Topic,
-    query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  readonly subscribeRuntimeRoutedInternal: (
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<
+    ViewServerLiveSubscription<object>,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
+  readonly subscribeRuntimeObservedInternal: (
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
     terminalObserver: ColumnLiveViewTerminalObserver,
     partition?: ViewServerRuntimeCoreQueryPartition,
   ) => Effect.Effect<

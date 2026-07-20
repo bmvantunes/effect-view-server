@@ -2557,8 +2557,8 @@ describe("@effect-view-server/server", () => {
       expect(invalidSubscribeTopic.code).toBe("InvalidTopic");
 
       const invalidQuery = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send malformed queries over the wire.
         client.subscribe("orders", {
-          // @ts-expect-error hostile callers can still send malformed queries over the wire.
           select: [1],
         }),
       );
@@ -2566,8 +2566,8 @@ describe("@effect-view-server/server", () => {
       expect(invalidQuery.message).toBe('Expected string, got 1\n  at ["select"][0]');
 
       const unknownSelect = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown projected fields.
         client.subscribe("orders", {
-          // @ts-expect-error hostile callers can still send unknown projected fields.
           select: ["missing"],
         }),
       );
@@ -2575,11 +2575,11 @@ describe("@effect-view-server/server", () => {
       expect(unknownSelect.message).toBe("Query references an unknown field for topic: orders");
 
       const unknownWhere = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown filter fields.
         client.subscribe("orders", {
           select: ["id"],
           where: [
             {
-              // @ts-expect-error hostile callers can still send unknown filter fields.
               field: "missing",
               type: "equals",
               filter: "x",
@@ -2593,11 +2593,11 @@ describe("@effect-view-server/server", () => {
       );
 
       const unknownOrderBy = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown sort fields.
         client.subscribe("orders", {
           select: ["id"],
           orderBy: [
             {
-              // @ts-expect-error hostile callers can still send unknown sort fields.
               field: "missing",
               direction: "asc",
             },

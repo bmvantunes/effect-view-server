@@ -28,9 +28,72 @@ describe("query input snapshots", () => {
     );
   });
 
+  it("owns a stateful BigDecimal from one descriptor capture", () => {
+    let coefficientDescriptorReads = 0;
+    let scaleDescriptorReads = 0;
+    const amount = new Proxy(BigDecimal.make(123n, 2), {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === "value") {
+          coefficientDescriptorReads += 1;
+          if (coefficientDescriptorReads > 1) {
+            throw new Error("coefficient descriptor was read twice");
+          }
+        }
+        if (key === "scale") {
+          scaleDescriptorReads += 1;
+          if (scaleDescriptorReads > 1) {
+            throw new Error("scale descriptor was read twice");
+          }
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const snapshot = snapshotViewServerQuery({ routeBy: { amount }, values: [amount, amount] });
+
+    expect(snapshot).toStrictEqual({
+      routeBy: { amount: BigDecimal.make(123n, 2) },
+      values: [BigDecimal.make(123n, 2), BigDecimal.make(123n, 2)],
+    });
+    expect(snapshot.values[0]).toBe(snapshot.routeBy.amount);
+    expect(snapshot.values[1]).toBe(snapshot.routeBy.amount);
+    expect(coefficientDescriptorReads).toBe(1);
+    expect(scaleDescriptorReads).toBe(1);
+  });
+
   it("rejects cycles and unsupported scalar or object values", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic["self"] = cyclic;
+    let hostileBrandChecks = 0;
+    const hostileBrand = new Proxy(
+      {},
+      {
+        has: () => {
+          hostileBrandChecks += 1;
+          throw new Error("brand reflection failed");
+        },
+      },
+    );
+    const hostileBigDecimal = new Proxy(BigDecimal.make(123n, 2), {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("BigDecimal descriptor reflection failed");
+      },
+    });
+    let forgedBigDecimalReads = 0;
+    const forgedBigDecimal: object = Object.create(Object.getPrototypeOf(BigDecimal.make(123n, 2)));
+    const forgedFields: ReadonlyArray<readonly [string, unknown]> = [
+      ["value", 123n],
+      ["scale", 2],
+    ];
+    for (const [key, result] of forgedFields) {
+      Object.defineProperty(forgedBigDecimal, key, {
+        enumerable: true,
+        get: () => {
+          forgedBigDecimalReads += 1;
+          return result;
+        },
+      });
+    }
 
     expect(() => snapshotViewServerQuery({ extension: cyclic })).toThrow(
       "Query input contains a cycle.",
@@ -50,6 +113,15 @@ describe("query input snapshots", () => {
     expect(() => snapshotViewServerQuery({ extension: new Date(0) })).toThrow(
       "Query input contains an unsupported object value.",
     );
+    expect(snapshotViewServerQuery({ extension: hostileBrand })).toStrictEqual({ extension: {} });
+    expect(hostileBrandChecks).toBe(0);
+    expect(() => snapshotViewServerQuery({ extension: hostileBigDecimal })).toThrow(
+      "Query input contains an unsupported object value.",
+    );
+    expect(() => snapshotViewServerQuery({ extension: forgedBigDecimal })).toThrow(
+      "Query input contains an unsupported object value.",
+    );
+    expect(forgedBigDecimalReads).toBe(0);
     for (const scale of [Number.POSITIVE_INFINITY, Number.NaN, 1.5]) {
       expect(() =>
         snapshotViewServerQuery({ routeBy: { amount: BigDecimal.make(123n, scale) } }),
@@ -63,6 +135,7 @@ describe("query input snapshots", () => {
   it("rejects hostile record and array ownership shapes without invoking accessors", () => {
     let reads = 0;
     let arrayReads = 0;
+    let extraArrayReads = 0;
     const accessor: Record<string, unknown> = {};
     Object.defineProperty(accessor, "value", {
       enumerable: true,
@@ -90,6 +163,14 @@ describe("query input snapshots", () => {
     Object.defineProperty(hiddenArrayValue, "0", { enumerable: false, value: "hidden" });
     const extended: Array<unknown> = [];
     Reflect.set(extended, "extra", true);
+    const extraArrayAccessor: Array<unknown> = [];
+    Object.defineProperty(extraArrayAccessor, "extra", {
+      enumerable: true,
+      get: () => {
+        extraArrayReads += 1;
+        return true;
+      },
+    });
     const symbolicArray: Array<unknown> = [];
     Object.defineProperty(symbolicArray, Symbol("x"), { enumerable: true, value: true });
     const proxiedArray = new Proxy(["plain"], {
@@ -121,8 +202,11 @@ describe("query input snapshots", () => {
     expect(() => snapshotViewServerQuery({ extension: hiddenArrayValue })).toThrow(
       "Query input arrays must be dense data arrays.",
     );
-    expect(() => snapshotViewServerQuery({ extension: extended })).toThrow(
-      "Query input arrays must not contain extra properties.",
+    const extendedSnapshot = snapshotViewServerQuery({ extension: extended });
+    expect(Reflect.get(extendedSnapshot.extension, "extra")).toBe(true);
+    expect(Object.isFrozen(extendedSnapshot.extension)).toBe(true);
+    expect(() => snapshotViewServerQuery({ extension: extraArrayAccessor })).toThrow(
+      "Query input arrays must contain enumerable data properties.",
     );
     expect(() => snapshotViewServerQuery({ extension: new CustomArray() })).toThrow(
       "Query input arrays must be plain arrays.",
@@ -135,5 +219,6 @@ describe("query input snapshots", () => {
     });
     expect(reads).toBe(0);
     expect(arrayReads).toBe(0);
+    expect(extraArrayReads).toBe(0);
   });
 });

@@ -2,9 +2,10 @@ import {
   collectCanonicalFilterGraphLeaves,
   compareCanonicalFilterGraphs,
   complementCanonicalFilterType,
-  isWireSafeBigDecimal,
+  wireSafeBigDecimalSemanticKey,
 } from "@effect-view-server/effect-utils";
-import { format, isBigDecimal, normalize } from "effect/BigDecimal";
+import { Result } from "effect";
+import { isBigDecimal } from "effect/BigDecimal";
 import {
   denseArrayValues as structuralDenseArrayValues,
   plainRecordSnapshot as structuralPlainRecordSnapshot,
@@ -49,6 +50,13 @@ type CanonicalNegation = {
 };
 
 type CanonicalExpression = CanonicalCondition | CanonicalGroup | CanonicalNegation;
+
+export type CanonicalWhereFieldContract = {
+  readonly materialize: (value: unknown) => unknown;
+  readonly supportsText: boolean;
+};
+
+export type CanonicalWhereFieldContracts = ReadonlyMap<string, CanonicalWhereFieldContract>;
 
 type DeferredExpressionSequence =
   | {
@@ -159,6 +167,40 @@ const textOptions = (
   };
 };
 
+const optionSyntax = (
+  values: ReadonlyMap<string, unknown>,
+  key: "caseSensitive" | "accentSensitive",
+): ReadonlyArray<unknown> => (values.has(key) ? ["present", values.get(key)] : ["absent"]);
+
+const preserveValidationSensitiveSyntax = (
+  tokens: Set<string>,
+  values: ReadonlyMap<string, unknown>,
+  field: string,
+  type: CanonicalConditionType,
+  reason: "emptyIn" | "nonStringTextOptions",
+  fieldContracts: CanonicalWhereFieldContracts | undefined,
+): void => {
+  const fieldContract = fieldContracts?.get(field);
+  const hasTextOptions = values.has("caseSensitive") || values.has("accentSensitive");
+  const syntaxIsValidNoOp =
+    fieldContract !== undefined &&
+    (reason === "emptyIn"
+      ? !hasTextOptions || fieldContract.supportsText
+      : fieldContract.supportsText);
+  if (syntaxIsValidNoOp) {
+    return;
+  }
+  tokens.add(
+    JSON.stringify([
+      reason,
+      field,
+      type,
+      optionSyntax(values, "caseSensitive"),
+      optionSyntax(values, "accentSensitive"),
+    ]),
+  );
+};
+
 const semanticScalarKey = (
   value: unknown,
   caseSensitive: boolean,
@@ -179,17 +221,63 @@ const semanticScalarKey = (
   if (typeof value === "bigint") {
     return JSON.stringify(["bigint", value.toString()]);
   }
-  if (isBigDecimal(value) && isWireSafeBigDecimal(value)) {
-    return JSON.stringify(["bigDecimal", format(normalize(value))]);
+  if (isBigDecimal(value)) {
+    const semanticKey = wireSafeBigDecimalSemanticKey(value);
+    if (semanticKey !== undefined) {
+      return JSON.stringify(["bigDecimal", semanticKey]);
+    }
   }
   return failInvalidWhere();
+};
+
+const exactScalarKey = (value: unknown): string => {
+  if (value === null) {
+    return JSON.stringify(["null"]);
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(["string", value]);
+  }
+  if (typeof value === "boolean") {
+    return JSON.stringify(["boolean", value]);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return JSON.stringify(["number", Object.is(value, -0) ? "-0" : String(value)]);
+  }
+  if (typeof value === "bigint") {
+    return JSON.stringify(["bigint", value.toString()]);
+  }
+  if (isBigDecimal(value) && wireSafeBigDecimalSemanticKey(value) !== undefined) {
+    return JSON.stringify(["bigDecimal", value.value.toString(), String(value.scale)]);
+  }
+  return failInvalidWhere();
+};
+
+const materializeEqualityOperand = (
+  value: unknown,
+  field: string,
+  type: CanonicalConditionType,
+  validationSensitiveSyntax: Set<string>,
+  fieldContracts: CanonicalWhereFieldContracts | undefined,
+): unknown => {
+  const fieldContract = fieldContracts?.get(field);
+  if (fieldContract === undefined) {
+    return value;
+  }
+  const materialized = Result.try(() => fieldContract.materialize(value));
+  if (Result.isSuccess(materialized)) {
+    return materialized.success;
+  }
+  validationSensitiveSyntax.add(
+    JSON.stringify(["invalidFieldOperand", field, type, exactScalarKey(value)]),
+  );
+  return value;
 };
 
 const numericScalarKey = (value: unknown): string => {
   if (
     (typeof value !== "number" || !Number.isFinite(value)) &&
     typeof value !== "bigint" &&
-    !(isBigDecimal(value) && isWireSafeBigDecimal(value))
+    !(isBigDecimal(value) && wireSafeBigDecimalSemanticKey(value) !== undefined)
   ) {
     return failInvalidWhere();
   }
@@ -203,7 +291,7 @@ const numericKind = (value: unknown): "number" | "bigint" | "bigDecimal" => {
   if (typeof value === "bigint") {
     return "bigint";
   }
-  if (isBigDecimal(value) && isWireSafeBigDecimal(value)) {
+  if (isBigDecimal(value) && wireSafeBigDecimalSemanticKey(value) !== undefined) {
     return "bigDecimal";
   }
   return failInvalidWhere();
@@ -247,6 +335,8 @@ const conditionType = (value: unknown): CanonicalConditionType => {
 
 const canonicalCondition = (
   values: ReadonlyMap<string, unknown>,
+  validationSensitiveSyntax: Set<string>,
+  fieldContracts: CanonicalWhereFieldContracts | undefined,
 ): CanonicalCondition | undefined => {
   const field = requiredValue(values, "field");
   const type = conditionType(requiredValue(values, "type"));
@@ -279,11 +369,38 @@ const canonicalCondition = (
       const unique = new Set<string>();
       let hasString = false;
       for (const candidate of candidates) {
-        hasString ||= typeof candidate === "string";
-        unique.add(semanticScalarKey(candidate, options.caseSensitive, options.accentSensitive));
+        const materializedCandidate = materializeEqualityOperand(
+          candidate,
+          field,
+          type,
+          validationSensitiveSyntax,
+          fieldContracts,
+        );
+        hasString ||= typeof materializedCandidate === "string";
+        unique.add(
+          semanticScalarKey(materializedCandidate, options.caseSensitive, options.accentSensitive),
+        );
       }
       if (unique.size === 0) {
+        preserveValidationSensitiveSyntax(
+          validationSensitiveSyntax,
+          values,
+          field,
+          type,
+          "emptyIn",
+          fieldContracts,
+        );
         return undefined;
+      }
+      if (!hasString && (values.has("caseSensitive") || values.has("accentSensitive"))) {
+        preserveValidationSensitiveSyntax(
+          validationSensitiveSyntax,
+          values,
+          field,
+          type,
+          "nonStringTextOptions",
+          fieldContracts,
+        );
       }
       return makeCondition({
         field,
@@ -297,17 +414,30 @@ const canonicalCondition = (
     if (textSearch && typeof filter !== "string") {
       return failInvalidWhere();
     }
-    const hasString = typeof filter === "string";
+    const materializedFilter = textSearch
+      ? filter
+      : materializeEqualityOperand(filter, field, type, validationSensitiveSyntax, fieldContracts);
+    const hasString = typeof materializedFilter === "string";
+    if (!hasString && (values.has("caseSensitive") || values.has("accentSensitive"))) {
+      preserveValidationSensitiveSyntax(
+        validationSensitiveSyntax,
+        values,
+        field,
+        type,
+        "nonStringTextOptions",
+        fieldContracts,
+      );
+    }
     const normalizedText =
       hasString && textSearch
-        ? normalizeText(filter, options.caseSensitive, options.accentSensitive)
+        ? normalizeText(materializedFilter, options.caseSensitive, options.accentSensitive)
         : undefined;
     if (normalizedText === "") {
       return failInvalidWhere();
     }
     const filterKey =
       normalizedText === undefined
-        ? semanticScalarKey(filter, options.caseSensitive, options.accentSensitive)
+        ? semanticScalarKey(materializedFilter, options.caseSensitive, options.accentSensitive)
         : JSON.stringify(["string", normalizedText]);
     return makeCondition({
       field,
@@ -578,6 +708,8 @@ const normalizeExpression = (
   active: WeakSet<object>,
   identities: ExpressionIdentityModule,
   materialization: FilterMaterializationModule,
+  validationSensitiveSyntax: Set<string>,
+  fieldContracts: CanonicalWhereFieldContracts | undefined,
 ): NormalizedExpression => {
   const frames: Array<NormalizeFrame> = [{ _tag: "enter", value: input }];
   const results: Array<NormalizedExpression> = [];
@@ -621,7 +753,7 @@ const normalizeExpression = (
       frames.push({ _tag: "enter", value: requiredValue(values, "condition") });
       continue;
     }
-    const condition = canonicalCondition(values);
+    const condition = canonicalCondition(values, validationSensitiveSyntax, fieldContracts);
     if (condition !== undefined) {
       identities.identityFor(condition);
     }
@@ -680,19 +812,41 @@ const serializeExpression = (expression: CanonicalExpression): string => {
   return JSON.stringify(["expressionGraph", identities.get(expression)!, definitions]);
 };
 
-export const canonicalWhereKey = (where: unknown): string | undefined => {
+export const canonicalWhereKey = (
+  where: unknown,
+  fieldContracts?: CanonicalWhereFieldContracts,
+): string | undefined => {
   const roots = denseArrayValues(where);
   const memo = new WeakMap<object, NormalizedExpression>();
   const complete = new WeakSet<object>();
   const active = new WeakSet<object>();
   const identities = makeExpressionIdentityModule();
   const materialization = makeFilterMaterializationModule(identities);
+  const validationSensitiveSyntax = new Set<string>();
   const normalized: Array<NormalizedExpression> = [];
   for (const root of roots) {
-    normalized.push(normalizeExpression(root, memo, complete, active, identities, materialization));
+    normalized.push(
+      normalizeExpression(
+        root,
+        memo,
+        complete,
+        active,
+        identities,
+        materialization,
+        validationSensitiveSyntax,
+        fieldContracts,
+      ),
+    );
   }
   const expression = materialization.materialize(
     normalizeGroup("AND", normalized, materialization),
   );
-  return expression === undefined ? undefined : serializeExpression(expression);
+  const semanticKey = expression === undefined ? undefined : serializeExpression(expression);
+  return validationSensitiveSyntax.size === 0
+    ? semanticKey
+    : JSON.stringify([
+        "whereWithValidationSensitiveSyntax",
+        semanticKey ?? null,
+        [...validationSensitiveSyntax].toSorted(),
+      ]);
 };

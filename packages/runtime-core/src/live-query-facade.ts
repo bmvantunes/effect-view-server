@@ -15,7 +15,6 @@ import type {
 } from "@effect-view-server/config";
 import { Effect } from "effect";
 import type {
-  ViewServerRuntimeCoreEngineQueryInput,
   ViewServerRuntimeCoreInternalLiveClient,
   ViewServerRuntimeCoreQueryPartition,
 } from "./live-client-contract";
@@ -53,42 +52,40 @@ export const makeRuntimeCoreLiveQueryFacade = <Topics extends DecodableTopicDefi
 ): RuntimeCoreLiveQueryFacade<Topics> => {
   function subscribeInternal<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends
+      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): Effect.Effect<
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
   >;
-  function subscribeInternal<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
+  function subscribeInternal(
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
   ): RuntimeSubscription {
     return substrate.subscribeQuery(topic, query);
   }
 
   function subscribeObservedInternal<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends
+      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
     terminalObserver: ColumnLiveViewTerminalObserver,
     partition?: ViewServerRuntimeCoreQueryPartition,
   ): Effect.Effect<
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
   >;
-  function subscribeObservedInternal<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ViewServerRuntimeCoreEngineQueryInput<Topics, Topic, Query>,
+  function subscribeObservedInternal(
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
     terminalObserver: ColumnLiveViewTerminalObserver,
     partition?: ViewServerRuntimeCoreQueryPartition,
   ): RuntimeSubscription {
@@ -97,25 +94,21 @@ export const makeRuntimeCoreLiveQueryFacade = <Topics extends DecodableTopicDefi
 
   function subscribe<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+    const Query extends
+      | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+      | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): Effect.Effect<
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRuntimeError | ViewServerTransportError
   >;
-  function subscribe<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-  ): Effect.Effect<
-    ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-    ViewServerRuntimeError | ViewServerTransportError
-  > {
-    const acquisition = subscribeInternal<Topic, Query>(topic, query);
+  function subscribe(
+    topic: Extract<keyof Topics, string>,
+    query: Readonly<Record<string, unknown>>,
+  ): RuntimeSubscription {
+    const acquisition = substrate.subscribeQuery(topic, query);
     return substrate.requirePublicReadAllowed(topic).pipe(Effect.flatMap(() => acquisition));
   }
 

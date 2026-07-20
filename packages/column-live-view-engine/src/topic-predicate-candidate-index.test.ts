@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { fromStringUnsafe } from "effect/BigDecimal";
+import { fromStringUnsafe, make as makeBigDecimal } from "effect/BigDecimal";
 import { InvalidRowError } from "./index";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
 import type { TopicRawPredicateFilterPlan } from "./raw-predicate-plan";
@@ -464,6 +464,34 @@ describe("Topic predicate candidate index", () => {
         { allowScalarIndexBuild: false, exactRangeCandidates: true },
       ),
     ).toBeUndefined();
+  });
+
+  it("matches BigDecimal slot equality without aligning extreme scales", () => {
+    const metadata = rawQueryCompilerMetadata(Position);
+    const tiny = makeBigDecimal(1n, Number.MAX_SAFE_INTEGER);
+    const huge = makeBigDecimal(1n, Number.MIN_SAFE_INTEGER);
+    const columns = makeColumns(metadata, [["price", [tiny, huge, makeBigDecimal(10n, 1)]]]);
+    const extremeMatcher = rawPredicateSlotFilterMatcher(
+      [{ field: "price", operator: "eq", value: huge }],
+      columns,
+      true,
+    );
+    const normalizedMatcher = rawPredicateSlotFilterMatcher(
+      [{ field: "price", operator: "eq", value: makeBigDecimal(1n, 0) }],
+      columns,
+      true,
+    );
+
+    expect([extremeMatcher(0), extremeMatcher(1), extremeMatcher(2)]).toStrictEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect([normalizedMatcher(0), normalizedMatcher(1), normalizedMatcher(2)]).toStrictEqual([
+      false,
+      false,
+      true,
+    ]);
   });
 
   it.effect("indexes ordered normalized text equality across row mutations", () =>

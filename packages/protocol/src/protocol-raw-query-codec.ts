@@ -22,7 +22,9 @@ import {
   hasTopic,
   invalidQuery,
   invalidTopic,
-  shallowWhereQueryInput,
+  ownProtocolQueryInput,
+  requireRouteByRecord,
+  shallowQueryInput,
   strictParseOptions,
   validateSourceRoute,
   validateWindow,
@@ -69,15 +71,21 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
   if (!hasTopic(config, topic)) {
     return yield* Effect.fail(invalidTopic(topic));
   }
-  const shallowQuery = yield* shallowWhereQueryInput(topic, query);
+  const ownedQuery = yield* ownProtocolQueryInput(topic, query);
+  const shallowQuery = yield* shallowQueryInput(topic, ownedQuery);
+  const routeByInput = shallowQuery.hasRouteBy
+    ? yield* requireRouteByRecord(topic, shallowQuery.routeBy)
+    : undefined;
   const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
     shallowQuery.input,
     strictParseOptions,
   ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
-  const decoded =
+  const decodedWhere =
     shallowQuery.where === undefined
       ? decodedShell
       : { ...decodedShell, where: shallowQuery.where };
+  const decoded =
+    routeByInput === undefined ? decodedWhere : { ...decodedWhere, routeBy: routeByInput };
   if (decoded.select.length === 0) {
     return yield* Effect.fail(invalidQuery(topic, "Query select must include at least one field"));
   }
@@ -100,7 +108,8 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
     }
   }
   const where = yield* encodeWhere(config, topic, decoded.where);
-  const routeBy = yield* encodeRouteBy(config, topic, decoded.routeBy);
+  const routeBy =
+    routeByInput === undefined ? undefined : yield* encodeRouteBy(config, topic, routeByInput);
   const wireQuery: ViewServerWireRawQuery = {
     select: decoded.select,
     ...(where === undefined ? {} : { where }),
@@ -125,23 +134,27 @@ const decodeRawQuery = Effect.fn("ViewServerProtocol.query.decode")(function* (
   query: unknown,
 ) {
   const decodedTopic = yield* viewServerDecodeTopic(config, topic);
-  const shallowQuery = yield* shallowWhereQueryInput(topic, query);
+  const topicSchema = config.topics[decodedTopic]!.schema;
+  const ownedQuery = yield* ownProtocolQueryInput(topic, query);
+  const shallowQuery = yield* shallowQueryInput(topic, ownedQuery);
+  const routeBy = shallowQuery.hasRouteBy
+    ? yield* decodeRouteBy(topic, topicSchema, shallowQuery.routeBy)
+    : undefined;
   const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
     shallowQuery.input,
     strictParseOptions,
   ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
-  const decoded =
+  const decodedWhere =
     shallowQuery.where === undefined
       ? decodedShell
       : { ...decodedShell, where: shallowQuery.where };
+  const decoded = routeBy === undefined ? decodedWhere : { ...decodedWhere, routeBy };
   if (decoded.select.length === 0) {
     return yield* Effect.fail(invalidQuery(topic, "Query select must include at least one field"));
   }
   yield* validateWindow(topic, decoded.offset, decoded.limit);
-  const topicSchema = config.topics[decodedTopic]!.schema;
   if (isRawQueryForTopic(topicSchema, decoded)) {
     const where = yield* decodeWhere(topic, topicSchema, decoded.where);
-    const routeBy = yield* decodeRouteBy(topic, topicSchema, decoded.routeBy);
     const trusted = validatedRawQuery<object>({
       select: decoded.select,
       ...(where === undefined ? {} : { where }),

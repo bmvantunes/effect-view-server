@@ -1,4 +1,5 @@
 import type * as BigDecimal from "effect/BigDecimal";
+import type { ValidateExactArray } from "./query-exact";
 
 export type FilterableScalar = string | number | bigint | boolean | BigDecimal.BigDecimal | null;
 
@@ -48,29 +49,57 @@ type TraversableObject<Value> =
               : never;
 
 type StringKey<Value> = Value extends unknown ? Extract<keyof Value, string> : never;
+type WithoutReservedDot<Key> = Key extends string
+  ? Key extends `${string}.${string}`
+    ? never
+    : Key
+  : never;
+type FilterableObjectKey<Value> = WithoutReservedDot<StringKey<Value>>;
 type ValueAtKey<Value, Key extends string> = Value extends unknown
   ? Key extends keyof Value
     ? Value[Key]
     : undefined
   : never;
 
-type FilterableFieldPathForBranch<Value, Seen> =
+type IsExactly<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? (<Value>() => Value extends Right ? 1 : 2) extends <Value>() => Value extends Left ? 1 : 2
+      ? true
+      : false
+    : false;
+
+type SeenContains<Seen extends ReadonlyArray<unknown>, Candidate> = Seen extends readonly [
+  infer Head,
+  ...infer Tail,
+]
+  ? IsExactly<Head, Candidate> extends true
+    ? true
+    : SeenContains<Tail, Candidate>
+  : false;
+
+type NestedFilterableFieldPath<Key extends string, Nested, Seen extends ReadonlyArray<unknown>> = [
+  Nested,
+] extends [never]
+  ? never
+  : SeenContains<Seen, Nested> extends true
+    ? never
+    : `${Key}.${FilterableFieldPathForBranch<Nested, readonly [...Seen, Nested]>}`;
+
+type FilterableFieldPathForBranch<Value, Seen extends ReadonlyArray<unknown>> =
   Value extends TraversableObject<Value>
     ? {
-        readonly [Key in StringKey<Value>]:
+        readonly [Key in FilterableObjectKey<Value>]:
           | (ScalarBranches<ValueAtKey<Value, Key>> extends never ? never : Key)
-          | (TraversableObject<Defined<ValueAtKey<Value, Key>>> extends infer Nested
-              ? [Nested] extends [never]
-                ? never
-                : Extract<Nested, Seen> extends never
-                  ? `${Key}.${FilterableFieldPathForBranch<Nested, Seen | Value>}`
-                  : never
-              : never);
-      }[StringKey<Value>]
+          | NestedFilterableFieldPath<
+              Key,
+              TraversableObject<Defined<ValueAtKey<Value, Key>>>,
+              readonly [...Seen, Value]
+            >;
+      }[FilterableObjectKey<Value>]
     : never;
 
 export type FilterableFieldPath<Row> = Extract<
-  FilterableFieldPathForBranch<TraversableObject<Row>, Row>,
+  FilterableFieldPathForBranch<TraversableObject<Row>, readonly []>,
   string
 >;
 
@@ -215,6 +244,12 @@ export type NegationExpression<Row> = {
 
 type FilterExpressionMember<Row> = FieldCondition<Row> | FilterGroup<Row> | NegationExpression<Row>;
 
+declare const filterExpressionType: unique symbol;
+
+type FilterExpressionTypeMarker = {
+  readonly [filterExpressionType]?: true;
+};
+
 type KeysOfUnion<Value> = Value extends unknown ? keyof Value : never;
 
 type StrictUnionMember<Member, AllMembers> = Member extends unknown
@@ -226,7 +261,8 @@ type StrictUnionMember<Member, AllMembers> = Member extends unknown
 export type FilterExpression<Row> = StrictUnionMember<
   FilterExpressionMember<Row>,
   FilterExpressionMember<Row>
->;
+> &
+  FilterExpressionTypeMarker;
 
 export type Where<Row> = ReadonlyArray<FilterExpression<Row>>;
 
@@ -234,55 +270,262 @@ type RejectExpressionExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
 
+type FilterExpressionKey =
+  | keyof TextMatchingOptions
+  | keyof InRangeCondition<string, number>
+  | keyof FilterGroup<never>
+  | keyof NegationExpression<never>
+  | typeof filterExpressionType;
+
+type StrictFilterExpressionShape<Shape> = Shape extends unknown
+  ? Shape & {
+      readonly [Key in Exclude<FilterExpressionKey, keyof Shape>]?: never;
+    }
+  : never;
+
+type FilterGroupCandidateShape = StrictFilterExpressionShape<{
+  readonly type: "AND" | "OR";
+  readonly conditions: ReadonlyArray<unknown>;
+}>;
+
+type NegationCandidateShape = StrictFilterExpressionShape<{
+  readonly type: "NOT";
+  readonly condition: unknown;
+}>;
+
+type ExactFieldConditionFilter<Candidate> = Candidate extends {
+  readonly type: "in";
+  readonly filter: infer Filter;
+}
+  ? [Filter] extends [ReadonlyArray<unknown>]
+    ? ValidateExactArray<Filter> extends never
+      ? { readonly filter: never }
+      : { readonly filter: Filter }
+    : { readonly filter: never }
+  : unknown;
+
 type ExactFieldCondition<Row, Candidate> = Candidate extends {
   readonly field: infer Field;
   readonly type: infer Type;
 }
   ? Field extends FilterableFieldPath<Row>
-    ? Extract<
-        FilterExpression<Row>,
-        { readonly field: Field; readonly type: Type }
+    ? StrictFilterExpressionShape<
+        Extract<FieldConditionForPath<Row, Field>, { readonly field: Field; readonly type: Type }>
       > extends infer Shape
       ? [Shape] extends [never]
         ? never
-        : Candidate & Shape & RejectExpressionExtraKeys<Candidate, Shape>
+        : Candidate &
+            Shape &
+            RejectExpressionExtraKeys<Candidate, Shape> &
+            ExactFieldConditionFilter<Candidate>
       : never
     : never
   : never;
 
-type ExactFilterExpression<Row, Candidate> = Candidate extends {
-  readonly type: "AND" | "OR";
-  readonly conditions: infer Conditions;
-}
-  ? Conditions extends ReadonlyArray<unknown>
+type ExactShallowFilterExpression<Row, Candidate> = Candidate extends FilterGroupCandidateShape
+  ? Candidate["conditions"] extends infer Conditions extends ReadonlyArray<unknown>
     ? Candidate &
-        Extract<FilterExpression<Row>, { readonly type: "AND" | "OR" }> &
-        RejectExpressionExtraKeys<
-          Candidate,
-          Extract<FilterExpression<Row>, { readonly type: "AND" | "OR" }>
-        > & {
-          readonly conditions: {
-            readonly [Index in keyof Conditions]: ExactFilterExpression<Row, Conditions[Index]>;
-          };
+        RejectExpressionExtraKeys<Candidate, FilterGroupCandidateShape> & {
+          readonly conditions: Conditions & ValidateExactArray<Conditions>;
         }
     : never
-  : Candidate extends { readonly type: "NOT"; readonly condition: infer Condition }
-    ? Candidate &
-        Extract<FilterExpression<Row>, { readonly type: "NOT" }> &
-        RejectExpressionExtraKeys<
-          Candidate,
-          Extract<FilterExpression<Row>, { readonly type: "NOT" }>
-        > & {
-          readonly condition: ExactFilterExpression<Row, Condition>;
-        }
+  : Candidate extends NegationCandidateShape
+    ? Candidate & RejectExpressionExtraKeys<Candidate, NegationCandidateShape>
     : ExactFieldCondition<Row, Candidate>;
 
-export type ExactWhere<Row, Query> = Query extends { readonly where: infer QueryWhere }
-  ? QueryWhere extends ReadonlyArray<unknown>
-    ? {
-        readonly where: QueryWhere & {
-          readonly [Index in keyof QueryWhere]: ExactFilterExpression<Row, QueryWhere[Index]>;
-        };
-      }
-    : { readonly where: never }
-  : unknown;
+type FilterExpressionChildren<Candidate> = Candidate extends FilterGroupCandidateShape
+  ? Candidate["conditions"] extends ReadonlyArray<unknown>
+    ? Candidate["conditions"]
+    : readonly []
+  : Candidate extends NegationCandidateShape
+    ? readonly [Candidate["condition"]]
+    : readonly [];
+
+type InvalidShallowFilterExpressionMember<Row, Candidate> = Candidate extends unknown
+  ? [Candidate] extends [ExactShallowFilterExpression<Row, Candidate>]
+    ? never
+    : Candidate
+  : never;
+
+type ValidateShallowFilterExpression<Row, Candidate> = [Candidate] extends [never]
+  ? unknown
+  : [InvalidShallowFilterExpressionMember<Row, Candidate>] extends [never]
+    ? unknown
+    : never;
+
+type IsUnion<Value, All = Value> = Value extends unknown
+  ? [All] extends [Value]
+    ? false
+    : true
+  : never;
+
+type CanonicalFilterExpressionExtraMember<Candidate> = Candidate extends unknown
+  ? Exclude<keyof Candidate, FilterExpressionKey> extends never
+    ? never
+    : Candidate
+  : never;
+
+type IsCanonicalFilterExpression<Row, Candidate> = [
+  CanonicalFilterExpressionExtraMember<Candidate>,
+] extends [never]
+  ? typeof filterExpressionType extends keyof Candidate
+    ? [Candidate] extends [FilterExpression<Row>]
+      ? true
+      : false
+    : false
+  : false;
+
+type InvalidFilterExpressionChildrenMember<
+  Row,
+  Children,
+  Rest extends ReadonlyArray<unknown>,
+  Seen extends ReadonlyArray<unknown>,
+> =
+  Children extends ReadonlyArray<unknown>
+    ? Children extends readonly [unknown, ...ReadonlyArray<unknown>]
+      ? ValidateFilterExpressionWorklist<Row, readonly [...Rest, ...Children], Seen> extends never
+        ? Children
+        : never
+      : number extends Children["length"]
+        ? ValidateWidenedFilterExpression<Row, Children[number], Seen> extends never
+          ? Children
+          : ValidateFilterExpressionWorklist<Row, Rest, Seen> extends never
+            ? Children
+            : never
+        : ValidateWidenedFilterExpression<
+              Row,
+              Exclude<Children[number], undefined>,
+              Seen
+            > extends never
+          ? Children
+          : ValidateFilterExpressionWorklist<Row, Rest, Seen> extends never
+            ? Children
+            : never
+    : Children;
+
+type ValidateFilterExpressionChildren<
+  Row,
+  Children extends ReadonlyArray<unknown>,
+  Rest extends ReadonlyArray<unknown>,
+  Seen extends ReadonlyArray<unknown>,
+> = [InvalidFilterExpressionChildrenMember<Row, Children, Rest, Seen>] extends [never]
+  ? unknown
+  : never;
+
+type ValidateWidenedFilterExpressionMember<Row, Candidate, Seen extends ReadonlyArray<unknown>> =
+  SeenContains<Seen, Candidate> extends true
+    ? unknown
+    : ValidateShallowFilterExpression<Row, Candidate> extends never
+      ? never
+      : FilterExpressionChildren<Candidate> extends infer Children extends ReadonlyArray<unknown>
+        ? ValidateFilterExpressionChildren<
+            Row,
+            Children,
+            readonly [],
+            readonly [...Seen, Candidate]
+          >
+        : never;
+
+type InvalidWidenedFilterExpressionMember<
+  Row,
+  Candidate,
+  Seen extends ReadonlyArray<unknown>,
+> = Candidate extends unknown
+  ? ValidateWidenedFilterExpressionMember<Row, Candidate, Seen> extends never
+    ? Candidate
+    : never
+  : never;
+
+type ValidateWidenedFilterExpression<
+  Row,
+  Candidate,
+  Seen extends ReadonlyArray<unknown> = readonly [],
+> = [Candidate] extends [never]
+  ? unknown
+  : IsCanonicalFilterExpression<Row, Candidate> extends true
+    ? unknown
+    : [InvalidWidenedFilterExpressionMember<Row, Candidate, Seen>] extends [never]
+      ? unknown
+      : never;
+
+type ValidateFilterExpressionWorklist<
+  Row,
+  Pending extends ReadonlyArray<unknown>,
+  Seen extends ReadonlyArray<unknown> = readonly [],
+> = Pending extends readonly [infer Current, ...infer Rest]
+  ? SeenContains<Seen, Current> extends true
+    ? ValidateFilterExpressionWorklist<Row, Rest, Seen>
+    : IsCanonicalFilterExpression<Row, Current> extends true
+      ? ValidateFilterExpressionWorklist<Row, Rest, Seen>
+      : IsUnion<Current> extends true
+        ? ValidateWidenedFilterExpression<Row, Current, Seen> extends never
+          ? never
+          : ValidateFilterExpressionWorklist<Row, Rest, Seen>
+        : ValidateShallowFilterExpression<Row, Current> extends never
+          ? never
+          : FilterExpressionChildren<Current> extends infer Children extends ReadonlyArray<unknown>
+            ? IsUnion<Children> extends false
+              ? Children extends readonly []
+                ? ValidateFilterExpressionWorklist<Row, Rest, Seen>
+                : Children extends readonly [unknown, ...ReadonlyArray<unknown>]
+                  ? ValidateFilterExpressionWorklist<Row, readonly [...Rest, ...Children], Seen>
+                  : ValidateFilterExpressionChildren<Row, Children, Rest, Seen>
+              : ValidateWidenedFilterExpression<Row, Current, Seen> extends never
+                ? never
+                : ValidateFilterExpressionWorklist<Row, Rest, Seen>
+            : never
+  : number extends Pending["length"]
+    ? ValidateWidenedFilterExpression<Row, Pending[number], Seen>
+    : ValidateWidenedFilterExpression<Row, Exclude<Pending[number], undefined>, Seen>;
+
+type InvalidWhereArrayMember<Row, QueryWhere> =
+  QueryWhere extends ReadonlyArray<unknown>
+    ? ValidateFilterExpressionWorklist<Row, QueryWhere> extends never
+      ? QueryWhere
+      : never
+    : QueryWhere;
+
+type ValidateWhereArray<Row, QueryWhere extends ReadonlyArray<unknown>> = [
+  InvalidWhereArrayMember<Row, QueryWhere>,
+] extends [never]
+  ? ValidateExactArray<QueryWhere>
+  : never;
+
+type CanonicalWhereArrayMember<Row, Candidate> =
+  Candidate extends ReadonlyArray<unknown>
+    ? number extends Candidate["length"]
+      ? IsCanonicalFilterExpression<Row, Candidate[number]> extends true
+        ? ValidateExactArray<Candidate> extends never
+          ? false
+          : true
+        : false
+      : false
+    : false;
+
+type IsCanonicalWhereArray<Row, Candidate> = [CanonicalWhereArrayMember<Row, Candidate>] extends [
+  true,
+]
+  ? true
+  : false;
+
+type InvalidWhereQueryMember<Row, Query> = Query extends unknown
+  ? Query extends { readonly where: infer QueryWhere }
+    ? [QueryWhere] extends [ReadonlyArray<unknown>]
+      ? IsCanonicalWhereArray<Row, QueryWhere> extends true
+        ? never
+        : ValidateWhereArray<Row, QueryWhere> extends never
+          ? Query
+          : never
+      : Query
+    : never
+  : never;
+
+type ExactWhereMembers<Query> = Query extends unknown
+  ? Query extends { readonly where: infer QueryWhere }
+    ? { readonly where: QueryWhere }
+    : unknown
+  : never;
+
+export type ExactWhere<Row, Query> = [InvalidWhereQueryMember<Row, Query>] extends [never]
+  ? ExactWhereMembers<Query>
+  : never;

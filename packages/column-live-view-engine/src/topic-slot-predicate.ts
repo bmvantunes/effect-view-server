@@ -1,4 +1,5 @@
 import type { TopicRawPredicateFilterPlan } from "./raw-predicate-plan";
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { normalizeFilterText } from "./filter-expression";
 import { valuesEqual } from "./row-values";
 import {
@@ -11,7 +12,7 @@ import {
   columnValue,
   type TopicColumnValues,
 } from "./topic-column-vector";
-import { equals as bigDecimalEquals, isBigDecimal } from "effect/BigDecimal";
+import { isBigDecimal } from "effect/BigDecimal";
 
 export type SlotFilterMatcher = (slot: number) => boolean;
 type RangePredicateFilter = TopicRawPredicateFilterPlan & {
@@ -77,7 +78,7 @@ const slotFilterMatcher = (
         const expected = filter.value;
         return (slot) => {
           const value = column.bigDecimalAt(slot);
-          return value !== undefined && bigDecimalEquals(value, expected);
+          return value !== undefined && compareTrustedWireSafeBigDecimal(value, expected) === 0;
         };
       }
       return (slot) => valuesEqual(columnValue(column, slot), filter.value);

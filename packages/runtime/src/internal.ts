@@ -208,7 +208,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     const preparedSources: Array<
       ViewServerRuntimePreparedSource<Topics, ViewServerRuntimeSourceError>
     > = [];
-    let runtimeLiveClient = runtimeCore.liveClient;
+    let runtimeLiveClient: ViewServerRuntimeLiveClient<Topics> = runtimeCore.liveClient;
     let runtimeProtocolQuerySubscriber = runtimeCore.protocolQuerySubscriber;
     let runtimeClient = runtimeCore.client;
     for (const sourceModule of sourceModules) {

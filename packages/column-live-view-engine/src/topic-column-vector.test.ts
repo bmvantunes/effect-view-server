@@ -68,7 +68,7 @@ describe("column-live-view-engine topic column vector", () => {
         value: { id: "second" },
       },
       price: {
-        key: "bigDecimal:12.5",
+        key: 'bigDecimal:["125","1"]',
         length: 1,
         value: decimal,
       },

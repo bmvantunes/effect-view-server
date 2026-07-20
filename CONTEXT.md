@@ -386,6 +386,7 @@ _Avoid_: Browser write, send, emit
 - **Filter Normalization** gives reordered or equivalently duplicated candidates in a **Membership Condition** one semantic query identity.
 - A **Range Condition** includes its lower bound and excludes its upper bound.
 - BigDecimal fields support the same equality, membership, comparison, and **Range Conditions** as other numeric fields without cross-kind coercion.
+- A BigDecimal query or route operand is wire-safe only when Effect's BigDecimal JSON codec round-trips it injectively; exponent/scale combinations that lose numeric identity are rejected before keying or transport.
 - An equal or reversed **Range Condition** fails query validation rather than representing an empty result.
 - An **AG Grid Adapter** preserves condition type names when AG Grid and **Field Condition** semantics coincide.
 - An **AG Grid Adapter** adds an explicit **Blank Condition** when AG Grid's configured equality behavior differs from a core **Equality Condition**.

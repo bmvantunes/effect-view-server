@@ -1,10 +1,14 @@
 import * as AtomReact from "@effect/atom-react";
-import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
+import {
+  ignoreLoggedTypedFailuresPreserveNonTypedFailures,
+  snapshotViewServerQuery,
+} from "@effect-view-server/effect-utils";
 import {
   applyEvent,
   initialClientState,
   liveQueryResultFromAsyncResult,
   stableQueryKey,
+  stableQueryKeyForRowSchema,
   type ViewServerLiveClient,
   type ViewServerLiveSubscription,
 } from "@effect-view-server/client";
@@ -16,10 +20,8 @@ import type {
   ExactLiveQueryInputForTopic,
   GrpcRuntimeClients,
   GroupedQuery,
-  GroupedResult,
   LiveQueryResult,
   LiveQueryRow,
-  PickRawFields,
   RawQuery,
   RuntimeRegions,
   TopicDefinitions,
@@ -31,7 +33,7 @@ import type {
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
 } from "@effect-view-server/config";
-import { Effect, Stream } from "effect";
+import { Effect, Result, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
@@ -65,22 +67,15 @@ const ignoreSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNonTyped
   "Ignoring React subscription close failure.",
 );
 
-export type UseLiveQueryHook<Topics extends TopicDefinitions> = {
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>;
-};
+export type UseLiveQueryHook<Topics extends TopicDefinitions> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
+>(
+  topic: Topic,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
 
 export const createViewServerReact = <
   const Topics extends TopicDefinitions,
@@ -174,20 +169,6 @@ export const createViewServerReact = <
 
   function useLiveQuery<
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>;
-  function useLiveQuery<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
-  ): LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>;
-  function useLiveQuery<
-    Topic extends Extract<keyof Topics, string>,
     const Query extends
       | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
       | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
@@ -196,10 +177,20 @@ export const createViewServerReact = <
     query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>> {
     const client = useClient();
-    type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
-    const queryKey = stableQueryKey(query);
-    return useSubscription<Row>(`${client.health.key}:query:${topic}:${queryKey}`, () =>
-      client.subscribe<Topic, Query>(topic, query),
+    const topicDefinition = config.topics[topic];
+    const queryIdentity = useMemo(() => {
+      // A query reference owns one hook snapshot; changing the query requires a new reference.
+      const capturedQuery = Result.try(() => snapshotViewServerQuery(query));
+      const ownedQuery = Result.isSuccess(capturedQuery) ? capturedQuery.success : query;
+      const key =
+        topicDefinition === undefined
+          ? stableQueryKey(ownedQuery)
+          : stableQueryKeyForRowSchema(ownedQuery, topicDefinition.schema);
+      return { key, query: ownedQuery };
+    }, [query, topicDefinition]);
+    return useSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>(
+      `${client.health.key}:query:${topic}:${queryIdentity.key}`,
+      () => client.subscribe<Topic, Query>(topic, queryIdentity.query),
     );
   }
 

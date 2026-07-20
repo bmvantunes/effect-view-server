@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import {
+  compileViewServerGroupedRowContract,
   decodeGroupedRow,
   decodeProjectedRow,
   encodeGroupedRow,
@@ -24,6 +25,8 @@ const groupedQuery = {
     rowCount: { aggFunc: "count" },
   },
 } as const;
+
+const groupedContract = compileViewServerGroupedRowContract(groupedQuery);
 
 describe("Protocol row reflection boundaries", () => {
   it.effect(
@@ -128,7 +131,7 @@ describe("Protocol row reflection boundaries", () => {
         value: "a",
       });
       const nonEnumerableError = yield* Effect.flip(
-        encodeGroupedRow(viewServer, "orders", groupedQuery, nonEnumerableRow),
+        encodeGroupedRow(viewServer, "orders", groupedContract, nonEnumerableRow),
       );
       expect(nonEnumerableError).toStrictEqual(
         invalidRow("Grouped row field for topic orders must be enumerable: id"),
@@ -142,7 +145,7 @@ describe("Protocol row reflection boundaries", () => {
         },
       });
       const accessorError = yield* Effect.flip(
-        encodeGroupedRow(viewServer, "orders", groupedQuery, accessorRow),
+        encodeGroupedRow(viewServer, "orders", groupedContract, accessorRow),
       );
       expect(accessorError).toStrictEqual(
         invalidRow("Grouped row field for topic orders must be a data property: rowCount"),
@@ -154,7 +157,7 @@ describe("Protocol row reflection boundaries", () => {
         value: "hidden",
       });
       const symbolError = yield* Effect.flip(
-        encodeGroupedRow(viewServer, "orders", groupedQuery, symbolRow),
+        encodeGroupedRow(viewServer, "orders", groupedContract, symbolRow),
       );
       expect(symbolError).toStrictEqual(
         invalidRow("Unexpected grouped row symbol field for topic orders: Symbol(secret)"),
@@ -183,7 +186,7 @@ describe("Protocol row reflection boundaries", () => {
         },
       };
       const groupedError = yield* Effect.flip(
-        decodeGroupedRow(viewServer, "orders", groupedQuery, accessorWireRow),
+        decodeGroupedRow(viewServer, "orders", groupedContract, accessorWireRow),
       );
       expect(groupedError).toStrictEqual(
         invalidRow(
@@ -214,7 +217,7 @@ describe("Protocol row reflection boundaries", () => {
         },
       );
       const reflectionError = yield* Effect.flip(
-        decodeGroupedRow(viewServer, "orders", groupedQuery, hostileWireRow),
+        decodeGroupedRow(viewServer, "orders", groupedContract, hostileWireRow),
       );
       expect(reflectionError).toStrictEqual(
         invalidRow("Invalid grouped row for topic orders: Could not inspect JSON value at $."),

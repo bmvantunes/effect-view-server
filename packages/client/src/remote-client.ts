@@ -26,12 +26,12 @@ import {
   viewServerQuerySnapshotErrorMessage,
 } from "@effect-view-server/effect-utils";
 import {
+  compileViewServerLiveEventCodec,
   ViewServerRpcs,
   viewServerDecodeHealth,
   viewServerDecodeHealthQuery,
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
-  viewServerDecodeTrustedLiveEvent,
   viewServerEncodeLiveQuery,
   type ViewServerRpcError,
   type ViewServerTrustedWireEvent,
@@ -281,9 +281,12 @@ export const makeViewServerClient: <
     return Effect.gen(function* () {
       type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
       const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, capturedQuery.success);
-      return yield* subscribeWire<Row, Topic>(topic, wireQuery, (event) =>
-        viewServerDecodeTrustedLiveEvent<Topics, Topic, Row>(config, topic, wireQuery, event),
+      const eventCodec = compileViewServerLiveEventCodec<Topics, Topic, Row>(
+        config,
+        topic,
+        wireQuery,
       );
+      return yield* subscribeWire<Row, Topic>(topic, wireQuery, eventCodec.decodeTrusted);
     });
   }
 

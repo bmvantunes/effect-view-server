@@ -3,6 +3,8 @@ import type {
   RuntimeFilterExpression,
   RuntimeFilterScalar,
 } from "./filter-expression";
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { isBigDecimal } from "effect/BigDecimal";
 import { normalizeFilterText } from "./filter-expression";
 import { compareFilterValue } from "./query-value";
 import { predicateFilterPlans, type TopicRawPredicatePlan } from "./raw-predicate-plan";
@@ -86,11 +88,26 @@ const fieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown =
   return value;
 };
 
+const trustedFieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown => {
+  let value: unknown = row;
+  for (const segment of segments) {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+      return undefined;
+    }
+    if (!Object.hasOwn(value, segment)) {
+      return undefined;
+    }
+    value = Reflect.get(value, segment);
+  }
+  return value;
+};
+
 const blank = (value: unknown): boolean => value === undefined || value === null || value === "";
 
 const compileCondition = <Row extends RowObject>(
   condition: RuntimeFilterCondition,
   metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
 ): ((row: Row) => boolean) => {
   const field = metadata.filterFields.get(condition.field);
   if (field === undefined) {
@@ -108,6 +125,9 @@ const compileCondition = <Row extends RowObject>(
   const equals = (value: unknown, operand: RuntimeFilterScalar): boolean => {
     if (typeof operand === "string") {
       return textValue(value) === operand;
+    }
+    if (isBigDecimal(operand)) {
+      return isBigDecimal(value) && compareTrustedWireSafeBigDecimal(value, operand) === 0;
     }
     return field.semantics.is(value) && field.semantics.equivalent(value, operand);
   };
@@ -178,12 +198,14 @@ const compileCondition = <Row extends RowObject>(
       }
     }
   };
-  return (row) => matchesValue(fieldPathValue(row, field.segments));
+  const readField = trustedRows ? trustedFieldPathValue : fieldPathValue;
+  return (row) => matchesValue(readField(row, field.segments));
 };
 
 const compileInstructions = <Row extends RowObject>(
   where: RuntimeFilterExpression,
   metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
 ): ReadonlyArray<PredicateInstruction<Row>> => {
   const instructions: Array<UnresolvedPredicateInstruction<Row>> = [];
   const whenTrue: PredicateLabel = { index: -1 };
@@ -206,7 +228,7 @@ const compileInstructions = <Row extends RowObject>(
     if (expression._tag === "condition") {
       instructions.push({
         _tag: "condition",
-        matches: compileCondition(expression, metadata),
+        matches: compileCondition(expression, metadata, trustedRows),
         whenFalse: task.whenFalse,
         whenTrue: task.whenTrue,
       });
@@ -286,6 +308,7 @@ const makeDagEvaluationScratch = (instructionCount: number): DagEvaluationScratc
 const compileDagMatcher = <Row extends RowObject>(
   where: RuntimeFilterExpression,
   metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
 ): ((row: Row) => boolean) => {
   const instructions: Array<DagPredicateInstruction<Row>> = [];
   const instructionByExpression = new WeakMap<object, number>();
@@ -310,7 +333,7 @@ const compileDagMatcher = <Row extends RowObject>(
 
     const instruction: DagPredicateInstruction<Row> =
       expression._tag === "condition"
-        ? { _tag: "condition", matches: compileCondition(expression, metadata) }
+        ? { _tag: "condition", matches: compileCondition(expression, metadata, trustedRows) }
         : expression._tag === "NOT"
           ? { _tag: "NOT", condition: instructionByExpression.get(expression.condition)! }
           : {
@@ -393,8 +416,9 @@ const compileDagMatcher = <Row extends RowObject>(
 const compileInstructionMatcher = <Row extends RowObject>(
   where: RuntimeFilterExpression,
   metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
 ): ((row: Row) => boolean) => {
-  const instructions = compileInstructions<Row>(where, metadata);
+  const instructions = compileInstructions<Row>(where, metadata, trustedRows);
   return (row) => {
     let instructionIndex = 0;
     while (true) {
@@ -436,6 +460,7 @@ const compilePlan = (
 export const compileRawPredicate = <Row extends RowObject>(
   metadata: RawQueryCompilerMetadata,
   where: RuntimeFilterExpression | undefined,
+  options: { readonly trustedRows?: boolean } = {},
 ): CompiledRawPredicate<Row> => {
   if (where === undefined) {
     return Object.freeze({
@@ -447,9 +472,10 @@ export const compileRawPredicate = <Row extends RowObject>(
       matches: () => true,
     });
   }
+  const trustedRows = options.trustedRows === true;
   const matches = expressionHasSharedNodes(where)
-    ? compileDagMatcher<Row>(where, metadata)
-    : compileInstructionMatcher<Row>(where, metadata);
+    ? compileDagMatcher<Row>(where, metadata, trustedRows)
+    : compileInstructionMatcher<Row>(where, metadata, trustedRows);
   return Object.freeze({
     plan: compilePlan(where, metadata),
     matches,

@@ -164,6 +164,7 @@ describe("in-memory type contracts", () => {
     expectTypeOf(kafkaSnapshot).not.toBeAny();
     expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
     expectTypeOf(inMemory.liveClient).not.toHaveProperty("subscribeRuntime");
+    expectTypeOf(leasedTestingInMemory.serverLiveClient).toHaveProperty("subscribeProtocolQuery");
     expectTypeOf(inMemoryWithGroupedAdmissionLimits.client).toEqualTypeOf<typeof inMemory.client>();
     expectTypeOf(invalidPatch).not.toBeAny();
     expectTypeOf(invalidTransportHealthOption).not.toBeAny();

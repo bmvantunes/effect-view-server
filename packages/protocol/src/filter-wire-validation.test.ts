@@ -161,6 +161,8 @@ describe("filter wire validation", () => {
         BigDecimal.make(1n, Number.NaN),
         BigDecimal.make(1n, Number.POSITIVE_INFINITY),
         BigDecimal.make(1n, 1.5),
+        BigDecimal.make(111n, Number.MIN_SAFE_INTEGER),
+        BigDecimal.make(111n, Number.MIN_SAFE_INTEGER + 1),
       ];
       const valid = BigDecimal.make(1n, 0);
 
@@ -316,11 +318,18 @@ describe("filter wire validation", () => {
         [extraPropertyArray, "Query where must be an array"],
         [[null], "Every filter expression must be an object"],
         [[cyclic], "Filter expressions must not contain cycles"],
+        [[{ type: "AND" }], "Filter group AND has invalid keys"],
+        [[{ type: "AND", condition: [] }], "Filter group AND has invalid keys"],
         [[{ type: "AND", conditions: [], extra: true }], "Filter group AND has invalid keys"],
         [[{ type: "OR", conditions: null }], "Filter group OR conditions must be an array"],
         [[{ type: "NOT", condition: {}, extra: true }], "Filter NOT has invalid keys"],
-        [[{ type: "NOT" }], "Every filter expression must be an object"],
+        [[{ type: "NOT" }], "Filter NOT has invalid keys"],
         [[{}], "Filter conditions require field and type"],
+        [[{ field: "id", type: "equals" }], "Filter condition id has invalid keys"],
+        [
+          [{ field: "count", type: "inRange", filter: 1 }],
+          "Filter condition count has invalid keys",
+        ],
         [
           [{ field: "missing", type: "equals", filter: "x" }],
           "Query references an unknown or non-filterable field: missing",
@@ -330,8 +339,8 @@ describe("filter wire validation", () => {
           "Unsupported filter condition type: unknown",
         ],
         [[{ field: "id", type: "blank", filter: "x" }], "Filter condition id has invalid keys"],
-        [[symbolicCondition], "Filter condition id has invalid keys"],
-        [[hiddenTextOption], "Filter condition id has invalid keys"],
+        [[symbolicCondition], "Every filter expression must be an object"],
+        [[hiddenTextOption], "Every filter expression must be an object"],
         [
           [{ field: "id", type: "equals", filter: "x", caseSensitive: "yes" }],
           invalidMessage("id", "caseSensitive must be a boolean"),
@@ -360,6 +369,160 @@ describe("filter wire validation", () => {
         expect(error.code).toBe("InvalidQuery");
         expect(error.message).toBe(message);
       }
+    }),
+  );
+
+  it.effect("turns hostile filter reflection into typed query errors", () =>
+    Effect.gen(function* () {
+      const revokedCondition = Proxy.revocable(
+        { field: "id", type: "equals", filter: "revoked" },
+        {},
+      );
+      revokedCondition.revoke();
+      const prototypeFailure = new Proxy(
+        { field: "id", type: "equals", filter: "prototype" },
+        {
+          getPrototypeOf: () => {
+            throw new Error("prototype reflection failed");
+          },
+        },
+      );
+      const keysFailure = new Proxy(
+        { field: "id", type: "equals", filter: "keys" },
+        {
+          ownKeys: () => {
+            throw new Error("key reflection failed");
+          },
+        },
+      );
+      const descriptorFailure = new Proxy(
+        { field: "id", type: "equals", filter: "descriptor" },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("descriptor reflection failed");
+          },
+        },
+      );
+
+      for (const condition of [
+        revokedCondition.proxy,
+        prototypeFailure,
+        keysFailure,
+        descriptorFailure,
+      ]) {
+        const decodeError = yield* Effect.flip(decodeHostileWhere([condition]));
+        const encodeError = yield* Effect.flip(encodeWhere(filterConfig, "values", [condition]));
+        const expected = {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          message: "Every filter expression must be an object",
+          topic: "values",
+        } as const;
+        expect(decodeError).toStrictEqual(expected);
+        expect(encodeError).toStrictEqual(expected);
+      }
+
+      const whereKeysFailure = new Proxy<Array<unknown>>([], {
+        ownKeys: () => {
+          throw new Error("where key reflection failed");
+        },
+      });
+      const conditionsPrototypeFailure = new Proxy<Array<unknown>>([], {
+        getPrototypeOf: () => {
+          throw new Error("conditions prototype reflection failed");
+        },
+      });
+      const filterDescriptorFailure = new Proxy<Array<unknown>>(["value"], {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("filter descriptor reflection failed");
+        },
+      });
+      const whereError = yield* Effect.flip(decodeHostileWhere(whereKeysFailure));
+      const conditionsError = yield* Effect.flip(
+        decodeHostileWhere([{ type: "AND", conditions: conditionsPrototypeFailure }]),
+      );
+      const filterError = yield* Effect.flip(
+        decodeHostileWhere([{ field: "id", type: "in", filter: filterDescriptorFailure }]),
+      );
+
+      expect(whereError.message).toBe("Query where must be an array");
+      expect(conditionsError.message).toBe("Filter group AND conditions must be an array");
+      expect(filterError.message).toBe("Filter condition id in must be an array");
+
+      const operandReflectionFailure = new Proxy(BigDecimal.make(123n, 2), {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("operand descriptor reflection failed");
+        },
+      });
+      const encodeOperandError = yield* Effect.flip(
+        encodeWhere(filterConfig, "values", [
+          { field: "id", type: "equals", filter: operandReflectionFailure },
+        ]),
+      );
+      const decodeOperandError = yield* Effect.flip(
+        decodeHostileWhere([{ field: "id", type: "equals", filter: operandReflectionFailure }]),
+      );
+
+      expect(encodeOperandError.message).toBe("Filter condition id operand could not be inspected");
+      expect(decodeOperandError.message).toBe("Filter condition id operand could not be inspected");
+    }),
+  );
+
+  it.effect("uses one immutable condition snapshot for exact keys and values", () =>
+    Effect.gen(function* () {
+      let filterDescriptorReads = 0;
+      const condition = new Proxy(
+        { field: "id", type: "equals", filter: "first" },
+        {
+          getOwnPropertyDescriptor: (target, key) => {
+            const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+            if (key !== "filter" || descriptor === undefined) {
+              return descriptor;
+            }
+            filterDescriptorReads += 1;
+            return {
+              ...descriptor,
+              value: filterDescriptorReads === 1 ? "first" : "mutated",
+            };
+          },
+        },
+      );
+
+      const decoded = yield* decodeHostileWhere([condition]);
+
+      expect(decoded).toStrictEqual([{ field: "id", type: "equals", filter: "first" }]);
+      expect(filterDescriptorReads).toBe(1);
+    }),
+  );
+
+  it.effect("owns a stateful BigDecimal filter operand from one descriptor capture", () =>
+    Effect.gen(function* () {
+      let coefficientDescriptorReads = 0;
+      let scaleDescriptorReads = 0;
+      const amount = new Proxy(BigDecimal.make(123n, 2), {
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === "value") {
+            coefficientDescriptorReads += 1;
+            if (coefficientDescriptorReads > 1) {
+              throw new Error("coefficient descriptor was read twice");
+            }
+          }
+          if (key === "scale") {
+            scaleDescriptorReads += 1;
+            if (scaleDescriptorReads > 1) {
+              throw new Error("scale descriptor was read twice");
+            }
+          }
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+
+      yield* encodeWhere(filterConfig, "values", [
+        { field: "amount", type: "equals", filter: amount },
+      ]);
+
+      expect(coefficientDescriptorReads).toBe(1);
+      expect(scaleDescriptorReads).toBe(1);
     }),
   );
 });

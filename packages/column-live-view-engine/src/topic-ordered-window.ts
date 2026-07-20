@@ -1,4 +1,4 @@
-import { compareWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import type { TopicRawPredicateFilterPlan } from "./raw-predicate-plan";
 import type { TopicRawOrderByPlan } from "./raw-window-scan";
 import {
@@ -277,7 +277,7 @@ const compareOrderedSlotRangeValue = (
   if (column.kind === "bigDecimal" && isBigDecimal(value)) {
     const slotValue = column.bigDecimalAt(slot);
     if (slotValue !== undefined) {
-      const comparison = compareWireSafeBigDecimal(slotValue, value);
+      const comparison = compareTrustedWireSafeBigDecimal(slotValue, value);
       if (comparison !== undefined) {
         return comparison;
       }

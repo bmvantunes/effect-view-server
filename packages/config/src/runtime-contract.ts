@@ -4,8 +4,8 @@ import type { ExactLiveQueryInputForTopic } from "./source-query-contract";
 import type {
   ExactPatch,
   GroupedQuery,
-  LiveQueryRow,
   LiveQueryResult,
+  LiveQueryRow,
   RawQuery,
   TopicRow,
 } from "./topic-contract";

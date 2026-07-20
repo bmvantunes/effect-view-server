@@ -1,11 +1,12 @@
 import type { RowSchema, ViewServerRuntimeError } from "@effect-view-server/config";
-import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { inspectWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { Effect, Result, Schema } from "effect";
 import { make as makeBigDecimal, type BigDecimal } from "effect/BigDecimal";
 import {
-  isProtocolPlainRecord,
-  protocolHasExactDataKeys,
-  protocolOwnDataValue,
+  protocolRecordSnapshot,
+  protocolSnapshotDataValue,
+  protocolSnapshotHasExactDataKeys,
+  type ProtocolRecordSnapshot,
 } from "./protocol-structural-value";
 
 type RouteScalar = null | string | number | bigint | boolean | BigDecimal;
@@ -19,23 +20,27 @@ const invalidQuery = (topic: string, message: string): ViewServerRuntimeError =>
   topic,
 });
 
-const ownDataValue = (
-  value: Readonly<Record<string, unknown>>,
-  key: string,
-): { readonly found: boolean; readonly value: unknown } => protocolOwnDataValue(value, key);
+const ownDataValue = (snapshot: ProtocolRecordSnapshot, key: string): unknown =>
+  protocolSnapshotDataValue(snapshot, key);
 
-const hasExactKeys = (
-  value: Readonly<Record<string, unknown>>,
-  keys: ReadonlyArray<string>,
-): boolean => protocolHasExactDataKeys(value, new Set(keys));
+const hasExactKeys = (snapshot: ProtocolRecordSnapshot, keys: ReadonlyArray<string>): boolean =>
+  protocolSnapshotHasExactDataKeys(snapshot, new Set(keys));
 
-const isRouteScalar = (value: unknown): value is RouteScalar =>
-  value === null ||
-  typeof value === "string" ||
-  typeof value === "bigint" ||
-  typeof value === "boolean" ||
-  isWireSafeBigDecimal(value) ||
-  (typeof value === "number" && Number.isFinite(value));
+const routeScalarSnapshot = (value: unknown): RouteScalar | undefined => {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "bigint" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  const decimal = inspectWireSafeBigDecimal(value);
+  return decimal._tag === "Success"
+    ? makeBigDecimal(decimal.coefficient, decimal.scale)
+    : undefined;
+};
 
 const scalarSatisfiesSchema = (
   schema: Schema.Codec<unknown, unknown, never, never>,
@@ -51,25 +56,26 @@ const encodeRouteScalar = (
   schema: Schema.Codec<unknown, unknown, never, never>,
   value: unknown,
 ): Effect.Effect<Schema.Json, ViewServerRuntimeError> => {
-  if (!isRouteScalar(value) || !scalarSatisfiesSchema(schema, value)) {
+  const candidate = routeScalarSnapshot(value);
+  if (candidate === undefined || !scalarSatisfiesSchema(schema, candidate)) {
     return Effect.fail(
       invalidQuery(topic, `routeBy field ${field} does not satisfy its configured scalar schema`),
     );
   }
-  if (isWireSafeBigDecimal(value)) {
+  if (candidate !== null && typeof candidate === "object") {
     return Effect.succeed({
       [routeScalarTag]: "bigDecimal",
-      coefficient: value.value.toString(),
-      scale: Object.is(value.scale, -0) ? "-0" : String(value.scale),
+      coefficient: candidate.value.toString(),
+      scale: Object.is(candidate.scale, -0) ? "-0" : String(candidate.scale),
     });
   }
-  if (typeof value === "bigint") {
-    return Effect.succeed({ [routeScalarTag]: "bigint", value: value.toString() });
+  if (typeof candidate === "bigint") {
+    return Effect.succeed({ [routeScalarTag]: "bigint", value: candidate.toString() });
   }
-  if (typeof value === "number" && Object.is(value, -0)) {
+  if (typeof candidate === "number" && Object.is(candidate, -0)) {
     return Effect.succeed({ [routeScalarTag]: "negativeZero" });
   }
-  return Effect.succeed(value);
+  return Effect.succeed(candidate);
 };
 
 const parseInteger = (value: unknown): bigint | undefined => {
@@ -87,20 +93,20 @@ const parseSafeInteger = (value: unknown): number | undefined => {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 };
 
-const decodeRouteEnvelope = (value: Readonly<Record<string, unknown>>): RouteScalar | undefined => {
-  const tag = ownDataValue(value, routeScalarTag);
-  if (!tag.found) {
+const decodeRouteEnvelope = (snapshot: ProtocolRecordSnapshot): RouteScalar | undefined => {
+  const tag = ownDataValue(snapshot, routeScalarTag);
+  if (tag === undefined) {
     return undefined;
   }
-  if (tag.value === "negativeZero" && hasExactKeys(value, [routeScalarTag])) {
+  if (tag === "negativeZero" && hasExactKeys(snapshot, [routeScalarTag])) {
     return -0;
   }
-  if (tag.value === "bigint" && hasExactKeys(value, [routeScalarTag, "value"])) {
-    return parseInteger(ownDataValue(value, "value").value);
+  if (tag === "bigint" && hasExactKeys(snapshot, [routeScalarTag, "value"])) {
+    return parseInteger(ownDataValue(snapshot, "value"));
   }
-  if (tag.value === "bigDecimal" && hasExactKeys(value, [routeScalarTag, "coefficient", "scale"])) {
-    const coefficient = parseInteger(ownDataValue(value, "coefficient").value);
-    const scale = parseSafeInteger(ownDataValue(value, "scale").value);
+  if (tag === "bigDecimal" && hasExactKeys(snapshot, [routeScalarTag, "coefficient", "scale"])) {
+    const coefficient = parseInteger(ownDataValue(snapshot, "coefficient"));
+    const scale = parseSafeInteger(ownDataValue(snapshot, "scale"));
     return coefficient !== undefined && scale !== undefined
       ? makeBigDecimal(coefficient, scale)
       : undefined;
@@ -114,11 +120,14 @@ const decodeRouteScalar = (
   schema: Schema.Codec<unknown, unknown, never, never>,
   value: unknown,
 ): Effect.Effect<RouteScalar, ViewServerRuntimeError> => {
-  const candidate = isRouteScalar(value)
-    ? value
-    : isProtocolPlainRecord(value)
-      ? decodeRouteEnvelope(value)
-      : undefined;
+  const scalar = routeScalarSnapshot(value);
+  const snapshot = scalar === undefined ? protocolRecordSnapshot(value) : undefined;
+  const candidate =
+    scalar !== undefined
+      ? scalar
+      : snapshot === undefined
+        ? undefined
+        : decodeRouteEnvelope(snapshot);
   return candidate !== undefined && scalarSatisfiesSchema(schema, candidate)
     ? Effect.succeed(candidate)
     : Effect.fail(
@@ -149,23 +158,23 @@ type RouteScalarTransform<Value> = (
 const transformRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(function* <Value>(
   topic: string,
   rowSchema: RowSchema,
-  routeBy: Readonly<Record<string, unknown>> | undefined,
+  routeBy: unknown,
   transform: RouteScalarTransform<Value>,
 ) {
   if (routeBy === undefined) {
     return undefined;
   }
-  if (!isProtocolPlainRecord(routeBy) || Object.getOwnPropertySymbols(routeBy).length > 0) {
+  const snapshot = protocolRecordSnapshot(routeBy);
+  if (snapshot === undefined) {
     return yield* Effect.fail(invalidQuery(topic, "Query routeBy must be a plain object"));
   }
   const output: Record<string, Value> = {};
-  for (const field of Object.getOwnPropertyNames(routeBy)) {
-    const fieldValue = ownDataValue(routeBy, field);
+  for (const [field, fieldValue] of snapshot.entries) {
     const schema = Object.hasOwn(rowSchema.fields, field) ? rowSchema.fields[field] : undefined;
-    if (schema === undefined || !fieldValue.found) {
+    if (schema === undefined) {
       return yield* Effect.fail(invalidQuery(topic, `Invalid routeBy field: ${field}`));
     }
-    defineRouteField(output, field, yield* transform(topic, field, schema, fieldValue.value));
+    defineRouteField(output, field, yield* transform(topic, field, schema, fieldValue));
   }
   return Object.freeze(output);
 });
@@ -173,7 +182,7 @@ const transformRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(funct
 export const encodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.encode")(function* (
   topic: string,
   rowSchema: RowSchema,
-  routeBy: Readonly<Record<string, unknown>> | undefined,
+  routeBy: unknown,
 ) {
   return yield* transformRouteBy(topic, rowSchema, routeBy, encodeRouteScalar);
 });
@@ -181,7 +190,7 @@ export const encodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.encode")(func
 export const decodeRouteBy = Effect.fn("ViewServerProtocol.routeBy.decode")(function* (
   topic: string,
   rowSchema: RowSchema,
-  routeBy: Readonly<Record<string, unknown>> | undefined,
+  routeBy: unknown,
 ) {
   return yield* transformRouteBy(topic, rowSchema, routeBy, decodeRouteScalar);
 });

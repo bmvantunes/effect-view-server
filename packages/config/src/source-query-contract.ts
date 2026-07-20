@@ -1,5 +1,5 @@
 import { Result, Schema } from "effect";
-import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
+import { make as makeBigDecimal } from "effect/BigDecimal";
 import type { TopicDefinitions, TopicRow } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
 import type { RouteFieldKey, RouteFieldValue } from "./query-filter";
@@ -102,50 +102,88 @@ type ExactSourceRouteQuery<
       : never
     : never;
 
-type QueryWithoutRoute<Query> = Omit<Query, "routeBy">;
+type QueryWithoutRoute<Query> = "routeBy" extends keyof Query
+  ? Query extends unknown
+    ? Omit<Query, "routeBy">
+    : never
+  : Query;
 
 type ExactLiveQueryForTopic<Topics, Topic extends keyof Topics, Query> = Topic extends keyof Topics
-  ? ExactLiveQuery<TopicRow<Topics, Topic>, QueryWithoutRoute<Query>>
+  ? {
+      readonly exact: ExactLiveQuery<TopicRow<Topics, Topic>, QueryWithoutRoute<Query>>;
+    }
   : never;
 
-type TopicsRejectingLiveQuery<
-  Topics,
-  Topic extends keyof Topics,
-  Query,
-> = Topic extends keyof Topics
-  ? QueryWithoutRoute<Query> extends ExactLiveQuery<
-      TopicRow<Topics, Topic>,
-      QueryWithoutRoute<Query>
-    >
-    ? never
-    : Topic
-  : never;
-
-type IsUnion<Value> = [Value] extends [UnionToIntersection<Value>] ? false : true;
-
-type RejectInvalidTopicUnionQuery<Topics, Topic extends keyof Topics, Query> =
-  true extends IsUnion<Topic>
-    ? [TopicsRejectingLiveQuery<Topics, Topic, Query>] extends [never]
-      ? unknown
-      : never
-    : unknown;
+type ExactLiveQueryForAllTopics<Topics, Topic extends keyof Topics, Query> =
+  UnionToIntersection<ExactLiveQueryForTopic<Topics, Topic, Query>> extends {
+    readonly exact: infer Exact;
+  }
+    ? Exact
+    : never;
 
 export type ExactLiveQueryInputForTopic<Topics, Topic extends keyof Topics, Query> = Query &
-  UnionToIntersection<ExactLiveQueryForTopic<Topics, Topic, Query>> &
-  RejectInvalidTopicUnionQuery<Topics, Topic, Query> &
-  ValidateLiveQuery<QueryWithoutRoute<Query>> &
-  ExactSourceRouteQuery<Topics, Topic, Query>;
+  NoInfer<
+    ExactLiveQueryForAllTopics<Topics, Topic, Query> &
+      ValidateLiveQuery<QueryWithoutRoute<Query>> &
+      ExactSourceRouteQuery<Topics, Topic, Query>
+  >;
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isWireSafeBigDecimal = (value: unknown): value is BigDecimal =>
-  isBigDecimal(value) && typeof value.value === "bigint" && Number.isSafeInteger(value.scale);
+const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  try {
+    return Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
+};
 
-const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  isRecord(value) &&
-  !isWireSafeBigDecimal(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
+const bigDecimalTypeId = "~effect/BigDecimal";
+const bigDecimalJsonCodec = Schema.toCodecJson(Schema.BigDecimal);
+
+const routeBigDecimalIsWireRoundtrippable = (value: unknown): boolean => {
+  try {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (typeof prototype !== "object" || prototype === null) {
+      return false;
+    }
+    const brand = Object.getOwnPropertyDescriptor(prototype, bigDecimalTypeId);
+    if (brand === undefined || !("value" in brand) || brand.value !== bigDecimalTypeId) {
+      return false;
+    }
+    const coefficient = Object.getOwnPropertyDescriptor(value, "value");
+    const scale = Object.getOwnPropertyDescriptor(value, "scale");
+    if (
+      coefficient === undefined ||
+      !coefficient.enumerable ||
+      !("value" in coefficient) ||
+      typeof coefficient.value !== "bigint" ||
+      scale === undefined ||
+      !scale.enumerable ||
+      !("value" in scale) ||
+      typeof scale.value !== "number" ||
+      !Number.isSafeInteger(scale.value)
+    ) {
+      return false;
+    }
+    const encoded = Schema.encodeUnknownResult(bigDecimalJsonCodec)(
+      makeBigDecimal(coefficient.value, scale.value),
+    );
+    return (
+      Result.isSuccess(encoded) &&
+      Result.isSuccess(Schema.decodeUnknownResult(bigDecimalJsonCodec)(encoded.success))
+    );
+  } catch {
+    return false;
+  }
+};
 
 const sourceLeasedRouteBy = (
   source: TopicSourceDefinition | undefined,
@@ -171,7 +209,7 @@ const routeScalarIsSupported = (value: unknown): boolean =>
   typeof value === "string" ||
   typeof value === "bigint" ||
   typeof value === "boolean" ||
-  isWireSafeBigDecimal(value) ||
+  routeBigDecimalIsWireRoundtrippable(value) ||
   (typeof value === "number" && Number.isFinite(value));
 
 const ownEnumerableDataProperty = (
@@ -184,7 +222,7 @@ const ownEnumerableDataProperty = (
     : undefined;
 };
 
-export const validateLiveQuerySourceRoute = <Topics extends TopicDefinitions>(
+const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
   topics: Topics,
   topic: string,
   query: unknown,
@@ -244,4 +282,15 @@ export const validateLiveQuerySourceRoute = <Topics extends TopicDefinitions>(
     }
   }
   return undefined;
+};
+
+export const validateLiveQuerySourceRoute = <Topics extends TopicDefinitions>(
+  topics: Topics,
+  topic: string,
+  query: unknown,
+): string | undefined => {
+  const validation = Result.try(() => validateLiveQuerySourceRouteUnsafe(topics, topic, query));
+  return Result.isFailure(validation)
+    ? `Query for topic ${topic} contains unsupported reflective properties.`
+    : validation.success;
 };

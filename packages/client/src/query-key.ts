@@ -1,12 +1,22 @@
-import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import {
+  isWireSafeBigDecimal,
+  makeSchemaJsonIdentity,
+  wireSafeBigDecimalSemanticKey,
+} from "@effect-view-server/effect-utils";
+import type { RowSchema } from "@effect-view-server/config";
+import { viewServerFilterFieldContracts } from "@effect-view-server/config/internal";
 import { Result } from "effect";
-import { format, isBigDecimal, normalize, type BigDecimal } from "effect/BigDecimal";
+import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
 import {
   denseArrayValues,
   hasPlainRecordPrototype,
   plainRecordSnapshot,
 } from "./query-structural-data";
-import { canonicalWhereKey } from "./query-where-key";
+import {
+  canonicalWhereKey,
+  type CanonicalWhereFieldContract,
+  type CanonicalWhereFieldContracts,
+} from "./query-where-key";
 
 type StableObjectEntry = readonly [string, StableQueryToken];
 type StableMapEntry = readonly [StableQueryToken, StableQueryToken];
@@ -88,10 +98,15 @@ type BigDecimalIdentity = "semantic" | "exact";
 const stableBigDecimalToken = (
   value: BigDecimal,
   identity: BigDecimalIdentity,
-): StableBigDecimalToken =>
-  identity === "exact"
-    ? ["bigDecimalExact", value.value.toString(), stableNumberValue(value.scale)]
-    : ["bigDecimal", format(normalize(value))];
+): StableBigDecimalToken | readonly ["unsupported", "bigDecimal"] => {
+  if (identity === "exact") {
+    return isWireSafeBigDecimal(value)
+      ? ["bigDecimalExact", value.value.toString(), stableNumberValue(value.scale)]
+      : ["unsupported", "bigDecimal"];
+  }
+  const semanticKey = wireSafeBigDecimalSemanticKey(value);
+  return semanticKey === undefined ? ["unsupported", "bigDecimal"] : ["bigDecimal", semanticKey];
+};
 
 const stableQueryValue = (
   value: unknown,
@@ -117,9 +132,7 @@ const stableQueryValue = (
     return ["bigint", value.toString()];
   }
   if (isBigDecimal(value)) {
-    return isWireSafeBigDecimal(value)
-      ? stableBigDecimalToken(value, bigDecimalIdentity)
-      : ["unsupported", "bigDecimal"];
+    return stableBigDecimalToken(value, bigDecimalIdentity);
   }
   if (typeof value === "symbol") {
     return ["unsupported", "symbol"];
@@ -301,9 +314,7 @@ const stableGraphQueryValue = (
       continue;
     }
     if (isBigDecimal(value)) {
-      current.slot.value = isWireSafeBigDecimal(value)
-        ? stableBigDecimalToken(value, current.bigDecimalIdentity)
-        : ["unsupported", "bigDecimal"];
+      current.slot.value = stableBigDecimalToken(value, current.bigDecimalIdentity);
       continue;
     }
     if (typeof value === "symbol") {
@@ -401,11 +412,14 @@ const stableGraphQueryValue = (
   return ["graph", root, nodes];
 };
 
-const canonicalQueryInput = (query: object): object => {
+const canonicalQueryInput = (
+  query: object,
+  fieldContracts?: CanonicalWhereFieldContracts,
+): object => {
   const canonical: Record<string, unknown> = {};
   for (const [key, value] of stableObjectEntries(query)) {
     if (key === "where") {
-      const whereKey = canonicalWhereKey(value);
+      const whereKey = canonicalWhereKey(value, fieldContracts);
       if (whereKey === undefined) {
         continue;
       }
@@ -429,7 +443,38 @@ const canonicalQueryInput = (query: object): object => {
 
 const invalidQueryKey = JSON.stringify(["invalidQuery"]);
 
-export const stableQueryKey = (query: object): string => {
-  const key = Result.try(() => JSON.stringify(stableGraphQueryValue(canonicalQueryInput(query))));
+const canonicalWhereFieldContractsCache = new WeakMap<object, CanonicalWhereFieldContracts>();
+
+const canonicalWhereFieldContracts = (rowSchema: RowSchema): CanonicalWhereFieldContracts => {
+  const cached = canonicalWhereFieldContractsCache.get(rowSchema);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const contracts = new Map<string, CanonicalWhereFieldContract>();
+  for (const [field, contract] of viewServerFilterFieldContracts(rowSchema)) {
+    contracts.set(
+      field,
+      Object.freeze({
+        materialize: makeSchemaJsonIdentity(contract.typeSchema).materializeDecoded,
+        supportsText: contract.supportsText,
+      }),
+    );
+  }
+  canonicalWhereFieldContractsCache.set(rowSchema, contracts);
+  return contracts;
+};
+
+const stableQueryKeyWithFields = (
+  query: object,
+  fieldContracts?: CanonicalWhereFieldContracts,
+): string => {
+  const key = Result.try(() =>
+    JSON.stringify(stableGraphQueryValue(canonicalQueryInput(query, fieldContracts))),
+  );
   return Result.isFailure(key) ? invalidQueryKey : key.success;
 };
+
+export const stableQueryKey = (query: object): string => stableQueryKeyWithFields(query);
+
+export const stableQueryKeyForRowSchema = (query: object, rowSchema: RowSchema): string =>
+  stableQueryKeyWithFields(query, canonicalWhereFieldContracts(rowSchema));

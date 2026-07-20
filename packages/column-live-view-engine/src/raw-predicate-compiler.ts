@@ -7,6 +7,7 @@ import { normalizeFilterText } from "./filter-expression";
 import { compareFilterValue } from "./query-value";
 import { predicateFilterPlans, type TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
+import { scalarEqualityKey } from "./row-values";
 
 type RowObject = object;
 
@@ -96,6 +97,10 @@ const compileCondition = <Row extends RowObject>(
     return () => false;
   }
   const filter = condition.filter;
+  const membershipKeys =
+    condition.type === "in" && filter !== undefined && isScalarArray(filter)
+      ? new Set(filter.map(scalarEqualityKey))
+      : undefined;
   const textValue = (value: unknown): string | undefined =>
     typeof value === "string"
       ? normalizeFilterText(value, condition.caseSensitive, condition.accentSensitive)
@@ -105,6 +110,14 @@ const compileCondition = <Row extends RowObject>(
       return textValue(value) === operand;
     }
     return field.semantics.is(value) && field.semantics.equivalent(value, operand);
+  };
+  const membershipKey = (value: unknown): string | undefined => {
+    if (typeof value === "string") {
+      return scalarEqualityKey(
+        normalizeFilterText(value, condition.caseSensitive, condition.accentSensitive),
+      );
+    }
+    return field.semantics.is(value) ? scalarEqualityKey(value) : undefined;
   };
   const matchesValue = (value: unknown): boolean => {
     switch (condition.type) {
@@ -119,9 +132,7 @@ const compileCondition = <Row extends RowObject>(
         return condition.type === "equals" ? matches : !matches;
       }
       case "in":
-        return filter !== undefined && isScalarArray(filter)
-          ? filter.some((candidate) => equals(value, candidate))
-          : false;
+        return membershipKeys?.has(membershipKey(value) ?? "") === true;
       case "contains":
       case "notContains":
       case "startsWith":

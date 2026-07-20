@@ -25,13 +25,10 @@ export {
   acquireTopicStoreRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
   evaluateTopicStoreRawQueryResult,
-  prepareTopicStoreGroupedQuery,
-  prepareTopicStoreRawQuery,
   prepareTopicStoreRuntimeGroupedQuery,
   prepareTopicStoreRuntimeRawQuery,
   releaseTopicStoreMaterializedQueryExecution,
   releaseTopicStoreRawQueryExecution,
-  topicStoreQueryMetadata,
 } from "./topic-store-query";
 export { collectTopicStoreHealth } from "./topic-store-health";
 export type { TopicStoreSubscriptionPermit } from "./topic-store-state";

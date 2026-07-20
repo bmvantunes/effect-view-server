@@ -7,6 +7,10 @@ import type {
   ViewServerRuntimeError,
   Where,
 } from "@effect-view-server/config";
+import {
+  trustDecodedRuntimeQuery,
+  type ValidatedRuntimeQuery,
+} from "@effect-view-server/config/internal";
 import { Effect, Schema } from "effect";
 import {
   decodeWhere,
@@ -39,7 +43,8 @@ type TrustedRawQuery<Row> = {
   readonly limit?: number;
 };
 
-export type ViewServerValidatedRawQuery<Row> = TrustedRawQuery<Row>;
+export type ViewServerValidatedRawQuery<Row extends object> = TrustedRawQuery<Row> &
+  ValidatedRuntimeQuery;
 
 const isRawQueryForTopic = (schema: RowSchema, query: LooseWireRawQuery): boolean => {
   if (!hasOnlyKnownFields(schema, query.select)) {
@@ -107,55 +112,64 @@ export const viewServerEncodeRawQuery = Effect.fn("ViewServerProtocol.query.enco
   return wireQuery;
 });
 
-function validatedRawQuery<Row>(query: LooseWireRawQuery): ViewServerValidatedRawQuery<Row>;
+function validatedRawQuery<Row extends object>(
+  query: LooseWireRawQuery,
+): ViewServerValidatedRawQuery<Row>;
 function validatedRawQuery(query: LooseWireRawQuery) {
-  return query;
+  return trustDecodedRuntimeQuery(query);
 }
 
-export const viewServerDecodeRawQuery: <
+const decodeRawQuery = Effect.fn("ViewServerProtocol.query.decode")(function* (
+  config: { readonly topics: TopicDefinitions },
+  topic: string,
+  query: unknown,
+) {
+  const decodedTopic = yield* viewServerDecodeTopic(config, topic);
+  const shallowQuery = yield* shallowWhereQueryInput(topic, query);
+  const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
+    shallowQuery.input,
+    strictParseOptions,
+  ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
+  const decoded =
+    shallowQuery.where === undefined
+      ? decodedShell
+      : { ...decodedShell, where: shallowQuery.where };
+  if (decoded.select.length === 0) {
+    return yield* Effect.fail(invalidQuery(topic, "Query select must include at least one field"));
+  }
+  yield* validateWindow(topic, decoded.offset, decoded.limit);
+  const topicSchema = config.topics[decodedTopic]!.schema;
+  if (isRawQueryForTopic(topicSchema, decoded)) {
+    const where = yield* decodeWhere(topic, topicSchema, decoded.where);
+    const routeBy = yield* decodeRouteBy(topic, topicSchema, decoded.routeBy);
+    const trusted = validatedRawQuery<object>({
+      select: decoded.select,
+      ...(where === undefined ? {} : { where }),
+      ...(routeBy === undefined ? {} : { routeBy }),
+      ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
+      ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
+      ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
+    });
+    yield* validateSourceRoute(config, topic, trusted);
+    return trusted;
+  }
+  return yield* Effect.fail(
+    invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
+  );
+});
+
+export function viewServerDecodeRawQuery<
   const Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
 >(
   config: { readonly topics: Topics },
   topic: Topic,
   query: unknown,
-) => Effect.Effect<ViewServerValidatedRawQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError> =
-  Effect.fn("ViewServerProtocol.query.decode")(function* <
-    const Topics extends TopicDefinitions,
-    Topic extends Extract<keyof Topics, string>,
-  >(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
-    const decodedTopic = yield* viewServerDecodeTopic(config, topic);
-    const shallowQuery = yield* shallowWhereQueryInput(topic, query);
-    const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireRawQuerySchema)(
-      shallowQuery.input,
-      strictParseOptions,
-    ).pipe(Effect.mapError((error) => invalidQuery(topic, error.message)));
-    const decoded =
-      shallowQuery.where === undefined
-        ? decodedShell
-        : { ...decodedShell, where: shallowQuery.where };
-    if (decoded.select.length === 0) {
-      return yield* Effect.fail(
-        invalidQuery(topic, "Query select must include at least one field"),
-      );
-    }
-    yield* validateWindow(topic, decoded.offset, decoded.limit);
-    const topicSchema = config.topics[decodedTopic]!.schema;
-    if (isRawQueryForTopic(topicSchema, decoded)) {
-      const where = yield* decodeWhere(topic, topicSchema, decoded.where);
-      const routeBy = yield* decodeRouteBy(topic, topicSchema, decoded.routeBy);
-      const trusted = validatedRawQuery<TopicRow<Topics, Topic>>({
-        select: decoded.select,
-        ...(where === undefined ? {} : { where }),
-        ...(routeBy === undefined ? {} : { routeBy }),
-        ...(decoded.orderBy === undefined ? {} : { orderBy: decoded.orderBy }),
-        ...(decoded.offset === undefined ? {} : { offset: decoded.offset }),
-        ...(decoded.limit === undefined ? {} : { limit: decoded.limit }),
-      });
-      yield* validateSourceRoute(config, topic, trusted);
-      return trusted;
-    }
-    return yield* Effect.fail(
-      invalidQuery(topic, `Query references an unknown field for topic: ${topic}`),
-    );
-  });
+): Effect.Effect<ViewServerValidatedRawQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError>;
+export function viewServerDecodeRawQuery(
+  config: { readonly topics: TopicDefinitions },
+  topic: string,
+  query: unknown,
+): Effect.Effect<unknown, ViewServerRuntimeError> {
+  return decodeRawQuery(config, topic, query);
+}

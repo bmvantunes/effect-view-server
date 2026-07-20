@@ -23,6 +23,14 @@ export {
   type SchemaValuePresenceToken,
 } from "./schema-value-presence";
 export { compareWireSafeBigDecimal, isWireSafeBigDecimal } from "./wire-safe-big-decimal";
+export {
+  collectCanonicalFilterGraphLeaves,
+  compareCanonicalFilterGraphs,
+  complementCanonicalFilterType,
+  type CanonicalComplementableFilterType,
+  type CanonicalFilterComparisonNode,
+  type CanonicalFilterGraphStep,
+} from "./canonical-filter-expression";
 
 const isNonTypedFailureReason = <E>(
   reason: Cause.Reason<E>,

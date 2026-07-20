@@ -156,6 +156,7 @@ export const makeGrpcRuntimeSourceAdapter = <
             return {
               client: manager.client,
               liveClient: manager.liveClient,
+              protocolQuerySubscriber: manager.protocolQuerySubscriber,
               start: RuntimeEffect.acquireRelease(
                 dependencies.makeIngress(
                   dependencyConfig,

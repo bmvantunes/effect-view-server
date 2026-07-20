@@ -24,14 +24,16 @@ describe("raw query decoder", () => {
       });
 
       expect(decoded.select).toStrictEqual(["value"]);
-      expect(decoded.where).toMatchObject({
+      expect(decoded.where).toStrictEqual({
         _tag: "condition",
         field: "value",
         type: "equals",
         filter: "alpha",
         caseSensitive: false,
         accentSensitive: false,
+        key: '["condition","value","equals",false,false,"[\\"string\\",\\"alpha\\"]",null]',
       });
+      expect(Object.isFrozen(decoded.where)).toBe(true);
       expect(encodeCalls).toBe(0);
     }),
   );

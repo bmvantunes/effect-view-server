@@ -2,6 +2,11 @@ import type { RowSchema, ViewServerRuntimeError } from "@effect-view-server/conf
 import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { Effect, Result, Schema } from "effect";
 import { make as makeBigDecimal, type BigDecimal } from "effect/BigDecimal";
+import {
+  isProtocolPlainRecord,
+  protocolHasExactDataKeys,
+  protocolOwnDataValue,
+} from "./protocol-structural-value";
 
 type RouteScalar = null | string | number | bigint | boolean | BigDecimal;
 
@@ -14,29 +19,15 @@ const invalidQuery = (topic: string, message: string): ViewServerRuntimeError =>
   topic,
 });
 
-const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
-
 const ownDataValue = (
   value: Readonly<Record<string, unknown>>,
   key: string,
-): { readonly found: boolean; readonly value: unknown } => {
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return descriptor !== undefined && descriptor.enumerable && "value" in descriptor
-    ? { found: true, value: descriptor.value }
-    : { found: false, value: undefined };
-};
+): { readonly found: boolean; readonly value: unknown } => protocolOwnDataValue(value, key);
 
 const hasExactKeys = (
   value: Readonly<Record<string, unknown>>,
   keys: ReadonlyArray<string>,
-): boolean =>
-  Object.getOwnPropertySymbols(value).length === 0 &&
-  Object.getOwnPropertyNames(value).length === keys.length &&
-  keys.every((key) => ownDataValue(value, key).found);
+): boolean => protocolHasExactDataKeys(value, new Set(keys));
 
 const isRouteScalar = (value: unknown): value is RouteScalar =>
   value === null ||
@@ -125,7 +116,7 @@ const decodeRouteScalar = (
 ): Effect.Effect<RouteScalar, ViewServerRuntimeError> => {
   const candidate = isRouteScalar(value)
     ? value
-    : isPlainRecord(value)
+    : isProtocolPlainRecord(value)
       ? decodeRouteEnvelope(value)
       : undefined;
   return candidate !== undefined && scalarSatisfiesSchema(schema, candidate)
@@ -164,7 +155,7 @@ const transformRouteBy = Effect.fn("ViewServerProtocol.routeBy.transform")(funct
   if (routeBy === undefined) {
     return undefined;
   }
-  if (!isPlainRecord(routeBy) || Object.getOwnPropertySymbols(routeBy).length > 0) {
+  if (!isProtocolPlainRecord(routeBy) || Object.getOwnPropertySymbols(routeBy).length > 0) {
     return yield* Effect.fail(invalidQuery(topic, "Query routeBy must be a plain object"));
   }
   const output: Record<string, Value> = {};

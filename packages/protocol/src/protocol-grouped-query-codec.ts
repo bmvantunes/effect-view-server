@@ -9,6 +9,10 @@ import type {
   Where,
 } from "@effect-view-server/config";
 import { viewServerSchemaFieldMetadata } from "@effect-view-server/config";
+import {
+  trustDecodedRuntimeQuery,
+  type ValidatedRuntimeQuery,
+} from "@effect-view-server/config/internal";
 import { Effect, Schema } from "effect";
 import type { JsonFieldSchema } from "./protocol-json-field-codec";
 import {
@@ -42,7 +46,8 @@ type TrustedGroupedQuery<Row> = {
   readonly limit?: number;
 };
 
-export type ViewServerValidatedGroupedQuery<Row> = TrustedGroupedQuery<Row>;
+export type ViewServerValidatedGroupedQuery<Row extends object> = TrustedGroupedQuery<Row> &
+  ValidatedRuntimeQuery;
 
 const dangerousRecordKeys = new Set(["__proto__", "prototype", "constructor"]);
 
@@ -151,27 +156,18 @@ export const viewServerEncodeGroupedQuery = Effect.fn("ViewServerProtocol.groupe
   },
 );
 
-function validatedGroupedQuery<Row>(
+function validatedGroupedQuery<Row extends object>(
   query: LooseWireGroupedQuery,
 ): ViewServerValidatedGroupedQuery<Row>;
 function validatedGroupedQuery(query: LooseWireGroupedQuery) {
-  return query;
+  return trustDecodedRuntimeQuery(query);
 }
 
-export const viewServerDecodeGroupedQuery: <
-  const Topics extends TopicDefinitions,
-  Topic extends Extract<keyof Topics, string>,
->(
-  config: { readonly topics: Topics },
-  topic: Topic,
+const decodeGroupedQuery = Effect.fn("ViewServerProtocol.groupedQuery.decode")(function* (
+  config: { readonly topics: TopicDefinitions },
+  topic: string,
   query: unknown,
-) => Effect.Effect<
-  ViewServerValidatedGroupedQuery<TopicRow<Topics, Topic>>,
-  ViewServerRuntimeError
-> = Effect.fn("ViewServerProtocol.groupedQuery.decode")(function* <
-  const Topics extends TopicDefinitions,
-  Topic extends Extract<keyof Topics, string>,
->(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
+) {
   const decodedTopic = yield* viewServerDecodeTopic(config, topic);
   const shallowQuery = yield* shallowWhereQueryInput(topic, query);
   const decodedShell = yield* Schema.decodeUnknownEffect(LooseWireGroupedQuerySchema)(
@@ -186,7 +182,7 @@ export const viewServerDecodeGroupedQuery: <
   yield* validateGroupedQuery(topic, topicSchema, decoded);
   const where = yield* decodeWhere(topic, topicSchema, decoded.where);
   const routeBy = yield* decodeRouteBy(topic, topicSchema, decoded.routeBy);
-  const trusted = validatedGroupedQuery<TopicRow<Topics, Topic>>({
+  const trusted = validatedGroupedQuery<object>({
     groupBy: decoded.groupBy,
     aggregates: decoded.aggregates,
     ...(where === undefined ? {} : { where }),
@@ -198,3 +194,19 @@ export const viewServerDecodeGroupedQuery: <
   yield* validateSourceRoute(config, topic, trusted);
   return trusted;
 });
+
+export function viewServerDecodeGroupedQuery<
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  query: unknown,
+): Effect.Effect<ViewServerValidatedGroupedQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError>;
+export function viewServerDecodeGroupedQuery(
+  config: { readonly topics: TopicDefinitions },
+  topic: string,
+  query: unknown,
+): Effect.Effect<unknown, ViewServerRuntimeError> {
+  return decodeGroupedQuery(config, topic, query);
+}

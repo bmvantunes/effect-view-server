@@ -76,12 +76,8 @@ describe("leased route wire codec", () => {
       });
       expect(decoded.routeBy).toStrictEqual(query.routeBy);
       expect(
-        Object.is(
-          BigDecimal.isBigDecimal(decoded.routeBy?.["amount"])
-            ? decoded.routeBy["amount"].scale
-            : 0,
-          -0,
-        ),
+        BigDecimal.isBigDecimal(decoded.routeBy?.["amount"]) &&
+          Object.is(decoded.routeBy["amount"].scale, -0),
       ).toBe(true);
       expect(Object.is(decoded.routeBy?.["zero"], -0)).toBe(true);
     }),

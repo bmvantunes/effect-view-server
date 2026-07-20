@@ -274,11 +274,9 @@ export const makeGrpcLeasedRowLifecycle = <const Topics extends ViewServerRuntim
     lease: GrpcLeasedActiveLease,
     values: ReadonlyArray<unknown>,
   ) {
+    const route = lease.subscription.materializeRoute();
     const rows = yield* Effect.forEach(values, (value) =>
-      Effect.gen(function* () {
-        const route = lease.subscription.materializeRoute();
-        return yield* mapLeasedValue(lease, route, value);
-      }).pipe(
+      mapLeasedValue(lease, route, value).pipe(
         Effect.tapError((error) =>
           Clock.currentTimeMillis.pipe(
             Effect.flatMap((nowMillis) =>

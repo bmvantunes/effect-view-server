@@ -18,6 +18,7 @@ import type {
   ViewServerTransportError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
+import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 import type { TopicDefinitionHasSourceOwner } from "./source-binding-resolution";
 
 type RuntimeCorePublicTopic<Topics extends TopicDefinitions> = Extract<
@@ -130,11 +131,8 @@ export type ViewServerRuntimeCorePublicLiveClient<Topics extends TopicDefinition
       readonly subscribe: RuntimeCorePublicSubscribe<Topics>;
     };
 
-export type ViewServerRuntimeCoreServerLiveClient<Topics extends TopicDefinitions> = [
-  RuntimeCoreLeasedTopic<Topics>,
-] extends [never]
-  ? ViewServerRuntimeLiveClient<Topics>
-  : Omit<ViewServerRuntimeLiveClient<Topics>, "subscribe" | "subscribeRuntime"> & {
-      readonly subscribe: RuntimeCorePublicSubscribe<Topics>;
-      readonly subscribeRuntime: RuntimeCorePublicSubscribeRuntime<Topics>;
-    };
+export type ViewServerRuntimeCoreServerLiveClient<Topics extends TopicDefinitions> = Pick<
+  ViewServerLiveClient<Topics>,
+  "subscribeHealth" | "subscribeHealthSummary"
+> &
+  ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;

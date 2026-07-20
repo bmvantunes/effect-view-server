@@ -52,7 +52,8 @@ Supported conditions are derived from the Topic Row schema:
 case-insensitive and accent-insensitive by default, so `Résumé` matches
 `resume`. Add `caseSensitive: true` and/or `accentSensitive: true` to a text
 condition to opt into exact handling for that dimension. `blank` means `""`,
-`null`, or `undefined`; `notBlank` is its exact complement.
+`null`, `undefined`, a missing leaf field, or a missing intermediate field in a
+dot path; `notBlank` is its exact complement.
 
 Statically named nested scalar fields use dot paths such as
 `profile.country`. Structured objects, arrays, maps, sets, dynamic record keys,

@@ -24,6 +24,7 @@ import type {
   GrpcTopicSourceIsBoundToClients,
 } from "./grpc-contract";
 import type { RejectExtraKeys } from "./query-exact";
+import type { RouteFieldKey } from "./query-filter";
 import type { TopicSourceDefinition } from "./source-contract";
 import type {
   FieldKey,
@@ -139,6 +140,7 @@ export type {
   ViewServerRuntimeError,
   ViewServerTransportError,
 } from "./runtime-contract";
+export type { ValidatedRuntimeQuery } from "./validated-runtime-query";
 export {
   viewServerSchemaFieldMetadata,
   viewServerUnsupportedRuntimeFieldDomain,
@@ -375,7 +377,7 @@ type ConfigGrpcSourceClientsConstraint<
 type ValidateGrpcLeasedRouteBy<Row, Source> =
   Source extends GrpcLeasedTopicSource<infer RouteBy>
     ? GrpcLeasedTopicSource<{
-        readonly [Index in keyof RouteBy]: RouteBy[Index] extends FieldKey<Row>
+        readonly [Index in keyof RouteBy]: RouteBy[Index] extends RouteFieldKey<Row>
           ? RouteBy[Index]
           : never;
       }>

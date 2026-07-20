@@ -2,18 +2,24 @@ import type * as BigDecimal from "effect/BigDecimal";
 
 export type FilterableScalar = string | number | bigint | boolean | BigDecimal.BigDecimal | null;
 
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
 type Defined<Value> = Exclude<Value, undefined>;
-type ScalarBranches<Value> = Extract<Defined<Value>, FilterableScalar>;
-type StringBranches<Value> = Extract<Defined<Value>, string>;
-type NumberBranches<Value> = Extract<Defined<Value>, number>;
-type BigIntBranches<Value> = Extract<Defined<Value>, bigint>;
-type BigDecimalBranches<Value> = Extract<Defined<Value>, BigDecimal.BigDecimal>;
+type ScalarBranches<Value> =
+  IsAny<Value> extends true ? never : Extract<Defined<Value>, FilterableScalar>;
+type StringBranches<Value> = IsAny<Value> extends true ? never : Extract<Defined<Value>, string>;
+type NumberBranches<Value> = IsAny<Value> extends true ? never : Extract<Defined<Value>, number>;
+type BigIntBranches<Value> = IsAny<Value> extends true ? never : Extract<Defined<Value>, bigint>;
+type BigDecimalBranches<Value> =
+  IsAny<Value> extends true ? never : Extract<Defined<Value>, BigDecimal.BigDecimal>;
 
-type IsRouteFieldValue<Value> = [Defined<Value>] extends [never]
-  ? false
-  : [Defined<Value>] extends [FilterableScalar]
-    ? true
-    : false;
+type IsRouteFieldValue<Value> =
+  IsAny<Value> extends true
+    ? false
+    : [Defined<Value>] extends [never]
+      ? false
+      : [Defined<Value>] extends [FilterableScalar]
+        ? true
+        : false;
 
 export type RouteFieldKey<Row> = Extract<
   {
@@ -24,19 +30,22 @@ export type RouteFieldKey<Row> = Extract<
 
 export type RouteFieldValue<Row, Field extends RouteFieldKey<Row>> = Defined<Row[Field]>;
 
-type TraversableObject<Value> = Value extends FilterableScalar
-  ? never
-  : Value extends ReadonlyArray<unknown>
+type TraversableObject<Value> =
+  IsAny<Value> extends true
     ? never
-    : Value extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown>
+    : Value extends FilterableScalar
       ? never
-      : Value extends (...args: ReadonlyArray<never>) => unknown
+      : Value extends ReadonlyArray<unknown>
         ? never
-        : Value extends object
-          ? string extends keyof Value
+        : Value extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown>
+          ? never
+          : Value extends (...args: ReadonlyArray<never>) => unknown
             ? never
-            : Value
-          : never;
+            : Value extends object
+              ? string extends keyof Value
+                ? never
+                : Value
+              : never;
 
 type StringKey<Value> = Value extends unknown ? Extract<keyof Value, string> : never;
 type ValueAtKey<Value, Key extends string> = Value extends unknown

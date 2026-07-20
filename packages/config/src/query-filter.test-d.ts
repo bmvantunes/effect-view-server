@@ -1,6 +1,12 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
+import { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
 import type { ExactWhere, FilterableFieldPath, FilterableFieldValue, Where } from "./query-filter";
+
+const AnyFieldRow = Schema.Struct({
+  id: Schema.String,
+  value: Schema.Any,
+});
 
 type FilterRow = {
   readonly id: string;
@@ -42,6 +48,7 @@ describe("query filter types", () => {
     expectTypeOf<FilterableFieldValue<FilterRow, "mixed">>().toEqualTypeOf<
       string | { readonly code: string }
     >();
+    expectTypeOf<FilterableFieldPath<typeof AnyFieldRow.Type>>().toEqualTypeOf<"id">();
   });
 
   it("accepts recursive exact expressions without const assertions", () => {
@@ -88,6 +95,11 @@ describe("query filter types", () => {
       // @ts-expect-error dynamic record keys are not statically named paths.
       { field: "dynamic.country", type: "equals", filter: "PT" },
     ] satisfies Where<FilterRow>;
+
+    const _anyFieldPath = [
+      // @ts-expect-error Schema.Any does not promise a runtime-filterable scalar domain.
+      { field: "value", type: "contains", filter: "PT" },
+    ] satisfies Where<typeof AnyFieldRow.Type>;
 
     const _numericText = [
       // @ts-expect-error text operators do not apply to numeric fields.

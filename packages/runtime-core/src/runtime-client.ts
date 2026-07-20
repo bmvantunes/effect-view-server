@@ -1,12 +1,7 @@
 import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import type { ColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
-  ExactLiveQueryInputForTopic,
-  GroupedQuery,
-  LiveQueryRow,
   LiveQueryResult,
-  RawQuery,
-  TopicRow,
   ViewServerHealth,
   ViewServerTopicConfig,
   ViewServerRuntimeClient,
@@ -24,6 +19,7 @@ import {
 } from "./health";
 import { engineQueryWithoutRoute } from "./engine-query";
 import { engineErrorToRuntimeError, invalidRuntimeQueryError } from "./runtime-error";
+import { makeRuntimeCoreSnapshotQueryFacade } from "./snapshot-query-facade";
 import {
   makeRuntimeCoreMutationPipeline,
   type ViewServerRuntimeCoreInternalMutations,
@@ -39,7 +35,13 @@ export type RuntimeCoreClientInstance<Topics extends DecodableTopicDefinitions> 
 };
 
 export type ViewServerRuntimeCoreInternalClient<Topics extends DecodableTopicDefinitions> =
-  ViewServerRuntimeClient<Topics> & ViewServerRuntimeCoreInternalMutations<Topics>;
+  ViewServerRuntimeClient<Topics> &
+    ViewServerRuntimeCoreInternalMutations<Topics> & {
+      readonly snapshotRuntimeInternal: (
+        topic: Extract<keyof Topics, string>,
+        query: Readonly<Record<string, unknown>>,
+      ) => Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError>;
+    };
 
 export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.make")(
   <const Topics extends DecodableTopicDefinitions>(
@@ -108,22 +110,10 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
         engine,
         requestHealthRefresh(),
       );
-      function snapshot<
-        Topic extends Extract<keyof Topics, string>,
-        const Query extends
-          | RawQuery<TopicRow<Topics, Topic>>
-          | GroupedQuery<TopicRow<Topics, Topic>>,
-      >(
-        topic: Topic,
-        query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-      ): Effect.Effect<
-        LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-        ViewServerRuntimeError
-      >;
-      function snapshot<Topic extends Extract<keyof Topics, string>>(
-        topic: Topic,
+      const snapshotQuery = (
+        topic: Extract<keyof Topics, string>,
         query: Readonly<Record<string, unknown>>,
-      ): Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError> {
+      ): Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError> => {
         return Effect.suspend(() => {
           const routeError = validateLiveQuerySourceRoute(config.topics, topic, query);
           if (routeError !== undefined) {
@@ -134,19 +124,22 @@ export const makeRuntimeCoreClient = Effect.fn("ViewServerRuntimeCore.client.mak
             .snapshotRuntime(topic, engineQuery)
             .pipe(Effect.mapError(engineErrorToRuntimeError));
         });
-      }
+      };
+      const { snapshotInternal, snapshot } = makeRuntimeCoreSnapshotQueryFacade<Topics>({
+        snapshotQuery,
+        requirePublicReadAllowed: (topic) =>
+          sourceOwnership.requirePublicReadAllowed(topic, "runtimeCore"),
+      });
       const internalClient: ViewServerRuntimeCoreInternalClient<Topics> = {
         ...mutationPipeline.internalMutations,
-        snapshot,
+        snapshot: snapshotInternal,
+        snapshotRuntimeInternal: snapshotQuery,
         health: () => healthReader(),
       };
       return {
         client: {
           ...mutationPipeline.checkedMutations,
-          snapshot: (topic, query) =>
-            sourceOwnership
-              .requirePublicReadAllowed(topic, "runtimeCore")
-              .pipe(Effect.flatMap(() => internalClient.snapshot(topic, query))),
+          snapshot,
           health: internalClient.health,
         },
         internalClient,

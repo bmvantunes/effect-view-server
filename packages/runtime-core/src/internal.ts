@@ -19,10 +19,9 @@ import {
   type RuntimeCoreHealthOverlay,
   type RuntimeCoreTransportHealth,
 } from "./health";
-import {
-  makeRuntimeCoreLiveClient,
-  type ViewServerRuntimeCoreInternalLiveClient,
-} from "./live-client";
+import { makeRuntimeCoreLiveClientModule } from "./live-client";
+import type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client-contract";
+import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 import type {
   ViewServerRuntimeCorePublicClient,
   ViewServerRuntimeCorePublicLiveClient,
@@ -72,7 +71,8 @@ export type {
   ViewServerRuntimeCoreInternalLiveClient,
   ViewServerRuntimeCoreQueryPartition,
   ViewServerRuntimeCoreTerminalObserver,
-} from "./live-client";
+} from "./live-client-contract";
+export type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 export type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
 
 export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicDefinitions> = Omit<
@@ -82,8 +82,10 @@ export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicD
   readonly client: ViewServerRuntimeClient<Topics>;
   readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
   readonly publicClient: ViewServerRuntimeCorePublicClient<Topics>;
-  readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
+  readonly liveClient: ViewServerRuntimeLiveClient<Topics> &
+    ViewServerRuntimeCoreInternalLiveClient<Topics>;
   readonly internalLiveClient: ViewServerRuntimeCoreInternalLiveClient<Topics>;
+  readonly protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;
   readonly publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
 };
 
@@ -139,12 +141,13 @@ export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableT
       healthOverlay,
       input.healthRefreshCadence,
     );
-    const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(
+    const liveClientModule = yield* makeRuntimeCoreLiveClientModule<Topics>(
       config,
       engine,
       health,
       runtimeClient.refreshHealth,
     );
+    const liveClient = liveClientModule.liveClient;
     const close = Effect.uninterruptible(runAllFinalizers([runtimeClient.close, liveClient.close]));
     const publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics> = {
       close,
@@ -162,10 +165,12 @@ export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableT
         close,
       },
       serverLiveClient: {
-        ...liveClient,
-        close,
+        subscribeHealth: liveClient.subscribeHealth,
+        subscribeHealthSummary: liveClient.subscribeHealthSummary,
+        subscribeProtocolQuery: liveClientModule.protocolQuerySubscriber.subscribeProtocolQuery,
       },
       internalLiveClient: liveClient,
+      protocolQuerySubscriber: liveClientModule.protocolQuerySubscriber,
       publicLiveClient,
       close,
       requestHealthRefresh: runtimeClient.requestHealthRefresh,

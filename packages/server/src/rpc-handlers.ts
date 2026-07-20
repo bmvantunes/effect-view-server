@@ -196,7 +196,7 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
             topic,
             payload.query,
           );
-          const subscription = yield* input.liveClient.subscribeRuntime(topic, query);
+          const subscription = yield* input.liveClient.subscribeProtocolQuery(topic, query);
           return subscription.events.pipe(
             Stream.mapEffect((event) => viewServerEncodeLiveEvent(config, topic, query, event)),
             Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),

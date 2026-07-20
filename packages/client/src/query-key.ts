@@ -1,6 +1,11 @@
 import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { Result } from "effect";
 import { format, isBigDecimal, normalize, type BigDecimal } from "effect/BigDecimal";
+import {
+  denseArrayValues,
+  hasPlainRecordPrototype,
+  plainRecordSnapshot,
+} from "./query-structural-data";
 import { canonicalWhereKey } from "./query-where-key";
 
 type StableObjectEntry = readonly [string, StableQueryToken];
@@ -25,52 +30,31 @@ type StableQueryToken =
   | readonly ["map", ReadonlyArray<StableMapEntry>]
   | readonly ["set", ReadonlyArray<StableQueryToken>];
 
-const isPlainObject = (value: object): boolean => {
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype;
+const failStableObject = (): never => {
+  throw new TypeError("Stable query objects must be plain data objects.");
 };
 
-const plainObjectEntries = (value: object): ReadonlyArray<readonly [string, unknown]> => {
-  if (!isPlainObject(value) || Object.getOwnPropertySymbols(value).length > 0) {
-    throw new TypeError("Stable query objects must be plain data objects.");
-  }
-  const entries: Array<readonly [string, unknown]> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      throw new TypeError("Stable query object fields must be own enumerable data properties.");
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return entries;
+const failStableObjectProperty = (): never => {
+  throw new TypeError("Stable query object fields must be own enumerable data properties.");
 };
 
-const denseArrayValues = (value: ReadonlyArray<unknown>): ReadonlyArray<unknown> => {
-  if (
-    Object.getPrototypeOf(value) !== Array.prototype ||
-    Object.getOwnPropertySymbols(value).length > 0
-  ) {
-    throw new TypeError("Stable query arrays must be plain data arrays.");
-  }
-  // Array.isArray plus the exact Array prototype guarantees the non-configurable data descriptor.
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length")!;
-  const length: number = lengthDescriptor.value;
-  const values: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      throw new TypeError("Stable query arrays must be dense data arrays.");
-    }
-    values.push(descriptor.value);
-  }
-  if (Object.getOwnPropertyNames(value).some((key) => !allowed.has(key))) {
-    throw new TypeError("Stable query arrays must not contain extra properties.");
-  }
-  return values;
+const failStableArray = (): never => {
+  throw new TypeError("Stable query arrays must be plain data arrays.");
 };
+
+const failStableArrayEntry = (): never => {
+  throw new TypeError("Stable query arrays must be dense data arrays.");
+};
+
+const failStableArrayExtraProperty = (): never => {
+  throw new TypeError("Stable query arrays must not contain extra properties.");
+};
+
+const stableArrayValues = (value: unknown): ReadonlyArray<unknown> =>
+  denseArrayValues(value, failStableArray, failStableArrayEntry, failStableArrayExtraProperty);
+
+const stableObjectEntries = (value: unknown): ReadonlyArray<readonly [string, unknown]> =>
+  plainRecordSnapshot(value, failStableObject, failStableObjectProperty).entries;
 
 const stableNumberValue = (value: number): string => {
   if (Object.is(value, -0)) {
@@ -146,7 +130,7 @@ const stableQueryValue = (
   if (Array.isArray(value)) {
     return withCycleTracking(value, active, () => [
       "array",
-      denseArrayValues(value).map((entry) => stableQueryValue(entry, active, bigDecimalIdentity)),
+      stableArrayValues(value).map((entry) => stableQueryValue(entry, active, bigDecimalIdentity)),
     ]);
   }
   if (value instanceof Map) {
@@ -180,12 +164,12 @@ const stableQueryValue = (
       ];
     });
   }
-  if (!isPlainObject(value)) {
+  if (!hasPlainRecordPrototype(value)) {
     return ["unsupported", stableObjectName(value)];
   }
   return withCycleTracking(value, active, () => [
     "object",
-    plainObjectEntries(value)
+    stableObjectEntries(value)
       .toSorted(([left], [right]) => left.localeCompare(right))
       .map(([key, entry]) => [key, stableQueryValue(entry, active, bigDecimalIdentity)]),
   ]);
@@ -338,7 +322,7 @@ const stableGraphQueryValue = (
       ];
       continue;
     }
-    if (!Array.isArray(value) && !isPlainObject(value)) {
+    if (!Array.isArray(value) && !hasPlainRecordPrototype(value)) {
       current.slot.value = ["unsupported", stableObjectName(value)];
       continue;
     }
@@ -359,7 +343,7 @@ const stableGraphQueryValue = (
     nodesByValue.set(value, { status: "active" });
     active.add(value);
     if (Array.isArray(value)) {
-      const children = denseArrayValues(value).map((input) => ({
+      const children = stableArrayValues(value).map((input) => ({
         input,
         slot: { value: undefined } satisfies StableGraphSlot,
       }));
@@ -387,7 +371,7 @@ const stableGraphQueryValue = (
       continue;
     }
 
-    const entries = plainObjectEntries(value)
+    const entries = stableObjectEntries(value)
       .toSorted(([left], [right]) => left.localeCompare(right))
       .map(([key, entry]) => ({ key, entry, slot: { value: undefined } }));
     const node: StableGraphNode = {
@@ -419,7 +403,7 @@ const stableGraphQueryValue = (
 
 const canonicalQueryInput = (query: object): object => {
   const canonical: Record<string, unknown> = {};
-  for (const [key, value] of plainObjectEntries(query)) {
+  for (const [key, value] of stableObjectEntries(query)) {
     if (key === "where") {
       const whereKey = canonicalWhereKey(value);
       if (whereKey === undefined) {

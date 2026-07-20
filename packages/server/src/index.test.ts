@@ -44,7 +44,7 @@ import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as Net from "node:net";
 import { makeViewServerWebSocketServer, ViewServerAuthError } from "./index";
-import type { ViewServerAuth } from "./index";
+import type { ViewServerAuth, ViewServerWebSocketServerInput } from "./index";
 import { makeViewServerRpcHandlers } from "./rpc-handlers";
 import { closeTrackedSockets, makeTrackedSocket } from "./websocket-tracking";
 
@@ -165,18 +165,22 @@ const createServerTestRuntime = <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: Parameters<typeof makeViewServerRuntimeCoreInternal<Topics>>[1] = {},
-) => Effect.runSync(makeViewServerRuntimeCoreInternal(config, options));
+) => {
+  const runtimeCore = Effect.runSync(makeViewServerRuntimeCoreInternal(config, options));
+  return {
+    ...runtimeCore,
+    liveClient: runtimeCore.serverLiveClient,
+  };
+};
 
 const serverTestLiveClientWithSubscribe = <const Topics extends TopicDefinitions>(
-  base: ViewServerRuntimeLiveClient<Topics>,
-  subscribe: (...args: ReadonlyArray<unknown>) => unknown,
-) => {
-  const liveClient = Object.create(base);
-  Object.defineProperty(liveClient, "subscribeRuntime", {
-    value: subscribe,
-  });
-  return liveClient;
-};
+  base: Pick<ViewServerRuntimeLiveClient<Topics>, "subscribeHealth" | "subscribeHealthSummary">,
+  subscribe: ViewServerWebSocketServerInput<Topics>["liveClient"]["subscribeProtocolQuery"],
+): ViewServerWebSocketServerInput<Topics>["liveClient"] => ({
+  subscribeHealth: base.subscribeHealth,
+  subscribeHealthSummary: base.subscribeHealthSummary,
+  subscribeProtocolQuery: subscribe,
+});
 
 const kafkaStartFromHealth = {
   consumerGroupId: "view-server-test",
@@ -950,7 +954,7 @@ describe("@effect-view-server/server", () => {
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: {
           ...inMemory.liveClient,
-          subscribeRuntime: () => Effect.fail(subscribeError),
+          subscribeProtocolQuery: () => Effect.fail(subscribeError),
         },
         runtime: inMemory.client,
         transport: {
@@ -1319,7 +1323,7 @@ describe("@effect-view-server/server", () => {
         },
       };
       const cachedHealth = AtomRef.make<ViewServerHealth<typeof viewServer.topics>>(degradedHealth);
-      const liveClient: ViewServerRuntimeLiveClient<typeof viewServer.topics> = {
+      const liveClient = {
         ...inMemory.liveClient,
         health: cachedHealth,
       };

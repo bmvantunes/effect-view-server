@@ -13,7 +13,6 @@ import { normalizeDecimalFields } from "../test-harness/rows";
 import { InvalidQueryError } from "./index";
 import { prepareGroupedQuery } from "./grouped-query-compiler";
 import { decodeTypedGroupedQuery } from "./grouped-query-decoder";
-import { prepareGroupedExecutableQuery, prepareRawExecutableQuery } from "./query-execution";
 import {
   prepareRawQuery,
   prepareRuntimeRawQuery,
@@ -23,7 +22,6 @@ import {
 import { decodeTypedRawQuery } from "./raw-query-decoder";
 import { groupedQueryResultSemantics, rawQueryResultSemantics } from "./query-result-semantics";
 import { topicRowValueSemanticsMatchesSchema } from "./topic-row-value-semantics";
-import { TopicStore, topicStoreQueryMetadata } from "./topic-store";
 
 describe("ColumnLiveViewEngine query result proof", () => {
   it.effect("keeps raw snapshot and delta projection exact and convergent", () =>
@@ -210,23 +208,6 @@ describe("ColumnLiveViewEngine query result proof", () => {
     }),
   );
 
-  it.effect("rejects a mismatched Topic Store schema before compiling a typed proof", () =>
-    Effect.gen(function* () {
-      const store = new TopicStore("orders", Order, "id", () => {});
-      const mismatchedSchema = Schema.Struct({
-        id: Schema.Number,
-      });
-
-      const error = yield* Effect.flip(topicStoreQueryMetadata(store, mismatchedSchema));
-      expect(error).toStrictEqual(
-        InvalidQueryError.make({
-          topic: "orders",
-          message: "Topic Store schema does not match the compiled query proof schema.",
-        }),
-      );
-    }),
-  );
-
   it.effect("rejects metadata whose public schema does not match its hidden provenance", () =>
     Effect.gen(function* () {
       const numericSchema = Schema.Struct({ id: Schema.Number });
@@ -305,6 +286,12 @@ describe("ColumnLiveViewEngine query result proof", () => {
         numericMetadata,
         numericGroupedQuery,
       );
+      const numericRawSemantics = rawQueryResultSemantics(
+        numericMetadata.valueSemantics,
+        numericRawWitness,
+      );
+
+      expect(numericRawSemantics.narrowProjectedRow({ id: 1 })).toStrictEqual({ id: 1 });
 
       expect(() =>
         rawQueryResultSemantics<typeof stringSchema.Type, typeof stringRawQuery>(
@@ -484,35 +471,17 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
     const stringGrouped = yield* prepareGroupedQuery("strings", stringMetadata, {
       groupBy: ["id"],
       aggregates: { rowCount: { aggFunc: "count" } },
+      where: [{ field: "id", type: "equals", filter: "none" }],
     });
     const numberGrouped = yield* prepareGroupedQuery("numbers", numberMetadata, {
       groupBy: ["id"],
       aggregates: { rowCount: { aggFunc: "count" } },
     });
-    const stringStore = new TopicStore("strings", stringSchema, "id", () => {});
-    const numberStore = new TopicStore("numbers", numberSchema, "id", () => {});
-    const stringRawExecutable = yield* prepareRawExecutableQuery(stringStore, stringMetadata, {
-      select: ["id"],
+    const emptyGroupedEvaluation = stringGrouped.evaluate({
+      changesSince: () => [],
+      scanRows: () => {},
+      version: () => 0,
     });
-    const numberRawExecutable = yield* prepareRawExecutableQuery(numberStore, numberMetadata, {
-      select: ["id"],
-    });
-    const stringGroupedExecutable = yield* prepareGroupedExecutableQuery(
-      stringStore,
-      stringMetadata,
-      {
-        groupBy: ["id"],
-        aggregates: { rowCount: { aggFunc: "count" } },
-      },
-    );
-    const numberGroupedExecutable = yield* prepareGroupedExecutableQuery(
-      numberStore,
-      numberMetadata,
-      {
-        groupBy: ["id"],
-        aggregates: { rowCount: { aggFunc: "count" } },
-      },
-    );
 
     expect(Object.isFrozen(stringRaw.plan)).toBe(true);
     expect(Object.isFrozen(stringRaw)).toBe(true);
@@ -520,6 +489,13 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
     expect(Object.isFrozen(stringGrouped)).toBe(true);
     expect(Object.isFrozen(stringRaw.plan.resultSemantics)).toBe(true);
     expect(Object.isFrozen(stringGrouped.plan.resultSemantics)).toBe(true);
+    expect(emptyGroupedEvaluation).toStrictEqual({
+      keys: [],
+      rows: [],
+      totalRows: 0,
+      version: 0,
+      window: [],
+    });
     expect(Object.isFrozen(stringRaw.plan.resultSemantics.topicStorageProjectionProof)).toBe(true);
     expect(
       Reflect.ownKeys(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
@@ -529,8 +505,6 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
         Object.getPrototypeOf(stringRaw.plan.resultSemantics.topicStorageProjectionProof),
       ),
     ).toBe(true);
-    expect(Object.isFrozen(stringRawExecutable)).toBe(true);
-    expect(Object.isFrozen(stringGroupedExecutable)).toBe(true);
     expect(() => Object.assign(stringRaw.plan, numberRaw.plan)).toThrowError(TypeError);
     expect(() => Object.assign(stringRaw, numberRaw)).toThrowError(TypeError);
     expect(() => Object.assign(stringGrouped.plan, numberGrouped.plan)).toThrowError(TypeError);
@@ -566,9 +540,5 @@ it.effect("freezes raw and grouped compiled proof carriers", () =>
         [],
       ),
     ).toThrowError("Query Result Topic Storage projection proof construction is private.");
-    expect(() => Object.assign(stringRawExecutable, numberRawExecutable)).toThrowError(TypeError);
-    expect(() => Object.assign(stringGroupedExecutable, numberGroupedExecutable)).toThrowError(
-      TypeError,
-    );
   }),
 );

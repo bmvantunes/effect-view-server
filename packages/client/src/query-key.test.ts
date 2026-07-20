@@ -53,6 +53,35 @@ const nonCollapsibleDiamondQuery = (depth: number, share: boolean): object => {
   return { select: ["name"], where: [condition] };
 };
 
+const repeatedSharedGroupQuery = (size: number): object => {
+  const shared = {
+    type: "AND",
+    conditions: Array.from({ length: size }, (_, index) => ({
+      field: "name",
+      type: "equals",
+      filter: `name-${index}`,
+    })),
+  };
+  return {
+    where: Array.from({ length: size }, () => shared),
+  };
+};
+
+const rightDeepDistinctQuery = (size: number): object => {
+  let condition: unknown = {
+    field: "name",
+    type: "equals",
+    filter: `name-${size - 1}`,
+  };
+  for (let index = size - 2; index >= 0; index -= 1) {
+    condition = {
+      type: "AND",
+      conditions: [{ field: "name", type: "equals", filter: `name-${index}` }, condition],
+    };
+  }
+  return { select: ["name"], where: [condition] };
+};
+
 describe("stableQueryKey", () => {
   it("uses a deterministic invalid identity without invoking getters or property reads", () => {
     let getterReads = 0;
@@ -500,6 +529,28 @@ describe("stableQueryKey", () => {
     expect(first.length).toBeLessThan(20_000);
   });
 
+  it("expands wide shared same-type groups only once", () => {
+    const query = repeatedSharedGroupQuery(12_000);
+    const key = stableQueryKey(query);
+
+    expect(key).toBe(stableQueryKey(query));
+    expect(key.length).toBeLessThan(5_000_000);
+  });
+
+  it("flattens right-deep distinct same-type groups without quadratic rebuilding", () => {
+    const size = 8_192;
+    const flat = {
+      select: ["name"],
+      where: Array.from({ length: size }, (_, index) => ({
+        field: "name",
+        type: "equals",
+        filter: `name-${index}`,
+      })),
+    };
+
+    expect(stableQueryKey(rightDeepDistinctQuery(size))).toBe(stableQueryKey(flat));
+  });
+
   it("serializes non-collapsible filter diamonds as bounded canonical graphs", () => {
     const deepShared = stableQueryKey(nonCollapsibleDiamondQuery(100, true));
 
@@ -520,6 +571,46 @@ describe("stableQueryKey", () => {
     };
 
     expect(stableQueryKey(sharedQuery)).toBe(stableQueryKey(duplicatedQuery));
+  });
+
+  it("flattens a same-type group recovered through double negation", () => {
+    const nested = {
+      where: [
+        {
+          type: "OR",
+          conditions: [
+            {
+              type: "NOT",
+              condition: {
+                type: "NOT",
+                condition: {
+                  type: "OR",
+                  conditions: [
+                    { field: "name", type: "equals", filter: "Ada" },
+                    { field: "name", type: "equals", filter: "Grace" },
+                  ],
+                },
+              },
+            },
+            { field: "name", type: "equals", filter: "Linus" },
+          ],
+        },
+      ],
+    };
+    const flat = {
+      where: [
+        {
+          type: "OR",
+          conditions: [
+            { field: "name", type: "equals", filter: "Ada" },
+            { field: "name", type: "equals", filter: "Grace" },
+            { field: "name", type: "equals", filter: "Linus" },
+          ],
+        },
+      ],
+    };
+
+    expect(stableQueryKey(nested)).toBe(stableQueryKey(flat));
   });
 
   it("preserves exact BigDecimal route identity while normalizing filter operands", () => {

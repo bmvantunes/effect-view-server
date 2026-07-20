@@ -1,6 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { Schema, Stream } from "effect";
 import { defineViewServerConfig, type LiveQueryResult, type TopicRouteBy } from "./index";
+import { grpcSourceMarkers } from "./internal";
 import {
   grpcOrdersByRegionStatusTopic,
   grpcTestClients,
@@ -67,6 +68,36 @@ describe("gRPC route generic contracts", () => {
         region: "usa",
         updatedAt: value.updatedAt,
       }),
+    });
+
+    const StructuredRoute = Schema.Struct({
+      id: Schema.String,
+      profile: Schema.Struct({ country: Schema.String }),
+    });
+    // @ts-expect-error internal leased-source markers still reject structured route fields.
+    defineViewServerConfig({
+      topics: {
+        structured: {
+          schema: StructuredRoute,
+          key: "id",
+          grpcSource: grpcSourceMarkers.leased({ routeBy: ["profile"] }),
+        },
+      },
+    });
+
+    const AnyRoute = Schema.Struct({
+      id: Schema.String,
+      value: Schema.Any,
+    });
+    // @ts-expect-error Schema.Any does not promise a scalar leased-route domain.
+    defineViewServerConfig({
+      topics: {
+        anyRoute: {
+          schema: AnyRoute,
+          key: "id",
+          grpcSource: grpcSourceMarkers.leased({ routeBy: ["value"] }),
+        },
+      },
     });
 
     const OptionalRouteOrder = Schema.Struct({

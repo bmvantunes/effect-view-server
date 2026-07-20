@@ -1,5 +1,14 @@
-import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import {
+  collectCanonicalFilterGraphLeaves,
+  compareCanonicalFilterGraphs,
+  complementCanonicalFilterType,
+  isWireSafeBigDecimal,
+} from "@effect-view-server/effect-utils";
 import { format, isBigDecimal, normalize } from "effect/BigDecimal";
+import {
+  denseArrayValues as structuralDenseArrayValues,
+  plainRecordSnapshot as structuralPlainRecordSnapshot,
+} from "./query-structural-data";
 
 type CanonicalConditionType =
   | "equals"
@@ -41,6 +50,25 @@ type CanonicalNegation = {
 
 type CanonicalExpression = CanonicalCondition | CanonicalGroup | CanonicalNegation;
 
+type DeferredExpressionSequence =
+  | {
+      readonly _tag: "one";
+      readonly expression: CanonicalExpression;
+    }
+  | {
+      readonly _tag: "concat";
+      readonly left: DeferredExpressionSequence;
+      readonly right: DeferredExpressionSequence;
+    };
+
+type DeferredCanonicalGroup = {
+  readonly _tag: "deferredGroup";
+  readonly type: "AND" | "OR";
+  readonly sequence: DeferredExpressionSequence;
+};
+
+type NormalizedExpression = CanonicalExpression | DeferredCanonicalGroup | undefined;
+
 type ExpressionIdentityTrie = {
   readonly branches: Map<number, ExpressionIdentityTrie>;
   identity: number | undefined;
@@ -54,59 +82,11 @@ const failInvalidWhere = (): never => {
   throw new TypeError("Query where cannot be used as a stable identity.");
 };
 
-type PlainRecordSnapshot = {
-  readonly source: object;
-  readonly entries: ReadonlyArray<readonly [string, unknown]>;
-};
+const plainRecordSnapshot = (value: unknown) =>
+  structuralPlainRecordSnapshot(value, failInvalidWhere, failInvalidWhere);
 
-const plainRecordSnapshot = (value: unknown): PlainRecordSnapshot => {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype ||
-    Object.getOwnPropertySymbols(value).length > 0
-  ) {
-    return failInvalidWhere();
-  }
-  const entries: Array<readonly [string, unknown]> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return failInvalidWhere();
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return { source: value, entries };
-};
-
-const denseArrayValues = (value: unknown): ReadonlyArray<unknown> => {
-  if (
-    !Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Array.prototype ||
-    Object.getOwnPropertySymbols(value).length > 0
-  ) {
-    return failInvalidWhere();
-  }
-  // Array.isArray plus the exact Array prototype guarantees the non-configurable data descriptor.
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length")!;
-  const length: number = lengthDescriptor.value;
-  const values: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return failInvalidWhere();
-    }
-    values.push(descriptor.value);
-  }
-  if (Object.getOwnPropertyNames(value).some((key) => !allowed.has(key))) {
-    return failInvalidWhere();
-  }
-  return values;
-};
+const denseArrayValues = (value: unknown): ReadonlyArray<unknown> =>
+  structuralDenseArrayValues(value, failInvalidWhere, failInvalidWhere, failInvalidWhere);
 
 type RecordValues = {
   readonly source: object;
@@ -365,25 +345,6 @@ const canonicalCondition = (
   });
 };
 
-const complementType = (type: CanonicalConditionType): CanonicalConditionType | undefined => {
-  switch (type) {
-    case "equals":
-      return "notEqual";
-    case "notEqual":
-      return "equals";
-    case "contains":
-      return "notContains";
-    case "notContains":
-      return "contains";
-    case "blank":
-      return "notBlank";
-    case "notBlank":
-      return "blank";
-    default:
-      return undefined;
-  }
-};
-
 const complementedCondition = (
   condition: CanonicalCondition,
   type: CanonicalConditionType,
@@ -470,76 +431,18 @@ const comparisonNode = (expression: CanonicalExpression): ComparisonNode => {
   };
 };
 
-const compareStrings = (left: string, right: string): number =>
-  Number(left > right) - Number(left < right);
-
 export const compareCanonicalWhereExpressions = (
   left: CanonicalExpression,
   right: CanonicalExpression,
-): number => {
-  const frames: Array<readonly [CanonicalExpression, CanonicalExpression]> = [[left, right]];
-  const compared = new WeakMap<object, WeakSet<object>>();
-  while (frames.length > 0) {
-    const [leftExpression, rightExpression] = frames.pop()!;
-    if (leftExpression === rightExpression) {
-      continue;
-    }
-    const existing = compared.get(leftExpression);
-    if (existing?.has(rightExpression) === true) {
-      continue;
-    }
-    if (existing === undefined) {
-      compared.set(leftExpression, new WeakSet([rightExpression]));
-    } else {
-      existing.add(rightExpression);
-    }
-    const leftNode = comparisonNode(leftExpression);
-    const rightNode = comparisonNode(rightExpression);
-    const tagComparison = compareStrings(leftNode.tag, rightNode.tag);
-    if (tagComparison !== 0) {
-      return tagComparison;
-    }
-    const valueComparison = compareStrings(leftNode.value, rightNode.value);
-    if (valueComparison !== 0) {
-      return valueComparison;
-    }
-    for (let index = leftNode.children.length - 1; index >= 0; index -= 1) {
-      frames.push([leftNode.children[index]!, rightNode.children[index]!]);
-    }
-  }
-  return 0;
-};
+): number => compareCanonicalFilterGraphs(left, right, comparisonNode);
 
 const canonicalGroup = (
   type: "AND" | "OR",
-  children: ReadonlyArray<CanonicalExpression | undefined>,
+  unique: ReadonlyArray<CanonicalExpression>,
   identities: ExpressionIdentityModule,
-): CanonicalExpression | undefined => {
-  const pending = [...children].reverse();
-  const unique: Array<CanonicalExpression> = [];
-  const seen = new Set<number>();
-  while (pending.length > 0) {
-    const child = pending.pop();
-    if (child === undefined) {
-      continue;
-    }
-    if (child._tag === "group" && child.type === type) {
-      for (let index = child.conditions.length - 1; index >= 0; index -= 1) {
-        pending.push(child.conditions[index]);
-      }
-      continue;
-    }
-    const identity = identities.identityFor(child);
-    if (!seen.has(identity)) {
-      seen.add(identity);
-      unique.push(child);
-    }
-  }
-  if (unique.length === 0) {
-    return undefined;
-  }
+): CanonicalExpression => {
   if (unique.length === 1) {
-    return unique[0];
+    return unique[0]!;
   }
   const group: CanonicalGroup = {
     _tag: "group",
@@ -551,26 +454,112 @@ const canonicalGroup = (
 };
 
 const canonicalNegation = (
-  child: CanonicalExpression | undefined,
+  child: NormalizedExpression,
   identities: ExpressionIdentityModule,
+  materialization: FilterMaterializationModule,
 ): CanonicalExpression | undefined => {
-  if (child === undefined) {
+  const materializedChild = materialization.materialize(child);
+  if (materializedChild === undefined) {
     return undefined;
   }
-  if (child._tag === "NOT") {
-    return child.condition;
+  if (materializedChild._tag === "NOT") {
+    return materializedChild.condition;
   }
-  if (child._tag === "condition") {
-    const complement = complementType(child.type);
+  if (materializedChild._tag === "condition") {
+    const complement = complementCanonicalFilterType(materializedChild.type);
     if (complement !== undefined) {
-      const condition = complementedCondition(child, complement);
+      const condition = complementedCondition(materializedChild, complement);
       identities.identityFor(condition);
       return condition;
     }
   }
-  const negation: CanonicalNegation = { _tag: "NOT", condition: child };
+  const negation: CanonicalNegation = { _tag: "NOT", condition: materializedChild };
   identities.identityFor(negation);
   return negation;
+};
+
+type FilterMaterializationModule = {
+  readonly materializeDefined: (
+    expression: CanonicalExpression | DeferredCanonicalGroup,
+  ) => CanonicalExpression;
+  readonly materialize: (expression: NormalizedExpression) => CanonicalExpression | undefined;
+};
+
+const makeFilterMaterializationModule = (
+  identities: ExpressionIdentityModule,
+): FilterMaterializationModule => {
+  const materializedGroups = new WeakMap<DeferredCanonicalGroup, CanonicalExpression>();
+  const materializeGroup = (group: DeferredCanonicalGroup): CanonicalExpression => {
+    const existing = materializedGroups.get(group);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const candidates = collectCanonicalFilterGraphLeaves<
+      DeferredExpressionSequence | CanonicalExpression,
+      CanonicalExpression,
+      number
+    >(
+      [group.sequence],
+      (current) => {
+        if (current._tag === "one") {
+          return { _tag: "expand", children: [current.expression] };
+        }
+        if (current._tag === "concat") {
+          return { _tag: "expand", children: [current.left, current.right] };
+        }
+        if (current._tag === "group" && current.type === group.type) {
+          return { _tag: "expand", children: current.conditions };
+        }
+        return { _tag: "leaf", leaf: current };
+      },
+      identities.identityFor,
+    );
+    const materialized = canonicalGroup(group.type, candidates, identities);
+    materializedGroups.set(group, materialized);
+    return materialized;
+  };
+  const materializeDefined = (
+    expression: CanonicalExpression | DeferredCanonicalGroup,
+  ): CanonicalExpression =>
+    expression._tag === "deferredGroup" ? materializeGroup(expression) : expression;
+  const materialize = (expression: NormalizedExpression): CanonicalExpression | undefined =>
+    expression === undefined ? undefined : materializeDefined(expression);
+  return { materialize, materializeDefined };
+};
+
+const expressionSequence = (expression: CanonicalExpression): DeferredExpressionSequence => ({
+  _tag: "one",
+  expression,
+});
+
+const concatenateExpressionSequences = (
+  left: DeferredExpressionSequence,
+  right: DeferredExpressionSequence,
+): DeferredExpressionSequence => ({ _tag: "concat", left, right });
+
+const normalizeGroup = (
+  type: "AND" | "OR",
+  children: ReadonlyArray<NormalizedExpression>,
+  materialization: FilterMaterializationModule,
+): NormalizedExpression => {
+  let sequence: DeferredExpressionSequence | undefined;
+  for (const child of children) {
+    if (child === undefined) {
+      continue;
+    }
+    const next =
+      child._tag === "deferredGroup" && child.type === type
+        ? child.sequence
+        : expressionSequence(materialization.materializeDefined(child));
+    sequence = sequence === undefined ? next : concatenateExpressionSequences(sequence, next);
+  }
+  if (sequence === undefined) {
+    return undefined;
+  }
+  if (sequence._tag === "one") {
+    return sequence.expression;
+  }
+  return { _tag: "deferredGroup", type, sequence };
 };
 
 type NormalizeFrame =
@@ -584,21 +573,22 @@ type NormalizeFrame =
 
 const normalizeExpression = (
   input: unknown,
-  memo: WeakMap<object, CanonicalExpression | undefined>,
+  memo: WeakMap<object, NormalizedExpression>,
   complete: WeakSet<object>,
   active: WeakSet<object>,
   identities: ExpressionIdentityModule,
-): CanonicalExpression | undefined => {
+  materialization: FilterMaterializationModule,
+): NormalizedExpression => {
   const frames: Array<NormalizeFrame> = [{ _tag: "enter", value: input }];
-  const results: Array<CanonicalExpression | undefined> = [];
+  const results: Array<NormalizedExpression> = [];
   while (frames.length > 0) {
     const frame = frames.pop()!;
     if (frame._tag === "exit") {
       const children = results.splice(results.length - frame.childCount, frame.childCount);
       const normalized =
         frame.kind === "NOT"
-          ? canonicalNegation(children[0], identities)
-          : canonicalGroup(frame.kind, children, identities);
+          ? canonicalNegation(children[0], identities, materialization)
+          : normalizeGroup(frame.kind, children, materialization);
       active.delete(frame.source);
       memo.set(frame.source, normalized);
       complete.add(frame.source);
@@ -692,14 +682,17 @@ const serializeExpression = (expression: CanonicalExpression): string => {
 
 export const canonicalWhereKey = (where: unknown): string | undefined => {
   const roots = denseArrayValues(where);
-  const memo = new WeakMap<object, CanonicalExpression | undefined>();
+  const memo = new WeakMap<object, NormalizedExpression>();
   const complete = new WeakSet<object>();
   const active = new WeakSet<object>();
   const identities = makeExpressionIdentityModule();
-  const normalized: Array<CanonicalExpression | undefined> = [];
+  const materialization = makeFilterMaterializationModule(identities);
+  const normalized: Array<NormalizedExpression> = [];
   for (const root of roots) {
-    normalized.push(normalizeExpression(root, memo, complete, active, identities));
+    normalized.push(normalizeExpression(root, memo, complete, active, identities, materialization));
   }
-  const expression = canonicalGroup("AND", normalized, identities);
+  const expression = materialization.materialize(
+    normalizeGroup("AND", normalized, materialization),
+  );
   return expression === undefined ? undefined : serializeExpression(expression);
 };

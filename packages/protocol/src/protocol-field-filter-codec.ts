@@ -12,6 +12,12 @@ import {
   protocolNumericOperandSchema,
 } from "./protocol-filter-field-schema";
 import { requireProtocolJsonArray } from "./protocol-json-value";
+import {
+  isProtocolPlainRecord,
+  protocolDenseArray,
+  protocolHasOnlyDataKeys,
+  protocolOwnDataValue,
+} from "./protocol-structural-value";
 
 type Direction = "encode" | "decode";
 
@@ -28,48 +34,14 @@ const filterJsonFieldContext = {
   notJsonSafePrefix: "Filter",
 };
 
-const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
-
 const ownValue = (value: Readonly<Record<string, unknown>>, key: string): unknown => {
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  return descriptor !== undefined && descriptor.enumerable && "value" in descriptor
-    ? descriptor.value
-    : undefined;
+  return protocolOwnDataValue(value, key).value;
 };
 
 const exactKeys = (
   value: Readonly<Record<string, unknown>>,
   allowed: ReadonlySet<string>,
-): boolean =>
-  Object.getOwnPropertySymbols(value).length === 0 &&
-  Object.getOwnPropertyNames(value).every(
-    (key) => allowed.has(key) && Object.getOwnPropertyDescriptor(value, key)?.enumerable === true,
-  );
-
-const denseArray = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    return undefined;
-  }
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    return undefined;
-  }
-  const output: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < value.length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    output.push(descriptor.value);
-  }
-  return Object.getOwnPropertyNames(value).every((key) => allowed.has(key)) ? output : undefined;
-};
+): boolean => protocolHasOnlyDataKeys(value, allowed);
 
 const uniqueValues = (values: ReadonlyArray<unknown>): ReadonlyArray<unknown> => {
   const unique: Array<unknown> = [];
@@ -192,7 +164,7 @@ const transformCondition = Effect.fn("ViewServerProtocol.filter.condition.transf
   }
   const filter = ownValue(condition, "filter");
   if (type === "in") {
-    const candidates = denseArray(filter);
+    const candidates = protocolDenseArray(filter);
     if (candidates === undefined) {
       return yield* Effect.fail(
         invalidQuery(topic, `Filter condition ${field} in must be an array`),
@@ -269,7 +241,7 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
       continue;
     }
     const expression = frame.value;
-    if (!isPlainRecord(expression)) {
+    if (!isProtocolPlainRecord(expression)) {
       return yield* Effect.fail(invalidQuery(topic, "Every filter expression must be an object"));
     }
     const cached = state.memo.get(expression);
@@ -285,7 +257,7 @@ const transformExpression = Effect.fn("ViewServerProtocol.filter.expression.tran
       if (!exactKeys(expression, new Set(["type", "conditions"]))) {
         return yield* Effect.fail(invalidQuery(topic, `Filter group ${type} has invalid keys`));
       }
-      const children = denseArray(ownValue(expression, "conditions"));
+      const children = protocolDenseArray(ownValue(expression, "conditions"));
       if (children === undefined) {
         return yield* Effect.fail(
           invalidQuery(topic, `Filter group ${type} conditions must be an array`),
@@ -328,7 +300,7 @@ const transformWhere = Effect.fn("ViewServerProtocol.filter.where.transform")(fu
   if (where === undefined) {
     return undefined;
   }
-  const roots = denseArray(where);
+  const roots = protocolDenseArray(where);
   if (roots === undefined) {
     return yield* Effect.fail(invalidQuery(topic, "Query where must be an array"));
   }

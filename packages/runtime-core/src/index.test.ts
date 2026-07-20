@@ -1317,6 +1317,22 @@ describe("@effect-view-server/runtime-core", () => {
     }),
   );
 
+  it.effect("refreshes pushed health when an event consumer stops without explicit close", () =>
+    Effect.gen(function* () {
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {});
+      yield* runtimeCore.internalClient.publish("orders", order("a", 10));
+      const subscription = yield* runtimeCore.liveClient.subscribeRuntime("orders", {
+        select: ["id"],
+      });
+
+      expect(runtimeCore.liveClient.health.value.engine.topics.orders.activeSubscriptions).toBe(1);
+      yield* subscription.events.pipe(Stream.take(1), Stream.runDrain);
+      expect(runtimeCore.liveClient.health.value.engine.topics.orders.activeSubscriptions).toBe(0);
+
+      yield* runtimeCore.close;
+    }),
+  );
+
   it.effect("forwards producer terminal observation through the internal live client", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(viewServer, {

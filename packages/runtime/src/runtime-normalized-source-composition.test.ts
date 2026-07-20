@@ -9,6 +9,7 @@ import {
   type ViewServerRuntimeSourceAdapter,
   type ViewServerRuntimeSourceModule,
 } from "./runtime-source";
+import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "@effect-view-server/runtime-core/internal";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -33,12 +34,16 @@ describe("Normalized runtime source composition", () => {
   it.effect("prepares and starts registered source Modules around the server lifecycle", () =>
     Effect.gen(function* () {
       const events: Array<string> = [];
+      const replacementProtocolQuerySubscriber = {
+        subscribeProtocolQuery: () => Effect.die("protocol query sentinel must not be invoked"),
+      } satisfies ViewServerRuntimeCoreProtocolQuerySubscriber<typeof viewServer.topics>;
+      let serverProtocolQuerySubscriber: unknown;
       const sourceAdapter: ViewServerRuntimeSourceAdapter<typeof viewServer.topics> = {
         make: () =>
           Effect.succeed({
             healthOverlay: (health) => health,
             ownedTopics: [],
-            prepare: ({ client, liveClient }) =>
+            prepare: ({ client, liveClient, protocolQuerySubscriber }) =>
               Effect.acquireRelease(
                 Effect.sync(() => {
                   events.push("prepare:source");
@@ -52,6 +57,7 @@ describe("Normalized runtime source composition", () => {
                 Effect.map(() => ({
                   client,
                   liveClient,
+                  protocolQuerySubscriber: replacementProtocolQuerySubscriber,
                   start: Effect.acquireRelease(
                     Effect.sync(() => {
                       events.push("start:source");
@@ -69,9 +75,10 @@ describe("Normalized runtime source composition", () => {
       const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
         ...makeDefaultRuntimeDependencies<typeof viewServer.topics>(),
         sourceAdapters: [sourceAdapter],
-        makeServer: () =>
+        makeServer: (_config, input) =>
           Effect.sync(() => {
             events.push("acquire:server");
+            serverProtocolQuerySubscriber = input.liveClient.subscribeProtocolQuery;
             return {
               url: "ws://127.0.0.1:0/rpc",
               healthUrl: "http://127.0.0.1:0/health",
@@ -86,6 +93,9 @@ describe("Normalized runtime source composition", () => {
       const runtime = yield* makeViewServerRuntimeWithDependencies(dependencies, viewServer);
       yield* runtime.close;
 
+      expect(serverProtocolQuerySubscriber).toBe(
+        replacementProtocolQuerySubscriber.subscribeProtocolQuery,
+      );
       expect(events).toStrictEqual([
         "prepare:source",
         "acquire:server",
@@ -115,10 +125,11 @@ describe("Normalized runtime source composition", () => {
             });
           },
         })),
-        prepare: ({ client, liveClient }) =>
+        prepare: ({ client, liveClient, protocolQuerySubscriber }) =>
           Effect.succeed({
             client,
             liveClient,
+            protocolQuerySubscriber,
             start: Effect.void,
           }),
       };
@@ -150,10 +161,11 @@ describe("Normalized runtime source composition", () => {
                   }),
               },
             ],
-            prepare: ({ client, liveClient }) =>
+            prepare: ({ client, liveClient, protocolQuerySubscriber }) =>
               Effect.succeed({
                 client,
                 liveClient,
+                protocolQuerySubscriber,
                 start: Effect.void,
               }),
           }),

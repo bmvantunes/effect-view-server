@@ -133,6 +133,11 @@ describe("runtime-core type contracts", () => {
     const subscription = runtimeCore.liveClient.subscribe("orders", {
       select: ["id"],
     });
+    const invalidValidatedSubscription = runtimeCore.serverLiveClient.subscribeProtocolQuery(
+      "orders",
+      // @ts-expect-error only the protocol decoder can construct a validated runtime query.
+      { select: ["id"] },
+    );
     const kafkaSnapshot = kafkaOwnedRuntimeCore.client.snapshot("orders", {
       select: ["id"],
     });
@@ -194,6 +199,7 @@ describe("runtime-core type contracts", () => {
         readonly id: string;
       }>
     >();
+    expectTypeOf(invalidValidatedSubscription).not.toBeAny();
     expectTypeOf(kafkaSnapshot).not.toBeAny();
     expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
     expectTypeOf<Effect.Success<typeof materializedGrpcSubscribe>>().toEqualTypeOf<
@@ -309,17 +315,14 @@ describe("runtime-core type contracts", () => {
     const invalidKafkaOwnedReset = kafkaOwnedRuntimeCore.client.reset();
     // @ts-expect-error source-owned runtime-core clients reject direct reset.
     const invalidMaterializedGrpcReset = materializedGrpcSourceRuntimeCore.client.reset();
+    // @ts-expect-error server transport clients never expose public query subscriptions.
     const _invalidLeasedServerSubscribe = leasedRuntimeCore.serverLiveClient.subscribe(
-      // @ts-expect-error public runtime-core server live clients reject direct leased gRPC subscriptions.
       "orders",
       leasedQuery,
     );
+    // @ts-expect-error server transport clients never expose public runtime subscriptions.
     const _invalidLeasedServerRuntimeSubscribe =
-      leasedRuntimeCore.serverLiveClient.subscribeRuntime(
-        // @ts-expect-error public runtime-core server live clients reject direct leased gRPC runtime subscriptions.
-        "orders",
-        leasedQuery,
-      );
+      leasedRuntimeCore.serverLiveClient.subscribeRuntime("orders", leasedQuery);
 
     expectTypeOf(invalidLeasedSnapshot).not.toBeAny();
     expectTypeOf(invalidLeasedPublish).not.toBeAny();

@@ -31,6 +31,16 @@ const metadata = rawQueryCompilerMetadata(Row);
 const decodeWhere = (where: unknown) =>
   decodeRawQuery("people", metadata, { select: ["id"], where });
 
+const expectGroup = (
+  expression: RuntimeFilterExpression | undefined,
+): Extract<RuntimeFilterExpression, { readonly _tag: "group" }> => {
+  expect(expression?._tag).toBe("group");
+  if (expression?._tag !== "group") {
+    throw new Error("Expected a normalized filter group.");
+  }
+  return expression;
+};
+
 describe("recursive filter expressions", () => {
   it.effect("normalizes text and evaluates recursive Boolean expressions", () =>
     Effect.gen(function* () {
@@ -273,6 +283,48 @@ describe("recursive filter expressions", () => {
     }),
   );
 
+  it.effect("evaluates large mixed membership filters across nested partition-shaped rows", () =>
+    Effect.gen(function* () {
+      const countryCandidates = Array.from(
+        { length: 10_000 },
+        (_value, index) => `country-${index}`,
+      );
+      countryCandidates.push("Résumé");
+      const query = yield* decodeWhere([
+        {
+          type: "OR",
+          conditions: [
+            { field: "profile.country", type: "in", filter: countryCandidates },
+            { field: "scalar", type: "in", filter: [1, 1n, false, null] },
+          ],
+        },
+      ]);
+      const predicate = compileRawPredicate<typeof Row.Type>(metadata, query.where);
+      const partitions = Array.from({ length: 16 }, (_value, partition) =>
+        Array.from({ length: 64 }, (_entry, offset) => {
+          const index = partition * 64 + offset;
+          return {
+            id: `row-${index}`,
+            name: "member",
+            age: index,
+            profile: { country: offset === 0 ? "resume" : `missing-${index}` },
+            ...(offset === 1 ? { scalar: 1n } : {}),
+          };
+        }),
+      );
+      let matches = 0;
+      for (const partition of partitions) {
+        for (const row of partition) {
+          if (predicate.matches(row)) {
+            matches += 1;
+          }
+        }
+      }
+
+      expect(matches).toBe(32);
+    }),
+  );
+
   it.effect("treats only empty strings, null, and undefined as blank", () =>
     Effect.gen(function* () {
       const blankQuery = yield* decodeWhere([{ field: "scalar", type: "blank" }]);
@@ -453,8 +505,8 @@ describe("recursive filter expressions", () => {
       const wide = yield* decodeWhere(wideConditions);
 
       expect(first.where?.key).toBe(second.where?.key);
-      expect(wide.where?._tag).toBe("group");
-      expect(wide.where?._tag === "group" ? wide.where.conditions.length : 0).toBe(2_000);
+      const wideGroup = expectGroup(wide.where);
+      expect(wideGroup.conditions.length).toBe(2_000);
     }),
   );
 
@@ -523,14 +575,10 @@ describe("recursive filter expressions", () => {
       const conjunction = yield* decodeWhere([rightDeep("AND")]);
       const disjunction = yield* decodeWhere([rightDeep("OR")]);
 
-      expect(conjunction.where?._tag).toBe("group");
-      expect(conjunction.where?._tag === "group" ? conjunction.where.conditions.length : 0).toBe(
-        conditionCount,
-      );
-      expect(disjunction.where?._tag).toBe("group");
-      expect(disjunction.where?._tag === "group" ? disjunction.where.conditions.length : 0).toBe(
-        conditionCount,
-      );
+      const conjunctionGroup = expectGroup(conjunction.where);
+      const disjunctionGroup = expectGroup(disjunction.where);
+      expect(conjunctionGroup.conditions.length).toBe(conditionCount);
+      expect(disjunctionGroup.conditions.length).toBe(conditionCount);
     }),
   );
 
@@ -550,13 +598,9 @@ describe("recursive filter expressions", () => {
 
       const query = yield* decodeWhere([restoredGroup, restoredGroup]);
 
-      expect(query.where?._tag).toBe("group");
-      expect(query.where?._tag === "group" ? query.where.conditions.length : 0).toBe(2);
-      expect(
-        query.where?._tag === "group"
-          ? query.where.conditions.every((condition) => condition._tag === "condition")
-          : false,
-      ).toBe(true);
+      const group = expectGroup(query.where);
+      expect(group.conditions.length).toBe(2);
+      expect(group.conditions.every((condition) => condition._tag === "condition")).toBe(true);
     }),
   );
 
@@ -619,10 +663,8 @@ describe("recursive filter expressions", () => {
       };
       const predicate = compileRawPredicate<typeof Row.Type>(metadata, wideSharedGroup);
 
-      expect(normalized.where?._tag).toBe("group");
-      expect(normalized.where?._tag === "group" ? normalized.where.conditions.length : 0).toBe(
-        conditionCount,
-      );
+      const normalizedGroup = expectGroup(normalized.where);
+      expect(normalizedGroup.conditions.length).toBe(conditionCount);
       expect(predicate.matches({ id: "matching", name: "x", age: 1 })).toBe(true);
       expect(predicate.matches({ id: "missing", name: "x", age: 2 })).toBe(false);
     }),

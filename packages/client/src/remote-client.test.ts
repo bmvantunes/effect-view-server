@@ -1295,10 +1295,10 @@ describe("remote ViewServer client", () => {
         client.subscribe("orders", {
           select: ["id"],
           where: [
+            // @ts-expect-error hostile callers can still send an invalid filter value.
             {
               field: "price",
               type: "greaterThan",
-              // @ts-expect-error hostile callers can still send an invalid filter value.
               filter: "nope",
             },
           ],

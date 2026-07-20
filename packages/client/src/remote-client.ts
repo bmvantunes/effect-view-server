@@ -220,15 +220,17 @@ export const makeViewServerClient: <
       topic,
     });
 
-  const subscribeLive = Effect.fn("ViewServerClient.remote.subscribe")(function* <
+  const subscribeWire = Effect.fn("ViewServerClient.remote.subscribe")(function* <
+    Row,
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(topic: Topic, query: ExactLiveQueryInputForTopic<Topics, Topic, Query>) {
-    type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
-    const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, query);
-    const stream = subscribeRpc<Row>(topic, wireQuery, (event) =>
-      viewServerDecodeTrustedLiveEvent<Topics, Topic, Row>(config, topic, wireQuery, event),
-    );
+  >(
+    topic: Topic,
+    wireQuery: ViewServerWireLiveQuery,
+    decodeEvent: (
+      event: ViewServerTrustedWireEvent,
+    ) => Effect.Effect<ViewServerLiveEvent<Row>, ViewServerRuntimeError>,
+  ) {
+    const stream = subscribeRpc<Row>(topic, wireQuery, decodeEvent);
     return yield* streamToSubscription(topic, stream, {
       onOpen: remoteHealth.updateSubscriptionCount(topic, 1),
       onClose: remoteHealth.updateSubscriptionCount(topic, -1),
@@ -268,14 +270,21 @@ export const makeViewServerClient: <
     const capturedQuery = Result.try(() =>
       snapshotViewServerQuery<ExactLiveQueryInputForTopic<Topics, Topic, Query>>(query),
     );
-    return Result.isFailure(capturedQuery)
-      ? Effect.fail({
-          _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
-          message: viewServerQuerySnapshotErrorMessage,
-          topic,
-        })
-      : subscribeLive<Topic, Query>(topic, capturedQuery.success);
+    if (Result.isFailure(capturedQuery)) {
+      return Effect.fail({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: viewServerQuerySnapshotErrorMessage,
+        topic,
+      });
+    }
+    return Effect.gen(function* () {
+      type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
+      const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, capturedQuery.success);
+      return yield* subscribeWire<Row, Topic>(topic, wireQuery, (event) =>
+        viewServerDecodeTrustedLiveEvent<Topics, Topic, Row>(config, topic, wireQuery, event),
+      );
+    });
   }
 
   const subscribeHealthSummary = Effect.fn("ViewServerClient.remote.healthSummary.subscribe")(

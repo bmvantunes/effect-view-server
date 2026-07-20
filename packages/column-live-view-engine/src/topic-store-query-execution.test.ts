@@ -1,16 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { format, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
-import { defaultGroupedIncrementalAdmissionLimits, InvalidQueryError } from "./index";
 import { evaluateRawQuery } from "./active-query";
 import { prepareRuntimeRawQuery, rawQueryCompilerMetadata } from "./raw-query-compiler";
-import { subscribeGroupedExecutableQuery, subscribeRawExecutableQuery } from "./query-execution";
-import {
-  collectTopicStoreActiveQueryCounts,
-  makeTopicStoreSubscriptionPermit,
-  TopicStore,
-  topicStoreState,
-} from "./topic-store-state";
 import {
   instrument,
   Instrument,
@@ -21,91 +13,6 @@ import {
 } from "../test-harness/public-engine";
 
 describe("Topic Store query execution", () => {
-  it.effect("rejects unrelated authentic raw metadata before subscription state acquisition", () =>
-    Effect.gen(function* () {
-      const store = new TopicStore("orders", Order, "id", () => {});
-      const error = yield* Effect.flip(
-        subscribeRawExecutableQuery(
-          rawQueryCompilerMetadata(Position),
-          {
-            select: ["symbol"],
-          },
-          {
-            groupedIncrementalAdmissionLimits: defaultGroupedIncrementalAdmissionLimits,
-            permit: makeTopicStoreSubscriptionPermit(store),
-            queryId: "unrelated-raw-proof",
-            queueCapacity: 8,
-            terminalObserver: {
-              onQueryRegistered: () => Effect.void,
-              onTerminalOccurrence: () => Effect.void,
-              onTerminalReady: () => Effect.void,
-            },
-          },
-        ),
-      );
-
-      expect(error).toStrictEqual(
-        InvalidQueryError.make({
-          topic: "orders",
-          message: "Topic Store schema does not match the compiled query proof schema.",
-        }),
-      );
-      expect(yield* collectTopicStoreActiveQueryCounts(store)).toStrictEqual({
-        activeFallbackGroupedViews: 0,
-        activeIncrementalGroupedViews: 0,
-        activeViews: 0,
-        groupedFullEvaluationCount: 0,
-        groupedPatchedEvaluationCount: 0,
-      });
-      expect(topicStoreState(store).subscribers.size).toBe(0);
-    }),
-  );
-
-  it.effect(
-    "rejects unrelated authentic grouped metadata before subscription state acquisition",
-    () =>
-      Effect.gen(function* () {
-        const store = new TopicStore("orders", Order, "id", () => {});
-        const error = yield* Effect.flip(
-          subscribeGroupedExecutableQuery(
-            rawQueryCompilerMetadata(Position),
-            {
-              groupBy: ["symbol"],
-              aggregates: {
-                rowCount: { aggFunc: "count" },
-              },
-            },
-            {
-              groupedIncrementalAdmissionLimits: defaultGroupedIncrementalAdmissionLimits,
-              permit: makeTopicStoreSubscriptionPermit(store),
-              queryId: "unrelated-grouped-proof",
-              queueCapacity: 8,
-              terminalObserver: {
-                onQueryRegistered: () => Effect.void,
-                onTerminalOccurrence: () => Effect.void,
-                onTerminalReady: () => Effect.void,
-              },
-            },
-          ),
-        );
-
-        expect(error).toStrictEqual(
-          InvalidQueryError.make({
-            topic: "orders",
-            message: "Topic Store schema does not match the compiled query proof schema.",
-          }),
-        );
-        expect(yield* collectTopicStoreActiveQueryCounts(store)).toStrictEqual({
-          activeFallbackGroupedViews: 0,
-          activeIncrementalGroupedViews: 0,
-          activeViews: 0,
-          groupedFullEvaluationCount: 0,
-          groupedPatchedEvaluationCount: 0,
-        });
-        expect(topicStoreState(store).subscribers.size).toBe(0);
-      }),
-  );
-
   it.effect("evaluates raw queries through the storage scan interface", () =>
     Effect.gen(function* () {
       const rows = [

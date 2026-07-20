@@ -1,52 +1,20 @@
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import { Effect, type Schema } from "effect";
+import {
+  isProtocolPlainRecord,
+  protocolDenseArray,
+  protocolRecordDataEntries,
+} from "./protocol-structural-value";
 
 type JsonFrame =
   | { readonly _tag: "enter"; readonly value: unknown }
   | { readonly _tag: "exit"; readonly value: object };
 
-const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
-
-const denseArray = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    return undefined;
-  }
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    return undefined;
-  }
-  const output: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < value.length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    output.push(descriptor.value);
-  }
-  return Object.getOwnPropertyNames(value).every((key) => allowed.has(key)) ? output : undefined;
-};
-
 const recordValues = (
   value: Readonly<Record<string, unknown>>,
 ): ReadonlyArray<unknown> | undefined => {
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    return undefined;
-  }
-  const values: Array<unknown> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    values.push(descriptor.value);
-  }
-  return values;
+  const entries = protocolRecordDataEntries(value);
+  return entries?.map(([, entry]) => entry);
 };
 
 export const isProtocolJson = (value: unknown): value is Schema.Json => {
@@ -76,8 +44,8 @@ export const isProtocolJson = (value: unknown): value is Schema.Json => {
       continue;
     }
     const children = Array.isArray(current)
-      ? denseArray(current)
-      : isPlainRecord(current)
+      ? protocolDenseArray(current)
+      : isProtocolPlainRecord(current)
         ? recordValues(current)
         : undefined;
     if (children === undefined) {

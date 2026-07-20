@@ -1,4 +1,9 @@
 import { Effect, Option, Schema, SchemaGetter, SchemaIssue } from "effect";
+import {
+  isProtocolPlainRecord,
+  protocolDenseArray,
+  protocolRecordDataEntries,
+} from "./protocol-structural-value";
 
 type QueryGraphValue =
   | readonly ["null"]
@@ -22,37 +27,15 @@ type QueryGraphCycleFrame =
   | { readonly _tag: "exit"; readonly id: number };
 
 const denseUnknownArray = (value: unknown): ReadonlyArray<unknown> => {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
-    throw new TypeError("Expected a plain array.");
-  }
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    throw new TypeError("Arrays must not contain symbol properties.");
-  }
-  const output: Array<unknown> = [];
-  const allowed = new Set(["length"]);
-  for (let index = 0; index < value.length; index += 1) {
-    const key = String(index);
-    allowed.add(key);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      throw new TypeError("Arrays must be dense data arrays.");
-    }
-    output.push(descriptor.value);
-  }
-  if (Object.getOwnPropertyNames(value).some((key) => !allowed.has(key))) {
-    throw new TypeError("Arrays must not contain extra properties.");
+  const output = protocolDenseArray(value);
+  if (output === undefined) {
+    throw new TypeError("Expected a plain dense data array without extra properties.");
   }
   return output;
 };
 
-const isPlainUnknownRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
-
 const plainUnknownRecord = (value: unknown): Readonly<Record<string, unknown>> => {
-  if (!isPlainUnknownRecord(value)) {
+  if (!isProtocolPlainRecord(value)) {
     throw new TypeError("Expected a plain record.");
   }
   return value;
@@ -61,16 +44,9 @@ const plainUnknownRecord = (value: unknown): Readonly<Record<string, unknown>> =
 const recordDataEntries = (
   value: Readonly<Record<string, unknown>>,
 ): ReadonlyArray<readonly [string, unknown]> => {
-  if (Object.getOwnPropertySymbols(value).length > 0) {
-    throw new TypeError("Records must not contain symbol properties.");
-  }
-  const entries: Array<readonly [string, unknown]> = [];
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      throw new TypeError("Record fields must be own enumerable data properties.");
-    }
-    entries.push([key, descriptor.value]);
+  const entries = protocolRecordDataEntries(value);
+  if (entries === undefined) {
+    throw new TypeError("Records must contain only own enumerable string data properties.");
   }
   return entries;
 };

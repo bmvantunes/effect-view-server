@@ -40,10 +40,12 @@ provider, so component tests do not need Kafka, gRPC, TCP, or a WebSocket server
 Every example uses the canonical Live Query filter format:
 
 ```ts
-where: [
-  { field: "status", type: "equals", filter: "open" },
-  { field: "price", type: "greaterThanOrEqual", filter: 10 },
-];
+const query = {
+  where: [
+    { field: "status", type: "equals", filter: "open" },
+    { field: "price", type: "greaterThanOrEqual", filter: 10 },
+  ],
+};
 ```
 
 The root array is an implicit `AND`; nested `AND`, `OR`, and `NOT` expressions

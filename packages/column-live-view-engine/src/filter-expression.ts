@@ -1,4 +1,9 @@
-import { isWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import {
+  collectCanonicalFilterGraphLeaves,
+  compareCanonicalFilterGraphs,
+  complementCanonicalFilterType,
+  isWireSafeBigDecimal,
+} from "@effect-view-server/effect-utils";
 import {
   isBigDecimal,
   make as makeBigDecimal,
@@ -442,27 +447,6 @@ const makeCondition = (
   });
 };
 
-const complementConditionType = (
-  type: RuntimeFilterConditionType,
-): RuntimeFilterConditionType | undefined => {
-  switch (type) {
-    case "equals":
-      return "notEqual";
-    case "notEqual":
-      return "equals";
-    case "contains":
-      return "notContains";
-    case "notContains":
-      return "contains";
-    case "blank":
-      return "notBlank";
-    case "notBlank":
-      return "blank";
-    default:
-      return undefined;
-  }
-};
-
 const complementCondition = (
   condition: RuntimeFilterCondition,
   type: RuntimeFilterConditionType,
@@ -600,8 +584,6 @@ const makeStructuralIdentityModule = (): StructuralIdentityModule => {
   return { identityFor };
 };
 
-type StructuralComparisonFrame = readonly [RuntimeFilterExpression, RuntimeFilterExpression];
-
 type StructuralComparisonNode = {
   readonly tag: string;
   readonly value: string;
@@ -628,65 +610,17 @@ const structuralComparisonNode = (
 export const compareRuntimeFilterExpressionStructure = (
   left: RuntimeFilterExpression,
   right: RuntimeFilterExpression,
-): number => {
-  const frames: Array<StructuralComparisonFrame> = [[left, right]];
-  const compared = new WeakMap<object, WeakSet<object>>();
-  while (frames.length > 0) {
-    const [leftExpression, rightExpression] = frames.pop()!;
-    if (leftExpression === rightExpression) {
-      continue;
-    }
-    const rightExpressions = compared.get(leftExpression);
-    if (rightExpressions?.has(rightExpression) === true) {
-      continue;
-    }
-    if (rightExpressions === undefined) {
-      compared.set(leftExpression, new WeakSet([rightExpression]));
-    } else {
-      rightExpressions.add(rightExpression);
-    }
-    const leftNode = structuralComparisonNode(leftExpression);
-    const rightNode = structuralComparisonNode(rightExpression);
-    const tagComparison = compareCodeUnits(leftNode.tag, rightNode.tag);
-    if (tagComparison !== 0) {
-      return tagComparison;
-    }
-    const valueComparison = compareCodeUnits(leftNode.value, rightNode.value);
-    if (valueComparison !== 0) {
-      return valueComparison;
-    }
-    for (let index = leftNode.children.length - 1; index >= 0; index -= 1) {
-      frames.push([leftNode.children[index]!, rightNode.children[index]!]);
-    }
-  }
-  return 0;
-};
+): number => compareCanonicalFilterGraphs(left, right, structuralComparisonNode);
 
 const canonicalGroup = (
   type: "AND" | "OR",
   candidates: ReadonlyArray<RuntimeFilterExpression>,
   identities: StructuralIdentityModule,
 ): RuntimeFilterExpression => {
-  const unique: Array<RuntimeFilterExpression> = [];
-  const byBoundedKey = new Map<string, Map<number, RuntimeFilterExpression>>();
-  for (const candidate of candidates) {
-    const exactIdentity = identities.identityFor(candidate);
-    const matching = byBoundedKey.get(candidate.key);
-    if (matching === undefined) {
-      byBoundedKey.set(candidate.key, new Map([[exactIdentity, candidate]]));
-      unique.push(candidate);
-      continue;
-    }
-    if (matching.has(exactIdentity)) {
-      continue;
-    }
-    matching.set(exactIdentity, candidate);
-    unique.push(candidate);
+  if (candidates.length === 1) {
+    return candidates[0]!;
   }
-  if (unique.length === 1) {
-    return unique[0]!;
-  }
-  const conditions = unique.toSorted(
+  const conditions = candidates.toSorted(
     (left, right) =>
       compareCodeUnits(left.key, right.key) || compareRuntimeFilterExpressionStructure(left, right),
   );
@@ -717,35 +651,26 @@ const makeFilterMaterializationModule = (
     if (existing !== undefined) {
       return existing;
     }
-    const candidates: Array<RuntimeFilterExpression> = [];
-    const pending: Array<DeferredExpressionSequence | RuntimeFilterExpression> = [group.sequence];
-    const expanded = new WeakSet<object>();
-    while (pending.length > 0) {
-      const current = pending.pop()!;
-      if (current._tag === "one") {
-        pending.push(current.expression);
-        continue;
-      }
-      if (current._tag === "concat") {
-        if (expanded.has(current)) {
-          continue;
+    const candidates = collectCanonicalFilterGraphLeaves<
+      DeferredExpressionSequence | RuntimeFilterExpression,
+      RuntimeFilterExpression,
+      number
+    >(
+      [group.sequence],
+      (current) => {
+        if (current._tag === "one") {
+          return { _tag: "expand", children: [current.expression] };
         }
-        expanded.add(current);
-        pending.push(current.right, current.left);
-        continue;
-      }
-      if (current._tag === "group" && current.type === group.type) {
-        if (expanded.has(current)) {
-          continue;
+        if (current._tag === "concat") {
+          return { _tag: "expand", children: [current.left, current.right] };
         }
-        expanded.add(current);
-        for (let index = current.conditions.length - 1; index >= 0; index -= 1) {
-          pending.push(current.conditions[index]!);
+        if (current._tag === "group" && current.type === group.type) {
+          return { _tag: "expand", children: current.conditions };
         }
-        continue;
-      }
-      candidates.push(current);
-    }
+        return { _tag: "leaf", leaf: current };
+      },
+      identities.identityFor,
+    );
     const materialized = canonicalGroup(group.type, candidates, identities);
     materializedGroups.set(group, materialized);
     return materialized;
@@ -805,7 +730,7 @@ const normalizeNegation = (
     return materializedChild.condition;
   }
   if (materializedChild._tag === "condition") {
-    const complement = complementConditionType(materializedChild.type);
+    const complement = complementCanonicalFilterType(materializedChild.type);
     if (complement !== undefined) {
       const condition = complementCondition(materializedChild, complement);
       identities.identityFor(condition);

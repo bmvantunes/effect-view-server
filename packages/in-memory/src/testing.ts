@@ -1,4 +1,3 @@
-import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import type {
   GrpcRuntimeClients,
   RuntimeRegions,
@@ -6,6 +5,7 @@ import type {
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalInstance,

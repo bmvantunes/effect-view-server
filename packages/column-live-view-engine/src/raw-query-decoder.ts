@@ -37,10 +37,7 @@ class TypedRuntimeRawQueryInvariant<Row, Query> {
   };
 }
 
-export type TypedRuntimeRawQuery<
-  Row extends object,
-  Query extends RawQuery<Row>,
-> = RuntimeRawQuery & {
+export type TypedRuntimeRawQuery<Row extends object, Query> = RuntimeRawQuery & {
   readonly [typedRuntimeRawQueryBrand]: TypedRuntimeRawQueryInvariant<Row, Query>;
 };
 
@@ -234,7 +231,7 @@ export const decodeTypedRawQuery = Effect.fn("ColumnLiveViewEngine.rawQuery.deco
     const typed = Object.freeze({
       ...decoded,
       [typedRuntimeRawQueryBrand]: new TypedRuntimeRawQueryInvariant<Row, Query>(),
-    } satisfies TypedRuntimeRawQuery<Row, Query>);
+    });
     typedRuntimeRawQueryMetadata.set(typed, metadata);
     return typed;
   },

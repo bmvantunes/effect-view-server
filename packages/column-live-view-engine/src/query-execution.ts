@@ -1,4 +1,3 @@
-import type { GroupedQuery, RawQuery } from "@effect-view-server/config";
 import { Effect } from "effect";
 import type { ColumnLiveViewTerminalObserver } from "./engine-contract";
 import { makeLiveSubscription } from "./live-subscription";
@@ -11,8 +10,6 @@ import {
   acquireTopicStoreRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
   evaluateTopicStoreRawQueryResult,
-  prepareTopicStoreGroupedQuery,
-  prepareTopicStoreRawQuery,
   prepareTopicStoreRuntimeGroupedQuery,
   prepareTopicStoreRuntimeRawQuery,
   releaseTopicStoreMaterializedQueryExecution,
@@ -20,7 +17,6 @@ import {
   type TopicStore,
   type TopicStoreSubscriptionPermit,
 } from "./topic-store";
-import type { RawQueryCompilerMetadata } from "./raw-query-compiler";
 import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 
 type RowObject = object;
@@ -43,34 +39,6 @@ export const isGroupedQuery = (
   !Array.isArray(query) &&
   ("groupBy" in query || "aggregates" in query);
 
-export const prepareRawExecutableQuery = Effect.fn(
-  "ColumnLiveViewEngine.queryExecution.prepareRaw",
-)(function* <Row extends RowObject, const Query extends RawQuery<NoInfer<Row>>>(
-  store: TopicStore,
-  metadata: RawQueryCompilerMetadata<Row>,
-  query: Query,
-) {
-  const compiled = yield* prepareTopicStoreRawQuery(store, metadata, query);
-  return Object.freeze({
-    kind: "raw",
-    compiled,
-  } satisfies ExecutableQuery<ReturnType<typeof compiled.plan.resultSemantics.projectRow>>);
-});
-
-export const prepareGroupedExecutableQuery = Effect.fn(
-  "ColumnLiveViewEngine.queryExecution.prepareGrouped",
-)(function* <Row extends RowObject, const Query extends GroupedQuery<NoInfer<Row>>>(
-  store: TopicStore,
-  metadata: RawQueryCompilerMetadata<Row>,
-  query: Query,
-) {
-  const compiled = yield* prepareTopicStoreGroupedQuery(store, metadata, query);
-  return Object.freeze({
-    kind: "grouped",
-    compiled,
-  } satisfies ExecutableQuery<ReturnType<typeof compiled.plan.resultSemantics.projectRow>>);
-});
-
 export const prepareRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.prepareRuntime",
 )(function* (store: TopicStore, query: unknown, partition?: ColumnLiveViewEngineQueryPartition) {
@@ -86,31 +54,6 @@ export const prepareRuntimeExecutableQuery = Effect.fn(
     kind: "raw",
     compiled,
   } satisfies ExecutableQuery<RowObject>);
-});
-
-export const snapshotRawExecutableQuery = Effect.fn(
-  "ColumnLiveViewEngine.queryExecution.snapshotRaw",
-)(function* <Row extends RowObject, const Query extends RawQuery<NoInfer<Row>>>(
-  store: TopicStore,
-  metadata: RawQueryCompilerMetadata<Row>,
-  query: Query,
-) {
-  const executable = yield* prepareRawExecutableQuery(store, metadata, query);
-  return evaluateTopicStoreRawQueryResult(store, executable.compiled);
-});
-
-export const snapshotGroupedExecutableQuery = Effect.fn(
-  "ColumnLiveViewEngine.queryExecution.snapshotGrouped",
-)(function* <Row extends RowObject, const Query extends GroupedQuery<NoInfer<Row>>>(
-  store: TopicStore,
-  metadata: RawQueryCompilerMetadata<Row>,
-  query: Query,
-) {
-  const executable = yield* prepareGroupedExecutableQuery(store, metadata, query);
-  return liveQueryResultFromOwnedEvaluation(
-    evaluateTopicStoreGroupedQuery(store, executable.compiled),
-    executable.compiled.plan.resultSemantics,
-  );
 });
 
 export const snapshotRuntimeExecutableQuery = Effect.fn(
@@ -132,50 +75,6 @@ type SubscribeExecutableQueryInput = {
   readonly queueCapacity: number;
   readonly terminalObserver: ColumnLiveViewTerminalObserver;
 };
-
-export const subscribeRawExecutableQuery = Effect.fn(
-  "ColumnLiveViewEngine.queryExecution.subscribeRaw",
-)(function* <Row extends RowObject, const Query extends RawQuery<NoInfer<Row>>>(
-  metadata: RawQueryCompilerMetadata<Row>,
-  query: Query,
-  input: SubscribeExecutableQueryInput,
-) {
-  const { store } = input.permit;
-  const executable = yield* prepareRawExecutableQuery(store, metadata, query);
-  const execution = yield* acquireTopicStoreRawQueryExecution(store, executable.compiled);
-  return yield* makeLiveSubscription({
-    permit: input.permit,
-    queryId: input.queryId,
-    execution,
-    queueCapacity: input.queueCapacity,
-    release: releaseTopicStoreRawQueryExecution(store, executable.compiled),
-    terminalObserver: input.terminalObserver,
-  });
-});
-
-export const subscribeGroupedExecutableQuery = Effect.fn(
-  "ColumnLiveViewEngine.queryExecution.subscribeGrouped",
-)(function* <Row extends RowObject, const Query extends GroupedQuery<NoInfer<Row>>>(
-  metadata: RawQueryCompilerMetadata<Row>,
-  query: Query,
-  input: SubscribeExecutableQueryInput,
-) {
-  const { store } = input.permit;
-  const executable = yield* prepareGroupedExecutableQuery(store, metadata, query);
-  const execution = yield* acquireTopicStoreMaterializedQueryExecution(
-    store,
-    executable.compiled,
-    input.groupedIncrementalAdmissionLimits,
-  );
-  return yield* makeLiveSubscription({
-    permit: input.permit,
-    queryId: input.queryId,
-    execution,
-    queueCapacity: input.queueCapacity,
-    release: releaseTopicStoreMaterializedQueryExecution(store, executable.compiled),
-    terminalObserver: input.terminalObserver,
-  });
-});
 
 export const subscribeRuntimeExecutableQuery = Effect.fn(
   "ColumnLiveViewEngine.queryExecution.subscribeRuntime",

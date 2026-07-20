@@ -68,7 +68,7 @@ describe("Invalid query wire inputs", () => {
 
       expect(invalidEncodeTopic.code).toBe("InvalidTopic");
 
-      const queryCases = [
+      const queryCases: ReadonlyArray<readonly [unknown, string]> = [
         [{ select: [] }, "Query select must include at least one field"],
         [{ select: ["id"], offset: -1 }, "Query offset must be a non-negative integer"],
         [
@@ -89,7 +89,7 @@ describe("Invalid query wire inputs", () => {
           { select: ["id"], orderBy: [{ field: "missing", direction: "asc" }] },
           "Query references an unknown field for topic: orders",
         ],
-      ] as const;
+      ];
 
       for (const [query, message] of queryCases) {
         const encodeError = yield* Effect.flip(
@@ -131,7 +131,11 @@ describe("Invalid query wire inputs", () => {
 
       expect(prototypeKeyEncode.code).toBe("InvalidQuery");
       expect(prototypeKeyDecode.code).toBe("InvalidQuery");
+    }),
+  );
 
+  it.effect("rejects invalid grouped query shapes", () =>
+    Effect.gen(function* () {
       const malformedGroupedEncode = yield* Effect.flip(
         viewServerEncodeGroupedQuery(viewServer, "orders", {
           groupBy: ["id"],
@@ -152,7 +156,7 @@ describe("Invalid query wire inputs", () => {
 
       expect(malformedGroupedDecode.code).toBe("InvalidQuery");
 
-      const groupedQueryCases = [
+      const groupedQueryCases: ReadonlyArray<readonly [unknown, string]> = [
         [
           { groupBy: [], aggregates: { rowCount: { aggFunc: "count" } } },
           "Grouped query groupBy must include at least one field",
@@ -229,7 +233,7 @@ describe("Invalid query wire inputs", () => {
           },
           "Query limit must be a non-negative integer",
         ],
-      ] as const;
+      ];
 
       for (const [query, message] of groupedQueryCases) {
         const encodeError = yield* Effect.flip(
@@ -304,7 +308,11 @@ describe("Invalid query wire inputs", () => {
       );
 
       expect(invalidGroupedEncodeTopic.code).toBe("InvalidTopic");
+    }),
+  );
 
+  it.effect("rejects invalid filter operators and values", () =>
+    Effect.gen(function* () {
       const liveGroupedDecodeError = yield* Effect.flip(
         viewServerDecodeLiveQuery(viewServer, "orders", {
           groupBy: ["id"],
@@ -413,7 +421,11 @@ describe("Invalid query wire inputs", () => {
         "Filter condition id accentSensitive must be a boolean",
       );
       expect(decoratedIn.message).toBe("Filter condition id in must be an array");
+    }),
+  );
 
+  it.effect("preserves text-search operands for supported string schemas", () =>
+    Effect.gen(function* () {
       const trimmedViewServer = defineViewServerConfig({
         topics: {
           trimmed: {
@@ -452,7 +464,11 @@ describe("Invalid query wire inputs", () => {
         select: ["id"],
         where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
       });
+    }),
+  );
 
+  it.effect("rejects non-string text-search operands", () =>
+    Effect.gen(function* () {
       const badJsonStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "badjson", {
           select: ["id"],
@@ -461,7 +477,11 @@ describe("Invalid query wire inputs", () => {
       );
 
       expect(badJsonStartsWith.message).toBe("Filter condition id startsWith requires a string");
+    }),
+  );
 
+  it.effect("preserves text-search operands for refined strings", () =>
+    Effect.gen(function* () {
       const refinedStringViewServer = defineViewServerConfig({
         topics: {
           refined: {
@@ -500,7 +520,11 @@ describe("Invalid query wire inputs", () => {
         select: ["id"],
         where: [{ field: "id", type: "startsWith", filter: "x" }],
       });
+    }),
+  );
 
+  it.effect("accepts text search for literal string fields", () =>
+    Effect.gen(function* () {
       const encodedLiteralStartsWith = yield* viewServerEncodeRawQuery(viewServer, "orders", {
         select: ["status"],
         where: [{ field: "status", type: "startsWith", filter: "op" }],
@@ -510,7 +534,11 @@ describe("Invalid query wire inputs", () => {
         select: ["status"],
         where: [{ field: "status", type: "startsWith", filter: "op" }],
       });
+    }),
+  );
 
+  it.effect("rejects structured and non-JSON filter operands", () =>
+    Effect.gen(function* () {
       const structuredEncodeStartsWith = yield* Effect.flip(
         viewServerEncodeRawQuery(viewServer, "orders", {
           select: ["id"],

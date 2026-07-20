@@ -28,7 +28,7 @@ export {
   type ViewServerValidatedRawQuery,
 } from "./protocol-raw-query-codec";
 
-export type ViewServerValidatedLiveQuery<Row> =
+export type ViewServerValidatedLiveQuery<Row extends object> =
   | ViewServerValidatedRawQuery<Row>
   | ViewServerValidatedGroupedQuery<Row>;
 
@@ -45,20 +45,29 @@ export const viewServerEncodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery
   },
 );
 
-export const viewServerDecodeLiveQuery: <
+const decodeLiveQuery = Effect.fn("ViewServerProtocol.liveQuery.decode")(function* (
+  config: { readonly topics: TopicDefinitions },
+  topic: string,
+  query: unknown,
+) {
+  if (isGroupedQueryInput(query)) {
+    return yield* viewServerDecodeGroupedQuery(config, topic, query);
+  }
+  return yield* viewServerDecodeRawQuery(config, topic, query);
+});
+
+export function viewServerDecodeLiveQuery<
   const Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
 >(
   config: { readonly topics: Topics },
   topic: Topic,
   query: unknown,
-) => Effect.Effect<ViewServerValidatedLiveQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError> =
-  Effect.fn("ViewServerProtocol.liveQuery.decode")(function* <
-    const Topics extends TopicDefinitions,
-    Topic extends Extract<keyof Topics, string>,
-  >(config: { readonly topics: Topics }, topic: Topic, query: unknown) {
-    if (isGroupedQueryInput(query)) {
-      return yield* viewServerDecodeGroupedQuery(config, topic, query);
-    }
-    return yield* viewServerDecodeRawQuery(config, topic, query);
-  });
+): Effect.Effect<ViewServerValidatedLiveQuery<TopicRow<Topics, Topic>>, ViewServerRuntimeError>;
+export function viewServerDecodeLiveQuery(
+  config: { readonly topics: TopicDefinitions },
+  topic: string,
+  query: unknown,
+): Effect.Effect<unknown, ViewServerRuntimeError> {
+  return decodeLiveQuery(config, topic, query);
+}

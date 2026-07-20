@@ -20,6 +20,7 @@ describe("gRPC lease manager route ownership", () => {
   it.live("snapshots routeBy at subscribe and preserves its exact string", () =>
     Effect.gen(function* () {
       const observedRoutes: Array<string> = [];
+      const mappedRoutes: Array<{ readonly region: string }> = [];
       const localViewServer = defineViewServerConfig({
         grpc: { clients: grpcClients },
         topics: {
@@ -35,7 +36,9 @@ describe("gRPC lease manager route ownership", () => {
             },
             acquire: ({ route }) => {
               observedRoutes.push(route.region);
-              return Stream.make(grpcOrderValue("order-1", 10)).pipe(Stream.concat(Stream.never));
+              return Stream.make(grpcOrderValue("order-1", 10), grpcOrderValue("order-2", 20)).pipe(
+                Stream.concat(Stream.never),
+              );
             },
             release: ({ route }) =>
               Effect.sync(() => {
@@ -43,6 +46,7 @@ describe("gRPC lease manager route ownership", () => {
               }),
             map: ({ value, route }) => {
               observedRoutes.push(route.region);
+              mappedRoutes.push(route);
               return {
                 id: `${route.region}:${value.customerId}`,
                 customerId: value.customerId,
@@ -83,17 +87,17 @@ describe("gRPC lease manager route ownership", () => {
       const subscription = yield* subscriptionEffect;
       const events = yield* subscription.events.pipe(Stream.take(2), Stream.runCollect);
 
-      expect(events[1]).toMatchObject({
-        type: "delta",
-        operations: [
-          {
-            type: "insert",
-            row: { id: "ÁbCDEfgh:order-1", region: "ÁbCDEfgh" },
-          },
-        ],
-      });
+      expect(events.length).toBe(2);
+      expect(mappedRoutes.length).toBe(2);
+      expect(mappedRoutes[0]).toBe(mappedRoutes[1]);
       yield* subscription.close();
-      expect(observedRoutes).toStrictEqual(["ÁbCDEfgh", "ÁbCDEfgh", "ÁbCDEfgh", "ÁbCDEfgh"]);
+      expect(observedRoutes).toStrictEqual([
+        "ÁbCDEfgh",
+        "ÁbCDEfgh",
+        "ÁbCDEfgh",
+        "ÁbCDEfgh",
+        "ÁbCDEfgh",
+      ]);
       yield* manager.close;
       yield* runtimeCore.close;
     }),

@@ -74,7 +74,7 @@ export const makeViewServerRuntimeCore: <
   return {
     client: runtimeCore.publicClient,
     liveClient: runtimeCore.publicLiveClient,
-    serverLiveClient: runtimeCore.liveClient,
+    serverLiveClient: runtimeCore.serverLiveClient,
     close: runtimeCore.close,
     requestHealthRefresh: runtimeCore.requestHealthRefresh,
     refreshHealth: runtimeCore.refreshHealth,

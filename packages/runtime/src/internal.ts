@@ -209,6 +209,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       ViewServerRuntimePreparedSource<Topics, ViewServerRuntimeSourceError>
     > = [];
     let runtimeLiveClient = runtimeCore.liveClient;
+    let runtimeProtocolQuerySubscriber = runtimeCore.protocolQuerySubscriber;
     let runtimeClient = runtimeCore.client;
     for (const sourceModule of sourceModules) {
       const preparedSource = yield* sourceModule
@@ -217,6 +218,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           internalClient: runtimeCore.internalClient,
           internalLiveClient: runtimeCore.internalLiveClient,
           liveClient: runtimeLiveClient,
+          protocolQuerySubscriber: runtimeProtocolQuerySubscriber,
           refreshHealth: refreshRuntimeHealth,
           requestHealthRefresh: runtimeCore.requestHealthRefresh,
         })
@@ -224,6 +226,7 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       preparedSources.push(preparedSource);
       runtimeClient = preparedSource.client;
       runtimeLiveClient = preparedSource.liveClient;
+      runtimeProtocolQuerySubscriber = preparedSource.protocolQuerySubscriber;
     }
     const server = yield* acquireRuntimeResource(
       runtimeScope,
@@ -231,7 +234,11 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         dependencyConfig,
         {
           ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-          liveClient: runtimeLiveClient,
+          liveClient: {
+            subscribeHealth: runtimeLiveClient.subscribeHealth,
+            subscribeHealthSummary: runtimeLiveClient.subscribeHealthSummary,
+            subscribeProtocolQuery: runtimeProtocolQuerySubscriber.subscribeProtocolQuery,
+          },
           runtime: runtimeClient,
           transport: {
             clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshRuntimeHealth)),

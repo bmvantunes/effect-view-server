@@ -2,7 +2,6 @@ import type {
   DeltaEvent,
   ExactLiveQueryInputForTopic,
   GroupedQuery,
-  LiveQuery,
   LiveQueryRow,
   RawQuery,
   SnapshotEvent,
@@ -150,11 +149,14 @@ export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
 
 export type ViewServerRuntimeLiveClient<Topics extends TopicDefinitions> =
   ViewServerLiveClient<Topics> & {
-    readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>>(
+    readonly subscribeRuntime: <
+      Topic extends Extract<keyof Topics, string>,
+      const Query extends
+        | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+        | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
+    >(
       topic: Topic,
-      query: LiveQuery<TopicRow<Topics, Topic>> & {
-        readonly routeBy?: Readonly<Record<string, unknown>>;
-      },
+      query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
     ) => Effect.Effect<
       ViewServerLiveSubscription<object>,
       ViewServerRuntimeError | ViewServerTransportError

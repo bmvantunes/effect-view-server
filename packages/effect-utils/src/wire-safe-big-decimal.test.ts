@@ -277,6 +277,7 @@ describe("wire-safe BigDecimal", () => {
   it("creates injective semantic keys only for codec-round-trippable decimals", () => {
     const firstCollision = BigDecimal.make(111n, Number.MIN_SAFE_INTEGER);
     const secondCollision = BigDecimal.make(111n, Number.MIN_SAFE_INTEGER + 1);
+    const negativeTrailingZeroBoundary = BigDecimal.make(-10n, Number.MIN_SAFE_INTEGER + 1);
     const invalidCoefficient = BigDecimal.make(1n, 0);
     Object.defineProperty(invalidCoefficient, "value", { value: 1 });
     const invalidScaleType = BigDecimal.make(1n, 0);
@@ -310,6 +311,9 @@ describe("wire-safe BigDecimal", () => {
       undefined,
       undefined,
     ]);
+    expect(wireSafeBigDecimalSemanticKey(negativeTrailingZeroBoundary)).toBe(
+      '["-1","-9007199254740991"]',
+    );
   });
 
   it("compares equal values and coefficients with different decimal widths", () => {

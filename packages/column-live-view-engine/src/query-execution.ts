@@ -31,9 +31,8 @@ export type ExecutableQuery<ResultRow extends RowObject> =
       readonly compiled: CompiledGroupedQuery<object, ResultRow>;
     };
 
-export const isGroupedQuery = (
-  query: unknown,
-): query is { readonly aggregates: object; readonly groupBy: ReadonlyArray<unknown> } =>
+// Either marker makes the grouped decoder responsible for reporting a missing counterpart.
+export const isGroupedQuery = (query: unknown): boolean =>
   typeof query === "object" &&
   query !== null &&
   !Array.isArray(query) &&

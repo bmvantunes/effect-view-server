@@ -8,6 +8,7 @@ import {
 } from "../test-harness/events";
 import { makeEngine, order, withObjectPrototypeValue } from "../test-harness/public-engine";
 import { decodeGroupedQuery } from "./grouped-query-decoder";
+import { InvalidQueryError } from "./index";
 import { isGroupedQuery } from "./query-execution";
 import { decodeRawQuery } from "./raw-query-decoder";
 import { rawQueryCompilerMetadata } from "./raw-query-metadata";
@@ -29,6 +30,8 @@ describe("query prototype isolation", () => {
         { rowCount: { aggFunc: "count" } },
         Effect.sync(() => {
           expect(isGroupedQuery({ select: ["value"] })).toBe(false);
+          expect(isGroupedQuery({ groupBy: ["value"] })).toBe(true);
+          expect(isGroupedQuery({ aggregates: { rowCount: { aggFunc: "count" } } })).toBe(true);
           expect(
             isGroupedQuery({
               groupBy: ["value"],
@@ -38,6 +41,34 @@ describe("query prototype isolation", () => {
         }),
       ),
     ),
+  );
+
+  it.effect("routes either grouped marker to the grouped decoder", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      const missingAggregates = yield* Effect.flip(
+        engine.subscribeRuntime("orders", { groupBy: ["region"] }),
+      );
+      expect(missingAggregates).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Grouped query aggregates must be a non-empty plain object.",
+        }),
+      );
+
+      const missingGroupBy = yield* Effect.flip(
+        engine.subscribeRuntime("orders", {
+          aggregates: { rowCount: { aggFunc: "count" } },
+        }),
+      );
+      expect(missingGroupBy).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Grouped query groupBy must be a non-empty array of strings.",
+        }),
+      );
+      yield* engine.close();
+    }),
   );
 
   it.effect("ignores inherited raw query fields and rejects inherited order fields", () =>

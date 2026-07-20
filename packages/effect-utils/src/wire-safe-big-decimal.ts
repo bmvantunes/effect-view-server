@@ -67,11 +67,9 @@ const canonicalWireSafeBigDecimalParts = (
     trailingZeroCount === 0 ? coefficient : BigInt(source.slice(0, end));
   const canonicalScale = normalizedScale === 0 ? 0 : normalizedScale;
 
-  if (Math.abs(canonicalScale) >= 16) {
-    const coefficientWidth =
-      normalizedCoefficient < 0n
-        ? normalizedCoefficient.toString().length - 1
-        : normalizedCoefficient.toString().length;
+  // A non-negative safe scale can only reduce the finite coefficient exponent.
+  if (canonicalScale < 0) {
+    const coefficientWidth = end - (coefficient < 0n ? 1 : 0);
     const decimalTailLength = coefficientWidth - 1;
     const exponent = decimalTailLength - canonicalScale;
     if (!Number.isSafeInteger(exponent)) {

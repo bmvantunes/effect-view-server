@@ -167,7 +167,6 @@ export const profiles = new Map([
         ...engineMixedReadSmokeEnv,
       }),
       rawPredicateIndexTask(1_000, engineReadSmokeEnv),
-      rawLargeMembershipTask(rawWriteSmokeEnv),
       rawWriteTask("base", 1_000, {
         VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "100",
         ...rawWriteSmokeEnv,
@@ -288,6 +287,7 @@ export const profiles = new Map([
   [
     "active-query-sharing",
     [
+      rawLargeMembershipTask(rawWriteSmokeEnv),
       rawLiveFanoutTask("same-window", 10_000, 50, {
         VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
         ...commonEngineSmokeEnv,

@@ -18,6 +18,15 @@ import {
   viewServer,
 } from "./test-support/runtime-test-fixtures";
 
+const expectRuntimeRejection = Effect.fn("ViewServerRuntimeCore.test.expectRuntimeRejection")(
+  function* <A>(
+    effect: Effect.Effect<A, ViewServerRuntimeError>,
+    expected: ViewServerRuntimeError,
+  ) {
+    expect(yield* Effect.flip(effect)).toStrictEqual(expected);
+  },
+);
+
 describe("Runtime Core source ownership", () => {
   it.effect("exposes route-bypassing internals only through the internal factory", () =>
     Effect.gen(function* () {
@@ -56,16 +65,14 @@ describe("Runtime Core source ownership", () => {
         runtimeCore.client,
         ["orders", missingRouteQuery],
       );
-      const missingRoute = yield* Effect.flip(missingRouteEffect);
-      expect(missingRoute).toStrictEqual(publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(missingRouteEffect, publicLeasedRuntimeAccessError);
 
       const missingSubscribeRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> =
         Reflect.apply(runtimeCore.liveClient.subscribe, runtimeCore.liveClient, [
           "orders",
           missingRouteQuery,
         ]);
-      const missingSubscribeRoute = yield* Effect.flip(missingSubscribeRouteEffect);
-      expect(missingSubscribeRoute).toStrictEqual(publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(missingSubscribeRouteEffect, publicLeasedRuntimeAccessError);
 
       const incompleteRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
         runtimeCore.liveClient.subscribe,
@@ -80,8 +87,7 @@ describe("Runtime Core source ownership", () => {
           },
         ],
       );
-      const incompleteRoute = yield* Effect.flip(incompleteRouteEffect);
-      expect(incompleteRoute).toStrictEqual(publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(incompleteRouteEffect, publicLeasedRuntimeAccessError);
 
       yield* runtimeCore.close;
     }),
@@ -134,17 +140,13 @@ describe("Runtime Core source ownership", () => {
         runtimeCore.client,
         [],
       );
-      expect(yield* Effect.flip(publishEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(publishManyEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(patchEffect)).toStrictEqual(publicSourceOwnedRuntimeMutationError);
-      expect(yield* Effect.flip(deleteEffect)).toStrictEqual(publicSourceOwnedRuntimeMutationError);
-      expect(yield* Effect.flip(snapshotEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(subscribeEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(resetEffect)).toStrictEqual(publicSourceOwnedRuntimeResetError);
+      yield* expectRuntimeRejection(publishEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(publishManyEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(patchEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(deleteEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(snapshotEffect, publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(subscribeEffect, publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(resetEffect, publicSourceOwnedRuntimeResetError);
 
       yield* runtimeCore.close;
     }),
@@ -234,34 +236,16 @@ describe("Runtime Core source ownership", () => {
         status: "ready",
         statusCode: "Ready",
       });
-      expect(yield* Effect.flip(kafkaPublishEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaPublishManyEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaPatchEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaDeleteEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcPublishEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcPublishManyEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcPatchEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcDeleteEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaResetEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeResetError,
-      );
-      expect(yield* Effect.flip(grpcResetEffect)).toStrictEqual(publicSourceOwnedRuntimeResetError);
+      yield* expectRuntimeRejection(kafkaPublishEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaPublishManyEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaPatchEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaDeleteEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcPublishEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcPublishManyEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcPatchEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcDeleteEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaResetEffect, publicSourceOwnedRuntimeResetError);
+      yield* expectRuntimeRejection(grpcResetEffect, publicSourceOwnedRuntimeResetError);
 
       yield* kafkaRuntimeCore.close;
       yield* grpcRuntimeCore.close;

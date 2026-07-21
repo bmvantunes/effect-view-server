@@ -7,11 +7,15 @@ import {
 } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
-  it("guards large membership performance in the smoke profile", () => {
-    const membershipTasks = (profiles.get("smoke") ?? []).filter(
+  it("guards large membership performance in the focused active-query-sharing profile", () => {
+    const smokeMembershipTasks = (profiles.get("smoke") ?? []).filter(
+      (task) => task.expectedBenchmarkScope === "engine-raw-large-membership",
+    );
+    const membershipTasks = (profiles.get("active-query-sharing") ?? []).filter(
       (task) => task.expectedBenchmarkScope === "engine-raw-large-membership",
     );
 
+    expect(smokeMembershipTasks).toStrictEqual([]);
     expect(
       membershipTasks.map((task) => ({
         benchmarkScope: task.expectedBenchmarkScope,
@@ -68,7 +72,38 @@ describe("benchmark baseline runner", () => {
   });
 
   it("defines active-query sharing fanout tasks", () => {
-    const activeQuerySharingTasks = profiles.get("active-query-sharing") ?? [];
+    const activeQuerySharingProfile = profiles.get("active-query-sharing") ?? [];
+    expect(
+      activeQuerySharingProfile.map((task) => ({
+        benchmarkScope: task.expectedBenchmarkScope,
+        taskLabel: task.label,
+      })),
+    ).toStrictEqual([
+      {
+        benchmarkScope: "engine-raw-large-membership",
+        taskLabel: "raw large membership 50000 candidates 100000 rows",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout same-window 10000 rows 50 subscribers",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout ten-window 10000 rows 50 subscribers",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout unique-window 10000 rows 50 subscribers",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout unique-shape 10000 rows 50 subscribers",
+      },
+    ]);
+
+    const activeQuerySharingTasks = activeQuerySharingProfile.filter(
+      (task) => task.expectedBenchmarkScope === "engine-raw-live-fanout",
+    );
 
     expect(
       activeQuerySharingTasks.map((task) => ({

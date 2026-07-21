@@ -4,6 +4,15 @@ import { profiles } from "./benchmark-baseline-profiles.mjs";
 import { rawPredicateIndexTask } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
+  it("keeps the focused active-query-sharing gate in pull request CI", () => {
+    const ciWorkflow = readFileSync(".github/workflows/ci.yml", "utf8");
+
+    expect(ciWorkflow).toContain(
+      "      - name: Active query sharing benchmark regression gate\n" +
+        "        run: vp run -w bench:baseline:active-query-sharing\n",
+    );
+  });
+
   it("requires timed-read and peak-RSS runner policy together", () => {
     expect(() =>
       rawPredicateIndexTask(100, {

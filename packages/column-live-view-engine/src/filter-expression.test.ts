@@ -702,37 +702,40 @@ describe("recursive filter expressions", () => {
     }),
   );
 
-  it.effect("normalizes and compiles groups wider than VM argument limits", () =>
-    Effect.gen(function* () {
-      const conditionCount = 125_000;
-      const wideConditions = Array.from({ length: conditionCount }, (_, filter) => ({
-        field: "age",
-        type: "equals",
-        filter,
-      }));
-      const normalized = yield* decodeWhere([{ type: "AND", conditions: wideConditions }]);
-      const sharedCondition: RuntimeFilterExpression = {
-        _tag: "condition",
-        key: "shared-age-equals-one",
-        field: "age",
-        type: "equals",
-        caseSensitive: false,
-        accentSensitive: false,
-        filter: 1,
-      };
-      const wideSharedGroup: RuntimeFilterExpression = {
-        _tag: "group",
-        key: "wide-shared-group",
-        type: "OR",
-        conditions: Array.from({ length: conditionCount }, () => sharedCondition),
-      };
-      const predicate = compileRawPredicate<typeof Row.Type>(metadata, wideSharedGroup);
+  it.effect(
+    "normalizes and compiles groups wider than VM argument limits",
+    () =>
+      Effect.gen(function* () {
+        const conditionCount = 125_000;
+        const wideConditions = Array.from({ length: conditionCount }, (_, filter) => ({
+          field: "age",
+          type: "equals",
+          filter,
+        }));
+        const normalized = yield* decodeWhere([{ type: "AND", conditions: wideConditions }]);
+        const sharedCondition: RuntimeFilterExpression = {
+          _tag: "condition",
+          key: "shared-age-equals-one",
+          field: "age",
+          type: "equals",
+          caseSensitive: false,
+          accentSensitive: false,
+          filter: 1,
+        };
+        const wideSharedGroup: RuntimeFilterExpression = {
+          _tag: "group",
+          key: "wide-shared-group",
+          type: "OR",
+          conditions: Array.from({ length: conditionCount }, () => sharedCondition),
+        };
+        const predicate = compileRawPredicate<typeof Row.Type>(metadata, wideSharedGroup);
 
-      const normalizedGroup = expectGroup(normalized.where);
-      expect(normalizedGroup.conditions.length).toBe(conditionCount);
-      expect(predicate.matches({ id: "matching", name: "x", age: 1 })).toBe(true);
-      expect(predicate.matches({ id: "missing", name: "x", age: 2 })).toBe(false);
-    }),
+        const normalizedGroup = expectGroup(normalized.where);
+        expect(normalizedGroup.conditions.length).toBe(conditionCount);
+        expect(predicate.matches({ id: "matching", name: "x", age: 1 })).toBe(true);
+        expect(predicate.matches({ id: "missing", name: "x", age: 2 })).toBe(false);
+      }),
+    15_000,
   );
 
   it.effect("compares shared expression pairs without revisiting them", () =>

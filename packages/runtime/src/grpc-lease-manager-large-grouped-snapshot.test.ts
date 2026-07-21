@@ -74,13 +74,12 @@ describe("gRPC lease manager large grouped snapshots", () => {
             (manager) =>
               Effect.acquireUseRelease(
                 manager.liveClient.subscribeRuntime("orders", {
+                  routeBy: { region: "usa" },
                   groupBy: ["customerId"],
                   aggregates: {
                     rowCount: { aggFunc: "count" },
                   },
-                  where: {
-                    region: { eq: "usa" },
-                  },
+                  where: [{ field: "region", type: "equals", filter: "usa" }],
                   limit: cardinality,
                 }),
                 (subscription) =>

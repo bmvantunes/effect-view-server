@@ -114,6 +114,32 @@ const grpcSeedMutationCountValue = (value, path, benchmarkScope) => {
   return undefined;
 };
 
+const rawLargeMembershipParametersValue = (value, path, benchmarkScope) => {
+  if (benchmarkScope === "engine-raw-large-membership") {
+    const parameters = exactObjectValue(value, path, [
+      "candidateCount",
+      "partitionCount",
+      "preparedPlanCompilationCount",
+      "subscriberCount",
+    ]);
+    return {
+      candidateCount: positiveInteger(parameters.candidateCount, `${path}.candidateCount`),
+      partitionCount: positiveInteger(parameters.partitionCount, `${path}.partitionCount`),
+      preparedPlanCompilationCount: positiveInteger(
+        parameters.preparedPlanCompilationCount,
+        `${path}.preparedPlanCompilationCount`,
+      ),
+      subscriberCount: positiveInteger(parameters.subscriberCount, `${path}.subscriberCount`),
+    };
+  }
+  if (value !== undefined) {
+    throw new Error(
+      `Benchmark artifact field ${path} is only supported for the engine-raw-large-membership benchmark scope.`,
+    );
+  }
+  return undefined;
+};
+
 const measurementProtocolValue = (value, path) => {
   if (value === undefined) {
     return undefined;
@@ -870,6 +896,24 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
   if (task.expectedRowCount !== undefined && rowCount !== task.expectedRowCount) {
     throw new Error(`${task.label}: rowCount changed from ${task.expectedRowCount} to ${rowCount}.`);
   }
+  const rawLargeMembershipParameters = rawLargeMembershipParametersValue(
+    summary.rawLargeMembershipParameters,
+    `${task.summaryPath}.rawLargeMembershipParameters`,
+    benchmarkScope,
+  );
+  const expectedRawLargeMembershipParameters = rawLargeMembershipParametersValue(
+    task.expectedRawLargeMembershipParameters,
+    `${task.label}.expectedRawLargeMembershipParameters`,
+    benchmarkScope,
+  );
+  if (
+    JSON.stringify(rawLargeMembershipParameters) !==
+    JSON.stringify(expectedRawLargeMembershipParameters)
+  ) {
+    throw new Error(
+      `${task.label}: rawLargeMembershipParameters changed from ${JSON.stringify(expectedRawLargeMembershipParameters)} to ${JSON.stringify(rawLargeMembershipParameters)}.`,
+    );
+  }
   const benchmarks = comparableBenchmarksFromVitestOutput(vitestOutput);
   const minimumSampleCount = positiveInteger(
     task.minimumSampleCount,
@@ -1011,6 +1055,7 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
     mutationCount,
     outputJsonPath: task.outputJsonPath,
     queuedEventCount: finiteNumber(summary.queuedEventCount, `${task.summaryPath}.queuedEventCount`),
+    ...(rawLargeMembershipParameters === undefined ? {} : { rawLargeMembershipParameters }),
     rowCount,
     ...(runtimeOperationCases === undefined ? {} : { runtimeOperationCases }),
     ...(summary.runtimeMetrics === undefined
@@ -1179,6 +1224,11 @@ export const validateBenchmarkObservation = (task, path) => {
     `${path}.measurementProtocol`,
   );
   const mutationCount = nonNegativeInteger(task.mutationCount, `${path}.mutationCount`);
+  const rawLargeMembershipParameters = rawLargeMembershipParametersValue(
+    task.rawLargeMembershipParameters,
+    `${path}.rawLargeMembershipParameters`,
+    benchmarkScope,
+  );
   const seedMutationCount = grpcSeedMutationCountValue(
     task.seedMutationCount,
     `${path}.seedMutationCount`,
@@ -1324,6 +1374,7 @@ export const validateBenchmarkObservation = (task, path) => {
     mutationCount,
     outputJsonPath: stringValue(task.outputJsonPath, `${path}.outputJsonPath`),
     queuedEventCount: finiteNumber(task.queuedEventCount, `${path}.queuedEventCount`),
+    ...(rawLargeMembershipParameters === undefined ? {} : { rawLargeMembershipParameters }),
     rowCount: finiteNumber(task.rowCount, `${path}.rowCount`),
     ...(runtimeOperationCases === undefined ? {} : { runtimeOperationCases }),
     ...(task.runtimeMetrics === undefined

@@ -15,6 +15,8 @@ This example demonstrates:
   source ownership.
 - A topic-owned binding from the View Server topic to the generated gRPC client
   method.
-- Type-enforced route filters in `useLiveQuery`.
+- A type-enforced exact `routeBy` object in `useLiveQuery`, passed to gRPC
+  without case, accent, or text normalization.
 - Shared upstream route acquisition for subscribers using the same route.
-- Local View Server filters on top of the leased source route.
+- Canonical local `where` arrays on top of the leased source route, independent
+  from `routeBy`.

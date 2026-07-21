@@ -6,7 +6,7 @@ describe("materialized gRPC example type contracts", () => {
   it("preserves selected strategy row types", () => {
     const result = useLiveQuery("strategies", {
       select: ["id", "strategyId", "notional"],
-      where: { status: { eq: "active" } },
+      where: [{ field: "status", type: "equals", filter: "active" }],
       limit: 20,
     });
 

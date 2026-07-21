@@ -75,8 +75,15 @@ vp run -w bench:baseline:active-query-sharing:update
 ```
 
 This profile runs `raw-live-fanout` across same-window, ten-window, unique-window, and unique-shape
-subscription sets. It exists to catch duplicated materialization/fanout regressions separately from
-the broader smoke gate while still using Vitest benchmark output and committed baselines.
+subscription sets. It also runs five exact samples for each of three 50k-candidate nested `in`
+cases: full production query admission/compilation, precompiled evaluation across 100k partitioned
+rows, and acquisition of 32 equivalent subscriber leases. The last case requires exactly one
+prepared Raw Query Plan compilation and one shared Active Query, guarding
+`O(candidateCount + subscribers)` retained plan ownership instead of per-subscriber membership
+plans. The focused profile catches duplicated materialization, fanout, and large-membership sharing
+regressions without adding the multi-second, high-memory workload to the frequently-run smoke gate.
+Pull request CI runs this focused gate as a separate serial step, so those regressions still block
+merge.
 
 Raw read/write performance has a focused engine gate:
 

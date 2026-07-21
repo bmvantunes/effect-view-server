@@ -6,18 +6,19 @@ import {
 import type { GroupedQueryPlan } from "./grouped-query-plan";
 import { emptyGroupedEvaluation, groupedEvaluationFromGroups } from "./grouped-window-evaluation";
 import type { QueryEvaluation } from "./query-result";
-import type { TopicRowScan } from "./row-scan";
+import { scanTopicRows, type TopicRowScan } from "./row-scan";
 
 type RowObject = object;
 
 const evaluateZeroLimitGroupedRows = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRowScan<Row>,
   plan: GroupedQueryPlan<Row, ResultRow>,
-  matches: (row: Row) => boolean,
+  matches: (row: Row, storageKey?: string) => boolean,
+  ownedStorageKeys?: () => Iterable<string>,
 ): QueryEvaluation<RowObject> => {
   const groupKeys = new Set<string>();
-  store.scanRows((_key, row) => {
-    if (matches(row)) {
+  scanTopicRows(store, ownedStorageKeys, (key, row) => {
+    if (matches(row, key)) {
       groupKeys.add(plan.groupKey(row));
     }
   });
@@ -27,14 +28,15 @@ const evaluateZeroLimitGroupedRows = <Row extends RowObject, ResultRow extends R
 export const evaluateGroupedRows = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRowScan<Row>,
   plan: GroupedQueryPlan<Row, ResultRow>,
-  matches: (row: Row) => boolean,
+  matches: (row: Row, storageKey?: string) => boolean,
+  ownedStorageKeys?: () => Iterable<string>,
 ): QueryEvaluation<RowObject> => {
   if (plan.zeroLimit) {
-    return evaluateZeroLimitGroupedRows(store, plan, matches);
+    return evaluateZeroLimitGroupedRows(store, plan, matches, ownedStorageKeys);
   }
   const groups = new Map<string, GroupState>();
-  store.scanRows((_key, row) => {
-    if (!matches(row)) {
+  scanTopicRows(store, ownedStorageKeys, (storageKey, row) => {
+    if (!matches(row, storageKey)) {
       return;
     }
     const key = plan.groupKey(row);

@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import {
   createColumnLiveViewEngine,
   EngineClosedError,
+  InvalidQueryError,
   InvalidRowError,
   InvalidTopicError,
   type ColumnLiveViewEngineConfig,
@@ -40,14 +41,6 @@ describe("ColumnLiveViewEngine validation", () => {
           },
         },
       });
-      const emptyObjectKeywordFilter = yield* engine.snapshot("payloads", {
-        select: ["id"],
-        where: {
-          payload: { venue: "xlon" },
-        },
-      });
-      expect(emptyObjectKeywordFilter.rows).toStrictEqual([]);
-
       const mapError = yield* Effect.flip(
         engine.publish("payloads", {
           id: "1",
@@ -73,24 +66,10 @@ describe("ColumnLiveViewEngine validation", () => {
         totalRows: 1,
         version: 1,
       });
-
-      const objectFilter = yield* engine.snapshot("payloads", {
-        select: ["id", "payload"],
-        where: {
-          payload: { venue: "xlon" },
-        },
-      });
-      expect(objectFilter).toStrictEqual({
-        rows: [{ id: "2", payload: { venue: "xlon" } }],
-        status: "ready",
-        statusCode: "Ready",
-        totalRows: 1,
-        version: 1,
-      });
     }),
   );
 
-  it.effect("rejects non-cloneable object rows and query filters through typed errors", () =>
+  it.effect("rejects non-cloneable object rows", () =>
     Effect.gen(function* () {
       const WithPayload = Schema.Struct({
         id: Schema.String,
@@ -109,71 +88,6 @@ describe("ColumnLiveViewEngine validation", () => {
         engine.publish("payloads", { id: "1", payload: new WeakMap() }),
       );
       expect(rowError._tag).toBe("InvalidRowError");
-
-      yield* engine.publish("payloads", { id: "2", payload: { venue: "xnys" } });
-      const queryError = yield* Effect.flip(
-        engine.snapshot("payloads", {
-          select: ["id"],
-          where: {
-            payload: new WeakMap(),
-          },
-        }),
-      );
-      expect(queryError._tag).toBe("InvalidQueryError");
-    }),
-  );
-
-  it.effect("matches schema-backed record filters with a null prototype", () =>
-    Effect.gen(function* () {
-      const WithPayload = Schema.Struct({
-        id: Schema.String,
-        payload: Schema.Record(Schema.String, Schema.String),
-      });
-      const engine = yield* createColumnLiveViewEngine({
-        topics: {
-          payloads: {
-            schema: WithPayload,
-            key: "id",
-          },
-        },
-      });
-      yield* engine.publish("payloads", {
-        id: "1",
-        payload: { venue: "xnys" },
-      });
-      yield* engine.publish("payloads", {
-        id: "2",
-        payload: { venue: "xlon" },
-      });
-
-      const filter: Record<string, string> = Object.create(null);
-      filter["venue"] = "xnys";
-      const snapshot = yield* engine.snapshot("payloads", {
-        select: ["id", "payload"],
-        where: { payload: filter },
-      });
-      const grouped = yield* engine.snapshot("payloads", {
-        groupBy: ["payload"],
-        aggregates: { rowCount: { aggFunc: "count" } },
-        where: { payload: filter },
-      });
-
-      expect({ grouped, snapshot }).toStrictEqual({
-        grouped: {
-          rows: [{ payload: { venue: "xnys" }, rowCount: 1n }],
-          status: "ready",
-          statusCode: "Ready",
-          totalRows: 1,
-          version: 2,
-        },
-        snapshot: {
-          rows: [{ id: "1", payload: { venue: "xnys" } }],
-          status: "ready",
-          statusCode: "Ready",
-          totalRows: 1,
-          version: 2,
-        },
-      });
     }),
   );
 
@@ -415,10 +329,12 @@ describe("ColumnLiveViewEngine validation", () => {
         // @ts-expect-error malformed untyped callers are still handled by the Effect error channel.
         engine.snapshot("orders", null),
       );
-      expect(nullError).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("Raw query must be a plain object"),
-      });
+      expect(nullError).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Query input could not be snapshotted.",
+        }),
+      );
 
       const undefinedError = yield* Effect.flip(
         // @ts-expect-error malformed untyped callers are still handled by the Effect error channel.
@@ -431,6 +347,152 @@ describe("ColumnLiveViewEngine validation", () => {
         engine.snapshot("orders", undefined),
       );
       expect(undefinedSnapshot._tag).toBe("InvalidQueryError");
+    }),
+  );
+
+  it.effect("captures raw and grouped one-shot query inputs when snapshot is called", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      yield* engine.publishMany("orders", [
+        order("1", "open", 10, 1, "emea"),
+        order("2", "open", 20, 2, "amer"),
+        order("3", "closed", 30, 3, "amer"),
+      ]);
+
+      let arrayPropertyReads = 0;
+      const selectTarget: ["id", "price"] = ["id", "price"];
+      const select = new Proxy(selectTarget, {
+        get: () => {
+          arrayPropertyReads += 1;
+          throw new Error("select property access must not run");
+        },
+      });
+      const whereTarget: Array<{
+        field: "status";
+        type: "equals";
+        filter: "open" | "closed";
+      }> = [{ field: "status", type: "equals", filter: "open" }];
+      const where = new Proxy(whereTarget, {
+        get: () => {
+          arrayPropertyReads += 1;
+          throw new Error("where property access must not run");
+        },
+      });
+      const rawOrderByTarget: Array<{
+        field: "price";
+        direction: "asc" | "desc";
+      }> = [{ field: "price", direction: "asc" }];
+      const rawOrderBy = new Proxy(rawOrderByTarget, {
+        get: () => {
+          arrayPropertyReads += 1;
+          throw new Error("raw orderBy property access must not run");
+        },
+      });
+      const rawQuery = { select, where, orderBy: rawOrderBy, offset: 0, limit: 1 };
+      const rawSnapshot = engine.snapshot("orders", rawQuery);
+
+      const groupByTarget: ["status" | "region"] = ["status"];
+      const groupBy = new Proxy(groupByTarget, {
+        get: () => {
+          arrayPropertyReads += 1;
+          throw new Error("groupBy property access must not run");
+        },
+      });
+      const groupedOrderByTarget: Array<{
+        aggregate: "rowCount";
+        direction: "asc" | "desc";
+      }> = [{ aggregate: "rowCount", direction: "desc" }];
+      const groupedOrderBy = new Proxy(groupedOrderByTarget, {
+        get: () => {
+          arrayPropertyReads += 1;
+          throw new Error("grouped orderBy property access must not run");
+        },
+      });
+      const groupedAggregates: {
+        rowCount: { aggFunc: "count" };
+      } = { rowCount: { aggFunc: "count" } };
+      const groupedQuery = {
+        groupBy,
+        aggregates: groupedAggregates,
+        orderBy: groupedOrderBy,
+        offset: 0,
+        limit: 1,
+      };
+      const groupedSnapshot = engine.snapshot("orders", groupedQuery);
+
+      whereTarget[0]!.filter = "closed";
+      rawOrderByTarget[0]!.direction = "desc";
+      rawQuery.offset = 1;
+      rawQuery.limit = 2;
+      groupByTarget[0] = "region";
+      groupedOrderByTarget[0]!.direction = "asc";
+      groupedQuery.offset = 1;
+      groupedQuery.limit = 2;
+
+      expect(yield* rawSnapshot).toStrictEqual({
+        rows: [{ id: "1", price: 10 }],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 2,
+        version: 1,
+      });
+      expect(yield* groupedSnapshot).toStrictEqual({
+        rows: [{ status: "open", rowCount: 2n }],
+        status: "ready",
+        statusCode: "Ready",
+        totalRows: 2,
+        version: 1,
+      });
+      expect(arrayPropertyReads).toBe(0);
+    }),
+  );
+
+  it.effect("maps hostile one-shot query ownership into typed query errors", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      let accessorReads = 0;
+      const accessorQuery = {};
+      Object.defineProperty(accessorQuery, "select", {
+        enumerable: true,
+        get: () => {
+          accessorReads += 1;
+          throw new Error("query accessor must not run");
+        },
+      });
+      const accessorSelect: Array<unknown> = [];
+      Object.defineProperty(accessorSelect, "0", {
+        enumerable: true,
+        get: () => {
+          accessorReads += 1;
+          throw new Error("select accessor must not run");
+        },
+      });
+      accessorSelect.length = 1;
+      const revokedQuery = Proxy.revocable({ select: ["id"] }, {});
+      revokedQuery.revoke();
+
+      const rootAccessorError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.snapshot("orders", accessorQuery),
+      );
+      const arrayAccessorError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.snapshot("orders", { select: accessorSelect }),
+      );
+      const revokedError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
+        engine.snapshot("orders", revokedQuery.proxy),
+      );
+
+      for (const error of [rootAccessorError, arrayAccessorError, revokedError]) {
+        expect(error).toStrictEqual(
+          InvalidQueryError.make({
+            message: "Query input could not be snapshotted.",
+            topic: "orders",
+          }),
+        );
+      }
+      expect(accessorReads).toBe(0);
     }),
   );
 
@@ -453,15 +515,11 @@ describe("ColumnLiveViewEngine validation", () => {
         message: expect.stringContaining("where"),
       });
 
-      const invalidWhereArrayQuery: object = {
+      const emptyWhere = yield* engine.snapshot("orders", {
         select: ["id"],
         where: [],
-      };
-      const invalidWhereArray = yield* Effect.flip(
-        // @ts-expect-error malformed runtime query where array must be rejected.
-        engine.snapshot("orders", invalidWhereArrayQuery),
-      );
-      expect(invalidWhereArray._tag).toBe("InvalidQueryError");
+      });
+      expect(emptyWhere.rows).toStrictEqual([{ id: "1" }]);
 
       // @ts-expect-error runtime validation still rejects hostile untyped inputs.
       const invalidTopLevelArray = yield* Effect.flip(engine.snapshot("orders", []));
@@ -469,10 +527,12 @@ describe("ColumnLiveViewEngine validation", () => {
 
       // @ts-expect-error runtime validation still rejects hostile untyped inputs.
       const invalidTopLevelMap = yield* Effect.flip(engine.snapshot("orders", new Map()));
-      expect(invalidTopLevelMap).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("plain object"),
-      });
+      expect(invalidTopLevelMap).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Query input could not be snapshotted.",
+        }),
+      );
 
       const invalidWhereMapQuery: object = {
         select: ["id"],
@@ -480,16 +540,16 @@ describe("ColumnLiveViewEngine validation", () => {
       };
       // @ts-expect-error hostile untyped runtime query is still handled by runtime guards.
       const invalidWhereMap = yield* Effect.flip(engine.snapshot("orders", invalidWhereMapQuery));
-      expect(invalidWhereMap).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("where"),
-      });
+      expect(invalidWhereMap).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Query input could not be snapshotted.",
+        }),
+      );
 
       const unknownTopLevelRawQuery: object = {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         whre: {
           status: "closed",
         },
@@ -514,9 +574,37 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(invalidOrderBy._tag).toBe("InvalidQueryError");
 
+      const decoratedSelect = ["id"];
+      Object.defineProperty(decoratedSelect, "metadata", { enumerable: true, value: true });
+      const decoratedSelectQuery: object = { select: decoratedSelect };
+      const decoratedSelectError = yield* Effect.flip(
+        // @ts-expect-error decorated query arrays are rejected by the runtime boundary.
+        engine.snapshot("orders", decoratedSelectQuery),
+      );
+      expect(decoratedSelectError).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Raw query select must be a non-empty array of strings.",
+        }),
+      );
+
+      const decoratedOrderBy = [{ field: "price", direction: "asc" }];
+      Object.defineProperty(decoratedOrderBy, "metadata", { enumerable: true, value: true });
+      const decoratedOrderByQuery: object = { select: ["id"], orderBy: decoratedOrderBy };
+      const decoratedOrderByError = yield* Effect.flip(
+        // @ts-expect-error decorated query arrays are rejected by the runtime boundary.
+        engine.snapshot("orders", decoratedOrderByQuery),
+      );
+      expect(decoratedOrderByError).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Raw query orderBy must be a dense array without extra properties.",
+        }),
+      );
+
       const invalidFields = yield* Effect.flip(
+        // @ts-expect-error malformed runtime query select must be rejected.
         engine.snapshot("orders", {
-          // @ts-expect-error malformed runtime query select must be rejected.
           select: "id",
         }),
       );
@@ -562,10 +650,12 @@ describe("ColumnLiveViewEngine validation", () => {
           offset: Number.NaN,
         }),
       );
-      expect(invalidOffsetNaN).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("offset"),
-      });
+      expect(invalidOffsetNaN).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Query input could not be snapshotted.",
+        }),
+      );
 
       const invalidOffsetNegative = yield* Effect.flip(
         engine.snapshot("orders", {
@@ -608,10 +698,12 @@ describe("ColumnLiveViewEngine validation", () => {
           limit: Number.POSITIVE_INFINITY,
         }),
       );
-      expect(invalidLimitInfinity).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("limit"),
-      });
+      expect(invalidLimitInfinity).toStrictEqual(
+        InvalidQueryError.make({
+          topic: "orders",
+          message: "Query input could not be snapshotted.",
+        }),
+      );
 
       const invalidOrderByEntryQuery: object = {
         select: ["id"],
@@ -691,9 +783,7 @@ describe("ColumnLiveViewEngine validation", () => {
 
       const unknownWhereFieldQuery: object = {
         select: ["id"],
-        where: {
-          prcie: 10,
-        },
+        where: [{ field: "prcie", type: "equals", filter: 10 }],
       };
       const unknownWhereField = yield* Effect.flip(
         // @ts-expect-error runtime query unknown where fields must be rejected.
@@ -701,36 +791,7 @@ describe("ColumnLiveViewEngine validation", () => {
       );
       expect(unknownWhereField).toMatchObject({
         _tag: "InvalidQueryError",
-        message: expect.stringContaining("where"),
-      });
-
-      const unknownFilterOperatorQuery: object = {
-        select: ["id"],
-        where: {
-          status: { equals: "open" },
-        },
-      };
-      const unknownFilterOperator = yield* Effect.flip(
-        // @ts-expect-error runtime query unknown filter operators must be rejected.
-        engine.snapshot("orders", unknownFilterOperatorQuery),
-      );
-      expect(unknownFilterOperator).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported filter operator"),
-      });
-
-      const mixedKnownAndUnknownFilterOperator = yield* Effect.flip(
-        engine.snapshot("orders", {
-          select: ["id"],
-          where: {
-            // @ts-expect-error runtime query unknown filter operators must be rejected.
-            status: { eq: "open", typo: true },
-          },
-        }),
-      );
-      expect(mixedKnownAndUnknownFilterOperator).toMatchObject({
-        _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported filter operator"),
+        message: expect.stringContaining("unknown or non-filterable field"),
       });
 
       const invalidOrderByDirectionQuery: object = {

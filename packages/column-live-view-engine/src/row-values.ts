@@ -1,10 +1,8 @@
 import {
-  equals,
-  format as formatBigDecimal,
-  isBigDecimal,
-  normalize,
-  type BigDecimal,
-} from "effect/BigDecimal";
+  compareTrustedWireSafeBigDecimal,
+  trustedWireSafeBigDecimalSemanticKey,
+} from "@effect-view-server/effect-utils";
+import { isBigDecimal, type BigDecimal } from "effect/BigDecimal";
 
 type RowObject = object;
 
@@ -69,7 +67,7 @@ export const trustedFieldValue = (row: RowObject, field: string): unknown =>
 
 export const valuesEqual = (left: unknown, right: unknown): boolean => {
   if (isBigDecimal(left) && isBigDecimal(right)) {
-    return equals(left, right);
+    return compareTrustedWireSafeBigDecimal(left, right) === 0;
   }
   if (Array.isArray(left) && Array.isArray(right)) {
     return (
@@ -110,7 +108,8 @@ export function scalarEqualityKey(value: unknown): string | undefined {
     return `number:${value.toString()}`;
   }
   if (isBigDecimal(value)) {
-    return `bigDecimal:${formatBigDecimal(normalize(value))}`;
+    const semanticKey = trustedWireSafeBigDecimalSemanticKey(value);
+    return semanticKey === undefined ? undefined : `bigDecimal:${semanticKey}`;
   }
   return undefined;
 }

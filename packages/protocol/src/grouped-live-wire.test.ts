@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
+  compileViewServerLiveEventCodec,
   viewServerDecodeGroupedQuery,
   viewServerDecodeLiveEvent,
   viewServerDecodeLiveQuery,
@@ -18,6 +19,79 @@ import {
 } from "../test-harness/protocol";
 
 describe("Grouped live wire codec", () => {
+  it.effect("compiles and reuses one grouped row contract across live events", () =>
+    Effect.gen(function* () {
+      const aggregateDefinitions = {
+        rowCount: { aggFunc: "count" as const },
+      };
+      const query = {
+        aggregates: aggregateDefinitions,
+        groupBy: ["id"],
+      };
+      const codec = compileViewServerLiveEventCodec<
+        typeof viewServer.topics,
+        "orders",
+        { readonly id: string; readonly rowCount: bigint }
+      >(viewServer, "orders", query);
+      query.groupBy.push("status");
+      Object.defineProperty(query.aggregates, "newCount", {
+        configurable: true,
+        enumerable: true,
+        value: { aggFunc: "count" },
+      });
+      Object.defineProperty(query.aggregates.rowCount, "aggFunc", {
+        configurable: true,
+        enumerable: true,
+        value: "sum",
+      });
+      Object.defineProperty(query.aggregates.rowCount, "field", {
+        configurable: true,
+        enumerable: true,
+        value: "price",
+      });
+
+      const first = yield* codec.encode({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "compiled-grouped",
+        version: 1,
+        keys: ["a"],
+        rows: [{ id: "a", rowCount: 1n }],
+        totalRows: 1,
+      });
+      const second = yield* codec.encode({
+        type: "delta",
+        topic: "orders",
+        queryId: "compiled-grouped",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [{ type: "update", key: "a", row: { id: "a", rowCount: 2n }, index: 0 }],
+        totalRows: 1,
+      });
+      const decodedFirst = yield* codec.decodeTrusted(first);
+      const decodedSecond = yield* codec.decodeTrusted(second);
+
+      expect(decodedFirst).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "compiled-grouped",
+        version: 1,
+        keys: ["a"],
+        rows: [{ id: "a", rowCount: 1n }],
+        totalRows: 1,
+      });
+      expect(decodedSecond).toStrictEqual({
+        type: "delta",
+        topic: "orders",
+        queryId: "compiled-grouped",
+        fromVersion: 1,
+        toVersion: 2,
+        operations: [{ type: "update", key: "a", row: { id: "a", rowCount: 2n }, index: 0 }],
+        totalRows: 1,
+      });
+    }),
+  );
+
   it.effect("encodes and decodes grouped query and grouped live event operations", () =>
     Effect.gen(function* () {
       const groupedQuery = {
@@ -30,10 +104,11 @@ describe("Grouped live wire codec", () => {
           maxPrice: { aggFunc: "max", field: "price" },
           distinctPrice: { aggFunc: "countDistinct", field: "price" },
         },
-        where: {
-          id: { startsWith: "a" },
-          price: { in: [10, 11], gte: 10 },
-        },
+        where: [
+          { field: "id", type: "startsWith", filter: "a" },
+          { field: "price", type: "in", filter: [10, 11] },
+          { field: "price", type: "greaterThanOrEqual", filter: 10 },
+        ],
         orderBy: [
           { field: "id", direction: "asc" },
           { aggregate: "totalPrice", direction: "desc" },

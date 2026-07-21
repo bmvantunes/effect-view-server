@@ -114,6 +114,7 @@ export const makeKafkaRuntimeSourceAdapter = <
             return {
               client: input.client,
               liveClient: input.liveClient,
+              protocolQuerySubscriber: input.protocolQuerySubscriber,
               start: RuntimeEffect.acquireRelease(
                 dependencies.makeIngress(
                   { topics: config.topics },

@@ -3,6 +3,7 @@ import type { SnapshotEvent, DeltaEvent } from "@effect-view-server/config";
 import type {
   ActiveQueryRegistry,
   LiveQueryExecution,
+  MaterializedCanonicalCompilation,
   MaterializedQueryExecution,
   MaterializedQueryExecutionSlot,
 } from "./active-query-contract";
@@ -55,6 +56,61 @@ const leaseMaterializedQueryExecution = <ResultRow extends RowObject>(
   });
 };
 
+const acquireExistingMaterializedQueryExecution = <ResultRow extends RowObject>(
+  store: TopicStoreQueryInterface,
+  registry: ActiveQueryRegistry,
+  cacheKey: string,
+  resultSemantics: QueryResultSemantics<ResultRow>,
+): LiveQueryExecution<ResultRow> | undefined => {
+  const existing = getActiveMaterializedQueryMap(registry).get(cacheKey);
+  if (existing === undefined) {
+    return undefined;
+  }
+  existing.refs += 1;
+  return leaseMaterializedQueryExecution(store, existing.execution, resultSemantics);
+};
+
+type MaterializedCompilation<ResultRow extends RowObject> = {
+  readonly canonicalCompiled: MaterializedCanonicalCompilation;
+  readonly execution: MaterializedQueryExecution;
+  readonly resultSemantics: QueryResultSemantics<ResultRow>;
+};
+
+const registerMaterializedQueryExecution = <ResultRow extends RowObject>(
+  store: TopicStoreQueryInterface,
+  registry: ActiveQueryRegistry,
+  cacheKey: string,
+  makeCompilation: (releaseRetainedChanges: () => void) => MaterializedCompilation<ResultRow>,
+  partitionKey: string | undefined,
+  recordCompilation: boolean,
+): LiveQueryExecution<ResultRow> => {
+  let retainedChanges = false;
+  const releaseRetainedChanges = () => {
+    if (!retainedChanges) {
+      return;
+    }
+    retainedChanges = false;
+    store.releaseChanges(partitionKey);
+  };
+  const compilation = makeCompilation(releaseRetainedChanges);
+  if (compilation.execution.incremental) {
+    retainedChanges = true;
+    store.retainChanges(partitionKey);
+  }
+  getActiveMaterializedQueryMap(registry).set(cacheKey, {
+    canonicalCompiled: compilation.canonicalCompiled,
+    canonicalLease: () =>
+      leaseMaterializedQueryExecution(store, compilation.execution, compilation.resultSemantics),
+    execution: compilation.execution,
+    releaseRetainedChanges,
+    refs: 1,
+  });
+  if (recordCompilation) {
+    registry.preparedGroupedPlanCompilationCount += 1;
+  }
+  return leaseMaterializedQueryExecution(store, compilation.execution, compilation.resultSemantics);
+};
+
 export const acquireMaterializedQueryExecution = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.acquire",
 )(function <ResultRow extends RowObject>(
@@ -63,35 +119,60 @@ export const acquireMaterializedQueryExecution = Effect.fn(
   cacheKey: string,
   resultSemantics: QueryResultSemantics<ResultRow>,
   makeExecution: (releaseRetainedChanges: () => void) => MaterializedQueryExecution,
+  partitionKey?: string,
 ) {
   return Effect.sync(() => {
-    const map = getActiveMaterializedQueryMap(registry);
-    const existing = map.get(cacheKey);
+    const existing = acquireExistingMaterializedQueryExecution(
+      store,
+      registry,
+      cacheKey,
+      resultSemantics,
+    );
     if (existing !== undefined) {
-      const entry = existing;
-      entry.refs += 1;
-      return leaseMaterializedQueryExecution<ResultRow>(store, entry.execution, resultSemantics);
+      return existing;
     }
 
-    let retainedChanges = false;
-    const releaseRetainedChanges = () => {
-      if (!retainedChanges) {
-        return;
-      }
-      retainedChanges = false;
-      store.releaseChanges();
-    };
-    const execution = makeExecution(releaseRetainedChanges);
-    if (execution.incremental) {
-      retainedChanges = true;
-      store.retainChanges();
-    }
-    map.set(cacheKey, {
-      execution,
-      releaseRetainedChanges,
-      refs: 1,
+    const canonicalCompiled = Object.freeze({
+      plan: Object.freeze({ cacheKey }),
     });
-    return leaseMaterializedQueryExecution<ResultRow>(store, execution, resultSemantics);
+    return registerMaterializedQueryExecution(
+      store,
+      registry,
+      cacheKey,
+      (releaseRetainedChanges) => ({
+        canonicalCompiled,
+        execution: makeExecution(releaseRetainedChanges),
+        resultSemantics,
+      }),
+      partitionKey,
+      false,
+    );
+  });
+});
+
+export const acquirePreparedMaterializedQueryExecution = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.materialized.acquirePrepared",
+)(function (
+  store: TopicStoreQueryInterface,
+  registry: ActiveQueryRegistry,
+  cacheKey: string,
+  makeCompilation: (releaseRetainedChanges: () => void) => MaterializedCompilation<RowObject>,
+  partitionKey?: string,
+) {
+  return Effect.sync(() => {
+    const existing = getActiveMaterializedQueryMap(registry).get(cacheKey);
+    if (existing !== undefined) {
+      existing.refs += 1;
+      return existing.canonicalLease();
+    }
+    return registerMaterializedQueryExecution(
+      store,
+      registry,
+      cacheKey,
+      makeCompilation,
+      partitionKey,
+      true,
+    );
   });
 });
 
@@ -131,6 +212,12 @@ export const activeMaterializedQueryExecutionCount = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.materialized.countStore",
 )((registry: ActiveQueryRegistry) =>
   Effect.sync(() => getActiveMaterializedQueryMap(registry).size),
+);
+
+export const preparedGroupedQueryPlanCompilationCount = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.materialized.preparedPlanCompilationCount",
+)((registry: ActiveQueryRegistry) =>
+  Effect.sync(() => registry.preparedGroupedPlanCompilationCount),
 );
 
 export const activeMaterializedQueryExecutionModeCounts = Effect.fn(

@@ -42,6 +42,52 @@ const schemaAst = (schema: unknown): SchemaAST.AST | undefined => {
   return SchemaAST.isAST(ast) ? ast : undefined;
 };
 
+const dottedStaticPropertyPath = (
+  ast: SchemaAST.AST,
+  path: ReadonlyArray<string>,
+  active: Set<SchemaAST.AST>,
+): string | undefined => {
+  if (active.has(ast)) {
+    return undefined;
+  }
+  active.add(ast);
+  let result: string | undefined;
+  if (SchemaAST.isSuspend(ast)) {
+    result = dottedStaticPropertyPath(ast.thunk(), path, active);
+  } else if (SchemaAST.isUnion(ast)) {
+    for (const member of ast.types) {
+      result = dottedStaticPropertyPath(member, path, active);
+      if (result !== undefined) {
+        break;
+      }
+    }
+  } else if (SchemaAST.isObjects(ast)) {
+    for (const property of ast.propertySignatures) {
+      if (typeof property.name !== "string") {
+        continue;
+      }
+      const propertyPath = [...path, property.name];
+      if (property.name.includes(".")) {
+        result = propertyPath.join(".");
+        break;
+      }
+      result = dottedStaticPropertyPath(property.type, propertyPath, active);
+      if (result !== undefined) {
+        break;
+      }
+    }
+  } else if (SchemaAST.isDeclaration(ast) && schemaAstIsClass(ast)) {
+    for (const parameter of ast.typeParameters) {
+      result = dottedStaticPropertyPath(parameter, path, active);
+      if (result !== undefined) {
+        break;
+      }
+    }
+  }
+  active.delete(ast);
+  return result;
+};
+
 const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
   SchemaAST.isDeclaration(ast) &&
   isRecord(ast.annotations?.["typeConstructor"]) &&
@@ -419,6 +465,10 @@ export const viewServerUnsupportedRuntimeFieldDomain = (schema: unknown): string
   const ast = schemaAst(schema);
   if (ast === undefined) {
     return undefined;
+  }
+  const dottedProperty = dottedStaticPropertyPath(ast, [], new Set());
+  if (dottedProperty !== undefined) {
+    return `statically named object field contains a reserved dot: ${dottedProperty}`;
   }
   const unsupported =
     unsupportedRuntimeDomainAst(ast, new Set()) ?? nestedMixedNumericRuntimeDomainAst(ast);

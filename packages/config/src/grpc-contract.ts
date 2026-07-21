@@ -7,14 +7,9 @@ import type {
 } from "@bufbuild/protobuf";
 import type { Client } from "@connectrpc/connect";
 import type { Config, Effect, Stream } from "effect";
-import type {
-  FieldKey,
-  RowFromSchema,
-  RowSchema,
-  StringFieldKey,
-  TopicDefinition,
-} from "./query-core";
+import type { RowFromSchema, RowSchema, StringFieldKey, TopicDefinition } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
+import type { RouteFieldKey, RouteFieldValue } from "./query-filter";
 import type {
   NonEmptyRouteBy,
   TopicLeasedSourceDefinition,
@@ -111,19 +106,36 @@ type TypeEquals<A, B> =
       : false
     : false;
 
-type ExactGrpcLeasedTopicSourceInput<Input> = Input &
+type RouteByHasDuplicates<
+  RouteBy extends ReadonlyArray<string>,
+  Seen extends string = never,
+> = RouteBy extends readonly [
+  infer Field extends string,
+  ...infer Rest extends ReadonlyArray<string>,
+]
+  ? Field extends Seen
+    ? true
+    : RouteByHasDuplicates<Rest, Seen | Field>
+  : false;
+
+type UniqueRouteBy<RouteBy extends NonEmptyRouteBy> =
+  RouteByHasDuplicates<RouteBy> extends true ? never : RouteBy;
+
+type ExactGrpcLeasedTopicSourceInput<Input extends { readonly routeBy: NonEmptyRouteBy }> = Input &
   RejectExtraKeys<
     Input,
     {
       readonly routeBy: NonEmptyRouteBy;
     }
-  >;
+  > & { readonly routeBy: UniqueRouteBy<Input["routeBy"]> };
 
-type RouteShapeForRow<Row, RouteBy extends ReadonlyArray<string>> = Pick<
-  Row,
-  Extract<RouteBy[number], FieldKey<Row>>
->;
-type NonEmptyRouteByForRow<Row> = readonly [FieldKey<Row>, ...ReadonlyArray<FieldKey<Row>>];
+type RouteShapeForRow<Row, RouteBy extends ReadonlyArray<string>> = {
+  readonly [Field in Extract<RouteBy[number], RouteFieldKey<Row>>]-?: RouteFieldValue<Row, Field>;
+};
+type NonEmptyRouteByForRow<Row> = readonly [
+  RouteFieldKey<Row>,
+  ...ReadonlyArray<RouteFieldKey<Row>>,
+];
 
 type ExactGrpcFeedMap<
   Input,
@@ -362,7 +374,7 @@ type ExactGrpcLeasedTopicInput<
   readonly key: Key;
   readonly client: ClientName;
   readonly method: MethodName;
-  readonly routeBy: RouteBy;
+  readonly routeBy: UniqueRouteBy<RouteBy>;
   readonly request: ExactGrpcRequest<
     [route: RouteShapeForRow<RowFromSchema<SchemaValue>, RouteBy>],
     GrpcMethodRequestExactShape<Clients[ClientName], MethodName>,

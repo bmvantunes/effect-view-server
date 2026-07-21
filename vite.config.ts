@@ -203,10 +203,10 @@ export default defineConfig({
     "*": "vp check --fix",
   },
   fmt: {
-    ignorePatterns: [".repos/**", "scripts/**"],
+    ignorePatterns: [".pnpm-store/**", ".repos/**", "scripts/**"],
   },
   lint: {
-    ignorePatterns: [".repos/**", "scripts/**"],
+    ignorePatterns: [".pnpm-store/**", ".repos/**", "scripts/**"],
     options: { typeAware: true, typeCheck: true },
   },
   run: {

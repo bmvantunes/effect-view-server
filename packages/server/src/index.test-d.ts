@@ -1,5 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { Effect } from "effect";
+import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
+import { defineViewServerConfig, type ValidatedRuntimeQuery } from "@effect-view-server/config";
+import { Effect, Schema } from "effect";
 import type {
   ViewServerAuth,
   ViewServerAuthRequest,
@@ -9,6 +11,20 @@ import type {
 } from "./index";
 
 declare const serverInput: ViewServerWebSocketServerInput<never>;
+
+const viewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({
+        id: Schema.String,
+      }),
+      key: "id",
+    },
+  },
+});
+declare const topicServerInput: ViewServerWebSocketServerInput<typeof viewServer.topics>;
+declare const runtimeLiveClient: ViewServerRuntimeLiveClient<typeof viewServer.topics>;
+declare const validatedQuery: ValidatedRuntimeQuery;
 
 describe("server type contracts", () => {
   it("accepts omitted, empty, client-only, and stream-only transport hooks", () => {
@@ -88,6 +104,30 @@ describe("server type contracts", () => {
     invalidStreamHookInput satisfies ViewServerWebSocketServerInput<never>;
     // @ts-expect-error auth validator must return an Effect.
     invalidAuthInput satisfies ViewServerWebSocketServerInput<never>;
+  });
+
+  it("requires the opaque protocol-query capability at the server boundary", () => {
+    const validatedSubscription = topicServerInput.liveClient.subscribeProtocolQuery(
+      "orders",
+      validatedQuery,
+    );
+    const invalidRuntimeLiveClientInput = {
+      liveClient: runtimeLiveClient,
+      runtime: topicServerInput.runtime,
+    };
+
+    // @ts-expect-error ordinary live clients cannot satisfy the decoded protocol-query boundary.
+    invalidRuntimeLiveClientInput satisfies ViewServerWebSocketServerInput<
+      typeof viewServer.topics
+    >;
+    const invalidPlainQuerySubscription = topicServerInput.liveClient.subscribeProtocolQuery(
+      "orders",
+      // @ts-expect-error only the protocol decoder can construct a validated runtime query.
+      { select: ["id"] },
+    );
+
+    expectTypeOf(validatedSubscription).not.toBeAny();
+    expectTypeOf(invalidPlainQuerySubscription).not.toBeAny();
   });
 
   it("keeps session shape explicit", () => {

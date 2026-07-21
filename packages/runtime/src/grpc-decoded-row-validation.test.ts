@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, viewSchema } from "@effect-view-server/config";
+import { defineViewServerConfig, type RawQuery, viewSchema } from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import { Effect, Schedule, Schema } from "effect";
 import { makeViewServerGrpcLeaseManager } from "./grpc-lease-manager";
@@ -28,10 +28,14 @@ const rowsQuery = () => ({
   limit: 10,
 });
 
-const leasedRowsQuery = (region: string) => ({
-  ...rowsQuery(),
-  where: { region: { eq: region } },
-});
+const leasedRowsQuery = (region: string) =>
+  ({
+    ...rowsQuery(),
+    routeBy: { region },
+    where: [{ field: "region", type: "equals", filter: region }],
+  }) satisfies RawQuery<typeof GrpcDecodedRow.Type> & {
+    readonly routeBy: { readonly region: string };
+  };
 
 describe("gRPC decoded row validation", () => {
   it.live("accepts a decoded materialized mapper row for a root Class topic", () =>

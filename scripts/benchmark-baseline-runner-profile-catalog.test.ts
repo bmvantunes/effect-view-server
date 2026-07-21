@@ -2,12 +2,108 @@ import { describe, expect, it } from "@effect/vitest";
 import { profiles } from "./benchmark-baseline-profiles.mjs";
 import {
   groupedWriteTask,
+  rawLargeMembershipTask,
   runtimeGrpcMaterializedTask,
 } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
+  it("guards large membership performance in the focused active-query-sharing profile", () => {
+    const smokeMembershipTasks = (profiles.get("smoke") ?? []).filter(
+      (task) => task.expectedBenchmarkScope === "engine-raw-large-membership",
+    );
+    const membershipTasks = (profiles.get("active-query-sharing") ?? []).filter(
+      (task) => task.expectedBenchmarkScope === "engine-raw-large-membership",
+    );
+
+    expect(smokeMembershipTasks).toStrictEqual([]);
+    expect(
+      membershipTasks.map((task) => ({
+        benchmarkScope: task.expectedBenchmarkScope,
+        iterations: task.env["VIEW_SERVER_ENGINE_BENCH_ITERATIONS"],
+        minimumSampleCount: task.minimumSampleCount,
+        outputJsonPath: task.packageOutputJsonPath,
+        rawLargeMembershipParameters: task.expectedRawLargeMembershipParameters,
+        rowCount: task.expectedRowCount,
+        task: task.args,
+        timeMs: task.env["VIEW_SERVER_ENGINE_BENCH_TIME_MS"],
+      })),
+    ).toStrictEqual([
+      {
+        benchmarkScope: "engine-raw-large-membership",
+        iterations: "5",
+        minimumSampleCount: 5,
+        outputJsonPath: ".artifacts/raw-large-membership-50000candidates-100000rows.json",
+        rawLargeMembershipParameters: {
+          candidateCount: 50_000,
+          partitionCount: 25,
+          preparedPlanCompilationCount: 1,
+          subscriberCount: 32,
+        },
+        rowCount: 100_000,
+        task: ["run", "--no-cache", "column-live-view-engine#bench:raw-large-membership"],
+        timeMs: "0",
+      },
+    ]);
+  });
+
+  it("defines the large membership task with deterministic defaults", () => {
+    const membershipTask = rawLargeMembershipTask();
+
+    expect({
+      benchmarkScope: membershipTask.expectedBenchmarkScope,
+      minimumSampleCount: membershipTask.minimumSampleCount,
+      outputJsonPath: membershipTask.packageOutputJsonPath,
+      rawLargeMembershipParameters: membershipTask.expectedRawLargeMembershipParameters,
+      rowCount: membershipTask.expectedRowCount,
+      task: membershipTask.args,
+    }).toStrictEqual({
+      benchmarkScope: "engine-raw-large-membership",
+      minimumSampleCount: 5,
+      outputJsonPath: ".artifacts/raw-large-membership-50000candidates-100000rows.json",
+      rawLargeMembershipParameters: {
+        candidateCount: 50_000,
+        partitionCount: 25,
+        preparedPlanCompilationCount: 1,
+        subscriberCount: 32,
+      },
+      rowCount: 100_000,
+      task: ["run", "--no-cache", "column-live-view-engine#bench:raw-large-membership"],
+    });
+  });
+
   it("defines active-query sharing fanout tasks", () => {
-    const activeQuerySharingTasks = profiles.get("active-query-sharing") ?? [];
+    const activeQuerySharingProfile = profiles.get("active-query-sharing") ?? [];
+    expect(
+      activeQuerySharingProfile.map((task) => ({
+        benchmarkScope: task.expectedBenchmarkScope,
+        taskLabel: task.label,
+      })),
+    ).toStrictEqual([
+      {
+        benchmarkScope: "engine-raw-large-membership",
+        taskLabel: "raw large membership 50000 candidates 100000 rows",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout same-window 10000 rows 50 subscribers",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout ten-window 10000 rows 50 subscribers",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout unique-window 10000 rows 50 subscribers",
+      },
+      {
+        benchmarkScope: "engine-raw-live-fanout",
+        taskLabel: "raw live fanout unique-shape 10000 rows 50 subscribers",
+      },
+    ]);
+
+    const activeQuerySharingTasks = activeQuerySharingProfile.filter(
+      (task) => task.expectedBenchmarkScope === "engine-raw-live-fanout",
+    );
 
     expect(
       activeQuerySharingTasks.map((task) => ({

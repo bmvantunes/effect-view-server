@@ -735,44 +735,62 @@ describe("@effect-view-server/client", () => {
     recursiveSet.add(recursiveSet);
     const objectWithoutFunctionConstructor = Object.create({ constructor: { name: "nope" } });
 
-    expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).toBe(
-      stableQueryKey({ where: { custom: { eq: firstFilter } } }),
-    );
-    expect(stableQueryKey({ where: { custom: { eq: firstFilter } } })).toBe(
-      stableQueryKey({ where: { custom: { eq: secondFilter } } }),
-    );
+    expect(
+      stableQueryKey({ where: [{ field: "custom", type: "equals", filter: firstFilter }] }),
+    ).toBe(stableQueryKey({ where: [{ field: "custom", type: "equals", filter: firstFilter }] }));
+    expect(
+      stableQueryKey({ where: [{ field: "custom", type: "equals", filter: firstFilter }] }),
+    ).toBe(stableQueryKey({ where: [{ field: "custom", type: "equals", filter: secondFilter }] }));
     expect(
       stableQueryKey({
-        where: {
-          custom: {
-            eq: new Map<unknown, unknown>([
+        where: [
+          {
+            field: "custom",
+            type: "equals",
+            filter: new Map<unknown, unknown>([
               ["b", 1],
               ["a", 2],
             ]),
           },
-        },
+        ],
       }),
     ).toBe(
       stableQueryKey({
-        where: {
-          custom: {
-            eq: new Map<unknown, unknown>([
+        where: [
+          {
+            field: "custom",
+            type: "equals",
+            filter: new Map<unknown, unknown>([
               ["a", 2],
               ["b", 1],
             ]),
           },
-        },
+        ],
       }),
     );
-    expect(stableQueryKey({ where: { custom: { eq: new Set(["b", "a"]) } } })).toBe(
-      stableQueryKey({ where: { custom: { eq: new Set(["a", "b"]) } } }),
+    expect(
+      stableQueryKey({ where: [{ field: "custom", type: "equals", filter: new Set(["b", "a"]) }] }),
+    ).toBe(
+      stableQueryKey({ where: [{ field: "custom", type: "equals", filter: new Set(["a", "b"]) }] }),
     );
     expect(stableQueryKey({ value: 10n })).toBe(stableQueryKey({ value: 10n }));
-    expect(stableQueryKey({ where: { price: { eq: fromStringUnsafe("1.50") } } })).toBe(
-      stableQueryKey({ where: { price: { eq: fromStringUnsafe("1.5") } } }),
+    expect(
+      stableQueryKey({
+        where: [{ field: "price", type: "equals", filter: fromStringUnsafe("1.50") }],
+      }),
+    ).toBe(
+      stableQueryKey({
+        where: [{ field: "price", type: "equals", filter: fromStringUnsafe("1.5") }],
+      }),
     );
-    expect(stableQueryKey({ where: { price: { eq: fromStringUnsafe("1.50") } } })).not.toBe(
-      stableQueryKey({ where: { price: { eq: fromStringUnsafe("2") } } }),
+    expect(
+      stableQueryKey({
+        where: [{ field: "price", type: "equals", filter: fromStringUnsafe("1.50") }],
+      }),
+    ).not.toBe(
+      stableQueryKey({
+        where: [{ field: "price", type: "equals", filter: fromStringUnsafe("2") }],
+      }),
     );
     expect(stableQueryKey({ value: recursiveObject })).toBe(
       stableQueryKey({ value: recursiveObject }),

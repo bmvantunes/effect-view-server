@@ -17,19 +17,12 @@ export const viewServer = defineViewServerConfig({
   },
 });
 
-export type LiveQueryCall<Topics extends object> = {
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
-  <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-  ): LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
-};
+export type LiveQueryCall<Topics extends object> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
+>(
+  topic: Topic,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;

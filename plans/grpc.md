@@ -65,8 +65,8 @@ Use these names consistently:
 - `topic`: the public View Server logical table, for example `orders`.
 - `materialized grpcSource`: a topic-owned gRPC source that starts on View Server startup and remains active until runtime shutdown.
 - `leased grpcSource`: a topic-owned gRPC source that starts only while at least one subscription needs a specific upstream route.
-- `routeBy`: topic row fields that must be present as exact equality predicates in user queries for a leased feed.
-- `route`: the extracted route values from a user query.
+- `routeBy`: the non-empty ordered declaration of top-level scalar fields that identify a leased feed; leased-topic queries supply an exact object with all and only those fields.
+- `route`: the exact values supplied by the query `routeBy` object, independent of local filters.
 - `feedKey`: the derived internal identity for one upstream stream instance.
 - `request`: the typed upstream gRPC request built from `route`.
 - `acquire`: the Effect operation that opens the upstream gRPC stream.
@@ -167,7 +167,7 @@ it must not connect them early and must not leave them in health as permanently 
 Behavior:
 
 - does not connect on runtime startup
-- requires all `routeBy` fields in the user query
+- requires an exact query `routeBy` object containing all and only the configured Route Fields
 - opens one upstream gRPC stream per distinct `feedKey`
 - shares that upstream stream across all users with the same route
 - applies remaining user filters/order/grouping locally inside View Server
@@ -228,11 +228,11 @@ then this is valid:
 
 ```ts
 useLiveQuery("orders", {
-  where: {
-    strategyId: { eq: "strategy-1" },
-    region: { eq: "usa" },
-    status: { eq: "open" },
+  routeBy: {
+    strategyId: "strategy-1",
+    region: "usa",
   },
+  where: [{ field: "status", type: "equals", filter: "open" }],
   orderBy: [{ field: "updatedAt", direction: "desc" }],
   select: ["id", "status", "price", "updatedAt"],
   limit: 50,
@@ -243,9 +243,7 @@ These must fail at compile time and runtime:
 
 ```ts
 useLiveQuery("orders", {
-  where: {
-    strategyId: { eq: "strategy-1" },
-  },
+  routeBy: { strategyId: "strategy-1" },
   select: ["id", "price"],
   limit: 50,
 });
@@ -253,16 +251,21 @@ useLiveQuery("orders", {
 
 ```ts
 useLiveQuery("orders", {
-  where: {
-    strategyId: { in: ["strategy-1", "strategy-2"] },
-    region: { eq: "usa" },
+  routeBy: {
+    strategyId: "strategy-1",
+    region: "usa",
+    extra: "not-a-route-field",
   },
   select: ["id", "price"],
   limit: 50,
 });
 ```
 
-Route predicates must be exact equality predicates. Do not allow `in`, `startsWith`, `gte`, `lte`, ranges, missing route fields, or ambiguous access paths for leased feeds.
+The query `routeBy` object must contain all and only the declared Route Fields,
+with schema-admitted scalar values. It is not a filter: the runtime must preserve
+case, accents, and the exact supplied scalar identity when building the upstream
+request. Local `where` expressions may independently mention Route Fields with
+any operator admitted by their schemas, or omit them entirely.
 
 The runtime must reject invalid leased-feed queries with `ViewServerRuntimeError` code
 `"InvalidQuery"`. Never fall back to an unfiltered upstream stream.
@@ -324,7 +327,7 @@ Compile-time guarantees:
 - The containing `topics` key is the public View Server Topic identity; `grpcSource` accepts no
   second target-topic field.
 - `routeBy` only accepts keys from the containing Topic Row schema.
-- leased-feed topics require exact equality filters for every `routeBy` field in `useLiveQuery`.
+- leased-feed topics require an exact query `routeBy` object containing every configured Route Field in `useLiveQuery`.
 - route fields in `request(route)` are inferred from the configured topic row schema.
 - `method` only accepts server-streaming methods from the configured ConnectRPC service.
 - `request` must return the generated ConnectRPC request type for `method`.
@@ -334,7 +337,7 @@ Compile-time guarantees:
 - `map` receives `value` inferred from the stream value and the return value must exactly match the target topic row schema.
 - extra returned fields in `map` must fail.
 - missing returned fields in `map` must fail.
-- wrong route fields, wrong route operators, invalid topic names, invalid select/order/group/aggregate fields, and invalid mapping output must have type tests.
+- missing/extra/wrongly typed route values, invalid topic names, invalid select/order/group/aggregate fields, and invalid mapping output must have type tests.
 
 Do not require users to write `as const` to preserve route, select, or query inference.
 
@@ -542,7 +545,7 @@ routeBy: ["strategyId", "region"]
 route: { strategyId: "s1", region: "usa" }
 
 feedKey:
-orders/orders/leased/strategyId=string%3A2%3As1&region=string%3A3%3Ausa
+orders/orders/leased/strategyId=%5B%22string%22%2C%22s1%22%5D&region=%5B%22string%22%2C%22usa%22%5D
 ```
 
 Canonicalization rules:
@@ -711,9 +714,9 @@ Required type tests:
 - `map` receives correctly typed stream value and route
 - `map` rejects missing fields
 - `map` rejects extra fields
-- `useLiveQuery` rejects leased topic queries missing route fields
-- `useLiveQuery` rejects non-eq route operators
-- `useLiveQuery` accepts route fields plus additional local filters
+- `useLiveQuery` rejects leased topic queries missing query `routeBy`
+- `useLiveQuery` rejects missing, extra, or wrongly typed query `routeBy` fields
+- `useLiveQuery` accepts exact `routeBy` independently from additional local filters
 - `useLiveQuery` return type remains based on select/aggregates, not route internals
 
 Current materialized runtime/e2e tests:
@@ -855,7 +858,7 @@ The current materialized gRPC slice is not complete until:
 
 The leased gRPC slice is not complete until:
 
-- `useLiveQuery` type tests reject missing/non-eq route fields for leased topics
+- `useLiveQuery` type tests reject missing, extra, or wrongly typed query `routeBy` fields for leased topics
 - decoded remote queries get the same route validation at runtime
 - first subscription opens exactly one upstream stream for one feed key
 - same-route subscribers share the upstream stream and retained feed state
@@ -875,7 +878,7 @@ Implement in slices that keep `vp run -w ready`, strict Effect LSP, package seam
 1. Source contracts and type gates
    - Add `grpc.topicSources(grpcClients).materialized(...)` and `.leased(...)` topic constructors.
    - Keep top-level `grpc.clients` as infrastructure and runtime `grpc` options as operational knobs only.
-   - Add type tests for topic names, route fields, request inference, acquire value inference, mapping output exactness, and invalid leased query predicates.
+   - Add type tests for topic names, exact query routes, request inference, acquire value inference, mapping output exactness, and invalid leased query routes.
 
 2. Runtime ownership validation
    - Reject Kafka + gRPC ownership conflicts.
@@ -892,7 +895,7 @@ Implement in slices that keep `vp run -w ready`, strict Effect LSP, package seam
    - Add e2e tests and a Vitest benchmark.
 
 4. Leased feed runtime
-   - Route subscriptions by exact `eq` predicates for every `routeBy` field.
+   - Route subscriptions by the exact query `routeBy` object for every configured Route Field.
    - Acquire one upstream stream per feed key.
    - Reuse same-route feeds across subscribers.
    - Isolate retained rows per internal feed partition.

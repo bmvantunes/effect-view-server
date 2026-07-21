@@ -1,8 +1,13 @@
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 import type { GroupedQuery } from "@effect-view-server/config";
 import type { RuntimeGroupedAggregate } from "./grouped-aggregate-state";
-import { InvalidQueryError, isDenseArray } from "./raw-query-decoder";
+import { denseArraySnapshot, InvalidQueryError } from "./raw-query-decoder";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
+import {
+  FilterExpressionError,
+  normalizeWhere,
+  type RuntimeFilterExpression,
+} from "./filter-expression";
 import { isPlainRecord } from "./row-values";
 
 export type RuntimeGroupedOrderBy =
@@ -15,10 +20,25 @@ export type RuntimeGroupedOrderBy =
       readonly direction: "asc" | "desc";
     };
 
+export type RuntimeGroupedFieldOrderBy = Extract<RuntimeGroupedOrderBy, { readonly field: string }>;
+
+export type RuntimeGroupedAggregateOrderBy = Extract<
+  RuntimeGroupedOrderBy,
+  { readonly aggregate: string }
+>;
+
+export const isRuntimeGroupedFieldOrderBy = (
+  order: RuntimeGroupedOrderBy,
+): order is RuntimeGroupedFieldOrderBy => Object.hasOwn(order, "field");
+
+export const isRuntimeGroupedAggregateOrderBy = (
+  order: RuntimeGroupedOrderBy,
+): order is RuntimeGroupedAggregateOrderBy => Object.hasOwn(order, "aggregate");
+
 export type RuntimeGroupedQuery = {
   readonly groupBy: ReadonlyArray<string>;
   readonly aggregates: Readonly<Record<string, RuntimeGroupedAggregate>>;
-  readonly where?: Record<string, unknown>;
+  readonly where?: RuntimeFilterExpression;
   readonly orderBy?: ReadonlyArray<RuntimeGroupedOrderBy>;
   readonly offset?: number;
   readonly limit?: number;
@@ -60,6 +80,9 @@ const dangerousRecordKeys = new Set(["__proto__", "prototype", "constructor"]);
 const isValidWindowNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+const ownValue = (value: Readonly<Record<string, unknown>>, key: string): unknown =>
+  Object.hasOwn(value, key) ? value[key] : undefined;
+
 export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.decode")((
   topic: string,
   metadata: RawQueryCompilerMetadata,
@@ -86,15 +109,16 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
     });
   }
 
-  const groupBy = query["groupBy"];
-  if (!Array.isArray(groupBy) || groupBy.length === 0 || !isDenseArray(groupBy)) {
+  const groupBy = ownValue(query, "groupBy");
+  const groupBySnapshot = denseArraySnapshot(groupBy);
+  if (groupBySnapshot === undefined || groupBySnapshot.length === 0) {
     return InvalidQueryError.make({
       topic,
       message: "Grouped query groupBy must be a non-empty array of strings.",
     });
   }
   const decodedGroupBy: Array<string> = [];
-  for (const field of groupBy) {
+  for (const field of groupBySnapshot) {
     if (typeof field !== "string") {
       return InvalidQueryError.make({
         topic,
@@ -110,7 +134,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
     decodedGroupBy.push(field);
   }
 
-  const aggregates = query["aggregates"];
+  const aggregates = ownValue(query, "aggregates");
   if (!isPlainRecord(aggregates) || Object.keys(aggregates).length === 0) {
     return InvalidQueryError.make({
       topic,
@@ -141,7 +165,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
       });
     }
     const aggregateKeys = Object.keys(aggregate);
-    const aggFunc = aggregate["aggFunc"];
+    const aggFunc = ownValue(aggregate, "aggFunc");
     if (
       aggFunc !== "count" &&
       aggFunc !== "countDistinct" &&
@@ -173,7 +197,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
         });
       }
     }
-    const field = aggregate["field"];
+    const field = ownValue(aggregate, "field");
     if (typeof field !== "string") {
       return InvalidQueryError.make({
         topic,
@@ -213,24 +237,32 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
     }
   }
 
-  const where = query["where"];
-  if (where !== undefined && !isPlainRecord(where)) {
-    return InvalidQueryError.make({
-      topic,
-      message: "Grouped query where must be a plain object.",
-    });
+  let where: RuntimeFilterExpression | undefined;
+  if (Object.hasOwn(query, "where")) {
+    const normalized = Result.try(() => normalizeWhere(query["where"], metadata.filterFields));
+    if (Result.isFailure(normalized)) {
+      return InvalidQueryError.make({
+        topic,
+        message:
+          normalized.failure instanceof FilterExpressionError
+            ? normalized.failure.message
+            : "Grouped query where contains an unsupported query value.",
+      });
+    }
+    where = normalized.success;
   }
 
-  const orderBy = query["orderBy"];
-  if (orderBy !== undefined && !Array.isArray(orderBy)) {
+  const orderBy = ownValue(query, "orderBy");
+  const orderBySnapshot = denseArraySnapshot(orderBy);
+  if (Object.hasOwn(query, "orderBy") && orderBySnapshot === undefined) {
     return InvalidQueryError.make({
       topic,
-      message: "Grouped query orderBy must be an array.",
+      message: "Grouped query orderBy must be a dense array without extra properties.",
     });
   }
   const decodedOrderBy: Array<RuntimeGroupedOrderBy> = [];
-  if (Array.isArray(orderBy)) {
-    for (const entry of orderBy) {
+  if (orderBySnapshot !== undefined) {
+    for (const entry of orderBySnapshot) {
       if (!isPlainRecord(entry)) {
         return InvalidQueryError.make({
           topic,
@@ -245,7 +277,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
           });
         }
       }
-      const direction = entry["direction"];
+      const direction = ownValue(entry, "direction");
       if (direction !== "asc" && direction !== "desc") {
         return InvalidQueryError.make({
           topic,
@@ -261,7 +293,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
         });
       }
       if (hasField) {
-        const field = entry["field"];
+        const field = ownValue(entry, "field");
         if (typeof field !== "string" || !decodedGroupBy.includes(field)) {
           return InvalidQueryError.make({
             topic,
@@ -270,7 +302,7 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
         }
         decodedOrderBy.push(Object.freeze({ field, direction }));
       } else {
-        const aggregate = entry["aggregate"];
+        const aggregate = ownValue(entry, "aggregate");
         if (typeof aggregate !== "string" || !aggregateAliases.has(aggregate)) {
           return InvalidQueryError.make({
             topic,
@@ -282,16 +314,16 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
     }
   }
 
-  const offset = query["offset"];
-  if (offset !== undefined && !isValidWindowNumber(offset)) {
+  const offset = ownValue(query, "offset");
+  if (Object.hasOwn(query, "offset") && !isValidWindowNumber(offset)) {
     return InvalidQueryError.make({
       topic,
       message: "Grouped query offset must be a non-negative safe integer.",
     });
   }
 
-  const limit = query["limit"];
-  if (limit !== undefined && !isValidWindowNumber(limit)) {
+  const limit = ownValue(query, "limit");
+  if (Object.hasOwn(query, "limit") && !isValidWindowNumber(limit)) {
     return InvalidQueryError.make({
       topic,
       message: "Grouped query limit must be a non-negative safe integer.",
@@ -304,8 +336,8 @@ export const decodeGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.d
       aggregates: Object.freeze(decodedAggregates),
       ...(where === undefined ? {} : { where }),
       ...(decodedOrderBy.length === 0 ? {} : { orderBy: Object.freeze(decodedOrderBy) }),
-      ...(offset === undefined ? {} : { offset }),
-      ...(limit === undefined ? {} : { limit }),
+      ...(isValidWindowNumber(offset) ? { offset } : {}),
+      ...(isValidWindowNumber(limit) ? { limit } : {}),
     }),
   );
 });

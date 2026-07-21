@@ -1,8 +1,4 @@
-import type {
-  ViewServerLiveClient,
-  ViewServerLiveSubscription,
-  ViewServerRuntimeLiveClient,
-} from "@effect-view-server/client";
+import type { ViewServerLiveClient, ViewServerLiveSubscription } from "@effect-view-server/client";
 import type {
   ExactLiveQueryInputForTopic,
   ExactPatch,
@@ -18,6 +14,7 @@ import type {
   ViewServerTransportError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
+import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 import type { TopicDefinitionHasSourceOwner } from "./source-binding-resolution";
 
 type RuntimeCorePublicTopic<Topics extends TopicDefinitions> = Extract<
@@ -64,10 +61,12 @@ type RuntimeCorePublicReset<Topics extends TopicDefinitions> = [
 
 type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
   Topic extends RuntimeCoreReadableTopic<Topics>,
-  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
 >(
   topic: Topic,
-  query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => Effect.Effect<
   LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
   ViewServerRuntimeError
@@ -75,22 +74,14 @@ type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
 
 type RuntimeCorePublicSubscribe<Topics extends TopicDefinitions> = <
   Topic extends RuntimeCoreReadableTopic<Topics>,
-  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
 >(
   topic: Topic,
-  query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => Effect.Effect<
   ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-  ViewServerRuntimeError | ViewServerTransportError
->;
-
-type RuntimeCorePublicSubscribeRuntime<Topics extends TopicDefinitions> = <
-  Topic extends RuntimeCoreReadableTopic<Topics>,
->(
-  topic: Topic,
-  query: RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-) => Effect.Effect<
-  ViewServerLiveSubscription<object>,
   ViewServerRuntimeError | ViewServerTransportError
 >;
 
@@ -126,11 +117,8 @@ export type ViewServerRuntimeCorePublicLiveClient<Topics extends TopicDefinition
       readonly subscribe: RuntimeCorePublicSubscribe<Topics>;
     };
 
-export type ViewServerRuntimeCoreServerLiveClient<Topics extends TopicDefinitions> = [
-  RuntimeCoreLeasedTopic<Topics>,
-] extends [never]
-  ? ViewServerRuntimeLiveClient<Topics>
-  : Omit<ViewServerRuntimeLiveClient<Topics>, "subscribe" | "subscribeRuntime"> & {
-      readonly subscribe: RuntimeCorePublicSubscribe<Topics>;
-      readonly subscribeRuntime: RuntimeCorePublicSubscribeRuntime<Topics>;
-    };
+export type ViewServerRuntimeCoreServerLiveClient<Topics extends TopicDefinitions> = Pick<
+  ViewServerLiveClient<Topics>,
+  "subscribeHealth" | "subscribeHealthSummary"
+> &
+  ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;

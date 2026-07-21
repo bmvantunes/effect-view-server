@@ -103,11 +103,7 @@ describe("public effect-view-server subpath type contracts", () => {
   it("preserves query result inference through public subpaths", () => {
     const result = react.useLiveQuery("orders", {
       select: ["id", "price"],
-      where: {
-        status: {
-          eq: "open",
-        },
-      },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       orderBy: [{ field: "price", direction: "desc" }],
       limit: 10,
     });
@@ -121,7 +117,7 @@ describe("public effect-view-server subpath type contracts", () => {
 
     const profileResult = publicProfileReact.useLiveQuery("profiles", {
       select: ["id", "score"],
-      where: { score: { gte: 10 } },
+      where: [{ field: "score", type: "greaterThanOrEqual", filter: 10 }],
       orderBy: [{ field: "score", direction: "desc" }],
     });
     expectTypeOf(profileResult).toEqualTypeOf<
@@ -134,7 +130,7 @@ describe("public effect-view-server subpath type contracts", () => {
 
   it("rejects invalid query and config contracts through public subpaths", () => {
     // @ts-expect-error raw queries must explicitly select columns.
-    react.useLiveQuery("orders", { where: { status: { eq: "open" } } });
+    react.useLiveQuery("orders", { where: [{ field: "status", type: "equals", filter: "open" }] });
 
     const unknownProjectedFieldQuery = {
       select: ["missing"],
@@ -146,28 +142,32 @@ describe("public effect-view-server subpath type contracts", () => {
 
     const encodedProfileScoreQuery = {
       select: ["id"],
-      where: { score: { gte: "10" } },
+      where: [{ field: "score", type: "greaterThanOrEqual", filter: "10" }],
     } satisfies {
       readonly select: readonly ["id"];
-      readonly where: { readonly score: { readonly gte: "10" } };
+      readonly where: readonly [
+        {
+          readonly field: "score";
+          readonly type: "greaterThanOrEqual";
+          readonly filter: "10";
+        },
+      ];
     };
     // @ts-expect-error transformed query operands must use the decoded number type.
     publicProfileReact.useLiveQuery("profiles", encodedProfileScoreQuery);
 
     const stringRangeFilterQuery = {
       select: ["id"],
-      where: {
-        status: {
-          gte: "open",
-        },
-      },
+      where: [{ field: "status", type: "greaterThanOrEqual", filter: "open" }],
     } satisfies {
       readonly select: readonly ["id"];
-      readonly where: {
-        readonly status: {
-          readonly gte: "open";
-        };
-      };
+      readonly where: readonly [
+        {
+          readonly field: "status";
+          readonly type: "greaterThanOrEqual";
+          readonly filter: "open";
+        },
+      ];
     };
     // @ts-expect-error string fields do not accept range predicates.
     react.useLiveQuery("orders", stringRangeFilterQuery);
@@ -205,10 +205,16 @@ describe("public effect-view-server subpath type contracts", () => {
 
     const methodWhereQuery = {
       select: ["id"],
-      where: { upperId: { eq: () => "PROFILE" } },
+      where: [{ field: "upperId", type: "equals", filter: () => "PROFILE" }],
     } satisfies {
       readonly select: readonly ["id"];
-      readonly where: { readonly upperId: { readonly eq: () => string } };
+      readonly where: readonly [
+        {
+          readonly field: "upperId";
+          readonly type: "equals";
+          readonly filter: () => string;
+        },
+      ];
     };
     // @ts-expect-error Schema.Class methods are not Topic Row where fields.
     publicProfileReact.useLiveQuery("profiles", methodWhereQuery);

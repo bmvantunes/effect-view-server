@@ -55,7 +55,15 @@ tasks remain iteration-bound with measurement time and warmup disabled so
 sample and mutation counts stay exact. The raw snapshot live-delta case uses
 exactly five smoke samples or 20 focused-profile samples even though the
 snapshot cases in the same benchmark process use read sampling floors. Fanout
-and other mutation tasks keep their existing sampling policy. Every affected
+and other mutation tasks keep their existing sampling policy. The focused active-query-sharing gate
+keeps three separately timed 50k-candidate nested `in` cases at five exact samples: full production
+query admission/compilation, precompiled evaluation over 100k partitioned rows, and acquisition of
+32 equivalent subscriber leases. The third case requires one prepared Raw Query Plan compilation
+and one shared Active Query, guarding `O(candidateCount + subscribers)` retained plan ownership
+rather than multiplicative membership plans. This catches large membership compile, evaluation,
+and sharing regressions without placing the multi-second, high-memory workload in the frequent
+smoke gate or placing a product limit on query size. Pull request CI runs the focused gate as a
+separate serial step, so the large-membership sharing contract remains merge-blocking. Every affected
 benchmark emits this machine-readable policy; the runner rejects missing
 samples, non-exact mutation samples, total mutation drift, and policy drift.
 

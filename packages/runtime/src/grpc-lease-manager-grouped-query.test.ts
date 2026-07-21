@@ -43,13 +43,12 @@ describe("gRPC lease manager grouped query behavior", () => {
       );
 
       const first = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["status"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "status", direction: "asc" }],
         limit: 10,
       });
@@ -62,13 +61,12 @@ describe("gRPC lease manager grouped query behavior", () => {
       const firstDelta = yield* Queue.take(firstEventQueue);
       const openStatusGroupKey = presentGroupedFieldKey("status", '"open"');
       const second = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["status"],
         aggregates: {
           totalPrice: { aggFunc: "sum", field: "price" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ aggregate: "totalPrice", direction: "desc" }],
         limit: 10,
       });

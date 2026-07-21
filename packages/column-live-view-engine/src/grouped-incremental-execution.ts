@@ -9,6 +9,7 @@ import {
   updateGroupAggregateState,
 } from "./grouped-aggregate-state";
 import type { GroupedQueryPlan } from "./grouped-query-plan";
+import { isRuntimeGroupedAggregateOrderBy } from "./grouped-query-decoder";
 import {
   emptyGroupedEvaluation,
   groupedEvaluationFromEntries,
@@ -22,12 +23,14 @@ import {
 import type { QueryEvaluation } from "./query-result";
 import {
   isTopicRowChangedFields,
+  scanTopicRows,
   type TopicRowChangedFields,
   type TopicRowChangeBatch,
   type TopicRowScan,
 } from "./row-scan";
 
 type RowObject = object;
+type GroupedRowMatcher<Row extends RowObject> = (row: Row, storageKey?: string) => boolean;
 
 type CountOnlyIncrementalGroupState = {
   readonly key: string;
@@ -164,16 +167,17 @@ const clearIncrementalGroupedQueryState = <Row extends RowObject>(
 const buildCountOnlyIncrementalGroupedQueryState = <Row extends RowObject>(
   store: TopicRowScan<Row>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   limits: GroupedIncrementalAdmissionLimits,
+  ownedStorageKeys?: () => Iterable<string>,
 ): IncrementalGroupedQueryBuildState => {
   const groups = new Map<string, CountOnlyIncrementalGroupState>();
   let admitted = true;
-  store.scanRows((_key, row) => {
+  scanTopicRows(store, ownedStorageKeys, (key, row) => {
     if (!admitted) {
       return undefined;
     }
-    if (!matches(row)) {
+    if (!matches(row, key)) {
       return undefined;
     }
     const groupedKey = plan.groupKey(row);
@@ -210,18 +214,19 @@ const buildCountOnlyIncrementalGroupedQueryState = <Row extends RowObject>(
 const buildMaterializedIncrementalGroupedQueryState = <Row extends RowObject>(
   store: TopicRowScan<Row>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   limits: GroupedIncrementalAdmissionLimits,
+  ownedStorageKeys?: () => Iterable<string>,
 ): IncrementalGroupedQueryBuildState => {
   const groups = new Map<string, MaterializedIncrementalGroupState>();
   const retainedAggregateCount = retainedValueAggregateCount(plan);
   let memberCount = 0;
   let admitted = true;
-  store.scanRows((key, row) => {
+  scanTopicRows(store, ownedStorageKeys, (key, row) => {
     if (!admitted) {
       return undefined;
     }
-    if (!matches(row)) {
+    if (!matches(row, key)) {
       return undefined;
     }
     const groupedKey = plan.groupKey(row);
@@ -270,22 +275,23 @@ const buildMaterializedIncrementalGroupedQueryState = <Row extends RowObject>(
 const buildIncrementalGroupedQueryState = <Row extends RowObject>(
   store: TopicRowScan<Row>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   limits: GroupedIncrementalAdmissionLimits,
+  ownedStorageKeys?: () => Iterable<string>,
 ): IncrementalGroupedQueryBuildState =>
   plan.zeroLimit
-    ? buildCountOnlyIncrementalGroupedQueryState(store, plan, matches, limits)
-    : buildMaterializedIncrementalGroupedQueryState(store, plan, matches, limits);
+    ? buildCountOnlyIncrementalGroupedQueryState(store, plan, matches, limits, ownedStorageKeys)
+    : buildMaterializedIncrementalGroupedQueryState(store, plan, matches, limits, ownedStorageKeys);
 
 const removeMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
   groups: Map<string, MaterializedIncrementalGroupState>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   key: string,
   row: Row,
 ): boolean => {
-  if (!matches(row)) {
+  if (!matches(row, key)) {
     return false;
   }
   const groupedKey = plan.groupKey(row);
@@ -310,10 +316,11 @@ const removeMaterializedIncrementalGroupedMember = <Row extends RowObject>(
 const removeCountOnlyIncrementalGroupedMember = <Row extends RowObject>(
   groups: Map<string, CountOnlyIncrementalGroupState>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
+  key: string,
   row: Row,
 ): boolean => {
-  if (!matches(row)) {
+  if (!matches(row, key)) {
     return false;
   }
   const groupedKey = plan.groupKey(row);
@@ -350,7 +357,7 @@ const orderByUsesAggregate = <Row extends RowObject>(
   alias: string,
 ): boolean => {
   for (const order of plan.orderBy) {
-    if ("aggregate" in order && order.aggregate === alias) {
+    if (isRuntimeGroupedAggregateOrderBy(order) && order.aggregate === alias) {
       return true;
     }
   }
@@ -472,11 +479,11 @@ const upsertMaterializedIncrementalGroupedMember = <Row extends RowObject>(
   dirtyAggregateRecomputes: DirtyAggregateRecomputes,
   groups: Map<string, MaterializedIncrementalGroupState>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   key: string,
   row: Row,
 ): UpsertIncrementalGroupedMemberResult | undefined => {
-  if (!matches(row)) {
+  if (!matches(row, key)) {
     return undefined;
   }
   return upsertMatchingMaterializedIncrementalGroupedMember(
@@ -491,10 +498,11 @@ const upsertMaterializedIncrementalGroupedMember = <Row extends RowObject>(
 const upsertCountOnlyIncrementalGroupedMember = <Row extends RowObject>(
   groups: Map<string, CountOnlyIncrementalGroupState>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
+  key: string,
   row: Row,
 ): boolean => {
-  if (!matches(row)) {
+  if (!matches(row, key)) {
     return false;
   }
   const groupedKey = plan.groupKey(row);
@@ -510,7 +518,7 @@ const upsertCountOnlyIncrementalGroupedMember = <Row extends RowObject>(
 const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
   state: Extract<IncrementalGroupedQueryState, { readonly mode: "materialized" }>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   batch: TopicRowChangeBatch<Row>,
   limits: GroupedIncrementalAdmissionLimits,
   patch: MaterializedEvaluationPatch,
@@ -519,8 +527,8 @@ const applyMaterializedIncrementalGroupedQueryBatch = <Row extends RowObject>(
   const dirtyAggregateRecomputes: DirtyAggregateRecomputes = new Set();
   for (const change of batch.changes) {
     if (change.previous !== undefined && change.next !== undefined) {
-      const previousMatches = matches(change.previous);
-      const nextMatches = matches(change.next);
+      const previousMatches = matches(change.previous, change.key);
+      const nextMatches = matches(change.next, change.key);
       const groupedKey = plan.groupKey(change.previous);
       const group = state.groups.get(groupedKey);
       if (
@@ -646,19 +654,26 @@ const evaluateMaterializedGroupedQueryAfterPatches = <Row extends RowObject>(
 const applyCountOnlyIncrementalGroupedQueryBatch = <Row extends RowObject>(
   state: Extract<IncrementalGroupedQueryState, { readonly mode: "countOnly" }>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   batch: TopicRowChangeBatch<Row>,
   limits: GroupedIncrementalAdmissionLimits,
 ): boolean => {
   for (const change of batch.changes) {
     if (change.previous !== undefined) {
-      removeCountOnlyIncrementalGroupedMember(state.groups, plan, matches, change.previous);
+      removeCountOnlyIncrementalGroupedMember(
+        state.groups,
+        plan,
+        matches,
+        change.key,
+        change.previous,
+      );
     }
     if (change.next !== undefined) {
       const inserted = upsertCountOnlyIncrementalGroupedMember(
         state.groups,
         plan,
         matches,
+        change.key,
         change.next,
       );
       if (!inserted) {
@@ -675,7 +690,7 @@ const applyCountOnlyIncrementalGroupedQueryBatch = <Row extends RowObject>(
 const applyMaterializedIncrementalGroupedQueryBatches = <Row extends RowObject>(
   state: Extract<IncrementalGroupedQueryState, { readonly mode: "materialized" }>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   batches: ReadonlyArray<TopicRowChangeBatch<Row>>,
   limits: GroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
@@ -698,7 +713,7 @@ const applyMaterializedIncrementalGroupedQueryBatches = <Row extends RowObject>(
 const applyCountOnlyIncrementalGroupedQueryBatches = <Row extends RowObject>(
   state: Extract<IncrementalGroupedQueryState, { readonly mode: "countOnly" }>,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   batches: ReadonlyArray<TopicRowChangeBatch<Row>>,
   limits: GroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
@@ -718,7 +733,7 @@ const applyCountOnlyIncrementalGroupedQueryBatches = <Row extends RowObject>(
 const applyIncrementalGroupedQueryBatches = <Row extends RowObject>(
   state: IncrementalGroupedQueryState,
   plan: GroupedQueryPlan<Row>,
-  matches: (row: Row) => boolean,
+  matches: GroupedRowMatcher<Row>,
   batches: ReadonlyArray<TopicRowChangeBatch<Row>>,
   limits: GroupedIncrementalAdmissionLimits,
   diagnostics: GroupedIncrementalExecutionDiagnostics,
@@ -786,7 +801,13 @@ export const makeIncrementalGroupedQueryExecution = <
     localDiagnostics.diagnostics,
     diagnostics,
   );
-  let build = buildIncrementalGroupedQueryState(store, compiled.plan, compiled.matches, limits);
+  let build = buildIncrementalGroupedQueryState(
+    store,
+    compiled.plan,
+    compiled.matches,
+    limits,
+    compiled.ownedStorageKeys,
+  );
   if (!build.admitted) {
     return makeFallbackGroupedQueryExecution(
       store,
@@ -822,9 +843,15 @@ export const makeIncrementalGroupedQueryExecution = <
       if (state.version === storeVersion) {
         return state.evaluation;
       }
-      const batches = store.changesSince(state.version);
+      const batches = store.changesSince(state.version, compiled.partitionKey);
       if (batches === undefined) {
-        build = buildIncrementalGroupedQueryState(store, compiled.plan, compiled.matches, limits);
+        build = buildIncrementalGroupedQueryState(
+          store,
+          compiled.plan,
+          compiled.matches,
+          limits,
+          compiled.ownedStorageKeys,
+        );
         if (!build.admitted) {
           return activateFallback().latest();
         }

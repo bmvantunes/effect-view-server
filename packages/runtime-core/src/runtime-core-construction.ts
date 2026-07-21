@@ -8,7 +8,7 @@ import type {
 import { runAllFinalizers } from "@effect-view-server/effect-utils";
 import { Clock, Effect } from "effect";
 import { defaultRuntimeCoreTransportHealth, healthFromEngine, readHealthSnapshot } from "./health";
-import { makeRuntimeCoreLiveClient } from "./live-client";
+import { makeRuntimeCoreLiveClientModule } from "./live-client";
 import type { ViewServerRuntimeCorePublicLiveClient } from "./public-client";
 import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
 import { makeRuntimeCoreClient } from "./runtime-client";
@@ -118,12 +118,13 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
             yield* markAcquired(constructionClose);
             const close = (yield* Effect.cached(constructionClose)).pipe(Effect.uninterruptible);
             yield* markAcquired(close);
-            const liveClient = yield* makeRuntimeCoreLiveClient<Topics>(
+            const liveClientModule = yield* makeRuntimeCoreLiveClientModule<Topics>(
               config,
               engine,
               pushedHealth,
               runtimeClient.requestHealthRefresh,
             );
+            const liveClient = liveClientModule.liveClient;
             const publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics> = {
               close,
               health: liveClient.health,
@@ -141,10 +142,13 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
                 close,
               },
               serverLiveClient: {
-                ...liveClient,
-                close,
+                subscribeHealth: liveClient.subscribeHealth,
+                subscribeHealthSummary: liveClient.subscribeHealthSummary,
+                subscribeProtocolQuery:
+                  liveClientModule.protocolQuerySubscriber.subscribeProtocolQuery,
               },
               internalLiveClient: liveClient,
+              protocolQuerySubscriber: liveClientModule.protocolQuerySubscriber,
               publicLiveClient,
               close,
               requestHealthRefresh: runtimeClient.requestHealthRefresh,

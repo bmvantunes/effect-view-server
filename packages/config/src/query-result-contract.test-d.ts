@@ -1,7 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import * as BigDecimal from "effect/BigDecimal";
 import {
-  type ExactGroupedQuery,
   type GroupedQuery,
   type GroupedResult,
   type PickRawFields,
@@ -109,9 +108,7 @@ describe("Query result contracts", () => {
     const assertQueryTypes = (useLiveQuery: LiveQueryCall<typeof viewServer.topics>) => {
       const selectedRawResult = useLiveQuery("orders", {
         select: ["id", "customerId", "status", "price", "region", "updatedAt"],
-        where: {
-          status: { eq: "open" },
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       });
 
       expectTypeOf(selectedRawResult).toEqualTypeOf<{
@@ -144,11 +141,12 @@ describe("Query result contracts", () => {
 
       const selectedResult = useLiveQuery("orders", {
         select: ["customerId", "status", "updatedAt"],
-        where: {
-          customerId: { startsWith: "customer-" },
-          status: "open",
-          updatedAt: { gte: 1, lte: 10 },
-        },
+        where: [
+          { field: "customerId", type: "startsWith", filter: "customer-" },
+          { field: "status", type: "equals", filter: "open" },
+          { field: "updatedAt", type: "greaterThanOrEqual", filter: 1 },
+          { field: "updatedAt", type: "lessThanOrEqual", filter: 10 },
+        ],
       });
 
       expectTypeOf(selectedResult).toEqualTypeOf<{
@@ -178,9 +176,7 @@ describe("Query result contracts", () => {
 
       const rawRows = useLiveQuery("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 50,
       }).rows;
@@ -193,9 +189,7 @@ describe("Query result contracts", () => {
           averageUpdatedAt: { aggFunc: "avg", field: "updatedAt" },
           firstStatus: { aggFunc: "min", field: "status" },
         },
-        where: {
-          region: "london",
-        },
+        where: [{ field: "region", type: "equals", filter: "london" }],
         orderBy: [
           { aggregate: "totalPrice", direction: "desc" },
           { field: "status", direction: "asc" },
@@ -245,13 +239,14 @@ describe("Query result contracts", () => {
 
       const positionRows = useLiveQuery("positions", {
         select: ["id", "price", "quantity"],
-        where: {
-          accountId: { startsWith: "acct-" },
-          active: true,
-          quantity: { gte: 1n, lte: 100n },
-          price: { gt: decimal("10.00") },
-          notional: { lt: 1_000_000 },
-        },
+        where: [
+          { field: "accountId", type: "startsWith", filter: "acct-" },
+          { field: "active", type: "equals", filter: true },
+          { field: "quantity", type: "greaterThanOrEqual", filter: 1n },
+          { field: "quantity", type: "lessThanOrEqual", filter: 100n },
+          { field: "price", type: "greaterThan", filter: decimal("10.00") },
+          { field: "notional", type: "lessThan", filter: 1_000_000 },
+        ],
         orderBy: [
           { field: "price", direction: "desc" },
           { field: "quantity", direction: "asc" },
@@ -347,11 +342,8 @@ describe("Query result contracts", () => {
         };
       };
       // @ts-expect-error aggregate aliases must be literal object keys.
-      const _invalidDynamicAggregateAlias: ExactGroupedQuery<
-        typeof Order.Type,
-        typeof dynamicAggregateQuery
-      > &
-        ValidateLiveQuery<typeof dynamicAggregateQuery> = dynamicAggregateQuery;
+      const _invalidDynamicAggregateAlias: ValidateLiveQuery<typeof dynamicAggregateQuery> =
+        dynamicAggregateQuery;
 
       void _invalidDynamicAggregateAlias;
     };

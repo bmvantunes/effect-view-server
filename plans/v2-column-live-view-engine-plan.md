@@ -225,9 +225,7 @@ import { useLiveQuery } from "./view-server.config";
 
 export function OrdersGrid() {
   const orders = useLiveQuery("orders", {
-    where: {
-      status: "open",
-    },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     select: ["id", "customerId", "status", "price", "region", "updatedAt"],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 50,
@@ -278,6 +276,16 @@ import { Config, Schema, Stream } from "effect";
 import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
 import { KafkaTrade, Order, Strategy, Trade } from "./schemas";
 import { ordersService, strategiesService } from "./generated/grpc";
+
+const ManualOrder = Schema.Struct({
+  id: Schema.String,
+  customerId: Schema.String,
+  strategyId: Schema.String,
+  status: Schema.Literals(["open", "closed", "cancelled"]),
+  price: Schema.Number,
+  region: Schema.String,
+  updatedAt: Schema.Number,
+});
 
 const kafkaRegions = {
   usa: Config.string("KAFKA_USA_BOOTSTRAP"),
@@ -357,7 +365,7 @@ export const viewServer = defineViewServerConfig({
       }),
     }),
     manualOrders: {
-      schema: Order,
+      schema: ManualOrder,
       key: "id",
     },
   },
@@ -424,7 +432,7 @@ import { createInMemoryViewServer, useLiveQuery } from "./view-server.config";
 
 function Orders() {
   const result = useLiveQuery("manualOrders", {
-    where: { status: "open" },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     select: ["id", "price"],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 50,
@@ -895,7 +903,7 @@ The engine should expose a direct subscription API independent of WebSockets:
 ```ts
 const subscription = await Effect.runPromise(
   engine.subscribe("orders", {
-    where: { status: "open" },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     select: ["id", "price"],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 50,

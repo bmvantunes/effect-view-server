@@ -37,18 +37,6 @@ export const leasedViewServer = defineViewServerConfig({
   },
 });
 
-export const leasedGrpcSourceViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region", "status"],
-      }),
-    },
-  },
-});
-
 export const materializedGrpcSourceViewServer = defineViewServerConfig({
   topics: {
     orders: {

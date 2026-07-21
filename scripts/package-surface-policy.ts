@@ -97,6 +97,7 @@ export const packageSurfacePolicy = {
       architecture: {
         allowedWorkspaceSpecifiers: [
           "@effect-view-server/config",
+          "@effect-view-server/config/internal",
           "@effect-view-server/effect-utils",
           "@effect-view-server/protocol",
         ],

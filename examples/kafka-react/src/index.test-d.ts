@@ -6,7 +6,7 @@ describe("kafka example type contracts", () => {
   it("preserves selected Kafka-backed order row types", () => {
     const result = useLiveQuery("orders", {
       select: ["id", "region", "price"],
-      where: { status: { eq: "open" } },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       limit: 20,
     });
 
@@ -22,7 +22,7 @@ describe("kafka example type contracts", () => {
   it("preserves selected Kafka-backed trade row types", () => {
     const result = useLiveQuery("trades", {
       select: ["id", "symbol", "side", "region"],
-      where: { side: { eq: "buy" } },
+      where: [{ field: "side", type: "equals", filter: "buy" }],
       limit: 20,
     });
 

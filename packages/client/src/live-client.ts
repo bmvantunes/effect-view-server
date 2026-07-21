@@ -2,7 +2,6 @@ import type {
   DeltaEvent,
   ExactLiveQueryInputForTopic,
   GroupedQuery,
-  LiveQuery,
   LiveQueryRow,
   RawQuery,
   SnapshotEvent,
@@ -113,19 +112,23 @@ export type ViewServerLiveSubscription<
   readonly close: () => Effect.Effect<void, ViewServerTransportError>;
 };
 
+type ViewServerQuerySubscriber<Topics extends TopicDefinitions, EraseRow extends boolean> = <
+  Topic extends Extract<keyof Topics, string>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
+>(
+  topic: Topic,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
+) => Effect.Effect<
+  ViewServerLiveSubscription<
+    EraseRow extends true ? object : LiveQueryRow<TopicRow<Topics, Topic>, Query>
+  >,
+  ViewServerRuntimeError | ViewServerTransportError
+>;
+
 export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
-  readonly subscribe: {
-    <
-      Topic extends Extract<keyof Topics, string>,
-      const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-    >(
-      topic: Topic,
-      query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
-    ): Effect.Effect<
-      ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
-      ViewServerRuntimeError | ViewServerTransportError
-    >;
-  };
+  readonly subscribe: ViewServerQuerySubscriber<Topics, false>;
   readonly subscribeHealthSummary: () => Effect.Effect<
     ViewServerLiveSubscription<
       ViewServerHealthSummaryRow<Topics>,
@@ -148,11 +151,5 @@ export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
 
 export type ViewServerRuntimeLiveClient<Topics extends TopicDefinitions> =
   ViewServerLiveClient<Topics> & {
-    readonly subscribeRuntime: <Topic extends Extract<keyof Topics, string>>(
-      topic: Topic,
-      query: LiveQuery<TopicRow<Topics, Topic>>,
-    ) => Effect.Effect<
-      ViewServerLiveSubscription<object>,
-      ViewServerRuntimeError | ViewServerTransportError
-    >;
+    readonly subscribeRuntime: ViewServerQuerySubscriber<Topics, true>;
   };

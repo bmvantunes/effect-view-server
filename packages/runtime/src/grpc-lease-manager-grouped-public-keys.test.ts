@@ -52,13 +52,12 @@ describe("gRPC lease manager grouped public-key translation and retention", () =
       );
 
       const first = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["id"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -70,13 +69,12 @@ describe("gRPC lease manager grouped public-key translation and retention", () =
       const firstSnapshot = yield* Queue.take(firstEventQueue);
       const firstDelta = yield* Queue.take(firstEventQueue);
       const second = yield* manager.liveClient.subscribe("orders", {
+        routeBy: { region: "usa" },
         groupBy: ["id"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -191,6 +189,7 @@ describe("gRPC lease manager grouped public-key translation and retention", () =
       );
 
       const subscription = yield* manager.liveClient.subscribeRuntime("orders", {
+        routeBy: { text: routeEncodingValues.text },
         groupBy: [
           "amount",
           "count",
@@ -207,9 +206,7 @@ describe("gRPC lease manager grouped public-key translation and retention", () =
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          text: { eq: routeEncodingValues.text },
-        },
+        where: [{ field: "text", type: "equals", filter: routeEncodingValues.text }],
         limit: 10,
       });
       const deltaEvents = yield* subscription.events.pipe(
@@ -514,25 +511,23 @@ describe("gRPC lease manager grouped public-key translation and retention", () =
             (manager) =>
               Effect.acquireUseRelease(
                 manager.liveClient.subscribeRuntime("orders", {
+                  routeBy: { region: "usa" },
                   groupBy: ["customerId"],
                   aggregates: {
                     rowCount: { aggFunc: "count" },
                   },
-                  where: {
-                    region: { eq: "usa" },
-                  },
+                  where: [{ field: "region", type: "equals", filter: "usa" }],
                   limit: 100,
                 }),
                 (customerSubscription) =>
                   Effect.acquireUseRelease(
                     manager.liveClient.subscribeRuntime("orders", {
+                      routeBy: { region: "usa" },
                       groupBy: ["status"],
                       aggregates: {
                         rowCount: { aggFunc: "count" },
                       },
-                      where: {
-                        region: { eq: "usa" },
-                      },
+                      where: [{ field: "region", type: "equals", filter: "usa" }],
                       limit: 10,
                     }),
                     (statusSubscription) =>

@@ -164,6 +164,7 @@ describe("in-memory type contracts", () => {
     expectTypeOf(kafkaSnapshot).not.toBeAny();
     expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
     expectTypeOf(inMemory.liveClient).not.toHaveProperty("subscribeRuntime");
+    expectTypeOf(leasedTestingInMemory.serverLiveClient).toHaveProperty("subscribeProtocolQuery");
     expectTypeOf(inMemoryWithGroupedAdmissionLimits.client).toEqualTypeOf<typeof inMemory.client>();
     expectTypeOf(invalidPatch).not.toBeAny();
     expectTypeOf(invalidTransportHealthOption).not.toBeAny();
@@ -173,16 +174,16 @@ describe("in-memory type contracts", () => {
 
   it("rejects leased gRPC topics from public in-memory clients", () => {
     const leasedQuery = {
-      where: {
-        id: { eq: "order-1" },
-      },
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
       select: ["id"],
     } satisfies {
-      readonly where: {
-        readonly id: {
-          readonly eq: "order-1";
-        };
-      };
+      readonly where: readonly [
+        {
+          readonly field: "id";
+          readonly type: "equals";
+          readonly filter: "order-1";
+        },
+      ];
       readonly select: readonly ["id"];
     };
     // @ts-expect-error public in-memory clients reject direct leased gRPC snapshots.
@@ -280,16 +281,18 @@ describe("in-memory type contracts", () => {
 
   it("allows leased gRPC topics from testing in-memory clients", () => {
     const leasedQuery = {
-      where: {
-        id: { eq: "order-1" },
-      },
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
+      routeBy: { id: "order-1" },
       select: ["id"],
     } satisfies {
-      readonly where: {
-        readonly id: {
-          readonly eq: "order-1";
-        };
-      };
+      readonly where: readonly [
+        {
+          readonly field: "id";
+          readonly type: "equals";
+          readonly filter: "order-1";
+        },
+      ];
+      readonly routeBy: { readonly id: "order-1" };
       readonly select: readonly ["id"];
     };
     const testingLeasedSubscribe = leasedTestingInMemory.liveClient.subscribe(

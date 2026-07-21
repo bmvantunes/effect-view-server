@@ -4,8 +4,8 @@ import type { ExactLiveQueryInputForTopic } from "./source-query-contract";
 import type {
   ExactPatch,
   GroupedQuery,
-  LiveQueryRow,
   LiveQueryResult,
+  LiveQueryRow,
   RawQuery,
   RowSchema,
   TopicDefinitions,
@@ -185,10 +185,12 @@ export type ViewServerTransportError =
 
 type RuntimeSnapshot<Topics extends object> = <
   Topic extends Extract<keyof Topics, string>,
-  const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
+  const Query extends
+    | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
+    | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
 >(
   topic: Topic,
-  query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
+  query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => Effect.Effect<
   LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
   ViewServerRuntimeError

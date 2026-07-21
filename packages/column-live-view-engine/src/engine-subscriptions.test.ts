@@ -33,9 +33,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const subscription = yield* engine.subscribe("orders", {
         select: orderSelect,
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       });
       const events = yield* takeEvents(subscription, 1);
 
@@ -164,9 +162,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publishMany("orders", [order("a", "open", 10, 1), order("b", "open", 20, 2)]);
 
       const baseQuery = {
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "asc" }],
       } satisfies Omit<RawQuery<OrderRow>, "select">;
       const idSubscription = yield* engine.subscribe("orders", {
@@ -210,9 +206,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const query = {
         select: orderSelect,
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "asc" }],
       } satisfies RawQuery<OrderRow>;
       const subscription = yield* engine.subscribe("orders", query);
@@ -453,9 +447,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publishMany("orders", [order("1", "open", 10, 1), order("2", "closed", 20, 2)]);
       const subscription = yield* engine.subscribe("orders", {
         select: orderSelect,
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       });
       const take = yield* makeEventReader(subscription);
       yield* take(1);
@@ -477,21 +469,22 @@ describe("ColumnLiveViewEngine subscriptions", () => {
 
       const query: {
         select: typeof orderSelect;
-        where: {
-          status: OrderRow["status"];
-        };
+        where: Array<{
+          field: "status";
+          type: "equals";
+          filter: OrderRow["status"];
+        }>;
       } = {
         select: orderSelect,
-        where: {
-          status: openStatus,
-        },
+        where: [{ field: "status", type: "equals", filter: openStatus }],
       };
-      const subscription = yield* engine.subscribe("orders", query);
+      const subscriptionEffect = engine.subscribe("orders", query);
+      query.where[0]!.filter = "closed";
+      const subscription = yield* subscriptionEffect;
       const take = yield* makeEventReader(subscription);
       const initialEvents = yield* take(1);
       let state = stateFromSnapshot(firstEvent(initialEvents));
 
-      query.where.status = "closed";
       yield* engine.publish("orders", order("2", "open", 20, 2));
 
       const events = yield* take(1);
@@ -691,9 +684,7 @@ describe("ColumnLiveViewEngine subscriptions", () => {
       yield* engine.publish("orders", order("1", "open", 10, 1));
       const query = {
         select: [...orderSelect, "note"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       } satisfies RawQuery<OrderRow> & {
         readonly select: readonly [
           "id",
@@ -704,9 +695,9 @@ describe("ColumnLiveViewEngine subscriptions", () => {
           "updatedAt",
           "note",
         ];
-        readonly where: {
-          readonly status: "open";
-        };
+        readonly where: readonly [
+          { readonly field: "status"; readonly type: "equals"; readonly filter: "open" },
+        ];
       };
       const subscription = yield* engine.subscribe("orders", query);
       const take = yield* makeEventReader(subscription);

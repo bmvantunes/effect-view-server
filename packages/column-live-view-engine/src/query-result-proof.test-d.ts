@@ -29,12 +29,7 @@ import {
   bindTopicStorageProjection,
   type TopicStorageProjectionCapability,
 } from "./topic-storage-projection";
-import {
-  type ExecutableQuery,
-  prepareRuntimeExecutableQuery,
-  snapshotGroupedExecutableQuery,
-  snapshotRawExecutableQuery,
-} from "./query-execution";
+import { type ExecutableQuery, prepareRuntimeExecutableQuery } from "./query-execution";
 import type { TopicStore } from "./topic-store";
 
 const Order = Schema.Struct({
@@ -368,16 +363,5 @@ describe("compiled Query Result Semantics", () => {
     >().not.toEqualTypeOf<ForgedResult>();
 
     void runtimeExecutable;
-  });
-
-  it("derives typed one-shot results from the compiled proof", () => {
-    const metadata = rawQueryCompilerMetadata(Order);
-    const rawSnapshot = snapshotRawExecutableQuery(store, metadata, rawQuery);
-    const groupedSnapshot = snapshotGroupedExecutableQuery(store, metadata, groupedQuery);
-
-    expectTypeOf<EffectSuccess<typeof rawSnapshot>["rows"][number]>().toEqualTypeOf<RawResult>();
-    expectTypeOf<
-      EffectSuccess<typeof groupedSnapshot>["rows"][number]
-    >().toEqualTypeOf<GroupedResultRow>();
   });
 });

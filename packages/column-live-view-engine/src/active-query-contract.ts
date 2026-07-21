@@ -1,7 +1,7 @@
 import type { DeltaEvent, SnapshotEvent } from "@effect-view-server/config";
 import type { Effect, Option } from "effect";
 import type { QueryEvaluation } from "./query-result";
-import type { RawQueryPlanWindow } from "./raw-query-plan";
+import type { RawQueryPlan, RawQueryPlanWindow } from "./raw-query-plan";
 import type { TopicRowEntry } from "./row-scan";
 
 type RowObject = object;
@@ -52,10 +52,22 @@ export type RawQueryExecutionWindowSlot = {
 };
 
 export type RawQueryExecutionSlot = {
+  readonly cacheKey: string;
+  readonly canonicalPlan: RawQueryPlan<RowObject, RowObject>;
   readonly execution: ActiveQueryBaseExecution;
   readonly releaseRetainedChanges: () => void;
   readonly windows: Map<string, RawQueryExecutionWindowSlot>;
   refs: number;
+};
+
+export type RawQueryExecutionReleaseToken = {
+  readonly cacheKey: string;
+  readonly window: RawQueryPlanWindow;
+};
+
+export type AcquiredRawQueryExecution<ResultRow extends RowObject> = {
+  readonly execution: RawQueryExecution<ResultRow>;
+  readonly releaseToken: RawQueryExecutionReleaseToken;
 };
 
 export type MaterializedQueryExecution = {
@@ -67,7 +79,15 @@ export type MaterializedQueryExecution = {
   readonly latest: () => QueryEvaluation<RowObject>;
 };
 
+export type MaterializedCanonicalCompilation = {
+  readonly plan: {
+    readonly cacheKey: string;
+  };
+};
+
 export type MaterializedQueryExecutionSlot = {
+  readonly canonicalCompiled: MaterializedCanonicalCompilation;
+  readonly canonicalLease: () => LiveQueryExecution<RowObject>;
   readonly execution: MaterializedQueryExecution;
   readonly releaseRetainedChanges: () => void;
   refs: number;
@@ -76,6 +96,8 @@ export type MaterializedQueryExecutionSlot = {
 export type ActiveQueryRegistry = {
   readonly raw: Map<string, RawQueryExecutionSlot>;
   readonly materialized: Map<string, MaterializedQueryExecutionSlot>;
+  preparedGroupedPlanCompilationCount: number;
+  preparedRawPlanCompilationCount: number;
 };
 
 export type ActiveQueryExecutionCounts = {
@@ -89,4 +111,6 @@ export type ActiveQueryExecutionCounts = {
 export const createActiveQueryRegistry = (): ActiveQueryRegistry => ({
   raw: new Map(),
   materialized: new Map(),
+  preparedGroupedPlanCompilationCount: 0,
+  preparedRawPlanCompilationCount: 0,
 });

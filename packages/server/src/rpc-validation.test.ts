@@ -57,7 +57,7 @@ describe("Real View Server RPC validation and typed errors", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { missing: { eq: "x" } },
+            where: [{ field: "missing", type: "equals", filter: "x" }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -125,7 +125,7 @@ describe("Real View Server RPC validation and typed errors", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { price: { gt: "bad" } },
+            where: [{ field: "price", type: "greaterThan", filter: "bad" }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -136,7 +136,7 @@ describe("Real View Server RPC validation and typed errors", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { price: { startsWith: "1" } },
+            where: [{ field: "price", type: "startsWith", filter: "1" }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -147,7 +147,7 @@ describe("Real View Server RPC validation and typed errors", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: { price: { startsWith: 1 } },
+            where: [{ field: "price", type: "startsWith", filter: 1 }],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -159,12 +159,16 @@ describe("Real View Server RPC validation and typed errors", () => {
           topic: "orders",
           query: {
             select: ["id"],
-            where: {
-              id: {
-                startsWith: "a",
-                raw: "value",
+            where: [
+              {
+                field: "id",
+                type: "equals",
+                filter: {
+                  startsWith: "a",
+                  raw: "value",
+                },
               },
-            },
+            ],
           },
         }).pipe(Stream.runDrain),
       ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ViewServerRpcErrorSchema)));
@@ -174,13 +178,11 @@ describe("Real View Server RPC validation and typed errors", () => {
         topic: "orders",
         query: {
           select: ["id", "price"],
-          where: {
-            id: {
-              in: ["a", "b"],
-              startsWith: "a",
-            },
-            price: 10,
-          },
+          where: [
+            { field: "id", type: "in", filter: ["a", "b"] },
+            { field: "id", type: "startsWith", filter: "a" },
+            { field: "price", type: "equals", filter: 10 },
+          ],
           offset: 0,
         },
       }).pipe(Stream.take(1), Stream.runCollect);
@@ -361,8 +363,8 @@ describe("Real View Server RPC validation and typed errors", () => {
       expect(invalidSubscribeTopic.code).toBe("InvalidTopic");
 
       const invalidQuery = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send malformed queries over the wire.
         client.subscribe("orders", {
-          // @ts-expect-error hostile callers can still send malformed queries over the wire.
           select: [1],
         }),
       );
@@ -370,8 +372,8 @@ describe("Real View Server RPC validation and typed errors", () => {
       expect(invalidQuery.message).toBe('Expected string, got 1\n  at ["select"][0]');
 
       const unknownSelect = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown projected fields.
         client.subscribe("orders", {
-          // @ts-expect-error hostile callers can still send unknown projected fields.
           select: ["missing"],
         }),
       );
@@ -379,25 +381,23 @@ describe("Real View Server RPC validation and typed errors", () => {
       expect(unknownSelect.message).toBe("Query references an unknown field for topic: orders");
 
       const unknownWhere = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown filter fields.
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
-          where: {
-            // @ts-expect-error hostile callers can still send unknown filter fields.
-            missing: { eq: "x" },
-          },
+          where: [{ field: "missing", type: "equals", filter: "x" }],
         }),
       );
       expect(unknownWhere.code).toBe("InvalidQuery");
-      expect(unknownWhere.message).toBe("Query references an unknown field for topic: orders");
+      expect(unknownWhere.message).toBe(
+        "Query references an unknown or non-filterable field: missing",
+      );
 
       const unknownOrderBy = yield* Effect.flip(
+        // @ts-expect-error hostile callers can still send unknown sort fields.
         client.subscribe("orders", {
-          // @ts-expect-error invalid query collapse keeps selected fields from being accepted.
           select: ["id"],
           orderBy: [
             {
-              // @ts-expect-error hostile callers can still send unknown sort fields.
               field: "missing",
               direction: "asc",
             },

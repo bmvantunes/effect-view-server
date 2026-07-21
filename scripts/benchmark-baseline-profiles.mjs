@@ -4,6 +4,7 @@ import {
   groupedWriteTask,
   queryDeltaOperationsTask,
   rawActiveRetainedDeltaTask,
+  rawLargeMembershipTask,
   rawLiveFanoutTask,
   rawPredicateIndexTask,
   rawSnapshotTask,
@@ -286,6 +287,7 @@ export const profiles = new Map([
   [
     "active-query-sharing",
     [
+      rawLargeMembershipTask(rawWriteSmokeEnv),
       rawLiveFanoutTask("same-window", 10_000, 50, {
         VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "1000",
         ...commonEngineSmokeEnv,

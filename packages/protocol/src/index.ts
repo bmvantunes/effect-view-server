@@ -41,9 +41,11 @@ export {
 } from "./protocol-event-schema";
 
 export {
+  compileViewServerLiveEventCodec,
   viewServerEncodeLiveEvent,
   viewServerDecodeLiveEvent,
   viewServerDecodeTrustedLiveEvent,
+  type ViewServerLiveEventCodec,
 } from "./protocol-event-codec";
 
 export {

@@ -1,8 +1,9 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import type * as Protocol from "./index";
 import {
+  compileViewServerLiveEventCodec,
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerDecodeTrustedLiveEvent,
@@ -478,6 +479,35 @@ describe("@effect-view-server/protocol type contract", () => {
       wireEvent,
     );
     expectTypeOf(invalidTrustedDecode).not.toBeAny();
+  });
+
+  it("preserves row and error types through a compiled live event codec", () => {
+    const codec = compileViewServerLiveEventCodec<
+      typeof typeViewServer.topics,
+      "orders",
+      Pick<typeof TypeOrder.Type, "id">
+    >(typeViewServer, "orders", { select: ["id"] });
+    const decoded = codec.decodeTrusted(trustedWireEvent);
+    type DecodedEvent = Effect.Success<typeof decoded>;
+    type DecodedSnapshot = Extract<DecodedEvent, { readonly type: "snapshot" }>;
+    expectTypeOf<DecodedSnapshot["rows"][number]>().toEqualTypeOf<
+      Pick<typeof TypeOrder.Type, "id">
+    >();
+    expectTypeOf<Effect.Error<typeof decoded>>().toEqualTypeOf<ViewServerRuntimeError>();
+
+    const invalidTrustedDecode = codec.decodeTrusted(
+      // @ts-expect-error compiled trusted decoder requires validated wire event proof.
+      wireEvent,
+    );
+    expectTypeOf(invalidTrustedDecode).not.toBeAny();
+
+    const invalidTopicCodec = compileViewServerLiveEventCodec(
+      typeViewServer,
+      // @ts-expect-error compiled codec topic must exist in the configured topics.
+      "missing",
+      { select: ["id"] },
+    );
+    expectTypeOf(invalidTopicCodec).not.toBeAny();
   });
 
   it("preserves health event decoder output generics", () => {

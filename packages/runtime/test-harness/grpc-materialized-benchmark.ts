@@ -210,10 +210,10 @@ const runRowsWorkload = Effect.fn("ViewServerRuntime.grpc.bench.sample.rows.run"
   const readBefore = performance.now();
   const result = yield* harness.runtimeCore.client.snapshot("orders", {
     select: ["id", "price", "status"],
-    where: {
-      status: { eq: "open" },
-      price: { gte: 10 },
-    },
+    where: [
+      { field: "status", type: "equals", filter: "open" },
+      { field: "price", type: "greaterThanOrEqual", filter: 10 },
+    ],
     orderBy: [{ field: "updatedAt", direction: "desc" }],
     limit: 100,
   });

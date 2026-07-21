@@ -83,3 +83,6 @@ jobs:
 
       - name: Raw read/write benchmark regression gate
         run: vp run -w bench:baseline:raw-read-write
+
+      - name: Active query sharing benchmark regression gate
+        run: vp run -w bench:baseline:active-query-sharing

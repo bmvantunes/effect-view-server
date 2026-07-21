@@ -412,8 +412,8 @@ describe("Runtime Core client", () => {
         aggregates: { rowCount: { aggFunc: "count" } },
       });
       const invalidQuery = yield* Effect.flip(
+        // @ts-expect-error hostile runtime callers can still send unknown projected fields.
         runtimeCore.client.snapshot("orders", {
-          // @ts-expect-error hostile runtime callers can still send unknown projected fields.
           select: ["prcie"],
         }),
       );

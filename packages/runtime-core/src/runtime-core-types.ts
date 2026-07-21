@@ -11,7 +11,8 @@ import type {
 import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
 import type { Duration, Effect } from "effect";
 import type { RuntimeCoreHealthOverlay, RuntimeCoreTransportHealth } from "./health";
-import type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client";
+import type { ViewServerRuntimeCoreInternalLiveClient } from "./live-client-contract";
+import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 import type {
   ViewServerRuntimeCorePublicClient,
   ViewServerRuntimeCorePublicLiveClient,
@@ -52,8 +53,10 @@ export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicD
   readonly decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics>;
   readonly internalClient: ViewServerRuntimeCoreInternalClient<Topics>;
   readonly publicClient: ViewServerRuntimeCorePublicClient<Topics>;
-  readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
+  readonly liveClient: ViewServerRuntimeLiveClient<Topics> &
+    ViewServerRuntimeCoreInternalLiveClient<Topics>;
   readonly internalLiveClient: ViewServerRuntimeCoreInternalLiveClient<Topics>;
+  readonly protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;
   readonly publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
 };
 

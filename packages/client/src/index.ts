@@ -12,4 +12,4 @@ export {
   liveQueryResult,
   type ClientState,
 } from "./live-query-state";
-export { stableQueryKey } from "./query-key";
+export { stableQueryKey, stableQueryKeyForRowSchema } from "./query-key";

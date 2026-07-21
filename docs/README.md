@@ -18,3 +18,8 @@ design sketches.
 The production browser transport is Effect RPC WebSocket with NDJSON
 serialization. Kafka, gRPC, TCP publish, and in-memory testing all feed the same
 Runtime Core mutation path.
+
+All Live Query documentation uses the canonical filter contract: `where` is an
+implicit-`AND` array of typed Field Conditions and recursive Boolean expressions.
+Field-keyed filter objects and shorthand operators are invalid. See
+[Query Semantics](./query-semantics.md) for the complete language.

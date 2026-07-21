@@ -221,10 +221,42 @@ export function App() {
 function Orders() {
   const orders = react.useLiveQuery("orders", {
     select: ["id", "price"],
+    where: [
+      { field: "status", type: "equals", filter: "open" },
+      {
+        type: "OR",
+        conditions: [
+          { field: "customerId", type: "startsWith", filter: "customer-" },
+          { field: "price", type: "greaterThanOrEqual", filter: 100 },
+        ],
+      },
+    ],
     orderBy: [{ field: "price", direction: "asc" }],
     limit: 20,
   });
 
   return <pre>{JSON.stringify(orders.rows, null, 2)}</pre>;
 }
+```
+
+`where` is always an implicit-`AND` array of typed Field Conditions or nested
+`AND`, `OR`, and `NOT` expressions. An omitted `where`, `where: []`, and empty
+generated groups all mean no filter. Field-keyed objects and shorthand operators
+such as `eq`, `gte`, or `contains: "value"` are rejected.
+
+Leased topics additionally require an exact `routeBy` object. Routing is
+independent from local filtering, and route values are passed to the source
+Adapter without case, accent, or text normalization:
+
+```tsx
+const orders = react.useLiveQuery("ordersByStrategy", {
+  routeBy: {
+    strategyId: "strategy-1",
+    region: "ÁbCDEfgh",
+  },
+  where: [{ field: "status", type: "equals", filter: "open" }],
+  select: ["id", "status", "price"],
+  orderBy: [{ field: "price", direction: "desc" }],
+  limit: 20,
+});
 ```

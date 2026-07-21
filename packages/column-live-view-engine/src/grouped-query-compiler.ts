@@ -7,18 +7,21 @@ import {
 } from "./grouped-query-decoder";
 import { evaluateGroupedRows } from "./grouped-query-evaluation";
 import {
+  groupedQueryPlanCacheKey,
   makeGroupedQueryPlan,
   makeRuntimeGroupedQueryPlan,
   type GroupedQueryPlan,
 } from "./grouped-query-plan";
 import {
   ensureRawQueryCompilerMetadata,
+  compileDecodedRuntimeRawQuery,
   type RawQueryCompilerMetadata,
-  prepareRuntimeRawQuery,
 } from "./raw-query-compiler";
+import { rawQueryPlanIdentity, type RawQueryPlanIdentity } from "./raw-query-plan";
 import type { QueryEvaluation } from "./query-result";
 import { groupedQueryResultSemantics } from "./query-result-semantics";
 import type { TopicRowScan } from "./row-scan";
+import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
 
 type RowObject = object;
 
@@ -27,8 +30,18 @@ export type { RuntimeGroupedQuery };
 export type CompiledGroupedQuery<Row extends RowObject, ResultRow extends RowObject> = {
   readonly plan: GroupedQueryPlan<Row, ResultRow>;
   readonly cacheKey: string;
-  readonly matches: (row: Row) => boolean;
+  readonly matches: (row: Row, storageKey?: string) => boolean;
+  readonly ownedStorageKeys?: () => Iterable<string>;
+  readonly partitionKey?: string;
   readonly evaluate: (store: TopicRowScan<Row>) => QueryEvaluation<RowObject>;
+};
+
+export type PreparedRuntimeGroupedQuery = {
+  readonly cacheKey: string;
+  readonly metadata: RawQueryCompilerMetadata;
+  readonly partition?: ColumnLiveViewEngineQueryPartition;
+  readonly query: RuntimeGroupedQuery;
+  readonly rawFilterIdentity: RawQueryPlanIdentity;
 };
 
 export const prepareGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.prepare")(
@@ -39,7 +52,7 @@ export const prepareGroupedQuery = Effect.fn("ColumnLiveViewEngine.groupedQuery.
   ) {
     yield* ensureRawQueryCompilerMetadata(topic, metadata);
     const decoded = yield* decodeTypedGroupedQuery(topic, metadata, query);
-    const rawFilter = yield* prepareRuntimeRawQuery(topic, metadata, {
+    const rawFilter = compileDecodedRuntimeRawQuery(metadata, {
       select: decoded.groupBy,
       ...(decoded.where === undefined ? {} : { where: decoded.where }),
     });
@@ -65,26 +78,66 @@ export const prepareRuntimeGroupedQuery = Effect.fn(
   topic: string,
   metadata: RawQueryCompilerMetadata<Row>,
   query: unknown,
+  partition?: ColumnLiveViewEngineQueryPartition,
+) {
+  const prepared = yield* prepareRuntimeGroupedQueryAdmission(topic, metadata, query, partition);
+  return compilePreparedRuntimeGroupedQuery(prepared);
+});
+
+export const prepareRuntimeGroupedQueryAdmission = Effect.fn(
+  "ColumnLiveViewEngine.groupedQuery.prepareRuntimeAdmission",
+)(function* <Row extends RowObject>(
+  topic: string,
+  metadata: RawQueryCompilerMetadata<Row>,
+  query: unknown,
+  partition?: ColumnLiveViewEngineQueryPartition,
 ) {
   yield* ensureRawQueryCompilerMetadata(topic, metadata);
   const decoded = yield* decodeGroupedQuery(topic, metadata, query);
-  const rawFilter = yield* prepareRuntimeRawQuery(topic, metadata, {
-    select: decoded.groupBy,
-    ...(decoded.where === undefined ? {} : { where: decoded.where }),
-  });
+  const rawFilterIdentity = rawQueryPlanIdentity(
+    {
+      select: decoded.groupBy,
+      ...(decoded.where === undefined ? {} : { where: decoded.where }),
+    },
+    partition,
+  );
+  return Object.freeze({
+    cacheKey: groupedQueryPlanCacheKey(decoded, rawFilterIdentity.queryCacheKey),
+    metadata,
+    ...(partition === undefined ? {} : { partition }),
+    query: decoded,
+    rawFilterIdentity,
+  } satisfies PreparedRuntimeGroupedQuery);
+});
+
+export const compilePreparedRuntimeGroupedQuery = (
+  prepared: PreparedRuntimeGroupedQuery,
+): CompiledGroupedQuery<RowObject, RowObject> => {
+  const { metadata, partition, query } = prepared;
+  const rawFilter = compileDecodedRuntimeRawQuery(
+    metadata,
+    {
+      select: query.groupBy,
+      ...(query.where === undefined ? {} : { where: query.where }),
+    },
+    partition,
+  );
   const { matches } = rawFilter.plan.predicate;
   const plan = makeRuntimeGroupedQueryPlan(
-    decoded,
+    query,
     metadata.valueSemantics,
-    rawFilter.plan.queryCacheKey,
+    prepared.rawFilterIdentity.queryCacheKey,
   );
   return Object.freeze({
     plan,
     cacheKey: plan.cacheKey,
     matches,
-    evaluate: (store: TopicRowScan<RowObject>) => evaluateGroupedRows(store, plan, matches),
-  } satisfies CompiledGroupedQuery<RowObject, object>);
-});
+    ...(partition === undefined ? {} : { ownedStorageKeys: partition.ownedStorageKeys }),
+    ...(partition === undefined ? {} : { partitionKey: partition.key }),
+    evaluate: (store: TopicRowScan<RowObject>) =>
+      evaluateGroupedRows(store, plan, matches, partition?.ownedStorageKeys),
+  } satisfies CompiledGroupedQuery<RowObject, RowObject>);
+};
 
 export const evaluateCompiledGroupedQuery = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRowScan<Row>,

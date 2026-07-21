@@ -1,12 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
-import { viewServerRuntimeDecodedMutationTrust } from "@effect-view-server/config/internal";
+import {
+  trustDecodedRuntimeQuery,
+  viewServerRuntimeDecodedMutationTrust,
+} from "@effect-view-server/config/internal";
 import { Effect, Stream } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { makeViewServerRuntimeCore } from "./index";
 import {
   kafkaOwnedViewServer,
-  leasedGrpcSourceViewServer,
   leasedViewServer,
   materializedGrpcSourceViewServer,
   order,
@@ -15,6 +17,15 @@ import {
   publicSourceOwnedRuntimeResetError,
   viewServer,
 } from "./test-support/runtime-test-fixtures";
+
+const expectRuntimeRejection = Effect.fn("ViewServerRuntimeCore.test.expectRuntimeRejection")(
+  function* <A>(
+    effect: Effect.Effect<A, ViewServerRuntimeError>,
+    expected: ViewServerRuntimeError,
+  ) {
+    expect(yield* Effect.flip(effect)).toStrictEqual(expected);
+  },
+);
 
 describe("Runtime Core source ownership", () => {
   it.effect("exposes route-bypassing internals only through the internal factory", () =>
@@ -44,9 +55,7 @@ describe("Runtime Core source ownership", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
       const missingRouteQuery = {
-        where: {
-          region: { eq: "usa" },
-        },
+        where: [{ field: "region", type: "equals", filter: "usa" }],
         select: ["id"],
         limit: 1,
       } as const;
@@ -56,34 +65,29 @@ describe("Runtime Core source ownership", () => {
         runtimeCore.client,
         ["orders", missingRouteQuery],
       );
-      const missingRoute = yield* Effect.flip(missingRouteEffect);
-      expect(missingRoute).toStrictEqual(publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(missingRouteEffect, publicLeasedRuntimeAccessError);
 
       const missingSubscribeRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> =
         Reflect.apply(runtimeCore.liveClient.subscribe, runtimeCore.liveClient, [
           "orders",
           missingRouteQuery,
         ]);
-      const missingSubscribeRoute = yield* Effect.flip(missingSubscribeRouteEffect);
-      expect(missingSubscribeRoute).toStrictEqual(publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(missingSubscribeRouteEffect, publicLeasedRuntimeAccessError);
 
-      const nonEqRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
+      const incompleteRouteEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
         runtimeCore.liveClient.subscribe,
         runtimeCore.liveClient,
         [
           "orders",
           {
-            where: {
-              region: { eq: "usa" },
-              status: { in: ["open"] },
-            },
+            where: [{ field: "status", type: "in", filter: ["open"] }],
+            routeBy: { region: "usa" },
             select: ["id"],
             limit: 1,
           },
         ],
       );
-      const nonEqRoute = yield* Effect.flip(nonEqRouteEffect);
-      expect(nonEqRoute).toStrictEqual(publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(incompleteRouteEffect, publicLeasedRuntimeAccessError);
 
       yield* runtimeCore.close;
     }),
@@ -93,10 +97,11 @@ describe("Runtime Core source ownership", () => {
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
       const leasedQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id", "region", "status"],
         limit: 1,
       } as const;
@@ -135,17 +140,13 @@ describe("Runtime Core source ownership", () => {
         runtimeCore.client,
         [],
       );
-      expect(yield* Effect.flip(publishEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(publishManyEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(patchEffect)).toStrictEqual(publicSourceOwnedRuntimeMutationError);
-      expect(yield* Effect.flip(deleteEffect)).toStrictEqual(publicSourceOwnedRuntimeMutationError);
-      expect(yield* Effect.flip(snapshotEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(subscribeEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(resetEffect)).toStrictEqual(publicSourceOwnedRuntimeResetError);
+      yield* expectRuntimeRejection(publishEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(publishManyEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(patchEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(deleteEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(snapshotEffect, publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(subscribeEffect, publicLeasedRuntimeAccessError);
+      yield* expectRuntimeRejection(resetEffect, publicSourceOwnedRuntimeResetError);
 
       yield* runtimeCore.close;
     }),
@@ -235,34 +236,16 @@ describe("Runtime Core source ownership", () => {
         status: "ready",
         statusCode: "Ready",
       });
-      expect(yield* Effect.flip(kafkaPublishEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaPublishManyEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaPatchEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaDeleteEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcPublishEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcPublishManyEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcPatchEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(grpcDeleteEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeMutationError,
-      );
-      expect(yield* Effect.flip(kafkaResetEffect)).toStrictEqual(
-        publicSourceOwnedRuntimeResetError,
-      );
-      expect(yield* Effect.flip(grpcResetEffect)).toStrictEqual(publicSourceOwnedRuntimeResetError);
+      yield* expectRuntimeRejection(kafkaPublishEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaPublishManyEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaPatchEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaDeleteEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcPublishEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcPublishManyEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcPatchEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(grpcDeleteEffect, publicSourceOwnedRuntimeMutationError);
+      yield* expectRuntimeRejection(kafkaResetEffect, publicSourceOwnedRuntimeResetError);
+      yield* expectRuntimeRejection(grpcResetEffect, publicSourceOwnedRuntimeResetError);
 
       yield* kafkaRuntimeCore.close;
       yield* grpcRuntimeCore.close;
@@ -345,35 +328,6 @@ describe("Runtime Core source ownership", () => {
     ),
   );
 
-  it.effect("rejects public grpcSource leased subscriptions before route validation", () =>
-    Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(leasedGrpcSourceViewServer, {});
-      const leasedQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
-        select: ["id", "region", "status"],
-        limit: 1,
-      } as const;
-      const snapshotEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
-        runtimeCore.client.snapshot,
-        runtimeCore.client,
-        ["orders", leasedQuery],
-      );
-      const subscribeEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
-        runtimeCore.liveClient.subscribe,
-        runtimeCore.liveClient,
-        ["orders", leasedQuery],
-      );
-
-      expect(yield* Effect.flip(snapshotEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-      expect(yield* Effect.flip(subscribeEffect)).toStrictEqual(publicLeasedRuntimeAccessError);
-
-      yield* runtimeCore.close;
-    }),
-  );
-
   it.effect("allows internal runtime core access for leased gRPC manager internals", () =>
     Effect.gen(function* () {
       const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedViewServer, {});
@@ -386,20 +340,22 @@ describe("Runtime Core source ownership", () => {
       ]);
 
       const snapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-a" },
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "customerId", type: "equals", filter: "customer-a" },
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id", "region", "status"],
         limit: 1,
       });
       const storageKeySnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-public-b" },
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "customerId", type: "equals", filter: "customer-public-b" },
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id", "region", "status"],
         limit: 1,
       });
@@ -407,9 +363,7 @@ describe("Runtime Core source ownership", () => {
         Reflect.apply(runtimeCore.internalClient.snapshot, runtimeCore.internalClient, [
           "orders",
           {
-            where: {
-              region: { eq: "usa" },
-            },
+            where: [{ field: "region", type: "equals", filter: "usa" }],
             select: ["id"],
             limit: 1,
           },
@@ -417,21 +371,23 @@ describe("Runtime Core source ownership", () => {
       const invalidRouteSnapshot = yield* Effect.flip(invalidRouteSnapshotEffect);
       const publicRuntimeSubscribe = yield* Effect.flip(
         runtimeCore.liveClient.subscribeRuntime("orders", {
-          where: {
-            customerId: { eq: "customer-a" },
-            region: { eq: "usa" },
-            status: { eq: "open" },
-          },
+          where: [
+            { field: "customerId", type: "equals", filter: "customer-a" },
+            { field: "region", type: "equals", filter: "usa" },
+            { field: "status", type: "equals", filter: "open" },
+          ],
+          routeBy: { region: "usa", status: "open" },
           select: ["id"],
           limit: 1,
         }),
       );
       const subscription = yield* runtimeCore.internalLiveClient.subscribeInternal("orders", {
-        where: {
-          customerId: { eq: "customer-a" },
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "customerId", type: "equals", filter: "customer-a" },
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id"],
         limit: 1,
       });
@@ -467,7 +423,7 @@ describe("Runtime Core source ownership", () => {
         _tag: "ViewServerRuntimeError",
         code: "InvalidQuery",
         topic: "orders",
-        message: "Leased topic orders route field status must use an exact eq filter.",
+        message: "Leased topic orders requires routeBy fields: region, status.",
       });
       expect(publicRuntimeSubscribe).toStrictEqual(publicLeasedRuntimeAccessError);
       expect(events[0]).toStrictEqual({
@@ -487,72 +443,71 @@ describe("Runtime Core source ownership", () => {
 
   it.effect("rejects public leased subscriptions when effects execute", () =>
     Effect.gen(function* () {
-      const runtimeCore = yield* makeViewServerRuntimeCore(leasedViewServer, {});
+      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(leasedViewServer, {});
       const delayedSubscribeQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id"],
         limit: 1,
       } satisfies {
-        readonly where: {
-          readonly region: {
-            readonly eq: "usa";
-          };
-          readonly status: {
-            readonly eq: "open";
-          };
+        where: [
+          { field: "region"; type: "equals"; filter: string },
+          { field: "status"; type: "equals"; filter: "open" | "closed" | "cancelled" },
+        ];
+        routeBy: {
+          region: string;
+          status: "open" | "closed" | "cancelled";
         };
-        readonly select: readonly ["id"];
-        readonly limit: 1;
+        select: ["id"];
+        limit: number;
       };
       const subscribeEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
         runtimeCore.liveClient.subscribe,
         runtimeCore.liveClient,
         ["orders", delayedSubscribeQuery],
       );
-      expect(Reflect.deleteProperty(delayedSubscribeQuery.where.status, "eq")).toBe(true);
-      Object.defineProperty(delayedSubscribeQuery.where.status, "in", {
-        enumerable: true,
-        value: ["open"],
-      });
+      const subscribeRuntimeEffect = runtimeCore.liveClient.subscribeRuntime(
+        "orders",
+        delayedSubscribeQuery,
+      );
+      expect(Reflect.set(delayedSubscribeQuery.routeBy, "status", "closed")).toBe(true);
 
       const subscribeRouteError = yield* Effect.flip(subscribeEffect);
       expect(subscribeRouteError).toStrictEqual(publicLeasedRuntimeAccessError);
+      const subscribeRuntimeRouteError = yield* Effect.flip(subscribeRuntimeEffect);
+      expect(subscribeRuntimeRouteError).toStrictEqual(publicLeasedRuntimeAccessError);
 
       const delayedRuntimeQuery = {
-        where: {
-          region: { eq: "usa" },
-          status: { eq: "open" },
-        },
+        where: [
+          { field: "region", type: "equals", filter: "usa" },
+          { field: "status", type: "equals", filter: "open" },
+        ],
+        routeBy: { region: "usa", status: "open" },
         select: ["id"],
         limit: 1,
       } satisfies {
-        readonly where: {
-          readonly region: {
-            readonly eq: "usa";
-          };
-          readonly status: {
-            readonly eq: "open";
-          };
+        where: [
+          { field: "region"; type: "equals"; filter: string },
+          { field: "status"; type: "equals"; filter: "open" | "closed" | "cancelled" },
+        ];
+        routeBy: {
+          region: string;
+          status: "open" | "closed" | "cancelled";
         };
-        readonly select: readonly ["id"];
-        readonly limit: 1;
+        select: ["id"];
+        limit: number;
       };
-      const subscribeRuntimeEffect: Effect.Effect<unknown, ViewServerRuntimeError> = Reflect.apply(
-        runtimeCore.serverLiveClient.subscribeRuntime,
-        runtimeCore.serverLiveClient,
-        ["orders", delayedRuntimeQuery],
+      const subscribeProtocolQueryEffect = runtimeCore.serverLiveClient.subscribeProtocolQuery(
+        "orders",
+        trustDecodedRuntimeQuery(delayedRuntimeQuery),
       );
-      expect(Reflect.deleteProperty(delayedRuntimeQuery.where.status, "eq")).toBe(true);
-      Object.defineProperty(delayedRuntimeQuery.where.status, "in", {
-        enumerable: true,
-        value: ["open"],
-      });
+      expect(Reflect.set(delayedRuntimeQuery.routeBy, "status", "closed")).toBe(true);
 
-      const subscribeRuntimeRouteError = yield* Effect.flip(subscribeRuntimeEffect);
-      expect(subscribeRuntimeRouteError).toStrictEqual(publicLeasedRuntimeAccessError);
+      const subscribeProtocolQueryRouteError = yield* Effect.flip(subscribeProtocolQueryEffect);
+      expect(subscribeProtocolQueryRouteError).toStrictEqual(publicLeasedRuntimeAccessError);
 
       yield* runtimeCore.close;
     }),

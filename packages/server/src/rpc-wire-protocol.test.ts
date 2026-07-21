@@ -128,9 +128,7 @@ describe("Real View Server RPC wire protocol composition", () => {
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("trades", {
-        where: {
-          quantity: { gte: 10n },
-        },
+        where: [{ field: "quantity", type: "greaterThanOrEqual", filter: 10n }],
         select: ["id", "quantity"],
         orderBy: [{ field: "quantity", direction: "asc" }],
         limit: 10,
@@ -189,9 +187,13 @@ describe("Real View Server RPC wire protocol composition", () => {
       const client = yield* makeViewServerClient(viewServer, { url: server.url });
       yield* Effect.addFinalizer(() => client.close);
       const subscription = yield* client.subscribe("quotes", {
-        where: {
-          price: { gte: fromStringUnsafe("10.50") },
-        },
+        where: [
+          {
+            field: "price",
+            type: "greaterThanOrEqual",
+            filter: fromStringUnsafe("10.50"),
+          },
+        ],
         select: ["id", "price"],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,

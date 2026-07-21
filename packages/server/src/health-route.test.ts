@@ -1,5 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import { type ViewServerHealth, type ViewServerRuntimeError } from "@effect-view-server/config";
 import { ViewServerHealthSchema } from "@effect-view-server/protocol";
 import { Effect, Schema } from "effect";
@@ -232,7 +231,7 @@ describe("Real View Server health route", () => {
         },
       };
       const cachedHealth = AtomRef.make<ViewServerHealth<typeof viewServer.topics>>(degradedHealth);
-      const liveClient: ViewServerRuntimeLiveClient<typeof viewServer.topics> = {
+      const liveClient = {
         ...inMemory.liveClient,
         health: cachedHealth,
       };

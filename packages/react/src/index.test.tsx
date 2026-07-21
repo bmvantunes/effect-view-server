@@ -7,9 +7,13 @@ import {
   VIEW_SERVER_HEALTH_TOPIC,
   type ViewServerHealthSummaryRow,
   type ViewServerHealthTopicRow,
+  type Where,
 } from "@effect-view-server/config";
+import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { createInMemoryViewServer as createCoreInMemoryViewServer } from "@effect-view-server/in-memory";
+import { createInMemoryViewServerTesting } from "@effect-view-server/in-memory/testing";
 import { Effect, Schema, Stream } from "effect";
+import { fromStringUnsafe, type BigDecimal } from "effect/BigDecimal";
 import { Component, type ReactNode } from "react";
 import { render } from "vitest-browser-react";
 import { createViewServerReact } from "./index";
@@ -52,9 +56,28 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const LeasedAmountOrder = Schema.Struct({
+  id: Schema.String,
+  amount: Schema.BigDecimal,
+});
+
+const leasedAmountViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: LeasedAmountOrder,
+      key: "id",
+      grpcSource: grpcSourceMarkers.leased({
+        routeBy: ["amount"],
+      }),
+    },
+  },
+});
+
 const react = createViewServerReact(viewServer);
 const { useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
+const leasedAmountReact = createViewServerReact(leasedAmountViewServer);
+const LeasedAmountClientProvider = leasedAmountReact[ViewServerReactClientProvider];
 
 type TestInMemoryOptions = ViewServerInMemoryOptions<typeof viewServer.topics>;
 
@@ -647,9 +670,7 @@ describe("createViewServerReact", () => {
   it("uses the same component with in-memory and remote providers", async () => {
     function OrdersView(props: { readonly id: string }) {
       const result = useLiveQuery("orders", {
-        where: {
-          id: { eq: props.id },
-        },
+        where: [{ field: "id", type: "equals", filter: props.id }],
         orderBy: [{ field: "price", direction: "asc" }],
         select: ["id", "price"],
         limit: 10,
@@ -837,6 +858,467 @@ describe("createViewServerReact", () => {
     await view.unmount();
   });
 
+  it("replaces leased subscriptions when the exact BigDecimal route changes", async () => {
+    const inMemory = createInMemoryViewServerTesting(leasedAmountViewServer);
+    let subscribeCount = 0;
+    let closeCount = 0;
+    const trackedClient = {
+      ...inMemory.liveClient,
+      subscribe: (topic, query) =>
+        inMemory.liveClient.subscribe(topic, query).pipe(
+          Effect.map((subscription) => {
+            subscribeCount += 1;
+            return {
+              events: subscription.events,
+              close: () =>
+                subscription.close().pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      closeCount += 1;
+                    }),
+                  ),
+                ),
+            };
+          }),
+        ),
+    } satisfies ViewServerLiveClient<typeof leasedAmountViewServer.topics>;
+
+    function LeasedOrdersView(props: { readonly route: BigDecimal }) {
+      const result = leasedAmountReact.useLiveQuery("orders", {
+        select: ["id"],
+        routeBy: { amount: props.route },
+      });
+      return <output role="status">{result.status}</output>;
+    }
+
+    const view = await render(
+      <LeasedAmountClientProvider client={trackedClient}>
+        <LeasedOrdersView route={fromStringUnsafe("1.50")} />
+      </LeasedAmountClientProvider>,
+    );
+    await expect.element(view.getByText("ready", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(1);
+
+    await view.rerender(
+      <LeasedAmountClientProvider client={trackedClient}>
+        <LeasedOrdersView route={fromStringUnsafe("1.5")} />
+      </LeasedAmountClientProvider>,
+    );
+
+    await expect.poll(() => subscribeCount).toBe(2);
+    await expect.poll(() => closeCount).toBe(1);
+
+    await view.unmount();
+    await expect.poll(() => closeCount).toBe(2);
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("reuses subscriptions when recursive where syntax has the same engine meaning", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    let subscribeCount = 0;
+    let closeCount = 0;
+    const trackedClient = {
+      ...inMemory.liveClient,
+      subscribe: (topic, query) =>
+        inMemory.liveClient.subscribe(topic, query).pipe(
+          Effect.map((subscription) => {
+            subscribeCount += 1;
+            return {
+              events: subscription.events,
+              close: () =>
+                subscription.close().pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      closeCount += 1;
+                    }),
+                  ),
+                ),
+            };
+          }),
+        ),
+    } satisfies ViewServerLiveClient<typeof viewServer.topics>;
+
+    function EquivalentOrdersView(props: { readonly expanded: boolean }) {
+      const where: Where<OrderRow> = props.expanded
+        ? [
+            {
+              field: "id",
+              type: "contains",
+              filter: "Résumé",
+              caseSensitive: false,
+              accentSensitive: false,
+            },
+            { field: "id", type: "in", filter: [] },
+            {
+              type: "OR",
+              conditions: [
+                { type: "OR", conditions: [] },
+                { field: "price", type: "equals", filter: -0 },
+                { field: "price", type: "equals", filter: 0 },
+                {
+                  type: "OR",
+                  conditions: [
+                    { field: "customerId", type: "equals", filter: "CUSTOMER-A" },
+                    { field: "customerId", type: "equals", filter: "customer-a" },
+                  ],
+                },
+              ],
+            },
+            {
+              type: "NOT",
+              condition: {
+                type: "NOT",
+                condition: { field: "region", type: "equals", filter: "USÁ" },
+              },
+            },
+          ]
+        : [
+            {
+              type: "AND",
+              conditions: [
+                { field: "region", type: "equals", filter: "usa" },
+                {
+                  type: "OR",
+                  conditions: [
+                    { field: "customerId", type: "equals", filter: "customer-a" },
+                    { field: "price", type: "equals", filter: 0 },
+                  ],
+                },
+                { field: "id", type: "contains", filter: "resume" },
+              ],
+            },
+          ];
+      const result = useLiveQuery("orders", { select: ["id"], where });
+      return <output role="status">{result.status}</output>;
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={trackedClient}>
+        <EquivalentOrdersView expanded />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("ready", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(1);
+
+    await view.rerender(
+      <ViewServerClientProvider client={trackedClient}>
+        <EquivalentOrdersView expanded={false} />
+      </ViewServerClientProvider>,
+    );
+
+    await expect.element(view.getByText("ready", { exact: true })).toBeVisible();
+    expect(subscribeCount).toBe(1);
+    expect(closeCount).toBe(0);
+
+    await view.unmount();
+    await expect.poll(() => closeCount).toBe(1);
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("captures query identity once per reference across live rerenders", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    await Effect.runPromise(
+      inMemory.client.publishMany("orders", [order("first", 10), order("second", 20)]),
+    );
+
+    let subscribeCount = 0;
+    let closeCount = 0;
+    const trackedClient = {
+      ...inMemory.liveClient,
+      subscribe: (topic, query) =>
+        inMemory.liveClient.subscribe(topic, query).pipe(
+          Effect.map((subscription) => {
+            subscribeCount += 1;
+            return {
+              events: subscription.events,
+              close: () =>
+                subscription.close().pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      closeCount += 1;
+                    }),
+                  ),
+                ),
+            };
+          }),
+        ),
+    } satisfies ViewServerLiveClient<typeof viewServer.topics>;
+
+    const queryInput: {
+      readonly select: readonly ["id"];
+      readonly orderBy: readonly [{ readonly field: "price"; readonly direction: "asc" }];
+      limit: number;
+    } = {
+      select: ["id"],
+      orderBy: [{ field: "price", direction: "asc" }],
+      limit: 1,
+    };
+    let originalReflectionCount = 0;
+    const stableQuery = new Proxy(queryInput, {
+      ownKeys: (target) => {
+        originalReflectionCount += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    function OrdersView(props: { readonly query: typeof queryInput }) {
+      const result = useLiveQuery("orders", props.query);
+      return (
+        <output aria-label="captured orders" role="status">
+          orders: {result.rows.map((row) => row.id).join("|")}
+        </output>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={trackedClient}>
+        <OrdersView query={stableQuery} />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("orders: first", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(1);
+    const reflectionCountAfterCapture = originalReflectionCount;
+
+    queryInput.limit = 2;
+    await view.rerender(
+      <ViewServerClientProvider client={trackedClient}>
+        <OrdersView query={stableQuery} />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("orders: first", { exact: true })).toBeVisible();
+    expect(originalReflectionCount).toBe(reflectionCountAfterCapture);
+    expect(subscribeCount).toBe(1);
+
+    await Effect.runPromise(inMemory.client.publish("orders", order("new-first", 5)));
+    await expect.element(view.getByText("orders: new-first", { exact: true })).toBeVisible();
+    expect(originalReflectionCount).toBe(reflectionCountAfterCapture);
+    expect(subscribeCount).toBe(1);
+
+    const replacementQuery: typeof queryInput = {
+      select: ["id"],
+      orderBy: [{ field: "price", direction: "asc" }],
+      limit: 2,
+    };
+    let replacementReflectionCount = 0;
+    const replacementQueryReference = new Proxy(replacementQuery, {
+      ownKeys: (target) => {
+        replacementReflectionCount += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    await view.rerender(
+      <ViewServerClientProvider client={trackedClient}>
+        <OrdersView query={replacementQueryReference} />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("orders: new-first|first", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(2);
+    await expect.poll(() => closeCount).toBe(1);
+    expect(replacementReflectionCount).toBeGreaterThan(0);
+
+    await view.unmount();
+    await expect.poll(() => closeCount).toBe(2);
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("resubscribes when a normalized operand changes schema validity", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    let subscribeCount = 0;
+    const trackedClient = {
+      ...inMemory.liveClient,
+      subscribe: (topic, query) => {
+        subscribeCount += 1;
+        return inMemory.liveClient.subscribe(topic, query);
+      },
+    } satisfies ViewServerLiveClient<typeof viewServer.topics>;
+    const validQuery = {
+      select: ["id"],
+      where: [{ field: "status", type: "equals", filter: "open" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [
+        {
+          readonly field: "status";
+          readonly type: "equals";
+          readonly filter: "open";
+        },
+      ];
+    };
+    const invalidQuery = {
+      select: ["id"],
+      where: [{ field: "status", type: "equals", filter: "OPEN" }],
+    } satisfies {
+      readonly select: readonly ["id"];
+      readonly where: readonly [
+        {
+          readonly field: "status";
+          readonly type: "equals";
+          readonly filter: "OPEN";
+        },
+      ];
+    };
+
+    function ValidationSensitiveOrdersView(props: {
+      readonly query: { readonly select: readonly ["id"] };
+    }) {
+      const result = useLiveQuery("orders", props.query);
+      return (
+        <output role="status">
+          {result.status}:{result.statusCode}
+        </output>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={trackedClient}>
+        <ValidationSensitiveOrdersView query={validQuery} />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("ready:Ready", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(1);
+
+    await view.rerender(
+      <ViewServerClientProvider client={trackedClient}>
+        <ValidationSensitiveOrdersView query={invalidQuery} />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("error:InvalidQuery", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(2);
+
+    await view.rerender(
+      <ViewServerClientProvider client={trackedClient}>
+        <ValidationSensitiveOrdersView query={validQuery} />
+      </ViewServerClientProvider>,
+    );
+    await expect.element(view.getByText("ready:Ready", { exact: true })).toBeVisible();
+    await expect.poll(() => subscribeCount).toBe(3);
+
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("surfaces malformed queries as typed errors without crashing render", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    let getterReads = 0;
+
+    function HostileOrdersView(props: {
+      readonly label: string;
+      readonly query: { readonly select: readonly ["id"] };
+    }) {
+      const result = useLiveQuery("orders", props.query);
+      return (
+        <output aria-label={props.label} role="status">
+          {result.status}:{result.statusCode}
+        </output>
+      );
+    }
+
+    function HostileTopicView() {
+      // @ts-expect-error unknown topics are still surfaced through the hook result.
+      const result = useLiveQuery("doesNotExist", { select: ["id"] });
+      return (
+        <output aria-label="unknown topic" role="status">
+          {result.status}:{result.statusCode}
+        </output>
+      );
+    }
+
+    const accessorQuery = {
+      select: ["id"],
+    } satisfies { readonly select: readonly ["id"] };
+    Object.defineProperty(accessorQuery, "where", {
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        return [];
+      },
+    });
+    const sparseWhere: Array<unknown> = [];
+    sparseWhere.length = 1;
+    const sparseQuery = {
+      select: ["id"],
+    } satisfies { readonly select: readonly ["id"] };
+    Object.defineProperty(sparseQuery, "where", {
+      enumerable: true,
+      value: sparseWhere,
+    });
+    const symbolicQuery = {
+      select: ["id"],
+    } satisfies { readonly select: readonly ["id"] };
+    Object.defineProperty(symbolicQuery, Symbol("query"), {
+      enumerable: true,
+      value: true,
+    });
+    const proxyQuery = new Proxy(
+      {
+        select: ["id"],
+      } satisfies { readonly select: readonly ["id"] },
+      {
+        ownKeys: () => {
+          throw new Error("proxy trap must not escape render");
+        },
+      },
+    );
+
+    const accessorView = await render(
+      <ProviderErrorBoundary>
+        <ViewServerClientProvider client={inMemory.liveClient}>
+          <HostileOrdersView label="accessor query" query={accessorQuery} />
+        </ViewServerClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(accessorView.getByText("error:InvalidQuery", { exact: true }))
+      .toBeVisible();
+    expect(getterReads).toBe(0);
+    await accessorView.unmount();
+
+    const sparseView = await render(
+      <ProviderErrorBoundary>
+        <ViewServerClientProvider client={inMemory.liveClient}>
+          <HostileOrdersView label="sparse query" query={sparseQuery} />
+        </ViewServerClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect.element(sparseView.getByText("error:InvalidQuery", { exact: true })).toBeVisible();
+    await sparseView.unmount();
+
+    const symbolicView = await render(
+      <ProviderErrorBoundary>
+        <ViewServerClientProvider client={inMemory.liveClient}>
+          <HostileOrdersView label="symbolic query" query={symbolicQuery} />
+        </ViewServerClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(symbolicView.getByText("error:InvalidQuery", { exact: true }))
+      .toBeVisible();
+    await symbolicView.unmount();
+
+    const proxyView = await render(
+      <ProviderErrorBoundary>
+        <ViewServerClientProvider client={inMemory.liveClient}>
+          <HostileOrdersView label="proxy query" query={proxyQuery} />
+        </ViewServerClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect.element(proxyView.getByText("error:InvalidQuery", { exact: true })).toBeVisible();
+    await proxyView.unmount();
+
+    const unknownTopicView = await render(
+      <ProviderErrorBoundary>
+        <ViewServerClientProvider client={inMemory.liveClient}>
+          <HostileTopicView />
+        </ViewServerClientProvider>
+      </ProviderErrorBoundary>,
+    );
+    await expect
+      .element(unknownTopicView.getByText("error:InvalidTopic", { exact: true }))
+      .toBeVisible();
+    await unknownTopicView.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
   it("keeps the in-memory engine open while a mounted provider has no hook consumers", async () => {
     const { ViewServerInMemoryProvider, client } = createInMemoryViewServer();
 
@@ -952,8 +1434,8 @@ describe("createViewServerReact", () => {
     const { ViewServerInMemoryProvider } = createInMemoryViewServer();
 
     function BrokenOrdersView() {
+      // @ts-expect-error invalid selected fields are still surfaced through the hook result.
       const result = useLiveQuery("orders", {
-        // @ts-expect-error invalid selected fields are still surfaced through the hook result.
         select: ["prcie"],
       });
       return (
@@ -1006,8 +1488,8 @@ describe("createViewServerReact", () => {
     );
     const invalidQuery = await Effect.runPromise(
       Effect.flip(
+        // @ts-expect-error hostile runtime callers can still send unknown projected fields.
         client.snapshot("orders", {
-          // @ts-expect-error hostile runtime callers can still send unknown projected fields.
           select: ["prcie"],
         }),
       ),
@@ -1025,9 +1507,7 @@ describe("createViewServerReact", () => {
 
     function TradesView() {
       const result = useLiveQuery("trades", {
-        where: {
-          quantity: { gte: 10n },
-        },
+        where: [{ field: "quantity", type: "greaterThanOrEqual", filter: 10n }],
         select: ["id", "quantity"],
         limit: 10,
       });

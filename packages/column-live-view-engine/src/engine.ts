@@ -1,23 +1,19 @@
 import type {
-  ExactGroupedQuery,
-  ExactLiveQuery,
   ExactPatch,
-  ExactRawQuery,
-  GroupedQuery,
-  GroupedResult,
   LiveQueryRow,
   LiveQueryResult,
-  PickRawFields,
-  RawQuery,
   TopicRow,
-  ValidateLiveQuery,
 } from "@effect-view-server/config";
 import { viewServerUnsupportedRuntimeFieldDomain } from "@effect-view-server/config";
+import {
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
+} from "@effect-view-server/effect-utils";
 import {
   snapshotViewServerTopics,
   viewServerRowSchemaFieldsMatchAst,
 } from "@effect-view-server/config/internal";
-import { Effect, Latch, Schema, Semaphore } from "effect";
+import { Effect, Latch, Result, Schema, Semaphore } from "effect";
 import type {
   ColumnLiveViewEngine,
   ColumnLiveViewEngineConfig,
@@ -26,6 +22,7 @@ import type {
   ColumnLiveViewSubscription,
   ColumnLiveViewTerminalObserver,
   DecodableTopicDefinitions,
+  ExactEngineLiveQueryInputForTopic,
 } from "./engine-contract";
 import {
   EngineClosedError,
@@ -39,14 +36,9 @@ import {
   type GroupedIncrementalAdmissionLimits,
 } from "./grouped-incremental-admission";
 import type { LiveSubscription } from "./live-subscription";
-import {
-  isGroupedQuery,
-  snapshotGroupedExecutableQuery,
-  snapshotRawExecutableQuery,
-  subscribeGroupedExecutableQuery,
-  subscribeRawExecutableQuery,
-  subscribeRuntimeExecutableQuery,
-} from "./query-execution";
+import { snapshotRuntimeExecutableQuery, subscribeRuntimeExecutableQuery } from "./query-execution";
+import type { ColumnLiveViewEngineQueryPartition } from "./query-partition";
+import { InvalidQueryError } from "./raw-query-compiler";
 import {
   acquireTopicStoreSubscription,
   closeTopicStoreSubscriptions,
@@ -59,7 +51,6 @@ import {
   publishTopicStoreRows,
   publishTopicStoreRowsWithStorageKeys,
   resetTopicStore,
-  topicStoreQueryMetadata,
   TopicStore,
 } from "./topic-store";
 
@@ -86,17 +77,6 @@ type EngineTopicsInspection<Topics extends DecodableTopicDefinitions> =
       readonly _tag: "Valid";
       readonly topics: Topics;
     };
-
-function engineTopicSchema<
-  Topics extends DecodableTopicDefinitions,
-  Topic extends Extract<keyof Topics, string>,
->(topics: Topics, topic: Topic): Schema.Codec<TopicRow<Topics, Topic>, unknown, never, never>;
-function engineTopicSchema(
-  topics: DecodableTopicDefinitions,
-  topic: string,
-): Schema.Codec<object, unknown, never, never> {
-  return topics[topic]!.schema;
-}
 
 const inspectEngineTopics = <Topics extends DecodableTopicDefinitions>(
   topics: Topics,
@@ -338,20 +318,20 @@ class InMemoryColumnLiveViewEngine<
   readonly publishManyDecodedRowsWithStorageKeys: ColumnLiveViewEngineInternal<Topics>["publishManyDecodedRowsWithStorageKeys"] =
     Effect.fn("ColumnLiveViewEngine.publishManyDecodedRowsWithStorageKeys")(
       { self: this },
-      function* (this: InMemoryColumnLiveViewEngine<Topics>, topic, rows) {
+      function* (this: InMemoryColumnLiveViewEngine<Topics>, topic, rows, partitionKey) {
         yield* this.ensureOpen();
         const store = yield* this.getStore(topic);
-        yield* publishTopicStoreDecodedRowsWithStorageKeys(store, rows, invalidRow);
+        yield* publishTopicStoreDecodedRowsWithStorageKeys(store, rows, invalidRow, partitionKey);
       },
     );
 
   readonly publishManyWithStorageKeys: ColumnLiveViewEngineInternal<Topics>["publishManyWithStorageKeys"] =
     Effect.fn("ColumnLiveViewEngine.publishManyWithStorageKeys")({ self: this }, function* <
       Topic extends Extract<keyof Topics, string>,
-    >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, rows: Parameters<ColumnLiveViewEngineInternal<Topics>["publishManyWithStorageKeys"]>[1]) {
+    >(this: InMemoryColumnLiveViewEngine<Topics>, topic: Topic, rows: Parameters<ColumnLiveViewEngineInternal<Topics>["publishManyWithStorageKeys"]>[1], partitionKey?: string) {
       yield* this.ensureOpen();
       const store = yield* this.getStore(topic);
-      yield* publishTopicStoreRowsWithStorageKeys(store, rows, invalidRow);
+      yield* publishTopicStoreRowsWithStorageKeys(store, rows, invalidRow, partitionKey);
     });
 
   readonly patchDecodedFields: ColumnLiveViewEngineInternal<Topics>["patchDecodedFields"] =
@@ -390,133 +370,69 @@ class InMemoryColumnLiveViewEngine<
     yield* deleteTopicStoreRow(store, key);
   });
 
-  private readonly snapshotQuery = <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query,
-  ) =>
-    Effect.fn("ColumnLiveViewEngine.snapshot")(
-      { self: this },
-      function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-        yield* this.ensureOpen();
-        const store = yield* this.getStore(topic);
-        const metadata = yield* topicStoreQueryMetadata(
-          store,
-          engineTopicSchema(this.topics, topic),
-        );
-        return yield* isGroupedQuery(query)
-          ? snapshotGroupedExecutableQuery(store, metadata, query)
-          : snapshotRawExecutableQuery(store, metadata, query);
-      },
-    )();
+  readonly deleteStorageKey: ColumnLiveViewEngineInternal<Topics>["deleteStorageKey"] = Effect.fn(
+    "ColumnLiveViewEngine.deleteStorageKey",
+  )(
+    { self: this },
+    function* (this: InMemoryColumnLiveViewEngine<Topics>, topic, key, partitionKey) {
+      yield* this.ensureOpen();
+      const store = yield* this.getStore(topic);
+      yield* deleteTopicStoreRow(store, key, partitionKey);
+    },
+  );
 
-  snapshot<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
+  snapshot<Topic extends Extract<keyof Topics, string>, const Query>(
     topic: Topic,
-    query: Query &
-      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
+    query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): Effect.Effect<
     LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   >;
-  snapshot<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
+  snapshot<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
-    query: Query &
-      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
-  ): Effect.Effect<
-    LiveQueryResult<GroupedResult<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  snapshot<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query &
-      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
-  ): Effect.Effect<
-    LiveQueryResult<PickRawFields<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  snapshot<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query &
-      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
+    query: object,
   ): Effect.Effect<LiveQueryResult<object>, ColumnLiveViewEngineError> {
-    return this.snapshotQuery(topic, query);
-  }
-
-  private readonly subscribeQuery = <
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query,
-    terminalObserver: ColumnLiveViewTerminalObserver,
-  ) =>
-    Effect.fn("ColumnLiveViewEngine.subscribe")(
+    const capturedQuery = Result.try(() => snapshotViewServerQuery(query));
+    return Effect.fn("ColumnLiveViewEngine.snapshot")(
       { self: this },
       function* (this: InMemoryColumnLiveViewEngine<Topics>) {
-        yield* this.ensureOpen();
-        const store = yield* this.getStore(topic);
-        const metadata = yield* topicStoreQueryMetadata(
-          store,
-          engineTopicSchema(this.topics, topic),
-        );
-        const subscription = yield* acquireTopicStoreSubscription(
-          store,
-          (
-            permit,
-            markAcquired: (subscription: LiveSubscription<object>) => Effect.Effect<void>,
-          ): Effect.Effect<LiveSubscription<object>, ColumnLiveViewEngineError> =>
-            Effect.gen({ self: this }, function* () {
-              yield* this.ensureOpen();
-              const queryId = `query-${this.nextQueryId}`;
-              this.nextQueryId += 1;
-              const input = {
-                groupedIncrementalAdmissionLimits: this.groupedIncrementalAdmissionLimits,
-                permit,
-                queryId,
-                queueCapacity: this.subscriptionQueueCapacity,
-                terminalObserver,
-              };
-              const acquiredSubscription = yield* isGroupedQuery(query)
-                ? subscribeGroupedExecutableQuery(metadata, query, input)
-                : subscribeRawExecutableQuery(metadata, query, input);
-              yield* markAcquired(acquiredSubscription);
-              return acquiredSubscription;
-            }),
-        );
-
-        return {
-          events: subscription.events,
-          close: subscription.close,
-        };
+        if (Result.isFailure(capturedQuery)) {
+          return yield* InvalidQueryError.make({
+            topic,
+            message: viewServerQuerySnapshotErrorMessage,
+          });
+        }
+        return yield* this.snapshotRuntime(topic, capturedQuery.success);
       },
     )();
+  }
+
+  readonly snapshotRuntime: ColumnLiveViewEngineInternal<Topics>["snapshotRuntime"] = (
+    topic,
+    query,
+  ) =>
+    Effect.gen({ self: this }, function* (this: InMemoryColumnLiveViewEngine<Topics>) {
+      yield* this.ensureOpen();
+      const store = yield* this.getStore(topic);
+      return yield* snapshotRuntimeExecutableQuery(store, query);
+    });
 
   private readonly subscribeRuntimeQuery = <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
     query: unknown,
     terminalObserver: ColumnLiveViewTerminalObserver,
-  ) =>
-    Effect.fn("ColumnLiveViewEngine.subscribeRuntime")(
+    partition?: ColumnLiveViewEngineQueryPartition,
+  ) => {
+    const capturedQuery = Result.try(() => snapshotViewServerQuery(query));
+    return Effect.fn("ColumnLiveViewEngine.subscribeRuntime")(
       { self: this },
       function* (this: InMemoryColumnLiveViewEngine<Topics>) {
+        if (Result.isFailure(capturedQuery)) {
+          return yield* InvalidQueryError.make({
+            topic,
+            message: viewServerQuerySnapshotErrorMessage,
+          });
+        }
         yield* this.ensureOpen();
         const store = yield* this.getStore(topic);
         const subscription = yield* acquireTopicStoreSubscription(
@@ -529,13 +445,17 @@ class InMemoryColumnLiveViewEngine<
               yield* this.ensureOpen();
               const queryId = `query-${this.nextQueryId}`;
               this.nextQueryId += 1;
-              const acquiredSubscription = yield* subscribeRuntimeExecutableQuery(query, {
-                groupedIncrementalAdmissionLimits: this.groupedIncrementalAdmissionLimits,
-                permit,
-                queryId,
-                queueCapacity: this.subscriptionQueueCapacity,
-                terminalObserver,
-              });
+              const acquiredSubscription = yield* subscribeRuntimeExecutableQuery(
+                capturedQuery.success,
+                {
+                  groupedIncrementalAdmissionLimits: this.groupedIncrementalAdmissionLimits,
+                  permit,
+                  queryId,
+                  queueCapacity: this.subscriptionQueueCapacity,
+                  terminalObserver,
+                },
+                partition,
+              );
               yield* markAcquired(acquiredSubscription);
               return acquiredSubscription;
             }),
@@ -547,112 +467,51 @@ class InMemoryColumnLiveViewEngine<
         };
       },
     )();
+  };
 
-  subscribe<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
+  subscribe<Topic extends Extract<keyof Topics, string>, const Query>(
     topic: Topic,
-    query: Query &
-      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
+    query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
   ): Effect.Effect<
     ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   >;
-  subscribe<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
+  subscribe<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
-    query: Query &
-      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  subscribe<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query &
-      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  subscribe<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query &
-      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
+    query: object,
   ): Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError> {
-    return this.subscribeQuery(topic, query, unobservedTerminal);
+    return this.subscribeRuntimeQuery(topic, query, unobservedTerminal);
   }
 
   readonly subscribeRuntime: ColumnLiveViewEngine<Topics>["subscribeRuntime"] = (topic, query) =>
     this.subscribeRuntimeQuery(topic, query, unobservedTerminal);
 
-  subscribeObserved<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
+  subscribeObserved<Topic extends Extract<keyof Topics, string>, const Query>(
     topic: Topic,
-    query: Query &
-      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
+    query: ExactEngineLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
     observer: ColumnLiveViewTerminalObserver,
   ): Effect.Effect<
     ColumnLiveViewSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ColumnLiveViewEngineError
   >;
-  subscribeObserved<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
+  subscribeObserved<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
-    query: Query &
-      ExactGroupedQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
-    observer: ColumnLiveViewTerminalObserver,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<GroupedResult<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  subscribeObserved<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query &
-      ExactRawQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
-    observer: ColumnLiveViewTerminalObserver,
-  ): Effect.Effect<
-    ColumnLiveViewSubscription<PickRawFields<TopicRow<Topics, Topic>, Query>>,
-    ColumnLiveViewEngineError
-  >;
-  subscribeObserved<
-    Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(
-    topic: Topic,
-    query: Query &
-      ExactLiveQuery<TopicRow<Topics, Topic>, NoInfer<Query>> &
-      ValidateLiveQuery<NoInfer<Query>>,
+    query: object,
     observer: ColumnLiveViewTerminalObserver,
   ): Effect.Effect<ColumnLiveViewSubscription<object>, ColumnLiveViewEngineError> {
-    return this.subscribeQuery(topic, query, observer);
+    return this.subscribeRuntimeQuery(topic, query, observer);
   }
 
   readonly subscribeRuntimeObserved: ColumnLiveViewEngineInternal<Topics>["subscribeRuntimeObserved"] =
     (topic, query, observer) => this.subscribeRuntimeQuery(topic, query, observer);
+
+  readonly subscribeRuntimePartitioned: ColumnLiveViewEngineInternal<Topics>["subscribeRuntimePartitioned"] =
+    (topic, query, partition) =>
+      this.subscribeRuntimeQuery(topic, query, unobservedTerminal, partition);
+
+  readonly subscribeRuntimeObservedPartitioned: ColumnLiveViewEngineInternal<Topics>["subscribeRuntimeObservedPartitioned"] =
+    (topic, query, partition, observer) =>
+      this.subscribeRuntimeQuery(topic, query, observer, partition);
 
   readonly health: ColumnLiveViewEngine<Topics>["health"] = Effect.fn(
     "ColumnLiveViewEngine.health",

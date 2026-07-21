@@ -568,9 +568,13 @@ const primaryGroupedAggregateQuery = () => {
   if (groupedWriteMode === "incremental") {
     return {
       ...base,
-      where: {
-        price: { gte: incrementalPriceThreshold(benchmarkRowCount) },
-      },
+      where: [
+        {
+          field: "price",
+          type: "greaterThanOrEqual",
+          filter: incrementalPriceThreshold(benchmarkRowCount),
+        },
+      ],
     } as const;
   }
   return base;
@@ -596,9 +600,13 @@ const secondaryGroupedAggregateQuery = () => {
   if (groupedWriteMode === "incremental") {
     return {
       ...base,
-      where: {
-        price: { gte: incrementalPriceThreshold(benchmarkRowCount) },
-      },
+      where: [
+        {
+          field: "price",
+          type: "greaterThanOrEqual",
+          filter: incrementalPriceThreshold(benchmarkRowCount),
+        },
+      ],
     } as const;
   }
   return base;

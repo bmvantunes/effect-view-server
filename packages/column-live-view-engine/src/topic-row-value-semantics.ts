@@ -1,5 +1,8 @@
 import { schemaAstChildren } from "@effect-view-server/config/internal";
-import { makeSchemaJsonIdentity } from "@effect-view-server/effect-utils";
+import {
+  compareTrustedWireSafeBigDecimal,
+  makeSchemaJsonIdentity,
+} from "@effect-view-server/effect-utils";
 import { Schema, SchemaAST } from "effect";
 import { isBigDecimal } from "effect/BigDecimal";
 import { compareQueryValue } from "./query-value";
@@ -62,6 +65,21 @@ const isBorrowableImmutablePrimitive = (value: unknown): boolean =>
 
 const unorderedEffectCollectionTags = new Set(["effect/HashMap", "effect/HashSet"]);
 
+const isBigDecimalAst = (ast: SchemaAST.AST): boolean =>
+  SchemaAST.isDeclaration(ast) &&
+  Reflect.get(Object(ast.annotations?.["typeConstructor"]), "_tag") === "effect/BigDecimal";
+
+const schemaContainsBigDecimal = (ast: SchemaAST.AST, seen: Set<SchemaAST.AST>): boolean => {
+  if (seen.has(ast)) {
+    return false;
+  }
+  seen.add(ast);
+  return (
+    isBigDecimalAst(ast) ||
+    schemaAstChildren(ast).some((child) => schemaContainsBigDecimal(child, seen))
+  );
+};
+
 const schemaContainsUnorderedEffectCollection = (
   ast: SchemaAST.AST,
   seen: Set<SchemaAST.AST>,
@@ -101,8 +119,28 @@ export const makeSchemaValueSemantics = (schema: ValueSchema): SchemaValueSemant
 
   const schemaEquivalent = Schema.toEquivalence(schema);
   const is = Schema.is(schema);
-  const equivalent = schemaContainsUnorderedEffectCollection(schema.ast, new Set())
-    ? (left: unknown, right: unknown): boolean => canonicalKey(left) === canonicalKey(right)
+  const canonicalEquivalenceRequired =
+    schemaContainsUnorderedEffectCollection(schema.ast, new Set()) ||
+    schemaContainsBigDecimal(schema.ast, new Set());
+  const equivalent = canonicalEquivalenceRequired
+    ? (left: unknown, right: unknown): boolean => {
+        if (Object.is(left, right)) {
+          return true;
+        }
+        if (left === undefined || right === undefined) {
+          return false;
+        }
+        const leftIsBigDecimal = isBigDecimal(left);
+        const rightIsBigDecimal = isBigDecimal(right);
+        if (leftIsBigDecimal || rightIsBigDecimal) {
+          return (
+            leftIsBigDecimal &&
+            rightIsBigDecimal &&
+            compareTrustedWireSafeBigDecimal(left, right) === 0
+          );
+        }
+        return canonicalKey(left) === canonicalKey(right);
+      }
     : schemaEquivalent;
 
   return Object.freeze({

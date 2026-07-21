@@ -7,14 +7,170 @@ import {
   activeQueryTestMetadata,
   activeStoreRawQueryExecutionCount,
   createActiveQueryRegistry,
+  preparedGroupedPlanCompilationCount,
+  preparedRawPlanCompilationCount,
   releaseRawQueryExecution,
 } from "../test-harness/active-query-interface";
-import { prepareRuntimeGroupedQuery } from "./grouped-query-compiler";
+import type { RawQueryExecutionReleaseToken } from "./active-query";
 import { prepareRuntimeRawQuery } from "./raw-query-compiler";
-import { publishTopicStoreRow, TopicStore } from "./topic-store";
+import {
+  acquireTopicStoreRuntimeGroupedQueryExecution,
+  acquireTopicStoreRuntimeRawQueryExecution,
+  publishTopicStoreRow,
+  releaseTopicStoreMaterializedQueryExecutionToken,
+  releaseTopicStoreRawQueryExecution,
+  TopicStore,
+} from "./topic-store";
+import { defaultGroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
 
 const invalidRow = (_topic: string, message: string): Error => new Error(message);
 describe("column-live-view-engine Active Query sharing", () => {
+  it.effect(
+    "compiles one canonical grouped plan for equivalent large deep filters",
+    () =>
+      Effect.gen(function* () {
+        const store = new TopicStore(
+          "shared-large-grouped-filter",
+          Schema.Struct({
+            id: Schema.String,
+            customerId: Schema.String,
+            status: Schema.String,
+          }),
+          "id",
+          () => {},
+        );
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-1", customerId: "customer-1", status: "open" },
+          invalidRow,
+        );
+
+        const candidates = Array.from({ length: 50_000 }, (_value, index) => `customer-${index}`);
+        let nestedWhere: unknown = {
+          field: "customerId",
+          type: "in",
+          filter: candidates,
+        };
+        for (let depth = 0; depth < 256; depth += 1) {
+          nestedWhere =
+            depth % 2 === 0
+              ? {
+                  type: "AND",
+                  conditions: [nestedWhere, { field: "status", type: "equals", filter: "open" }],
+                }
+              : {
+                  type: "OR",
+                  conditions: [
+                    nestedWhere,
+                    {
+                      field: "customerId",
+                      type: "equals",
+                      filter: `missing-${depth}`,
+                    },
+                  ],
+                };
+        }
+        const query = {
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [nestedWhere],
+        };
+        const releaseTokens: Array<string> = [];
+        for (let subscriber = 0; subscriber < 12; subscriber += 1) {
+          const acquired = yield* acquireTopicStoreRuntimeGroupedQueryExecution(
+            store,
+            query,
+            defaultGroupedIncrementalAdmissionLimits,
+          );
+          releaseTokens.push(acquired.releaseToken);
+          expect(acquired.execution.initial(`grouped-subscriber-${subscriber}`).totalRows).toBe(1);
+        }
+
+        const queryInterface = activeQueryTestInterface(store);
+        expect(yield* preparedGroupedPlanCompilationCount(queryInterface)).toBe(1);
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(1);
+        const canonicalEntry = queryInterface.activeQueries.materialized.values().next().value;
+        expect(canonicalEntry?.canonicalCompiled.plan.cacheKey).toBe(releaseTokens[0]);
+        expect(canonicalEntry?.refs).toBe(12);
+
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-2", customerId: "customer-2", status: "open" },
+          invalidRow,
+        );
+        expect(queryInterface.changesSince(1)).toBeDefined();
+
+        for (const token of releaseTokens) {
+          yield* releaseTopicStoreMaterializedQueryExecutionToken(store, token);
+        }
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(0);
+        expect(yield* preparedGroupedPlanCompilationCount(queryInterface)).toBe(1);
+
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-3", customerId: "customer-3", status: "closed" },
+          invalidRow,
+        );
+        expect(queryInterface.changesSince(2)).toBeUndefined();
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "compiles one canonical 50k membership plan for equivalent runtime subscribers",
+    () =>
+      Effect.gen(function* () {
+        const store = new TopicStore(
+          "shared-large-membership",
+          Schema.Struct({
+            id: Schema.String,
+            customerId: Schema.String,
+            region: Schema.String,
+          }),
+          "id",
+          () => {},
+        );
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-1", customerId: "customer-1", region: "emea" },
+          invalidRow,
+        );
+
+        const candidates = Array.from({ length: 50_000 }, (_value, index) => `customer-${index}`);
+        const releaseTokens: Array<RawQueryExecutionReleaseToken> = [];
+        for (let subscriber = 0; subscriber < 12; subscriber += 1) {
+          const acquired = yield* acquireTopicStoreRuntimeRawQueryExecution(store, {
+            select: subscriber % 2 === 0 ? ["id"] : ["id", "region"],
+            where: [
+              {
+                field: "customerId",
+                type: "in",
+                filter: candidates,
+              },
+            ],
+            offset: subscriber % 3,
+            limit: 1,
+          });
+          releaseTokens.push(acquired.releaseToken);
+          expect(acquired.execution.initial(`subscriber-${subscriber}`).totalRows).toBe(1);
+        }
+
+        const queryInterface = activeQueryTestInterface(store);
+        expect(yield* preparedRawPlanCompilationCount(queryInterface)).toBe(1);
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(1);
+        const canonicalEntry = queryInterface.activeQueries.raw.values().next().value;
+        expect(canonicalEntry?.canonicalPlan.predicate.plan.filters).toHaveLength(1);
+        expect(canonicalEntry?.refs).toBe(12);
+
+        for (const token of releaseTokens) {
+          yield* releaseTopicStoreRawQueryExecution(store, token);
+        }
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(0);
+        expect(yield* preparedRawPlanCompilationCount(queryInterface)).toBe(1);
+      }),
+    30_000,
+  );
+
   it.effect("reuses execution state for identical compiled raw queries", () =>
     Effect.gen(function* () {
       const rowSchema = Schema.Struct({
@@ -51,9 +207,7 @@ describe("column-live-view-engine Active Query sharing", () => {
 
       const compiled = yield* prepareRuntimeRawQuery("scores", activeQueryTestMetadata(store), {
         select: ["id", "score", "count", "value"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [
           {
             field: "score",
@@ -190,9 +344,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
         },
       );
@@ -201,9 +353,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
         },
       );
@@ -251,9 +401,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id", "score"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           offset: 0,
           limit: 1,
@@ -264,9 +412,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           offset: 1,
           limit: 1,
@@ -388,9 +534,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           offset: 0,
           limit: 3,
@@ -401,9 +545,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           offset: 1,
           limit: 1,
@@ -455,9 +597,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           offset: 1,
           limit: 1,
@@ -468,9 +608,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
         },
       );
@@ -525,9 +663,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           offset: 10,
           limit: 0,
@@ -574,34 +710,24 @@ describe("column-live-view-engine Active Query sharing", () => {
         invalidRow,
       );
 
-      const infFilter = yield* prepareRuntimeRawQuery(
-        "numbers",
-        activeQueryTestMetadata(numericStore),
-        {
+      const infFilter = yield* Effect.flip(
+        prepareRuntimeRawQuery("numbers", activeQueryTestMetadata(numericStore), {
           select: ["id", "score"],
-          where: {
-            score: Number.POSITIVE_INFINITY,
-          },
-        },
+          where: [{ field: "score", type: "equals", filter: Number.POSITIVE_INFINITY }],
+        }),
       );
-      const nanFilter = yield* prepareRuntimeRawQuery(
-        "numbers",
-        activeQueryTestMetadata(numericStore),
-        {
+      const nanFilter = yield* Effect.flip(
+        prepareRuntimeRawQuery("numbers", activeQueryTestMetadata(numericStore), {
           select: ["id", "score"],
-          where: {
-            score: Number.NaN,
-          },
-        },
+          where: [{ field: "score", type: "equals", filter: Number.NaN }],
+        }),
       );
       const zeroFilter = yield* prepareRuntimeRawQuery(
         "numbers",
         activeQueryTestMetadata(numericStore),
         {
           select: ["id", "score"],
-          where: {
-            score: 10,
-          },
+          where: [{ field: "score", type: "equals", filter: 10 }],
         },
       );
       const positiveZeroFilter = yield* prepareRuntimeRawQuery(
@@ -609,9 +735,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(numericStore),
         {
           select: ["id", "score"],
-          where: {
-            score: 0,
-          },
+          where: [{ field: "score", type: "equals", filter: 0 }],
         },
       );
       const negativeZeroFilter = yield* prepareRuntimeRawQuery(
@@ -619,9 +743,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(numericStore),
         {
           select: ["id", "score"],
-          where: {
-            score: -0,
-          },
+          where: [{ field: "score", type: "equals", filter: -0 }],
         },
       );
       const offsetFilter = yield* prepareRuntimeRawQuery(
@@ -637,9 +759,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(bigintStore),
         {
           select: ["id", "amount"],
-          where: {
-            amount: 3n,
-          },
+          where: [{ field: "amount", type: "equals", filter: 3n }],
         },
       );
       const decimalFilter = yield* prepareRuntimeRawQuery(
@@ -647,20 +767,10 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(decimalStore),
         {
           select: ["id", "price"],
-          where: {
-            price: fromStringUnsafe("1.23"),
-          },
+          where: [{ field: "price", type: "equals", filter: fromStringUnsafe("1.23") }],
         },
       );
 
-      const infExecution = yield* acquireRawQueryExecution(
-        activeQueryTestInterface(numericStore),
-        infFilter,
-      );
-      const nanExecution = yield* acquireRawQueryExecution(
-        activeQueryTestInterface(numericStore),
-        nanFilter,
-      );
       const zeroExecution = yield* acquireRawQueryExecution(
         activeQueryTestInterface(numericStore),
         zeroFilter,
@@ -681,7 +791,7 @@ describe("column-live-view-engine Active Query sharing", () => {
       );
 
       expect(yield* activeStoreRawQueryExecutionCount(activeQueryTestInterface(numericStore))).toBe(
-        5,
+        3,
       );
       expect(yield* activeStoreRawQueryExecutionCount(activeQueryTestInterface(bigintStore))).toBe(
         1,
@@ -690,29 +800,23 @@ describe("column-live-view-engine Active Query sharing", () => {
         1,
       );
 
-      const infCursor = infExecution.createCursor();
-      const nanCursor = nanExecution.createCursor();
       const zeroCursor = zeroExecution.createCursor();
       const offsetCursor = offsetExecution.createCursor();
       const bigintCursor = bigintExecution.createCursor();
       const decimalCursor = decimalExecution.createCursor();
 
-      expect(infExecution.initial("q").totalRows).toBe(0);
-      expect(nanExecution.initial("q").totalRows).toBe(0);
+      expect(infFilter.message).toBe("Filter numbers must be finite.");
+      expect(nanFilter.message).toBe("Filter numbers must be finite.");
       expect(zeroExecution.initial("q").totalRows).toBe(1);
       expect(offsetExecution.initial("q").totalRows).toBe(1);
       expect(bigintExecution.initial("q").totalRows).toBe(0);
       expect(decimalExecution.initial("q").totalRows).toBe(1);
 
-      expect((yield* infExecution.next("q", infCursor))._tag).toBe("None");
-      expect((yield* nanExecution.next("q", nanCursor))._tag).toBe("None");
       expect((yield* zeroExecution.next("q", zeroCursor))._tag).toBe("None");
       expect((yield* offsetExecution.next("q", offsetCursor))._tag).toBe("None");
       expect((yield* bigintExecution.next("q", bigintCursor))._tag).toBe("None");
       expect((yield* decimalExecution.next("q", decimalCursor))._tag).toBe("None");
 
-      yield* releaseRawQueryExecution(activeQueryTestInterface(numericStore), infFilter);
-      yield* releaseRawQueryExecution(activeQueryTestInterface(numericStore), nanFilter);
       yield* releaseRawQueryExecution(activeQueryTestInterface(numericStore), zeroFilter);
       yield* releaseRawQueryExecution(activeQueryTestInterface(numericStore), positiveZeroFilter);
       yield* releaseRawQueryExecution(activeQueryTestInterface(numericStore), negativeZeroFilter);
@@ -722,7 +826,7 @@ describe("column-live-view-engine Active Query sharing", () => {
     }),
   );
 
-  it.effect("covers cache keys for nullish, array, object, and boolean filter values", () =>
+  it.effect("covers cache keys for nested scalar and boolean filter values", () =>
     Effect.gen(function* () {
       const eventStore = new TopicStore(
         "events",
@@ -752,44 +856,12 @@ describe("column-live-view-engine Active Query sharing", () => {
         invalidRow,
       );
 
-      const undefinedFilter = yield* prepareRuntimeRawQuery(
-        "events",
-        activeQueryTestMetadata(eventStore),
-        {
-          select: ["id", "label"],
-          where: {
-            label: undefined,
-          },
-        },
-      );
-      const nullFilter = yield* prepareRuntimeRawQuery(
-        "events",
-        activeQueryTestMetadata(eventStore),
-        {
-          select: ["id", "label"],
-          where: {
-            label: null,
-          },
-        },
-      );
-      const arrayFilter = yield* prepareRuntimeRawQuery(
-        "events",
-        activeQueryTestMetadata(eventStore),
-        {
-          select: ["id", "tags"],
-          where: {
-            tags: ["open", "closed"],
-          },
-        },
-      );
-      const objectFilter = yield* prepareRuntimeRawQuery(
+      const nestedScalarFilter = yield* prepareRuntimeRawQuery(
         "events",
         activeQueryTestMetadata(eventStore),
         {
           select: ["id", "metadata"],
-          where: {
-            metadata: { kind: "test", scope: "global" },
-          },
+          where: [{ field: "metadata.kind", type: "equals", filter: "test" }],
         },
       );
       const booleanFilter = yield* prepareRuntimeRawQuery(
@@ -797,27 +869,13 @@ describe("column-live-view-engine Active Query sharing", () => {
         activeQueryTestMetadata(eventStore),
         {
           select: ["id", "active"],
-          where: {
-            active: true,
-          },
+          where: [{ field: "active", type: "equals", filter: true }],
         },
       );
 
-      const undefinedExecution = yield* acquireRawQueryExecution(
+      const nestedScalarExecution = yield* acquireRawQueryExecution(
         activeQueryTestInterface(eventStore),
-        undefinedFilter,
-      );
-      const nullExecution = yield* acquireRawQueryExecution(
-        activeQueryTestInterface(eventStore),
-        nullFilter,
-      );
-      const arrayExecution = yield* acquireRawQueryExecution(
-        activeQueryTestInterface(eventStore),
-        arrayFilter,
-      );
-      const objectExecution = yield* acquireRawQueryExecution(
-        activeQueryTestInterface(eventStore),
-        objectFilter,
+        nestedScalarFilter,
       );
       const booleanExecution = yield* acquireRawQueryExecution(
         activeQueryTestInterface(eventStore),
@@ -825,31 +883,19 @@ describe("column-live-view-engine Active Query sharing", () => {
       );
 
       expect(yield* activeStoreRawQueryExecutionCount(activeQueryTestInterface(eventStore))).toBe(
-        5,
+        2,
       );
 
-      expect(undefinedExecution.initial("query").totalRows).toBe(0);
-      expect(nullExecution.initial("query").totalRows).toBe(0);
-      expect(arrayExecution.initial("query").totalRows).toBe(1);
-      expect(objectExecution.initial("query").totalRows).toBe(1);
+      expect(nestedScalarExecution.initial("query").totalRows).toBe(1);
       expect(booleanExecution.initial("query").totalRows).toBe(1);
 
-      const undefinedCursor = undefinedExecution.createCursor();
-      const nullCursor = nullExecution.createCursor();
-      const arrayCursor = arrayExecution.createCursor();
-      const objectCursor = objectExecution.createCursor();
+      const nestedScalarCursor = nestedScalarExecution.createCursor();
       const booleanCursor = booleanExecution.createCursor();
 
-      expect((yield* undefinedExecution.next("query", undefinedCursor))._tag).toBe("None");
-      expect((yield* nullExecution.next("query", nullCursor))._tag).toBe("None");
-      expect((yield* arrayExecution.next("query", arrayCursor))._tag).toBe("None");
-      expect((yield* objectExecution.next("query", objectCursor))._tag).toBe("None");
+      expect((yield* nestedScalarExecution.next("query", nestedScalarCursor))._tag).toBe("None");
       expect((yield* booleanExecution.next("query", booleanCursor))._tag).toBe("None");
 
-      yield* releaseRawQueryExecution(activeQueryTestInterface(eventStore), undefinedFilter);
-      yield* releaseRawQueryExecution(activeQueryTestInterface(eventStore), nullFilter);
-      yield* releaseRawQueryExecution(activeQueryTestInterface(eventStore), arrayFilter);
-      yield* releaseRawQueryExecution(activeQueryTestInterface(eventStore), objectFilter);
+      yield* releaseRawQueryExecution(activeQueryTestInterface(eventStore), nestedScalarFilter);
       yield* releaseRawQueryExecution(activeQueryTestInterface(eventStore), booleanFilter);
     }),
   );
@@ -908,64 +954,6 @@ describe("column-live-view-engine Active Query sharing", () => {
     }),
   );
 
-  it.effect("canonicalizes schema-backed null-prototype filter values before cache-keying", () =>
-    Effect.gen(function* () {
-      const store = new TopicStore(
-        "special",
-        Schema.Struct({
-          id: Schema.String,
-          payload: Schema.Record(Schema.String, Schema.String),
-        }),
-        "id",
-        () => {},
-      );
-      const queryPayload: Record<string, string> = Object.create(null);
-      queryPayload["venue"] = "xnys";
-
-      const nullPrototypeQuery = yield* prepareRuntimeRawQuery(
-        "special",
-        activeQueryTestMetadata(store),
-        {
-          select: ["id", "payload"],
-          where: {
-            payload: queryPayload,
-          },
-        },
-      );
-      const plainRecordQuery = yield* prepareRuntimeRawQuery(
-        "special",
-        activeQueryTestMetadata(store),
-        {
-          select: ["id", "payload"],
-          where: {
-            payload: { venue: "xnys" },
-          },
-        },
-      );
-      const nullPrototypeGrouped = yield* prepareRuntimeGroupedQuery(
-        "special",
-        activeQueryTestMetadata(store),
-        {
-          groupBy: ["payload"],
-          aggregates: { rowCount: { aggFunc: "count" } },
-          where: { payload: queryPayload },
-        },
-      );
-      const plainRecordGrouped = yield* prepareRuntimeGroupedQuery(
-        "special",
-        activeQueryTestMetadata(store),
-        {
-          groupBy: ["payload"],
-          aggregates: { rowCount: { aggFunc: "count" } },
-          where: { payload: { venue: "xnys" } },
-        },
-      );
-
-      expect(nullPrototypeQuery.plan.queryCacheKey).toBe(plainRecordQuery.plan.queryCacheKey);
-      expect(nullPrototypeGrouped.cacheKey).toBe(plainRecordGrouped.cacheKey);
-    }),
-  );
-
   it.effect("rejects non-serializable filter values before cache-keying", () =>
     Effect.gen(function* () {
       const firstFunction = () => "first";
@@ -975,7 +963,7 @@ describe("column-live-view-engine Active Query sharing", () => {
         "special-non-serializable",
         Schema.Struct({
           id: Schema.String,
-          marker: Schema.Unknown,
+          marker: Schema.String,
         }),
         "id",
         () => {},
@@ -984,40 +972,34 @@ describe("column-live-view-engine Active Query sharing", () => {
       const functionFilter = yield* Effect.flip(
         prepareRuntimeRawQuery("special-non-serializable", activeQueryTestMetadata(store), {
           select: ["id", "marker"],
-          where: {
-            marker: firstFunction,
-          },
+          where: [{ field: "marker", type: "equals", filter: firstFunction }],
         }),
       );
       expect(functionFilter).toMatchObject({
         _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported query value"),
+        message: expect.stringContaining("does not satisfy its configured schema"),
       });
 
       const symbolFilter = yield* Effect.flip(
         prepareRuntimeRawQuery("special-non-serializable", activeQueryTestMetadata(store), {
           select: ["id", "marker"],
-          where: {
-            marker: firstSymbol,
-          },
+          where: [{ field: "marker", type: "equals", filter: firstSymbol }],
         }),
       );
       expect(symbolFilter).toMatchObject({
         _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported query value"),
+        message: expect.stringContaining("does not satisfy its configured schema"),
       });
 
       const mapFilter = yield* Effect.flip(
         prepareRuntimeRawQuery("special-non-serializable", activeQueryTestMetadata(store), {
           select: ["id", "marker"],
-          where: {
-            marker: firstMap,
-          },
+          where: [{ field: "marker", type: "equals", filter: firstMap }],
         }),
       );
       expect(mapFilter).toMatchObject({
         _tag: "InvalidQueryError",
-        message: expect.stringContaining("unsupported query value"),
+        message: expect.stringContaining("does not satisfy its configured schema"),
       });
     }),
   );

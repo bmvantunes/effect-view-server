@@ -288,9 +288,7 @@ beforeAll(async () => {
   const subscription = await Effect.runPromise(
     engine.subscribe("orders", {
       select: ["id", "price", "status", "updatedAt"],
-      where: {
-        status: { eq: "open" },
-      },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       orderBy: [{ field: "updatedAt", direction: "desc" }],
       limit: 50,
     }),
@@ -331,7 +329,7 @@ afterAll(async () => {
     backpressureCount: backpressureCountFromEngineHealth(health),
     benchmarkCases: [
       "equality filter + top-k sort",
-      "selective equality filter + fallback top-k sort",
+      "selective equality filter + different ordered index",
       "ordered equality filter + indexed seek",
       "ordered in filter + indexed seek",
       "range filter + top-k sort",
@@ -339,6 +337,7 @@ afterAll(async () => {
       "BigDecimal range filter + indexed seek",
       "selective range filter + fallback top-k sort",
       "compound filter + top-k sort",
+      "nested OR filter + top-k sort",
       "narrow scalar projection + top-k sort",
       "wide scalar projection + top-k sort",
       "filtered totalRows via zero-row window",
@@ -371,9 +370,7 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
-          where: {
-            status: { eq: "open" },
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 50,
         }),
@@ -383,18 +380,19 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
   );
 
   bench(
-    "selective equality filter + fallback top-k sort",
+    "selective equality filter + different ordered index",
     async () => {
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
-          where: {
-            price: { eq: Math.floor(profile.rowCount / 2) % 1_000_000 },
-          },
-          orderBy: [
-            { field: "updatedAt", direction: "desc" },
-            { field: "id", direction: "asc" },
+          where: [
+            {
+              field: "price",
+              type: "equals",
+              filter: Math.floor(profile.rowCount / 2) % 1_000_000,
+            },
           ],
+          orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 50,
         }),
       );
@@ -408,9 +406,13 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
-          where: {
-            price: { eq: Math.floor(profile.rowCount / 2) % 1_000_000 },
-          },
+          where: [
+            {
+              field: "price",
+              type: "equals",
+              filter: Math.floor(profile.rowCount / 2) % 1_000_000,
+            },
+          ],
           orderBy: [{ field: "price", direction: "asc" }],
           limit: 50,
         }),
@@ -425,11 +427,13 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "status", "updatedAt"],
-          where: {
-            price: {
-              in: [100, Math.floor(profile.rowCount / 2) % 1_000_000, profile.rowCount - 1],
+          where: [
+            {
+              field: "price",
+              type: "in",
+              filter: [100, Math.floor(profile.rowCount / 2) % 1_000_000, profile.rowCount - 1],
             },
-          },
+          ],
           orderBy: [{ field: "price", direction: "asc" }],
           limit: 50,
         }),
@@ -444,9 +448,7 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "region", "updatedAt"],
-          where: {
-            price: { gte: 500_000 },
-          },
+          where: [{ field: "price", type: "greaterThanOrEqual", filter: 500_000 }],
           orderBy: [{ field: "price", direction: "asc" }],
           limit: 100,
         }),
@@ -461,9 +463,7 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "quantity", "status", "updatedAt"],
-          where: {
-            quantity: { gte: 500_000n },
-          },
+          where: [{ field: "quantity", type: "greaterThanOrEqual", filter: 500_000n }],
           orderBy: [{ field: "quantity", direction: "asc" }],
           limit: 100,
         }),
@@ -478,9 +478,13 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "decimalPrice", "status", "updatedAt"],
-          where: {
-            decimalPrice: { gte: fromStringUnsafe("500000") },
-          },
+          where: [
+            {
+              field: "decimalPrice",
+              type: "greaterThanOrEqual",
+              filter: fromStringUnsafe("500000"),
+            },
+          ],
           orderBy: [{ field: "decimalPrice", direction: "asc" }],
           limit: 100,
         }),
@@ -496,9 +500,13 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "region", "updatedAt"],
-          where: {
-            price: { gte: Math.max(0, priceDomainSize - 100) },
-          },
+          where: [
+            {
+              field: "price",
+              type: "greaterThanOrEqual",
+              filter: Math.max(0, priceDomainSize - 100),
+            },
+          ],
           orderBy: [
             { field: "updatedAt", direction: "desc" },
             { field: "id", direction: "asc" },
@@ -516,11 +524,39 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "region", "status", "updatedAt"],
-          where: {
-            status: { eq: "open" },
-            region: { eq: "emea" },
-            price: { gte: 250_000 },
-          },
+          where: [
+            { field: "status", type: "equals", filter: "open" },
+            { field: "region", type: "equals", filter: "emea" },
+            { field: "price", type: "greaterThanOrEqual", filter: 250_000 },
+          ],
+          orderBy: [{ field: "updatedAt", direction: "desc" }],
+          limit: 50,
+        }),
+      );
+    },
+    benchOptions,
+  );
+
+  bench(
+    "nested OR filter + top-k sort",
+    async () => {
+      await Effect.runPromise(
+        profileEngine(profile).snapshot("orders", {
+          select: ["id", "price", "region", "status", "updatedAt"],
+          where: [
+            { field: "status", type: "equals", filter: "open" },
+            {
+              type: "OR",
+              conditions: [
+                { field: "region", type: "equals", filter: "emea" },
+                {
+                  field: "price",
+                  type: "greaterThanOrEqual",
+                  filter: Math.floor(Math.min(profile.rowCount, 1_000_000) / 2),
+                },
+              ],
+            },
+          ],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 50,
         }),
@@ -535,9 +571,7 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id", "price", "updatedAt"],
-          where: {
-            status: { eq: "open" },
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 200,
         }),
@@ -561,9 +595,7 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
             "region",
             "updatedAt",
           ],
-          where: {
-            status: { eq: "open" },
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "updatedAt", direction: "desc" }],
           limit: 200,
         }),
@@ -578,10 +610,10 @@ describe(`raw snapshot and delta engine benchmark: ${profile.rowCount} rows`, ()
       await Effect.runPromise(
         profileEngine(profile).snapshot("orders", {
           select: ["id"],
-          where: {
-            status: { eq: "open" },
-            price: { gte: 100_000 },
-          },
+          where: [
+            { field: "status", type: "equals", filter: "open" },
+            { field: "price", type: "greaterThanOrEqual", filter: 100_000 },
+          ],
           limit: 0,
         }),
       );

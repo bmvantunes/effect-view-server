@@ -120,4 +120,43 @@ describe("gRPC leased benchmark lifecycle", () => {
       );
     }),
   );
+
+  it.live("rejects retained cleanup that leaves route-owned runtime state", () =>
+    Effect.gen(function* () {
+      const readHealth = benchmarkRuntime.readHealthyGrpcLeasedBenchmarkState;
+      vi.spyOn(benchmarkRuntime, "readHealthyGrpcLeasedBenchmarkState").mockImplementation(
+        (context) =>
+          readHealth(context).pipe(
+            Effect.map((health) =>
+              benchmarkRuntime.activeGrpcLeasedFeedCount(health) === 0
+                ? {
+                    ...health,
+                    engine: {
+                      ...health.engine,
+                      topics: {
+                        ...health.engine.topics,
+                        orders: {
+                          ...health.engine.topics.orders,
+                          queuedEvents: 1,
+                        },
+                      },
+                    },
+                  }
+                : health,
+            ),
+          ),
+      );
+
+      const error = yield* runGrpcLeasedBenchmarkSample("retained-local-filter-snapshot", {
+        ...options,
+        routeCount: 1,
+      }).pipe(Effect.flip);
+
+      expect(
+        error.message.split("\n").filter((line) => !line.trimStart().startsWith("at ")),
+      ).toStrictEqual([
+        "GrpcLeasedBenchmarkWorkloadError: GrpcLeasedBenchmarkStateError: gRPC leased retained benchmark did not release exactly its route-owned rows and subscriptions.",
+      ]);
+    }),
+  );
 });

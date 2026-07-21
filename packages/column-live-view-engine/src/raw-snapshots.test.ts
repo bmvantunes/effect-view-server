@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { fromStringUnsafe } from "effect/BigDecimal";
+import { fromStringUnsafe, make as makeBigDecimal } from "effect/BigDecimal";
 import {
   instrument,
   instrumentSelect,
@@ -31,13 +31,14 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("orders", {
         select: orderSelect,
-        where: {
-          customerId: { startsWith: "customer-" },
-          status: "open",
-          price: { gte: 10, lt: 50 },
-          updatedAt: { lte: 4 },
-          region: { eq: "emea" },
-        },
+        where: [
+          { field: "customerId", type: "startsWith", filter: "customer-" },
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThanOrEqual", filter: 10 },
+          { field: "price", type: "lessThan", filter: 50 },
+          { field: "updatedAt", type: "lessThanOrEqual", filter: 4 },
+          { field: "region", type: "equals", filter: "emea" },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 1,
         limit: 1,
@@ -53,9 +54,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const equalStringSort = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "status", direction: "asc" }],
       });
       expect(rowIds(equalStringSort.rows)).toStrictEqual(["1", "2", "4", "5", "6"]);
@@ -81,9 +80,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("orders", {
         select: ["customerId", "status", "updatedAt"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       });
 
       expect(snapshot.rows).toStrictEqual([
@@ -108,9 +105,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("positions", {
         select: ["id", "symbol", "active", "quantity", "price"],
-        where: {
-          symbol: "MSFT",
-        },
+        where: [{ field: "symbol", type: "equals", filter: "MSFT" }],
         orderBy: [{ field: "quantity", direction: "desc" }],
         limit: 1,
       });
@@ -145,9 +140,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const windowed = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 2,
         limit: 3,
@@ -162,9 +155,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const countOnly = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 0,
       });
@@ -176,9 +167,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterTieAppend = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 4,
       });
@@ -195,9 +184,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterReplace = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 4,
       });
@@ -218,9 +205,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterAppend = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 5,
       });
@@ -238,9 +223,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterDelete = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 4,
       });
@@ -273,9 +256,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const ascendingInclusive = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 3 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 3 }],
         orderBy: [{ field: "price", direction: "asc" }],
         offset: 1,
         limit: 2,
@@ -289,9 +270,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const scalarFilteredOrderedWindow = yield* engine.snapshot("orders", {
         select: ["id", "price", "status"],
-        where: {
-          status: "closed",
-        },
+        where: [{ field: "status", type: "equals", filter: "closed" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 1,
       });
@@ -303,9 +282,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const scalarFilteredEmptyOrderedWindow = yield* engine.snapshot("orders", {
         select: ["id", "customerId", "price"],
-        where: {
-          customerId: "missing-customer",
-        },
+        where: [{ field: "customerId", type: "equals", filter: "missing-customer" }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 1,
       });
@@ -315,9 +292,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const numericEquality = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { eq: 5 },
-        },
+        where: [{ field: "price", type: "equals", filter: 5 }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -327,9 +302,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const numericInAscending = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { in: [8, 2, 99, 2] },
-        },
+        where: [{ field: "price", type: "in", filter: [8, 2, 99, 2] }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -343,9 +316,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const numericInDescending = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { in: [8, 2, 99, 2] },
-        },
+        where: [{ field: "price", type: "in", filter: [8, 2, 99, 2] }],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 1,
         limit: 1,
@@ -356,21 +327,27 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const emptyIn = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { in: [] },
-        },
+        where: [{ field: "price", type: "in", filter: [] }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
 
-      expect(emptyIn.rows).toStrictEqual([]);
-      expect(emptyIn.totalRows).toBe(0);
+      expect(emptyIn.rows).toStrictEqual([
+        { id: "a", price: 1 },
+        { id: "b", price: 2 },
+        { id: "c", price: 3 },
+        { id: "d", price: 4 },
+        { id: "e", price: 5 },
+        { id: "f", price: 6 },
+        { id: "g", price: 7 },
+        { id: "h", price: 8 },
+        { id: "z", price: 99 },
+      ]);
+      expect(emptyIn.totalRows).toBe(9);
 
       const stringEquality = yield* engine.snapshot("orders", {
         select: ["id", "status"],
-        where: {
-          status: { eq: "closed" },
-        },
+        where: [{ field: "status", type: "equals", filter: "closed" }],
         orderBy: [{ field: "status", direction: "asc" }],
         limit: 10,
       });
@@ -380,9 +357,13 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const stringIn = yield* engine.snapshot("orders", {
         select: ["id", "customerId"],
-        where: {
-          customerId: { in: ["customer-h", "customer-b", "customer-z", "customer-b"] },
-        },
+        where: [
+          {
+            field: "customerId",
+            type: "in",
+            filter: ["customer-h", "customer-b", "customer-z", "customer-b"],
+          },
+        ],
         orderBy: [{ field: "customerId", direction: "asc" }],
         limit: 10,
       });
@@ -396,9 +377,11 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const numericInWithRange = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { in: [2, 5, 8, 99, 2], gte: 5, lt: 99 },
-        },
+        where: [
+          { field: "price", type: "in", filter: [2, 5, 8, 99, 2] },
+          { field: "price", type: "greaterThanOrEqual", filter: 5 },
+          { field: "price", type: "lessThan", filter: 99 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         offset: 1,
         limit: 1,
@@ -409,9 +392,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const equalityInIntersection = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { eq: 5, in: [2, 5, 8] },
-        },
+        where: [
+          { field: "price", type: "equals", filter: 5 },
+          { field: "price", type: "in", filter: [2, 5, 8] },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -421,9 +405,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const contradictoryEqualityInIntersection = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { eq: 5, in: [2, 8] },
-        },
+        where: [
+          { field: "price", type: "equals", filter: 5 },
+          { field: "price", type: "in", filter: [2, 8] },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -433,9 +418,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const equalityOutsideRange = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { eq: 5, gt: 5 },
-        },
+        where: [
+          { field: "price", type: "equals", filter: 5 },
+          { field: "price", type: "greaterThan", filter: 5 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -445,9 +431,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const ascendingExclusive = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gt: 3, lt: 7 },
-        },
+        where: [
+          { field: "price", type: "greaterThan", filter: 3 },
+          { field: "price", type: "lessThan", filter: 7 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -461,9 +448,12 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const strongerDifferentBounds = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gt: 3, gte: 4, lt: 8, lte: 6 },
-        },
+        where: [
+          { field: "price", type: "greaterThan", filter: 3 },
+          { field: "price", type: "greaterThanOrEqual", filter: 4 },
+          { field: "price", type: "lessThan", filter: 8 },
+          { field: "price", type: "lessThanOrEqual", filter: 6 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -477,9 +467,12 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const strongerEqualBounds = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 3, gt: 3, lte: 6, lt: 6 },
-        },
+        where: [
+          { field: "price", type: "greaterThanOrEqual", filter: 3 },
+          { field: "price", type: "greaterThan", filter: 3 },
+          { field: "price", type: "lessThanOrEqual", filter: 6 },
+          { field: "price", type: "lessThan", filter: 6 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -492,9 +485,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const descendingInclusive = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { lte: 6 },
-        },
+        where: [{ field: "price", type: "lessThanOrEqual", filter: 6 }],
         orderBy: [{ field: "price", direction: "desc" }],
         offset: 1,
         limit: 2,
@@ -508,9 +499,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const descendingExclusive = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { lt: 6 },
-        },
+        where: [{ field: "price", type: "lessThan", filter: 6 }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 2,
       });
@@ -523,9 +512,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const descendingLowerBound = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gt: 3 },
-        },
+        where: [{ field: "price", type: "greaterThan", filter: 3 }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 2,
       });
@@ -538,9 +525,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const descendingLowerInclusive = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 6 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 6 }],
         orderBy: [{ field: "price", direction: "desc" }],
         limit: 4,
       });
@@ -555,9 +540,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const exactInclusiveRange = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 4, lte: 4 },
-        },
+        where: [
+          { field: "price", type: "greaterThanOrEqual", filter: 4 },
+          { field: "price", type: "lessThanOrEqual", filter: 4 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 2,
       });
@@ -567,9 +553,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const impossibleRange = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gt: 4, lte: 4 },
-        },
+        where: [
+          { field: "price", type: "greaterThan", filter: 4 },
+          { field: "price", type: "lessThanOrEqual", filter: 4 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 5,
       });
@@ -579,9 +566,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const invertedRange = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gt: 7, lt: 4 },
-        },
+        where: [
+          { field: "price", type: "greaterThan", filter: 7 },
+          { field: "price", type: "lessThan", filter: 4 },
+        ],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 5,
       });
@@ -591,9 +579,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const nonOrderFieldRange = yield* engine.snapshot("orders", {
         select: ["id", "price", "updatedAt"],
-        where: {
-          price: { gte: 4 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 4 }],
         orderBy: [{ field: "updatedAt", direction: "desc" }],
         limit: 2,
       });
@@ -608,9 +594,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const duplicateEqualityValue = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { eq: 8 },
-        },
+        where: [{ field: "price", type: "equals", filter: 8 }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -625,9 +609,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterAppend = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          price: { gte: 8 },
-        },
+        where: [{ field: "price", type: "greaterThanOrEqual", filter: 8 }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 3,
       });
@@ -652,9 +634,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const initial = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -667,9 +647,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterUpdateAndSlotSwapDelete = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -682,9 +660,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterInsertAndSecondSlotSwapDelete = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -696,9 +672,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterReset = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
         orderBy: [{ field: "id", direction: "asc" }],
         limit: 10,
       });
@@ -722,22 +696,14 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
     }),
   );
 
-  it.effect("deep-clones nested rows and supports object-valued equality filters", () =>
+  it.effect("deep-clones nested rows and filters statically named scalar paths", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
-      const emptyStructuredQuery = yield* engine.snapshot("instruments", {
+      const emptyNestedQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
-        where: {
-          metadata: {
-            venue: "xnys",
-            risk: {
-              tier: 1,
-              lot: 1n,
-            },
-          },
-        },
+        where: [{ field: "metadata.venue", type: "equals", filter: "xnys" }],
       });
-      expect(emptyStructuredQuery.rows).toStrictEqual([]);
+      expect(emptyNestedQuery.rows).toStrictEqual([]);
 
       yield* engine.publishMany("instruments", [
         instrument("1", "xnys", 1, ["equity", "us"]),
@@ -746,121 +712,25 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const metadataQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
-        where: {
-          metadata: {
-            venue: "xnys",
-            risk: {
-              tier: 1,
-              lot: 1n,
-            },
-          },
-        },
+        where: [
+          { field: "metadata.venue", type: "equals", filter: "xnys" },
+          { field: "metadata.risk.tier", type: "equals", filter: 1 },
+          { field: "metadata.risk.lot", type: "equals", filter: 1n },
+        ],
       });
       expect(rowIds(metadataQuery.rows)).toStrictEqual(["1"]);
 
-      const arrayQuery = yield* engine.snapshot("instruments", {
+      const operatorLikeLeafQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
-        where: {
-          tags: ["equity", "us"],
-        },
+        where: [{ field: "operatorLike.eq", type: "equals", filter: "xnys" }],
       });
-      expect(rowIds(arrayQuery.rows)).toStrictEqual(["1"]);
+      expect(rowIds(operatorLikeLeafQuery.rows)).toStrictEqual(["1"]);
 
-      const operatorObjectQuery = yield* engine.snapshot("instruments", {
+      const operatorRangeLikeLeafQuery = yield* engine.snapshot("instruments", {
         select: ["id"],
-        where: {
-          metadata: {
-            eq: {
-              venue: "xlon",
-              risk: {
-                tier: 2,
-                lot: 2n,
-              },
-            },
-          },
-        },
+        where: [{ field: "operatorRangeLike.gte", type: "greaterThanOrEqual", filter: 2 }],
       });
-      expect(rowIds(operatorObjectQuery.rows)).toStrictEqual(["2"]);
-
-      const operatorLikeDirectObjectQuery = yield* engine.snapshot("instruments", {
-        select: ["id"],
-        where: {
-          operatorLike: {
-            eq: "xnys",
-          },
-        },
-      });
-      expect(rowIds(operatorLikeDirectObjectQuery.rows)).toStrictEqual(["1"]);
-
-      const operatorRangeLikeDirectObjectQuery = yield* engine.snapshot("instruments", {
-        select: ["id"],
-        where: {
-          operatorRangeLike: {
-            gte: 2,
-          },
-        },
-      });
-      expect(rowIds(operatorRangeLikeDirectObjectQuery.rows)).toStrictEqual(["2"]);
-
-      const operatorLikeWrappedObjectQuery = yield* engine.snapshot("instruments", {
-        select: ["id"],
-        where: {
-          operatorLike: {
-            eq: {
-              eq: "xlon",
-            },
-          },
-        },
-      });
-      expect(rowIds(operatorLikeWrappedObjectQuery.rows)).toStrictEqual(["2"]);
-
-      const operatorLikeObjectNeq = yield* engine.snapshot("instruments", {
-        select: ["id"],
-        where: {
-          operatorLike: {
-            neq: {
-              eq: "not-present",
-            },
-          },
-        },
-      });
-      expect(rowIds(operatorLikeObjectNeq.rows)).toStrictEqual(["1", "2"]);
-
-      const operatorLikeObjectNeqEqual = yield* engine.snapshot("instruments", {
-        select: ["id"],
-        where: {
-          operatorLike: {
-            neq: {
-              eq: "xnys",
-            },
-          },
-        },
-      });
-      expect(rowIds(operatorLikeObjectNeqEqual.rows)).toStrictEqual(["2"]);
-
-      const objectInQuery = yield* engine.snapshot("instruments", {
-        select: ["id"],
-        where: {
-          operatorLike: {
-            in: [
-              {
-                eq: "xlon",
-              },
-            ],
-          },
-        },
-      });
-      expect(rowIds(objectInQuery.rows)).toStrictEqual(["2"]);
-
-      const invalidObjectRuntimeQuery: object = {
-        select: ["id"],
-        where: {
-          operatorLike: { in: [undefined] },
-        },
-      };
-      // @ts-expect-error runtime validation handles hostile untyped structured filters.
-      const invalidObjectInQuery = yield* engine.snapshot("instruments", invalidObjectRuntimeQuery);
-      expect(rowIds(invalidObjectInQuery.rows)).toStrictEqual([]);
+      expect(rowIds(operatorRangeLikeLeafQuery.rows)).toStrictEqual(["2"]);
 
       const fullSnapshot = yield* engine.snapshot("instruments", {
         select: ["id", "metadata", "tags"],
@@ -871,9 +741,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const projectedSnapshot = yield* engine.snapshot("instruments", {
         select: ["metadata", "tags"],
-        where: {
-          id: "1",
-        },
+        where: [{ field: "id", type: "equals", filter: "1" }],
       });
       expect(projectedSnapshot.rows).toStrictEqual([
         {
@@ -892,9 +760,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const fresh = yield* engine.snapshot("instruments", {
         select: instrumentSelect,
-        where: {
-          id: "1",
-        },
+        where: [{ field: "id", type: "equals", filter: "1" }],
       });
       expect(fresh.rows).toStrictEqual([instrument("1", "xnys", 1, ["equity", "us"])]);
     }),
@@ -987,10 +853,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("positions", {
         select: ["id"],
-        where: {
-          quantity: { gt: 9n },
-          price: { gte: fromStringUnsafe("2.00") },
-        },
+        where: [
+          { field: "quantity", type: "greaterThan", filter: 9n },
+          { field: "price", type: "greaterThanOrEqual", filter: fromStringUnsafe("2.00") },
+        ],
         orderBy: [
           { field: "active", direction: "asc" },
           { field: "price", direction: "asc" },
@@ -1013,17 +879,13 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
       const symbolOrdered = yield* engine.snapshot("positions", {
         select: ["id"],
         orderBy: [{ field: "symbol", direction: "desc" }],
-        where: {
-          price: { eq: fromStringUnsafe("1.00") },
-        },
+        where: [{ field: "price", type: "equals", filter: fromStringUnsafe("1.00") }],
       });
       expect(rowIds(symbolOrdered.rows)).toStrictEqual(["position-3", "position-4"]);
 
       const decimalEqualityOrdered = yield* engine.snapshot("positions", {
         select: ["id"],
-        where: {
-          price: { eq: fromStringUnsafe("1.00") },
-        },
+        where: [{ field: "price", type: "equals", filter: fromStringUnsafe("1.00") }],
         orderBy: [{ field: "price", direction: "asc" }],
         limit: 10,
       });
@@ -1043,9 +905,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const bigintEqualityOrdered = yield* engine.snapshot("positions", {
         select: ["id"],
-        where: {
-          quantity: { eq: 10n },
-        },
+        where: [{ field: "quantity", type: "equals", filter: 10n }],
         orderBy: [{ field: "quantity", direction: "asc" }],
         limit: 10,
       });
@@ -1054,9 +914,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const booleanNotEqual = yield* engine.snapshot("positions", {
         select: ["id"],
-        where: {
-          active: { neq: false },
-        },
+        where: [{ field: "active", type: "notEqual", filter: false }],
         orderBy: [{ field: "symbol", direction: "asc" }],
       });
       expect(rowIds(booleanNotEqual.rows)).toStrictEqual([
@@ -1067,9 +925,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const decimalNotEqual = yield* engine.snapshot("positions", {
         select: ["id"],
-        where: {
-          price: { neq: fromStringUnsafe("2.00") },
-        },
+        where: [{ field: "price", type: "notEqual", filter: fromStringUnsafe("2.00") }],
         orderBy: [{ field: "symbol", direction: "asc" }],
       });
       expect(rowIds(decimalNotEqual.rows)).toStrictEqual([
@@ -1077,6 +933,37 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         "position-4",
         "position-3",
       ]);
+    }),
+  );
+
+  it.effect("filters and orders extreme-scale BigDecimals without scale alignment", () =>
+    Effect.gen(function* () {
+      const engine = yield* makeEngine();
+      const tiny = makeBigDecimal(1n, Number.MAX_SAFE_INTEGER);
+      const middle = makeBigDecimal(5n, Number.MAX_SAFE_INTEGER);
+      const upper = makeBigDecimal(1n, Number.MAX_SAFE_INTEGER - 1);
+      const huge = makeBigDecimal(1n, Number.MIN_SAFE_INTEGER);
+      yield* engine.publishMany("positions", [
+        { ...position("huge", "HUGE", 4n, "1"), price: huge },
+        { ...position("upper", "UPPER", 3n, "1"), price: upper },
+        { ...position("tiny", "TINY", 1n, "1"), price: tiny },
+        { ...position("middle", "MIDDLE", 2n, "1"), price: middle },
+      ]);
+
+      const filtered = yield* engine.snapshot("positions", {
+        select: ["id"],
+        where: [{ field: "price", type: "inRange", filter: tiny, filterTo: upper }],
+        orderBy: [{ field: "price", direction: "asc" }],
+      });
+      const indexed = yield* engine.snapshot("positions", {
+        select: ["id"],
+        orderBy: [{ field: "price", direction: "asc" }],
+        limit: 4,
+      });
+
+      expect(rowIds(filtered.rows)).toStrictEqual(["tiny", "middle"]);
+      expect(rowIds(indexed.rows)).toStrictEqual(["tiny", "middle", "upper", "huge"]);
+      yield* engine.close();
     }),
   );
 
@@ -1208,21 +1095,20 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          customerId: { startsWith: "customer-" },
-          price: { gt: 9 },
-          updatedAt: { gte: 1, lte: 4 },
-          status: { in: ["open"] },
-          region: { eq: "emea" },
-        },
+        where: [
+          { field: "customerId", type: "startsWith", filter: "customer-" },
+          { field: "price", type: "greaterThan", filter: 9 },
+          { field: "updatedAt", type: "greaterThanOrEqual", filter: 1 },
+          { field: "updatedAt", type: "lessThanOrEqual", filter: 4 },
+          { field: "status", type: "in", filter: ["open"] },
+          { field: "region", type: "equals", filter: "emea" },
+        ],
       });
       expect(rowIds(snapshot.rows)).toStrictEqual(["7"]);
 
       const notOpen = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          status: { neq: "open" },
-        },
+        where: [{ field: "status", type: "notEqual", filter: "open" }],
       });
       expect(rowIds(notOpen.rows)).toStrictEqual(["4"]);
     }),
@@ -1241,10 +1127,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterReplace = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-          price: { gt: 35 },
-        },
+        where: [
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThan", filter: 35 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
       });
       expect(afterReplace.rows).toStrictEqual([{ id: "1", price: 40 }]);
@@ -1254,20 +1140,20 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterDelete = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-          price: { gt: 35 },
-        },
+        where: [
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThan", filter: 35 },
+        ],
       });
       expect(afterDelete.rows).toStrictEqual([]);
       expect(afterDelete.totalRows).toBe(0);
 
       const movedRowAfterDelete = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-          price: { lt: 35 },
-        },
+        where: [
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "lessThan", filter: 35 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
       });
       expect(movedRowAfterDelete.rows).toStrictEqual([
@@ -1280,10 +1166,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterSlotReuse = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-          price: { gt: 35 },
-        },
+        where: [
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThan", filter: 35 },
+        ],
         orderBy: [{ field: "price", direction: "desc" }],
       });
       expect(afterSlotReuse.rows).toStrictEqual([{ id: "4", price: 50 }]);
@@ -1293,10 +1179,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterPatchOut = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-          price: { gt: 35 },
-        },
+        where: [
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThan", filter: 35 },
+        ],
       });
       expect(afterPatchOut.rows).toStrictEqual([]);
       expect(afterPatchOut.totalRows).toBe(0);
@@ -1305,10 +1191,10 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const afterPatchIn = yield* engine.snapshot("orders", {
         select: ["id", "price"],
-        where: {
-          status: "open",
-          price: { gt: 35 },
-        },
+        where: [
+          { field: "status", type: "equals", filter: "open" },
+          { field: "price", type: "greaterThan", filter: 35 },
+        ],
       });
       expect(afterPatchIn.rows).toStrictEqual([{ id: "4", price: 45 }]);
       expect(afterPatchIn.totalRows).toBe(1);
@@ -1325,9 +1211,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("positions", {
         select: ["id"],
-        where: {
-          quantity: { lt: 10n },
-        },
+        where: [{ field: "quantity", type: "lessThan", filter: 10n }],
       });
 
       expect(snapshot.rows).toStrictEqual([{ id: "1" }]);
@@ -1335,7 +1219,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
     }),
   );
 
-  it.effect("keeps optional not-equal semantics aligned with public raw snapshots", () =>
+  it.effect("treats notEqual as the exact complement of equals for optional fields", () =>
     Effect.gen(function* () {
       const engine = yield* makeEngine();
       yield* engine.publishMany("orders", [
@@ -1346,14 +1230,12 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
 
       const snapshot = yield* engine.snapshot("orders", {
         select: ["id"],
-        where: {
-          note: { neq: "bye" },
-        },
+        where: [{ field: "note", type: "notEqual", filter: "bye" }],
         orderBy: [{ field: "id", direction: "asc" }],
       });
 
-      expect(rowIds(snapshot.rows)).toStrictEqual(["matched-note"]);
-      expect(snapshot.totalRows).toBe(1);
+      expect(rowIds(snapshot.rows)).toStrictEqual(["matched-note", "missing-note"]);
+      expect(snapshot.totalRows).toBe(2);
     }),
   );
 
@@ -1374,9 +1256,7 @@ describe("ColumnLiveViewEngine raw snapshots", () => {
         });
         const polluted = yield* engine.snapshot("orders", {
           select: ["id"],
-          where: {
-            note: { eq: "polluted" },
-          },
+          where: [{ field: "note", type: "equals", filter: "polluted" }],
           orderBy: [{ field: "id", direction: "asc" }],
         });
 

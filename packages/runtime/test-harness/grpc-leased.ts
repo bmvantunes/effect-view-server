@@ -63,6 +63,7 @@ export const grpcLeasedViewServer = (input: {
     region: string,
   ) => Stream.Stream<GrpcOrderValueMessage, unknown, never>;
   readonly acquired?: (region: string) => void;
+  readonly requested?: (region: string) => void;
   readonly release?: Effect.Effect<void>;
 }) =>
   defineViewServerConfig({
@@ -74,7 +75,10 @@ export const grpcLeasedViewServer = (input: {
         client: "orders",
         method: "streamOrders",
         routeBy: ["region"],
-        request: ({ region }) => ({ orderId: region }),
+        request: ({ region }) => {
+          input.requested?.(region);
+          return { orderId: region };
+        },
         acquire: ({ route }) => {
           input.acquired?.(route.region);
           return input.streamForRegion(route.region);
@@ -204,19 +208,7 @@ export const grpcRouteEncodingLeasedViewServer = () =>
         key: "id",
         client: "orders",
         method: "streamOrders",
-        routeBy: [
-          "amount",
-          "count",
-          "disabled",
-          "flag",
-          "meta",
-          "none",
-          "plainScore",
-          "score",
-          "tags",
-          "text",
-          "weird",
-        ],
+        routeBy: ["amount", "count", "disabled", "flag", "none", "plainScore", "score", "text"],
         request: (route) => ({ orderId: String(route.text) }),
         acquire: () => Stream.never,
         map: () => ({
@@ -243,7 +235,7 @@ export const grpcSemanticRouteLeasedViewServer = () =>
         key: "id",
         client: "orders",
         method: "streamOrders",
-        routeBy: ["routeClass", "routeOption", "routeHashMap"],
+        routeBy: ["id"],
         request: () => ({ orderId: "semantic-route" }),
         acquire: () => Stream.never,
         map: () => ({
@@ -278,11 +270,10 @@ export const captureLeasedGrpcDegradation = <
 
 export type LeasedOrdersQuery = {
   readonly select: readonly ["id", "customerId", "price", "region"];
-  readonly where: {
-    readonly region: {
-      readonly eq: string;
-    };
-  };
+  readonly routeBy: { readonly region: string };
+  readonly where: readonly [
+    { readonly field: "region"; readonly type: "equals"; readonly filter: string },
+  ];
   readonly orderBy: readonly [
     {
       readonly field: "price";
@@ -294,9 +285,8 @@ export type LeasedOrdersQuery = {
 
 export const leasedOrdersQuery = (region: string): LeasedOrdersQuery => ({
   select: ["id", "customerId", "price", "region"],
-  where: {
-    region: { eq: region },
-  },
+  routeBy: { region },
+  where: [{ field: "region", type: "equals", filter: region }],
   orderBy: [{ field: "price", direction: "asc" }],
   limit: 10,
 });

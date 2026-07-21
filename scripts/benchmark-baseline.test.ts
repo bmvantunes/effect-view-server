@@ -1803,6 +1803,97 @@ describe("benchmark baseline artifacts", () => {
     ).toThrow("task a: measurementProtocol did not match the runner policy.");
   });
 
+  it("requires and preserves the exact raw large membership workload", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-raw-large-membership-workload-"));
+    const summaryPath = join(directory, "actual.summary.json");
+    const missingSummaryPath = join(directory, "missing.summary.json");
+    const driftedSummaryPath = join(directory, "drifted.summary.json");
+    const extraneousSummaryPath = join(directory, "extraneous.summary.json");
+    const outputJsonPath = join(directory, "actual.json");
+    const rawLargeMembershipParameters = {
+      candidateCount: 50_000,
+      partitionCount: 25,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    };
+    const membershipSummary = {
+      ...summary,
+      benchmarkScope: "engine-raw-large-membership",
+      rawLargeMembershipParameters,
+      rowCount: 100_000,
+    };
+    const membershipTask = {
+      ...taskPaths(summaryPath, outputJsonPath),
+      expectedBenchmarkScope: "engine-raw-large-membership",
+      expectedRawLargeMembershipParameters: rawLargeMembershipParameters,
+      expectedRowCount: 100_000,
+    };
+    writeFileSync(summaryPath, `${JSON.stringify(membershipSummary)}\n`);
+    writeFileSync(
+      missingSummaryPath,
+      `${JSON.stringify({
+        ...membershipSummary,
+        rawLargeMembershipParameters: undefined,
+      })}\n`,
+    );
+    writeFileSync(
+      driftedSummaryPath,
+      `${JSON.stringify({
+        ...membershipSummary,
+        rawLargeMembershipParameters: {
+          ...rawLargeMembershipParameters,
+          candidateCount: 49_999,
+        },
+      })}\n`,
+    );
+    writeFileSync(
+      extraneousSummaryPath,
+      `${JSON.stringify({
+        ...summary,
+        rawLargeMembershipParameters,
+      })}\n`,
+    );
+    writeFileSync(outputJsonPath, `${JSON.stringify(vitestOutput)}\n`);
+
+    expect(readBenchmarkObservation(membershipTask)).toStrictEqual({
+      ...observation,
+      benchmarkScope: "engine-raw-large-membership",
+      outputJsonPath,
+      rawLargeMembershipParameters,
+      rowCount: 100_000,
+      summaryPath,
+    });
+    expect(() =>
+      readBenchmarkObservation({
+        ...membershipTask,
+        summaryPath: missingSummaryPath,
+      }),
+    ).toThrow(
+      `Benchmark artifact field ${missingSummaryPath}.rawLargeMembershipParameters must be an object.`,
+    );
+    expect(() =>
+      readBenchmarkObservation({
+        ...membershipTask,
+        summaryPath: driftedSummaryPath,
+      }),
+    ).toThrow(
+      'task a: rawLargeMembershipParameters changed from {"candidateCount":50000,"partitionCount":25,"preparedPlanCompilationCount":1,"subscriberCount":32} to {"candidateCount":49999,"partitionCount":25,"preparedPlanCompilationCount":1,"subscriberCount":32}.',
+    );
+    expect(() =>
+      readBenchmarkObservation({
+        ...membershipTask,
+        expectedRawLargeMembershipParameters: undefined,
+      }),
+    ).toThrow(
+      "Benchmark artifact field task a.expectedRawLargeMembershipParameters must be an object.",
+    );
+    expect(() =>
+      readBenchmarkObservation(taskPaths(extraneousSummaryPath, outputJsonPath)),
+    ).toThrow(
+      `Benchmark artifact field ${extraneousSummaryPath}.rawLargeMembershipParameters is only supported for the engine-raw-large-membership benchmark scope.`,
+    );
+  });
+
   it("rejects summaries that point at a different Vitest output artifact", () => {
     const directory = mkdtempSync(join(tmpdir(), "view-server-benchmark-output-path-"));
     const summaryPath = join(directory, "actual.summary.json");
@@ -1834,6 +1925,40 @@ describe("benchmark baseline artifacts", () => {
     writeBenchmarkBaseline(baselinePath, baseline);
 
     expect(readBenchmarkBaseline(baselinePath)).toStrictEqual(baseline);
+  });
+
+  it("roundtrips raw large membership workload metadata in baseline manifests", () => {
+    const directory = mkdtempSync(join(tmpdir(), "view-server-membership-baseline-"));
+    const baselinePath = join(directory, "baseline.json");
+    const rawLargeMembershipParameters = {
+      candidateCount: 50_000,
+      partitionCount: 25,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    };
+    const membershipObservation = {
+      ...observation,
+      benchmarkScope: "engine-raw-large-membership",
+      rawLargeMembershipParameters,
+      rowCount: 100_000,
+    };
+    const baseline = buildBenchmarkBaseline("smoke", [membershipObservation]);
+
+    writeBenchmarkBaseline(baselinePath, baseline);
+
+    expect(readBenchmarkBaseline(baselinePath)).toStrictEqual(baseline);
+    expect(() =>
+      validateBenchmarkBaseline(
+        buildBenchmarkBaseline("smoke", [
+          {
+            ...membershipObservation,
+            rawLargeMembershipParameters: undefined,
+          },
+        ]),
+      ),
+    ).toThrow(
+      "Benchmark artifact field baseline.tasks[0].rawLargeMembershipParameters must be an object.",
+    );
   });
 
   it("validates baseline manifests with the default diagnostic path", () => {

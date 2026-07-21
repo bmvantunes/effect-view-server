@@ -63,9 +63,7 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
-        where: {
-          region: "emea",
-        },
+        where: [{ field: "region", type: "equals", filter: "emea" }],
         orderBy: [{ field: "status", direction: "asc" }],
       });
       expect(filteredSnapshot.totalRows).toBe(3);
@@ -130,9 +128,7 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
           minNote: { aggFunc: "min", field: "note" },
           maxNote: { aggFunc: "max", field: "note" },
         },
-        where: {
-          status: "open",
-        },
+        where: [{ field: "status", type: "equals", filter: "open" }],
       });
       expect(equalMinMaxSnapshot.rows).toStrictEqual([
         { status: "open", minNote: "same", maxNote: "same" },

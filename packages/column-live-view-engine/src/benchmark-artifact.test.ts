@@ -519,6 +519,33 @@ describe("benchmark artifact helpers", () => {
       )}\n`,
     );
 
+    const rawLargeMembershipOutputJsonPath =
+      ".artifacts/benchmark-artifact-raw-large-membership-test.json";
+    writeBenchmarkArtifact({
+      ...artifactInput,
+      benchmarkScope: "engine-raw-large-membership",
+      outputJsonPath: rawLargeMembershipOutputJsonPath,
+      rawLargeMembershipParameters: {
+        candidateCount: 50_000,
+        partitionCount: 25,
+        preparedPlanCompilationCount: 1,
+        subscriberCount: 32,
+      },
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          ".artifacts/benchmark-artifact-raw-large-membership-test.summary.json",
+          "utf8",
+        ),
+      ).rawLargeMembershipParameters,
+    ).toStrictEqual({
+      candidateCount: 50_000,
+      partitionCount: 25,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    });
+
     expect(() =>
       writeBenchmarkArtifact({
         ...artifactInput,

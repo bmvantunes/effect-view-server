@@ -5,7 +5,7 @@ import { Deferred, Effect, Exit, Fiber, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { healthFromEngine } from "./health";
 import { makeViewServerRuntimeCore } from "./index";
-import { acquireRuntimeCoreLiveSubscription, makeRuntimeCoreLiveClient } from "./live-client";
+import { acquireRuntimeCoreLiveSubscription, makeRuntimeCoreLiveClientModule } from "./live-client";
 import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
 import { makeViewServerRuntimeCoreInternalWithConstructionOptions } from "./runtime-core-construction";
 import { acquireRuntimeCoreResourceHandoff } from "./subscription-handoff";
@@ -264,7 +264,6 @@ describe("Runtime Core lifecycle", () => {
       );
 
       expect(runtimeCore.liveClient.close).toBe(runtimeCore.close);
-      expect(runtimeCore.serverLiveClient.close).toBe(runtimeCore.close);
 
       yield* Effect.all([runtimeCore.close, runtimeCore.liveClient.close], {
         concurrency: "unbounded",
@@ -653,7 +652,7 @@ describe("Runtime Core lifecycle", () => {
             ? Deferred.succeed(refreshStarted, undefined).pipe(Effect.andThen(Effect.never))
             : Deferred.succeed(cleanupRefreshRequested, undefined).pipe(Effect.asVoid);
         });
-        const liveClient = yield* makeRuntimeCoreLiveClient(
+        const { liveClient } = yield* makeRuntimeCoreLiveClientModule(
           viewServer,
           engine,
           hub,

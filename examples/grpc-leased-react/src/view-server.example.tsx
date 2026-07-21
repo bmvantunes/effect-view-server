@@ -6,11 +6,12 @@ export function GrpcLeasedExampleApp() {
   const health = useViewServerHealthSummary();
   const orders = useLiveQuery("orders", {
     select: ["id", "customerId", "price", "strategyId", "region"],
-    where: {
-      strategyId: { eq: "strategy-alpha" },
-      region: { eq: "usa" },
-      customerId: { startsWith: "customer-" },
-    },
+    where: [
+      { field: "strategyId", type: "equals", filter: "strategy-alpha" },
+      { field: "region", type: "equals", filter: "usa" },
+      { field: "customerId", type: "startsWith", filter: "customer-" },
+    ],
+    routeBy: { strategyId: "strategy-alpha", region: "usa" },
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 20,
   });
@@ -21,7 +22,7 @@ export function GrpcLeasedExampleApp() {
         <p className="eyebrow">Leased gRPC source</p>
         <h1>On-demand shared gRPC route</h1>
         <p>
-          The query must include exact route filters for strategy and region; the runtime shares one
+          The query declares exact route values for strategy and region; the runtime shares one
           upstream route for matching subscribers.
         </p>
       </header>

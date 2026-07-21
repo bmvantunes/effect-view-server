@@ -4,6 +4,7 @@ import {
   defineViewServerConfig,
   grpc,
   kafka,
+  type FilterExpression,
   type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
@@ -16,6 +17,19 @@ const Order = Schema.Struct({
   id: Schema.String,
   price: Schema.Number,
 });
+
+type ValidRuntimeCoreIdCondition = {
+  readonly field: "id";
+  readonly type: "equals";
+  readonly filter: "order-1";
+};
+
+type QueryUnionWithInvalidWhere =
+  | { readonly select: readonly ["id"] }
+  | {
+      readonly select: readonly ["id"];
+      readonly where: readonly [ValidRuntimeCoreIdCondition & { readonly unexpected: true }];
+    };
 
 declare const grpcRuntimeClients: GrpcRuntimeClients;
 declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
@@ -126,15 +140,32 @@ const kafkaOwnedRuntimeCore = createViewServerRuntimeCore(kafkaOwnedViewServer);
 
 describe("runtime-core type contracts", () => {
   it("preserves runtime and live client topic types", () => {
+    const canonicalExpression: FilterExpression<typeof Order.Type> = {
+      field: "id",
+      type: "equals",
+      filter: "order-1",
+    };
     const publish = runtimeCore.client.publish("orders", {
       id: "order-1",
       price: 42,
     });
     const subscription = runtimeCore.liveClient.subscribe("orders", {
       select: ["id"],
+      where: [canonicalExpression],
     });
+    const rejectQueryUnion = (query: QueryUnionWithInvalidWhere) => {
+      // @ts-expect-error every whole-query union member must be exact.
+      return runtimeCore.client.snapshot("orders", query);
+    };
+    expectTypeOf(rejectQueryUnion).toBeFunction();
+    const invalidValidatedSubscription = runtimeCore.serverLiveClient.subscribeProtocolQuery(
+      "orders",
+      // @ts-expect-error only the protocol decoder can construct a validated runtime query.
+      { select: ["id"] },
+    );
     const kafkaSnapshot = kafkaOwnedRuntimeCore.client.snapshot("orders", {
       select: ["id"],
+      where: [canonicalExpression],
     });
     const materializedGrpcSnapshot = materializedGrpcSourceRuntimeCore.client.snapshot("orders", {
       select: ["id"],
@@ -194,6 +225,7 @@ describe("runtime-core type contracts", () => {
         readonly id: string;
       }>
     >();
+    expectTypeOf(invalidValidatedSubscription).not.toBeAny();
     expectTypeOf(kafkaSnapshot).not.toBeAny();
     expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
     expectTypeOf<Effect.Success<typeof materializedGrpcSubscribe>>().toEqualTypeOf<
@@ -210,16 +242,16 @@ describe("runtime-core type contracts", () => {
 
   it("rejects leased gRPC topics from public runtime-core clients", () => {
     const leasedQuery = {
-      where: {
-        id: { eq: "order-1" },
-      },
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
       select: ["id"],
     } satisfies {
-      readonly where: {
-        readonly id: {
-          readonly eq: "order-1";
-        };
-      };
+      readonly where: readonly [
+        {
+          readonly field: "id";
+          readonly type: "equals";
+          readonly filter: "order-1";
+        },
+      ];
       readonly select: readonly ["id"];
     };
     // @ts-expect-error public runtime-core clients reject direct leased gRPC snapshots.
@@ -309,17 +341,14 @@ describe("runtime-core type contracts", () => {
     const invalidKafkaOwnedReset = kafkaOwnedRuntimeCore.client.reset();
     // @ts-expect-error source-owned runtime-core clients reject direct reset.
     const invalidMaterializedGrpcReset = materializedGrpcSourceRuntimeCore.client.reset();
+    // @ts-expect-error server transport clients never expose public query subscriptions.
     const _invalidLeasedServerSubscribe = leasedRuntimeCore.serverLiveClient.subscribe(
-      // @ts-expect-error public runtime-core server live clients reject direct leased gRPC subscriptions.
       "orders",
       leasedQuery,
     );
     const _invalidLeasedServerRuntimeSubscribe =
-      leasedRuntimeCore.serverLiveClient.subscribeRuntime(
-        // @ts-expect-error public runtime-core server live clients reject direct leased gRPC runtime subscriptions.
-        "orders",
-        leasedQuery,
-      );
+      // @ts-expect-error server transport clients never expose public runtime subscriptions.
+      leasedRuntimeCore.serverLiveClient.subscribeRuntime("orders", leasedQuery);
 
     expectTypeOf(invalidLeasedSnapshot).not.toBeAny();
     expectTypeOf(invalidLeasedPublish).not.toBeAny();

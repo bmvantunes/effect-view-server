@@ -278,6 +278,7 @@ export const runtimeUnavailable: ViewServerRuntimeError = {
 
 export const failingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
   delete: () => Effect.fail(runtimeUnavailable),
+  deleteStorageKey: () => Effect.fail(runtimeUnavailable),
   health: () => Effect.fail(runtimeUnavailable),
   patch: () => Effect.fail(runtimeUnavailable),
   patchDecodedFields: () => Effect.fail(runtimeUnavailable),
@@ -288,6 +289,7 @@ export const failingClient: ViewServerRuntimeCoreInternalClient<Topics> = {
   publishManyWithStorageKeys: () => Effect.fail(runtimeUnavailable),
   reset: () => Effect.fail(runtimeUnavailable),
   snapshot: () => Effect.fail(runtimeUnavailable),
+  snapshotRuntimeInternal: () => Effect.fail(runtimeUnavailable),
 };
 
 export async function* failingKafkaStream(): AsyncIterable<KafkaMessage> {

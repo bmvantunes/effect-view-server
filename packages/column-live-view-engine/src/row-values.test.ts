@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { fromStringUnsafe } from "effect/BigDecimal";
+import { fromStringUnsafe, make } from "effect/BigDecimal";
 import { stableQueryValueString } from "./raw-query-compiler";
 import {
+  cloneUnknown,
   cloneRecord,
   fieldValue,
   scalarEqualityKey,
@@ -19,7 +20,9 @@ describe("Row value semantics", () => {
     expect(scalarEqualityKey(-0)).toBe("number:0");
     expect(scalarEqualityKey(Number.NaN)).toBe("number:NaN");
     expect(scalarEqualityKey(Number.POSITIVE_INFINITY)).toBe("number:Infinity");
-    expect(scalarEqualityKey(fromStringUnsafe("1.0"))).toBe("bigDecimal:1");
+    expect(scalarEqualityKey(fromStringUnsafe("1.0"))).toBe('bigDecimal:["1","0"]');
+    expect(scalarEqualityKey(make(111n, Number.MIN_SAFE_INTEGER))).toBeUndefined();
+    expect(scalarEqualityKey(make(111n, Number.MIN_SAFE_INTEGER + 1))).toBeUndefined();
     expect(scalarEqualityKey({ value: "open" })).toBeUndefined();
   });
 
@@ -147,7 +150,18 @@ describe("Row value semantics", () => {
     });
   });
 
+  it("clones arrays and plain records while preserving BigDecimal identity", () => {
+    const amount = fromStringUnsafe("1.25");
+    const source = [{ nested: { amount } }];
+    const cloned = cloneUnknown(source);
+
+    expect(cloned).toStrictEqual(source);
+    expect(cloned === source).toBe(false);
+    expect(cloneUnknown(amount)).toBe(amount);
+  });
+
   it("compares array and plain-record values structurally", () => {
+    expect(valuesEqual(make(1n, Number.MAX_SAFE_INTEGER), make(1n, 0))).toBe(false);
     expect(valuesEqual([1, { nested: "same" }], [1, { nested: "same" }])).toBe(true);
     expect(valuesEqual([1], [1, 2])).toBe(false);
     expect(valuesEqual([1], [2])).toBe(false);

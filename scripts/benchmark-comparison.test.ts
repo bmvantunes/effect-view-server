@@ -1477,6 +1477,74 @@ describe("benchmark metadata compatibility", () => {
     });
   });
 
+  it("requires exact large membership sample and mutation counts", () => {
+    const rawLargeMembershipParameters = {
+      candidateCount: 50_000,
+      partitionCount: 25,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    };
+    const largeMembershipObservation = {
+      ...observation,
+      benchmarks: observation.benchmarks.map((benchmark) => ({
+        ...benchmark,
+        sampleCount: 5,
+      })),
+      benchmarkScope: "engine-raw-large-membership",
+      minimumSampleCount: 5,
+      mutationCount: 0,
+      rawLargeMembershipParameters,
+    };
+    const baseline = buildBenchmarkBaseline("active-query-sharing", [largeMembershipObservation]);
+    const changedSampleCount = buildBenchmarkBaseline("active-query-sharing", [
+      {
+        ...largeMembershipObservation,
+        benchmarks: [
+          {
+            ...largeMembershipObservation.benchmarks[0],
+            sampleCount: 6,
+          },
+        ],
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedSampleCount)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a / src/example.bench.ts > example benchmark group / case a: sampleCount changed from 5 to 6.",
+      ],
+    });
+
+    const changedMutationCount = buildBenchmarkBaseline("active-query-sharing", [
+      {
+        ...largeMembershipObservation,
+        mutationCount: 1,
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedMutationCount)).toStrictEqual({
+      ok: false,
+      regressions: ["task a: mutationCount changed from 0 to 1."],
+    });
+
+    const changedWorkload = buildBenchmarkBaseline("active-query-sharing", [
+      {
+        ...largeMembershipObservation,
+        rawLargeMembershipParameters: {
+          ...rawLargeMembershipParameters,
+          candidateCount: 49_999,
+        },
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedWorkload)).toStrictEqual({
+      ok: false,
+      regressions: [
+        'task a: rawLargeMembershipParameters changed from {"candidateCount":50000,"partitionCount":25,"preparedPlanCompilationCount":1,"subscriberCount":32} to {"candidateCount":49999,"partitionCount":25,"preparedPlanCompilationCount":1,"subscriberCount":32}.',
+      ],
+    });
+  });
+
 
   it("reports benchmark metadata drift", () => {
     const baseline = buildBenchmarkBaseline("smoke", [observation]);

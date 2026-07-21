@@ -1,10 +1,14 @@
+import {
+  compareTrustedWireSafeBigDecimal,
+  isTrustedWireSafeBigDecimal,
+} from "@effect-view-server/effect-utils";
 import { valuesEqual } from "./row-values";
-import { isBigDecimal, Order as orderBigDecimal } from "effect/BigDecimal";
+import { isBigDecimal } from "effect/BigDecimal";
 
 export const isComparableRangeValue = (value: unknown): boolean =>
   (typeof value === "number" && Number.isFinite(value)) ||
   typeof value === "bigint" ||
-  isBigDecimal(value);
+  isTrustedWireSafeBigDecimal(value);
 
 export const compareExactRangeColumnValue = (left: unknown, right: unknown): number | undefined => {
   if (typeof left === "number" && typeof right === "number") {
@@ -20,7 +24,7 @@ export const compareExactRangeColumnValue = (left: unknown, right: unknown): num
     return left < right ? -1 : 1;
   }
   if (isBigDecimal(left) && isBigDecimal(right)) {
-    return orderBigDecimal(left, right);
+    return compareTrustedWireSafeBigDecimal(left, right);
   }
   return undefined;
 };
@@ -43,7 +47,7 @@ export const compareRangeColumnValue = (left: unknown, right: unknown): number |
     return left < right ? -1 : 1;
   }
   if (isBigDecimal(left) && isBigDecimal(right)) {
-    return orderBigDecimal(left, right);
+    return compareTrustedWireSafeBigDecimal(left, right);
   }
   return undefined;
 };

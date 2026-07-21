@@ -58,4 +58,59 @@ describe("column-live-view-engine topic row change journal", () => {
 
     expect(journal.changesSince(0, 1)).toBeUndefined();
   });
+
+  it("retains sparse partition history across unrelated global versions", () => {
+    const journal = new TopicRowChangeJournal<object>(undefined, true);
+
+    journal.retain(0);
+
+    expect(journal.changesSince(0, 2)).toStrictEqual([]);
+
+    journal.record({ key: "owned", previous: undefined, next: row("owned") }, 2);
+    journal.commit(3);
+
+    expect(journal.changesSince(0, 3)).toStrictEqual([
+      {
+        changes: [{ key: "owned", previous: undefined, next: row("owned") }],
+        version: 3,
+      },
+    ]);
+  });
+
+  it("invalidates trimmed sparse partition history without requiring contiguous versions", () => {
+    const journal = new TopicRowChangeJournal<object>({ maxVersions: 1 }, true);
+
+    journal.retain(0);
+    journal.record({ key: "first", previous: undefined, next: row("first") }, 0);
+    journal.commit(1);
+    journal.record({ key: "third", previous: undefined, next: row("third") }, 2);
+    journal.commit(3);
+
+    expect(journal.changesSince(0, 3)).toBeUndefined();
+    expect(journal.changesSince(1, 3)).toStrictEqual([
+      {
+        changes: [{ key: "third", previous: undefined, next: row("third") }],
+        version: 3,
+      },
+    ]);
+  });
+
+  it("keeps retained sparse history until its final consumer releases it", () => {
+    const journal = new TopicRowChangeJournal<object>(undefined, true);
+
+    journal.retain(0);
+    journal.retain(0);
+    journal.record({ key: "owned", previous: undefined, next: row("owned") }, 0);
+    journal.commit(1);
+
+    expect(journal.release(1)).toBe(false);
+    expect(journal.changesSince(0, 1)).toStrictEqual([
+      {
+        changes: [{ key: "owned", previous: undefined, next: row("owned") }],
+        version: 1,
+      },
+    ]);
+    expect(journal.release(1)).toBe(true);
+    expect(journal.changesSince(0, 1)).toBeUndefined();
+  });
 });

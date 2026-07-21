@@ -1,8 +1,14 @@
-import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
+import type {
+  ViewServerLiveSubscription,
+  ViewServerRuntimeLiveClient,
+} from "@effect-view-server/client";
 import type {
   TopicDefinitions,
+  ValidatedRuntimeQuery,
   ViewServerHealth,
   ViewServerRuntimeClient,
+  ViewServerRuntimeError,
+  ViewServerTransportError,
 } from "@effect-view-server/config";
 import type { Effect } from "effect";
 import type { ViewServerAuth } from "./auth";
@@ -12,9 +18,22 @@ export type ViewServerServerRuntime<Topics extends TopicDefinitions> = Pick<
   "health"
 >;
 
+type ViewServerValidatedRuntimeLiveClient<Topics extends TopicDefinitions> = Pick<
+  ViewServerRuntimeLiveClient<Topics>,
+  "subscribeHealth" | "subscribeHealthSummary"
+> & {
+  readonly subscribeProtocolQuery: <Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+    query: ValidatedRuntimeQuery,
+  ) => Effect.Effect<
+    ViewServerLiveSubscription<object>,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
+};
+
 export type ViewServerWebSocketServerInput<Topics extends TopicDefinitions> = {
   readonly auth?: ViewServerAuth;
-  readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
+  readonly liveClient: ViewServerValidatedRuntimeLiveClient<Topics>;
   readonly runtime: ViewServerServerRuntime<Topics>;
   readonly transport?: {
     readonly clientOpened?: Effect.Effect<void>;

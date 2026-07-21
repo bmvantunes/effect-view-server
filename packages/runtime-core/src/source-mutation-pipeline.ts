@@ -37,6 +37,11 @@ export type ViewServerRuntimeCoreInternalMutations<Topics extends DecodableTopic
   ViewServerRuntimeClient<Topics>,
   "delete" | "patch" | "publish" | "publishMany" | "reset"
 > & {
+  readonly deleteStorageKey: (
+    topic: Extract<keyof Topics, string>,
+    key: string,
+    partitionKey: string,
+  ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly patchDecodedFields: (
     topic: Extract<keyof Topics, string>,
     key: string,
@@ -49,6 +54,7 @@ export type ViewServerRuntimeCoreInternalMutations<Topics extends DecodableTopic
   readonly publishManyDecodedRowsWithStorageKeys: (
     topic: Extract<keyof Topics, string>,
     rows: ReadonlyArray<RuntimeCoreDecodedRowWithStorageKey>,
+    partitionKey?: string,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly publishManyWithStorageKeys: <Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
@@ -56,6 +62,7 @@ export type ViewServerRuntimeCoreInternalMutations<Topics extends DecodableTopic
       readonly storageKey: string;
       readonly row: TopicRow<Topics, Topic>;
     }>,
+    partitionKey?: string,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
 };
 
@@ -105,9 +112,10 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
   )(function* (
     topic: Extract<keyof Topics, string>,
     rows: ReadonlyArray<RuntimeCoreDecodedRowWithStorageKey>,
+    partitionKey?: string,
   ) {
     yield* applyEngineMutation(
-      engine.publishManyDecodedRowsWithStorageKeys(topic, rows),
+      engine.publishManyDecodedRowsWithStorageKeys(topic, rows, partitionKey),
       requestHealthRefresh,
     );
   });
@@ -119,9 +127,10 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
       readonly storageKey: string;
       readonly row: TopicRow<Topics, Topic>;
     }>,
+    partitionKey?: string,
   ) {
     yield* applyEngineMutation(
-      engine.publishManyWithStorageKeys(topic, rows),
+      engine.publishManyWithStorageKeys(topic, rows, partitionKey),
       requestHealthRefresh,
     );
   });
@@ -148,6 +157,14 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
   >(topic: Topic, key: string) {
     yield* applyEngineMutation(engine.delete(topic, key), requestHealthRefresh);
   });
+  const deleteStorageKey = Effect.fn("ViewServerRuntimeCore.sourceMutation.deleteStorageKey")(
+    function* (topic: Extract<keyof Topics, string>, key: string, partitionKey: string) {
+      yield* applyEngineMutation(
+        engine.deleteStorageKey(topic, key, partitionKey),
+        requestHealthRefresh,
+      );
+    },
+  );
   const reset = Effect.fn("ViewServerRuntimeCore.client.reset")(function* () {
     yield* applyEngineMutation(engine.reset(), requestHealthRefresh);
   });
@@ -160,6 +177,7 @@ export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTo
     patchDecodedFields,
     patch,
     delete: deleteRow,
+    deleteStorageKey,
     reset,
   };
   const decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics> = {

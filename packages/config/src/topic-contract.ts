@@ -15,11 +15,25 @@ export type {
 } from "./query-core";
 export type { RejectExtraKeys } from "./query-exact";
 export type {
-  EqualityFilter,
+  BlankCondition,
   ExactWhere,
-  FieldFilter,
-  RangeFilter,
-  StringFilter,
+  EqualsCondition,
+  FieldCondition,
+  FieldConditionForPath,
+  FilterableFieldPath,
+  FilterableFieldValue,
+  FilterableScalar,
+  FilterExpression,
+  FilterGroup,
+  InCondition,
+  InRangeCondition,
+  NegationExpression,
+  NotEqualCondition,
+  NumericComparisonCondition,
+  RouteFieldKey,
+  RouteFieldValue,
+  TextMatchingOptions,
+  TextSearchCondition,
   Where,
 } from "./query-filter";
 export type {

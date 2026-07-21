@@ -11,3 +11,8 @@ and Effect utility packages plus Effect and React. Its testing subpath uses the 
 Adapter as a development dependency and optional peer. The testing helper must be created from the
 same `createViewServerReact(...)` binding object used by application hooks, so the test provider and
 hook contexts cannot drift apart.
+
+`useLiveQuery` exposes the canonical query Interface unchanged: `where` is an
+implicit-`AND` array of typed Field Conditions or nested `AND`, `OR`, and `NOT`
+expressions. The React Module must not introduce field-keyed filter shorthands or
+transport-specific filter models.

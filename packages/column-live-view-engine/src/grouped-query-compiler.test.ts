@@ -7,6 +7,41 @@ import { makeEngine, position, Position } from "../test-harness/public-engine";
 import { normalizeDecimalAndBigIntFields } from "../test-harness/rows";
 
 describe("Grouped query compilation and evaluation", () => {
+  it.effect("reports canonical and hostile grouped filter failures", () =>
+    Effect.gen(function* () {
+      const metadata = rawQueryCompilerMetadata(Position);
+      const invalid = yield* Effect.flip(
+        prepareRuntimeGroupedQuery("positions", metadata, {
+          groupBy: ["symbol"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [{ field: "missing", type: "equals", filter: "x" }],
+        }),
+      );
+      const hostileWhere = new Proxy<Array<unknown>>([], {
+        getPrototypeOf: () => {
+          throw new Error("hostile prototype");
+        },
+      });
+      const hostile = yield* Effect.flip(
+        prepareRuntimeGroupedQuery("positions", metadata, {
+          groupBy: ["symbol"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: hostileWhere,
+        }),
+      );
+
+      expect(invalid.message).toBe(
+        "Filter condition references unknown or non-filterable field: missing.",
+      );
+      expect(hostile.message).toBe("Grouped query where contains an unsupported query value.");
+
+      const nonPlainQuery = yield* Effect.flip(
+        prepareRuntimeGroupedQuery("positions", metadata, new Map()),
+      );
+      expect(nonPlainQuery.message).toBe("Grouped query must be a plain object.");
+    }),
+  );
+
   it.effect("evaluates bounded grouped windows without changing ordered aggregate results", () =>
     Effect.gen(function* () {
       const rows = new Map<string, object>(
@@ -78,9 +113,7 @@ describe("Grouped query compilation and evaluation", () => {
           aggregates: {
             rowCount: { aggFunc: "count" },
           },
-          where: {
-            symbol: "AAPL",
-          },
+          where: [{ field: "symbol", type: "equals", filter: "AAPL" }],
           orderBy: [{ field: "symbol", direction: "asc" }],
           offset: 10_000,
           limit: 0,
@@ -447,6 +480,10 @@ describe("Grouped query compilation and evaluation", () => {
       const engine = yield* makeEngine();
       const sparseGroupBy = Array<string>();
       sparseGroupBy[1] = "status";
+      const decoratedGroupBy = ["status"];
+      Object.defineProperty(decoratedGroupBy, "metadata", { enumerable: true, value: true });
+      const decoratedOrderBy = [{ field: "status", direction: "asc" }];
+      Object.defineProperty(decoratedOrderBy, "metadata", { enumerable: true, value: true });
       const nonPlainGroupedQuery: object = Object.assign(new Map(), {
         groupBy: ["status"],
         aggregates: { rowCount: { aggFunc: "count" } },
@@ -455,8 +492,8 @@ describe("Grouped query compilation and evaluation", () => {
         readonly query: unknown;
         readonly message: string;
       }> = [
-        { query: null, message: "plain object" },
-        { query: nonPlainGroupedQuery, message: "plain object" },
+        { query: null, message: "snapshotted" },
+        { query: nonPlainGroupedQuery, message: "snapshotted" },
         {
           query: {
             groupBy: ["status"],
@@ -479,6 +516,13 @@ describe("Grouped query compilation and evaluation", () => {
         },
         {
           query: { groupBy: sparseGroupBy, aggregates: { rowCount: { aggFunc: "count" } } },
+          message: "snapshotted",
+        },
+        {
+          query: {
+            groupBy: decoratedGroupBy,
+            aggregates: { rowCount: { aggFunc: "count" } },
+          },
           message: "groupBy",
         },
         {
@@ -532,14 +576,18 @@ describe("Grouped query compilation and evaluation", () => {
           message: "unknown field: missing",
         },
         {
-          query: { groupBy: ["status"], aggregates: { rowCount: { aggFunc: "count" } }, where: [] },
-          message: "where",
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            orderBy: "bad",
+          },
+          message: "orderBy",
         },
         {
           query: {
             groupBy: ["status"],
             aggregates: { rowCount: { aggFunc: "count" } },
-            orderBy: "bad",
+            orderBy: decoratedOrderBy,
           },
           message: "orderBy",
         },
@@ -604,6 +652,14 @@ describe("Grouped query compilation and evaluation", () => {
             groupBy: ["status"],
             aggregates: { rowCount: { aggFunc: "count" } },
             offset: -1,
+          },
+          message: "offset",
+        },
+        {
+          query: {
+            groupBy: ["status"],
+            aggregates: { rowCount: { aggFunc: "count" } },
+            offset: 0.5,
           },
           message: "offset",
         },

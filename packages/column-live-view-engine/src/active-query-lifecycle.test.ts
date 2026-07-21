@@ -34,9 +34,7 @@ describe("column-live-view-engine Active Query lifecycle", () => {
         activeQueryTestMetadata(store),
         {
           select: ["id"],
-          where: {
-            status: "open",
-          },
+          where: [{ field: "status", type: "equals", filter: "open" }],
           orderBy: [{ field: "score", direction: "desc" }],
           limit: 2,
         },
@@ -64,9 +62,7 @@ describe("column-live-view-engine Active Query lifecycle", () => {
       );
       const compiled = yield* prepareRuntimeRawQuery("numbers", activeQueryTestMetadata(store), {
         select: ["id"],
-        where: {
-          score: 1,
-        },
+        where: [{ field: "score", type: "equals", filter: 1 }],
       });
 
       yield* releaseRawQueryExecution(activeQueryTestInterface(store), compiled);

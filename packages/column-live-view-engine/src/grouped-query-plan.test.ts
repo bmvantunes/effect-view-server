@@ -8,6 +8,7 @@ import {
   type RuntimeGroupedOrderBy,
 } from "./grouped-query-plan";
 import { rawQueryCompilerMetadata } from "./raw-query-compiler";
+import { normalizeWhere } from "./filter-expression";
 
 const GroupKeyRow = Schema.Struct({
   status: Schema.String,
@@ -43,11 +44,13 @@ describe("Grouped query planning", () => {
       { aggregate: "total", direction: "desc" },
       { field: "status", direction: "asc" },
     ];
-    const where: Record<string, unknown> = { status: "open" };
+    const metadata = rawQueryCompilerMetadata(GroupKeyRow);
+    const whereInput = [{ field: "status", type: "equals", filter: "open" }];
+    const where = normalizeWhere(whereInput, metadata.filterFields);
     const query: GroupedQueryPlanInput = {
       groupBy,
       aggregates,
-      where,
+      ...(where === undefined ? {} : { where }),
       orderBy,
       offset: 1,
       limit: 2,
@@ -100,7 +103,7 @@ describe("Grouped query planning", () => {
       aggregate: "rowCount",
       direction: "asc",
     });
-    where["status"] = "closed";
+    whereInput[0]!.filter = "closed";
     Object.assign(query, { offset: 20, limit: 30 });
 
     expect(plan.cacheKey).toBe(cacheKey);

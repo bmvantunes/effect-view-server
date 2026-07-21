@@ -3,13 +3,19 @@ import type { DeltaEvent, LiveQueryResult } from "@effect-view-server/config";
 import type {
   ActiveQueryBaseEvaluation,
   ActiveQueryBaseExecution,
+  AcquiredRawQueryExecution,
   ActiveQueryRegistry,
   RawQueryExecution,
+  RawQueryExecutionReleaseToken,
   RawQueryExecutionSlot,
   RawQueryExecutionWindowSlot,
   RetainedWindowEntry,
 } from "./active-query-contract";
-import type { CompiledRawQuery } from "./raw-query-compiler";
+import {
+  compilePreparedRuntimeRawQuery,
+  type CompiledRawQuery,
+  type PreparedRuntimeRawQuery,
+} from "./raw-query-compiler";
 import {
   rawQueryPlanWindow,
   rawQueryWindowScanPlan,
@@ -23,8 +29,14 @@ import {
   type TopicStorageProjectionSession,
 } from "./topic-storage-projection";
 import type { TopicStoreQueryInterface } from "./topic-store-query-interface";
+import type { TopicStorageProjectableQueryResultSemantics } from "./query-result-semantics";
 
 type RowObject = object;
+
+type RawQueryLeasePlan<ResultRow extends RowObject> = {
+  readonly resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>;
+  readonly window: RawQueryPlanWindow;
+};
 
 const retainedWindowFilled = (
   window: ReadonlyArray<{ readonly key: string; readonly row: RowObject }>,
@@ -54,18 +66,6 @@ const retainedWindowKeyIndex = (
     keyIndex.set(entry.key, index);
   }
   return keyIndex;
-};
-
-const getActiveRawQueryEntry = <ResultRow extends RowObject>(
-  registry: ActiveQueryRegistry,
-  compiled: CompiledRawQuery<object, ResultRow>,
-): {
-  map: Map<string, RawQueryExecutionSlot>;
-  key: string;
-} => {
-  const key = compiled.plan.queryCacheKey;
-  const map = getActiveRawQueryMap(registry);
-  return { map, key };
 };
 
 const evaluateBaseQuery = <Row extends RowObject, ResultRow extends RowObject>(
@@ -167,7 +167,7 @@ const updateBaseEvaluationFromRetainedChanges = (
   queryWindow: RawQueryPlanWindow,
 ): ActiveQueryBaseEvaluation<object> | undefined => {
   const currentVersion = store.version();
-  const batches = store.changesSince(evaluation.version);
+  const batches = store.changesSince(evaluation.version, compiled.plan.partitionKey);
   if (batches === undefined) {
     return undefined;
   }
@@ -183,8 +183,10 @@ const updateBaseEvaluationFromRetainedChanges = (
   for (const batch of batches) {
     for (const change of batch.changes) {
       const previousMatches =
-        change.previous !== undefined && compiled.plan.predicate.matches(change.previous);
-      const nextMatches = change.next !== undefined && compiled.plan.predicate.matches(change.next);
+        change.previous !== undefined &&
+        compiled.plan.predicate.matches(change.previous, change.key);
+      const nextMatches =
+        change.next !== undefined && compiled.plan.predicate.matches(change.next, change.key);
 
       if (queryWindow.limit === 0) {
         if (previousMatches && !nextMatches) {
@@ -332,10 +334,10 @@ const projectBaseEvaluation = <Row extends RowObject, ResultRow extends RowObjec
   compiled: CompiledRawQuery<Row, ResultRow>,
   evaluation: ActiveQueryBaseEvaluation<Row>,
 ): QueryEvaluation<ResultRow> => {
-  const storageProjection = bindStoreProjection(store, compiled);
+  const storageProjection = bindStoreProjection(store, compiled.plan.resultSemantics);
   const window = evaluation.window.map((entry) => ({
     key: entry.key,
-    row: projectRetainedEntry(store, compiled, entry, storageProjection),
+    row: projectRetainedEntry(store, compiled.plan.resultSemantics, entry, storageProjection),
   }));
 
   return {
@@ -349,18 +351,18 @@ const projectBaseEvaluation = <Row extends RowObject, ResultRow extends RowObjec
 
 const projectWindowEvaluation = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
-  compiled: CompiledRawQuery<Row, ResultRow>,
+  leasePlan: RawQueryLeasePlan<ResultRow>,
   evaluation: ActiveQueryBaseEvaluation<Row>,
   storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): QueryEvaluation<ResultRow> => {
   const end =
-    compiled.plan.window.limit === undefined
+    leasePlan.window.limit === undefined
       ? undefined
-      : compiled.plan.window.offset + compiled.plan.window.limit;
-  const sourceWindow = evaluation.window.slice(compiled.plan.window.offset, end);
+      : leasePlan.window.offset + leasePlan.window.limit;
+  const sourceWindow = evaluation.window.slice(leasePlan.window.offset, end);
   const window = sourceWindow.map((entry) => ({
     key: entry.key,
-    row: projectRetainedEntry(store, compiled, entry, storageProjection),
+    row: projectRetainedEntry(store, leasePlan.resultSemantics, entry, storageProjection),
   }));
 
   return {
@@ -380,26 +382,23 @@ export const evaluateRawQuery = <Row extends RowObject, ResultRow extends RowObj
 
 const bindStoreProjection = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
-  compiled: CompiledRawQuery<Row, ResultRow>,
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
 ): TopicStorageProjectionSession<ResultRow> | undefined => {
   const storageProjection = store.storageProjection;
   return storageProjection === undefined
     ? undefined
-    : bindTopicStorageProjection(
-        storageProjection,
-        compiled.plan.resultSemantics.topicStorageProjectionProof,
-      );
+    : bindTopicStorageProjection(storageProjection, resultSemantics.topicStorageProjectionProof);
 };
 
 const projectRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
-  compiled: CompiledRawQuery<Row, ResultRow>,
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
   entry: RetainedWindowEntry<Row>,
   storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): ResultRow => {
   const slot = retainedEntrySlot(store, entry);
   return storageProjection === undefined || slot === undefined
-    ? compiled.plan.project(entry.row)
+    ? resultSemantics.projectRow(entry.row)
     : storageProjection.projectResultRow(slot);
 };
 
@@ -416,13 +415,13 @@ const retainedEntrySlot = <Row extends RowObject>(
 
 const projectOwnedRetainedEntry = <Row extends RowObject, ResultRow extends RowObject>(
   store: TopicRawWindowScan<Row>,
-  compiled: CompiledRawQuery<Row, ResultRow>,
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
   entry: RetainedWindowEntry<Row>,
   storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): ResultRow => {
   const slot = retainedEntrySlot(store, entry);
   return storageProjection === undefined || slot === undefined
-    ? compiled.plan.resultSemantics.projectOwnedRow(entry.row)
+    ? resultSemantics.projectOwnedRow(entry.row)
     : storageProjection.projectOwnedResultRow(slot);
 };
 
@@ -434,10 +433,10 @@ export const evaluateRawQueryResult = <Row extends RowObject, ResultRow extends 
   const scanResult = store.scanRawWindow(
     rawQueryWindowScanPlan(compiled.plan, compiled.plan.window),
   );
-  const storageProjection = bindStoreProjection(store, compiled);
+  const storageProjection = bindStoreProjection(store, compiled.plan.resultSemantics);
   return {
     rows: scanResult.window.map((entry) =>
-      projectOwnedRetainedEntry(store, compiled, entry, storageProjection),
+      projectOwnedRetainedEntry(store, compiled.plan.resultSemantics, entry, storageProjection),
     ),
     totalRows: scanResult.totalRows,
     version,
@@ -449,15 +448,15 @@ export const evaluateRawQueryResult = <Row extends RowObject, ResultRow extends 
 const leaseRawQueryExecution = <ResultRow extends RowObject>(
   store: TopicStoreQueryInterface,
   execution: ActiveQueryBaseExecution,
-  compiled: CompiledRawQuery<object, ResultRow>,
+  leasePlan: RawQueryLeasePlan<ResultRow>,
   storageProjection: TopicStorageProjectionSession<ResultRow> | undefined,
 ): RawQueryExecution<ResultRow> => {
   const latestEvaluation = () =>
-    projectWindowEvaluation(store, compiled, execution.latest(), storageProjection);
+    projectWindowEvaluation(store, leasePlan, execution.latest(), storageProjection);
 
   return Object.freeze({
     initial: (queryId) =>
-      snapshotEvent(store, queryId, latestEvaluation(), compiled.plan.resultSemantics),
+      snapshotEvent(store, queryId, latestEvaluation(), leasePlan.resultSemantics),
     createCursor: () => ({
       evaluation: latestEvaluation(),
     }),
@@ -465,20 +464,13 @@ const leaseRawQueryExecution = <ResultRow extends RowObject>(
       Effect.sync(() => {
         const previous = cursor.evaluation;
         const next = latestEvaluation();
-        const operations = deltaOperations(previous, next, compiled.plan.resultSemantics);
+        const operations = deltaOperations(previous, next, leasePlan.resultSemantics);
         if (operations.length === 0 && previous.totalRows === next.totalRows) {
           return Option.none();
         }
         cursor.evaluation = next;
         return Option.some(
-          deltaEvent(
-            store,
-            queryId,
-            previous.version,
-            next,
-            operations,
-            compiled.plan.resultSemantics,
-          ),
+          deltaEvent(store, queryId, previous.version, next, operations, leasePlan.resultSemantics),
         );
       }),
   });
@@ -508,17 +500,18 @@ const retainedWindowForBaseWindow = (window: RawQueryPlanWindow): RawQueryPlanWi
 const acquireRawQueryWindow = (
   windows: Map<string, RawQueryExecutionWindowSlot>,
   window: RawQueryPlanWindow,
-): void => {
+): RawQueryPlanWindow => {
   const key = window.cacheKey;
   const existing = windows.get(key);
   if (existing !== undefined) {
     existing.refs += 1;
-    return;
+    return existing.window;
   }
   windows.set(key, {
     window,
     refs: 1,
   });
+  return window;
 };
 
 const releaseRawQueryWindow = (
@@ -589,36 +582,134 @@ const makeRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.ma
     }),
 );
 
+const rawQueryLeasePlan = <ResultRow extends RowObject>(
+  resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
+  window: RawQueryPlanWindow,
+): RawQueryLeasePlan<ResultRow> => Object.freeze({ resultSemantics, window });
+
+const acquireExistingRawQueryExecution = <ResultRow extends RowObject>(
+  store: TopicStoreQueryInterface,
+  registry: ActiveQueryRegistry,
+  cacheKey: string,
+  leasePlan: RawQueryLeasePlan<ResultRow>,
+): AcquiredRawQueryExecution<ResultRow> | undefined => {
+  const existing = getActiveRawQueryMap(registry).get(cacheKey);
+  if (existing === undefined) {
+    return undefined;
+  }
+  const storageProjection = bindStoreProjection(store, leasePlan.resultSemantics);
+  existing.refs += 1;
+  const window = acquireRawQueryWindow(existing.windows, leasePlan.window);
+  const canonicalLeasePlan = rawQueryLeasePlan(leasePlan.resultSemantics, window);
+  return Object.freeze({
+    execution: leaseRawQueryExecution(
+      store,
+      existing.execution,
+      canonicalLeasePlan,
+      storageProjection,
+    ),
+    releaseToken: Object.freeze({ cacheKey: existing.cacheKey, window }),
+  });
+};
+
+const registerRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.register")(
+  function* <ResultRow extends RowObject>(
+    store: TopicStoreQueryInterface,
+    registry: ActiveQueryRegistry,
+    compiled: CompiledRawQuery<object, ResultRow>,
+    recordCompilation: boolean,
+  ) {
+    const storageProjection = bindStoreProjection(store, compiled.plan.resultSemantics);
+    const windows = new Map<string, RawQueryExecutionWindowSlot>();
+    const window = acquireRawQueryWindow(windows, compiled.plan.window);
+    const execution = yield* makeRawQueryExecution(store, compiled, windows);
+    const cacheKey = compiled.plan.queryCacheKey;
+    return yield* Effect.sync(() => {
+      store.retainChanges(compiled.plan.partitionKey);
+      const entry: RawQueryExecutionSlot = {
+        cacheKey,
+        canonicalPlan: compiled.plan,
+        execution,
+        releaseRetainedChanges: () => store.releaseChanges(compiled.plan.partitionKey),
+        windows,
+        refs: 1,
+      };
+      getActiveRawQueryMap(registry).set(cacheKey, entry);
+      if (recordCompilation) {
+        registry.preparedRawPlanCompilationCount += 1;
+      }
+      const leasePlan = rawQueryLeasePlan(compiled.plan.resultSemantics, window);
+      return Object.freeze({
+        execution: leaseRawQueryExecution(store, execution, leasePlan, storageProjection),
+        releaseToken: Object.freeze({ cacheKey: entry.cacheKey, window }),
+      });
+    });
+  },
+);
+
+export const acquirePreparedRawQueryExecution = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.raw.acquirePrepared",
+)(function* <ResultRow extends RowObject>(
+  store: TopicStoreQueryInterface,
+  registry: ActiveQueryRegistry,
+  prepared: PreparedRuntimeRawQuery<ResultRow>,
+) {
+  const leasePlan = rawQueryLeasePlan(prepared.resultSemantics, prepared.identity.window);
+  const existing = acquireExistingRawQueryExecution(
+    store,
+    registry,
+    prepared.identity.queryCacheKey,
+    leasePlan,
+  );
+  if (existing !== undefined) {
+    return existing;
+  }
+  const compiled = compilePreparedRuntimeRawQuery(prepared);
+  return yield* registerRawQueryExecution(store, registry, compiled, true);
+});
+
 export const acquireRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.acquire")(
   function* <ResultRow extends RowObject>(
     store: TopicStoreQueryInterface,
     registry: ActiveQueryRegistry,
     compiled: CompiledRawQuery<object, ResultRow>,
   ) {
-    const storageProjection = bindStoreProjection(store, compiled);
-    const { map, key } = getActiveRawQueryEntry(registry, compiled);
-    const existing = map.get(key);
+    const leasePlan = rawQueryLeasePlan(compiled.plan.resultSemantics, compiled.plan.window);
+    const existing = acquireExistingRawQueryExecution(
+      store,
+      registry,
+      compiled.plan.queryCacheKey,
+      leasePlan,
+    );
     if (existing !== undefined) {
-      const entry = existing;
-      entry.refs += 1;
-      acquireRawQueryWindow(entry.windows, compiled.plan.window);
-      return leaseRawQueryExecution(store, entry.execution, compiled, storageProjection);
+      return existing.execution;
     }
-
-    const windows = new Map<string, RawQueryExecutionWindowSlot>();
-    acquireRawQueryWindow(windows, compiled.plan.window);
-    const execution = yield* makeRawQueryExecution(store, compiled, windows);
-    return yield* Effect.sync(() => {
-      store.retainChanges();
-      map.set(key, {
-        execution,
-        releaseRetainedChanges: () => store.releaseChanges(),
-        windows,
-        refs: 1,
-      });
-      return leaseRawQueryExecution(store, execution, compiled, storageProjection);
-    });
+    const acquired = yield* registerRawQueryExecution(store, registry, compiled, false);
+    return acquired.execution;
   },
+);
+
+export const releaseRawQueryExecutionToken = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.raw.releaseToken",
+)((registry: ActiveQueryRegistry, token: RawQueryExecutionReleaseToken) =>
+  Effect.sync(() => {
+    const map = getActiveRawQueryMap(registry);
+    const entry = map.get(token.cacheKey);
+    if (entry === undefined) {
+      return undefined;
+    }
+    if (!releaseRawQueryWindow(entry.windows, token.window)) {
+      return undefined;
+    }
+    if (entry.refs > 1) {
+      entry.refs -= 1;
+      entry.execution.latest();
+      return undefined;
+    }
+    entry.releaseRetainedChanges();
+    map.delete(entry.cacheKey);
+    return undefined;
+  }),
 );
 
 export const releaseRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQuery.raw.release")(
@@ -626,24 +717,9 @@ export const releaseRawQueryExecution = Effect.fn("ColumnLiveViewEngine.activeQu
     registry: ActiveQueryRegistry,
     compiled: CompiledRawQuery<object, ResultRow>,
   ) =>
-    Effect.sync(() => {
-      const { map, key } = getActiveRawQueryEntry(registry, compiled);
-      const existing = map.get(key);
-      if (existing === undefined) {
-        return undefined;
-      }
-      const entry = existing;
-      if (!releaseRawQueryWindow(entry.windows, compiled.plan.window)) {
-        return undefined;
-      }
-      if (entry.refs > 1) {
-        entry.refs -= 1;
-        entry.execution.latest();
-        return undefined;
-      }
-      entry.releaseRetainedChanges();
-      map.delete(key);
-      return undefined;
+    releaseRawQueryExecutionToken(registry, {
+      cacheKey: compiled.plan.queryCacheKey,
+      window: compiled.plan.window,
     }),
 );
 
@@ -661,3 +737,7 @@ export const clearRawQueryExecutions = Effect.fn("ColumnLiveViewEngine.activeQue
 export const activeRawQueryExecutionCount = Effect.fn(
   "ColumnLiveViewEngine.activeQuery.raw.countStore",
 )((registry: ActiveQueryRegistry) => Effect.sync(() => getActiveRawQueryMap(registry).size));
+
+export const preparedRawQueryPlanCompilationCount = Effect.fn(
+  "ColumnLiveViewEngine.activeQuery.raw.preparedPlanCompilationCount",
+)((registry: ActiveQueryRegistry) => Effect.sync(() => registry.preparedRawPlanCompilationCount));

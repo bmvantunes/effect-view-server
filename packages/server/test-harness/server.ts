@@ -1,5 +1,4 @@
 import { NodeSocket } from "@effect/platform-node";
-import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import {
   defineViewServerConfig,
   type GrpcRuntimeClients,
@@ -24,7 +23,11 @@ import { fromStringUnsafe } from "effect/BigDecimal";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import * as Net from "node:net";
-import { ViewServerAuthError, type ViewServerAuth } from "../src/index";
+import {
+  ViewServerAuthError,
+  type ViewServerAuth,
+  type ViewServerWebSocketServerInput,
+} from "../src/index";
 
 export const Order = Schema.Struct({
   id: Schema.String,
@@ -141,18 +144,25 @@ export const createServerTestRuntime = <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: Parameters<typeof makeViewServerRuntimeCoreInternal<Topics>>[1] = {},
-) => Effect.runSync(makeViewServerRuntimeCoreInternal(config, options));
+) => {
+  const runtimeCore = Effect.runSync(makeViewServerRuntimeCoreInternal(config, options));
+  return {
+    ...runtimeCore,
+    liveClient: runtimeCore.serverLiveClient,
+  };
+};
 
 export const serverTestLiveClientWithSubscribe = <const Topics extends TopicDefinitions>(
-  base: ViewServerRuntimeLiveClient<Topics>,
-  subscribe: (...args: ReadonlyArray<unknown>) => unknown,
-) => {
-  const liveClient = Object.create(base);
-  Object.defineProperty(liveClient, "subscribeRuntime", {
-    value: subscribe,
-  });
-  return liveClient;
-};
+  base: Pick<
+    ViewServerWebSocketServerInput<Topics>["liveClient"],
+    "subscribeHealth" | "subscribeHealthSummary"
+  >,
+  subscribe: ViewServerWebSocketServerInput<Topics>["liveClient"]["subscribeProtocolQuery"],
+): ViewServerWebSocketServerInput<Topics>["liveClient"] => ({
+  subscribeHealth: base.subscribeHealth,
+  subscribeHealthSummary: base.subscribeHealthSummary,
+  subscribeProtocolQuery: subscribe,
+});
 
 export const kafkaStartFromHealth = {
   consumerGroupId: "view-server-test",

@@ -1,15 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
 import { viewSchema } from "@effect-view-server/config";
 import { Effect, HashMap, HashSet, Result, Schema } from "effect";
+import * as BigDecimal from "effect/BigDecimal";
 import {
   makeGrpcLeasedIdentityContract,
+  type GrpcLeasedIdentityContract,
   type GrpcLeasedIdentityError,
 } from "./grpc-leased-identity";
 
 const IdentityRow = Schema.Struct({
   id: Schema.String,
   region: Schema.String,
-  desk: Schema.Struct({ name: Schema.String }),
+  desk: Schema.String,
 });
 
 const GroupedIdentityRow = Schema.Struct({
@@ -31,6 +33,9 @@ const failure = <Success>(
     onSuccess: () => undefined,
   });
 
+const leaseFromQuery = (contract: GrpcLeasedIdentityContract, query: unknown) =>
+  Result.map(contract.resolveQueryRoute(query), contract.leaseFromRoute);
+
 const missingPresenceKey = JSON.stringify(["missing"]);
 
 const presentPresenceKey = (canonicalKey: string): string =>
@@ -39,6 +44,22 @@ const presentPresenceKey = (canonicalKey: string): string =>
 const groupedPublicKey = (
   entries: ReadonlyArray<readonly [field: string, presenceKey: string]>,
 ): string => JSON.stringify(entries);
+
+const withObjectPrototypeValue = <Value, Error, Requirements>(
+  field: string,
+  value: unknown,
+  effect: Effect.Effect<Value, Error, Requirements>,
+): Effect.Effect<Value, Error, Requirements> =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      Reflect.set(Object.prototype, field, value);
+    }),
+    () => effect,
+    () =>
+      Effect.sync(() => {
+        Reflect.deleteProperty(Object.prototype, field);
+      }),
+  );
 
 const makeGroupedLease = Effect.gen(function* () {
   const contract = yield* Effect.fromResult(
@@ -50,10 +71,302 @@ const makeGroupedLease = Effect.gen(function* () {
       keyField: "id",
     }),
   );
-  return yield* Effect.fromResult(contract.leaseFromQuery({ where: { region: { eq: "usa" } } }));
+  return yield* Effect.fromResult(leaseFromQuery(contract, { routeBy: { region: "usa" } }));
 });
 
 describe("leased gRPC identity contract", () => {
+  it.effect("ignores inherited route and grouping query fields", () =>
+    withObjectPrototypeValue(
+      "routeBy",
+      { region: "usa" },
+      Effect.gen(function* () {
+        const contract = yield* Effect.fromResult(
+          makeGrpcLeasedIdentityContract({
+            topic: "orders",
+            feedName: "orders",
+            routeBy: ["region"],
+            schema: IdentityRow,
+            keyField: "id",
+          }),
+        );
+        expect(failure(contract.resolveQueryRoute({}))?.kind).toBe("Route");
+        expect(failure(contract.resolveQueryRoute(null))?.kind).toBe("Route");
+        expect(
+          failure(
+            contract.resolveQueryRoute(
+              new Proxy(
+                {},
+                {
+                  getOwnPropertyDescriptor() {
+                    throw new Error("query fields cannot be inspected");
+                  },
+                },
+              ),
+            ),
+          )?.kind,
+        ).toBe("Route");
+
+        const lease = yield* Effect.fromResult(
+          leaseFromQuery(contract, { routeBy: { region: "usa" } }),
+        );
+        const row = { id: "order-1", region: "usa", desk: "equities" };
+        const internal = yield* Effect.fromResult(lease.internalizeRowKey(row));
+        const translated = yield* withObjectPrototypeValue(
+          "groupBy",
+          ["region"],
+          Effect.fromResult(
+            lease
+              .resultKeys<typeof row>({ select: ["id"] })
+              .translateSnapshot([internal.storageKey], [row]),
+          ),
+        );
+        const nullQueryTranslated = yield* Effect.fromResult(
+          lease.resultKeys<typeof row>(null).translateSnapshot([internal.storageKey], [row]),
+        );
+
+        expect(translated).toStrictEqual(["order-1"]);
+        expect(nullQueryTranslated).toStrictEqual(["order-1"]);
+      }),
+    ),
+  );
+
+  it("returns typed route failures when nested route reflection is hostile", () => {
+    const contract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "orders",
+        feedName: "orders",
+        routeBy: ["region"],
+        schema: IdentityRow,
+        keyField: "id",
+      }),
+    );
+    const hostileKeys = new Proxy(
+      { region: "usa" },
+      {
+        ownKeys() {
+          throw new Error("route keys cannot be inspected");
+        },
+      },
+    );
+    const hostileDescriptor = new Proxy(
+      { region: "usa" },
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("route field cannot be inspected");
+        },
+      },
+    );
+    const revokedQuery = Proxy.revocable({}, {});
+    revokedQuery.revoke();
+    const hostileKeysFailure = failure(contract.resolveQueryRoute({ routeBy: hostileKeys }));
+    const hostileDescriptorFailure = failure(
+      contract.resolveQueryRoute({ routeBy: hostileDescriptor }),
+    );
+    const revokedQueryFailure = failure(contract.resolveQueryRoute(revokedQuery.proxy));
+
+    expect({
+      hostileKeys: {
+        kind: hostileKeysFailure?.kind,
+        message: hostileKeysFailure?.message,
+      },
+      hostileDescriptor: {
+        kind: hostileDescriptorFailure?.kind,
+        message: hostileDescriptorFailure?.message,
+      },
+      revokedQuery: {
+        kind: revokedQueryFailure?.kind,
+        message: revokedQueryFailure?.message,
+      },
+    }).toStrictEqual({
+      hostileKeys: {
+        kind: "Route",
+        message: "Leased topic orders routeBy could not be inspected.",
+      },
+      hostileDescriptor: {
+        kind: "Route",
+        message: "Leased topic orders routeBy field region could not be inspected.",
+      },
+      revokedQuery: {
+        kind: "Route",
+        message: "Leased topic orders requires routeBy fields: region.",
+      },
+    });
+  });
+
+  it("compiles a total exact-route engine partition predicate", () => {
+    const contract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "orders",
+        feedName: "orders",
+        routeBy: ["region"],
+        schema: IdentityRow,
+        keyField: "id",
+      }),
+    );
+    const lease = Result.getOrThrow(leaseFromQuery(contract, { routeBy: { region: "UsÁ" } }));
+    const reacquired = Result.getOrThrow(leaseFromQuery(contract, { routeBy: { region: "UsÁ" } }));
+    let hostileReads = 0;
+    const hostileRow = new Proxy(
+      { region: "UsÁ" },
+      {
+        get() {
+          hostileReads += 1;
+          throw new Error("route field cannot be read");
+        },
+      },
+    );
+
+    expect({
+      exact: lease.enginePartition.matches({ region: "UsÁ" }),
+      differentExactValue: lease.enginePartition.matches({ region: "usá" }),
+      scalarOutsideSchema: lease.enginePartition.matches({ region: 1 }),
+      nonScalar: lease.enginePartition.matches({ region: { value: "UsÁ" } }),
+      unreadable: lease.enginePartition.matches(hostileRow),
+      hostileReads,
+      sameFeed: reacquired.feedKey === lease.feedKey,
+      separateExecution: reacquired.enginePartition.key !== lease.enginePartition.key,
+    }).toStrictEqual({
+      exact: true,
+      differentExactValue: false,
+      scalarOutsideSchema: false,
+      nonScalar: false,
+      unreadable: false,
+      hostileReads: 1,
+      sameFeed: true,
+      separateExecution: true,
+    });
+  });
+
+  it("rejects malformed BigDecimals before deriving a leased feed key", () => {
+    const BigDecimalRouteRow = Schema.Struct({
+      id: Schema.String,
+      amount: Schema.BigDecimal,
+    });
+    const contract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "orders",
+        feedName: "orders",
+        routeBy: ["amount"],
+        schema: BigDecimalRouteRow,
+        keyField: "id",
+      }),
+    );
+    const infinite = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(1n, Number.POSITIVE_INFINITY) },
+    });
+    const notANumber = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(1n, Number.NaN) },
+    });
+    const fractional = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(1n, 1.5) },
+    });
+    const firstCodecCollision = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(111n, Number.MIN_SAFE_INTEGER) },
+    });
+    const secondCodecCollision = leaseFromQuery(contract, {
+      routeBy: { amount: BigDecimal.make(111n, Number.MIN_SAFE_INTEGER + 1) },
+    });
+
+    expect({
+      infinite: failure(infinite)?.kind,
+      notANumber: failure(notANumber)?.kind,
+      fractional: failure(fractional)?.kind,
+      firstCodecCollision: failure(firstCodecCollision)?.kind,
+      secondCodecCollision: failure(secondCodecCollision)?.kind,
+    }).toStrictEqual({
+      infinite: "Route",
+      notANumber: "Route",
+      fractional: "Route",
+      firstCodecCollision: "Route",
+      secondCodecCollision: "Route",
+    });
+    expect(Result.isSuccess(infinite)).toBe(false);
+    expect(Result.isSuccess(notANumber)).toBe(false);
+    expect(Result.isSuccess(fractional)).toBe(false);
+    expect(Result.isSuccess(firstCodecCollision)).toBe(false);
+    expect(Result.isSuccess(secondCodecCollision)).toBe(false);
+  });
+
+  it("preserves negative-zero BigDecimal scales in exact route identity", () => {
+    const BigDecimalRouteRow = Schema.Struct({
+      id: Schema.String,
+      amount: Schema.BigDecimal,
+    });
+    const contract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "orders",
+        feedName: "orders",
+        routeBy: ["amount"],
+        schema: BigDecimalRouteRow,
+        keyField: "id",
+      }),
+    );
+    const zeroScale = Result.getOrThrow(
+      leaseFromQuery(contract, { routeBy: { amount: BigDecimal.make(1n, 0) } }),
+    );
+    const negativeZeroScale = Result.getOrThrow(
+      leaseFromQuery(contract, { routeBy: { amount: BigDecimal.make(1n, -0) } }),
+    );
+    const materialized = negativeZeroScale.materializeRoute();
+    const materializedAmount = materialized["amount"];
+    let hostileInspectionCount = 0;
+    const trustedDecodedAmount = new Proxy(BigDecimal.make(1n, -0), {
+      getOwnPropertyDescriptor(target, property) {
+        hostileInspectionCount += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      getPrototypeOf(target) {
+        hostileInspectionCount += 1;
+        return Reflect.getPrototypeOf(target);
+      },
+    });
+    const unreadableAmount = new Proxy(BigDecimal.make(1n, -0), {
+      get(target, property, receiver) {
+        if (property === "value") {
+          throw new Error("BigDecimal coefficient cannot be read");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(zeroScale.feedKey).not.toBe(negativeZeroScale.feedKey);
+    expect(
+      BigDecimal.isBigDecimal(materializedAmount) && Object.is(materializedAmount.scale, -0),
+    ).toBe(true);
+    expect(
+      Result.isSuccess(
+        negativeZeroScale.validateRowRoute({ id: "negative", amount: BigDecimal.make(1n, -0) }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        negativeZeroScale.validateRowRoute({ id: "positive", amount: BigDecimal.make(1n, 0) }),
+      ),
+    ).toBe(true);
+    expect(
+      negativeZeroScale.enginePartition.matches({
+        id: "negative",
+        amount: BigDecimal.make(1n, -0),
+      }),
+    ).toBe(true);
+    expect(
+      negativeZeroScale.enginePartition.matches({ id: "positive", amount: BigDecimal.make(1n, 0) }),
+    ).toBe(false);
+    expect(
+      Result.isSuccess(
+        negativeZeroScale.validateRowRoute({ id: "trusted", amount: trustedDecodedAmount }),
+      ),
+    ).toBe(true);
+    expect(
+      negativeZeroScale.enginePartition.matches({ id: "trusted", amount: trustedDecodedAmount }),
+    ).toBe(true);
+    expect(
+      failure(negativeZeroScale.validateRowRoute({ id: "unreadable", amount: unreadableAmount }))
+        ?.kind,
+    ).toBe("RouteMismatch");
+    expect(hostileInspectionCount).toBe(0);
+  });
+
   it.effect("round-trips one canonical route and collision-resistant raw Row Keys", () =>
     Effect.gen(function* () {
       const contract = yield* Effect.fromResult(
@@ -66,17 +379,14 @@ describe("leased gRPC identity contract", () => {
         }),
       );
       const lease = yield* Effect.fromResult(
-        contract.leaseFromQuery({
-          where: {
-            region: { eq: "us&a=1/%" },
-            desk: { eq: { name: "equities" } },
-          },
+        leaseFromQuery(contract, {
+          routeBy: { region: "UsÁ&a=1/%", desk: "Equíties" },
         }),
       );
       const firstRoute = lease.materializeRoute();
       const secondRoute = lease.materializeRoute();
-      const firstRow = { id: 'a","b', region: "us&a=1/%", desk: { name: "equities" } };
-      const secondRow = { id: 'a],["b', region: "us&a=1/%", desk: { name: "equities" } };
+      const firstRow = { id: 'a","b', region: "UsÁ&a=1/%", desk: "Equíties" };
+      const secondRow = { id: 'a],["b', region: "UsÁ&a=1/%", desk: "Equíties" };
       const firstRowKey = yield* Effect.fromResult(lease.internalizeRowKey(firstRow));
       const secondRowKey = yield* Effect.fromResult(lease.internalizeRowKey(secondRow));
       const rawKeys = lease.resultKeys<typeof firstRow>({ select: ["id"] });
@@ -104,31 +414,34 @@ describe("leased gRPC identity contract", () => {
       const invalidRowRoute = yield* Effect.fromResult(
         lease.validateRowRoute({ ...firstRow, region: 1 }),
       ).pipe(Effect.flip);
-      let hostileRouteReads = 0;
-      const hostileRouteMismatch = yield* Effect.fromResult(
+      let accessorRouteReads = 0;
+      const accessorRoute = { id: firstRow.id, desk: firstRow.desk };
+      Object.defineProperty(accessorRoute, "region", {
+        enumerable: true,
+        get() {
+          accessorRouteReads += 1;
+          return firstRow.region;
+        },
+      });
+      const accessorRouteMismatch = yield* Effect.fromResult(
+        lease.validateRowRoute(accessorRoute),
+      ).pipe(Effect.flip);
+      const inheritedRouteMismatch = yield* Effect.fromResult(
         lease.validateRowRoute(
-          new Proxy(firstRow, {
-            get(target, property, receiver) {
-              if (property === "region") {
-                hostileRouteReads += 1;
-                if (hostileRouteReads > 1) {
-                  throw new Error("route field was read twice");
-                }
-                return "europe";
-              }
-              return Reflect.get(target, property, receiver);
-            },
+          Object.assign(Object.create({ region: firstRow.region }), {
+            id: firstRow.id,
+            desk: firstRow.desk,
           }),
         ),
       ).pipe(Effect.flip);
-      const hostileRouteRead = yield* Effect.fromResult(
+      const unreadableRouteDescriptor = yield* Effect.fromResult(
         lease.validateRowRoute(
           new Proxy(firstRow, {
-            get(target, property, receiver) {
+            getOwnPropertyDescriptor(target, property) {
               if (property === "region") {
-                throw new Error("route field reflection failed");
+                throw new Error("route field descriptor failed");
               }
-              return Reflect.get(target, property, receiver);
+              return Reflect.getOwnPropertyDescriptor(target, property);
             },
           }),
         ),
@@ -169,17 +482,18 @@ describe("leased gRPC identity contract", () => {
         invalidRawSnapshotKind: invalidRawSnapshot.kind,
         routeMismatchKind: routeMismatch.kind,
         invalidRowRouteKind: invalidRowRoute.kind,
-        hostileRouteMismatchKind: hostileRouteMismatch.kind,
-        hostileRouteReadKind: hostileRouteRead.kind,
-        hostileRouteReads,
+        accessorRouteMismatchKind: accessorRouteMismatch.kind,
+        inheritedRouteMismatchKind: inheritedRouteMismatch.kind,
+        unreadableRouteDescriptorKind: unreadableRouteDescriptor.kind,
+        accessorRouteReads,
         invalidPublicKeyKind: invalidPublicKey.kind,
         hostilePublicKeyKind: hostilePublicKey.kind,
         distinctStorageKeys: firstRowKey.storageKey !== secondRowKey.storageKey,
       }).toStrictEqual({
         feedKey:
-          "orders%2Factive/orders%2Factive/leased/region=%22us%26a%3D1%2F%25%22&desk=%7B%22name%22%3A%22equities%22%7D",
-        firstRoute: { region: "us&a=1/%", desk: { name: "equities" } },
-        secondRoute: { region: "us&a=1/%", desk: { name: "equities" } },
+          "orders%2Factive/orders%2Factive/leased/region=%5B%22string%22%2C%22Us%C3%81%26a%3D1%2F%25%22%5D&desk=%5B%22string%22%2C%22Equ%C3%ADties%22%5D",
+        firstRoute: { region: "UsÁ&a=1/%", desk: "Equíties" },
+        secondRoute: { region: "UsÁ&a=1/%", desk: "Equíties" },
         validatedRow: firstRow,
         snapshotKeys: ['a","b', 'a],["b'],
         delta: [
@@ -200,15 +514,15 @@ describe("leased gRPC identity contract", () => {
         invalidRawSnapshotKind: "RowKey",
         routeMismatchKind: "RouteMismatch",
         invalidRowRouteKind: "RouteMismatch",
-        hostileRouteMismatchKind: "RouteMismatch",
-        hostileRouteReadKind: "RouteMismatch",
-        hostileRouteReads: 1,
+        accessorRouteMismatchKind: "RouteMismatch",
+        inheritedRouteMismatchKind: "RouteMismatch",
+        unreadableRouteDescriptorKind: "RouteMismatch",
+        accessorRouteReads: 0,
         invalidPublicKeyKind: "RowKey",
         hostilePublicKeyKind: "RowKey",
         distinctStorageKeys: true,
       });
       expect(firstRoute).not.toBe(secondRoute);
-      expect(firstRoute["desk"]).not.toBe(secondRoute["desk"]);
       rawKeys.clear();
     }),
   );
@@ -230,6 +544,18 @@ describe("leased gRPC identity contract", () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    let flakyRegionAstReads = 0;
+    const flakyRegion = new Proxy(Schema.String, {
+      get(target, property, receiver) {
+        if (property === "ast") {
+          flakyRegionAstReads += 1;
+          if (flakyRegionAstReads > 1) {
+            throw new Error("route validator failed");
+          }
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const HostileIdentityRow = new Proxy(IdentityRow, {
       get(target, property, receiver) {
         if (property === "fields") {
@@ -246,6 +572,20 @@ describe("leased gRPC identity contract", () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    const StructuredRouteRow = Schema.Struct({
+      id: Schema.String,
+      profile: Schema.Struct({ country: Schema.String }),
+    });
+    const MixedRouteRow = Schema.Struct({
+      id: Schema.String,
+      route: Schema.Union([Schema.String, Schema.Struct({ code: Schema.String })]),
+    });
+    const AnyRouteRow = Schema.Struct({ id: Schema.String, route: Schema.Any });
+    const FlakyValidatorRouteRow = Schema.Struct({ id: Schema.String, region: flakyRegion });
+    flakyRegionAstReads = 0;
+    const InheritedRouteRow = Schema.Struct({ id: Schema.String });
+    Object.setPrototypeOf(InheritedRouteRow.fields, { region: Schema.String });
+    const DottedRouteRow = Schema.Struct({ "profile.country": Schema.String });
     const contract = Result.getOrThrow(
       makeGrpcLeasedIdentityContract({
         topic: "orders",
@@ -255,16 +595,17 @@ describe("leased gRPC identity contract", () => {
         keyField: "id",
       }),
     );
+    const loneSurrogateContract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "\ud800",
+        feedName: "orders",
+        routeBy: ["region"],
+        schema: IdentityRow,
+        keyField: "id",
+      }),
+    );
     const loneSurrogateLease = Result.getOrThrow(
-      Result.getOrThrow(
-        makeGrpcLeasedIdentityContract({
-          topic: "\ud800",
-          feedName: "orders",
-          routeBy: ["region"],
-          schema: IdentityRow,
-          keyField: "id",
-        }),
-      ).leaseFromQuery({ where: { region: { eq: "usa" } } }),
+      leaseFromQuery(loneSurrogateContract, { routeBy: { region: "usa" } }),
     );
 
     expect({
@@ -296,6 +637,16 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
+      nonString: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "orders",
+          feedName: "orders",
+          // @ts-expect-error Runtime admission protects untyped callers from non-string fields.
+          routeBy: [1],
+          schema: IdentityRow,
+          keyField: "id",
+        }),
+      )?.kind,
       missing: failure(
         makeGrpcLeasedIdentityContract({
           topic: "orders",
@@ -303,6 +654,51 @@ describe("leased gRPC identity contract", () => {
           routeBy: ["missing"],
           schema: IdentityRow,
           keyField: "id",
+        }),
+      )?.kind,
+      structured: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "structured",
+          feedName: "structured",
+          routeBy: ["profile"],
+          schema: StructuredRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      mixed: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "mixed",
+          feedName: "mixed",
+          routeBy: ["route"],
+          schema: MixedRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      any: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "any",
+          feedName: "any",
+          routeBy: ["route"],
+          schema: AnyRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      inherited: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "inherited",
+          feedName: "inherited",
+          routeBy: ["region"],
+          schema: InheritedRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      dotted: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "dotted",
+          feedName: "dotted",
+          routeBy: ["profile.country"],
+          schema: DottedRouteRow,
+          keyField: "profile.country",
         }),
       )?.kind,
       hostileCodec: failure(
@@ -314,6 +710,15 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
+      unusableValidator: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "flaky-validator",
+          feedName: "flaky-validator",
+          routeBy: ["region"],
+          schema: FlakyValidatorRouteRow,
+          keyField: "id",
+        }),
+      )?.message,
       unreadableFields: failure(
         makeGrpcLeasedIdentityContract({
           topic: "orders",
@@ -323,19 +728,31 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
-      missingWhere: failure(contract.leaseFromQuery({}))?.kind,
-      nonExact: failure(contract.leaseFromQuery({ where: { region: { startsWith: "u" } } }))?.kind,
-      invalidValue: failure(contract.leaseFromQuery({ where: { region: { eq: 1 } } }))?.kind,
+      missingRoute: failure(contract.resolveQueryRoute({}))?.kind,
+      extraRoute: failure(
+        contract.resolveQueryRoute({ routeBy: { region: "usa", desk: "equities" } }),
+      )?.kind,
+      invalidValue: failure(contract.resolveQueryRoute({ routeBy: { region: { value: "usa" } } }))
+        ?.kind,
     }).toStrictEqual({
-      loneSurrogateFeedKey: "json:%22%5Cud800%22/orders/leased/region=%22usa%22",
+      loneSurrogateFeedKey:
+        "json:%22%5Cud800%22/orders/leased/region=%5B%22string%22%2C%22usa%22%5D",
       unreadable: "Configuration",
       empty: "Configuration",
       duplicate: "Configuration",
+      nonString: "Configuration",
       missing: "Configuration",
+      structured: "Configuration",
+      mixed: "Configuration",
+      any: "Configuration",
+      inherited: "Configuration",
+      dotted: "Configuration",
       hostileCodec: "Configuration",
+      unusableValidator:
+        "Leased topic flaky-validator route field region has no usable scalar schema validator.",
       unreadableFields: "Configuration",
-      missingWhere: "Route",
-      nonExact: "Route",
+      missingRoute: "Route",
+      extraRoute: "Route",
       invalidValue: "Route",
     });
   });
@@ -583,7 +1000,7 @@ describe("leased gRPC identity contract", () => {
         }),
       );
       const hostileLease = yield* Effect.fromResult(
-        hostileContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+        leaseFromQuery(hostileContract, { routeBy: { region: "usa" } }),
       );
       const hostileGrouping = hostileLease.resultKeys({ groupBy: ["hostile"] });
       const unreadableContract = yield* Effect.fromResult(
@@ -596,7 +1013,7 @@ describe("leased gRPC identity contract", () => {
         }),
       );
       const unreadableLease = yield* Effect.fromResult(
-        unreadableContract.leaseFromQuery({ where: { region: { eq: "usa" } } }),
+        leaseFromQuery(unreadableContract, { routeBy: { region: "usa" } }),
       );
       const unreadableGrouping = unreadableLease.resultKeys({ groupBy: ["unreadable"] });
       const missingFieldError = yield* Effect.fromResult(

@@ -11,6 +11,8 @@ type RowObject = object;
 export type TopicStoreMutationState = {
   readonly storage: TopicRowStorage;
   readonly subscribers: Set<LiveTopicSubscriber>;
+  readonly partitionedSubscribers: Map<string, Set<LiveTopicSubscriber>>;
+  readonly unpartitionedSubscribers: Set<LiveTopicSubscriber>;
   readonly mutationSemaphore: Semaphore.Semaphore;
   readonly notificationSemaphore: Semaphore.Semaphore;
   readonly healthLedger: ReturnType<typeof createTopicHealthLedger>;
@@ -24,8 +26,11 @@ export type TopicStoreMutationAdmission = <Success, Error, Requirements>(
 ) => Effect.Effect<Success, Error, Requirements>;
 
 export type TopicStoreMutationContext = {
-  readonly publishPrepared: (prepared: PreparedTopicRow) => number;
-  readonly publishPreparedMany: (preparedRows: ReadonlyArray<PreparedTopicRow>) => number;
+  readonly publishPrepared: (prepared: PreparedTopicRow, partitionKey?: string) => number;
+  readonly publishPreparedMany: (
+    preparedRows: ReadonlyArray<PreparedTopicRow>,
+    partitionKey?: string,
+  ) => number;
   readonly patch: <Patch extends Partial<RowObject>, Error>(
     key: string,
     patch: Patch,
@@ -36,7 +41,7 @@ export type TopicStoreMutationContext = {
     patch: Patch,
     invalidRow: InvalidRowErrorFactory<Error>,
   ) => Effect.Effect<number, Error>;
-  readonly delete: (key: string) => number;
+  readonly delete: (key: string, partitionKey?: string) => number;
 };
 
 export type TopicStoreRowWithStorageKey<Row extends object> = {
@@ -89,21 +94,29 @@ export const withTopicStoreStateTransition = Effect.fn(
 
 const commitTopicStoreState = (
   state: TopicStoreMutationState,
+  partitionKey?: string,
 ): ReadonlyArray<LiveTopicSubscriber> => {
-  state.storage.advanceVersion();
+  state.storage.advanceVersion(partitionKey);
   state.onCommit();
-  return [...state.subscribers];
+  if (partitionKey === undefined) {
+    return [...state.subscribers];
+  }
+  return [
+    ...state.unpartitionedSubscribers,
+    ...(state.partitionedSubscribers.get(partitionKey) ?? []),
+  ];
 };
 
 const recordTopicStoreMutation = (
   state: TopicStoreMutationState,
   rowsChanged: number,
   occurredAt: number,
+  partitionKey?: string,
 ): ReadonlyArray<LiveTopicSubscriber> => {
   if (rowsChanged <= 0) {
     return [];
   }
-  const subscribersToNotify = commitTopicStoreState(state);
+  const subscribersToNotify = commitTopicStoreState(state, partitionKey);
   state.healthLedger.recordMutation({
     version: state.storage.version,
     rowCount: state.storage.rowCount,
@@ -114,8 +127,9 @@ const recordTopicStoreMutation = (
 };
 
 const topicStoreMutationContext = (state: TopicStoreMutationState): TopicStoreMutationContext => ({
-  publishPrepared: (prepared) => state.storage.setPrepared(prepared),
-  publishPreparedMany: (preparedRows) => state.storage.setPreparedMany(preparedRows),
+  publishPrepared: (prepared, partitionKey) => state.storage.setPrepared(prepared, partitionKey),
+  publishPreparedMany: (preparedRows, partitionKey) =>
+    state.storage.setPreparedMany(preparedRows, partitionKey),
   patch: (key, patch, invalidRow) =>
     Effect.gen(function* () {
       const prepared = yield* state.storage.preparePatch(key, patch, invalidRow);
@@ -126,7 +140,7 @@ const topicStoreMutationContext = (state: TopicStoreMutationState): TopicStoreMu
       const prepared = yield* state.storage.prepareDecodedPatch(key, patch, invalidRow);
       return state.storage.setPrepared(prepared);
     }),
-  delete: (key) => state.storage.delete(key),
+  delete: (key, partitionKey) => state.storage.delete(key, partitionKey),
 });
 
 const withTopicStoreMutationBatch = Effect.fn("ColumnLiveViewEngine.topicStore.mutationBatch")(
@@ -171,6 +185,7 @@ export const runTopicStoreMutationTransaction = Effect.fn(
   state: TopicStoreMutationState,
   store: TopicStore,
   mutate: (mutation: TopicStoreMutationContext) => Effect.Effect<number, Error, Requirements>,
+  partitionKey?: string,
 ) {
   yield* state.withMutationAdmission(
     withTopicStoreMutationBatch(
@@ -186,7 +201,7 @@ export const runTopicStoreMutationTransaction = Effect.fn(
             }
             const rowsChanged = yield* mutate(topicStoreMutationContext(state));
             const occurredAt = yield* Clock.currentTimeMillis;
-            return recordTopicStoreMutation(state, rowsChanged, occurredAt);
+            return recordTopicStoreMutation(state, rowsChanged, occurredAt, partitionKey);
           }),
         );
         yield* notifyTopicStoreSubscribers(state, store, subscribers);
@@ -246,15 +261,20 @@ export const publishTopicStoreRowsWithStorageKeys = Effect.fn(
   store: TopicStore,
   rows: ReadonlyArray<TopicStoreRowWithStorageKey<Row>>,
   invalidRow: InvalidRowErrorFactory<Error>,
+  partitionKey?: string,
 ) {
   const state = topicStoreState(store);
   const preparedRows = yield* Effect.forEach(rows, (entry) =>
     state.storage.prepareRowWithStorageKey(entry.row, entry.storageKey, invalidRow),
   );
-  yield* runTopicStoreMutationTransaction(state, store, (mutation) =>
-    Effect.sync(() => {
-      return mutation.publishPreparedMany(preparedRows);
-    }),
+  yield* runTopicStoreMutationTransaction(
+    state,
+    store,
+    (mutation) =>
+      Effect.sync(() => {
+        return mutation.publishPreparedMany(preparedRows, partitionKey);
+      }),
+    partitionKey,
   );
 });
 
@@ -264,15 +284,20 @@ export const publishTopicStoreDecodedRowsWithStorageKeys = Effect.fn(
   store: TopicStore,
   rows: ReadonlyArray<TopicStoreRowWithStorageKey<Row>>,
   invalidRow: InvalidRowErrorFactory<Error>,
+  partitionKey?: string,
 ) {
   const state = topicStoreState(store);
   const preparedRows = yield* Effect.forEach(rows, (entry) =>
     state.storage.prepareDecodedRowWithStorageKey(entry.row, entry.storageKey, invalidRow),
   );
-  yield* runTopicStoreMutationTransaction(state, store, (mutation) =>
-    Effect.sync(() => {
-      return mutation.publishPreparedMany(preparedRows);
-    }),
+  yield* runTopicStoreMutationTransaction(
+    state,
+    store,
+    (mutation) =>
+      Effect.sync(() => {
+        return mutation.publishPreparedMany(preparedRows, partitionKey);
+      }),
+    partitionKey,
   );
 });
 
@@ -301,10 +326,15 @@ export const patchTopicStoreDecodedFields = Effect.fn(
 export const deleteTopicStoreRow = Effect.fn("ColumnLiveViewEngine.topicStore.delete")(function* (
   store: TopicStore,
   key: string,
+  partitionKey?: string,
 ) {
-  yield* runTopicStoreMutationTransaction(topicStoreState(store), store, (mutation) =>
-    Effect.sync(() => {
-      return mutation.delete(key);
-    }),
+  yield* runTopicStoreMutationTransaction(
+    topicStoreState(store),
+    store,
+    (mutation) =>
+      Effect.sync(() => {
+        return mutation.delete(key, partitionKey);
+      }),
+    partitionKey,
   );
 });

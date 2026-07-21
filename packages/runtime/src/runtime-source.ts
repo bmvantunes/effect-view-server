@@ -9,6 +9,7 @@ import type {
 import type {
   ViewServerRuntimeCoreInternalClient,
   ViewServerRuntimeCoreInternalLiveClient,
+  ViewServerRuntimeCoreProtocolQuerySubscriber,
 } from "@effect-view-server/runtime-core/internal";
 import { Effect, type Config, type Scope } from "effect";
 import type { ViewServerRuntimeOptions, ViewServerRuntimeTopicDefinitions } from "./runtime-types";
@@ -16,6 +17,7 @@ import type { ViewServerRuntimeOptions, ViewServerRuntimeTopicDefinitions } from
 export type ViewServerRuntimeSourceClients<Topics extends ViewServerRuntimeTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
   readonly liveClient: ViewServerRuntimeLiveClient<Topics>;
+  readonly protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;
 };
 
 export type ViewServerRuntimeSourcePrepareInput<Topics extends ViewServerRuntimeTopicDefinitions> =

@@ -1,9 +1,9 @@
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
 import { compareQueryValue } from "./query-value";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
 import type { TopicRawOrderByPlan, TopicRawWindowScanPlan } from "./raw-window-scan";
 import type { TopicRowEntry } from "./row-scan";
 import { columnValue, type TopicColumnValues } from "./topic-column-vector";
-import { Order as orderBigDecimal } from "effect/BigDecimal";
 import {
   distinctOrderedEqualityValues,
   equalityValueSatisfiesRangeBounds,
@@ -284,7 +284,10 @@ const compareBigDecimalColumnSlots = (
   const leftValue = column.bigDecimalAt(left);
   const rightValue = column.bigDecimalAt(right);
   if (leftValue !== undefined && rightValue !== undefined) {
-    return orderBigDecimal(leftValue, rightValue);
+    const comparison = compareTrustedWireSafeBigDecimal(leftValue, rightValue);
+    if (comparison !== undefined) {
+      return comparison;
+    }
   }
   return compareQueryValue(columnValue(column, left), columnValue(column, right));
 };

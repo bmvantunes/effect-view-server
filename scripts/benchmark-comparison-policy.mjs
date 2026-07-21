@@ -557,6 +557,7 @@ const compareKafkaSustainedFirehoseFinalLag = (regressions, taskLabel, actualTas
 
 const benchmarkScopeRequiresExactMutationCount = (benchmarkScope) =>
   benchmarkScope === "engine-raw-write" ||
+  benchmarkScope === "engine-raw-large-membership" ||
   benchmarkScope === "runtime-grpc-leased" ||
   benchmarkScope === "runtime-grpc-materialized" ||
   benchmarkScope === "runtime-kafka-ingest" ||
@@ -567,7 +568,7 @@ const benchmarkTaskRequiresExactMutationCount = (task) =>
   samplingPolicyRequiresExactMutationCount(task.samplingPolicy);
 
 const benchmarkScopeRequiresExactSampleCount = (benchmarkScope) =>
-  benchmarkScope === "engine-raw-write";
+  benchmarkScope === "engine-raw-write" || benchmarkScope === "engine-raw-large-membership";
 
 export const compareBenchmarkArtifacts = ({
   actual: validatedActual,
@@ -754,6 +755,13 @@ export const compareBenchmarkArtifacts = ({
       "groupedWriteAdmission",
       baselineTask.groupedWriteAdmission,
       actualTask.groupedWriteAdmission,
+    );
+    compareExactJson(
+      regressions,
+      taskLabel,
+      "rawLargeMembershipParameters",
+      baselineTask.rawLargeMembershipParameters,
+      actualTask.rawLargeMembershipParameters,
     );
     compareExactJson(
       regressions,

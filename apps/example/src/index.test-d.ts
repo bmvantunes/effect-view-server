@@ -16,9 +16,7 @@ describe("example app type contracts", () => {
   it("preserves selected order row types", () => {
     const result = useLiveQuery("orders", {
       select: ["id", "price"],
-      where: {
-        status: { eq: "open" },
-      },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       orderBy: [{ field: "price", direction: "desc" }],
       limit: 20,
     });
@@ -34,9 +32,7 @@ describe("example app type contracts", () => {
   it("rejects implicit all-column queries", () => {
     // @ts-expect-error raw example queries must explicitly select columns.
     useLiveQuery("orders", {
-      where: {
-        status: { eq: "open" },
-      },
+      where: [{ field: "status", type: "equals", filter: "open" }],
       limit: 20,
     });
   });

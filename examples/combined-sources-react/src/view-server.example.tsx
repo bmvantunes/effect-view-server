@@ -12,15 +12,16 @@ export function CombinedSourcesExampleApp() {
   const health = useViewServerHealth();
   const orders = useLiveQuery("orders", {
     select: ["id", "customerId", "strategyId", "region", "price"],
-    where: {
-      strategyId: { eq: "strategy-alpha" },
-      region: { eq: "usa" },
-    },
+    where: [
+      { field: "strategyId", type: "equals", filter: "strategy-alpha" },
+      { field: "region", type: "equals", filter: "usa" },
+    ],
+    routeBy: { strategyId: "strategy-alpha", region: "usa" },
     limit: 10,
   });
   const strategies = useLiveQuery("strategies", {
     select: ["id", "strategyId", "status", "notional"],
-    where: { status: { eq: "active" } },
+    where: [{ field: "status", type: "equals", filter: "active" }],
     limit: 10,
   });
   const trades = useLiveQuery("trades", {

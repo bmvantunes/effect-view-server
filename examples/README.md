@@ -9,7 +9,7 @@ non-runnable deployment recipe rather than an application.
 | ------------------------------------------------------ | ---------------------------- | -------------------- | --------------------------------------------------------------------------------- |
 | [`in-memory-react`](./in-memory-react)                 | in-memory client             | browser/test runtime | Fastest way to test components with the real runtime core and engine.             |
 | [`kafka-react`](./kafka-react)                         | Kafka                        | server runtime       | Topic-owned Apache Kafka sources across two Regions feeding React live queries.   |
-| [`grpc-leased-react`](./grpc-leased-react)             | gRPC leased                  | server runtime       | On-demand shared routes with required route filters.                              |
+| [`grpc-leased-react`](./grpc-leased-react)             | gRPC leased                  | server runtime       | On-demand shared routes with required exact `routeBy` values.                     |
 | [`grpc-materialized-react`](./grpc-materialized-react) | gRPC materialized            | server runtime       | Startup materialized stream retained as a View Server topic.                      |
 | [`combined-sources-react`](./combined-sources-react)   | Kafka + gRPC                 | server runtime       | Production-shaped app with two Kafka regions, leased gRPC, and materialized gRPC. |
 | [`tcp-publisher-react`](./tcp-publisher-react)         | external TCP                 | server runtime       | Non-browser publisher pushing rows into schema-safe TCP ingress.                  |
@@ -36,6 +36,21 @@ Each React example also includes a Vitest browser-mode test that renders the
 same production component under `createInMemoryViewServerReact`. Application
 code keeps using the same `useLiveQuery` and health hooks; tests only swap the
 provider, so component tests do not need Kafka, gRPC, TCP, or a WebSocket server.
+
+Every example uses the canonical Live Query filter format:
+
+```ts
+const query = {
+  where: [
+    { field: "status", type: "equals", filter: "open" },
+    { field: "price", type: "greaterThanOrEqual", filter: 10 },
+  ],
+};
+```
+
+The root array is an implicit `AND`; nested `AND`, `OR`, and `NOT` expressions
+provide recursive Boolean logic. Leased examples supply an exact `routeBy`
+object separately from local `where` filtering.
 
 Runnable server-runtime examples also expose `runtime` scripts that start the View Server
 runtime:

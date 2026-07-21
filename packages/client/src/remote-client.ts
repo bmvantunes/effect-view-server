@@ -20,21 +20,25 @@ import {
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
-import { runAllFinalizers } from "@effect-view-server/effect-utils";
 import {
+  runAllFinalizers,
+  snapshotViewServerQuery,
+  viewServerQuerySnapshotErrorMessage,
+} from "@effect-view-server/effect-utils";
+import {
+  compileViewServerLiveEventCodec,
   ViewServerRpcs,
   viewServerDecodeHealth,
   viewServerDecodeHealthQuery,
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
-  viewServerDecodeTrustedLiveEvent,
   viewServerEncodeLiveQuery,
   type ViewServerRpcError,
   type ViewServerTrustedWireEvent,
   type ViewServerWireHealth,
   type ViewServerWireLiveQuery,
 } from "@effect-view-server/protocol";
-import { Context, Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
+import { Context, Effect, Exit, Layer, ManagedRuntime, Result, Scope, Stream } from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type {
@@ -216,15 +220,17 @@ export const makeViewServerClient: <
       topic,
     });
 
-  const subscribeLive = Effect.fn("ViewServerClient.remote.subscribe")(function* <
+  const subscribeWire = Effect.fn("ViewServerClient.remote.subscribe")(function* <
+    Row,
     Topic extends Extract<keyof Topics, string>,
-    const Query extends RawQuery<TopicRow<Topics, Topic>> | GroupedQuery<TopicRow<Topics, Topic>>,
-  >(topic: Topic, query: Query) {
-    type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
-    const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, query);
-    const stream = subscribeRpc<Row>(topic, wireQuery, (event) =>
-      viewServerDecodeTrustedLiveEvent<Topics, Topic, Row>(config, topic, wireQuery, event),
-    );
+  >(
+    topic: Topic,
+    wireQuery: ViewServerWireLiveQuery,
+    decodeEvent: (
+      event: ViewServerTrustedWireEvent,
+    ) => Effect.Effect<ViewServerLiveEvent<Row>, ViewServerRuntimeError>,
+  ) {
+    const stream = subscribeRpc<Row>(topic, wireQuery, decodeEvent);
     return yield* streamToSubscription(topic, stream, {
       onOpen: remoteHealth.updateSubscriptionCount(topic, 1),
       onClose: remoteHealth.updateSubscriptionCount(topic, -1),
@@ -261,7 +267,27 @@ export const makeViewServerClient: <
     ViewServerLiveSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>,
     ViewServerRemoteClientError
   > {
-    return subscribeLive(topic, query);
+    const capturedQuery = Result.try(() =>
+      snapshotViewServerQuery<ExactLiveQueryInputForTopic<Topics, Topic, Query>>(query),
+    );
+    if (Result.isFailure(capturedQuery)) {
+      return Effect.fail({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: viewServerQuerySnapshotErrorMessage,
+        topic,
+      });
+    }
+    return Effect.gen(function* () {
+      type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
+      const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, capturedQuery.success);
+      const eventCodec = compileViewServerLiveEventCodec<Topics, Topic, Row>(
+        config,
+        topic,
+        wireQuery,
+      );
+      return yield* subscribeWire<Row, Topic>(topic, wireQuery, eventCodec.decodeTrusted);
+    });
   }
 
   const subscribeHealthSummary = Effect.fn("ViewServerClient.remote.healthSummary.subscribe")(

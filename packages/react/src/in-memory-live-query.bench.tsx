@@ -312,9 +312,7 @@ const writeBenchmarkArtifact = (input: ReactBrowserBenchmarkArtifact): Promise<v
 function OrdersView() {
   const result = useLiveQuery("orders", {
     select: ["id", "price", "updatedAt"],
-    where: {
-      status: { eq: "open" },
-    },
+    where: [{ field: "status", type: "equals", filter: "open" }],
     orderBy: [{ field: "updatedAt", direction: "desc" }],
     limit: 1,
   });

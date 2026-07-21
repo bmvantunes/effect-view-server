@@ -15,5 +15,6 @@ This example demonstrates:
 - Canonical Kafka JSON source mapping through
   `kafka.json(() => Schema.toCodecJson(RowSchema))`.
 - Kafka source rows mapped into a View Server topic.
-- React subscriptions over the normal WebSocket provider.
+- React subscriptions using canonical typed `where` arrays over the normal
+  WebSocket provider.
 - Health summary and detailed health rows for lag/message-rate visibility.

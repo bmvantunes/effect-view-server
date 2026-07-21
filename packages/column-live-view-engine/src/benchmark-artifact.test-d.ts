@@ -1,8 +1,39 @@
 import { expectTypeOf } from "@effect/vitest";
 import type {
+  BenchmarkArtifactInput,
   BenchmarkArtifactMeasurementInput,
   BenchmarkMeasurementProtocol,
 } from "./benchmark-artifact";
+
+type RawLargeMembershipArtifactInput = Extract<
+  BenchmarkArtifactInput,
+  { readonly benchmarkScope: "engine-raw-large-membership" }
+>;
+type RawSnapshotArtifactInput = Extract<
+  BenchmarkArtifactInput,
+  { readonly benchmarkScope: "engine-raw-snapshot" }
+>;
+
+declare const rawLargeMembershipWithoutParameters: Omit<
+  RawLargeMembershipArtifactInput,
+  "rawLargeMembershipParameters"
+>;
+declare const rawSnapshotArtifact: RawSnapshotArtifactInput;
+
+// @ts-expect-error The large-membership benchmark must declare its exact workload parameters.
+const missingRawLargeMembershipParameters: RawLargeMembershipArtifactInput = {
+  ...rawLargeMembershipWithoutParameters,
+};
+const rawSnapshotWithLargeMembershipParameters: RawSnapshotArtifactInput = {
+  ...rawSnapshotArtifact,
+  // @ts-expect-error Other benchmark scopes cannot claim large-membership workload metadata.
+  rawLargeMembershipParameters: {
+    candidateCount: 50_000,
+    partitionCount: 25,
+    preparedPlanCompilationCount: 1,
+    subscriberCount: 32,
+  },
+};
 
 const memoryCheckpointProtocol: BenchmarkMeasurementProtocol = {
   memoryCheckpoint: "settled-explicit-gc-after-cleanup",
@@ -97,3 +128,5 @@ expectTypeOf(postGcSamplesWithoutProtocol).toMatchTypeOf<BenchmarkArtifactMeasur
 expectTypeOf(
   postGcSamplesWithOriginalCheckpoint,
 ).toMatchTypeOf<BenchmarkArtifactMeasurementInput>();
+expectTypeOf(missingRawLargeMembershipParameters).toMatchTypeOf<RawLargeMembershipArtifactInput>();
+expectTypeOf(rawSnapshotWithLargeMembershipParameters).toMatchTypeOf<RawSnapshotArtifactInput>();

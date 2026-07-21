@@ -121,7 +121,7 @@ it("derives topic column vectors from schema metadata and preserves slot mutatio
   expect(columnScalarEqualityKey(numberKeys, 3)).toBe("number:-Infinity");
   expect(columnScalarEqualityKey(quantity, 0)).toBe("bigint:1");
   expect(columnScalarEqualityKey(quantity, -1)).toBeUndefined();
-  expect(columnScalarEqualityKey(decimalPrice, 0)).toBe("bigDecimal:1.25");
+  expect(columnScalarEqualityKey(decimalPrice, 0)).toBe('bigDecimal:["125","2"]');
   expect(columnScalarEqualityKey(decimalPrice, 1)).toBeUndefined();
 
   generic.set(0, "generic");
@@ -174,6 +174,9 @@ it("uses typed column values for ordered slot bound indexes", () => {
   const generic = createTopicColumnValuesFromArray("unknown", metadata, ["closed", "open"]);
 
   expect(orderedSlotBoundIndex([0, 1, 2], status, "open", (comparison) => comparison >= 0)).toBe(1);
+  expect(
+    orderedSlotBoundIndex([0, 1, 2], status, "aardvark", (comparison) => comparison >= 0),
+  ).toBe(0);
   expect(orderedSlotBoundIndex([0, 1, 2], status, "open", (comparison) => comparison > 0)).toBe(3);
   expect(orderedSlotBoundIndex([0, 1], sparseStatus, "open", (comparison) => comparison >= 0)).toBe(
     1,

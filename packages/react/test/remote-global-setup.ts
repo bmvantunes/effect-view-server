@@ -51,7 +51,7 @@ export const setup = async (project: Project) => {
   const runtimeCore = createInMemoryViewServerTesting(viewServer);
   const server = await Effect.runPromise(
     makeViewServerWebSocketServer(viewServer, {
-      liveClient: runtimeCore.liveClient,
+      liveClient: runtimeCore.serverLiveClient,
       runtime: runtimeCore.client,
     }),
   );

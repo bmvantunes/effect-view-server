@@ -5,6 +5,7 @@ import type { TopicStore } from "./topic-store";
 export type LiveTopicSubscriber = {
   readonly topic: string;
   readonly queryId: string;
+  readonly partitionKey?: string;
   readonly notify: (store: TopicStore) => Effect.Effect<void>;
   readonly queuedEvents: Effect.Effect<number>;
   readonly end: Effect.Effect<void>;

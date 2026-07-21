@@ -1,283 +1,483 @@
-import { isBigDecimal, make as makeBigDecimal } from "effect/BigDecimal";
+import type {
+  RuntimeFilterCondition,
+  RuntimeFilterExpression,
+  RuntimeFilterScalar,
+} from "./filter-expression";
+import { compareTrustedWireSafeBigDecimal } from "@effect-view-server/effect-utils";
+import { isBigDecimal } from "effect/BigDecimal";
+import { normalizeFilterText } from "./filter-expression";
 import { compareFilterValue } from "./query-value";
-import { isDenseArray, type RuntimeRawQuery } from "./raw-query-decoder";
-import { isOperatorFilterObject } from "./raw-query-filter";
-import { compileSchemaEquality } from "./raw-query-value-semantics";
 import { predicateFilterPlans, type TopicRawPredicatePlan } from "./raw-predicate-plan";
 import type { RawQueryCompilerMetadata } from "./raw-query-metadata";
-import { isPlainRecord, trustedFieldValue } from "./row-values";
-import type { SchemaValueSemantics } from "./topic-row-value-semantics";
+import { scalarEqualityKey } from "./row-values";
 
 type RowObject = object;
 
 export type CompiledRawPredicate<Row extends RowObject> = {
   readonly plan: TopicRawPredicatePlan;
-  readonly matches: (row: Row) => boolean;
+  readonly matches: (row: Row, storageKey?: string) => boolean;
 };
 
-type CompiledRawPredicateClause = {
-  readonly field: string;
-  readonly matches: (value: unknown) => boolean;
+type PredicateInstruction<Row extends RowObject> =
+  | {
+      readonly _tag: "condition";
+      readonly matches: (row: Row) => boolean;
+      readonly whenFalse: number;
+      readonly whenTrue: number;
+    }
+  | { readonly _tag: "return"; readonly value: boolean };
+
+type PredicateLabel = { index: number };
+
+type UnresolvedPredicateInstruction<Row extends RowObject> =
+  | {
+      readonly _tag: "condition";
+      readonly matches: (row: Row) => boolean;
+      readonly whenFalse: PredicateLabel;
+      readonly whenTrue: PredicateLabel;
+    }
+  | { readonly _tag: "return"; readonly value: boolean };
+
+type CompileTask =
+  | {
+      readonly _tag: "expression";
+      readonly expression: RuntimeFilterExpression;
+      readonly whenFalse: PredicateLabel;
+      readonly whenTrue: PredicateLabel;
+    }
+  | { readonly _tag: "mark"; readonly label: PredicateLabel; readonly value?: boolean };
+
+type DagPredicateInstruction<Row extends RowObject> =
+  | { readonly _tag: "condition"; readonly matches: (row: Row) => boolean }
+  | { readonly _tag: "NOT"; readonly condition: number }
+  | {
+      readonly _tag: "group";
+      readonly type: "AND" | "OR";
+      readonly conditions: ReadonlyArray<number>;
+    };
+
+type DagCompileFrame =
+  | { readonly _tag: "enter"; readonly expression: RuntimeFilterExpression }
+  | { readonly _tag: "exit"; readonly expression: RuntimeFilterExpression };
+
+type DagEvaluationScratch = {
+  readonly values: Uint8Array;
+  readonly evaluated: Uint8Array;
+  readonly visited: Uint32Array;
+  readonly nodeStack: Uint32Array;
+  readonly childPositions: Uint32Array;
+  visitedCount: number;
 };
 
-type CompiledRawPredicateParts = {
-  readonly clauses: ReadonlyArray<CompiledRawPredicateClause>;
-  readonly plan: TopicRawPredicatePlan;
+const isScalarArray = (
+  value: RuntimeFilterScalar | ReadonlyArray<RuntimeFilterScalar>,
+): value is ReadonlyArray<RuntimeFilterScalar> => Array.isArray(value);
+
+const fieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown => {
+  let value: unknown = row;
+  for (const segment of segments) {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+      return undefined;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, segment);
+    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
+      return undefined;
+    }
+    value = descriptor.value;
+  }
+  return value;
 };
 
-const clonePredicateFilter = (value: unknown): unknown => {
-  if (isBigDecimal(value)) {
-    return makeBigDecimal(value.value, value.scale);
+const trustedFieldPathValue = (row: object, segments: ReadonlyArray<string>): unknown => {
+  let value: unknown = row;
+  for (const segment of segments) {
+    if ((typeof value !== "object" || value === null) && typeof value !== "function") {
+      return undefined;
+    }
+    if (!Object.hasOwn(value, segment)) {
+      return undefined;
+    }
+    value = Reflect.get(value, segment);
   }
-  if (Array.isArray(value)) {
-    return value.map(clonePredicateFilter);
-  }
-  if (!isPlainRecord(value)) {
-    return value;
-  }
-  const cloned: Record<string, unknown> = {};
-  for (const [key, fieldValue] of Object.entries(value)) {
-    Object.defineProperty(cloned, key, {
-      configurable: true,
-      enumerable: true,
-      value: clonePredicateFilter(fieldValue),
-      writable: true,
-    });
-  }
-  return cloned;
+  return value;
 };
 
-const isStructuredQueryValue = (value: unknown): boolean =>
-  (isPlainRecord(value) && !isBigDecimal(value)) || Array.isArray(value);
+const blank = (value: unknown): boolean => value === undefined || value === null || value === "";
 
-const compileStructuredFilterMatcher = (
-  filter: Readonly<Record<string, unknown>>,
-  semantics: SchemaValueSemantics,
-): ((value: unknown) => boolean) => {
-  const literalMatcher = compileSchemaEquality(semantics, filter);
-  const oneOf = filter["in"];
-  const oneOfMatcher =
-    oneOf === undefined
-      ? undefined
-      : Array.isArray(oneOf) &&
-          isDenseArray(oneOf) &&
-          !oneOf.some((candidate) => candidate === undefined)
-        ? (() => {
-            const candidates = oneOf.map((candidate) =>
-              compileSchemaEquality(semantics, candidate),
-            );
-            return candidates.every((candidate) => candidate.valid)
-              ? (value: unknown) => candidates.some((candidate) => candidate.matches(value))
-              : () => false;
-          })()
-        : () => false;
-  const eq = filter["eq"];
-  const neq = filter["neq"];
-  const eqMatcher = eq === undefined ? undefined : compileSchemaEquality(semantics, eq);
-  const neqMatcher = neq === undefined ? undefined : compileSchemaEquality(semantics, neq);
+const compileCondition = <Row extends RowObject>(
+  condition: RuntimeFilterCondition,
+  metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
+): ((row: Row) => boolean) => {
+  const field = metadata.filterFields.get(condition.field);
+  if (field === undefined) {
+    return () => false;
+  }
+  const filter = condition.filter;
+  const membershipKeys =
+    condition.type === "in" && filter !== undefined && isScalarArray(filter)
+      ? new Set(filter.map(scalarEqualityKey))
+      : undefined;
+  const textValue = (value: unknown): string | undefined =>
+    typeof value === "string"
+      ? normalizeFilterText(value, condition.caseSensitive, condition.accentSensitive)
+      : undefined;
+  const equals = (value: unknown, operand: RuntimeFilterScalar): boolean => {
+    if (typeof operand === "string") {
+      return textValue(value) === operand;
+    }
+    if (isBigDecimal(operand)) {
+      return isBigDecimal(value) && compareTrustedWireSafeBigDecimal(value, operand) === 0;
+    }
+    return field.semantics.is(value) && field.semantics.equivalent(value, operand);
+  };
+  const membershipKey = (value: unknown): string | undefined => {
+    if (typeof value === "string") {
+      return scalarEqualityKey(
+        normalizeFilterText(value, condition.caseSensitive, condition.accentSensitive),
+      );
+    }
+    return field.semantics.is(value) ? scalarEqualityKey(value) : undefined;
+  };
+  const matchesValue = (value: unknown): boolean => {
+    switch (condition.type) {
+      case "blank":
+        return blank(value);
+      case "notBlank":
+        return !blank(value);
+      case "equals":
+      case "notEqual": {
+        const matches =
+          filter !== undefined && !isScalarArray(filter) ? equals(value, filter) : false;
+        return condition.type === "equals" ? matches : !matches;
+      }
+      case "in":
+        return membershipKeys?.has(membershipKey(value) ?? "") === true;
+      case "contains":
+      case "notContains":
+      case "startsWith":
+      case "endsWith": {
+        const actual = textValue(value);
+        const expected = typeof filter === "string" ? filter : undefined;
+        const positive =
+          actual !== undefined && expected !== undefined
+            ? condition.type === "startsWith"
+              ? actual.startsWith(expected)
+              : condition.type === "endsWith"
+                ? actual.endsWith(expected)
+                : actual.includes(expected)
+            : false;
+        return condition.type === "notContains" ? !positive : positive;
+      }
+      case "greaterThan":
+      case "greaterThanOrEqual":
+      case "lessThan":
+      case "lessThanOrEqual": {
+        if (filter === undefined || isScalarArray(filter)) {
+          return false;
+        }
+        const comparison = compareFilterValue(value, filter);
+        if (comparison === undefined) {
+          return false;
+        }
+        return condition.type === "greaterThan"
+          ? comparison > 0
+          : condition.type === "greaterThanOrEqual"
+            ? comparison >= 0
+            : condition.type === "lessThan"
+              ? comparison < 0
+              : comparison <= 0;
+      }
+      case "inRange": {
+        if (filter === undefined || isScalarArray(filter) || condition.filterTo === undefined) {
+          return false;
+        }
+        const lower = compareFilterValue(value, filter);
+        const upper = compareFilterValue(value, condition.filterTo);
+        return lower !== undefined && upper !== undefined && lower >= 0 && upper < 0;
+      }
+    }
+  };
+  const readField = trustedRows ? trustedFieldPathValue : fieldPathValue;
+  return (row) => matchesValue(readField(row, field.segments));
+};
 
-  return (value) => {
-    if (literalMatcher.valid && literalMatcher.matches(value)) {
+const compileInstructions = <Row extends RowObject>(
+  where: RuntimeFilterExpression,
+  metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
+): ReadonlyArray<PredicateInstruction<Row>> => {
+  const instructions: Array<UnresolvedPredicateInstruction<Row>> = [];
+  const whenTrue: PredicateLabel = { index: -1 };
+  const whenFalse: PredicateLabel = { index: -1 };
+  const tasks: Array<CompileTask> = [
+    { _tag: "mark", label: whenFalse, value: false },
+    { _tag: "mark", label: whenTrue, value: true },
+    { _tag: "expression", expression: where, whenTrue, whenFalse },
+  ];
+  while (tasks.length > 0) {
+    const task = tasks.pop()!;
+    if (task._tag === "mark") {
+      task.label.index = instructions.length;
+      if (task.value !== undefined) {
+        instructions.push({ _tag: "return", value: task.value });
+      }
+      continue;
+    }
+    const expression = task.expression;
+    if (expression._tag === "condition") {
+      instructions.push({
+        _tag: "condition",
+        matches: compileCondition(expression, metadata, trustedRows),
+        whenFalse: task.whenFalse,
+        whenTrue: task.whenTrue,
+      });
+      continue;
+    }
+    if (expression._tag === "NOT") {
+      tasks.push({
+        _tag: "expression",
+        expression: expression.condition,
+        whenFalse: task.whenTrue,
+        whenTrue: task.whenFalse,
+      });
+      continue;
+    }
+    const continuationLabels = expression.conditions.slice(1).map(() => ({ index: -1 }));
+    const groupTasks: Array<CompileTask> = [];
+    for (let index = 0; index < expression.conditions.length; index += 1) {
+      if (index > 0) {
+        groupTasks.push({ _tag: "mark", label: continuationLabels[index - 1]! });
+      }
+      const continuation = continuationLabels[index];
+      groupTasks.push({
+        _tag: "expression",
+        expression: expression.conditions[index]!,
+        whenFalse: expression.type === "AND" ? task.whenFalse : (continuation ?? task.whenFalse),
+        whenTrue: expression.type === "OR" ? task.whenTrue : (continuation ?? task.whenTrue),
+      });
+    }
+    for (let index = groupTasks.length - 1; index >= 0; index -= 1) {
+      tasks.push(groupTasks[index]!);
+    }
+  }
+  return Object.freeze(
+    instructions.map(
+      (instruction): PredicateInstruction<Row> =>
+        instruction._tag === "condition"
+          ? Object.freeze({
+              _tag: "condition",
+              matches: instruction.matches,
+              whenFalse: instruction.whenFalse.index,
+              whenTrue: instruction.whenTrue.index,
+            })
+          : Object.freeze(instruction),
+    ),
+  );
+};
+
+const expressionHasSharedNodes = (where: RuntimeFilterExpression): boolean => {
+  const seen = new WeakSet<object>();
+  const pending: Array<RuntimeFilterExpression> = [where];
+  while (pending.length > 0) {
+    const expression = pending.pop()!;
+    if (seen.has(expression)) {
       return true;
     }
-    if (eqMatcher?.valid === false || neqMatcher?.valid === false) {
-      return false;
+    seen.add(expression);
+    if (expression._tag === "NOT") {
+      pending.push(expression.condition);
+    } else if (expression._tag === "group") {
+      for (const condition of expression.conditions) {
+        pending.push(condition);
+      }
     }
-    if (oneOfMatcher !== undefined && !oneOfMatcher(value)) {
-      return false;
-    }
-    if (eqMatcher !== undefined && !eqMatcher.matches(value)) {
-      return false;
-    }
-    if (neqMatcher !== undefined && neqMatcher.matches(value)) {
-      return false;
-    }
-    return eq !== undefined || oneOfMatcher !== undefined || neq !== undefined;
-  };
+  }
+  return false;
 };
 
-const compileScalarOperatorFilterMatcher = (
-  filter: Readonly<Record<string, unknown>>,
-  semantics: SchemaValueSemantics,
-): ((value: unknown) => boolean) => {
-  if (
-    ("eq" in filter && filter["eq"] === undefined) ||
-    ("neq" in filter && filter["neq"] === undefined) ||
-    ("in" in filter && filter["in"] === undefined) ||
-    ("gt" in filter && filter["gt"] === undefined) ||
-    ("gte" in filter && filter["gte"] === undefined) ||
-    ("lt" in filter && filter["lt"] === undefined) ||
-    ("lte" in filter && filter["lte"] === undefined) ||
-    ("startsWith" in filter && filter["startsWith"] === undefined)
-  ) {
-    return () => false;
-  }
+const makeDagEvaluationScratch = (instructionCount: number): DagEvaluationScratch => ({
+  values: new Uint8Array(instructionCount),
+  evaluated: new Uint8Array(instructionCount),
+  visited: new Uint32Array(instructionCount),
+  nodeStack: new Uint32Array(instructionCount),
+  childPositions: new Uint32Array(instructionCount),
+  visitedCount: 0,
+});
 
-  const eq = filter["eq"];
-  const neq = filter["neq"];
-  const oneOf = filter["in"];
-  const startsWith = filter["startsWith"];
-  const gt = filter["gt"];
-  const gte = filter["gte"];
-  const lt = filter["lt"];
-  const lte = filter["lte"];
-  const eqMatcher = eq === undefined ? undefined : compileSchemaEquality(semantics, eq);
-  const neqMatcher = neq === undefined ? undefined : compileSchemaEquality(semantics, neq);
-  const oneOfMatcher =
-    oneOf === undefined
-      ? undefined
-      : Array.isArray(oneOf) &&
-          isDenseArray(oneOf) &&
-          !oneOf.some((candidate) => candidate === undefined)
-        ? (() => {
-            const candidates = oneOf.map((candidate) =>
-              compileSchemaEquality(semantics, candidate),
-            );
-            return candidates.every((candidate) => candidate.valid)
-              ? (value: unknown) => candidates.some((candidate) => candidate.matches(value))
-              : () => false;
-          })()
-        : () => false;
-
-  if (eqMatcher?.valid === false || neqMatcher?.valid === false) {
-    return () => false;
-  }
-
-  return (value) => {
-    if (eqMatcher !== undefined && !eqMatcher.matches(value)) {
-      return false;
-    }
-    if (neqMatcher !== undefined && neqMatcher.matches(value)) {
-      return false;
-    }
-    if (oneOfMatcher !== undefined && !oneOfMatcher(value)) {
-      return false;
-    }
-    if (startsWith !== undefined) {
-      if (
-        typeof startsWith !== "string" ||
-        typeof value !== "string" ||
-        !value.startsWith(startsWith)
-      ) {
-        return false;
-      }
-    }
-
-    if (gt !== undefined) {
-      const comparison = compareFilterValue(value, gt);
-      if (comparison === undefined || comparison <= 0) {
-        return false;
-      }
-    }
-    if (gte !== undefined) {
-      const comparison = compareFilterValue(value, gte);
-      if (comparison === undefined || comparison < 0) {
-        return false;
-      }
-    }
-    if (lt !== undefined) {
-      const comparison = compareFilterValue(value, lt);
-      if (comparison === undefined || comparison >= 0) {
-        return false;
-      }
-    }
-    if (lte !== undefined) {
-      const comparison = compareFilterValue(value, lte);
-      if (comparison === undefined || comparison > 0) {
-        return false;
-      }
-    }
-
-    return true;
-  };
-};
-
-const compileFilterMatcher = (
-  filter: unknown,
-  semantics: SchemaValueSemantics,
-): ((value: unknown) => boolean) => {
-  if (filter === undefined) {
-    return () => false;
-  }
-  if (!isPlainRecord(filter) || isBigDecimal(filter)) {
-    return compileSchemaEquality(semantics, filter).matches;
-  }
-
-  const structuredMatcher = compileStructuredFilterMatcher(filter, semantics);
-  if (!isOperatorFilterObject(filter)) {
-    const literalMatcher = compileSchemaEquality(semantics, filter);
-    return (value) =>
-      isStructuredQueryValue(value) ? structuredMatcher(value) : literalMatcher.matches(value);
-  }
-
-  const scalarMatcher = compileScalarOperatorFilterMatcher(filter, semantics);
-  return (value) =>
-    isStructuredQueryValue(value) ? structuredMatcher(value) : scalarMatcher(value);
-};
-
-const compilePredicateParts = (
+const compileDagMatcher = <Row extends RowObject>(
+  where: RuntimeFilterExpression,
   metadata: RawQueryCompilerMetadata,
-  where: RuntimeRawQuery["where"],
-): CompiledRawPredicateParts => {
-  if (where === undefined) {
-    return Object.freeze({
-      clauses: Object.freeze([]),
-      plan: Object.freeze({
-        filters: Object.freeze([]),
-        callbackRequired: false,
-        callbackSkippable: true,
-      }),
-    });
+  trustedRows: boolean,
+): ((row: Row) => boolean) => {
+  const instructions: Array<DagPredicateInstruction<Row>> = [];
+  const instructionByExpression = new WeakMap<object, number>();
+  const frames: Array<DagCompileFrame> = [{ _tag: "enter", expression: where }];
+  while (frames.length > 0) {
+    const frame = frames.pop()!;
+    const expression = frame.expression;
+    if (frame._tag === "enter") {
+      if (instructionByExpression.has(expression)) {
+        continue;
+      }
+      frames.push({ _tag: "exit", expression });
+      if (expression._tag === "NOT") {
+        frames.push({ _tag: "enter", expression: expression.condition });
+      } else if (expression._tag === "group") {
+        for (let index = expression.conditions.length - 1; index >= 0; index -= 1) {
+          frames.push({ _tag: "enter", expression: expression.conditions[index]! });
+        }
+      }
+      continue;
+    }
+
+    const instruction: DagPredicateInstruction<Row> =
+      expression._tag === "condition"
+        ? { _tag: "condition", matches: compileCondition(expression, metadata, trustedRows) }
+        : expression._tag === "NOT"
+          ? { _tag: "NOT", condition: instructionByExpression.get(expression.condition)! }
+          : {
+              _tag: "group",
+              type: expression.type,
+              conditions: Object.freeze(
+                expression.conditions.map((condition) => instructionByExpression.get(condition)!),
+              ),
+            };
+    instructionByExpression.set(expression, instructions.length);
+    instructions.push(Object.freeze(instruction));
   }
 
+  const rootInstruction = instructionByExpression.get(where)!;
+  const scratch = makeDagEvaluationScratch(instructions.length);
+  return (row) => {
+    for (let index = 0; index < scratch.visitedCount; index += 1) {
+      scratch.evaluated[scratch.visited[index]!] = 0;
+    }
+    scratch.visitedCount = 0;
+    let depth = 0;
+    scratch.nodeStack[0] = rootInstruction;
+    scratch.childPositions[0] = 0;
+    while (depth >= 0) {
+      const instructionIndex = scratch.nodeStack[depth]!;
+      const instruction = instructions[instructionIndex]!;
+      if (instruction._tag === "condition") {
+        scratch.values[instructionIndex] = instruction.matches(row) ? 1 : 0;
+        scratch.evaluated[instructionIndex] = 1;
+        scratch.visited[scratch.visitedCount] = instructionIndex;
+        scratch.visitedCount += 1;
+        depth -= 1;
+        continue;
+      }
+      if (instruction._tag === "NOT") {
+        if (scratch.evaluated[instruction.condition] === 0) {
+          depth += 1;
+          scratch.nodeStack[depth] = instruction.condition;
+          scratch.childPositions[depth] = 0;
+          continue;
+        }
+        scratch.values[instructionIndex] = scratch.values[instruction.condition] === 0 ? 1 : 0;
+        scratch.evaluated[instructionIndex] = 1;
+        scratch.visited[scratch.visitedCount] = instructionIndex;
+        scratch.visitedCount += 1;
+        depth -= 1;
+        continue;
+      }
+      const childPosition = scratch.childPositions[depth]!;
+      if (childPosition >= instruction.conditions.length) {
+        scratch.values[instructionIndex] = instruction.type === "AND" ? 1 : 0;
+        scratch.evaluated[instructionIndex] = 1;
+        scratch.visited[scratch.visitedCount] = instructionIndex;
+        scratch.visitedCount += 1;
+        depth -= 1;
+        continue;
+      }
+      const childInstruction = instruction.conditions[childPosition]!;
+      if (scratch.evaluated[childInstruction] === 0) {
+        depth += 1;
+        scratch.nodeStack[depth] = childInstruction;
+        scratch.childPositions[depth] = 0;
+        continue;
+      }
+      const childMatches = scratch.values[childInstruction] === 1;
+      if (instruction.type === "AND" ? !childMatches : childMatches) {
+        scratch.values[instructionIndex] = instruction.type === "OR" ? 1 : 0;
+        scratch.evaluated[instructionIndex] = 1;
+        scratch.visited[scratch.visitedCount] = instructionIndex;
+        scratch.visitedCount += 1;
+        depth -= 1;
+        continue;
+      }
+      scratch.childPositions[depth] = childPosition + 1;
+    }
+    return scratch.values[rootInstruction] === 1;
+  };
+};
+
+const compileInstructionMatcher = <Row extends RowObject>(
+  where: RuntimeFilterExpression,
+  metadata: RawQueryCompilerMetadata,
+  trustedRows: boolean,
+): ((row: Row) => boolean) => {
+  const instructions = compileInstructions<Row>(where, metadata, trustedRows);
+  return (row) => {
+    let instructionIndex = 0;
+    while (true) {
+      const instruction = instructions[instructionIndex]!;
+      if (instruction._tag === "condition") {
+        instructionIndex = instruction.matches(row) ? instruction.whenTrue : instruction.whenFalse;
+        continue;
+      }
+      return instruction.value;
+    }
+  };
+};
+
+const compilePlan = (
+  where: RuntimeFilterExpression,
+  metadata: RawQueryCompilerMetadata,
+): TopicRawPredicatePlan => {
+  const conditions = where._tag === "group" && where.type === "AND" ? where.conditions : [where];
   const filters: Array<TopicRawPredicatePlan["filters"][number]> = [];
-  const clauses: Array<CompiledRawPredicateClause> = [];
   let callbackRequired = false;
-  for (const [field, filter] of Object.entries(where)) {
-    const fieldPlan = predicateFilterPlans(field, filter, metadata);
-    filters.push(...fieldPlan.filters);
-    callbackRequired ||= fieldPlan.callbackRequired;
-    clauses.push(
-      Object.freeze({
-        field,
-        matches: compileFilterMatcher(
-          clonePredicateFilter(filter),
-          metadata.valueSemantics.field(field),
-        ),
-      }),
-    );
+  for (const expression of conditions) {
+    if (expression._tag !== "condition") {
+      callbackRequired = true;
+      continue;
+    }
+    const plan = predicateFilterPlans(expression, metadata);
+    for (const filter of plan.filters) {
+      filters.push(filter);
+    }
+    callbackRequired ||= plan.callbackRequired;
   }
   return Object.freeze({
-    clauses: Object.freeze(clauses),
-    plan: Object.freeze({
-      filters: Object.freeze(filters),
-      callbackRequired,
-      callbackSkippable: !callbackRequired,
-    }),
+    filters: Object.freeze(filters),
+    callbackRequired,
+    callbackSkippable: !callbackRequired,
   });
 };
 
 export const compileRawPredicate = <Row extends RowObject>(
   metadata: RawQueryCompilerMetadata,
-  where: RuntimeRawQuery["where"],
+  where: RuntimeFilterExpression | undefined,
+  options: { readonly trustedRows?: boolean } = {},
 ): CompiledRawPredicate<Row> => {
-  const parts = compilePredicateParts(metadata, where);
-  if (parts.clauses.length === 0) {
+  if (where === undefined) {
     return Object.freeze({
-      plan: parts.plan,
+      plan: Object.freeze({
+        filters: Object.freeze([]),
+        callbackRequired: false,
+        callbackSkippable: true,
+      }),
       matches: () => true,
     });
   }
-
+  const trustedRows = options.trustedRows === true;
+  const matches = expressionHasSharedNodes(where)
+    ? compileDagMatcher<Row>(where, metadata, trustedRows)
+    : compileInstructionMatcher<Row>(where, metadata, trustedRows);
   return Object.freeze({
-    plan: parts.plan,
-    matches: (row) => {
-      for (const clause of parts.clauses) {
-        if (!clause.matches(trustedFieldValue(row, clause.field))) {
-          return false;
-        }
-      }
-      return true;
-    },
+    plan: compilePlan(where, metadata),
+    matches,
   });
 };

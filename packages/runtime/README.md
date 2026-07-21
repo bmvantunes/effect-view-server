@@ -307,9 +307,22 @@ NodeRuntime.runMain(
 );
 ```
 
-Leased gRPC topics require the `routeBy` fields in user queries, so the runtime
-can open exactly one shared upstream stream per route key instead of accidentally
-materializing an unbounded upstream dataset.
+Leased gRPC topics require an exact `routeBy` object containing all and only the
+configured Route Fields, so the runtime can open exactly one shared upstream
+stream per Feed Route instead of accidentally materializing an unbounded
+upstream dataset. `routeBy` values are passed to the gRPC request Adapter exactly
+as supplied; the local `where` filter is independent:
+
+```ts
+useLiveQuery("orders", {
+  routeBy: {
+    strategyId: "strategy-1",
+    region: "ÁbCDEfgh",
+  },
+  where: [{ field: "status", type: "equals", filter: "open" }],
+  select: ["id", "status", "price"],
+});
+```
 
 ## TCP Publish Ingress
 

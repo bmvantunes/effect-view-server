@@ -6,7 +6,7 @@ export function GrpcMaterializedExampleApp() {
   const health = useViewServerHealthSummary();
   const strategies = useLiveQuery("strategies", {
     select: ["id", "strategyId", "region", "status", "notional"],
-    where: { status: { eq: "active" } },
+    where: [{ field: "status", type: "equals", filter: "active" }],
     orderBy: [{ field: "notional", direction: "desc" }],
     limit: 20,
   });

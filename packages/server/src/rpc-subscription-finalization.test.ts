@@ -31,7 +31,7 @@ describe("Real View Server RPC subscription finalization", () => {
       const server = yield* makeViewServerWebSocketServer(viewServer, {
         liveClient: {
           ...inMemory.liveClient,
-          subscribeRuntime: () => Effect.fail(subscribeError),
+          subscribeProtocolQuery: () => Effect.fail(subscribeError),
         },
         runtime: inMemory.client,
         transport: {

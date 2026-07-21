@@ -342,10 +342,14 @@ const liveStatusAggregateQuery = () =>
   ({
     groupBy: ["status"],
     aggregates: groupByStatusAggregateFields,
-    where: {
-      region: { eq: "emea" },
-      price: { gte: filteredPriceThreshold(benchmarkRowCount) },
-    },
+    where: [
+      { field: "region", type: "equals", filter: "emea" },
+      {
+        field: "price",
+        type: "greaterThanOrEqual",
+        filter: filteredPriceThreshold(benchmarkRowCount),
+      },
+    ],
     orderBy: groupByStatusOrder,
     limit: 50,
   }) as const;
@@ -403,10 +407,14 @@ const filteredStatusAggregateQuery = () =>
       rowCount: { aggFunc: "count" },
       totalPrice: { aggFunc: "sum", field: "price" },
     },
-    where: {
-      region: { eq: "emea" },
-      price: { gte: filteredPriceThreshold(benchmarkRowCount) },
-    },
+    where: [
+      { field: "region", type: "equals", filter: "emea" },
+      {
+        field: "price",
+        type: "greaterThanOrEqual",
+        filter: filteredPriceThreshold(benchmarkRowCount),
+      },
+    ],
     orderBy: [
       { aggregate: "totalPrice", direction: "desc" },
       { field: "status", direction: "asc" },

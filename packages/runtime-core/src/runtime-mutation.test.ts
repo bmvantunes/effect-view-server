@@ -65,16 +65,12 @@ describe("Runtime Core mutation", () => {
       ]);
 
       const decodedSnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-decoded" },
-        },
+        where: [{ field: "customerId", type: "equals", filter: "customer-decoded" }],
         select: ["id", "price"],
         limit: 1,
       });
       const storageKeySnapshot = yield* runtimeCore.internalClient.snapshot("orders", {
-        where: {
-          customerId: { eq: "customer-public-decoded" },
-        },
+        where: [{ field: "customerId", type: "equals", filter: "customer-public-decoded" }],
         select: ["id", "price"],
         limit: 1,
       });

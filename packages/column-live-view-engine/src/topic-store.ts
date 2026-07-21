@@ -21,17 +21,14 @@ export {
   trackTopicStoreSubscriptionQueueDepth,
 } from "./topic-store-subscription";
 export {
-  acquireTopicStoreMaterializedQueryExecution,
-  acquireTopicStoreRawQueryExecution,
+  acquireTopicStoreRuntimeGroupedQueryExecution,
+  acquireTopicStoreRuntimeRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
   evaluateTopicStoreRawQueryResult,
-  prepareTopicStoreGroupedQuery,
-  prepareTopicStoreRawQuery,
   prepareTopicStoreRuntimeGroupedQuery,
   prepareTopicStoreRuntimeRawQuery,
-  releaseTopicStoreMaterializedQueryExecution,
+  releaseTopicStoreMaterializedQueryExecutionToken,
   releaseTopicStoreRawQueryExecution,
-  topicStoreQueryMetadata,
 } from "./topic-store-query";
 export { collectTopicStoreHealth } from "./topic-store-health";
 export type { TopicStoreSubscriptionPermit } from "./topic-store-state";

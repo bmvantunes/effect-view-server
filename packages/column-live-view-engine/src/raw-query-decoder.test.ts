@@ -4,7 +4,7 @@ import { decodeRawQuery } from "./raw-query-decoder";
 import { rawQueryCompilerMetadata } from "./raw-query-metadata";
 
 describe("raw query decoder", () => {
-  it.effect("materializes each where operand through its field schema exactly once", () =>
+  it.effect("validates decoded scalar operands without re-encoding them", () =>
     Effect.gen(function* () {
       let encodeCalls = 0;
       const CountedString = Schema.String.pipe(
@@ -20,14 +20,50 @@ describe("raw query decoder", () => {
 
       const decoded = yield* decodeRawQuery("rows", rawQueryCompilerMetadata(Row), {
         select: ["value"],
-        where: { value: { eq: "alpha" } },
+        where: [{ field: "value", type: "equals", filter: "alpha" }],
       });
 
-      expect(decoded).toStrictEqual({
-        select: ["value"],
-        where: { value: { eq: "alpha" } },
+      expect(decoded.select).toStrictEqual(["value"]);
+      expect(decoded.where).toStrictEqual({
+        _tag: "condition",
+        field: "value",
+        type: "equals",
+        filter: "alpha",
+        caseSensitive: false,
+        accentSensitive: false,
+        key: '["condition","value","equals",false,false,"[\\"string\\",\\"alpha\\"]",null]',
       });
-      expect(encodeCalls).toBe(1);
+      expect(Object.isFrozen(decoded.where)).toBe(true);
+      expect(encodeCalls).toBe(0);
+    }),
+  );
+
+  it.effect("turns unexpected filter reflection failures into a stable query error", () =>
+    Effect.gen(function* () {
+      const Row = Schema.Struct({ value: Schema.String });
+      const hostileWhere = new Proxy<Array<unknown>>([], {
+        getPrototypeOf: () => {
+          throw new Error("hostile prototype");
+        },
+      });
+      const error = yield* Effect.flip(
+        decodeRawQuery("rows", rawQueryCompilerMetadata(Row), {
+          select: ["value"],
+          where: hostileWhere,
+        }),
+      );
+
+      expect(error.message).toBe("Raw query where contains an unsupported query value.");
+
+      const nonPlainQuery = yield* Effect.flip(
+        decodeRawQuery("rows", rawQueryCompilerMetadata(Row), new Map()),
+      );
+      expect(nonPlainQuery.message).toBe("Raw query must be a plain object.");
+
+      const missingQuery = yield* Effect.flip(
+        decodeRawQuery("rows", rawQueryCompilerMetadata(Row), undefined),
+      );
+      expect(missingQuery.message).toBe("Raw query select must be a non-empty array of strings.");
     }),
   );
 });

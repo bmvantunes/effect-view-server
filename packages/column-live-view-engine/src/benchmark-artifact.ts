@@ -120,20 +120,46 @@ export type BenchmarkArtifactMeasurementInput =
       readonly postGcEventLoopSamples?: never;
     };
 
+export type BenchmarkRawLargeMembershipParameters = {
+  readonly candidateCount: number;
+  readonly partitionCount: number;
+  readonly preparedPlanCompilationCount: number;
+  readonly subscriberCount: number;
+};
+
+type BenchmarkScope =
+  | "engine-raw-snapshot"
+  | "engine-raw-predicate-index"
+  | "engine-raw-large-membership"
+  | "engine-raw-live-fanout"
+  | "engine-query-delta-operations"
+  | "engine-raw-active-retained-delta"
+  | "engine-raw-write"
+  | "engine-grouped-aggregate"
+  | "engine-grouped-key-width"
+  | "engine-grouped-write";
+
+type BenchmarkScopeWithoutRawLargeMembership = Exclude<
+  BenchmarkScope,
+  "engine-raw-large-membership"
+>;
+
+type BenchmarkScopeFields =
+  | {
+      readonly benchmarkScope: "engine-raw-large-membership";
+      readonly rawLargeMembershipParameters: BenchmarkRawLargeMembershipParameters;
+    }
+  | {
+      readonly [Scope in BenchmarkScopeWithoutRawLargeMembership]: {
+        readonly benchmarkScope: Scope;
+        readonly rawLargeMembershipParameters?: never;
+      };
+    }[BenchmarkScopeWithoutRawLargeMembership];
+
 type BenchmarkArtifactFields = {
   readonly activeViewCountBeforeCleanup?: number;
   readonly artifactKind: "engine-benchmark-summary";
   readonly benchmarkName: string;
-  readonly benchmarkScope:
-    | "engine-raw-snapshot"
-    | "engine-raw-predicate-index"
-    | "engine-raw-live-fanout"
-    | "engine-query-delta-operations"
-    | "engine-raw-active-retained-delta"
-    | "engine-raw-write"
-    | "engine-grouped-aggregate"
-    | "engine-grouped-key-width"
-    | "engine-grouped-write";
   readonly rowCount: number;
   readonly mutationCount: number;
   readonly subscriberCount: number;
@@ -152,7 +178,7 @@ type BenchmarkArtifactFields = {
   readonly health: unknown;
   readonly notes: ReadonlyArray<string>;
   readonly preCleanupHealth?: unknown;
-};
+} & BenchmarkScopeFields;
 
 export type BenchmarkArtifactInput = BenchmarkArtifactFields &
   BenchmarkArtifactMemoryInput &
@@ -422,6 +448,7 @@ export const writeBenchmarkArtifact = (input: BenchmarkArtifactInput): void => {
         outputJsonPath: input.outputJsonPath,
         preCleanupHealth: input.preCleanupHealth,
         queuedEventCount: input.queuedEventCount,
+        rawLargeMembershipParameters: input.rawLargeMembershipParameters,
         rowCount: input.rowCount,
         samplingPolicy: input.samplingPolicy,
         subscriberCount: input.subscriberCount,

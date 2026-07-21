@@ -153,9 +153,10 @@ gRPC source topics bind their runtime stream beside the topic schema:
 - `client` is a key from `grpc.clients`, and `method` is a server-streaming
   method on that generated client.
 
-For leased topics, the `routeBy` tuple fields become required exact-equality
-filters in `useLiveQuery`; the source `request` callback receives them and
-builds the upstream gRPC request.
+For leased topics, the `routeBy` tuple defines the required fields of an exact
+query `routeBy` object. That object selects one Leased Feed, and the source
+`request` callback receives those values unchanged to build the upstream gRPC
+request. `where` remains independent local filtering within that feed.
 
 ## React Provider
 
@@ -182,11 +183,11 @@ column from wide topics.
 function Orders() {
   const orders = useLiveQuery("orders", {
     select: ["id", "price", "status"],
-    where: {
-      status: { eq: "open" },
-      customerId: { startsWith: "customer-" },
-      price: { gte: 10 },
-    },
+    where: [
+      { field: "status", type: "equals", filter: "open" },
+      { field: "customerId", type: "startsWith", filter: "customer-" },
+      { field: "price", type: "greaterThanOrEqual", filter: 10 },
+    ],
     orderBy: [{ field: "price", direction: "desc" }],
     limit: 20,
   });
@@ -195,11 +196,20 @@ function Orders() {
 }
 ```
 
+The root `where` array is an implicit `AND`. Its entries are typed Field
+Conditions or recursive `AND`, `OR`, and `NOT` expressions. An omitted `where`,
+`where: []`, and empty generated groups mean no filter. Field-keyed objects and
+shorthand operator properties are rejected. See [Query
+Semantics](./query-semantics.md) for the complete condition language.
+
 Grouped queries use `groupBy` plus an aggregate object keyed by output alias.
-Aggregate aliases become fields on the returned row type.
+Aggregate aliases become fields on the returned row type. Their `where`, when
+present, uses the same canonical expressions and filters source Topic Rows
+before grouping.
 
 ```tsx
 const totals = useLiveQuery("orders", {
+  where: [{ field: "price", type: "greaterThanOrEqual", filter: 10 }],
   groupBy: ["status"],
   aggregates: {
     rowCount: { aggFunc: "count" },

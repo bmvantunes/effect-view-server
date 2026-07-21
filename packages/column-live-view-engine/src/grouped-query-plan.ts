@@ -14,7 +14,11 @@ import {
   type GroupedKeyIdentityField,
 } from "@effect-view-server/effect-utils";
 import { Option } from "effect";
-import type { RuntimeGroupedOrderBy, RuntimeGroupedQuery } from "./grouped-query-decoder";
+import {
+  isRuntimeGroupedFieldOrderBy,
+  type RuntimeGroupedOrderBy,
+  type RuntimeGroupedQuery,
+} from "./grouped-query-decoder";
 import { stableQueryValueString } from "./query-value";
 import type { StoredRowOf } from "./query-result";
 import {
@@ -53,7 +57,7 @@ export type GroupedQueryPlan<Row extends RowObject, ResultRow extends RowObject 
   readonly groupKey: (row: Row) => string;
 };
 
-const groupedQueryPlanCacheKey = (
+export const groupedQueryPlanCacheKey = (
   query: GroupedQueryPlanInput,
   rawPredicateCacheKey: string,
 ): string =>
@@ -102,7 +106,7 @@ const immutableGroupedOrderBy = (
 ): ReadonlyArray<RuntimeGroupedOrderBy> =>
   Object.freeze(
     (orderBy ?? []).map((order) =>
-      "field" in order
+      isRuntimeGroupedFieldOrderBy(order)
         ? Object.freeze({ field: order.field, direction: order.direction })
         : Object.freeze({ aggregate: order.aggregate, direction: order.direction }),
     ),
@@ -231,7 +235,7 @@ const compileGroupedOrderBy = (
 ): ReadonlyArray<CompiledGroupedOrderBy> =>
   Object.freeze(
     orderBy.map((order) =>
-      "field" in order
+      isRuntimeGroupedFieldOrderBy(order)
         ? groupedFieldOrderColumn(order.field, order.direction, valueSemantics.field(order.field))
         : groupedAggregateOrderColumn(
             Option.getOrThrow(

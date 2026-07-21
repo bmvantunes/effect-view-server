@@ -73,6 +73,7 @@ const task = ({
   env,
   expectedMutationCount,
   expectedMeasurementProtocol,
+  expectedRawLargeMembershipParameters,
   label,
   minimumSampleCount,
   outputJsonPath,
@@ -88,6 +89,7 @@ const task = ({
   expectedBenchmarkScope: benchmarkScope,
   expectedMeasurementProtocol,
   expectedMutationCount,
+  expectedRawLargeMembershipParameters,
   expectedRowCount: rowCount,
   label,
   minimumSampleCount,
@@ -225,6 +227,35 @@ export const rawPredicateIndexTask = (rowCount, env = {}) => {
     rowCount,
     samplingPolicy,
     vpTask: "column-live-view-engine#bench:raw-predicate-index",
+  });
+};
+
+export const rawLargeMembershipTask = (env = {}) => {
+  const rowCount = 100_000;
+  const candidateCount = 50_000;
+  const partitionCount = 25;
+  const outputJsonPath = engineArtifactName(
+    `raw-large-membership-${candidateCount}candidates-${rowCount}rows.json`,
+  );
+  return task({
+    artifactKind: "engine-benchmark-summary",
+    benchmarkScope: "engine-raw-large-membership",
+    env: {
+      VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: outputJsonPath,
+      ...env,
+    },
+    expectedRawLargeMembershipParameters: {
+      candidateCount,
+      partitionCount,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    },
+    label: `raw large membership ${candidateCount} candidates ${rowCount} rows`,
+    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_ENGINE_BENCH_ITERATIONS"),
+    outputJsonPath,
+    packageDirectory: enginePackageDirectory,
+    rowCount,
+    vpTask: "column-live-view-engine#bench:raw-large-membership",
   });
 };
 

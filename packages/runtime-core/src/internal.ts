@@ -15,6 +15,8 @@ export {
   topicGrpcSourceMetadataFromUnknown,
 } from "./source-binding-resolution";
 export { makeRuntimeCoreMutationPipeline } from "./source-mutation-pipeline";
+export { engineQueryWithoutRoute } from "./engine-query";
+export { adaptRuntimeQuerySubscriber } from "./runtime-query-subscriber";
 export type {
   TopicDefinitionHasRequiredDefinedObjectProperty,
   TopicDefinitionHasSourceOwner,
@@ -44,8 +46,10 @@ export type {
 
 export type {
   ViewServerRuntimeCoreInternalLiveClient,
+  ViewServerRuntimeCoreQueryPartition,
   ViewServerRuntimeCoreTerminalObserver,
-} from "./live-client";
+} from "./live-client-contract";
+export type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 export type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
 export type {
   ViewServerRuntimeCoreInternalInstance,

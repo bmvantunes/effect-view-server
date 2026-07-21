@@ -126,6 +126,55 @@ describe("@effect-view-server/in-memory", () => {
     }),
   );
 
+  it.effect("rejects decorated query arrays through the in-memory runtime", () =>
+    Effect.gen(function* () {
+      const inMemory = createInMemoryViewServer(viewServer);
+      const decoratedOrderBy = [{ field: "price", direction: "asc" }];
+      Object.defineProperty(decoratedOrderBy, "metadata", { enumerable: true, value: true });
+      const decoratedGroupBy = ["price"];
+      Object.defineProperty(decoratedGroupBy, "metadata", { enumerable: true, value: true });
+      const decoratedRawQuery: object = { select: ["id"], orderBy: decoratedOrderBy };
+      const decoratedGroupedQuery: object = {
+        groupBy: decoratedGroupBy,
+        aggregates: { rowCount: { aggFunc: "count" } },
+      };
+
+      const snapshotError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped callers can still pass decorated query arrays.
+        inMemory.client.snapshot("orders", decoratedRawQuery),
+      );
+      const subscriptionError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped callers can still pass decorated query arrays.
+        inMemory.liveClient.subscribe("orders", decoratedRawQuery),
+      );
+      const groupedError = yield* Effect.flip(
+        // @ts-expect-error hostile untyped callers can still pass decorated query arrays.
+        inMemory.client.snapshot("orders", decoratedGroupedQuery),
+      );
+
+      expect(snapshotError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "Raw query orderBy must be a dense array without extra properties.",
+        topic: "orders",
+      });
+      expect(subscriptionError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "Raw query orderBy must be a dense array without extra properties.",
+        topic: "orders",
+      });
+      expect(groupedError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "Grouped query groupBy must be a non-empty array of strings.",
+        topic: "orders",
+      });
+
+      yield* inMemory.close;
+    }),
+  );
+
   it.effect("forwards grouped admission limits through the public in-memory API", () =>
     Effect.gen(function* () {
       const inMemory = createInMemoryViewServer(viewServer, {
@@ -247,9 +296,34 @@ describe("@effect-view-server/in-memory", () => {
       const inMemory = yield* makeInMemoryViewServerTesting(leasedViewServer, {});
       const subscription = yield* inMemory.liveClient.subscribe("orders", {
         select: ["id", "price"],
-        where: {
-          id: { eq: "order-1" },
-        },
+        where: [{ field: "id", type: "equals", filter: "order-1" }],
+        routeBy: { id: "order-1" },
+        limit: 10,
+      });
+      const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
+
+      expect(events[0]).toStrictEqual({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-0",
+        version: 0,
+        keys: [],
+        rows: [],
+        totalRows: 0,
+      });
+
+      yield* subscription.close();
+      yield* inMemory.close;
+    }),
+  );
+
+  it.effect("testing adapter keeps routeBy on runtime-erased leased subscriptions", () =>
+    Effect.gen(function* () {
+      const inMemory = yield* makeInMemoryViewServerTesting(leasedViewServer, {});
+      const subscription = yield* inMemory.liveClient.subscribeRuntime("orders", {
+        select: ["id", "price"],
+        where: [{ field: "id", type: "equals", filter: "order-1" }],
+        routeBy: { id: "order-1" },
         limit: 10,
       });
       const events = yield* subscription.events.pipe(Stream.take(1), Stream.runCollect);
@@ -471,6 +545,7 @@ describe("@effect-view-server/in-memory", () => {
 
       expect(health.engine.topics.orders.rowCount).toBe(1);
       expect("subscribeRuntime" in inMemory.liveClient).toBe(true);
+      expect("subscribeProtocolQuery" in inMemory.serverLiveClient).toBe(true);
 
       yield* inMemory.close;
     }),

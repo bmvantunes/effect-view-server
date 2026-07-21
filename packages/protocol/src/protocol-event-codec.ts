@@ -7,6 +7,8 @@ import type {
 } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
+  type ViewServerLooseWireEvent,
+  ViewServerLooseWireEventSchema,
   ViewServerTrustedWireEventSchema,
   type ViewServerTrustedWireEvent,
   ViewServerWireEventSchema,
@@ -173,7 +175,7 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   config: { readonly topics: Topics },
   expectedTopic: Topic,
   rowContract: ViewServerEventRowContract,
-  wireEvent: ViewServerWireEvent,
+  wireEvent: ViewServerLooseWireEvent,
 ) {
   if (wireEvent.topic !== expectedTopic) {
     return yield* Effect.fail(
@@ -232,7 +234,7 @@ const decodeLiveEventWithContract = Effect.fn("ViewServerProtocol.event.decode")
   rowContract: ViewServerEventRowContract,
   event: ViewServerWireEvent,
 ) {
-  const wireEvent = yield* Schema.decodeUnknownEffect(ViewServerWireEventSchema)(event).pipe(
+  const wireEvent = yield* Schema.decodeUnknownEffect(ViewServerLooseWireEventSchema)(event).pipe(
     Effect.mapError((error) => invalidRow(expectedTopic, `Invalid event: ${error.message}`)),
   );
   return yield* decodeValidatedLiveEvent<Topics, Topic, Row>(

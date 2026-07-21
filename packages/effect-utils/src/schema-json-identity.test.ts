@@ -131,7 +131,10 @@ describe("Schema JSON identity", () => {
   it("rejects encoded values that are not strict JSON", () => {
     const identity = makeSchemaJsonIdentity(Schema.Unknown);
 
-    expect(() => identity.canonicalKey(new Map([["key", "value"]]))).toThrow(
+    const nonJson = new Map([["key", "value"]]);
+
+    expect(() => identity.canonicalKey(nonJson)).toThrow("Expected JSON value");
+    expect(() => identity.decodeEncoded(nonJson)).toThrow(
       "Expected a plain data record or dense array",
     );
   });

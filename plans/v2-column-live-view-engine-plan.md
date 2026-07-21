@@ -40,7 +40,7 @@ Before implementing product code, set up Effect v4 beta and the Effect language 
 Required package baseline:
 
 - Use the workspace-pinned `effect` v4 beta; do not update it as part of unrelated work.
-- Current workspace baseline: `effect@4.0.0-beta.91`.
+- Current workspace baseline: `effect@4.0.0-beta.100`.
 - Use `@effect/vitest` for all tests.
 - Run strict Effect language-service diagnostics before considering a change complete.
 

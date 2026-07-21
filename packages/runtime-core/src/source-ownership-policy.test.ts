@@ -268,11 +268,13 @@ describe("SourceOwnershipPolicy", () => {
           routeBy: [],
         },
       });
-      const malformedLeasedViewServer = defineViewServerConfig({
+      // Config admission rejects empty leased routing, while the policy still defends its
+      // structural seam for callers that construct an internal view server directly.
+      const malformedLeasedViewServer = {
         topics: {
           malformedLeasedOrders,
         },
-      });
+      };
       const policy = makeSourceOwnershipPolicy(malformedLeasedViewServer);
 
       const runtimeCoreReadError = yield* policy

@@ -1,6 +1,9 @@
 import type { ViewServerTopicConfig } from "@effect-view-server/config";
+import type {
+  ViewServerRuntimeDecodedMutationClient,
+  ViewServerRuntimeTopicDefinitions,
+} from "@effect-view-server/config/internal";
 import type { ViewServerAuth } from "@effect-view-server/server";
-import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";
 import { Effect } from "effect";
 import * as Net from "node:net";
 import { ViewServerTcpPublishIngressError } from "./tcp-publish-command";
@@ -8,7 +11,6 @@ import {
   makeTcpPublishSocketServer,
   type TcpPublishServerFactory,
 } from "./tcp-publish-socket-runtime";
-import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export { ViewServerTcpPublishIngressError } from "./tcp-publish-command";
 export { tcpPublishUrl, writeTcpJsonLine } from "./tcp-publish-socket-runtime";
@@ -101,7 +103,7 @@ export const makeViewServerTcpPublishIngressWithServerFactory = Effect.fn(
   "ViewServerRuntime.tcpPublish.makeWithServerFactory",
 )(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
-  client: ViewServerRuntimeCoreInternalClient<Topics>,
+  client: ViewServerRuntimeDecodedMutationClient<Topics>,
   options: ViewServerTcpPublishIngressOptions,
   createServer: TcpPublishServerFactory,
 ) {
@@ -112,7 +114,7 @@ export const makeViewServerTcpPublishIngressWithServerFactory = Effect.fn(
 export const makeViewServerTcpPublishIngress = Effect.fn("ViewServerRuntime.tcpPublish.make")(
   function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
-    client: ViewServerRuntimeCoreInternalClient<Topics>,
+    client: ViewServerRuntimeDecodedMutationClient<Topics>,
     options: ViewServerTcpPublishIngressOptions,
   ) {
     return yield* makeViewServerTcpPublishIngressWithServerFactory(

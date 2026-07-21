@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { trustDecodedRuntimeQuery } from "@effect-view-server/config/internal";
 import { Effect } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
-import { viewServer } from "./runtime-core-test-fixtures";
+import { viewServer } from "./test-support/runtime-test-fixtures";
 
 describe("@effect-view-server/runtime-core", () => {
   it.effect("rejects routeBy on ordinary runtime subscription boundaries", () =>

@@ -112,6 +112,23 @@ describe("benchmark artifact compatibility", () => {
       regressions: ["task a: missing benchmark task in actual run."],
     });
   });
+
+  it("rejects measurement protocol changes as structural incompatibilities", () => {
+    const withMeasurementProtocol = {
+      ...simpleObservation,
+      measurementProtocol: {
+        memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        postGcEventLoopTurns: 8,
+      },
+    };
+
+    expect(compare([withMeasurementProtocol], [simpleObservation])).toStrictEqual({
+      ok: false,
+      regressions: [
+        'task a: measurementProtocol changed from {"memoryCheckpoint":"settled-explicit-gc-plus-post-gc-turns-after-cleanup","postGcEventLoopTurns":8} to undefined.',
+      ],
+    });
+  });
 });
 
 describe("benchmark threshold direction", () => {
@@ -1456,6 +1473,61 @@ describe("benchmark metadata compatibility", () => {
       regressions: [
         "task a: mutationCount changed from 100 to 101.",
         "task a / src/example.bench.ts > example benchmark group / case a: sampleCount changed from 10 to 11.",
+      ],
+    });
+  });
+
+  it("requires exact large membership sample counts", () => {
+    const rawLargeMembershipParameters = {
+      candidateCount: 50_000,
+      partitionCount: 25,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    };
+    const largeMembershipObservation = {
+      ...observation,
+      benchmarks: observation.benchmarks.map((benchmark) => ({
+        ...benchmark,
+        sampleCount: 5,
+      })),
+      benchmarkScope: "engine-raw-large-membership",
+      minimumSampleCount: 5,
+      rawLargeMembershipParameters,
+    };
+    const baseline = buildBenchmarkBaseline("smoke", [largeMembershipObservation]);
+    const changedSampleCount = buildBenchmarkBaseline("smoke", [
+      {
+        ...largeMembershipObservation,
+        benchmarks: [
+          {
+            ...largeMembershipObservation.benchmarks[0],
+            sampleCount: 6,
+          },
+        ],
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedSampleCount)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a / src/example.bench.ts > example benchmark group / case a: sampleCount changed from 5 to 6.",
+      ],
+    });
+
+    const changedWorkload = buildBenchmarkBaseline("smoke", [
+      {
+        ...largeMembershipObservation,
+        rawLargeMembershipParameters: {
+          ...rawLargeMembershipParameters,
+          candidateCount: 49_999,
+        },
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedWorkload)).toStrictEqual({
+      ok: false,
+      regressions: [
+        'task a: rawLargeMembershipParameters changed from {"candidateCount":50000,"partitionCount":25,"preparedPlanCompilationCount":1,"subscriberCount":32} to {"candidateCount":49999,"partitionCount":25,"preparedPlanCompilationCount":1,"subscriberCount":32}.',
       ],
     });
   });

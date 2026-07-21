@@ -958,7 +958,8 @@ describe("recursive filter expressions", () => {
           },
         },
       );
-      const cyclicAnd = { type: "AND", conditions: [] as Array<unknown> };
+      const cyclicConditions: Array<unknown> = [];
+      const cyclicAnd = { type: "AND", conditions: cyclicConditions };
       cyclicAnd.conditions.push(cyclicAnd);
 
       const cases: ReadonlyArray<readonly [unknown, string]> = [

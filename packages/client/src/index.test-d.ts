@@ -47,6 +47,27 @@ type QueryUnionWithInvalidWhere =
       readonly where: readonly [ValidClientIdCondition & { readonly unexpected: true }];
     };
 
+type ValidRawOrGroupedClientQuery =
+  | { readonly select: readonly ["id"] }
+  | {
+      readonly groupBy: readonly ["price"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+
+type ValidRawOrInvalidGroupedClientQuery =
+  | { readonly select: readonly ["id"] }
+  | {
+      readonly groupBy: readonly ["missing"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+
+type InvalidRawOrValidGroupedClientQuery =
+  | { readonly select: readonly ["missing"] }
+  | {
+      readonly groupBy: readonly ["price"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+
 declare const grpcRuntimeClients: GrpcRuntimeClients;
 declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
 
@@ -216,6 +237,36 @@ describe("client type contracts", () => {
     expectTypeOf<Effect.Error<typeof subscription>>().toEqualTypeOf<
       ViewServerRuntimeError | ViewServerTransportError
     >();
+
+    const acceptValidRawOrGroupedUnion = (query: ValidRawOrGroupedClientQuery) => {
+      const mixedSubscription = client.subscribe("orders", query);
+      expectTypeOf<Effect.Success<typeof mixedSubscription>>().toEqualTypeOf<
+        ViewServerLiveSubscription<
+          { readonly id: string } | { readonly price: number; readonly rowCount: bigint }
+        >
+      >();
+    };
+    expectTypeOf(acceptValidRawOrGroupedUnion).toBeFunction();
+
+    const rejectValidRawOrInvalidGroupedUnion = (query: ValidRawOrInvalidGroupedClientQuery) => {
+      // @ts-expect-error one invalid grouped member poisons the whole subscription query union.
+      const rejected = client.subscribe("orders", query);
+      expectTypeOf(rejected).not.toBeAny();
+    };
+    expectTypeOf(rejectValidRawOrInvalidGroupedUnion).toBeFunction();
+    expectTypeOf<
+      ExactLiveQuery<typeof Order.Type, ValidRawOrInvalidGroupedClientQuery>
+    >().toBeNever();
+
+    const rejectInvalidRawOrValidGroupedUnion = (query: InvalidRawOrValidGroupedClientQuery) => {
+      // @ts-expect-error one invalid raw member poisons the whole subscription query union.
+      const rejected = client.subscribe("orders", query);
+      expectTypeOf(rejected).not.toBeAny();
+    };
+    expectTypeOf(rejectInvalidRawOrValidGroupedUnion).toBeFunction();
+    expectTypeOf<
+      ExactLiveQuery<typeof Order.Type, InvalidRawOrValidGroupedClientQuery>
+    >().toBeNever();
 
     const rejectQueryUnion = (query: QueryUnionWithInvalidWhere) => {
       // @ts-expect-error every whole-query union member must be exact.

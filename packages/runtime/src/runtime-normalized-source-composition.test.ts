@@ -43,7 +43,7 @@ describe("Normalized runtime source composition", () => {
           Effect.succeed({
             healthOverlay: (health) => health,
             ownedTopics: [],
-            prepare: ({ client, liveClient, protocolQuerySubscriber }) =>
+            prepare: ({ client, liveClient }) =>
               Effect.acquireRelease(
                 Effect.sync(() => {
                   events.push("prepare:source");

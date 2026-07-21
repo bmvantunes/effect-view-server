@@ -3,7 +3,21 @@ import type { ExactRawQuery, PickRawFields, RawQuery } from "./raw-query-contrac
 
 export type LiveQuery<Row> = RawQuery<Row> | GroupedQuery<Row>;
 
-export type ExactLiveQuery<Row, Query> = ExactRawQuery<Row, Query> | ExactGroupedQuery<Row, Query>;
+type ExactLiveQueryMember<Row, Query> = ExactRawQuery<Row, Query> | ExactGroupedQuery<Row, Query>;
+
+type InvalidExactLiveQueryMember<Row, Query> = Query extends unknown
+  ? [ExactLiveQueryMember<Row, Query>] extends [never]
+    ? Query
+    : never
+  : never;
+
+type ExactLiveQueryMembers<Row, Query> = Query extends unknown
+  ? ExactLiveQueryMember<Row, Query>
+  : never;
+
+export type ExactLiveQuery<Row, Query> = [InvalidExactLiveQueryMember<Row, Query>] extends [never]
+  ? ExactLiveQueryMembers<Row, Query>
+  : never;
 
 export type LiveQueryRow<Row, Query> = Query extends { readonly groupBy: ReadonlyArray<unknown> }
   ? GroupedResult<Row, Query>

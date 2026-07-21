@@ -1,5 +1,11 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { ExactGroupedQuery, ExactRawQuery, FilterExpression } from "./index";
+import type {
+  ExactGroupedQuery,
+  ExactLiveQuery,
+  ExactLiveQueryInput,
+  ExactRawQuery,
+  FilterExpression,
+} from "./index";
 import { viewServer } from "../test-harness/live-query";
 import type { LiveQueryCall } from "../test-harness/live-query";
 import { Order } from "../test-harness/schemas";
@@ -62,6 +68,69 @@ type RawQueryUnionWithInvalidWhere =
       readonly select: readonly ["id"];
       readonly where: readonly [ValidIdFilter & { readonly unexpected: true }];
     };
+
+type ValidRawOrGroupedQuery =
+  | { readonly select: readonly ["id"] }
+  | {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+
+type ValidRawOrInvalidGroupedQuery =
+  | { readonly select: readonly ["id"] }
+  | {
+      readonly groupBy: readonly ["missing"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+
+type InvalidRawOrValidGroupedQuery =
+  | { readonly select: readonly ["missing"] }
+  | {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    };
+
+type RawQueryWithOptionalUndefinedWhere = {
+  readonly select: readonly ["id"];
+  readonly where?: undefined;
+};
+
+type RawQueryWithOptionalUndefinedOrderBy = {
+  readonly select: readonly ["id"];
+  readonly orderBy?: undefined;
+};
+
+type GroupedQueryWithOptionalUndefinedWhere = {
+  readonly groupBy: readonly ["status"];
+  readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+  readonly where?: undefined;
+};
+
+type GroupedQueryWithOptionalUndefinedOrderBy = {
+  readonly groupBy: readonly ["status"];
+  readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+  readonly orderBy?: undefined;
+};
+
+type ValidRawOrOptionalUndefinedRawQuery =
+  | { readonly select: readonly ["id"] }
+  | RawQueryWithOptionalUndefinedWhere
+  | RawQueryWithOptionalUndefinedOrderBy;
+
+type ValidGroupedOrOptionalUndefinedGroupedQuery =
+  | {
+      readonly groupBy: readonly ["status"];
+      readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+    }
+  | GroupedQueryWithOptionalUndefinedWhere
+  | GroupedQueryWithOptionalUndefinedOrderBy;
+
+type LiveQueryUnionWithOptionalUndefined =
+  | ValidRawOrGroupedQuery
+  | RawQueryWithOptionalUndefinedWhere
+  | RawQueryWithOptionalUndefinedOrderBy
+  | GroupedQueryWithOptionalUndefinedWhere
+  | GroupedQueryWithOptionalUndefinedOrderBy;
 
 describe("Live query generic contracts", () => {
   it("infers recursive raw and grouped query results", () => {
@@ -161,6 +230,21 @@ describe("Live query generic contracts", () => {
           readonly rowCount: bigint;
         }>
       >();
+
+      const acceptValidRawOrGroupedUnion = (query: ValidRawOrGroupedQuery) => {
+        const mixed = useLiveQuery("orders", query);
+        expectTypeOf(mixed.rows).toEqualTypeOf<
+          ReadonlyArray<
+            | { readonly id: string }
+            | {
+                readonly status: "open" | "closed" | "cancelled";
+                readonly rowCount: bigint;
+              }
+          >
+        >();
+      };
+      expectTypeOf(acceptValidRawOrGroupedUnion).toBeFunction();
+      expectTypeOf<ExactLiveQuery<typeof Order.Type, ValidRawOrGroupedQuery>>().not.toBeNever();
     };
 
     expectTypeOf(assertLiveQueryContracts).toBeFunction();
@@ -170,6 +254,26 @@ describe("Live query generic contracts", () => {
     const assertLiveQueryContracts = (useLiveQuery: LiveQueryCall<typeof viewServer.topics>) => {
       // @ts-expect-error raw queries must explicitly select projected fields.
       useLiveQuery("orders", { where: [] });
+
+      const emptyGroupBy = {
+        groupBy: [],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      } satisfies {
+        readonly groupBy: readonly [];
+        readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+      };
+      // @ts-expect-error grouped queries require at least one groupBy field.
+      useLiveQuery("orders", emptyGroupBy);
+
+      const emptyAggregates = {
+        groupBy: ["status"],
+        aggregates: {},
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: Record<never, never>;
+      };
+      // @ts-expect-error grouped queries require at least one aggregate.
+      useLiveQuery("orders", emptyAggregates);
 
       const rejectGeneratedInvalidQuery = (query: {
         readonly select: readonly ["id"];
@@ -241,6 +345,322 @@ describe("Live query generic contracts", () => {
       };
       expectTypeOf(rejectQueryUnionWithInvalidWhere).toBeFunction();
       expectTypeOf<ExactRawQuery<typeof Order.Type, RawQueryUnionWithInvalidWhere>>().toBeNever();
+
+      const rejectValidRawOrInvalidGroupedUnion = (query: ValidRawOrInvalidGroupedQuery) => {
+        // @ts-expect-error one invalid grouped member poisons the whole live-query union.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectValidRawOrInvalidGroupedUnion).toBeFunction();
+      expectTypeOf<ExactLiveQuery<typeof Order.Type, ValidRawOrInvalidGroupedQuery>>().toBeNever();
+
+      const rejectInvalidRawOrValidGroupedUnion = (query: InvalidRawOrValidGroupedQuery) => {
+        // @ts-expect-error one invalid raw member poisons the whole live-query union.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectInvalidRawOrValidGroupedUnion).toBeFunction();
+      expectTypeOf<ExactLiveQuery<typeof Order.Type, InvalidRawOrValidGroupedQuery>>().toBeNever();
+
+      const rejectOptionalUndefinedRawWhere = (query: RawQueryWithOptionalUndefinedWhere) => {
+        // @ts-expect-error optional where cannot permit an explicitly present undefined value.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectOptionalUndefinedRawWhere).toBeFunction();
+
+      const rejectOptionalUndefinedRawOrderBy = (query: RawQueryWithOptionalUndefinedOrderBy) => {
+        // @ts-expect-error optional orderBy cannot permit an explicitly present undefined value.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectOptionalUndefinedRawOrderBy).toBeFunction();
+
+      const rejectOptionalUndefinedGroupedWhere = (
+        query: GroupedQueryWithOptionalUndefinedWhere,
+      ) => {
+        // @ts-expect-error grouped where cannot permit an explicitly present undefined value.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectOptionalUndefinedGroupedWhere).toBeFunction();
+
+      const rejectOptionalUndefinedGroupedOrderBy = (
+        query: GroupedQueryWithOptionalUndefinedOrderBy,
+      ) => {
+        // @ts-expect-error grouped orderBy cannot permit an explicitly present undefined value.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectOptionalUndefinedGroupedOrderBy).toBeFunction();
+
+      const rejectLiveUnionWithOptionalUndefined = (query: LiveQueryUnionWithOptionalUndefined) => {
+        // @ts-expect-error every member of the complete live-query union must be exact.
+        useLiveQuery("orders", query);
+      };
+      expectTypeOf(rejectLiveUnionWithOptionalUndefined).toBeFunction();
+
+      expectTypeOf<
+        ExactRawQuery<typeof Order.Type, RawQueryWithOptionalUndefinedWhere>
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<typeof Order.Type, RawQueryWithOptionalUndefinedOrderBy>
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<typeof Order.Type, GroupedQueryWithOptionalUndefinedWhere>
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<typeof Order.Type, GroupedQueryWithOptionalUndefinedOrderBy>
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<typeof Order.Type, ValidRawOrOptionalUndefinedRawQuery>
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<typeof Order.Type, ValidGroupedOrOptionalUndefinedGroupedQuery>
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQuery<typeof Order.Type, RawQueryWithOptionalUndefinedWhere>
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQuery<typeof Order.Type, GroupedQueryWithOptionalUndefinedOrderBy>
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQuery<typeof Order.Type, LiveQueryUnionWithOptionalUndefined>
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQueryInput<typeof Order.Type, RawQueryWithOptionalUndefinedOrderBy>
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQueryInput<typeof Order.Type, GroupedQueryWithOptionalUndefinedWhere>
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQueryInput<typeof Order.Type, LiveQueryUnionWithOptionalUndefined>
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          {
+            readonly select: readonly ["id"];
+            readonly where?: readonly [ValidIdFilter] | undefined;
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly orderBy?:
+              | readonly [{ readonly aggregate: "rowCount"; readonly direction: "desc" }]
+              | undefined;
+          }
+        >
+      >().toBeNever();
+
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly where?: readonly [ValidIdFilter] }
+        >
+      >().not.toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          {
+            readonly select: readonly ["id"];
+            readonly orderBy?: readonly [{ readonly field: "id"; readonly direction: "asc" }];
+          }
+        >
+      >().not.toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly where?: readonly [ValidIdFilter];
+            readonly orderBy?: readonly [
+              { readonly aggregate: "rowCount"; readonly direction: "desc" },
+            ];
+          }
+        >
+      >().not.toBeNever();
+
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly offset: undefined }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly offset: "invalid" }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly limit: undefined }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly limit: "invalid" }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly offset: undefined;
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly offset: "invalid";
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly limit: undefined;
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly limit: "invalid";
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactLiveQueryInput<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly offset: undefined }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly offset?: undefined }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly offset?: number | undefined }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly limit?: undefined;
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactRawQuery<
+          typeof Order.Type,
+          { readonly select: readonly ["id"]; readonly offset?: number }
+        >
+      >().not.toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy: readonly ["status"];
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+            readonly limit?: number;
+          }
+        >
+      >().not.toBeNever();
+
+      expectTypeOf<ExactRawQuery<typeof Order.Type, { readonly select?: undefined }>>().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          {
+            readonly groupBy?: undefined;
+            readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+          }
+        >
+      >().toBeNever();
+      expectTypeOf<
+        ExactGroupedQuery<
+          typeof Order.Type,
+          { readonly groupBy: readonly ["status"]; readonly aggregates?: undefined }
+        >
+      >().toBeNever();
+
+      const undefinedSelect = { select: undefined } satisfies {
+        readonly select: undefined;
+      };
+      // @ts-expect-error raw query select must be present and cannot be undefined.
+      useLiveQuery("orders", undefinedSelect);
+      expectTypeOf<ExactRawQuery<typeof Order.Type, typeof undefinedSelect>>().toBeNever();
+
+      const undefinedGroupBy = {
+        groupBy: undefined,
+        aggregates: { rowCount: { aggFunc: "count" } },
+      } satisfies {
+        readonly groupBy: undefined;
+        readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+      };
+      // @ts-expect-error grouped query groupBy must be present and cannot be undefined.
+      useLiveQuery("orders", undefinedGroupBy);
+      expectTypeOf<ExactGroupedQuery<typeof Order.Type, typeof undefinedGroupBy>>().toBeNever();
+
+      const undefinedAggregates = {
+        groupBy: ["status"],
+        aggregates: undefined,
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: undefined;
+      };
+      // @ts-expect-error grouped query aggregates must be present and cannot be undefined.
+      useLiveQuery("orders", undefinedAggregates);
+      expectTypeOf<ExactGroupedQuery<typeof Order.Type, typeof undefinedAggregates>>().toBeNever();
+
+      const undefinedRawOrderBy = {
+        select: ["id"],
+        orderBy: undefined,
+      } satisfies {
+        readonly select: readonly ["id"];
+        readonly orderBy: undefined;
+      };
+      // @ts-expect-error raw query orderBy must be omitted rather than set to undefined.
+      useLiveQuery("orders", undefinedRawOrderBy);
+      expectTypeOf<ExactRawQuery<typeof Order.Type, typeof undefinedRawOrderBy>>().toBeNever();
+
+      const undefinedGroupedOrderBy = {
+        groupBy: ["status"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+        orderBy: undefined,
+      } satisfies {
+        readonly groupBy: readonly ["status"];
+        readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
+        readonly orderBy: undefined;
+      };
+      // @ts-expect-error grouped query orderBy must be omitted rather than set to undefined.
+      useLiveQuery("orders", undefinedGroupedOrderBy);
+      expectTypeOf<
+        ExactGroupedQuery<typeof Order.Type, typeof undefinedGroupedOrderBy>
+      >().toBeNever();
 
       const decoratedSelect = Object.assign(["id"] satisfies ["id"], {
         metadata: "id" as const,

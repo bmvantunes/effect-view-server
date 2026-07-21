@@ -23,6 +23,11 @@ export type RawQueryPlanWindow = {
   readonly limit: number | undefined;
 };
 
+export type RawQueryPlanIdentity = {
+  readonly queryCacheKey: string;
+  readonly window: RawQueryPlanWindow;
+};
+
 export type RawQueryPlan<Row extends RowObject, ResultRow extends RowObject> = {
   readonly candidateStorageKeys?: () => Iterable<string>;
   readonly partitionKey?: string;
@@ -73,6 +78,15 @@ export const rawQueryPlanWindow = (offset: number, limit: number | undefined): R
 
 const rawQueryPlanWindowFromQuery = (query: RuntimeRawQuery): RawQueryPlanWindow =>
   rawQueryPlanWindow(query.offset ?? 0, query.limit);
+
+export const rawQueryPlanIdentity = (
+  query: RuntimeRawQuery,
+  partition?: ColumnLiveViewEngineQueryPartition,
+): RawQueryPlanIdentity =>
+  Object.freeze({
+    queryCacheKey: rawQueryShapeCacheKey(query, partition),
+    window: rawQueryPlanWindowFromQuery(query),
+  });
 
 const compareStringRowFieldValues = <Row extends RowObject>(
   left: Row,
@@ -209,6 +223,7 @@ export const makeRawQueryPlan = <
   query: RuntimeRawQuery,
   resultSemantics: TopicStorageProjectableQueryResultSemantics<ResultRow>,
   partition?: ColumnLiveViewEngineQueryPartition,
+  identity: RawQueryPlanIdentity = rawQueryPlanIdentity(query, partition),
 ): RawQueryPlan<Row, ResultRow> => {
   const orderBy = Object.freeze(
     (query.orderBy ?? []).map((order) =>
@@ -237,7 +252,7 @@ export const makeRawQueryPlan = <
   return Object.freeze({
     ...(partition === undefined ? {} : { candidateStorageKeys: partition.ownedStorageKeys }),
     ...(partition === undefined ? {} : { partitionKey: partition.key }),
-    queryCacheKey: rawQueryShapeCacheKey(query, partition),
+    queryCacheKey: identity.queryCacheKey,
     selectedFields,
     predicate,
     orderBy,
@@ -245,7 +260,7 @@ export const makeRawQueryPlan = <
     compare: (left, right) => compareRows(left, right, rowOrderBy),
     project: resultSemantics.projectRow,
     resultSemantics,
-    window: rawQueryPlanWindowFromQuery(query),
+    window: identity.window,
   });
 };
 

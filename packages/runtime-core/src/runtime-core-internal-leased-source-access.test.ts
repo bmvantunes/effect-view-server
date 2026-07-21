@@ -1,22 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { Effect, Stream } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
-import { Order, order, publicLeasedRuntimeAccessError } from "./runtime-core-test-fixtures";
-
-const leasedViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({ routeBy: ["region", "status"] }),
-    },
-  },
-});
+import { leasedViewServer, order } from "./test-support/runtime-test-fixtures";
 
 describe("@effect-view-server/runtime-core", () => {
-  it.effect("allows internal runtime core access for leased gRPC manager internals", () =>
+  it.effect("supports internal erased and routed leased query seams", () =>
     Effect.acquireUseRelease(
       makeViewServerRuntimeCoreInternal(leasedViewServer, {}),
       (runtimeCore) =>
@@ -55,18 +43,6 @@ describe("@effect-view-server/runtime-core", () => {
           const invalidRouteSnapshot = yield* Effect.flip(
             runtimeCore.internalClient.snapshotRuntimeInternal("orders", {
               where: [{ field: "region", type: "equals", filter: "usa" }],
-              select: ["id"],
-              limit: 1,
-            }),
-          );
-          const publicRuntimeSubscribe = yield* Effect.flip(
-            runtimeCore.liveClient.subscribeRuntime("orders", {
-              where: [
-                { field: "customerId", type: "equals", filter: "customer-a" },
-                { field: "region", type: "equals", filter: "usa" },
-                { field: "status", type: "equals", filter: "open" },
-              ],
-              routeBy: { region: "usa", status: "open" },
               select: ["id"],
               limit: 1,
             }),
@@ -131,7 +107,6 @@ describe("@effect-view-server/runtime-core", () => {
             topic: "orders",
             message: "Leased topic orders requires routeBy fields: region, status.",
           });
-          expect(publicRuntimeSubscribe).toStrictEqual(publicLeasedRuntimeAccessError);
           expect(events[0]).toStrictEqual({
             type: "snapshot",
             topic: "orders",

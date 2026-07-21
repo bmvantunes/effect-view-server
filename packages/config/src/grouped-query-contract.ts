@@ -9,7 +9,12 @@ import type {
   SumAggregate,
 } from "./query-aggregate";
 import type { FieldKey, PickTupleFields, Simplify } from "./query-core";
-import type { RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
+import type {
+  ExactQueryWindow,
+  PresentPropertyValue,
+  RejectArrayExtraKeys,
+  RejectExtraKeys,
+} from "./query-exact";
 import type { ExactWhere, Where } from "./query-filter";
 import type { ExactGroupedOrderByEntry, GroupedOrderBy } from "./query-sort";
 
@@ -59,24 +64,27 @@ type GroupedOrderByField<Row, GroupBy> = Extract<
   FieldKey<Row>
 >;
 
-type ExactGroupedOrderBy<Row, Query> = Query extends {
-  readonly orderBy: infer Candidate;
-  readonly groupBy: infer GroupBy;
-  readonly aggregates: infer Aggregates;
-}
-  ? Candidate extends ReadonlyArray<infer Entry>
-    ? {
-        readonly orderBy: Candidate &
-          RejectArrayExtraKeys<Candidate> &
-          ReadonlyArray<
-            ExactGroupedOrderByEntry<
-              Entry,
-              GroupedOrderByField<Row, GroupBy>,
-              AggregateAliasesFromAggregates<Aggregates>
-            >
-          >;
-      }
-    : { readonly orderBy: never }
+type ExactGroupedOrderBy<Row, Query> = "orderBy" extends keyof Query
+  ? Query extends {
+      readonly groupBy: infer GroupBy;
+      readonly aggregates: infer Aggregates;
+    }
+    ? PresentPropertyValue<Query, "orderBy"> extends infer Candidate
+      ? Candidate extends ReadonlyArray<infer Entry>
+        ? {
+            readonly orderBy?: Candidate &
+              RejectArrayExtraKeys<Candidate> &
+              ReadonlyArray<
+                ExactGroupedOrderByEntry<
+                  Entry,
+                  GroupedOrderByField<Row, GroupBy>,
+                  AggregateAliasesFromAggregates<Aggregates>
+                >
+              >;
+          }
+        : { readonly orderBy?: never }
+      : never
+    : unknown
   : unknown;
 
 type ExactGroupedQueryMember<Row, Query> = Query &
@@ -84,6 +92,7 @@ type ExactGroupedQueryMember<Row, Query> = Query &
     readonly select?: never;
   } & ExactWhere<Row, Query> &
   ExactGroupedOrderBy<Row, Query> &
+  ExactQueryWindow<Query> &
   (Query extends {
     readonly groupBy: infer GroupBy;
     readonly aggregates: infer Aggregates;

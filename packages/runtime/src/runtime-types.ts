@@ -9,10 +9,8 @@ import type {
   ExactLiveQueryInputForTopic,
   ExactPatch,
   RuntimeRegions,
-  RowSchema,
   TopicRouteBy,
   TopicRow,
-  TopicDefinitions,
   ViewServerHealth,
   ViewServerKafkaStartFrom,
   ViewServerRuntimeClient,
@@ -23,22 +21,15 @@ import type {
   RuntimeKafkaSourceOwnershipConstraint,
   RuntimeKafkaSourceRegionConstraint,
   TopicOwnedKafkaSourceTopic,
+  ViewServerRuntimeTopicDefinitions,
 } from "@effect-view-server/config/internal";
-import type { Effect, Schema } from "effect";
+import type { Effect } from "effect";
 import type { ViewServerGrpcRuntimeOptions } from "./grpc-runtime-option-contract";
 import type { ViewServerKafkaRuntimeOptions } from "./kafka-runtime-option-contract";
 
 export type { ViewServerGrpcRuntimeOptions } from "./grpc-runtime-option-contract";
 export type { ViewServerKafkaRuntimeOptions } from "./kafka-runtime-option-contract";
-
-export type ViewServerRuntimeTopicDefinitions = TopicDefinitions &
-  Record<
-    string,
-    {
-      readonly schema: RowSchema & Schema.Codec<object, unknown, never, unknown>;
-      readonly key: string;
-    }
-  >;
+export type { ViewServerRuntimeTopicDefinitions } from "@effect-view-server/config/internal";
 
 type RuntimeHttpPath = `/${string}`;
 

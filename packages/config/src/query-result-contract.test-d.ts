@@ -1,7 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import * as BigDecimal from "effect/BigDecimal";
 import {
-  type ExactGroupedQuery,
   type GroupedQuery,
   type GroupedResult,
   type PickRawFields,
@@ -343,11 +342,8 @@ describe("Query result contracts", () => {
         };
       };
       // @ts-expect-error aggregate aliases must be literal object keys.
-      const _invalidDynamicAggregateAlias: ExactGroupedQuery<
-        typeof Order.Type,
-        typeof dynamicAggregateQuery
-      > &
-        ValidateLiveQuery<typeof dynamicAggregateQuery> = dynamicAggregateQuery;
+      const _invalidDynamicAggregateAlias: ValidateLiveQuery<typeof dynamicAggregateQuery> =
+        dynamicAggregateQuery;
 
       void _invalidDynamicAggregateAlias;
     };

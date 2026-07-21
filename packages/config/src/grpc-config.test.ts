@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { BigDecimal, Effect, Schema, Stream } from "effect";
 import { defineViewServerConfig, grpc, validateLiveQuerySourceRoute } from "./index";
 import { grpcSourceMarkers } from "./internal";
+import { sourceLeasedRouteBy } from "./source-query-contract";
 import {
   grpcOrdersByRegionStatusTopic,
   grpcOrdersMaterializedTopic,
@@ -11,10 +12,252 @@ import {
 import { ordersService, tradesOnlyService } from "../test-harness/protobuf";
 import { Order, Position, Trade } from "../test-harness/schemas";
 
+const withObjectPrototypeValue = <Value, Error, Requirements>(
+  field: string,
+  value: unknown,
+  effect: Effect.Effect<Value, Error, Requirements>,
+): Effect.Effect<Value, Error, Requirements> =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      Reflect.set(Object.prototype, field, value);
+    }),
+    () => effect,
+    () =>
+      Effect.sync(() => {
+        Reflect.deleteProperty(Object.prototype, field);
+      }),
+  );
+
 describe("gRPC configuration runtime behavior", () => {
   it("keeps gRPC source markers exact at runtime", () => {
     expect(grpcSourceMarkers.leased({ routeBy: ["region"] }).routeBy).toStrictEqual(["region"]);
   });
+
+  it("totalizes and snapshots leased route metadata reflection", () => {
+    const revokedSource = Proxy.revocable({}, {});
+    revokedSource.revoke();
+    const hostileLifecycle = new Proxy(
+      {},
+      {
+        get(_target, property) {
+          if (property === "lifecycle") {
+            throw new Error("lifecycle cannot be inspected");
+          }
+          return undefined;
+        },
+      },
+    );
+    const hostileRouteBy = new Proxy(
+      { lifecycle: "leased" },
+      {
+        get(target, property, receiver) {
+          if (property === "routeBy") {
+            throw new Error("routeBy cannot be inspected");
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const hostileRouteArray = new Proxy(["region"], {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          throw new Error("route array cannot be iterated");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const mutableRouteFields = ["region"];
+    const snapshottedRouteFields = sourceLeasedRouteBy({
+      lifecycle: "leased",
+      routeBy: mutableRouteFields,
+    });
+    mutableRouteFields[0] = "desk";
+
+    expect({
+      revoked: sourceLeasedRouteBy(revokedSource.proxy),
+      hostileLifecycle: sourceLeasedRouteBy(hostileLifecycle),
+      hostileRouteBy: sourceLeasedRouteBy(hostileRouteBy),
+      nonArrayRouteBy: sourceLeasedRouteBy({ lifecycle: "leased", routeBy: "region" }),
+      hostileRouteArray: sourceLeasedRouteBy({
+        lifecycle: "leased",
+        routeBy: hostileRouteArray,
+      }),
+      snapshottedRouteFields,
+    }).toStrictEqual({
+      revoked: "invalid",
+      hostileLifecycle: "invalid",
+      hostileRouteBy: "invalid",
+      nonArrayRouteBy: "invalid",
+      hostileRouteArray: "invalid",
+      snapshottedRouteFields: ["region"],
+    });
+  });
+
+  it("rejects leased route metadata outside the complete scalar field contract", () => {
+    const StructuredRoute = Schema.Struct({
+      id: Schema.String,
+      profile: Schema.Struct({ country: Schema.String }),
+    });
+    const MixedRoute = Schema.Struct({
+      id: Schema.String,
+      value: Schema.Union([Schema.String, Schema.Struct({ code: Schema.String })]),
+    });
+    const AnyRoute = Schema.Struct({ id: Schema.String, value: Schema.Any });
+    const emptyRouteSource = grpcSourceMarkers.leased({ routeBy: ["id"] });
+    const duplicateRouteSource = grpcSourceMarkers.leased({ routeBy: ["id"] });
+    const nonStringRouteSource = grpcSourceMarkers.leased({ routeBy: ["id"] });
+    expect(Reflect.set(emptyRouteSource, "routeBy", [])).toBe(true);
+    expect(Reflect.set(duplicateRouteSource, "routeBy", ["id", "id"])).toBe(true);
+    expect(Reflect.set(nonStringRouteSource, "routeBy", [1])).toBe(true);
+
+    expect(() =>
+      // @ts-expect-error Runtime admission protects untyped callers from structured route fields.
+      defineViewServerConfig({
+        topics: {
+          structured: {
+            schema: StructuredRoute,
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({ routeBy: ["profile"] }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic structured leased gRPC route field profile must have a complete supported scalar schema domain.",
+    );
+    expect(() =>
+      // @ts-expect-error Runtime admission protects untyped callers from mixed route domains.
+      defineViewServerConfig({
+        topics: {
+          mixed: {
+            schema: MixedRoute,
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({ routeBy: ["value"] }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic mixed leased gRPC route field value must have a complete supported scalar schema domain.",
+    );
+    expect(() =>
+      // @ts-expect-error Runtime admission protects untyped callers from Schema.Any routes.
+      defineViewServerConfig({
+        topics: {
+          any: {
+            schema: AnyRoute,
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({ routeBy: ["value"] }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic any leased gRPC route field value must have a complete supported scalar schema domain.",
+    );
+    expect(() =>
+      // @ts-expect-error Runtime admission protects untyped callers from absent route fields.
+      defineViewServerConfig({
+        topics: {
+          absent: {
+            schema: StructuredRoute,
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({ routeBy: ["missing"] }),
+          },
+        },
+      }),
+    ).toThrow(
+      "View Server topic absent leased gRPC route field missing must have a complete supported scalar schema domain.",
+    );
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          empty: {
+            schema: StructuredRoute,
+            key: "id",
+            grpcSource: emptyRouteSource,
+          },
+        },
+      }),
+    ).toThrow("View Server topic empty declares invalid leased gRPC route metadata.");
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          duplicate: {
+            schema: StructuredRoute,
+            key: "id",
+            grpcSource: duplicateRouteSource,
+          },
+        },
+      }),
+    ).toThrow("View Server topic duplicate declares invalid leased gRPC route metadata.");
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          nonString: {
+            schema: StructuredRoute,
+            key: "id",
+            grpcSource: nonStringRouteSource,
+          },
+        },
+      }),
+    ).toThrow("View Server topic nonString declares invalid leased gRPC route metadata.");
+
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          optional: {
+            schema: Schema.Struct({
+              id: Schema.String,
+              region: Schema.optionalKey(Schema.String),
+            }),
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({ routeBy: ["region"] }),
+          },
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      defineViewServerConfig({
+        topics: {
+          scalarUnion: {
+            schema: Schema.Struct({
+              id: Schema.String,
+              route: Schema.Union([
+                Schema.Literal("global"),
+                Schema.Enum({ Europe: "emea", America: "amer" }),
+              ]),
+            }),
+            key: "id",
+            grpcSource: grpcSourceMarkers.leased({ routeBy: ["route"] }),
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it.effect("rejects route fields inherited through the schema field prototype", () =>
+    withObjectPrototypeValue(
+      "inheritedRoute",
+      Schema.String,
+      Effect.sync(() => {
+        const RowWithoutInheritedRoute = Schema.Struct({ id: Schema.String });
+
+        expect(() =>
+          // @ts-expect-error Runtime admission protects untyped callers from inherited route fields.
+          defineViewServerConfig({
+            topics: {
+              inherited: {
+                schema: RowWithoutInheritedRoute,
+                key: "id",
+                grpcSource: grpcSourceMarkers.leased({ routeBy: ["inheritedRoute"] }),
+              },
+            },
+          }),
+        ).toThrow(
+          "View Server topic inherited leased gRPC route field inheritedRoute must have a complete supported scalar schema domain.",
+        );
+      }),
+    ),
+  );
 
   it("validates exact leased gRPC route values independently from filters", () => {
     const grpcViewServer = defineViewServerConfig({

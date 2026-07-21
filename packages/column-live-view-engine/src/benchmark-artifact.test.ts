@@ -12,6 +12,7 @@ import {
   groupedFullEvaluationCountFromEngineHealth,
   groupedPatchedEvaluationCountFromEngineHealth,
   isBenchmarkEngineHealth,
+  pendingMutationBatchCountFromEngineHealth,
   queuedEventCountFromEngineHealth,
   writeBenchmarkArtifact,
   type BenchmarkArtifactInput,
@@ -75,6 +76,7 @@ describe("benchmark artifact helpers", () => {
           activeViews: 7,
           groupedFullEvaluationCount: 0,
           groupedPatchedEvaluationCount: 0,
+          pendingMutationBatches: 4,
         },
       },
     };
@@ -87,6 +89,7 @@ describe("benchmark artifact helpers", () => {
     expect(activeIncrementalGroupedViewCountFromEngineHealth(health)).toBe(0);
     expect(groupedFullEvaluationCountFromEngineHealth(health)).toBe(0);
     expect(groupedPatchedEvaluationCountFromEngineHealth(health)).toBe(0);
+    expect(pendingMutationBatchCountFromEngineHealth(health, ["orders"])).toBe(4);
 
     const healthWithGroupedDiagnostics = {
       activeSubscriptions: 0,
@@ -100,6 +103,7 @@ describe("benchmark artifact helpers", () => {
           activeViews: 1,
           groupedFullEvaluationCount: 2,
           groupedPatchedEvaluationCount: 3,
+          pendingMutationBatches: 4,
         },
         trades: {
           activeFallbackGroupedViews: 1,
@@ -107,12 +111,16 @@ describe("benchmark artifact helpers", () => {
           activeViews: 1,
           groupedFullEvaluationCount: 5,
           groupedPatchedEvaluationCount: 7,
+          pendingMutationBatches: 6,
         },
       },
     };
     expect(isBenchmarkEngineHealth(healthWithGroupedDiagnostics)).toBe(true);
     expect(groupedFullEvaluationCountFromEngineHealth(healthWithGroupedDiagnostics)).toBe(7);
     expect(groupedPatchedEvaluationCountFromEngineHealth(healthWithGroupedDiagnostics)).toBe(10);
+    expect(
+      pendingMutationBatchCountFromEngineHealth(healthWithGroupedDiagnostics, ["orders"]),
+    ).toBe(10);
 
     const minimalTopicHealth = {
       activeSubscriptions: 0,
@@ -122,6 +130,7 @@ describe("benchmark artifact helpers", () => {
       topics: {
         orders: {
           activeViews: 1,
+          pendingMutationBatches: 0,
         },
       },
     };
@@ -130,6 +139,21 @@ describe("benchmark artifact helpers", () => {
     expect(activeIncrementalGroupedViewCountFromEngineHealth(minimalTopicHealth)).toBe(0);
     expect(groupedFullEvaluationCountFromEngineHealth(minimalTopicHealth)).toBe(0);
     expect(groupedPatchedEvaluationCountFromEngineHealth(minimalTopicHealth)).toBe(0);
+    expect(pendingMutationBatchCountFromEngineHealth(minimalTopicHealth, ["orders"])).toBe(0);
+
+    expect(
+      isBenchmarkEngineHealth({
+        activeSubscriptions: 0,
+        backpressureEvents: 0,
+        maxQueueDepth: 0,
+        queuedEvents: 0,
+        topics: {
+          orders: {
+            activeViews: 1,
+          },
+        },
+      }),
+    ).toBe(false);
 
     const healthWithoutTopics = {
       activeSubscriptions: 2,
@@ -143,6 +167,61 @@ describe("benchmark artifact helpers", () => {
     expect(activeIncrementalGroupedViewCountFromEngineHealth(healthWithoutTopics)).toBe(0);
     expect(groupedFullEvaluationCountFromEngineHealth(healthWithoutTopics)).toBe(0);
     expect(groupedPatchedEvaluationCountFromEngineHealth(healthWithoutTopics)).toBe(0);
+    expect(() =>
+      pendingMutationBatchCountFromEngineHealth(healthWithoutTopics, ["orders"]),
+    ).toThrow(
+      "Benchmark engine health must include topic health to prove pending mutation batches are zero.",
+    );
+    expect(() => pendingMutationBatchCountFromEngineHealth(minimalTopicHealth, [])).toThrow(
+      "Benchmark pending-mutation proof must name at least one expected topic.",
+    );
+    expect(() =>
+      pendingMutationBatchCountFromEngineHealth(
+        {
+          ...minimalTopicHealth,
+          topics: {},
+        },
+        ["orders"],
+      ),
+    ).toThrow(
+      "Benchmark engine health must include expected topic orders to prove pending mutation batches are zero.",
+    );
+    const inheritedTopics = Object.setPrototypeOf(
+      {},
+      {
+        orders: {
+          activeViews: 0,
+          pendingMutationBatches: 0,
+        },
+      },
+    );
+    expect(() =>
+      pendingMutationBatchCountFromEngineHealth(
+        {
+          ...minimalTopicHealth,
+          topics: inheritedTopics,
+        },
+        ["orders"],
+      ),
+    ).toThrow(
+      "Benchmark engine health must include expected topic orders to prove pending mutation batches are zero.",
+    );
+    expect(() =>
+      pendingMutationBatchCountFromEngineHealth(
+        {
+          ...minimalTopicHealth,
+          topics: {
+            trades: {
+              activeViews: 0,
+              pendingMutationBatches: 0,
+            },
+          },
+        },
+        ["orders"],
+      ),
+    ).toThrow(
+      "Benchmark engine health must include expected topic orders to prove pending mutation batches are zero.",
+    );
     expect(
       isBenchmarkEngineHealth({
         activeSubscriptions: 2,
@@ -180,9 +259,24 @@ describe("benchmark artifact helpers", () => {
         queuedEvents: 3,
         topics: {
           orders: {
+            activeViews: 7,
+            pendingMutationBatches: "1",
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isBenchmarkEngineHealth({
+        activeSubscriptions: 2,
+        backpressureEvents: 5,
+        maxQueueDepth: 999,
+        queuedEvents: 3,
+        topics: {
+          orders: {
             activeFallbackGroupedViews: 0,
             activeIncrementalGroupedViews: 0,
             activeViews: "7",
+            pendingMutationBatches: 0,
           },
         },
       }),
@@ -208,6 +302,7 @@ describe("benchmark artifact helpers", () => {
           orders: {
             activeFallbackGroupedViews: 0,
             activeIncrementalGroupedViews: 0,
+            pendingMutationBatches: 0,
           },
         },
       }),
@@ -225,6 +320,7 @@ describe("benchmark artifact helpers", () => {
             activeViews: 7,
             groupedFullEvaluationCount: 0,
             groupedPatchedEvaluationCount: 0,
+            pendingMutationBatches: 0,
           },
         },
       }),
@@ -242,6 +338,7 @@ describe("benchmark artifact helpers", () => {
             activeViews: 7,
             groupedFullEvaluationCount: 0,
             groupedPatchedEvaluationCount: 0,
+            pendingMutationBatches: 0,
           },
         },
       }),
@@ -422,6 +519,33 @@ describe("benchmark artifact helpers", () => {
       )}\n`,
     );
 
+    const rawLargeMembershipOutputJsonPath =
+      ".artifacts/benchmark-artifact-raw-large-membership-test.json";
+    writeBenchmarkArtifact({
+      ...artifactInput,
+      benchmarkScope: "engine-raw-large-membership",
+      outputJsonPath: rawLargeMembershipOutputJsonPath,
+      rawLargeMembershipParameters: {
+        candidateCount: 50_000,
+        partitionCount: 25,
+        preparedPlanCompilationCount: 1,
+        subscriberCount: 32,
+      },
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          ".artifacts/benchmark-artifact-raw-large-membership-test.summary.json",
+          "utf8",
+        ),
+      ).rawLargeMembershipParameters,
+    ).toStrictEqual({
+      candidateCount: 50_000,
+      partitionCount: 25,
+      preparedPlanCompilationCount: 1,
+      subscriberCount: 32,
+    });
+
     expect(() =>
       writeBenchmarkArtifact({
         ...artifactInput,
@@ -474,5 +598,32 @@ describe("benchmark artifact helpers", () => {
         readFileSync(".artifacts/benchmark-artifact-endpoint-only-test.summary.json", "utf8"),
       ).memory,
     ).not.toHaveProperty("processPeakRss");
+
+    const postGcOutputJsonPath = ".artifacts/benchmark-artifact-post-gc-test.json";
+    const cleanupLedger = {
+      activeSubscriptions: 0,
+      activeViews: 0,
+      pendingMutationBatches: 0,
+      queuedEvents: 0,
+    };
+    const postGcEventLoopSamples = Array.from({ length: 9 }, (_value, eventLoopTurn) => ({
+      cleanupLedger,
+      eventLoopTurn,
+      memory: memory(9 + eventLoopTurn),
+    }));
+    writeBenchmarkArtifact({
+      ...endpointOnlyArtifactInput,
+      measurementProtocol: {
+        memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
+        postGcEventLoopTurns: 8,
+      },
+      memoryAfterBenchmark: memory(17),
+      outputJsonPath: postGcOutputJsonPath,
+      postGcEventLoopSamples,
+    });
+    expect(
+      JSON.parse(readFileSync(".artifacts/benchmark-artifact-post-gc-test.summary.json", "utf8"))
+        .memory.postGcEventLoopSamples,
+    ).toStrictEqual(postGcEventLoopSamples);
   });
 });

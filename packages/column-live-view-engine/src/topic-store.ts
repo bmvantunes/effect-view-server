@@ -21,13 +21,13 @@ export {
   trackTopicStoreSubscriptionQueueDepth,
 } from "./topic-store-subscription";
 export {
-  acquireTopicStoreMaterializedQueryExecution,
-  acquireTopicStoreRawQueryExecution,
+  acquireTopicStoreRuntimeGroupedQueryExecution,
+  acquireTopicStoreRuntimeRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
   evaluateTopicStoreRawQueryResult,
   prepareTopicStoreRuntimeGroupedQuery,
   prepareTopicStoreRuntimeRawQuery,
-  releaseTopicStoreMaterializedQueryExecution,
+  releaseTopicStoreMaterializedQueryExecutionToken,
   releaseTopicStoreRawQueryExecution,
 } from "./topic-store-query";
 export { collectTopicStoreHealth } from "./topic-store-health";

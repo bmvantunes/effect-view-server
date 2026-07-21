@@ -1,5 +1,9 @@
 import type * as BigDecimal from "effect/BigDecimal";
-import type { ValidateExactArray } from "./query-exact";
+import type * as Chunk from "effect/Chunk";
+import type * as HashMap from "effect/HashMap";
+import type * as HashSet from "effect/HashSet";
+import type * as Option from "effect/Option";
+import type { PresentPropertyValue, ValidateExactArray } from "./query-exact";
 
 export type FilterableScalar = string | number | bigint | boolean | BigDecimal.BigDecimal | null;
 
@@ -31,22 +35,30 @@ export type RouteFieldKey<Row> = Extract<
 
 export type RouteFieldValue<Row, Field extends RouteFieldKey<Row>> = Defined<Row[Field]>;
 
+type OpaqueEffectValue =
+  | Option.Option<unknown>
+  | Chunk.Chunk<unknown>
+  | HashMap.HashMap<unknown, unknown>
+  | HashSet.HashSet<unknown>;
+
 type TraversableObject<Value> =
   IsAny<Value> extends true
     ? never
     : Value extends FilterableScalar
       ? never
-      : Value extends ReadonlyArray<unknown>
+      : Value extends OpaqueEffectValue
         ? never
-        : Value extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown>
+        : Value extends ReadonlyArray<unknown>
           ? never
-          : Value extends (...args: ReadonlyArray<never>) => unknown
+          : Value extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown>
             ? never
-            : Value extends object
-              ? string extends keyof Value
-                ? never
-                : Value
-              : never;
+            : Value extends (...args: ReadonlyArray<never>) => unknown
+              ? never
+              : Value extends object
+                ? string extends keyof Value
+                  ? never
+                  : Value
+                : never;
 
 type StringKey<Value> = Value extends unknown ? Extract<keyof Value, string> : never;
 type WithoutReservedDot<Key> = Key extends string
@@ -509,20 +521,22 @@ type IsCanonicalWhereArray<Row, Candidate> = [CanonicalWhereArrayMember<Row, Can
   : false;
 
 type InvalidWhereQueryMember<Row, Query> = Query extends unknown
-  ? Query extends { readonly where: infer QueryWhere }
-    ? [QueryWhere] extends [ReadonlyArray<unknown>]
-      ? IsCanonicalWhereArray<Row, QueryWhere> extends true
-        ? never
-        : ValidateWhereArray<Row, QueryWhere> extends never
-          ? Query
-          : never
+  ? "where" extends keyof Query
+    ? PresentPropertyValue<Query, "where"> extends infer QueryWhere
+      ? [QueryWhere] extends [ReadonlyArray<unknown>]
+        ? IsCanonicalWhereArray<Row, QueryWhere> extends true
+          ? never
+          : ValidateWhereArray<Row, QueryWhere> extends never
+            ? Query
+            : never
+        : Query
       : Query
     : never
   : never;
 
 type ExactWhereMembers<Query> = Query extends unknown
-  ? Query extends { readonly where: infer QueryWhere }
-    ? { readonly where: QueryWhere }
+  ? "where" extends keyof Query
+    ? Pick<Query, Extract<keyof Query, "where">>
     : unknown
   : never;
 

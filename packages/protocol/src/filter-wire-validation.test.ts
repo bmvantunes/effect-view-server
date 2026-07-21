@@ -296,7 +296,8 @@ describe("filter wire validation", () => {
       accessorArray.length = 1;
       const extraPropertyArray: Array<unknown> = [];
       Object.defineProperty(extraPropertyArray, "extra", { enumerable: true, value: true });
-      const cyclic = { type: "AND", conditions: [] as Array<unknown> };
+      const cyclicConditions: Array<unknown> = [];
+      const cyclic = { type: "AND", conditions: cyclicConditions };
       cyclic.conditions.push(cyclic);
       const symbolicCondition = { field: "id", type: "blank" };
       Object.defineProperty(symbolicCondition, Symbol("metadata"), {

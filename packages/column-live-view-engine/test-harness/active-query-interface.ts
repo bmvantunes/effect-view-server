@@ -6,6 +6,8 @@ import {
   releaseMaterializedQueryExecution as releaseMaterializedQueryExecutionFromRegistry,
   releaseRawQueryExecution as releaseRawQueryExecutionFromRegistry,
 } from "../src/active-query";
+import { preparedRawQueryPlanCompilationCount } from "../src/active-raw-query";
+import { preparedGroupedQueryPlanCompilationCount } from "../src/active-materialized-query";
 import {
   createActiveQueryRegistry,
   type ActiveQueryRegistry,
@@ -87,5 +89,11 @@ export const clearStoreRawQueryExecutions = (queryInterface: ActiveQueryTestInte
 
 export const activeStoreRawQueryExecutionCount = (queryInterface: ActiveQueryTestInterface) =>
   activeStoreRawQueryExecutionCountFromRegistry(queryInterface.activeQueries);
+
+export const preparedRawPlanCompilationCount = (queryInterface: ActiveQueryTestInterface) =>
+  preparedRawQueryPlanCompilationCount(queryInterface.activeQueries);
+
+export const preparedGroupedPlanCompilationCount = (queryInterface: ActiveQueryTestInterface) =>
+  preparedGroupedQueryPlanCompilationCount(queryInterface.activeQueries);
 
 export { createActiveQueryRegistry };

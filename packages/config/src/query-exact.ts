@@ -2,6 +2,19 @@ export type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
 
+export type PresentPropertyValue<Candidate, Key extends PropertyKey> = Key extends keyof Candidate
+  ? Required<Pick<Candidate, Key>>[Key]
+  : never;
+
+type ExactQueryWindowField<Query, Field extends "offset" | "limit"> = Field extends keyof Query
+  ? [PresentPropertyValue<Query, Field>] extends [number]
+    ? unknown
+    : { readonly [Key in Field]: never }
+  : unknown;
+
+export type ExactQueryWindow<Query> = ExactQueryWindowField<Query, "offset"> &
+  ExactQueryWindowField<Query, "limit">;
+
 type TupleIndexKeys<
   Candidate extends ReadonlyArray<unknown>,
   Indices extends ReadonlyArray<unknown> = readonly [],

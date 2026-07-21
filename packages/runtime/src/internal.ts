@@ -259,10 +259,14 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         ? undefined
         : yield* acquireRuntimeResource(
             runtimeScope,
-            dependencies.makeTcpPublishIngress(dependencyConfig, runtimeCore.internalClient, {
-              ...resolvedOptions.tcpPublishOptions,
-              ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
-            }),
+            dependencies.makeTcpPublishIngress(
+              dependencyConfig,
+              runtimeCore.decodedMutationClient,
+              {
+                ...resolvedOptions.tcpPublishOptions,
+                ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
+              },
+            ),
             (resource) => resource.close,
           );
     const close: Effect.Effect<void> = (yield* Effect.cached(

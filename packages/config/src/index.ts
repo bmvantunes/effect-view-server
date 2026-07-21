@@ -27,7 +27,6 @@ import type { RejectExtraKeys } from "./query-exact";
 import type { RouteFieldKey } from "./query-filter";
 import type { TopicSourceDefinition } from "./source-contract";
 import type {
-  FieldKey,
   RowFromSchema,
   RowSchema,
   StringFieldKey,
@@ -35,6 +34,8 @@ import type {
   TopicDefinitions,
 } from "./topic-contract";
 import { viewServerUnsupportedRuntimeFieldDomain } from "./schema-field-metadata";
+import { viewServerRouteFieldSchemaHasCompleteScalarDomain } from "./route-field-contract";
+import { sourceLeasedRouteBy } from "./source-query-contract";
 import { Schema } from "effect";
 export { viewSchema } from "./view-schema";
 
@@ -655,6 +656,32 @@ const validateConcreteGrpcBinding = (
   }
 };
 
+const validateLeasedGrpcRouteFields = (
+  topic: string,
+  topicDefinition: object,
+  schema: RowSchema,
+): void => {
+  const source = hasDefinedOwnProperty(topicDefinition, "grpcSource")
+    ? Reflect.get(topicDefinition, "grpcSource")
+    : undefined;
+  const routeBy = sourceLeasedRouteBy(source);
+  if (routeBy === undefined) {
+    return;
+  }
+  if (routeBy === "invalid") {
+    throw new Error(`View Server topic ${topic} declares invalid leased gRPC route metadata.`);
+  }
+  for (const field of routeBy) {
+    const fields = schema.fields;
+    const fieldSchema = Object.hasOwn(fields, field) ? fields[field] : undefined;
+    if (!viewServerRouteFieldSchemaHasCompleteScalarDomain(fieldSchema)) {
+      throw new Error(
+        `View Server topic ${topic} leased gRPC route field ${field} must have a complete supported scalar schema domain.`,
+      );
+    }
+  }
+};
+
 export function defineViewServerConfig<
   const Topics extends Record<
     string,
@@ -756,6 +783,7 @@ export function defineViewServerConfig(
         `View Server topic ${topic} cannot declare more than one source owner: kafkaSource, grpcSource.`,
       );
     }
+    validateLeasedGrpcRouteFields(topic, topicDefinition, schema);
     validateConcreteGrpcBinding(topic, topicDefinition, grpc?.clients);
   }
   const config = Object.freeze({

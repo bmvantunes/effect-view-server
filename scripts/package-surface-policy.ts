@@ -355,6 +355,7 @@ export const packageSurfacePolicy = {
         allowedWorkspaceSpecifiers: [
           "@effect-view-server/client",
           "@effect-view-server/config",
+          "@effect-view-server/config/internal",
           "@effect-view-server/effect-utils",
           "@effect-view-server/column-live-view-engine",
           "@effect-view-server/column-live-view-engine/internal",

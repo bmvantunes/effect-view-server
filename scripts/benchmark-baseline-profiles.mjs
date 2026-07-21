@@ -4,6 +4,7 @@ import {
   groupedWriteTask,
   queryDeltaOperationsTask,
   rawActiveRetainedDeltaTask,
+  rawLargeMembershipTask,
   rawLiveFanoutTask,
   rawPredicateIndexTask,
   rawSnapshotTask,
@@ -166,6 +167,7 @@ export const profiles = new Map([
         ...engineMixedReadSmokeEnv,
       }),
       rawPredicateIndexTask(1_000, engineReadSmokeEnv),
+      rawLargeMembershipTask(rawWriteSmokeEnv),
       rawWriteTask("base", 1_000, {
         VIEW_SERVER_ENGINE_BENCH_BATCH_SIZE: "100",
         ...rawWriteSmokeEnv,
@@ -231,7 +233,9 @@ export const profiles = new Map([
     "grpc-materialized",
     [
       runtimeGrpcMaterializedTask(1_000, 256, {
+        NODE_OPTIONS: "--expose-gc",
         VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
@@ -242,7 +246,9 @@ export const profiles = new Map([
     "grpc-leased",
     [
       runtimeGrpcLeasedTask(50, 25, 500, {
+        NODE_OPTIONS: "--expose-gc",
         VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
@@ -253,7 +259,9 @@ export const profiles = new Map([
     "grpc-leased-retained",
     [
       runtimeGrpcLeasedTask(50, 25, 50_000, {
+        NODE_OPTIONS: "--expose-gc",
         VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+        VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC: "1",
         VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
         VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
@@ -347,7 +355,11 @@ export const profiles = new Map([
       }),
       groupedWriteTask("incremental", 5_000_000, {
         ...groupedWriteReleaseEnv,
+        NODE_OPTIONS: "--expose-gc",
+        VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC: "1",
         VIEW_SERVER_ENGINE_BENCH_GROUPED_WRITE_READER_PROFILE: "order-neutral",
+        VIEW_SERVER_ENGINE_BENCH_POST_GC_EVENT_LOOP_TURNS: "8",
+        VIEW_SERVER_ENGINE_BENCH_PRIMING_APPEND_BATCHES: "1",
       }),
     ],
   ],

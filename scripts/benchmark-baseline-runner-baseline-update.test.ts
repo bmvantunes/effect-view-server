@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   readBenchmarkBaseline,
@@ -17,6 +17,15 @@ import {
   vitestOutput,
   writeArtifacts,
 } from "./benchmark-baseline-runner-test-support";
+import {
+  replaceGrpcMaterializedOperationCase,
+  runtimeGrpcMaterializedObservation,
+  runtimeGrpcMaterializedOperationCaseFor,
+  runtimeGrpcMaterializedOperationCases,
+  runtimeGrpcMaterializedParameters,
+  runtimeGrpcMaterializedStreamSample,
+  runtimeGrpcMaterializedVitestOutput,
+} from "./benchmark-baseline-test-fixtures";
 
 describe("benchmark baseline runner", () => {
   it("updates and compares a tiny profile with fresh artifacts", async () => {
@@ -228,6 +237,190 @@ describe("benchmark baseline runner", () => {
       scopedExitCode: 0,
       scopedTaskLabels: ["task a"],
       updatedMeanMs: 2.5,
+    });
+  });
+
+  it("migrates measurement protocol only for selected baseline tasks", async () => {
+    const directory = makeDirectory();
+    const firstTask = makeTask(directory);
+    const secondTask = {
+      ...makeTask(directory),
+      env: {
+        VIEW_SERVER_ENGINE_BENCH_OUTPUT_JSON: "actual-b.json",
+      },
+      label: "task b",
+      outputJsonPath: join(directory, "actual-b.json"),
+      packageOutputJsonPath: "actual-b.json",
+      summaryPath: join(directory, "actual-b.summary.json"),
+    };
+    const baselineFile = join(directory, "baseline.json");
+    const { logger } = silentLogger();
+    const initialProfileMap = new Map([["tiny", [firstTask, secondTask]]]);
+    const initialRunTask = async (currentTask: typeof firstTask) => {
+      writeArtifacts(currentTask);
+      return 0;
+    };
+    await runBenchmarkBaseline({
+      argv: ["node", "script", "--profile=tiny", "--update-baseline"],
+      baselinePathForProfile: () => baselineFile,
+      environment: {},
+      logger,
+      profileMap: initialProfileMap,
+      runTask: initialRunTask,
+    });
+    const initialBaseline = readBenchmarkBaseline(baselineFile);
+    const measurementProtocol = {
+      memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup" as const,
+      postGcEventLoopTurns: 8 as const,
+    };
+    const cleanupLedger = {
+      activeSubscriptions: 0,
+      activeViews: 0,
+      pendingMutationBatches: 0,
+      queuedEvents: 0,
+    };
+    const checkpointMemory = (value: number) => ({
+      arrayBuffersBytes: value,
+      externalBytes: value + 1,
+      heapTotalBytes: value + 2,
+      heapUsedBytes: value + 3,
+      rssBytes: value + 4,
+    });
+    const postGcEventLoopSamples = Array.from({ length: 9 }, (_value, eventLoopTurn) => ({
+      cleanupLedger,
+      eventLoopTurn,
+      memory: checkpointMemory(eventLoopTurn),
+    }));
+    const migratedFirstTask = {
+      ...firstTask,
+      expectedMeasurementProtocol: measurementProtocol,
+    };
+
+    const exitCode = await runBenchmarkBaseline({
+      argv: [
+        "node",
+        "script",
+        "--profile=tiny",
+        "--update-baseline",
+        "--update-baseline-task=task a",
+      ],
+      baselinePathForProfile: () => baselineFile,
+      environment: {},
+      logger,
+      profileMap: new Map([["tiny", [migratedFirstTask, secondTask]]]),
+      runTask: async (currentTask: typeof migratedFirstTask | typeof secondTask) => {
+        writeArtifacts(currentTask, {
+          ...summary,
+          measurementProtocol,
+          memory: {
+            ...summary.memory,
+            afterBenchmark: checkpointMemory(8),
+            before: checkpointMemory(0),
+            postGcEventLoopSamples,
+            totalDelta: {
+              arrayBuffersBytes: 8,
+              externalBytes: 8,
+              heapTotalBytes: 8,
+              heapUsedBytes: 8,
+              rssBytes: 8,
+            },
+          },
+        });
+        return 0;
+      },
+    });
+    const migratedBaseline = readBenchmarkBaseline(baselineFile);
+
+    expect({
+      exitCode,
+      migratedTask: migratedBaseline.tasks.find((task) => task.taskLabel === "task a"),
+      preservedTask: migratedBaseline.tasks.find((task) => task.taskLabel === "task b"),
+      thresholds: migratedBaseline.thresholds,
+    }).toStrictEqual({
+      exitCode: 0,
+      migratedTask: {
+        ...initialBaseline.tasks.find((task) => task.taskLabel === "task a"),
+        measurementProtocol,
+        memoryRssTotalDeltaBytes: 8,
+      },
+      preservedTask: initialBaseline.tasks.find((task) => task.taskLabel === "task b"),
+      thresholds: initialBaseline.thresholds,
+    });
+  });
+
+  it("refreshes nested runtime operation samples for a selected baseline task", async () => {
+    const directory = makeDirectory();
+    const task = {
+      ...makeTask(directory),
+      expectedArtifactKind: "runtime-benchmark-summary",
+      expectedBenchmarkScope: "runtime-grpc-materialized",
+    };
+    const baselineFile = join(directory, "baseline.json");
+    const { logger } = silentLogger();
+    const profileMap = new Map([["grpc-materialized", [task]]]);
+    let operationCases = runtimeGrpcMaterializedOperationCases;
+    const runTask = async (currentTask: typeof task) => {
+      writeFileSync(
+        currentTask.summaryPath,
+        `${JSON.stringify({
+          ...summary,
+          artifactKind: "runtime-benchmark-summary",
+          benchmarkCases: runtimeGrpcMaterializedObservation.benchmarkCases,
+          benchmarkScope: "runtime-grpc-materialized",
+          cases: operationCases,
+          grpcParameters: runtimeGrpcMaterializedParameters,
+          mutationCount: runtimeGrpcMaterializedObservation.mutationCount,
+          seedMutationCount: runtimeGrpcMaterializedObservation.seedMutationCount,
+        })}\n`,
+      );
+      writeFileSync(
+        currentTask.outputJsonPath,
+        `${JSON.stringify(runtimeGrpcMaterializedVitestOutput)}\n`,
+      );
+      return 0;
+    };
+    await runBenchmarkBaseline({
+      argv: ["node", "script", "--profile=grpc-materialized", "--update-baseline"],
+      baselinePathForProfile: () => baselineFile,
+      environment: {},
+      logger,
+      profileMap,
+      runTask,
+    });
+    const initialBaseline = readBenchmarkBaseline(baselineFile);
+    operationCases = replaceGrpcMaterializedOperationCase(
+      runtimeGrpcMaterializedOperationCaseFor({
+        ...runtimeGrpcMaterializedStreamSample,
+        cleanupMs: 3,
+      }),
+    );
+
+    const exitCode = await runBenchmarkBaseline({
+      argv: [
+        "node",
+        "script",
+        "--profile=grpc-materialized",
+        "--update-baseline",
+        "--update-baseline-task=task a",
+      ],
+      baselinePathForProfile: () => baselineFile,
+      environment: {},
+      logger,
+      profileMap,
+      runTask,
+    });
+    const refreshedBaseline = readBenchmarkBaseline(baselineFile);
+
+    expect({
+      exitCode,
+      initialOperationCases: initialBaseline.tasks[0]?.runtimeOperationCases,
+      refreshedOperationCases: refreshedBaseline.tasks[0]?.runtimeOperationCases,
+      thresholds: refreshedBaseline.thresholds,
+    }).toStrictEqual({
+      exitCode: 0,
+      initialOperationCases: runtimeGrpcMaterializedOperationCases,
+      refreshedOperationCases: operationCases,
+      thresholds: initialBaseline.thresholds,
     });
   });
 

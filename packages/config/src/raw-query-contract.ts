@@ -1,5 +1,5 @@
 import type { FieldKey, PickTupleFields } from "./query-core";
-import type { RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
+import type { ExactQueryWindow, RejectArrayExtraKeys, RejectExtraKeys } from "./query-exact";
 import type { ExactWhere, Where } from "./query-filter";
 import type { ExactRawOrderBy, OrderBy } from "./query-sort";
 
@@ -53,7 +53,8 @@ type ExactRawQueryMember<Row, Query> = Query &
     readonly aggregates?: never;
   } & ExactRawSelect<Row, Query> &
   ExactWhere<Row, Query> &
-  ExactRawOrderBy<Row, Query>;
+  ExactRawOrderBy<Row, Query> &
+  ExactQueryWindow<Query>;
 
 type InvalidExactRawQueryMember<Row, Query> = Query extends unknown
   ? Query extends ExactRawQueryMember<Row, Query>

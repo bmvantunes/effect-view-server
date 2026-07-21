@@ -54,7 +54,7 @@ describe("benchmark profile resolution", () => {
     }).toStrictEqual({
       artifactKind: benchmarkProfileArtifactKind,
       name: "smoke",
-      taskCount: 19,
+      taskCount: 20,
     });
   });
 

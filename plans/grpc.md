@@ -788,7 +788,10 @@ It records whole-case Vitest latency, stream convergence, filtered/sorted snapsh
 latency, health overlay latency, rows/sec, final health, mutation count, explicit
 gRPC parameters, `runtimeOperationCases`, and memory deltas. The baseline gate
 compares whole-case Vitest timing, memory summary, operation mean/max timings,
-operation throughput, sample counts, and structural counters.
+operation throughput, sample counts, and structural counters. Committed gRPC profiles capture
+endpoint RSS after sample cleanup, one event-loop settlement, and explicit GC. The summary and task
+catalog identify that choice as structural `measurementProtocol` metadata, so post-GC observations
+cannot compare against an immediate endpoint baseline.
 
 Current leased-feed benchmark command:
 

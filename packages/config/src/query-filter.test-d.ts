@@ -8,10 +8,25 @@ import type {
   FilterExpression,
   Where,
 } from "./query-filter";
+import { viewSchema } from "./view-schema";
 
 const AnyFieldRow = Schema.Struct({
   id: Schema.String,
   value: Schema.Any,
+});
+
+class OpaqueBoundaryProfile extends Schema.Class<OpaqueBoundaryProfile>("OpaqueBoundaryProfile")({
+  nickname: Schema.String,
+}) {}
+
+const OpaqueEffectFieldRow = Schema.Struct({
+  id: Schema.String,
+  profile: Schema.Struct({ country: Schema.String }),
+  profileClass: OpaqueBoundaryProfile,
+  optionalProfile: viewSchema.Option(Schema.Struct({ country: Schema.String })),
+  profiles: viewSchema.Chunk(Schema.Struct({ country: Schema.String })),
+  profilesById: viewSchema.HashMap(Schema.String, Schema.Struct({ country: Schema.String })),
+  profileSet: viewSchema.HashSet(Schema.Struct({ country: Schema.String })),
 });
 
 type FilterRow = {
@@ -216,6 +231,44 @@ describe("query filter types", () => {
     expectTypeOf<FilterableFieldPath<{ readonly node: RecursiveUnionNode }>>().toEqualTypeOf<
       "node.kind" | "node.a" | "node.b"
     >();
+    expectTypeOf<FilterableFieldPath<typeof OpaqueEffectFieldRow.Type>>().toEqualTypeOf<
+      "id" | "profile.country" | "profileClass.nickname"
+    >();
+  });
+
+  it("treats admitted Effect values as opaque filter fields", () => {
+    const supported = [
+      { field: "id", type: "equals", filter: "profile-1" },
+      { field: "profile.country", type: "equals", filter: "PT" },
+      { field: "profileClass.nickname", type: "contains", filter: "admin" },
+    ] satisfies Where<typeof OpaqueEffectFieldRow.Type>;
+
+    expectTypeOf(supported).toMatchTypeOf<Where<typeof OpaqueEffectFieldRow.Type>>();
+
+    const _optionImplementationField = [
+      // @ts-expect-error admitted Option values are opaque runtime declarations.
+      { field: "optionalProfile.value.country", type: "equals", filter: "PT" },
+    ] satisfies Where<typeof OpaqueEffectFieldRow.Type>;
+    const _chunkImplementationField = [
+      // @ts-expect-error admitted Chunk values do not expose their length as a filter field.
+      { field: "profiles.length", type: "equals", filter: 1 },
+    ] satisfies Where<typeof OpaqueEffectFieldRow.Type>;
+    const _hashMapImplementationField = [
+      {
+        // @ts-expect-error admitted HashMap values do not expose implementation markers.
+        field: "profilesById.~effect/collections/HashMap",
+        type: "equals",
+        filter: "~effect/collections/HashMap",
+      },
+    ] satisfies Where<typeof OpaqueEffectFieldRow.Type>;
+    const _hashSetImplementationField = [
+      {
+        // @ts-expect-error admitted HashSet values do not expose implementation markers.
+        field: "profileSet.~effect/collections/HashSet",
+        type: "equals",
+        filter: "~effect/collections/HashSet",
+      },
+    ] satisfies Where<typeof OpaqueEffectFieldRow.Type>;
   });
 
   it("accepts recursive exact expressions without const assertions", () => {

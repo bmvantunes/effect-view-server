@@ -130,6 +130,69 @@ describe("leased gRPC identity contract", () => {
     ),
   );
 
+  it("returns typed route failures when nested route reflection is hostile", () => {
+    const contract = Result.getOrThrow(
+      makeGrpcLeasedIdentityContract({
+        topic: "orders",
+        feedName: "orders",
+        routeBy: ["region"],
+        schema: IdentityRow,
+        keyField: "id",
+      }),
+    );
+    const hostileKeys = new Proxy(
+      { region: "usa" },
+      {
+        ownKeys() {
+          throw new Error("route keys cannot be inspected");
+        },
+      },
+    );
+    const hostileDescriptor = new Proxy(
+      { region: "usa" },
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("route field cannot be inspected");
+        },
+      },
+    );
+    const revokedQuery = Proxy.revocable({}, {});
+    revokedQuery.revoke();
+    const hostileKeysFailure = failure(contract.resolveQueryRoute({ routeBy: hostileKeys }));
+    const hostileDescriptorFailure = failure(
+      contract.resolveQueryRoute({ routeBy: hostileDescriptor }),
+    );
+    const revokedQueryFailure = failure(contract.resolveQueryRoute(revokedQuery.proxy));
+
+    expect({
+      hostileKeys: {
+        kind: hostileKeysFailure?.kind,
+        message: hostileKeysFailure?.message,
+      },
+      hostileDescriptor: {
+        kind: hostileDescriptorFailure?.kind,
+        message: hostileDescriptorFailure?.message,
+      },
+      revokedQuery: {
+        kind: revokedQueryFailure?.kind,
+        message: revokedQueryFailure?.message,
+      },
+    }).toStrictEqual({
+      hostileKeys: {
+        kind: "Route",
+        message: "Leased topic orders routeBy could not be inspected.",
+      },
+      hostileDescriptor: {
+        kind: "Route",
+        message: "Leased topic orders routeBy field region could not be inspected.",
+      },
+      revokedQuery: {
+        kind: "Route",
+        message: "Leased topic orders requires routeBy fields: region.",
+      },
+    });
+  });
+
   it("compiles a total exact-route engine partition predicate", () => {
     const contract = Result.getOrThrow(
       makeGrpcLeasedIdentityContract({
@@ -481,6 +544,18 @@ describe("leased gRPC identity contract", () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    let flakyRegionAstReads = 0;
+    const flakyRegion = new Proxy(Schema.String, {
+      get(target, property, receiver) {
+        if (property === "ast") {
+          flakyRegionAstReads += 1;
+          if (flakyRegionAstReads > 1) {
+            throw new Error("route validator failed");
+          }
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const HostileIdentityRow = new Proxy(IdentityRow, {
       get(target, property, receiver) {
         if (property === "fields") {
@@ -497,6 +572,20 @@ describe("leased gRPC identity contract", () => {
         return Reflect.get(target, property, receiver);
       },
     });
+    const StructuredRouteRow = Schema.Struct({
+      id: Schema.String,
+      profile: Schema.Struct({ country: Schema.String }),
+    });
+    const MixedRouteRow = Schema.Struct({
+      id: Schema.String,
+      route: Schema.Union([Schema.String, Schema.Struct({ code: Schema.String })]),
+    });
+    const AnyRouteRow = Schema.Struct({ id: Schema.String, route: Schema.Any });
+    const FlakyValidatorRouteRow = Schema.Struct({ id: Schema.String, region: flakyRegion });
+    flakyRegionAstReads = 0;
+    const InheritedRouteRow = Schema.Struct({ id: Schema.String });
+    Object.setPrototypeOf(InheritedRouteRow.fields, { region: Schema.String });
+    const DottedRouteRow = Schema.Struct({ "profile.country": Schema.String });
     const contract = Result.getOrThrow(
       makeGrpcLeasedIdentityContract({
         topic: "orders",
@@ -548,6 +637,16 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
+      nonString: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "orders",
+          feedName: "orders",
+          // @ts-expect-error Runtime admission protects untyped callers from non-string fields.
+          routeBy: [1],
+          schema: IdentityRow,
+          keyField: "id",
+        }),
+      )?.kind,
       missing: failure(
         makeGrpcLeasedIdentityContract({
           topic: "orders",
@@ -555,6 +654,51 @@ describe("leased gRPC identity contract", () => {
           routeBy: ["missing"],
           schema: IdentityRow,
           keyField: "id",
+        }),
+      )?.kind,
+      structured: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "structured",
+          feedName: "structured",
+          routeBy: ["profile"],
+          schema: StructuredRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      mixed: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "mixed",
+          feedName: "mixed",
+          routeBy: ["route"],
+          schema: MixedRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      any: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "any",
+          feedName: "any",
+          routeBy: ["route"],
+          schema: AnyRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      inherited: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "inherited",
+          feedName: "inherited",
+          routeBy: ["region"],
+          schema: InheritedRouteRow,
+          keyField: "id",
+        }),
+      )?.kind,
+      dotted: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "dotted",
+          feedName: "dotted",
+          routeBy: ["profile.country"],
+          schema: DottedRouteRow,
+          keyField: "profile.country",
         }),
       )?.kind,
       hostileCodec: failure(
@@ -566,6 +710,15 @@ describe("leased gRPC identity contract", () => {
           keyField: "id",
         }),
       )?.kind,
+      unusableValidator: failure(
+        makeGrpcLeasedIdentityContract({
+          topic: "flaky-validator",
+          feedName: "flaky-validator",
+          routeBy: ["region"],
+          schema: FlakyValidatorRouteRow,
+          keyField: "id",
+        }),
+      )?.message,
       unreadableFields: failure(
         makeGrpcLeasedIdentityContract({
           topic: "orders",
@@ -587,8 +740,16 @@ describe("leased gRPC identity contract", () => {
       unreadable: "Configuration",
       empty: "Configuration",
       duplicate: "Configuration",
+      nonString: "Configuration",
       missing: "Configuration",
+      structured: "Configuration",
+      mixed: "Configuration",
+      any: "Configuration",
+      inherited: "Configuration",
+      dotted: "Configuration",
       hostileCodec: "Configuration",
+      unusableValidator:
+        "Leased topic flaky-validator route field region has no usable scalar schema validator.",
       unreadableFields: "Configuration",
       missingRoute: "Route",
       extraRoute: "Route",

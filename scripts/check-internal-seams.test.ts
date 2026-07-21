@@ -13,6 +13,7 @@ import {
   assertNoEngineSeamViolations,
   assertNoPackageImportViolations,
   assertNoPackageSurfaceViolations,
+  collectRuntimeCoreDependencyCycleViolations,
   collectConsumerImportViolations,
   collectEngineSeamViolations,
   collectPackageImportViolations,
@@ -46,6 +47,41 @@ describe("internal Seam checker", () => {
       stateExportViolations: [],
     });
     expect(collectRuntimeSourceSeamViolations()).toStrictEqual([]);
+    expect(collectRuntimeCoreDependencyCycleViolations()).toStrictEqual([]);
+  });
+
+  it("rejects local Runtime Core dependency cycles", () => {
+    const directory = makeDirectory();
+    const sourceRoot = join(directory, "packages", "runtime-core", "src");
+    mkdirSync(sourceRoot, { recursive: true });
+    writeFileSync(
+      join(sourceRoot, "health.ts"),
+      'import "./missing";\nimport type { Live } from "./live-client";\n',
+    );
+    writeFileSync(
+      join(sourceRoot, "live-client.ts"),
+      'import type { Health } from "./health";\n',
+    );
+
+    expect(collectRuntimeCoreDependencyCycleViolations(directory)).toStrictEqual([
+      "packages/runtime-core/src/health.ts -> packages/runtime-core/src/live-client.ts -> packages/runtime-core/src/health.ts forms a local Runtime Core dependency cycle.",
+    ]);
+
+    rmSync(directory, { force: true, recursive: true });
+  });
+
+  it("rejects local Runtime Core dependency cycles across source extensions", () => {
+    const directory = makeDirectory();
+    const sourceRoot = join(directory, "packages", "runtime-core", "src");
+    mkdirSync(sourceRoot, { recursive: true });
+    writeFileSync(join(sourceRoot, "health.tsx"), 'import type { Live } from "./live-client";\n');
+    writeFileSync(join(sourceRoot, "live-client.mts"), 'import type { Health } from "./health";\n');
+
+    expect(collectRuntimeCoreDependencyCycleViolations(directory)).toStrictEqual([
+      "packages/runtime-core/src/health.tsx -> packages/runtime-core/src/live-client.mts -> packages/runtime-core/src/health.tsx forms a local Runtime Core dependency cycle.",
+    ]);
+
+    rmSync(directory, { force: true, recursive: true });
   });
 
   it("keeps runtime composition neutral and Adapter option dependencies acyclic", () => {
@@ -120,6 +156,33 @@ describe("internal Seam checker", () => {
         path: join(process.cwd(), "packages/runtime/src/runtime-types.ts"),
       }),
     ).toStrictEqual([]);
+  });
+
+  it("keeps TCP Publish on the neutral decoded-mutation contract", () => {
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents:
+          'import type { ViewServerRuntimeCoreInternalClient } from "@effect-view-server/runtime-core/internal";',
+        path: join(process.cwd(), "packages/runtime/src/tcp-publish-command.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/tcp-publish-command.ts imports Runtime Core implementation types through @effect-view-server/runtime-core/internal instead of the neutral decoded-mutation contract.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents:
+          'import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";',
+        path: join(process.cwd(), "packages/runtime/src/tcp-publish-command.ts"),
+      }),
+    ).toStrictEqual([]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
+        contents: 'import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";',
+        path: join(process.cwd(), "packages/runtime/src/tcp-publish-ingress.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/tcp-publish-ingress.ts imports Runtime Core implementation types through ./runtime-types instead of the neutral decoded-mutation contract.",
+    ]);
   });
 
   it("rejects private, stale, bare-root, deep, and evasive consumer imports", () => {
@@ -352,8 +415,14 @@ describe("internal Seam checker", () => {
       ),
     ).toStrictEqual(Array.from({ length: 12 }, () => true));
     expect(
-      ["src/a.ts", "src/a.mts", "src/a.test.js", "src/a.integration.ts"].map(isTestFile),
-    ).toStrictEqual([false, false, false, false]);
+      [
+        "src/a.ts",
+        "src/a.mts",
+        "src/a.test.js",
+        "src/a.integration.ts",
+        "src/test-support/a.ts",
+      ].map(isTestFile),
+    ).toStrictEqual([false, false, false, false, true]);
     rmSync(root, { recursive: true });
   });
 

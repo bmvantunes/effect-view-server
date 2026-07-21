@@ -73,7 +73,7 @@ export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopi
 };
 
 export type ViewServerRuntimeCoreLiveClientModule<Topics extends DecodableTopicDefinitions> = {
-  readonly liveClient: ViewServerRuntimeLiveClient<Topics> &
+  readonly liveClient: Omit<ViewServerRuntimeLiveClient<Topics>, "close"> &
     ViewServerRuntimeCoreInternalLiveClient<Topics>;
   readonly protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;
 };

@@ -1,6 +1,6 @@
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
-import { afterAll, bench, describe } from "vitest";
+import { afterAll, beforeAll, bench, describe } from "vitest";
 import { Effect } from "effect";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -12,6 +12,12 @@ import {
   type GrpcLeasedBenchmarkSample,
   type GrpcLeasedBenchmarkWorkload,
 } from "../test-harness/grpc-leased-benchmark";
+import {
+  grpcBenchmarkExplicitGcFromEnv,
+  makeGrpcBenchmarkMemoryLifecycle,
+} from "../test-harness/grpc-benchmark-memory";
+
+declare const gc: (() => void) | undefined;
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -40,7 +46,6 @@ const defaultRouteCount = 25;
 const defaultWarmupIterations = 0;
 const defaultWarmupTimeMs = 0;
 const convergenceTimeout = "10 seconds";
-const memoryBefore = memorySnapshot();
 
 const positiveIntegerFromEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];
@@ -108,6 +113,15 @@ if (benchOptions.time > 0 || benchOptions.warmupIterations > 0 || benchOptions.w
 }
 
 const samples: Array<GrpcLeasedBenchmarkSample> = [];
+const explicitGarbageCollection = grpcBenchmarkExplicitGcFromEnv(
+  process.env["VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC"],
+);
+const memoryLifecycle = makeGrpcBenchmarkMemoryLifecycle({
+  capture: memorySnapshot,
+  collectGarbage: typeof gc === "function" ? gc : undefined,
+  explicitGc: explicitGarbageCollection,
+  settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
+});
 
 function memorySnapshot(): BenchmarkMemorySnapshot {
   const memory = process.memoryUsage();
@@ -164,7 +178,9 @@ const benchmarkBody = (workload: GrpcLeasedBenchmarkWorkload) => async (): Promi
   );
 };
 
-afterAll(() => {
+beforeAll(() => memoryLifecycle.captureBefore());
+
+afterAll(async () => {
   const cases = grpcLeasedBenchmarkCases.map((benchmarkCase) =>
     summarizeGrpcLeasedBenchmarkSamples(samples, benchmarkCase.name, benchOptions.iterations),
   );
@@ -185,7 +201,7 @@ afterAll(() => {
     (total, sample) => total + sample.queuedEventCount,
     0,
   );
-  const memoryAfterBenchmark = memorySnapshot();
+  const memory = await memoryLifecycle.captureAfterCleanup();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
     artifactKind: "runtime-benchmark-summary",
     backpressureCount,
@@ -205,10 +221,13 @@ afterAll(() => {
       source: "vitest-output-json",
     },
     memory: {
-      afterBenchmark: memoryAfterBenchmark,
-      before: memoryBefore,
-      totalDelta: memoryDelta(memoryBefore, memoryAfterBenchmark),
+      afterBenchmark: memory.afterCleanup,
+      before: memory.before,
+      totalDelta: memoryDelta(memory.before, memory.afterCleanup),
     },
+    measurementProtocol: explicitGarbageCollection
+      ? { memoryCheckpoint: "settled-explicit-gc-after-cleanup" }
+      : undefined,
     mutationCount: cases.reduce((total, benchmarkCase) => total + benchmarkCase.mutationCount, 0),
     notes: [
       "Vitest latency includes a fresh Runtime Core, leased manager, deterministic sources, measured operation, health audit, and cleanup for each sample.",
@@ -216,6 +235,9 @@ afterAll(() => {
       "Retained local-filter snapshot timing starts before subscription so its pooled throughput includes retained query evaluation and initial event delivery.",
       "Measured subscription-release cleanup is audited immediately after close and before the emergency whole-manager teardown.",
       "Every sample owns independent routes and emits separate raw measured-cleanup and emergency-teardown evidence, including the gRPC client active-feed ledger.",
+      explicitGarbageCollection
+        ? "Endpoint RSS is captured after a settled explicit-GC checkpoint; the measurement protocol is structural baseline metadata."
+        : "Endpoint RSS is captured after cleanup and one event-loop settlement without explicit GC.",
     ],
     queuedEventCount,
     rowCount: rowsPerFeed,

@@ -7,13 +7,170 @@ import {
   activeQueryTestMetadata,
   activeStoreRawQueryExecutionCount,
   createActiveQueryRegistry,
+  preparedGroupedPlanCompilationCount,
+  preparedRawPlanCompilationCount,
   releaseRawQueryExecution,
 } from "../test-harness/active-query-interface";
+import type { RawQueryExecutionReleaseToken } from "./active-query";
 import { prepareRuntimeRawQuery } from "./raw-query-compiler";
-import { publishTopicStoreRow, TopicStore } from "./topic-store";
+import {
+  acquireTopicStoreRuntimeGroupedQueryExecution,
+  acquireTopicStoreRuntimeRawQueryExecution,
+  publishTopicStoreRow,
+  releaseTopicStoreMaterializedQueryExecutionToken,
+  releaseTopicStoreRawQueryExecution,
+  TopicStore,
+} from "./topic-store";
+import { defaultGroupedIncrementalAdmissionLimits } from "./grouped-incremental-admission";
 
 const invalidRow = (_topic: string, message: string): Error => new Error(message);
 describe("column-live-view-engine Active Query sharing", () => {
+  it.effect(
+    "compiles one canonical grouped plan for equivalent large deep filters",
+    () =>
+      Effect.gen(function* () {
+        const store = new TopicStore(
+          "shared-large-grouped-filter",
+          Schema.Struct({
+            id: Schema.String,
+            customerId: Schema.String,
+            status: Schema.String,
+          }),
+          "id",
+          () => {},
+        );
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-1", customerId: "customer-1", status: "open" },
+          invalidRow,
+        );
+
+        const candidates = Array.from({ length: 50_000 }, (_value, index) => `customer-${index}`);
+        let nestedWhere: unknown = {
+          field: "customerId",
+          type: "in",
+          filter: candidates,
+        };
+        for (let depth = 0; depth < 256; depth += 1) {
+          nestedWhere =
+            depth % 2 === 0
+              ? {
+                  type: "AND",
+                  conditions: [nestedWhere, { field: "status", type: "equals", filter: "open" }],
+                }
+              : {
+                  type: "OR",
+                  conditions: [
+                    nestedWhere,
+                    {
+                      field: "customerId",
+                      type: "equals",
+                      filter: `missing-${depth}`,
+                    },
+                  ],
+                };
+        }
+        const query = {
+          groupBy: ["status"],
+          aggregates: { rowCount: { aggFunc: "count" } },
+          where: [nestedWhere],
+        };
+        const releaseTokens: Array<string> = [];
+        for (let subscriber = 0; subscriber < 12; subscriber += 1) {
+          const acquired = yield* acquireTopicStoreRuntimeGroupedQueryExecution(
+            store,
+            query,
+            defaultGroupedIncrementalAdmissionLimits,
+          );
+          releaseTokens.push(acquired.releaseToken);
+          expect(acquired.execution.initial(`grouped-subscriber-${subscriber}`).totalRows).toBe(1);
+        }
+
+        const queryInterface = activeQueryTestInterface(store);
+        expect(yield* preparedGroupedPlanCompilationCount(queryInterface)).toBe(1);
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(1);
+        const canonicalEntry = queryInterface.activeQueries.materialized.values().next().value;
+        expect(canonicalEntry?.canonicalCompiled.plan.cacheKey).toBe(releaseTokens[0]);
+        expect(canonicalEntry?.refs).toBe(12);
+
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-2", customerId: "customer-2", status: "open" },
+          invalidRow,
+        );
+        expect(queryInterface.changesSince(1)).toBeDefined();
+
+        for (const token of releaseTokens) {
+          yield* releaseTopicStoreMaterializedQueryExecutionToken(store, token);
+        }
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(0);
+        expect(yield* preparedGroupedPlanCompilationCount(queryInterface)).toBe(1);
+
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-3", customerId: "customer-3", status: "closed" },
+          invalidRow,
+        );
+        expect(queryInterface.changesSince(2)).toBeUndefined();
+      }),
+    30_000,
+  );
+
+  it.effect(
+    "compiles one canonical 50k membership plan for equivalent runtime subscribers",
+    () =>
+      Effect.gen(function* () {
+        const store = new TopicStore(
+          "shared-large-membership",
+          Schema.Struct({
+            id: Schema.String,
+            customerId: Schema.String,
+            region: Schema.String,
+          }),
+          "id",
+          () => {},
+        );
+        yield* publishTopicStoreRow(
+          store,
+          { id: "order-1", customerId: "customer-1", region: "emea" },
+          invalidRow,
+        );
+
+        const candidates = Array.from({ length: 50_000 }, (_value, index) => `customer-${index}`);
+        const releaseTokens: Array<RawQueryExecutionReleaseToken> = [];
+        for (let subscriber = 0; subscriber < 12; subscriber += 1) {
+          const acquired = yield* acquireTopicStoreRuntimeRawQueryExecution(store, {
+            select: subscriber % 2 === 0 ? ["id"] : ["id", "region"],
+            where: [
+              {
+                field: "customerId",
+                type: "in",
+                filter: candidates,
+              },
+            ],
+            offset: subscriber % 3,
+            limit: 1,
+          });
+          releaseTokens.push(acquired.releaseToken);
+          expect(acquired.execution.initial(`subscriber-${subscriber}`).totalRows).toBe(1);
+        }
+
+        const queryInterface = activeQueryTestInterface(store);
+        expect(yield* preparedRawPlanCompilationCount(queryInterface)).toBe(1);
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(1);
+        const canonicalEntry = queryInterface.activeQueries.raw.values().next().value;
+        expect(canonicalEntry?.canonicalPlan.predicate.plan.filters).toHaveLength(1);
+        expect(canonicalEntry?.refs).toBe(12);
+
+        for (const token of releaseTokens) {
+          yield* releaseTopicStoreRawQueryExecution(store, token);
+        }
+        expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(0);
+        expect(yield* preparedRawPlanCompilationCount(queryInterface)).toBe(1);
+      }),
+    30_000,
+  );
+
   it.effect("reuses execution state for identical compiled raw queries", () =>
     Effect.gen(function* () {
       const rowSchema = Schema.Struct({

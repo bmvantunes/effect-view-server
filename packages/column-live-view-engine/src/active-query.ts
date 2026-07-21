@@ -8,13 +8,16 @@ import {
 import type { ActiveQueryExecutionCounts, ActiveQueryRegistry } from "./active-query-contract";
 
 export {
+  acquirePreparedRawQueryExecution,
   acquireRawQueryExecution,
   evaluateRawQuery,
   evaluateRawQueryResult,
   releaseRawQueryExecution,
+  releaseRawQueryExecutionToken,
 } from "./active-raw-query";
 export {
   acquireMaterializedQueryExecution,
+  acquirePreparedMaterializedQueryExecution,
   releaseMaterializedQueryExecution,
 } from "./active-materialized-query";
 export {
@@ -25,6 +28,7 @@ export {
   type LiveQueryExecutionCursor,
   type MaterializedQueryExecution,
   type RawQueryExecution,
+  type RawQueryExecutionReleaseToken,
 } from "./active-query-contract";
 
 export const clearStoreRawQueryExecutions = Effect.fn(

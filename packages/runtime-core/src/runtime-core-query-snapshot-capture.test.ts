@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Stream } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { makeViewServerRuntimeCore } from "./index";
-import { order, viewServer } from "./runtime-core-test-fixtures";
+import { order, viewServer } from "./test-support/runtime-test-fixtures";
 
 describe("@effect-view-server/runtime-core", () => {
   it.effect("captures ordinary subscription queries when subscribe is called", () =>

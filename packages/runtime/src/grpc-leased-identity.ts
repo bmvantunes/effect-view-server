@@ -1,4 +1,5 @@
 import type { DeltaOperation, RowSchema } from "@effect-view-server/config";
+import { viewServerRouteFieldSchemaHasCompleteScalarDomain } from "@effect-view-server/config/internal";
 import type { ViewServerRuntimeCoreQueryPartition } from "@effect-view-server/runtime-core/internal";
 import {
   compileGroupedKeyIdentity,
@@ -89,8 +90,13 @@ const identityError = (
   cause: unknown,
 ): GrpcLeasedIdentityError => new GrpcLeasedIdentityError({ kind, message, cause });
 
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> => {
+  try {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+};
 
 type RouteScalar = null | string | number | bigint | boolean | BigDecimal;
 
@@ -440,18 +446,32 @@ export const makeGrpcLeasedIdentityContract = (input: {
       ),
     );
   }
-  if (routeBy.success.length === 0 || new Set(routeBy.success).size !== routeBy.success.length) {
+  if (
+    routeBy.success.length === 0 ||
+    !routeBy.success.every(
+      (field) =>
+        typeof field === "string" &&
+        field !== "__proto__" &&
+        field !== "prototype" &&
+        field !== "constructor" &&
+        !field.includes("."),
+    ) ||
+    new Set(routeBy.success).size !== routeBy.success.length
+  ) {
     return Result.fail(
       identityError(
         "Configuration",
-        `Leased topic ${input.topic} must configure distinct route fields.`,
+        `Leased topic ${input.topic} must configure distinct, statically named route fields.`,
         routeBy.success,
       ),
     );
   }
   const routeFields: Array<CompiledRouteField> = [];
   for (const field of routeBy.success) {
-    const fieldSchema = Result.try(() => input.schema.fields[field]);
+    const fieldSchema = Result.try(() => {
+      const fields = input.schema.fields;
+      return Object.hasOwn(fields, field) ? fields[field] : undefined;
+    });
     if (Result.isFailure(fieldSchema)) {
       return Result.fail(
         identityError(
@@ -467,6 +487,15 @@ export const makeGrpcLeasedIdentityContract = (input: {
         identityError(
           "Configuration",
           `Leased topic ${input.topic} route field ${field} is not in the topic schema.`,
+          field,
+        ),
+      );
+    }
+    if (!viewServerRouteFieldSchemaHasCompleteScalarDomain(schemaField)) {
+      return Result.fail(
+        identityError(
+          "Configuration",
+          `Leased topic ${input.topic} route field ${field} must have a complete supported scalar schema domain.`,
           field,
         ),
       );
@@ -518,11 +547,23 @@ export const makeGrpcLeasedIdentityContract = (input: {
       );
     }
     const queryRoute = routeDescriptor.success.value;
-    const actualFields = Object.getOwnPropertyNames(queryRoute);
+    const routeShape = Result.try(() => ({
+      actualFields: Object.getOwnPropertyNames(queryRoute),
+      symbolCount: Object.getOwnPropertySymbols(queryRoute).length,
+    }));
+    if (Result.isFailure(routeShape)) {
+      return Result.fail(
+        identityError(
+          "Route",
+          `Leased topic ${input.topic} routeBy could not be inspected.`,
+          routeShape.failure,
+        ),
+      );
+    }
     if (
-      Object.getOwnPropertySymbols(queryRoute).length > 0 ||
-      actualFields.length !== frozenRouteFields.length ||
-      actualFields.some((field) => !frozenRouteFieldNames.has(field))
+      routeShape.success.symbolCount > 0 ||
+      routeShape.success.actualFields.length !== frozenRouteFields.length ||
+      routeShape.success.actualFields.some((field) => !frozenRouteFieldNames.has(field))
     ) {
       return Result.fail(
         identityError(
@@ -534,7 +575,19 @@ export const makeGrpcLeasedIdentityContract = (input: {
     }
     const candidate: Record<string, unknown> = {};
     for (const routeField of frozenRouteFields) {
-      const descriptor = Object.getOwnPropertyDescriptor(queryRoute, routeField.field);
+      const inspectedDescriptor = Result.try(() =>
+        Object.getOwnPropertyDescriptor(queryRoute, routeField.field),
+      );
+      if (Result.isFailure(inspectedDescriptor)) {
+        return Result.fail(
+          identityError(
+            "Route",
+            `Leased topic ${input.topic} routeBy field ${routeField.field} could not be inspected.`,
+            inspectedDescriptor.failure,
+          ),
+        );
+      }
+      const descriptor = inspectedDescriptor.success;
       if (
         descriptor === undefined ||
         !descriptor.enumerable ||

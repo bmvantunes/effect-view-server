@@ -114,6 +114,217 @@ const grpcSeedMutationCountValue = (value, path, benchmarkScope) => {
   return undefined;
 };
 
+const rawLargeMembershipParametersValue = (value, path, benchmarkScope) => {
+  if (benchmarkScope === "engine-raw-large-membership") {
+    const parameters = exactObjectValue(value, path, [
+      "candidateCount",
+      "partitionCount",
+      "preparedPlanCompilationCount",
+      "subscriberCount",
+    ]);
+    return {
+      candidateCount: positiveInteger(parameters.candidateCount, `${path}.candidateCount`),
+      partitionCount: positiveInteger(parameters.partitionCount, `${path}.partitionCount`),
+      preparedPlanCompilationCount: positiveInteger(
+        parameters.preparedPlanCompilationCount,
+        `${path}.preparedPlanCompilationCount`,
+      ),
+      subscriberCount: positiveInteger(parameters.subscriberCount, `${path}.subscriberCount`),
+    };
+  }
+  if (value !== undefined) {
+    throw new Error(
+      `Benchmark artifact field ${path} is only supported for the engine-raw-large-membership benchmark scope.`,
+    );
+  }
+  return undefined;
+};
+
+const measurementProtocolValue = (value, path) => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const protocol = objectValue(value, path);
+  const keys = Object.keys(protocol).sort();
+  const supportedKeys = ["memoryCheckpoint", "postGcEventLoopTurns", "priming"];
+  if (keys.length === 0 || keys.some((key) => !supportedKeys.includes(key))) {
+    throw new Error(
+      `Benchmark artifact field ${path} must contain one or more of these keys only: ${supportedKeys.join(", ")}.`,
+    );
+  }
+  const memoryCheckpoint =
+    Object.hasOwn(protocol, "memoryCheckpoint")
+      ? stringValue(protocol.memoryCheckpoint, `${path}.memoryCheckpoint`)
+      : undefined;
+  if (
+    memoryCheckpoint !== undefined &&
+    memoryCheckpoint !== "settled-explicit-gc-after-cleanup" &&
+    memoryCheckpoint !== "settled-explicit-gc-plus-post-gc-turns-after-cleanup"
+  ) {
+    throw new Error(
+      `Benchmark artifact field ${path}.memoryCheckpoint must be settled-explicit-gc-after-cleanup or settled-explicit-gc-plus-post-gc-turns-after-cleanup.`,
+    );
+  }
+  const postGcEventLoopTurns = Object.hasOwn(protocol, "postGcEventLoopTurns")
+    ? positiveInteger(protocol.postGcEventLoopTurns, `${path}.postGcEventLoopTurns`)
+    : undefined;
+  if (
+    postGcEventLoopTurns !== undefined &&
+    memoryCheckpoint !== "settled-explicit-gc-plus-post-gc-turns-after-cleanup"
+  ) {
+    throw new Error(
+      `Benchmark artifact field ${path}.postGcEventLoopTurns requires the settled-explicit-gc-plus-post-gc-turns-after-cleanup checkpoint.`,
+    );
+  }
+  if (postGcEventLoopTurns !== undefined && postGcEventLoopTurns !== 8) {
+    throw new Error(`Benchmark artifact field ${path}.postGcEventLoopTurns must be 8.`);
+  }
+  if (
+    memoryCheckpoint === "settled-explicit-gc-plus-post-gc-turns-after-cleanup" &&
+    postGcEventLoopTurns === undefined
+  ) {
+    throw new Error(
+      `Benchmark artifact field ${path}.postGcEventLoopTurns is required for the settled-explicit-gc-plus-post-gc-turns-after-cleanup checkpoint.`,
+    );
+  }
+  const priming =
+    Object.hasOwn(protocol, "priming")
+      ? stringValue(protocol.priming, `${path}.priming`)
+      : undefined;
+  if (priming !== undefined && priming !== "append-delete-restore-before-sampling") {
+    throw new Error(
+      `Benchmark artifact field ${path}.priming must be append-delete-restore-before-sampling.`,
+    );
+  }
+  return {
+    ...(memoryCheckpoint === undefined ? {} : { memoryCheckpoint }),
+    ...(postGcEventLoopTurns === undefined ? {} : { postGcEventLoopTurns }),
+    ...(priming === undefined ? {} : { priming }),
+  };
+};
+
+const memoryCheckpointSnapshotValue = (value, path) => {
+  const snapshot = exactObjectValue(value, path, [
+    "arrayBuffersBytes",
+    "externalBytes",
+    "heapTotalBytes",
+    "heapUsedBytes",
+    "rssBytes",
+  ]);
+  return {
+    arrayBuffersBytes: nonNegativeInteger(snapshot.arrayBuffersBytes, `${path}.arrayBuffersBytes`),
+    externalBytes: nonNegativeInteger(snapshot.externalBytes, `${path}.externalBytes`),
+    heapTotalBytes: nonNegativeInteger(snapshot.heapTotalBytes, `${path}.heapTotalBytes`),
+    heapUsedBytes: nonNegativeInteger(snapshot.heapUsedBytes, `${path}.heapUsedBytes`),
+    rssBytes: nonNegativeInteger(snapshot.rssBytes, `${path}.rssBytes`),
+  };
+};
+
+const memoryCheckpointDeltaValue = (value, path) => {
+  const delta = exactObjectValue(value, path, [
+    "arrayBuffersBytes",
+    "externalBytes",
+    "heapTotalBytes",
+    "heapUsedBytes",
+    "rssBytes",
+  ]);
+  return {
+    arrayBuffersBytes: finiteNumber(delta.arrayBuffersBytes, `${path}.arrayBuffersBytes`),
+    externalBytes: finiteNumber(delta.externalBytes, `${path}.externalBytes`),
+    heapTotalBytes: finiteNumber(delta.heapTotalBytes, `${path}.heapTotalBytes`),
+    heapUsedBytes: finiteNumber(delta.heapUsedBytes, `${path}.heapUsedBytes`),
+    rssBytes: finiteNumber(delta.rssBytes, `${path}.rssBytes`),
+  };
+};
+
+const zeroCleanupLedgerValue = (value, path) => {
+  const ledger = exactObjectValue(value, path, [
+    "activeSubscriptions",
+    "activeViews",
+    "pendingMutationBatches",
+    "queuedEvents",
+  ]);
+  const decoded = {
+    activeSubscriptions: nonNegativeInteger(
+      ledger.activeSubscriptions,
+      `${path}.activeSubscriptions`,
+    ),
+    activeViews: nonNegativeInteger(ledger.activeViews, `${path}.activeViews`),
+    pendingMutationBatches: nonNegativeInteger(
+      ledger.pendingMutationBatches,
+      `${path}.pendingMutationBatches`,
+    ),
+    queuedEvents: nonNegativeInteger(ledger.queuedEvents, `${path}.queuedEvents`),
+  };
+  if (Object.values(decoded).some((count) => count !== 0)) {
+    throw new Error(`Benchmark artifact field ${path} must contain only zero counts.`);
+  }
+  return decoded;
+};
+
+const validatePostGcEventLoopSamples = (memory, measurementProtocol, path) => {
+  const samplesValue = memory.postGcEventLoopSamples;
+  const postGcEventLoopTurns = measurementProtocol?.postGcEventLoopTurns;
+  if (postGcEventLoopTurns === undefined) {
+    if (samplesValue !== undefined) {
+      throw new Error(
+        `Benchmark artifact field ${path}.postGcEventLoopSamples requires postGcEventLoopTurns protocol metadata.`,
+      );
+    }
+    return;
+  }
+  const samples = arrayValue(samplesValue, `${path}.postGcEventLoopSamples`);
+  const expectedSampleCount = postGcEventLoopTurns + 1;
+  if (samples.length !== expectedSampleCount) {
+    throw new Error(
+      `Benchmark artifact field ${path}.postGcEventLoopSamples must contain ${expectedSampleCount} samples.`,
+    );
+  }
+  const decodedSamples = samples.map((value, index) => {
+    const samplePath = `${path}.postGcEventLoopSamples[${index}]`;
+    const sample = exactObjectValue(value, samplePath, [
+      "cleanupLedger",
+      "eventLoopTurn",
+      "memory",
+    ]);
+    const eventLoopTurn = nonNegativeInteger(sample.eventLoopTurn, `${samplePath}.eventLoopTurn`);
+    if (eventLoopTurn !== index) {
+      throw new Error(
+        `Benchmark artifact field ${samplePath}.eventLoopTurn must be ${index}.`,
+      );
+    }
+    return {
+      cleanupLedger: zeroCleanupLedgerValue(sample.cleanupLedger, `${samplePath}.cleanupLedger`),
+      eventLoopTurn,
+      memory: memoryCheckpointSnapshotValue(sample.memory, `${samplePath}.memory`),
+    };
+  });
+  const endpoint = memoryCheckpointSnapshotValue(
+    memory.afterBenchmark,
+    `${path}.afterBenchmark`,
+  );
+  const finalSample = decodedSamples[postGcEventLoopTurns];
+  if (JSON.stringify(finalSample?.memory) !== JSON.stringify(endpoint)) {
+    throw new Error(
+      `Benchmark artifact field ${path}.afterBenchmark must equal the final post-GC event-loop sample.`,
+    );
+  }
+  const before = memoryCheckpointSnapshotValue(memory.before, `${path}.before`);
+  const totalDelta = memoryCheckpointDeltaValue(memory.totalDelta, `${path}.totalDelta`);
+  const expectedTotalDelta = {
+    arrayBuffersBytes: endpoint.arrayBuffersBytes - before.arrayBuffersBytes,
+    externalBytes: endpoint.externalBytes - before.externalBytes,
+    heapTotalBytes: endpoint.heapTotalBytes - before.heapTotalBytes,
+    heapUsedBytes: endpoint.heapUsedBytes - before.heapUsedBytes,
+    rssBytes: endpoint.rssBytes - before.rssBytes,
+  };
+  if (JSON.stringify(totalDelta) !== JSON.stringify(expectedTotalDelta)) {
+    throw new Error(
+      `Benchmark artifact field ${path}.totalDelta must equal the fixed final endpoint minus the before checkpoint.`,
+    );
+  }
+};
+
 const comparableBenchmark = (groupName, benchmark) => ({
   groupName,
   maxMs: finiteNumber(benchmark.max, `${benchmark.name}.max`),
@@ -665,9 +876,43 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
       `${task.label}: benchmarkScope changed from ${task.expectedBenchmarkScope} to ${benchmarkScope}.`,
     );
   }
+  const measurementProtocol = measurementProtocolValue(
+    summary.measurementProtocol,
+    `${task.summaryPath}.measurementProtocol`,
+  );
+  const expectedMeasurementProtocol = measurementProtocolValue(
+    task.expectedMeasurementProtocol,
+    `${task.label}.expectedMeasurementProtocol`,
+  );
+  if (JSON.stringify(measurementProtocol) !== JSON.stringify(expectedMeasurementProtocol)) {
+    throw new Error(`${task.label}: measurementProtocol did not match the runner policy.`);
+  }
+  validatePostGcEventLoopSamples(
+    memory,
+    measurementProtocol,
+    `${task.summaryPath}.memory`,
+  );
   const rowCount = finiteNumber(summary.rowCount, `${task.summaryPath}.rowCount`);
   if (task.expectedRowCount !== undefined && rowCount !== task.expectedRowCount) {
     throw new Error(`${task.label}: rowCount changed from ${task.expectedRowCount} to ${rowCount}.`);
+  }
+  const rawLargeMembershipParameters = rawLargeMembershipParametersValue(
+    summary.rawLargeMembershipParameters,
+    `${task.summaryPath}.rawLargeMembershipParameters`,
+    benchmarkScope,
+  );
+  const expectedRawLargeMembershipParameters = rawLargeMembershipParametersValue(
+    task.expectedRawLargeMembershipParameters,
+    `${task.label}.expectedRawLargeMembershipParameters`,
+    benchmarkScope,
+  );
+  if (
+    JSON.stringify(rawLargeMembershipParameters) !==
+    JSON.stringify(expectedRawLargeMembershipParameters)
+  ) {
+    throw new Error(
+      `${task.label}: rawLargeMembershipParameters changed from ${JSON.stringify(expectedRawLargeMembershipParameters)} to ${JSON.stringify(rawLargeMembershipParameters)}.`,
+    );
   }
   const benchmarks = comparableBenchmarksFromVitestOutput(vitestOutput);
   const minimumSampleCount = positiveInteger(
@@ -804,11 +1049,13 @@ export const decodeBenchmarkObservation = (task, summaryArtifact, vitestOutput) 
     ...(grpcParameters === undefined ? {} : { grpcParameters }),
     kafkaIngestLanes,
     latencySource,
+    ...(measurementProtocol === undefined ? {} : { measurementProtocol }),
     memoryRssTotalDeltaBytes: rssBytes,
     minimumSampleCount,
     mutationCount,
     outputJsonPath: task.outputJsonPath,
     queuedEventCount: finiteNumber(summary.queuedEventCount, `${task.summaryPath}.queuedEventCount`),
+    ...(rawLargeMembershipParameters === undefined ? {} : { rawLargeMembershipParameters }),
     rowCount,
     ...(runtimeOperationCases === undefined ? {} : { runtimeOperationCases }),
     ...(summary.runtimeMetrics === undefined
@@ -972,7 +1219,16 @@ export const validateBenchmarkObservation = (task, path) => {
   const artifactKind = summaryArtifactKind(task.artifactKind, `${path}.artifactKind`);
   const benchmarkScope = stringValue(task.benchmarkScope, `${path}.benchmarkScope`);
   const taskLabel = stringValue(task.taskLabel, `${path}.taskLabel`);
+  const measurementProtocol = measurementProtocolValue(
+    task.measurementProtocol,
+    `${path}.measurementProtocol`,
+  );
   const mutationCount = nonNegativeInteger(task.mutationCount, `${path}.mutationCount`);
+  const rawLargeMembershipParameters = rawLargeMembershipParametersValue(
+    task.rawLargeMembershipParameters,
+    `${path}.rawLargeMembershipParameters`,
+    benchmarkScope,
+  );
   const seedMutationCount = grpcSeedMutationCountValue(
     task.seedMutationCount,
     `${path}.seedMutationCount`,
@@ -1112,11 +1368,13 @@ export const validateBenchmarkObservation = (task, path) => {
     ...(grpcParameters === undefined ? {} : { grpcParameters }),
     kafkaIngestLanes,
     latencySource: stringValue(task.latencySource, `${path}.latencySource`),
+    ...(measurementProtocol === undefined ? {} : { measurementProtocol }),
     memoryRssTotalDeltaBytes,
     minimumSampleCount,
     mutationCount,
     outputJsonPath: stringValue(task.outputJsonPath, `${path}.outputJsonPath`),
     queuedEventCount: finiteNumber(task.queuedEventCount, `${path}.queuedEventCount`),
+    ...(rawLargeMembershipParameters === undefined ? {} : { rawLargeMembershipParameters }),
     rowCount: finiteNumber(task.rowCount, `${path}.rowCount`),
     ...(runtimeOperationCases === undefined ? {} : { runtimeOperationCases }),
     ...(task.runtimeMetrics === undefined

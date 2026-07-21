@@ -1,11 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type {
-  ExactLiveQueryInputForTopic,
-  LiveQueryResult,
-  RawQuery,
-  TopicRow,
-} from "effect-view-server/config";
-import { grpcClients, useLiveQuery, viewServer } from "./view-server.config";
+import type { LiveQueryResult } from "effect-view-server/config";
+import { grpcClients, useLiveQuery } from "./view-server.config";
 
 describe("leased gRPC example type contracts", () => {
   it("requires leased route values and preserves selected row types", () => {
@@ -40,10 +35,8 @@ describe("leased gRPC example type contracts", () => {
       ];
       readonly limit: 20;
     };
-    type Topics = typeof viewServer.topics;
     // @ts-expect-error leased gRPC order queries must include the exact routeBy object.
-    const invalidRouteQuery: RawQuery<TopicRow<Topics, "orders">> &
-      ExactLiveQueryInputForTopic<Topics, "orders", typeof missingRouteQuery> = missingRouteQuery;
+    const invalidRouteQuery = useLiveQuery("orders", missingRouteQuery);
 
     expectTypeOf(invalidRouteQuery).not.toBeAny();
   });

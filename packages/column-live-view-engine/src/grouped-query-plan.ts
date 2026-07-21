@@ -57,7 +57,7 @@ export type GroupedQueryPlan<Row extends RowObject, ResultRow extends RowObject 
   readonly groupKey: (row: Row) => string;
 };
 
-const groupedQueryPlanCacheKey = (
+export const groupedQueryPlanCacheKey = (
   query: GroupedQueryPlanInput,
   rawPredicateCacheKey: string,
 ): string =>

@@ -89,7 +89,7 @@ type OrdinaryTopicsForTopicUnion<Topics, Topic extends keyof Topics> = Topic ext
     : never
   : never;
 
-type ExactSourceRouteQuery<
+type ExactSourceRouteQueryMember<
   Topics,
   Topic extends keyof Topics,
   Query,
@@ -101,6 +101,26 @@ type ExactSourceRouteQuery<
       ? UnionToIntersection<ExactLeasedRouteQueryForTopic<Topics, Topic, Query>>
       : never
     : never;
+
+type InvalidExactSourceRouteQueryMember<
+  Topics,
+  Topic extends keyof Topics,
+  Query,
+> = Query extends unknown
+  ? Query extends Query & ExactSourceRouteQueryMember<Topics, Topic, Query>
+    ? never
+    : Query
+  : never;
+
+type ExactSourceRouteQueryMembers<Topics, Topic extends keyof Topics, Query> = Query extends unknown
+  ? ExactSourceRouteQueryMember<Topics, Topic, Query>
+  : never;
+
+type ExactSourceRouteQuery<Topics, Topic extends keyof Topics, Query> = [
+  InvalidExactSourceRouteQueryMember<Topics, Topic, Query>,
+] extends [never]
+  ? ExactSourceRouteQueryMembers<Topics, Topic, Query>
+  : never;
 
 type QueryWithoutRoute<Query> = "routeBy" extends keyof Query
   ? Query extends unknown
@@ -185,23 +205,29 @@ const routeBigDecimalIsWireRoundtrippable = (value: unknown): boolean => {
   }
 };
 
-const sourceLeasedRouteBy = (
-  source: TopicSourceDefinition | undefined,
+export const sourceLeasedRouteBy = (
+  source: unknown,
 ): ReadonlyArray<string> | "invalid" | undefined => {
-  const candidate: unknown = source;
-  if (!isRecord(candidate) || candidate["lifecycle"] !== "leased") {
-    return undefined;
-  }
-  const routeBy = candidate["routeBy"];
-  if (
-    !Array.isArray(routeBy) ||
-    routeBy.length === 0 ||
-    !routeBy.every((field) => typeof field === "string") ||
-    new Set(routeBy).size !== routeBy.length
-  ) {
-    return "invalid";
-  }
-  return routeBy;
+  const inspected = Result.try(() => {
+    const candidate: unknown = source;
+    if (!isRecord(candidate) || candidate["lifecycle"] !== "leased") {
+      return undefined;
+    }
+    const routeBy = candidate["routeBy"];
+    if (!Array.isArray(routeBy)) {
+      return "invalid";
+    }
+    const routeFields = [...routeBy];
+    if (
+      routeFields.length === 0 ||
+      !routeFields.every((field) => typeof field === "string") ||
+      new Set(routeFields).size !== routeFields.length
+    ) {
+      return "invalid";
+    }
+    return routeFields;
+  });
+  return Result.isFailure(inspected) ? "invalid" : inspected.success;
 };
 
 const routeScalarIsSupported = (value: unknown): boolean =>
@@ -268,7 +294,8 @@ const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
     if (descriptor === undefined || !routeScalarIsSupported(descriptor.value)) {
       return `Leased topic ${topic} routeBy field ${field} must be a supported scalar value.`;
     }
-    const fieldSchema = topicDefinition.schema.fields[field];
+    const fields = topicDefinition.schema.fields;
+    const fieldSchema = Object.hasOwn(fields, field) ? fields[field] : undefined;
     const matchesFieldSchema =
       fieldSchema === undefined
         ? undefined

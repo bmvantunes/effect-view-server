@@ -36,23 +36,22 @@ describe("runtime live client type contracts", () => {
     });
     // @ts-expect-error runtime subscriptions to leased topics require routeBy.
     const missingRoute = leasedRuntimeClient.subscribeRuntime("orders", { select: ["id"] });
+    // @ts-expect-error runtime route values must match their configured fields.
     const wrongRouteValue = leasedRuntimeClient.subscribeRuntime("orders", {
-      // @ts-expect-error runtime route values must match their configured fields.
       routeBy: { id: 1 },
       select: ["id"],
     });
+    // @ts-expect-error runtime route objects must contain all and only configured fields.
     const extraRouteField = leasedRuntimeClient.subscribeRuntime("orders", {
       routeBy: {
         id: "Order-Á",
-        // @ts-expect-error runtime route objects must contain all and only configured fields.
         price: 10,
       },
       select: ["id"],
     });
+    // @ts-expect-error ordinary topics reject routeBy and therefore the whole query.
     const ordinaryRoute = ordinaryRuntimeClient.subscribeRuntime("orders", {
-      // @ts-expect-error ordinary topics reject routeBy.
       routeBy: { id: "Order-Á" },
-      // @ts-expect-error an invalid route makes the whole ordinary-topic query invalid.
       select: ["id"],
     });
 

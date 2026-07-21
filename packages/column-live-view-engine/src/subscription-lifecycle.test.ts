@@ -785,10 +785,19 @@ describe("Subscription lifecycle ownership", () => {
       expect(evaluationCount).toBe(1);
       yield* acquireMaterializedQueryExecution(
         queryInterface,
+        "empty-materialized",
+        emptyResultSemantics,
+        makeExecution,
+      );
+      expect(evaluationCount).toBe(1);
+      yield* acquireMaterializedQueryExecution(
+        queryInterface,
         "second-materialized",
         emptyResultSemantics,
         makeExecution,
       );
+      expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(2);
+      yield* releaseMaterializedQueryExecution(queryInterface, "empty-materialized");
       expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(2);
       yield* releaseMaterializedQueryExecution(queryInterface, "empty-materialized");
       expect(yield* activeStoreRawQueryExecutionCount(queryInterface)).toBe(1);

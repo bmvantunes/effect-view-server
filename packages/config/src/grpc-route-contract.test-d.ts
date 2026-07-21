@@ -1,6 +1,11 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { Schema, Stream } from "effect";
-import { defineViewServerConfig, type LiveQueryResult, type TopicRouteBy } from "./index";
+import {
+  defineViewServerConfig,
+  type ExactLiveQueryInputForTopic,
+  type LiveQueryResult,
+  type TopicRouteBy,
+} from "./index";
 import { grpcSourceMarkers } from "./internal";
 import {
   grpcOrdersByRegionStatusTopic,
@@ -51,6 +56,33 @@ describe("gRPC route generic contracts", () => {
       },
     });
 
+    const UndefinedRoute = Schema.Struct({ id: Schema.String, value: Schema.Undefined });
+    // @ts-expect-error a route field needs at least one defined scalar branch.
+    defineViewServerConfig({
+      topics: {
+        undefinedRoute: {
+          schema: UndefinedRoute,
+          key: "id",
+          grpcSource: grpcSourceMarkers.leased({ routeBy: ["value"] }),
+        },
+      },
+    });
+
+    const NestedRoute = Schema.Struct({
+      id: Schema.String,
+      profile: Schema.Struct({ country: Schema.String }),
+    });
+    // @ts-expect-error leased route declarations accept top-level fields, not nested paths.
+    defineViewServerConfig({
+      topics: {
+        nestedRoute: {
+          schema: NestedRoute,
+          key: "id",
+          grpcSource: grpcSourceMarkers.leased({ routeBy: ["profile.country"] }),
+        },
+      },
+    });
+
     grpcTestTopicSources.leased({
       schema: Order,
       key: "id",
@@ -94,6 +126,21 @@ describe("gRPC route generic contracts", () => {
       topics: {
         anyRoute: {
           schema: AnyRoute,
+          key: "id",
+          grpcSource: grpcSourceMarkers.leased({ routeBy: ["value"] }),
+        },
+      },
+    });
+
+    const MixedRoute = Schema.Struct({
+      id: Schema.String,
+      value: Schema.Union([Schema.String, Schema.Struct({ code: Schema.String })]),
+    });
+    // @ts-expect-error every defined branch of a leased route field must be scalar.
+    defineViewServerConfig({
+      topics: {
+        mixedRoute: {
+          schema: MixedRoute,
           key: "id",
           grpcSource: grpcSourceMarkers.leased({ routeBy: ["value"] }),
         },
@@ -165,6 +212,16 @@ describe("gRPC route generic contracts", () => {
       // @ts-expect-error leased topics require routeBy.
       useLiveQuery("orders", missingRoute);
 
+      const undefinedRoute = {
+        routeBy: undefined,
+        select: ["id"],
+      } satisfies {
+        readonly routeBy: undefined;
+        readonly select: readonly ["id"];
+      };
+      // @ts-expect-error leased topics reject routeBy explicitly set to undefined.
+      useLiveQuery("orders", undefinedRoute);
+
       const missingField = {
         routeBy: { region: "usa" },
         select: ["id"],
@@ -211,5 +268,114 @@ describe("gRPC route generic contracts", () => {
     };
 
     expectTypeOf(assertGrpcRouteQueryTypes).toBeFunction();
+  });
+
+  it("validates every leased route independently across query unions", () => {
+    const grpcViewServer = defineViewServerConfig({
+      grpc: { clients: grpcTestClients },
+      topics: {
+        orders: grpcOrdersByRegionStatusTopic,
+      },
+    });
+
+    type UsaRawQuery = {
+      readonly routeBy: { readonly region: "usa"; readonly status: "open" };
+      readonly select: readonly ["id"];
+    };
+    type LondonRawQuery = {
+      readonly routeBy: { readonly region: "london"; readonly status: "closed" };
+      readonly select: readonly ["price"];
+    };
+    type UsaGroupedQuery = {
+      readonly routeBy: { readonly region: "usa"; readonly status: "open" };
+      readonly groupBy: readonly ["region"];
+      readonly aggregates: {
+        readonly rowCount: { readonly aggFunc: "count" };
+      };
+    };
+
+    const assertValidUnionQueries = (useLiveQuery: LiveQueryCall<typeof grpcViewServer.topics>) => {
+      const acceptRawUnion = (query: UsaRawQuery | LondonRawQuery) => {
+        const result = useLiveQuery("orders", query);
+        expectTypeOf(result).toEqualTypeOf<
+          LiveQueryResult<{ readonly id: string } | { readonly price: number }>
+        >();
+      };
+      const acceptMixedUnion = (query: LondonRawQuery | UsaGroupedQuery) => {
+        const result = useLiveQuery("orders", query);
+        expectTypeOf(result).toEqualTypeOf<
+          LiveQueryResult<
+            { readonly price: number } | { readonly region: string; readonly rowCount: bigint }
+          >
+        >();
+      };
+
+      expectTypeOf(acceptRawUnion).toBeFunction();
+      expectTypeOf(acceptMixedUnion).toBeFunction();
+    };
+
+    expectTypeOf(assertValidUnionQueries).toBeFunction();
+
+    type ValidQuery = UsaRawQuery;
+    type WrongValueQuery = {
+      readonly routeBy: { readonly region: "usa"; readonly status: 1 };
+      readonly select: readonly ["id"];
+    };
+    type ExtraFieldQuery = {
+      readonly routeBy: {
+        readonly region: "usa";
+        readonly status: "open";
+        readonly desk: "equities";
+      };
+      readonly select: readonly ["id"];
+    };
+    type MissingFieldQuery = {
+      readonly routeBy: { readonly region: "usa" };
+      readonly select: readonly ["id"];
+    };
+    type WrongFieldQuery = {
+      readonly routeBy: { readonly region: "usa"; readonly state: "open" };
+      readonly select: readonly ["id"];
+    };
+
+    type Topics = typeof grpcViewServer.topics;
+    expectTypeOf<
+      ExactLiveQueryInputForTopic<Topics, "orders", ValidQuery | WrongValueQuery>
+    >().toBeNever();
+    expectTypeOf<
+      ExactLiveQueryInputForTopic<Topics, "orders", ValidQuery | ExtraFieldQuery>
+    >().toBeNever();
+    expectTypeOf<
+      ExactLiveQueryInputForTopic<Topics, "orders", ValidQuery | MissingFieldQuery>
+    >().toBeNever();
+    expectTypeOf<
+      ExactLiveQueryInputForTopic<Topics, "orders", ValidQuery | WrongFieldQuery>
+    >().toBeNever();
+
+    const assertInvalidUnionQueries = (useLiveQuery: LiveQueryCall<Topics>) => {
+      const rejectWrongValue = (query: ValidQuery | WrongValueQuery) => {
+        // @ts-expect-error one invalid route value poisons the whole query union.
+        useLiveQuery("orders", query);
+      };
+      const rejectExtraField = (query: ValidQuery | ExtraFieldQuery) => {
+        // @ts-expect-error one extra route field poisons the whole query union.
+        useLiveQuery("orders", query);
+      };
+      const rejectMissingField = (query: ValidQuery | MissingFieldQuery) => {
+        // @ts-expect-error one missing route field poisons the whole query union.
+        useLiveQuery("orders", query);
+      };
+      const rejectWrongField = (query: ValidQuery | WrongFieldQuery) => {
+        // @ts-expect-error one wrong route field poisons the whole query union.
+        useLiveQuery("orders", query);
+      };
+
+      expectTypeOf(rejectWrongValue).toBeFunction();
+      expectTypeOf(rejectExtraField).toBeFunction();
+      expectTypeOf(rejectMissingField).toBeFunction();
+      expectTypeOf(rejectWrongField).toBeFunction();
+    };
+
+    expectTypeOf(assertInvalidUnionQueries).toBeFunction();
   });
 });

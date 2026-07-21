@@ -4,7 +4,6 @@ import type {
 } from "@effect-view-server/column-live-view-engine";
 import type { TransportHealth, ViewServerHealth } from "@effect-view-server/config";
 import { Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore, type Duration } from "effect";
-import type { AtomRef } from "effect/unstable/reactivity";
 
 type EngineHealthReader<Topics extends DecodableTopicDefinitions> = {
   readonly health: () => Effect.Effect<ColumnLiveViewEngineHealth<Topics>, never>;
@@ -23,11 +22,9 @@ type RuntimeCoreHealthInput<Topics extends DecodableTopicDefinitions> = {
 };
 
 type ReadHealthInput<Topics extends DecodableTopicDefinitions> = {
-  readonly runtimeStartedAtNanos?: bigint;
-  readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
-  readonly healthOverlay?: RuntimeCoreHealthOverlay<Topics>;
-  readonly shouldInstall?: () => boolean;
-  readonly onInstall?: () => void;
+  readonly runtimeStartedAtNanos: bigint;
+  readonly transportHealth: RuntimeCoreTransportHealth<Topics>;
+  readonly healthOverlay: RuntimeCoreHealthOverlay<Topics> | undefined;
 };
 
 const zeroRuntimeCoreHealthTiming: RuntimeCoreHealthTiming = {
@@ -90,41 +87,20 @@ export const defaultRuntimeCoreTransportHealth = <Topics extends DecodableTopicD
   lastError: null,
 });
 
-const nextHealthValue = <Topics extends DecodableTopicDefinitions>(
-  current: ViewServerHealth<Topics>,
-  next: ViewServerHealth<Topics>,
-): ViewServerHealth<Topics> => {
-  if (current.status === "stopping" && next.status !== "stopping") {
-    return current;
-  }
-  return next;
-};
-
-export const readHealth = Effect.fn("ViewServerRuntimeCore.health.read")(function* <
+export const readHealthSnapshot = Effect.fn("ViewServerRuntimeCore.health.readSnapshot")(function* <
   const Topics extends DecodableTopicDefinitions,
->(
-  engine: EngineHealthReader<Topics>,
-  health: AtomRef.AtomRef<ViewServerHealth<Topics>>,
-  input: ReadHealthInput<Topics> = {},
-) {
+>(engine: EngineHealthReader<Topics>, input: ReadHealthInput<Topics>) {
   const nowMillis = yield* Clock.currentTimeMillis;
   const nowNanos = yield* Clock.currentTimeNanos;
-  const value = healthFromEngine(yield* engine.health(), {
-    transportHealth: input.transportHealth ?? defaultRuntimeCoreTransportHealth,
+  return healthFromEngine(yield* engine.health(), {
+    transportHealth: input.transportHealth,
     healthOverlay: input.healthOverlay ?? defaultRuntimeCoreHealthOverlay,
     timing: {
       nowMillis,
       nowNanos,
-      runtimeStartedAtNanos: input.runtimeStartedAtNanos ?? 0n,
+      runtimeStartedAtNanos: input.runtimeStartedAtNanos,
     },
   });
-  yield* Effect.sync(() => {
-    if (input.shouldInstall === undefined || input.shouldInstall()) {
-      health.update((current) => nextHealthValue(current, value));
-      input.onInstall?.();
-    }
-  });
-  return health.value;
 });
 
 export const makeCoalescedHealthReader = <const Topics extends DecodableTopicDefinitions, E>(

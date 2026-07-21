@@ -299,6 +299,64 @@
       "backpressureCount": 0,
       "benchmarks": [
         {
+          "groupName": "src/raw-large-membership.bench.ts > raw nested membership callback benchmark (localhost CPU/GC partition stress)",
+          "maxMs": 31.665500000000065,
+          "meanMs": 30.059183200000053,
+          "minMs": 28.997625000000085,
+          "name": "evaluate 50k candidates across 100k partitioned rows",
+          "p99Ms": 31.665500000000065,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/raw-large-membership.bench.ts > raw nested membership callback benchmark (localhost CPU/GC partition stress)",
+          "maxMs": 131.59329200000002,
+          "meanMs": 129.38466660000003,
+          "minMs": 127.01512500000013,
+          "name": "compile raw query with 50k membership candidates",
+          "p99Ms": 131.59329200000002,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/raw-large-membership.bench.ts > raw nested membership callback benchmark (localhost CPU/GC partition stress)",
+          "maxMs": 3885.592832999999,
+          "meanMs": 3715.9845497999995,
+          "minMs": 3586.584125000001,
+          "name": "acquire 32 equivalent subscribers with one 50k membership plan",
+          "p99Ms": 3885.592832999999,
+          "sampleCount": 5
+        }
+      ],
+      "benchmarkCases": [
+        "evaluate 50k candidates across 100k partitioned rows",
+        "compile raw query with 50k membership candidates",
+        "acquire 32 equivalent subscribers with one 50k membership plan"
+      ],
+      "benchmarkName": "raw large membership compilation and evaluation benchmark",
+      "benchmarkScope": "engine-raw-large-membership",
+      "cleanupLeakCount": 0,
+      "latencySource": "vitest-output-json",
+      "memoryRssTotalDeltaBytes": 445743104,
+      "minimumSampleCount": 5,
+      "mutationCount": 0,
+      "outputJsonPath": "packages/column-live-view-engine/.artifacts/raw-large-membership-50000candidates-100000rows.json",
+      "queuedEventCount": 0,
+      "rawLargeMembershipParameters": {
+        "candidateCount": 50000,
+        "partitionCount": 25,
+        "preparedPlanCompilationCount": 1,
+        "subscriberCount": 32
+      },
+      "rowCount": 100000,
+      "subscriberCount": 32,
+      "summaryPath": "packages/column-live-view-engine/.artifacts/raw-large-membership-50000candidates-100000rows.summary.json",
+      "taskLabel": "raw large membership 50000 candidates 100000 rows",
+      "topics": ["rows"]
+    },
+    {
+      "artifactKind": "engine-benchmark-summary",
+      "backpressureCount": 0,
+      "benchmarks": [
+        {
           "groupName": "src/raw-write.bench.ts > raw write engine benchmark: 1000 rows",
           "maxMs": 0.2669999999999959,
           "meanMs": 0.13457479999999578,

@@ -567,7 +567,7 @@ const benchmarkTaskRequiresExactMutationCount = (task) =>
   samplingPolicyRequiresExactMutationCount(task.samplingPolicy);
 
 const benchmarkScopeRequiresExactSampleCount = (benchmarkScope) =>
-  benchmarkScope === "engine-raw-write";
+  benchmarkScope === "engine-raw-write" || benchmarkScope === "engine-raw-large-membership";
 
 export const compareBenchmarkArtifacts = ({
   actual: validatedActual,
@@ -758,9 +758,23 @@ export const compareBenchmarkArtifacts = ({
     compareExactJson(
       regressions,
       taskLabel,
+      "rawLargeMembershipParameters",
+      baselineTask.rawLargeMembershipParameters,
+      actualTask.rawLargeMembershipParameters,
+    );
+    compareExactJson(
+      regressions,
+      taskLabel,
       "grpcParameters",
       baselineTask.grpcParameters,
       actualTask.grpcParameters,
+    );
+    compareExactJson(
+      regressions,
+      taskLabel,
+      "measurementProtocol",
+      baselineTask.measurementProtocol,
+      actualTask.measurementProtocol,
     );
     compareExact(
       regressions,

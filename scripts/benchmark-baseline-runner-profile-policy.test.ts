@@ -57,7 +57,7 @@ describe("benchmark baseline runner", () => {
       groupedOrderNeutralUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grouped-order-neutral --update-baseline",
       grpcGate:
-        "vp run -w ready && vp run -w bench:baseline:grpc-materialized && vp run -w bench:baseline:grpc-leased && vp run -w bench:baseline:grpc-leased-retained",
+        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained",
       grpcLeased: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased",
       grpcLeasedRetained: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained",
       grpcLeasedRetainedRepeat:
@@ -77,7 +77,7 @@ describe("benchmark baseline runner", () => {
       kafkaSustainedFirehoseUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose --update-baseline",
       preGrpcGate:
-        "vp run -w ready && vp run -w bench:baseline:smoke && vp run -w bench:baseline:raw-read-write && vp run -w bench:baseline:active-query-sharing && vp run -w bench:baseline:grouped-admission && vp run -w bench:baseline:grouped-order-neutral && vp run -w bench:baseline:websocket-firehose && vp run -w bench:baseline:kafka-ingest && vp run -w bench:baseline:kafka-sustained-firehose",
+        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:smoke && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:raw-read-write && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:active-query-sharing && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
       rawReadWrite: "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write",
       rawReadWriteUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write --update-baseline",
@@ -89,12 +89,12 @@ describe("benchmark baseline runner", () => {
     });
   });
 
-  it("keeps the pre-gRPC gate covering pre-gRPC strict compare-mode benchmark gates", () => {
+  it("keeps the pre-gRPC gate bounded and covering strict compare-mode benchmark gates", () => {
     const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
     const preGrpcGateSteps = scripts["pre-grpc:gate"].split(" && ");
     const preGrpcBenchmarkGates = preGrpcGateSteps
       .slice(1)
-      .map((step: string) => step.replace("vp run -w ", ""));
+      .map((step: string) => step.replace("VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ", ""));
     const strictPreGrpcCompareBenchmarkGates = Object.entries(scripts)
       .filter(([name, command]) =>
         name.startsWith("bench:baseline:") &&
@@ -108,15 +108,15 @@ describe("benchmark baseline runner", () => {
       .sort();
 
     expect(preGrpcGateSteps).toStrictEqual([
-      "vp run -w ready",
-      "vp run -w bench:baseline:smoke",
-      "vp run -w bench:baseline:raw-read-write",
-      "vp run -w bench:baseline:active-query-sharing",
-      "vp run -w bench:baseline:grouped-admission",
-      "vp run -w bench:baseline:grouped-order-neutral",
-      "vp run -w bench:baseline:websocket-firehose",
-      "vp run -w bench:baseline:kafka-ingest",
-      "vp run -w bench:baseline:kafka-sustained-firehose",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:smoke",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:raw-read-write",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:active-query-sharing",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
     ]);
     expect(preGrpcBenchmarkGates.toSorted()).toStrictEqual(strictPreGrpcCompareBenchmarkGates);
     expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:release");
@@ -125,26 +125,26 @@ describe("benchmark baseline runner", () => {
     expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:grpc-leased-retained");
   });
 
-  it("keeps the gRPC gate scoped to gRPC runtime baselines", () => {
+  it("keeps the gRPC gate bounded and scoped to gRPC runtime baselines", () => {
     const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
 
     expect(scripts["grpc:gate"].split(" && ")).toStrictEqual([
-      "vp run -w ready",
-      "vp run -w bench:baseline:grpc-materialized",
-      "vp run -w bench:baseline:grpc-leased",
-      "vp run -w bench:baseline:grpc-leased-retained",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained",
     ]);
   });
 
-  it("keeps the release-candidate capacity gate serial and complete", () => {
+  it("keeps the release-candidate capacity gate bounded, serial, and complete", () => {
     const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
 
     expect(scripts["release-candidate:capacity"].split(" && ")).toStrictEqual([
-      "vp run -w examples:test",
-      "vp run -w examples:build",
-      "vp run -w pre-grpc:gate",
-      "vp run -w grpc:gate",
-      "vp run -w bench:baseline:release",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w examples:test",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w examples:build",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w pre-grpc:gate",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w grpc:gate",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:release",
     ]);
   });
 

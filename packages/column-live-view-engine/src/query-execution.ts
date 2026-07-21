@@ -6,13 +6,13 @@ import type { GroupedIncrementalAdmissionLimits } from "./grouped-incremental-ad
 import type { CompiledRawQuery } from "./raw-query-compiler";
 import { liveQueryResultFromOwnedEvaluation } from "./query-result";
 import {
-  acquireTopicStoreMaterializedQueryExecution,
-  acquireTopicStoreRawQueryExecution,
+  acquireTopicStoreRuntimeGroupedQueryExecution,
+  acquireTopicStoreRuntimeRawQueryExecution,
   evaluateTopicStoreGroupedQuery,
   evaluateTopicStoreRawQueryResult,
   prepareTopicStoreRuntimeGroupedQuery,
   prepareTopicStoreRuntimeRawQuery,
-  releaseTopicStoreMaterializedQueryExecution,
+  releaseTopicStoreMaterializedQueryExecutionToken,
   releaseTopicStoreRawQueryExecution,
   type TopicStore,
   type TopicStoreSubscriptionPermit,
@@ -83,32 +83,32 @@ export const subscribeRuntimeExecutableQuery = Effect.fn(
   partition?: ColumnLiveViewEngineQueryPartition,
 ) {
   const { store } = input.permit;
-  const executable = yield* prepareRuntimeExecutableQuery(store, query, partition);
-  if (executable.kind === "raw") {
-    const execution = yield* acquireTopicStoreRawQueryExecution(store, executable.compiled);
+  if (!isGroupedQuery(query)) {
+    const acquired = yield* acquireTopicStoreRuntimeRawQueryExecution(store, query, partition);
     return yield* makeLiveSubscription({
       permit: input.permit,
       queryId: input.queryId,
-      execution,
+      execution: acquired.execution,
       ...(partition === undefined ? {} : { partitionKey: partition.key }),
       queueCapacity: input.queueCapacity,
-      release: releaseTopicStoreRawQueryExecution(store, executable.compiled),
+      release: releaseTopicStoreRawQueryExecution(store, acquired.releaseToken),
       terminalObserver: input.terminalObserver,
     });
   }
 
-  const execution = yield* acquireTopicStoreMaterializedQueryExecution(
+  const acquired = yield* acquireTopicStoreRuntimeGroupedQueryExecution(
     store,
-    executable.compiled,
+    query,
     input.groupedIncrementalAdmissionLimits,
+    partition,
   );
   return yield* makeLiveSubscription({
     permit: input.permit,
     queryId: input.queryId,
-    execution,
+    execution: acquired.execution,
     ...(partition === undefined ? {} : { partitionKey: partition.key }),
     queueCapacity: input.queueCapacity,
-    release: releaseTopicStoreMaterializedQueryExecution(store, executable.compiled),
+    release: releaseTopicStoreMaterializedQueryExecutionToken(store, acquired.releaseToken),
     terminalObserver: input.terminalObserver,
   });
 });

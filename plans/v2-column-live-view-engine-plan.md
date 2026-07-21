@@ -277,6 +277,16 @@ import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
 import { KafkaTrade, Order, Strategy, Trade } from "./schemas";
 import { ordersService, strategiesService } from "./generated/grpc";
 
+const ManualOrder = Schema.Struct({
+  id: Schema.String,
+  customerId: Schema.String,
+  strategyId: Schema.String,
+  status: Schema.Literals(["open", "closed", "cancelled"]),
+  price: Schema.Number,
+  region: Schema.String,
+  updatedAt: Schema.Number,
+});
+
 const kafkaRegions = {
   usa: Config.string("KAFKA_USA_BOOTSTRAP"),
   london: Config.string("KAFKA_LONDON_BOOTSTRAP"),
@@ -355,7 +365,7 @@ export const viewServer = defineViewServerConfig({
       }),
     }),
     manualOrders: {
-      schema: Order,
+      schema: ManualOrder,
       key: "id",
     },
   },

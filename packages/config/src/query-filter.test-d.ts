@@ -243,7 +243,7 @@ describe("query filter types", () => {
       { field: "profileClass.nickname", type: "contains", filter: "admin" },
     ] satisfies Where<typeof OpaqueEffectFieldRow.Type>;
 
-    expectTypeOf(supported).toMatchTypeOf<Where<typeof OpaqueEffectFieldRow.Type>>();
+    expectTypeOf(supported).toExtend<Where<typeof OpaqueEffectFieldRow.Type>>();
 
     const _optionImplementationField = [
       // @ts-expect-error admitted Option values are opaque runtime declarations.

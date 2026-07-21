@@ -1477,7 +1477,7 @@ describe("benchmark metadata compatibility", () => {
     });
   });
 
-  it("requires exact large membership sample counts", () => {
+  it("requires exact large membership sample and mutation counts", () => {
     const rawLargeMembershipParameters = {
       candidateCount: 50_000,
       partitionCount: 25,
@@ -1492,10 +1492,11 @@ describe("benchmark metadata compatibility", () => {
       })),
       benchmarkScope: "engine-raw-large-membership",
       minimumSampleCount: 5,
+      mutationCount: 0,
       rawLargeMembershipParameters,
     };
-    const baseline = buildBenchmarkBaseline("smoke", [largeMembershipObservation]);
-    const changedSampleCount = buildBenchmarkBaseline("smoke", [
+    const baseline = buildBenchmarkBaseline("active-query-sharing", [largeMembershipObservation]);
+    const changedSampleCount = buildBenchmarkBaseline("active-query-sharing", [
       {
         ...largeMembershipObservation,
         benchmarks: [
@@ -1514,7 +1515,19 @@ describe("benchmark metadata compatibility", () => {
       ],
     });
 
-    const changedWorkload = buildBenchmarkBaseline("smoke", [
+    const changedMutationCount = buildBenchmarkBaseline("active-query-sharing", [
+      {
+        ...largeMembershipObservation,
+        mutationCount: 1,
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedMutationCount)).toStrictEqual({
+      ok: false,
+      regressions: ["task a: mutationCount changed from 0 to 1."],
+    });
+
+    const changedWorkload = buildBenchmarkBaseline("active-query-sharing", [
       {
         ...largeMembershipObservation,
         rawLargeMembershipParameters: {

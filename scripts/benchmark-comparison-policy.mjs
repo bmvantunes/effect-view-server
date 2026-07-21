@@ -557,6 +557,7 @@ const compareKafkaSustainedFirehoseFinalLag = (regressions, taskLabel, actualTas
 
 const benchmarkScopeRequiresExactMutationCount = (benchmarkScope) =>
   benchmarkScope === "engine-raw-write" ||
+  benchmarkScope === "engine-raw-large-membership" ||
   benchmarkScope === "runtime-grpc-leased" ||
   benchmarkScope === "runtime-grpc-materialized" ||
   benchmarkScope === "runtime-kafka-ingest" ||

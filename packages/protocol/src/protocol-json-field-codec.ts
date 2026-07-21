@@ -38,6 +38,7 @@ type TopicNamedJsonFieldEncodeContext<E> = TopicNamedJsonFieldCodecContext<E> & 
 };
 
 type CompiledJsonFieldCodec<Row> = {
+  readonly accepts: (value: unknown) => boolean;
   readonly decode: (value: unknown) => Effect.Effect<Row, Schema.SchemaError>;
   readonly encode: (value: unknown) => Effect.Effect<Schema.Json, Schema.SchemaError>;
 };
@@ -54,6 +55,7 @@ function compiledJsonFieldCodec(schema: JsonFieldSchema): CompiledJsonFieldCodec
   }
   const codec = Schema.toCodecJson(schema);
   const compiled: CompiledJsonFieldCodec<unknown> = {
+    accepts: Schema.is(schema),
     decode: Schema.decodeUnknownEffect(codec),
     encode: Schema.encodeUnknownEffect(codec),
   };
@@ -75,9 +77,17 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   value: unknown,
   errors: JsonFieldCodecErrors<E>,
 ) {
-  const encoded = yield* compiledJsonFieldCodec(schema)
-    .encode(value)
-    .pipe(Effect.mapError((error) => errors.invalid(error.message)));
+  const compiled = compiledJsonFieldCodec(schema);
+  const encoded = yield* compiled.encode(value).pipe(
+    Effect.catch((error) => {
+      if (!compiled.accepts(value)) {
+        return Effect.fail(errors.invalid(error.message));
+      }
+      return materializeJsonFieldValue(value, errors.notJsonSafe).pipe(
+        Effect.andThen(Effect.fail(errors.invalid(error.message))),
+      );
+    }),
+  );
   return yield* materializeJsonFieldValue(encoded, errors.notJsonSafe);
 });
 

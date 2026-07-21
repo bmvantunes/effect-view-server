@@ -91,7 +91,7 @@ const makeReleaseTree = (version = "1.2.3") => {
     },
     dependencies: {
       "@effect-view-server/client": "workspace:*",
-      effect: "4.0.0-beta.91",
+      effect: "4.0.0-beta.100",
     },
     scripts: {
       build: "vp pack",
@@ -248,7 +248,7 @@ describe("release publish orchestration", () => {
           provenance: true,
         },
         dependencies: {
-          effect: "4.0.0-beta.91",
+          effect: "4.0.0-beta.100",
         },
       },
       nestedFile: "ready\n",

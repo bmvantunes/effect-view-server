@@ -76,7 +76,7 @@ const publicPackageJson = {
   },
   dependencies: {
     "@effect-view-server/client": "workspace:*",
-    effect: "4.0.0-beta.91",
+    effect: "4.0.0-beta.100",
   },
   devDependencies: {
     "@effect-view-server/runtime": "workspace:*",
@@ -318,7 +318,7 @@ describe("release publish policy", () => {
         provenance: true,
       },
       dependencies: {
-        effect: "4.0.0-beta.91",
+        effect: "4.0.0-beta.100",
       },
       peerDependencies: {
         react: "19.2.6",
@@ -345,7 +345,7 @@ describe("release publish policy", () => {
       peerOptional: packageJson.peerDependenciesMeta.scheduler,
     }).toStrictEqual({
       atomReactDependency: undefined,
-      atomReactPeerDependency: "4.0.0-beta.91",
+      atomReactPeerDependency: "4.0.0-beta.100",
       atomReactPeerOptional: true,
       dependency: undefined,
       peerDependency: undefined,

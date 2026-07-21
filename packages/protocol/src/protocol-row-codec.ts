@@ -1,7 +1,7 @@
 import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
 import { Effect, Schema, SchemaAST } from "effect";
 import { decodeAggregateValue, encodeAggregateValue } from "./protocol-aggregate-row-codec";
-import { ViewServerWireRowSchema, type ViewServerWireRow } from "./protocol-event-schema";
+import { type ViewServerLooseWireRow, ViewServerWireRowSchema } from "./protocol-event-schema";
 import {
   decodeJsonFieldValue,
   decodeMaterializedJsonFieldValue,
@@ -107,7 +107,7 @@ const isViewServerWireRow = Schema.is(ViewServerWireRowSchema);
 const materializeWireRow = Effect.fn("ViewServerProtocol.row.materializeWire")(function* (
   topic: string,
   kind: RowKind,
-  row: ViewServerWireRow,
+  row: ViewServerLooseWireRow,
 ) {
   const materialized = yield* materializeJsonFieldValue(row, (message) =>
     invalidRow(topic, `Invalid ${kind} for topic ${topic}: ${message}`),
@@ -205,7 +205,7 @@ export const decodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.deco
   config: { readonly topics: Topics },
   topic: Topic,
   selectedFields: ReadonlySet<string>,
-  row: ViewServerWireRow,
+  row: ViewServerLooseWireRow,
 ) {
   const output: Record<string, unknown> = {};
   const materialized = yield* materializeWireRow(topic, "row", row);
@@ -295,7 +295,7 @@ export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode
   config: { readonly topics: Topics },
   topic: Topic,
   contract: ViewServerGroupedRowContract,
-  row: ViewServerWireRow,
+  row: ViewServerLooseWireRow,
 ) {
   const topicSchema = config.topics[topic]!.schema;
   const { aggregateAliases, aggregates, groupFields } = contract;
@@ -358,7 +358,7 @@ export const encodeSystemRow = Effect.fn("ViewServerProtocol.system.row.encode")
 export const decodeSystemRow = Effect.fn("ViewServerProtocol.system.row.decode")(function* <Row>(
   topic: string,
   schema: Schema.Codec<Row, unknown, never, never>,
-  row: ViewServerWireRow,
+  row: ViewServerLooseWireRow,
 ) {
   return yield* decodeJsonFieldValue(schema, row, {
     invalid: (message) => invalidRow(topic, `Invalid system row: ${message}`),

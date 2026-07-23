@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import {
   compileViewServerGroupedRowContract,
+  compileViewServerRuntimeEventRowPlan,
   decodeGroupedRow,
   decodeProjectedRow,
   encodeGroupedRow,
@@ -27,6 +28,12 @@ const groupedQuery = {
 } as const;
 
 const groupedContract = compileViewServerGroupedRowContract(groupedQuery);
+
+class InconsistentEmptySet extends Set<string> {
+  override has(_field: string): boolean {
+    return true;
+  }
+}
 
 describe("Protocol row reflection boundaries", () => {
   it.effect(
@@ -162,6 +169,106 @@ describe("Protocol row reflection boundaries", () => {
       expect(symbolError).toStrictEqual(
         invalidRow("Unexpected grouped row symbol field for topic orders: Symbol(secret)"),
       );
+    }),
+  );
+
+  it.effect("rejects unknown and inherited row-contract fields as typed errors", () =>
+    Effect.gen(function* () {
+      for (const field of ["missing", "toString"]) {
+        const selectedFields = new Set([field]);
+        const groupedFieldContract = compileViewServerGroupedRowContract({
+          groupBy: [field],
+          aggregates: {},
+        });
+        const selectedFieldError = invalidRow(
+          `Selected row field does not exist for topic orders: ${field}`,
+        );
+        const groupedFieldError = invalidRow(
+          `Grouped row field does not exist for topic orders: ${field}`,
+        );
+
+        const rawEncodeError = yield* Effect.flip(
+          encodeProjectedRow(viewServer, "orders", selectedFields, {}),
+        );
+        expect(rawEncodeError).toStrictEqual(selectedFieldError);
+
+        const rawDecodeError = yield* Effect.flip(
+          decodeProjectedRow(viewServer, "orders", selectedFields, {}),
+        );
+        expect(rawDecodeError).toStrictEqual(selectedFieldError);
+
+        const groupedEncodeError = yield* Effect.flip(
+          encodeGroupedRow(viewServer, "orders", groupedFieldContract, {}),
+        );
+        expect(groupedEncodeError).toStrictEqual(groupedFieldError);
+
+        const groupedDecodeError = yield* Effect.flip(
+          decodeGroupedRow(viewServer, "orders", groupedFieldContract, {}),
+        );
+        expect(groupedDecodeError).toStrictEqual(groupedFieldError);
+      }
+    }),
+  );
+
+  it.effect("rejects inconsistent hostile row contracts as typed errors", () =>
+    Effect.gen(function* () {
+      const selectedFields = new InconsistentEmptySet();
+      const groupedFields = new InconsistentEmptySet();
+      const hostileGroupedContract = {
+        aggregateAliases: new Set<string>(),
+        aggregates: {},
+        groupFields: groupedFields,
+      };
+      const selectedFieldError = invalidRow(
+        "Selected row field does not exist for topic orders: id",
+      );
+      const groupedFieldError = invalidRow("Grouped row field does not exist for topic orders: id");
+
+      const rawEncodeError = yield* Effect.flip(
+        encodeProjectedRow(viewServer, "orders", selectedFields, { id: "a" }),
+      );
+      expect(rawEncodeError).toStrictEqual(selectedFieldError);
+
+      const rawDecodeError = yield* Effect.flip(
+        decodeProjectedRow(viewServer, "orders", selectedFields, { id: "a" }),
+      );
+      expect(rawDecodeError).toStrictEqual(selectedFieldError);
+
+      const groupedEncodeError = yield* Effect.flip(
+        encodeGroupedRow(viewServer, "orders", hostileGroupedContract, { id: "a" }),
+      );
+      expect(groupedEncodeError).toStrictEqual(groupedFieldError);
+
+      const groupedDecodeError = yield* Effect.flip(
+        decodeGroupedRow(viewServer, "orders", hostileGroupedContract, { id: "a" }),
+      );
+      expect(groupedDecodeError).toStrictEqual(groupedFieldError);
+    }),
+  );
+
+  it.effect("turns hostile runtime query reflection into a failed row plan", () =>
+    Effect.gen(function* () {
+      let accessorReads = 0;
+      const hostileQuery = {
+        get select(): ReadonlyArray<string> {
+          accessorReads += 1;
+          throw new Error("query accessor must not escape");
+        },
+      };
+      const rowPlan = compileViewServerRuntimeEventRowPlan(viewServer, "orders", hostileQuery);
+      const expectedError = {
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "Could not compile the live-event row contract for topic orders",
+        topic: "orders",
+      } as const;
+
+      const encodeError = yield* Effect.flip(rowPlan.encode({ id: "a" }));
+      expect(encodeError).toStrictEqual(expectedError);
+
+      const decodeError = yield* Effect.flip(rowPlan.decodeMaterialized({ id: "a" }));
+      expect(decodeError).toStrictEqual(expectedError);
+      expect(accessorReads).toBe(1);
     }),
   );
 

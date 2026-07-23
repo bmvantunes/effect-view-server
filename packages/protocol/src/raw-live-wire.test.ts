@@ -3,6 +3,7 @@ import { VIEW_SERVER_HEALTH_TOPIC } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   compileViewServerLiveEventCodec,
+  defineViewServerLiveEventQuery,
   ViewServerTrustedWireEventSchema,
   viewServerDecodeHealth,
   viewServerDecodeHealthQuery,
@@ -16,7 +17,6 @@ import {
 
 import {
   nonOwnTopicRowFields,
-  Order,
   unknownTopicRowFieldError,
   viewServer,
   wireHealth,
@@ -25,14 +25,11 @@ import {
 describe("Raw live wire codec", () => {
   it.effect("compiles and reuses one raw row contract across live events", () =>
     Effect.gen(function* () {
-      const query = {
+      const query = defineViewServerLiveEventQuery(viewServer, "orders", {
         select: ["id"],
-      };
-      const codec = compileViewServerLiveEventCodec<
-        typeof viewServer.topics,
-        "orders",
-        Pick<typeof Order.Type, "id">
-      >(viewServer, "orders", query);
+      });
+      const codec = compileViewServerLiveEventCodec(viewServer, "orders", query);
+      // @ts-expect-error hostile callers can mutate a query after its row contract is compiled.
       query.select.push("price");
 
       const snapshot = yield* codec.encode({
@@ -121,7 +118,7 @@ describe("Raw live wire codec", () => {
         where: [{ field: "price", type: "equals", filter: 10 }],
       });
 
-      const idQuery = { select: ["id"] };
+      const idQuery = defineViewServerLiveEventQuery(viewServer, "orders", { select: ["id"] });
       const statusEvent = yield* viewServerEncodeLiveEvent(viewServer, "orders", idQuery, {
         type: "status",
         topic: "orders",
@@ -184,52 +181,46 @@ describe("Raw live wire codec", () => {
       });
       expect(delta.type).toBe("delta");
 
-      const decodedStatus = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedStatus = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        typeof Order.Type
-      >(viewServer, "orders", idQuery, statusEvent);
+        idQuery,
+        statusEvent,
+      );
       expect(decodedStatus).toStrictEqual(statusEvent);
 
       const malformedStatusDecode = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", typeof Order.Type>(
-          viewServer,
-          "orders",
-          idQuery,
-          {
-            type: "status",
-            topic: "orders",
-            queryId: "query-0",
-            status: "ready",
-            // @ts-expect-error hostile wire status can use an invalid ready code.
-            code: "InvalidRow",
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", idQuery, {
+          type: "status",
+          topic: "orders",
+          queryId: "query-0",
+          status: "ready",
+          // @ts-expect-error hostile wire status can use an invalid ready code.
+          code: "InvalidRow",
+        }),
       );
       expect(malformedStatusDecode.message).toMatch(/Invalid event/);
 
-      const decodedSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedSnapshot = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        Pick<typeof Order.Type, "id">
-      >(viewServer, "orders", idQuery, snapshot);
+        idQuery,
+        snapshot,
+      );
       expect(decodedSnapshot).toStrictEqual(snapshot);
 
-      const decodedDelta = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
-        "orders",
-        Pick<typeof Order.Type, "id">
-      >(viewServer, "orders", idQuery, delta);
+      const decodedDelta = yield* viewServerDecodeLiveEvent(viewServer, "orders", idQuery, delta);
       expect(decodedDelta).toStrictEqual(delta);
 
       const trustedSnapshot = yield* Schema.decodeUnknownEffect(ViewServerTrustedWireEventSchema)(
         snapshot,
       );
-      const decodedTrustedSnapshot = yield* viewServerDecodeTrustedLiveEvent<
-        typeof viewServer.topics,
+      const decodedTrustedSnapshot = yield* viewServerDecodeTrustedLiveEvent(
+        viewServer,
         "orders",
-        Pick<typeof Order.Type, "id">
-      >(viewServer, "orders", idQuery, trustedSnapshot);
+        idQuery,
+        trustedSnapshot,
+      );
       expect(decodedTrustedSnapshot).toStrictEqual(snapshot);
 
       const decodedHealth = yield* viewServerDecodeHealth(viewServer, wireHealth);

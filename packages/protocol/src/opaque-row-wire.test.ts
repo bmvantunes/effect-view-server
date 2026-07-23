@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
+  defineViewServerLiveEventQuery,
   viewServerDecodeLiveEvent,
   viewServerEncodeGroupedQuery,
   viewServerEncodeLiveEvent,
@@ -21,7 +22,9 @@ const opaqueViewServer = defineViewServerConfig({
   },
 });
 
-const rawQuery = { select: ["id", "payload"] };
+const rawQuery = defineViewServerLiveEventQuery(opaqueViewServer, "opaque", {
+  select: ["id", "payload"],
+});
 
 const expectedOpaqueValueError = {
   _tag: "ViewServerRuntimeError",
@@ -87,7 +90,7 @@ describe("Opaque row wire values", () => {
         totalRows: 1,
       };
       const error = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof opaqueViewServer.topics, "opaque", typeof OpaqueRow.Type>(
+        viewServerDecodeLiveEvent(
           opaqueViewServer,
           "opaque",
           rawQuery,
@@ -105,12 +108,13 @@ describe("Opaque row wire values", () => {
 
   it.effect("rejects opaque Map aggregate values in grouped Snapshots and update Deltas", () =>
     Effect.gen(function* () {
-      const groupedQuery = yield* viewServerEncodeGroupedQuery(opaqueViewServer, "opaque", {
+      const groupedQuery = defineViewServerLiveEventQuery(opaqueViewServer, "opaque", {
         groupBy: ["id"],
         aggregates: {
           firstPayload: { aggFunc: "min", field: "payload" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(opaqueViewServer, "opaque", groupedQuery);
       const row = {
         id: "1",
         firstPayload: new Map([["venue", "xnys"]]),
@@ -165,11 +169,7 @@ describe("Opaque row wire values", () => {
         totalRows: 1,
       };
       const directDecodeError = yield* Effect.flip(
-        viewServerDecodeLiveEvent<
-          typeof opaqueViewServer.topics,
-          "opaque",
-          { readonly id: string; readonly firstPayload: object }
-        >(
+        viewServerDecodeLiveEvent(
           opaqueViewServer,
           "opaque",
           groupedQuery,
@@ -206,11 +206,12 @@ describe("Opaque row wire values", () => {
         totalRows: 1,
       });
 
-      const decoded = yield* viewServerDecodeLiveEvent<
-        typeof opaqueViewServer.topics,
+      const decoded = yield* viewServerDecodeLiveEvent(
+        opaqueViewServer,
         "opaque",
-        typeof OpaqueRow.Type
-      >(opaqueViewServer, "opaque", rawQuery, encoded);
+        rawQuery,
+        encoded,
+      );
       expect(decoded).toStrictEqual(encoded);
     }),
   );

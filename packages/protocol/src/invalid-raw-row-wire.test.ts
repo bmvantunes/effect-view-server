@@ -2,19 +2,23 @@ import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
+  compileViewServerRuntimeLiveEventEncoder,
+  defineViewServerLiveEventQuery,
   viewServerDecodeLiveEvent,
   viewServerEncodeGroupedQuery,
   viewServerEncodeLiveEvent,
 } from "./index";
 
-import { BadJsonField, Order, viewServer } from "../test-harness/protocol";
+import { BadJsonField, viewServer } from "../test-harness/protocol";
 
 describe("Invalid raw row wire inputs", () => {
   it.effect("rejects invalid raw row payloads", () =>
     Effect.gen(function* () {
-      const idQuery = { select: ["id"] };
+      const idQuery = defineViewServerLiveEventQuery(viewServer, "orders", { select: ["id"] });
 
-      const priceQuery = { select: ["price"] };
+      const priceQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
+        select: ["price"],
+      });
 
       const wrongEncodeTopic = yield* Effect.flip(
         viewServerEncodeLiveEvent(viewServer, "orders", idQuery, {
@@ -29,18 +33,13 @@ describe("Invalid raw row wire inputs", () => {
       expect(wrongEncodeTopic.code).toBe("InvalidRow");
 
       const wrongDecodeTopic = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", typeof Order.Type>(
-          viewServer,
-          "orders",
-          idQuery,
-          {
-            type: "status",
-            topic: "badjson",
-            queryId: "query-0",
-            status: "ready",
-            code: "Ready",
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", idQuery, {
+          type: "status",
+          topic: "badjson",
+          queryId: "query-0",
+          status: "ready",
+          code: "Ready",
+        }),
       );
 
       expect(wrongDecodeTopic.code).toBe("InvalidRow");
@@ -52,6 +51,7 @@ describe("Invalid raw row wire inputs", () => {
           queryId: "query-0",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload omits id and includes an unselected field.
           rows: [{ price: 10 }],
           totalRows: 1,
         }),
@@ -66,6 +66,7 @@ describe("Invalid raw row wire inputs", () => {
           queryId: "query-0",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload includes an unselected field.
           rows: [{ id: "a", price: 10 }],
           totalRows: 1,
         }),
@@ -80,6 +81,7 @@ describe("Invalid raw row wire inputs", () => {
           queryId: "query-0",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload violates the selected field type.
           rows: [{ price: "nope" }],
           totalRows: 1,
         }),
@@ -92,58 +94,43 @@ describe("Invalid raw row wire inputs", () => {
       );
 
       const extraField = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", typeof Order.Type>(
-          viewServer,
-          "orders",
-          idQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "query-0",
-            version: 1,
-            keys: ["a"],
-            rows: [{ id: "a", price: 10 }],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", idQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 1,
+          keys: ["a"],
+          rows: [{ id: "a", price: 10 }],
+          totalRows: 1,
+        }),
       );
 
       expect(extraField.message).toBe("Unexpected row field for topic orders: price");
 
       const missingDecodeField = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", typeof Order.Type>(
-          viewServer,
-          "orders",
-          priceQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "query-0",
-            version: 1,
-            keys: ["a"],
-            rows: [{ id: "a" }],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", priceQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 1,
+          keys: ["a"],
+          rows: [{ id: "a" }],
+          totalRows: 1,
+        }),
       );
 
       expect(missingDecodeField.message).toBe("Missing row field for topic orders: price");
 
       const invalidFieldType = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", typeof Order.Type>(
-          viewServer,
-          "orders",
-          priceQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "query-0",
-            version: 1,
-            keys: ["a"],
-            rows: [{ price: "nope" }],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", priceQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "query-0",
+          version: 1,
+          keys: ["a"],
+          rows: [{ price: "nope" }],
+          totalRows: 1,
+        }),
       );
 
       expect(invalidFieldType.code).toBe("InvalidRow");
@@ -206,7 +193,7 @@ describe("Invalid raw row wire inputs", () => {
         },
       });
 
-      const badJsonAggregateQuery = yield* viewServerEncodeGroupedQuery(
+      const badJsonAggregateQuery = defineViewServerLiveEventQuery(
         badJsonAggregateViewServer,
         "badAggregate",
         {
@@ -215,6 +202,11 @@ describe("Invalid raw row wire inputs", () => {
             badValue: { aggFunc: "min", field: "value" },
           },
         },
+      );
+      yield* viewServerEncodeGroupedQuery(
+        badJsonAggregateViewServer,
+        "badAggregate",
+        badJsonAggregateQuery,
       );
       Object.defineProperty(BadJsonAggregateRow.fields, "value", {
         configurable: true,
@@ -243,6 +235,7 @@ describe("Invalid raw row wire inputs", () => {
             queryId: "grouped-bad-aggregate",
             version: 1,
             keys: ["a"],
+            // @ts-expect-error hostile schema mutation invalidates the original aggregate type.
             rows: [{ id: "a", badValue: "not-json-safe" }],
             totalRows: 1,
           },
@@ -254,6 +247,70 @@ describe("Invalid raw row wire inputs", () => {
       expect(nonJsonAggregate.message).toBe(
         'Field badValue is not JSON-safe: Unsupported JSON value type "symbol" at $.',
       );
+    }),
+  );
+
+  it.effect("rejects unknown and inherited selected fields through public live codecs", () =>
+    Effect.gen(function* () {
+      for (const field of ["missing", "toString"]) {
+        const query = { select: [field] };
+        const expectedError = {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidRow",
+          message: `Selected row field does not exist for topic orders: ${field}`,
+          topic: "orders",
+        } as const;
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeLiveEvent(
+            viewServer,
+            "orders",
+            // @ts-expect-error hostile callers can bypass the exact selected-field contract.
+            query,
+            {
+              type: "snapshot",
+              topic: "orders",
+              queryId: `invalid-selected-encode-${field}`,
+              version: 1,
+              keys: ["a"],
+              rows: [{}],
+              totalRows: 1,
+            },
+          ),
+        );
+        expect(encodeError).toStrictEqual(expectedError);
+
+        const runtimeEncodeError = yield* Effect.flip(
+          compileViewServerRuntimeLiveEventEncoder(viewServer, "orders", query).encode({
+            type: "snapshot",
+            topic: "orders",
+            queryId: `invalid-selected-runtime-encode-${field}`,
+            version: 1,
+            keys: ["a"],
+            rows: [{}],
+            totalRows: 1,
+          }),
+        );
+        expect(runtimeEncodeError).toStrictEqual(expectedError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeLiveEvent(
+            viewServer,
+            "orders",
+            // @ts-expect-error hostile callers can bypass the exact selected-field contract.
+            query,
+            {
+              type: "snapshot",
+              topic: "orders",
+              queryId: `invalid-selected-decode-${field}`,
+              version: 1,
+              keys: ["a"],
+              rows: [{}],
+              totalRows: 1,
+            },
+          ),
+        );
+        expect(decodeError).toStrictEqual(expectedError);
+      }
     }),
   );
 });

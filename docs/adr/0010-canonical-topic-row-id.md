@@ -1,0 +1,7 @@
+# Every Topic Row has one canonical string ID
+
+## Status
+
+Accepted design. Implementation is pending, so the canonical `id` contract and removal of the separate `key` property are not yet available in the public configuration API.
+
+Every user-provided Topic Schema must declare the required field `id: Schema.String`, and Topic configuration has no separate `key` property. View Server rejects a missing, optional, transformed, refined, branded, or non-string `id` at compile time and defensively at runtime. This deliberately gives storage, queries, mutations, React rows, Wire Protocol schemas, and Source Adapters one universal identity contract. The common Source Adapter SDK requires only complete Upserts and ID-addressed Deletes; each adapter owns its ergonomic ID-producing API. Kafka composes `region:localRowKey`, while an adapter without that transport concept may require its Mapping to return the complete Topic Row directly.

@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
+  compileViewServerRuntimeLiveEventEncoder,
+  defineViewServerLiveEventQuery,
   viewServerDecodeLiveEvent,
   viewServerEncodeGroupedQuery,
   viewServerEncodeLiveEvent,
@@ -12,13 +14,14 @@ import { viewServer } from "../test-harness/protocol";
 describe("Invalid grouped row wire inputs", () => {
   it.effect("rejects invalid grouped row and aggregate payloads", () =>
     Effect.gen(function* () {
-      const groupedQuery = yield* viewServerEncodeGroupedQuery(viewServer, "orders", {
+      const groupedQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
         groupBy: ["id"],
         aggregates: {
           rowCount: { aggFunc: "count" },
           averagePrice: { aggFunc: "avg", field: "price" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(viewServer, "orders", groupedQuery);
 
       const missingGroupedField = yield* Effect.flip(
         viewServerEncodeLiveEvent(viewServer, "orders", groupedQuery, {
@@ -27,6 +30,7 @@ describe("Invalid grouped row wire inputs", () => {
           queryId: "grouped-0",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload omits the required group field.
           rows: [{ rowCount: 1n, averagePrice: BigDecimal.fromStringUnsafe("1.5") }],
           totalRows: 1,
         }),
@@ -41,6 +45,7 @@ describe("Invalid grouped row wire inputs", () => {
           queryId: "grouped-0",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload omits the required count aggregate.
           rows: [{ id: "a", averagePrice: BigDecimal.fromStringUnsafe("1.5") }],
           totalRows: 1,
         }),
@@ -54,10 +59,10 @@ describe("Invalid grouped row wire inputs", () => {
         viewServerEncodeLiveEvent(
           viewServer,
           "orders",
+          // @ts-expect-error hostile query payload can omit an aggregate definition value.
           {
             groupBy: ["id"],
             aggregates: {
-              // @ts-expect-error hostile query payload can omit an aggregate definition value.
               missing: undefined,
             },
           },
@@ -89,6 +94,7 @@ describe("Invalid grouped row wire inputs", () => {
               id: "a",
               rowCount: 1n,
               averagePrice: BigDecimal.fromStringUnsafe("1.5"),
+              // @ts-expect-error hostile runtime payload contains an unexpected field.
               extra: true,
             },
           ],
@@ -110,6 +116,7 @@ describe("Invalid grouped row wire inputs", () => {
           rows: [
             {
               id: "a",
+              // @ts-expect-error hostile runtime payload violates the count aggregate type.
               rowCount: Symbol("bad"),
               averagePrice: BigDecimal.fromStringUnsafe("1.5"),
             },
@@ -131,6 +138,7 @@ describe("Invalid grouped row wire inputs", () => {
             {
               id: "a",
               rowCount: 1n,
+              // @ts-expect-error hostile runtime payload violates the average aggregate type.
               averagePrice: 1,
             },
           ],
@@ -143,50 +151,40 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const invalidGroupedField = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: 10,
-                rowCount: { _viewServerAggregate: "bigint", value: "1" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: 10,
+              rowCount: { _viewServerAggregate: "bigint", value: "1" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(invalidGroupedField.message).toBe("Invalid field id: Expected string, got 10");
 
       const missingDecodedGroupedField = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                rowCount: { _viewServerAggregate: "bigint", value: "1" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              rowCount: { _viewServerAggregate: "bigint", value: "1" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(missingDecodedGroupedField.message).toBe(
@@ -194,25 +192,20 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const missingDecodedGroupedAggregate = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(missingDecodedGroupedAggregate.message).toBe(
@@ -220,13 +213,13 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const missingDecodedGroupedAggregateDefinition = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
+        viewServerDecodeLiveEvent(
           viewServer,
           "orders",
+          // @ts-expect-error hostile query payload can omit an aggregate definition value.
           {
             groupBy: ["id"],
             aggregates: {
-              // @ts-expect-error hostile query payload can omit an aggregate definition value.
               missing: undefined,
             },
           },
@@ -252,27 +245,22 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const unexpectedDecodedGroupedField = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "bigint", value: "1" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-                extra: true,
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: "1" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+              extra: true,
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(unexpectedDecodedGroupedField.message).toBe(
@@ -280,26 +268,21 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const nonJsonDecodedGroupedAggregate = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "nope", value: "bad" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "nope", value: "bad" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(nonJsonDecodedGroupedAggregate.message).toBe(
@@ -307,26 +290,21 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const numericBigIntEnvelope = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "bigint", value: 1 },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: 1 },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(numericBigIntEnvelope.message).toBe(
@@ -334,76 +312,61 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const invalidGroupedBigInt = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "bigint", value: "not-a-bigint" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: "not-a-bigint" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "1.5" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(invalidGroupedBigInt.message).toBe("Aggregate rowCount must be a bigint envelope.");
 
       const invalidGroupedBigDecimal = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "bigint", value: "1" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: "nope" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: "1" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: "nope" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(invalidGroupedBigDecimal.message).toMatch(/Invalid aggregate averagePrice/);
 
       const numericBigDecimalEnvelope = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "bigint", value: "1" },
-                averagePrice: { _viewServerAggregate: "bigdecimal", value: 1 },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: "1" },
+              averagePrice: { _viewServerAggregate: "bigdecimal", value: 1 },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(numericBigDecimalEnvelope.message).toBe(
@@ -411,38 +374,34 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const wrongGroupedBigDecimalEnvelope = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-0",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                rowCount: { _viewServerAggregate: "bigint", value: "1" },
-                averagePrice: { _viewServerAggregate: "bigint", value: "1" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-0",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              rowCount: { _viewServerAggregate: "bigint", value: "1" },
+              averagePrice: { _viewServerAggregate: "bigint", value: "1" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(wrongGroupedBigDecimalEnvelope.message).toBe(
         "Aggregate averagePrice must be a BigDecimal envelope.",
       );
 
-      const groupedMinQuery = yield* viewServerEncodeGroupedQuery(viewServer, "orders", {
+      const groupedMinQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
         groupBy: ["id"],
         aggregates: {
           minPrice: { aggFunc: "min", field: "price" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(viewServer, "orders", groupedMinQuery);
 
       const invalidEncodedMin = yield* Effect.flip(
         viewServerEncodeLiveEvent(viewServer, "orders", groupedMinQuery, {
@@ -451,6 +410,7 @@ describe("Invalid grouped row wire inputs", () => {
           queryId: "grouped-min",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload violates the min aggregate type.
           rows: [{ id: "a", minPrice: "not-a-number" }],
           totalRows: 1,
         }),
@@ -461,25 +421,20 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const wrongJsonEnvelope = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedMinQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-min",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                minPrice: { _viewServerAggregate: "bigint", value: "1" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedMinQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-min",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              minPrice: { _viewServerAggregate: "bigint", value: "1" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(wrongJsonEnvelope.message).toBe(
@@ -487,56 +442,58 @@ describe("Invalid grouped row wire inputs", () => {
       );
 
       const invalidJsonAggregateValue = yield* Effect.flip(
-        viewServerDecodeLiveEvent<typeof viewServer.topics, "orders", object>(
-          viewServer,
-          "orders",
-          groupedMinQuery,
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-min",
-            version: 1,
-            keys: ["a"],
-            rows: [
-              {
-                id: "a",
-                minPrice: { _viewServerAggregate: "json", value: "not-a-number" },
-              },
-            ],
-            totalRows: 1,
-          },
-        ),
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedMinQuery, {
+          type: "snapshot",
+          topic: "orders",
+          queryId: "grouped-min",
+          version: 1,
+          keys: ["a"],
+          rows: [
+            {
+              id: "a",
+              minPrice: { _viewServerAggregate: "json", value: "not-a-number" },
+            },
+          ],
+          totalRows: 1,
+        }),
       );
 
       expect(invalidJsonAggregateValue.message).toBe(
         'Invalid field minPrice: Expected "Infinity" | "-Infinity" | "NaN", got "not-a-number"',
       );
 
-      const missingAggregateSourceField = yield* Effect.flip(
-        viewServerEncodeLiveEvent(
-          viewServer,
-          "orders",
-          {
-            groupBy: ["id"],
-            aggregates: {
-              badPrice: { aggFunc: "min", field: "missing" },
+      for (const field of ["missing", "toString"]) {
+        const invalidAggregateQuery = {
+          groupBy: ["id"],
+          aggregates: {
+            badPrice: { aggFunc: "min", field },
+          },
+        };
+        const invalidAggregateSourceField = yield* Effect.flip(
+          viewServerEncodeLiveEvent(
+            viewServer,
+            "orders",
+            // @ts-expect-error hostile callers can bypass exact grouped aggregate fields.
+            invalidAggregateQuery,
+            {
+              type: "snapshot",
+              topic: "orders",
+              queryId: `grouped-invalid-aggregate-field-${field}`,
+              version: 1,
+              keys: ["a"],
+              rows: [{ id: "a", badPrice: 1 }],
+              totalRows: 1,
             },
-          },
-          {
-            type: "snapshot",
-            topic: "orders",
-            queryId: "grouped-missing-field",
-            version: 1,
-            keys: ["a"],
-            rows: [{ id: "a", badPrice: 1 }],
-            totalRows: 1,
-          },
-        ),
-      );
+          ),
+        );
 
-      expect(missingAggregateSourceField.message).toBe(
-        "Aggregate references unknown field for topic orders: missing",
-      );
+        expect(invalidAggregateSourceField).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidRow",
+          message: `Aggregate references unknown field for topic orders: ${field}`,
+          topic: "orders",
+        });
+      }
 
       const malformedEventSchemaConfig = {
         topics: {
@@ -647,6 +604,73 @@ describe("Invalid grouped row wire inputs", () => {
         ],
         totalRows: 1,
       });
+    }),
+  );
+
+  it.effect("rejects unknown and inherited group fields through public live codecs", () =>
+    Effect.gen(function* () {
+      for (const field of ["missing", "toString"]) {
+        const query = {
+          groupBy: [field],
+          aggregates: { rowCount: { aggFunc: "count" } },
+        } as const;
+        const expectedError = {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidRow",
+          message: `Grouped row field does not exist for topic orders: ${field}`,
+          topic: "orders",
+        } as const;
+        const encodeError = yield* Effect.flip(
+          viewServerEncodeLiveEvent(
+            viewServer,
+            "orders",
+            // @ts-expect-error hostile callers can bypass the exact group-field contract.
+            query,
+            {
+              type: "snapshot",
+              topic: "orders",
+              queryId: `invalid-group-encode-${field}`,
+              version: 1,
+              keys: ["a"],
+              rows: [{ rowCount: 1n }],
+              totalRows: 1,
+            },
+          ),
+        );
+        expect(encodeError).toStrictEqual(expectedError);
+
+        const runtimeEncodeError = yield* Effect.flip(
+          compileViewServerRuntimeLiveEventEncoder(viewServer, "orders", query).encode({
+            type: "snapshot",
+            topic: "orders",
+            queryId: `invalid-group-runtime-encode-${field}`,
+            version: 1,
+            keys: ["a"],
+            rows: [{ rowCount: 1n }],
+            totalRows: 1,
+          }),
+        );
+        expect(runtimeEncodeError).toStrictEqual(expectedError);
+
+        const decodeError = yield* Effect.flip(
+          viewServerDecodeLiveEvent(
+            viewServer,
+            "orders",
+            // @ts-expect-error hostile callers can bypass the exact group-field contract.
+            query,
+            {
+              type: "snapshot",
+              topic: "orders",
+              queryId: `invalid-group-decode-${field}`,
+              version: 1,
+              keys: ["a"],
+              rows: [{ rowCount: { _viewServerAggregate: "bigint", value: "1" } }],
+              totalRows: 1,
+            },
+          ),
+        );
+        expect(decodeError).toStrictEqual(expectedError);
+      }
     }),
   );
 });

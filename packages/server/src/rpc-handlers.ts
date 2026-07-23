@@ -10,7 +10,7 @@ import type {
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import {
-  compileViewServerLiveEventCodec,
+  compileViewServerRuntimeLiveEventEncoder,
   ViewServerRpcs,
   viewServerDecodeHealth,
   viewServerDecodeHealthQuery,
@@ -196,10 +196,10 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
             topic,
             payload.query,
           );
-          const eventCodec = compileViewServerLiveEventCodec(config, topic, query);
+          const eventEncoder = compileViewServerRuntimeLiveEventEncoder(config, topic, query);
           const subscription = yield* input.liveClient.subscribeProtocolQuery(topic, query);
           return subscription.events.pipe(
-            Stream.mapEffect(eventCodec.encode),
+            Stream.mapEffect(eventEncoder.encode),
             Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
           );
         }),

@@ -38,15 +38,30 @@ import {
 const makeDirectory = () => mkdtempSync(join(tmpdir(), "view-server-seams-"));
 
 describe("internal Seam checker", () => {
-  it("keeps the repository aligned with the Package Surface Policy", () => {
+  it("keeps package surfaces aligned with the Package Surface Policy", () => {
     expect(collectPackageSurfaceViolations()).toStrictEqual([]);
+  });
+
+  it("keeps package imports aligned with the Package Surface Policy", () => {
     expect(collectPackageImportViolations()).toStrictEqual([]);
+  });
+
+  it("keeps consumer imports aligned with the Package Surface Policy", () => {
     expect(collectConsumerImportViolations()).toStrictEqual([]);
+  });
+
+  it("keeps Topic Store Module seams intact", () => {
     expect(collectEngineSeamViolations()).toStrictEqual({
       helperViolations: [],
       stateExportViolations: [],
     });
+  });
+
+  it("keeps Runtime Source Module seams intact", () => {
     expect(collectRuntimeSourceSeamViolations()).toStrictEqual([]);
+  });
+
+  it("keeps Runtime Core dependencies acyclic", () => {
     expect(collectRuntimeCoreDependencyCycleViolations()).toStrictEqual([]);
   });
 

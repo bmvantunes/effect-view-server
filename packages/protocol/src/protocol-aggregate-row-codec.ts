@@ -170,7 +170,8 @@ const decodeJsonAggregateValue = Effect.fn("ViewServerProtocol.row.aggregate.jso
 const aggregateFieldSchema = Effect.fn("ViewServerProtocol.row.aggregate.fieldSchema")(function* <
   const Topics extends TopicDefinitions,
 >(config: { readonly topics: Topics }, topic: Extract<keyof Topics, string>, field: string) {
-  const fieldSchema = config.topics[topic]!.schema.fields[field];
+  const fields = config.topics[topic]!.schema.fields;
+  const fieldSchema = Object.hasOwn(fields, field) ? fields[field] : undefined;
   if (fieldSchema === undefined) {
     return yield* Effect.fail(
       invalidRow(topic, `Aggregate references unknown field for topic ${topic}: ${field}`),

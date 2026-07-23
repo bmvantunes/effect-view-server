@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import {
   compileViewServerLiveEventCodec,
+  defineViewServerLiveEventQuery,
   viewServerDecodeGroupedQuery,
   viewServerDecodeLiveEvent,
   viewServerDecodeLiveQuery,
@@ -21,18 +22,14 @@ import {
 describe("Grouped live wire codec", () => {
   it.effect("compiles and reuses one grouped row contract across live events", () =>
     Effect.gen(function* () {
-      const aggregateDefinitions = {
-        rowCount: { aggFunc: "count" as const },
-      };
-      const query = {
-        aggregates: aggregateDefinitions,
+      const query = defineViewServerLiveEventQuery(viewServer, "orders", {
+        aggregates: {
+          rowCount: { aggFunc: "count" },
+        },
         groupBy: ["id"],
-      };
-      const codec = compileViewServerLiveEventCodec<
-        typeof viewServer.topics,
-        "orders",
-        { readonly id: string; readonly rowCount: bigint }
-      >(viewServer, "orders", query);
+      });
+      const codec = compileViewServerLiveEventCodec(viewServer, "orders", query);
+      // @ts-expect-error hostile callers can mutate a query after its row contract is compiled.
       query.groupBy.push("status");
       Object.defineProperty(query.aggregates, "newCount", {
         configurable: true,
@@ -94,7 +91,7 @@ describe("Grouped live wire codec", () => {
 
   it.effect("encodes and decodes grouped query and grouped live event operations", () =>
     Effect.gen(function* () {
-      const groupedQuery = {
+      const groupedQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
         groupBy: ["id"],
         aggregates: {
           rowCount: { aggFunc: "count" },
@@ -115,7 +112,7 @@ describe("Grouped live wire codec", () => {
         ],
         offset: 0,
         limit: 10,
-      };
+      });
 
       const encodedGrouped = yield* viewServerEncodeGroupedQuery(
         viewServer,
@@ -189,7 +186,7 @@ describe("Grouped live wire codec", () => {
       const decodedGrouped = yield* viewServerDecodeGroupedQuery(
         viewServer,
         "orders",
-        encodedGrouped,
+        groupedQuery,
       );
       expect(decodedGrouped).toStrictEqual(groupedQuery);
 
@@ -245,20 +242,15 @@ describe("Grouped live wire codec", () => {
         distinctPrice: 2n,
       };
 
-      const groupedSnapshot = yield* viewServerEncodeLiveEvent(
-        viewServer,
-        "orders",
-        encodedGrouped,
-        {
-          type: "snapshot",
-          topic: "orders",
-          queryId: "grouped-0",
-          version: 1,
-          keys: ["a"],
-          rows: [groupedRow],
-          totalRows: 1,
-        },
-      );
+      const groupedSnapshot = yield* viewServerEncodeLiveEvent(viewServer, "orders", groupedQuery, {
+        type: "snapshot",
+        topic: "orders",
+        queryId: "grouped-0",
+        version: 1,
+        keys: ["a"],
+        rows: [groupedRow],
+        totalRows: 1,
+      });
       expect(groupedSnapshot).toStrictEqual({
         type: "snapshot",
         topic: "orders",
@@ -279,11 +271,12 @@ describe("Grouped live wire codec", () => {
         totalRows: 1,
       });
 
-      const decodedGroupedSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedGroupedSnapshot = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        typeof groupedRow
-      >(viewServer, "orders", encodedGrouped, groupedSnapshot);
+        groupedQuery,
+        groupedSnapshot,
+      );
       const decodedGroupedSnapshotRows =
         decodedGroupedSnapshot.type === "snapshot"
           ? decodedGroupedSnapshot.rows.map((row) => ({
@@ -306,12 +299,13 @@ describe("Grouped live wire codec", () => {
       });
 
       const invalidMinSnapshot = yield* Effect.flip(
-        viewServerEncodeLiveEvent(viewServer, "orders", encodedGrouped, {
+        viewServerEncodeLiveEvent(viewServer, "orders", groupedQuery, {
           type: "snapshot",
           topic: "orders",
           queryId: "grouped-undefined",
           version: 1,
           keys: ["a"],
+          // @ts-expect-error hostile runtime payload violates the required min aggregate type.
           rows: [{ ...groupedRow, minPrice: undefined }],
           totalRows: 1,
         }),
@@ -324,7 +318,7 @@ describe("Grouped live wire codec", () => {
           "Invalid field minPrice: aggregate min cannot be undefined because price is required.",
       });
       const invalidMinEnvelope = yield* Effect.flip(
-        viewServerDecodeLiveEvent(viewServer, "orders", encodedGrouped, {
+        viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {
           type: "snapshot",
           topic: "orders",
           queryId: "grouped-undefined-envelope",
@@ -352,12 +346,13 @@ describe("Grouped live wire codec", () => {
           "Invalid field minPrice: aggregate min cannot be undefined because price is required.",
       });
 
-      const optionalMinQuery = yield* viewServerEncodeGroupedQuery(viewServer, "orders", {
+      const optionalMinQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
         groupBy: ["id"],
         aggregates: {
           minUnset: { aggFunc: "min", field: "unset" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(viewServer, "orders", optionalMinQuery);
       const optionalMinSnapshot = yield* viewServerEncodeLiveEvent(
         viewServer,
         "orders",
@@ -386,11 +381,12 @@ describe("Grouped live wire codec", () => {
         ],
         totalRows: 1,
       });
-      const decodedOptionalMinSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedOptionalMinSnapshot = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        { readonly id: string; readonly minUnset: undefined }
-      >(viewServer, "orders", optionalMinQuery, optionalMinSnapshot);
+        optionalMinQuery,
+        optionalMinSnapshot,
+      );
       expect(decodedOptionalMinSnapshot).toStrictEqual({
         type: "snapshot",
         topic: "orders",
@@ -401,12 +397,13 @@ describe("Grouped live wire codec", () => {
         totalRows: 1,
       });
 
-      const objectAggregateQuery = yield* viewServerEncodeGroupedQuery(viewServer, "orders", {
+      const objectAggregateQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
         groupBy: ["id"],
         aggregates: {
           firstMetadata: { aggFunc: "min", field: "metadata" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(viewServer, "orders", objectAggregateQuery);
       const objectAggregateSnapshot = yield* viewServerEncodeLiveEvent(
         viewServer,
         "orders",
@@ -449,14 +446,12 @@ describe("Grouped live wire codec", () => {
         ],
         totalRows: 1,
       });
-      const decodedObjectAggregateSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedObjectAggregateSnapshot = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        {
-          readonly id: string;
-          readonly firstMetadata: { readonly _viewServerScalar: string; readonly value: string };
-        }
-      >(viewServer, "orders", objectAggregateQuery, objectAggregateSnapshot);
+        objectAggregateQuery,
+        objectAggregateSnapshot,
+      );
       expect(decodedObjectAggregateSnapshot).toStrictEqual({
         type: "snapshot",
         topic: "orders",
@@ -475,12 +470,13 @@ describe("Grouped live wire codec", () => {
         totalRows: 1,
       });
 
-      const bigIntSumQuery = yield* viewServerEncodeGroupedQuery(viewServer, "orders", {
+      const bigIntSumQuery = defineViewServerLiveEventQuery(viewServer, "orders", {
         groupBy: ["id"],
         aggregates: {
           totalQuantity: { aggFunc: "sum", field: "quantity" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(viewServer, "orders", bigIntSumQuery);
       const bigIntSumSnapshot = yield* viewServerEncodeLiveEvent(
         viewServer,
         "orders",
@@ -509,14 +505,12 @@ describe("Grouped live wire codec", () => {
         ],
         totalRows: 1,
       });
-      const decodedBigIntSumSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedBigIntSumSnapshot = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        {
-          readonly id: string;
-          readonly totalQuantity: bigint;
-        }
-      >(viewServer, "orders", bigIntSumQuery, bigIntSumSnapshot);
+        bigIntSumQuery,
+        bigIntSumSnapshot,
+      );
       expect(decodedBigIntSumSnapshot).toStrictEqual({
         type: "snapshot",
         topic: "orders",
@@ -527,7 +521,7 @@ describe("Grouped live wire codec", () => {
         totalRows: 1,
       });
 
-      const groupedDelta = yield* viewServerEncodeLiveEvent(viewServer, "orders", encodedGrouped, {
+      const groupedDelta = yield* viewServerEncodeLiveEvent(viewServer, "orders", groupedQuery, {
         type: "delta",
         topic: "orders",
         queryId: "grouped-0",
@@ -547,11 +541,12 @@ describe("Grouped live wire codec", () => {
         totalRows: 2,
       });
 
-      const decodedGroupedDelta = yield* viewServerDecodeLiveEvent<
-        typeof viewServer.topics,
+      const decodedGroupedDelta = yield* viewServerDecodeLiveEvent(
+        viewServer,
         "orders",
-        typeof groupedRow
-      >(viewServer, "orders", encodedGrouped, groupedDelta);
+        groupedQuery,
+        groupedDelta,
+      );
       const decodedGroupedDeltaOperations =
         decodedGroupedDelta.type === "delta"
           ? decodedGroupedDelta.operations.map((operation) =>

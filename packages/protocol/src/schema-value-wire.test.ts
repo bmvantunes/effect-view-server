@@ -5,6 +5,7 @@ import * as HashMap from "effect/HashMap";
 import * as Option from "effect/Option";
 import { Effect, Schema } from "effect";
 import {
+  defineViewServerLiveEventQuery,
   ViewServerWireEventSchema,
   viewServerDecodeLiveEvent,
   viewServerDecodeRawQuery,
@@ -124,9 +125,9 @@ describe("Schema value wire semantics", () => {
         const row = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(SemanticRow))(
           semanticWireRow,
         );
-        const query = {
+        const query = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
           select: ["id", "venue", "optionalQuantity", "tags", "quantities", "amount", "note"],
-        };
+        });
         const snapshot = yield* viewServerEncodeLiveEvent(semanticViewServer, "semantic", query, {
           type: "snapshot",
           topic: "semantic",
@@ -147,11 +148,12 @@ describe("Schema value wire semantics", () => {
         });
 
         const transportedSnapshot = yield* decodeTransportedEvent(snapshot);
-        const decodedSnapshot = yield* viewServerDecodeLiveEvent<
-          typeof semanticViewServer.topics,
+        const decodedSnapshot = yield* viewServerDecodeLiveEvent(
+          semanticViewServer,
           "semantic",
-          typeof SemanticRow.Type
-        >(semanticViewServer, "semantic", query, transportedSnapshot);
+          query,
+          transportedSnapshot,
+        );
         const decodedSnapshotEvent = yield* requireSnapshotEvent(decodedSnapshot);
         const summarizedSnapshot = {
           ...decodedSnapshotEvent,
@@ -193,11 +195,12 @@ describe("Schema value wire semantics", () => {
         });
 
         const transportedDelta = yield* decodeTransportedEvent(delta);
-        const decodedDelta = yield* viewServerDecodeLiveEvent<
-          typeof semanticViewServer.topics,
+        const decodedDelta = yield* viewServerDecodeLiveEvent(
+          semanticViewServer,
           "semantic",
-          typeof SemanticRow.Type
-        >(semanticViewServer, "semantic", query, transportedDelta);
+          query,
+          transportedDelta,
+        );
         const decodedDeltaEvent = yield* requireDeltaEvent(decodedDelta);
         const summarizedDelta = {
           ...decodedDeltaEvent,
@@ -224,15 +227,134 @@ describe("Schema value wire semantics", () => {
       }),
   );
 
+  it.effect("rejects unencoded semantic values before configured row decoding", () =>
+    Effect.gen(function* () {
+      const query = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
+        select: ["id", "amount"],
+      });
+      const rawBigIntEvent = {
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "raw-bigint",
+        version: 1,
+        keys: ["1"],
+        rows: [{ id: "1", amount: 123n }],
+        totalRows: 1,
+      } as const;
+      expect(Schema.is(ViewServerWireEventSchema)(rawBigIntEvent)).toBe(false);
+      const rawBigIntError = yield* Effect.flip(
+        viewServerDecodeLiveEvent(
+          semanticViewServer,
+          "semantic",
+          query,
+          // @ts-expect-error unencoded bigint bypasses the public JSON wire type.
+          rawBigIntEvent,
+        ),
+      );
+      expect(rawBigIntError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: 'Invalid event: Unsupported JSON value type "bigint" at $.rows[0].amount.',
+        topic: "semantic",
+      });
+
+      const rawBigDecimalEvent = {
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "raw-big-decimal",
+        version: 1,
+        keys: ["1"],
+        rows: [{ id: "1", amount: BigDecimal.make(123n, 2) }],
+        totalRows: 1,
+      } as const;
+      expect(Schema.is(ViewServerWireEventSchema)(rawBigDecimalEvent)).toBe(false);
+      const rawBigDecimalError = yield* Effect.flip(
+        viewServerDecodeLiveEvent(
+          semanticViewServer,
+          "semantic",
+          query,
+          // @ts-expect-error unencoded BigDecimal bypasses the public JSON wire type.
+          rawBigDecimalEvent,
+        ),
+      );
+      expect(rawBigDecimalError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Invalid event: Expected a plain data record or dense array at $.rows[0].amount.",
+        topic: "semantic",
+      });
+    }),
+  );
+
+  it.effect("rejects event and row accessors without invoking them", () =>
+    Effect.gen(function* () {
+      const query = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
+        select: ["id", "amount"],
+      });
+      let accessorReads = 0;
+      const eventAccessor = {
+        type: "snapshot",
+        get topic(): string {
+          accessorReads += 1;
+          throw new Error("event accessor must not run");
+        },
+        queryId: "event-accessor",
+        version: 1,
+        keys: ["1"],
+        rows: [{ id: "1", amount: "1" }],
+        totalRows: 1,
+      } as const;
+      const eventAccessorError = yield* Effect.flip(
+        viewServerDecodeLiveEvent(semanticViewServer, "semantic", query, eventAccessor),
+      );
+      expect(eventAccessorError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Invalid event: Accessor properties are not valid JSON data at $.topic.",
+        topic: "semantic",
+      });
+      expect(accessorReads).toBe(0);
+
+      const rowAccessor = {
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "row-accessor",
+        version: 1,
+        keys: ["1"],
+        rows: [
+          {
+            id: "1",
+            get amount(): string {
+              accessorReads += 1;
+              throw new Error("row accessor must not run");
+            },
+          },
+        ],
+        totalRows: 1,
+      } as const;
+      const rowAccessorError = yield* Effect.flip(
+        viewServerDecodeLiveEvent(semanticViewServer, "semantic", query, rowAccessor),
+      );
+      expect(rowAccessorError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Invalid event: Accessor properties are not valid JSON data at $.rows[0].amount.",
+        topic: "semantic",
+      });
+      expect(accessorReads).toBe(0);
+    }),
+  );
+
   it.effect("round-trips Schema.Class group fields in grouped Snapshot and update Delta rows", () =>
     Effect.gen(function* () {
       const venue = Venue.make({ code: "XNYS" });
-      const groupedQuery = yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", {
+      const groupedQuery = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
         groupBy: ["venue"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", groupedQuery);
       const groupedRow = { venue, rowCount: 1n };
       const groupedWireRow = {
         venue: { code: "XNYS" },
@@ -262,11 +384,12 @@ describe("Schema value wire semantics", () => {
         totalRows: 1,
       });
 
-      const decodedSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof semanticViewServer.topics,
+      const decodedSnapshot = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
         "semantic",
-        typeof groupedRow
-      >(semanticViewServer, "semantic", groupedQuery, yield* decodeTransportedEvent(snapshot));
+        groupedQuery,
+        yield* decodeTransportedEvent(snapshot),
+      );
       expect(decodedSnapshot).toStrictEqual({
         type: "snapshot",
         topic: "semantic",
@@ -296,11 +419,12 @@ describe("Schema value wire semantics", () => {
         totalRows: 1,
       });
 
-      const decodedDelta = yield* viewServerDecodeLiveEvent<
-        typeof semanticViewServer.topics,
+      const decodedDelta = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
         "semantic",
-        typeof groupedRow
-      >(semanticViewServer, "semantic", groupedQuery, yield* decodeTransportedEvent(delta));
+        groupedQuery,
+        yield* decodeTransportedEvent(delta),
+      );
       expect(decodedDelta).toStrictEqual({
         type: "delta",
         topic: "semantic",
@@ -315,13 +439,14 @@ describe("Schema value wire semantics", () => {
 
   it.effect("round-trips Schema.Class min and max aggregate envelopes", () =>
     Effect.gen(function* () {
-      const groupedQuery = yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", {
+      const groupedQuery = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
         groupBy: ["id"],
         aggregates: {
           firstVenue: { aggFunc: "min", field: "venue" },
           lastVenue: { aggFunc: "max", field: "venue" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", groupedQuery);
       const groupedRow = {
         id: "1",
         firstVenue: Venue.make({ code: "XNYS" }),
@@ -357,11 +482,12 @@ describe("Schema value wire semantics", () => {
         totalRows: 1,
       });
 
-      const decoded = yield* viewServerDecodeLiveEvent<
-        typeof semanticViewServer.topics,
+      const decoded = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
         "semantic",
-        typeof groupedRow
-      >(semanticViewServer, "semantic", groupedQuery, yield* decodeTransportedEvent(encoded));
+        groupedQuery,
+        yield* decodeTransportedEvent(encoded),
+      );
       const snapshot = yield* requireSnapshotEvent(decoded);
       expect(snapshot.rows[0]?.firstVenue).toBeInstanceOf(Venue);
       expect(snapshot.rows[0]?.lastVenue).toBeInstanceOf(Venue);
@@ -377,15 +503,16 @@ describe("Schema value wire semantics", () => {
     }),
   );
 
-  it.effect("round-trips all-missing optional min and max values in Snapshot and Delta", () =>
+  it.effect("round-trips missing and present optional min and max values", () =>
     Effect.gen(function* () {
-      const groupedQuery = yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", {
+      const groupedQuery = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
         groupBy: ["id"],
         aggregates: {
           firstNote: { aggFunc: "min", field: "note" },
           lastNote: { aggFunc: "max", field: "note" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", groupedQuery);
       const groupedRow = {
         id: "1",
         firstNote: undefined,
@@ -419,11 +546,12 @@ describe("Schema value wire semantics", () => {
         rows: [wireRow],
         totalRows: 1,
       });
-      const decodedSnapshot = yield* viewServerDecodeLiveEvent<
-        typeof semanticViewServer.topics,
+      const decodedSnapshot = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
         "semantic",
-        typeof groupedRow
-      >(semanticViewServer, "semantic", groupedQuery, yield* decodeTransportedEvent(snapshot));
+        groupedQuery,
+        yield* decodeTransportedEvent(snapshot),
+      );
       expect(decodedSnapshot).toStrictEqual({
         type: "snapshot",
         topic: "semantic",
@@ -452,11 +580,12 @@ describe("Schema value wire semantics", () => {
         operations: [{ type: "update", key: "1", row: wireRow, index: 0 }],
         totalRows: 1,
       });
-      const decodedDelta = yield* viewServerDecodeLiveEvent<
-        typeof semanticViewServer.topics,
+      const decodedDelta = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
         "semantic",
-        typeof groupedRow
-      >(semanticViewServer, "semantic", groupedQuery, yield* decodeTransportedEvent(delta));
+        groupedQuery,
+        yield* decodeTransportedEvent(delta),
+      );
       expect(decodedDelta).toStrictEqual({
         type: "delta",
         topic: "semantic",
@@ -466,17 +595,68 @@ describe("Schema value wire semantics", () => {
         operations: [{ type: "update", key: "1", row: groupedRow, index: 0 }],
         totalRows: 1,
       });
+
+      const presentRow = {
+        id: "2",
+        firstNote: "alpha",
+        lastNote: "omega",
+      };
+      const presentSnapshot = yield* viewServerEncodeLiveEvent(
+        semanticViewServer,
+        "semantic",
+        groupedQuery,
+        {
+          type: "snapshot",
+          topic: "semantic",
+          queryId: "semantic-present-optional-extrema",
+          version: 3,
+          keys: ["2"],
+          rows: [presentRow],
+          totalRows: 1,
+        },
+      );
+      expect(presentSnapshot).toStrictEqual({
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "semantic-present-optional-extrema",
+        version: 3,
+        keys: ["2"],
+        rows: [
+          {
+            id: "2",
+            firstNote: { _viewServerAggregate: "json", value: "alpha" },
+            lastNote: { _viewServerAggregate: "json", value: "omega" },
+          },
+        ],
+        totalRows: 1,
+      });
+      const decodedPresentSnapshot = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
+        "semantic",
+        groupedQuery,
+        yield* decodeTransportedEvent(presentSnapshot),
+      );
+      expect(decodedPresentSnapshot).toStrictEqual({
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "semantic-present-optional-extrema",
+        version: 3,
+        keys: ["2"],
+        rows: [presentRow],
+        totalRows: 1,
+      });
     }),
   );
 
   it.effect("round-trips an omitted optional grouped field", () =>
     Effect.gen(function* () {
-      const groupedQuery = yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", {
+      const groupedQuery = defineViewServerLiveEventQuery(semanticViewServer, "semantic", {
         groupBy: ["note"],
         aggregates: {
           rowCount: { aggFunc: "count" },
         },
       });
+      yield* viewServerEncodeGroupedQuery(semanticViewServer, "semantic", groupedQuery);
       const groupedRow = { rowCount: 1n };
       const snapshot = yield* viewServerEncodeLiveEvent(
         semanticViewServer,
@@ -503,11 +683,12 @@ describe("Schema value wire semantics", () => {
         totalRows: 1,
       });
 
-      const decoded = yield* viewServerDecodeLiveEvent<
-        typeof semanticViewServer.topics,
+      const decoded = yield* viewServerDecodeLiveEvent(
+        semanticViewServer,
         "semantic",
-        typeof groupedRow
-      >(semanticViewServer, "semantic", groupedQuery, yield* decodeTransportedEvent(snapshot));
+        groupedQuery,
+        yield* decodeTransportedEvent(snapshot),
+      );
       expect(decoded).toStrictEqual({
         type: "snapshot",
         topic: "semantic",

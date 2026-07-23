@@ -4,6 +4,8 @@ import { Effect, Schema } from "effect";
 import type * as Protocol from "./index";
 import {
   compileViewServerLiveEventCodec,
+  defineViewServerLiveEventQuery,
+  viewServerDecodeLiveEvent,
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerDecodeTrustedLiveEvent,
@@ -481,25 +483,63 @@ describe("@effect-view-server/protocol type contract", () => {
     expectTypeOf(invalidTrustedDecode).not.toBeAny();
   });
 
-  it("preserves row and error types through a compiled live event codec", () => {
-    const codec = compileViewServerLiveEventCodec<
-      typeof typeViewServer.topics,
-      "orders",
-      Pick<typeof TypeOrder.Type, "id">
-    >(typeViewServer, "orders", { select: ["id"] });
-    const decoded = codec.decodeTrusted(trustedWireEvent);
-    type DecodedEvent = Effect.Success<typeof decoded>;
-    type DecodedSnapshot = Extract<DecodedEvent, { readonly type: "snapshot" }>;
-    expectTypeOf<DecodedSnapshot["rows"][number]>().toEqualTypeOf<
+  it("derives raw and grouped row types through public live event codecs", () => {
+    const rawCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", {
+      select: ["id"],
+    });
+    const rawDecoded = rawCodec.decodeTrusted(trustedWireEvent);
+    type RawDecodedEvent = Effect.Success<typeof rawDecoded>;
+    type RawDecodedSnapshot = Extract<RawDecodedEvent, { readonly type: "snapshot" }>;
+    type RawDecodedDeltaOperation = Extract<
+      RawDecodedEvent,
+      { readonly type: "delta" }
+    >["operations"][number];
+    type RawDecodedChangedRow = Extract<
+      RawDecodedDeltaOperation,
+      { readonly type: "insert" | "update" }
+    >["row"];
+    expectTypeOf<RawDecodedSnapshot["rows"][number]>().toEqualTypeOf<
       Pick<typeof TypeOrder.Type, "id">
     >();
-    expectTypeOf<Effect.Error<typeof decoded>>().toEqualTypeOf<ViewServerRuntimeError>();
+    expectTypeOf<RawDecodedChangedRow>().toEqualTypeOf<Pick<typeof TypeOrder.Type, "id">>();
+    expectTypeOf<Effect.Error<typeof rawDecoded>>().toEqualTypeOf<ViewServerRuntimeError>();
 
-    const invalidTrustedDecode = codec.decodeTrusted(
+    const invalidTrustedDecode = rawCodec.decodeTrusted(
       // @ts-expect-error compiled trusted decoder requires validated wire event proof.
       wireEvent,
     );
     expectTypeOf(invalidTrustedDecode).not.toBeAny();
+
+    const groupedCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", {
+      groupBy: ["id"],
+      aggregates: {
+        rowCount: { aggFunc: "count" },
+      },
+    });
+    const groupedDecoded = groupedCodec.decodeTrusted(trustedWireEvent);
+    type GroupedDecodedEvent = Effect.Success<typeof groupedDecoded>;
+    type GroupedDecodedSnapshot = Extract<GroupedDecodedEvent, { readonly type: "snapshot" }>;
+    type GroupedDecodedDeltaOperation = Extract<
+      GroupedDecodedEvent,
+      { readonly type: "delta" }
+    >["operations"][number];
+    type GroupedDecodedChangedRow = Extract<
+      GroupedDecodedDeltaOperation,
+      { readonly type: "insert" | "update" }
+    >["row"];
+    type ExpectedGroupedRow = {
+      readonly id: string;
+      readonly rowCount: bigint;
+    };
+    expectTypeOf<GroupedDecodedSnapshot["rows"][number]>().toEqualTypeOf<ExpectedGroupedRow>();
+    expectTypeOf<GroupedDecodedChangedRow>().toEqualTypeOf<ExpectedGroupedRow>();
+    expectTypeOf<Effect.Error<typeof groupedDecoded>>().toEqualTypeOf<ViewServerRuntimeError>();
+
+    // @ts-expect-error compiled codec row type is derived from the topic and query.
+    const fabricatedCodec: Protocol.ViewServerLiveEventCodec<{
+      readonly fabricated: boolean;
+    }> = rawCodec;
+    expectTypeOf(fabricatedCodec).not.toBeAny();
 
     const invalidTopicCodec = compileViewServerLiveEventCodec(
       typeViewServer,
@@ -508,6 +548,120 @@ describe("@effect-view-server/protocol type contract", () => {
       { select: ["id"] },
     );
     expectTypeOf(invalidTopicCodec).not.toBeAny();
+
+    // @ts-expect-error selected fields must be own fields of the configured topic row.
+    const unknownSelectedFieldCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", {
+      select: ["missing"],
+    });
+    expectTypeOf(unknownSelectedFieldCodec).not.toBeAny();
+
+    // @ts-expect-error inherited object fields are not topic row fields.
+    const inheritedSelectedFieldCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", {
+      select: ["toString"],
+    });
+    expectTypeOf(inheritedSelectedFieldCodec).not.toBeAny();
+
+    // @ts-expect-error grouped fields must be own fields of the configured topic row.
+    const unknownGroupedFieldCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", {
+      groupBy: ["missing"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+    });
+    expectTypeOf(unknownGroupedFieldCodec).not.toBeAny();
+
+    // @ts-expect-error inherited object fields are not topic row fields.
+    const inheritedGroupedFieldCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", {
+      groupBy: ["toString"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+    });
+    expectTypeOf(inheritedGroupedFieldCodec).not.toBeAny();
+  });
+
+  it("defines reusable exact live event queries without as const", () => {
+    const rawQuery = defineViewServerLiveEventQuery(typeViewServer, "orders", {
+      select: ["id"],
+    });
+    const rawCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", rawQuery);
+    const rawDecoded = rawCodec.decodeTrusted(trustedWireEvent);
+    type RawSnapshot = Extract<Effect.Success<typeof rawDecoded>, { readonly type: "snapshot" }>;
+    expectTypeOf<RawSnapshot["rows"][number]>().toEqualTypeOf<Pick<typeof TypeOrder.Type, "id">>();
+
+    const groupedQuery = defineViewServerLiveEventQuery(typeViewServer, "orders", {
+      groupBy: ["id"],
+      aggregates: { rowCount: { aggFunc: "count" } },
+    });
+    const groupedCodec = compileViewServerLiveEventCodec(typeViewServer, "orders", groupedQuery);
+    const groupedDecoded = groupedCodec.decodeTrusted(trustedWireEvent);
+    type GroupedSnapshot = Extract<
+      Effect.Success<typeof groupedDecoded>,
+      { readonly type: "snapshot" }
+    >;
+    expectTypeOf<GroupedSnapshot["rows"][number]>().toEqualTypeOf<{
+      readonly id: string;
+      readonly rowCount: bigint;
+    }>();
+
+    // @ts-expect-error reusable query builders reject fields outside the topic schema.
+    const invalidQuery = defineViewServerLiveEventQuery(typeViewServer, "orders", {
+      select: ["missing"],
+    });
+    expectTypeOf(invalidQuery).not.toBeAny();
+  });
+
+  it("derives one-shot live decoder rows and rejects fabricated row claims", () => {
+    const rawDecode = viewServerDecodeLiveEvent(
+      typeViewServer,
+      "orders",
+      { select: ["id"] },
+      wireEvent,
+    );
+    const trustedRawDecode = viewServerDecodeTrustedLiveEvent(
+      typeViewServer,
+      "orders",
+      { select: ["id"] },
+      trustedWireEvent,
+    );
+    const groupedDecode = viewServerDecodeLiveEvent(
+      typeViewServer,
+      "orders",
+      {
+        groupBy: ["id"],
+        aggregates: { rowCount: { aggFunc: "count" } },
+      },
+      wireEvent,
+    );
+    type RawSnapshot = Extract<Effect.Success<typeof rawDecode>, { readonly type: "snapshot" }>;
+    type TrustedRawSnapshot = Extract<
+      Effect.Success<typeof trustedRawDecode>,
+      { readonly type: "snapshot" }
+    >;
+    type GroupedSnapshot = Extract<
+      Effect.Success<typeof groupedDecode>,
+      { readonly type: "snapshot" }
+    >;
+    expectTypeOf<RawSnapshot["rows"][number]>().toEqualTypeOf<Pick<typeof TypeOrder.Type, "id">>();
+    expectTypeOf<TrustedRawSnapshot["rows"][number]>().toEqualTypeOf<
+      Pick<typeof TypeOrder.Type, "id">
+    >();
+    expectTypeOf<GroupedSnapshot["rows"][number]>().toEqualTypeOf<{
+      readonly id: string;
+      readonly rowCount: bigint;
+    }>();
+
+    const fabricatedDecode = viewServerDecodeLiveEvent<
+      typeof typeViewServer.topics,
+      "orders",
+      // @ts-expect-error the third generic is a query contract, not a caller-selected row type.
+      { readonly fabricated: boolean }
+    >(typeViewServer, "orders", { fabricated: true }, wireEvent);
+    expectTypeOf(fabricatedDecode).not.toBeAny();
+
+    const fabricatedTrustedDecode = viewServerDecodeTrustedLiveEvent<
+      typeof typeViewServer.topics,
+      "orders",
+      // @ts-expect-error the third generic is a query contract, not a caller-selected row type.
+      { readonly fabricated: boolean }
+    >(typeViewServer, "orders", { fabricated: true }, trustedWireEvent);
+    expectTypeOf(fabricatedTrustedDecode).not.toBeAny();
   });
 
   it("preserves health event decoder output generics", () => {

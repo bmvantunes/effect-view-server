@@ -281,11 +281,7 @@ export const makeViewServerClient: <
     return Effect.gen(function* () {
       type Row = LiveQueryRow<TopicRow<Topics, Topic>, Query>;
       const wireQuery = yield* viewServerEncodeLiveQuery(config, topic, capturedQuery.success);
-      const eventCodec = compileViewServerLiveEventCodec<Topics, Topic, Row>(
-        config,
-        topic,
-        wireQuery,
-      );
+      const eventCodec = compileViewServerLiveEventCodec(config, topic, capturedQuery.success);
       return yield* subscribeWire<Row, Topic>(topic, wireQuery, eventCodec.decodeTrusted);
     });
   }

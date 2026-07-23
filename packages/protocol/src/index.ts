@@ -42,10 +42,13 @@ export {
 
 export {
   compileViewServerLiveEventCodec,
+  compileViewServerRuntimeLiveEventEncoder,
+  defineViewServerLiveEventQuery,
   viewServerEncodeLiveEvent,
   viewServerDecodeLiveEvent,
   viewServerDecodeTrustedLiveEvent,
   type ViewServerLiveEventCodec,
+  type ViewServerRuntimeLiveEventEncoder,
 } from "./protocol-event-codec";
 
 export {

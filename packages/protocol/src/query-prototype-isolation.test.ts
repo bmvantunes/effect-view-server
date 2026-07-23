@@ -1,7 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { Order, viewServer } from "../test-harness/protocol";
-import { viewServerDecodeLiveEvent, viewServerEncodeLiveEvent } from "./protocol-event-codec";
+import { viewServer } from "../test-harness/protocol";
+import {
+  defineViewServerLiveEventQuery,
+  viewServerDecodeLiveEvent,
+  viewServerEncodeLiveEvent,
+} from "./protocol-event-codec";
 import { viewServerEncodeGroupedQuery } from "./protocol-grouped-query-codec";
 
 const withObjectPrototypeValue = <Value, Error, Requirements>(
@@ -54,7 +58,7 @@ describe("protocol query prototype isolation", () => {
       "groupBy",
       ["status"],
       Effect.gen(function* () {
-        const query = { select: ["id"] } as const;
+        const query = defineViewServerLiveEventQuery(viewServer, "orders", { select: ["id"] });
         const encoded = yield* viewServerEncodeLiveEvent(viewServer, "orders", query, {
           type: "snapshot",
           topic: "orders",
@@ -64,11 +68,7 @@ describe("protocol query prototype isolation", () => {
           rows: [{ id: "order-1" }],
           totalRows: 1,
         });
-        const decoded = yield* viewServerDecodeLiveEvent<
-          typeof viewServer.topics,
-          "orders",
-          Pick<typeof Order.Type, "id">
-        >(viewServer, "orders", query, encoded);
+        const decoded = yield* viewServerDecodeLiveEvent(viewServer, "orders", query, encoded);
 
         expect(decoded).toStrictEqual({
           type: "snapshot",

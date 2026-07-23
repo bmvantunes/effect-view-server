@@ -7,13 +7,12 @@ import type {
 } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
-  type ViewServerLooseWireEvent,
-  ViewServerLooseWireEventSchema,
   ViewServerTrustedWireEventSchema,
   type ViewServerTrustedWireEvent,
   ViewServerWireEventSchema,
   type ViewServerWireEvent,
 } from "./protocol-event-schema";
+import { materializeJsonFieldValue } from "./protocol-json-field-codec";
 import type { ViewServerEventQuery } from "./protocol-query-schema";
 import {
   compileViewServerGroupedRowContract,
@@ -175,7 +174,7 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   config: { readonly topics: Topics },
   expectedTopic: Topic,
   rowContract: ViewServerEventRowContract,
-  wireEvent: ViewServerLooseWireEvent,
+  wireEvent: ViewServerWireEvent,
 ) {
   if (wireEvent.topic !== expectedTopic) {
     return yield* Effect.fail(
@@ -234,9 +233,12 @@ const decodeLiveEventWithContract = Effect.fn("ViewServerProtocol.event.decode")
   rowContract: ViewServerEventRowContract,
   event: ViewServerWireEvent,
 ) {
-  const wireEvent = yield* Schema.decodeUnknownEffect(ViewServerLooseWireEventSchema)(event).pipe(
-    Effect.mapError((error) => invalidRow(expectedTopic, `Invalid event: ${error.message}`)),
+  const materializedEvent = yield* materializeJsonFieldValue(event, (message) =>
+    invalidRow(expectedTopic, `Invalid event: ${message}`),
   );
+  const wireEvent = yield* Schema.decodeUnknownEffect(ViewServerWireEventSchema)(
+    materializedEvent,
+  ).pipe(Effect.mapError((error) => invalidRow(expectedTopic, `Invalid event: ${error.message}`)));
   return yield* decodeValidatedLiveEvent<Topics, Topic, Row>(
     config,
     expectedTopic,

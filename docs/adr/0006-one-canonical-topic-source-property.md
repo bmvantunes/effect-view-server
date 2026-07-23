@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted design. Implementation is pending, so this ADR does not describe a currently available public configuration contract.
 
 ## Context
 

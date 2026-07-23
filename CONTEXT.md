@@ -2,6 +2,10 @@
 
 This context defines the language for the View Server project: a type-safe live view system that serves initial snapshots and live deltas from an authoritative in-memory engine to React applications over a real server or an in-memory test runtime.
 
+## Document Status
+
+Runtime code and published package exports are authoritative for currently available behavior. All Source Adapter, Source Definition, Source Adapter Runtime Service, and canonical Topic Row ID material throughout this document describes accepted target architecture whose implementation is pending; none of that material describes a currently available public package export or configuration contract.
+
 ## Language
 
 ### Product Concepts
@@ -19,15 +23,15 @@ A View Server runtime created inside the current process for tests, demos, Story
 _Avoid_: Mock server, fake client, test hook
 
 **View Server Topic**:
-A configured logical table with one Topic Schema, one canonical Topic Row ID, and one authoritative store.
+A configured logical table with one Topic Schema and one authoritative store. In the accepted target architecture, it has one canonical Topic Row ID.
 _Avoid_: Kafka topic, channel, collection
 
 **View Server Config**:
-The one frozen browser-safe declaration created by `defineViewServerConfig(...)` and shared by React, Remote Browser Clients, In-Memory View Server, and the real runtime. It is the sole type authority for View Server Topics, Topic Schemas, queries, Feed Routes, source failures, health, and adapter metrics. Every Topic appears once and owns zero or one canonical Source Definition; there is no mirrored browser contract and server runtime topic tree. It contains browser-safe Source Adapter options, including Mapping functions, generated descriptors, platform-neutral codecs, and diagnostic Schemas that may contribute to the browser bundle, but no concrete transport client, credential, platform Layer, Node dependency, or ManagedRuntime. V1 accepts that bundle tradeoff rather than introducing code generation, a build transform, automatic projection, or duplicate authoring.
+The one frozen browser-safe declaration created by `defineViewServerConfig(...)` and shared by React, Remote Browser Clients, In-Memory View Server, and the real runtime. It is the sole type authority for View Server Topics, Topic Schemas, queries, Feed Routes, and health. In the accepted target architecture, it also owns source failures and adapter metrics; every Topic owns zero or one canonical Source Definition without a mirrored browser contract and server runtime topic tree. That target declaration contains browser-safe Source Adapter options, including Mapping functions, generated descriptors, platform-neutral codecs, and diagnostic Schemas that may contribute to the browser bundle, but no concrete transport client, credential, platform Layer, Node dependency, or ManagedRuntime. V1 accepts that bundle tradeoff rather than introducing code generation, a build transform, automatic projection, or duplicate authoring.
 _Avoid_: Separate contract/runtime configs, duplicated topic tree, generated untyped client metadata, server resource in shared config
 
 **View Server Runtime Effect**:
-The scoped server-edge Effect returned by `runViewServerRuntime(viewServer, options)`. Its environment is the exact union inferred from the one View Server Config's Source Adapter runtime services, retry Schedules, and application dependencies. Application code satisfies that union with aggregate adapter/platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`.
+The scoped server-edge Effect returned by `runViewServerRuntime(viewServer, options)`. In the accepted target architecture, its environment is the exact union inferred from the one View Server Config's Source Adapter runtime services, retry Schedules, and application dependencies. Application code will satisfy that union with aggregate adapter/platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`.
 _Avoid_: Transport-specific runtime option bag, hidden adapter runtime, reusable module calling Effect.run
 
 **Runtime Composition Failure**:
@@ -35,7 +39,7 @@ A fatal typed failure before View Server transport availability caused by invali
 _Avoid_: Broker outage classified as fatal startup, partially listening invalid runtime, missing Layer converted to source retry
 
 **Topic Row**:
-A Topic-Schema-decoded object stored in a View Server Topic. Every Topic Row contains exactly one required canonical `id: string` field.
+A Topic-Schema-decoded object stored in a View Server Topic. In the accepted target architecture, every Topic Row contains exactly one required canonical `id: string` field.
 _Avoid_: Record, document, message
 
 **Topic Row Value Semantics**:
@@ -43,7 +47,7 @@ The schema-derived ownership, equivalence, canonical JSON representation, and or
 _Avoid_: Deep clone helper, generic object equality, JSON stringify semantics
 
 **Topic Row ID**:
-The required `id: Schema.String` field declared by every Topic Schema. Its decoded string uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker; the field name and Schema are not configurable.
+In the accepted target architecture, the required `id: Schema.String` field declared by every Topic Schema. Its decoded string uniquely identifies a Topic Row and acts as the final deterministic sort tiebreaker; the field name and Schema are not configurable.
 _Avoid_: Configurable Row Key, primary key when discussing external databases, optional ID, numeric ID
 
 **Timestamp**:
@@ -269,6 +273,8 @@ A string key emitted by an AG Grid Set Filter that the AG Grid Adapter decodes i
 _Avoid_: Guessed field value, implicit string field, server-side key reconstruction
 
 ### Ingestion Concepts
+
+The Source Adapter concepts in this section describe accepted target architecture whose implementation is pending.
 
 **Source Topic**:
 An external Kafka topic or future server-side source that provides messages to be mapped into a View Server Topic.
@@ -583,17 +589,17 @@ _Avoid_: Browser write, send, emit
 - A **Runtime Client** can publish mutations but is not exposed to browsers by the Real View Server.
 - A **Remote Browser Client** is a **Live Client** adapter for the **Wire Protocol**.
 - React, the **Remote Browser Client**, In-Memory View Server, and the real runtime consume the same browser-safe **View Server Config**; applications never author a mirrored server topic tree.
-- React hooks derive topic names, selected result rows, valid filter paths and operators, sort fields, group fields, aggregate fields and aliases, Feed Routes, and Source Adapter Failure unions directly from the **View Server Config** without requiring `as const`.
-- `runViewServerRuntime(viewServer, options)` returns a **View Server Runtime Effect** whose requirements preserve the union inferred from every Source Definition's nominal Source Adapter Runtime Service, retry Schedule, and application dependencies.
-- Application code satisfies the **View Server Runtime Effect** with aggregate adapter and platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`.
-- A Source Adapter never creates a hidden ManagedRuntime or calls `Effect.run*` inside reusable integration code.
-- Pure View Server Config, Source Definition, and aggregate adapter Layer constructors throw named configuration errors immediately for deterministic programmer mistakes and return frozen snapshots rather than Effects or hidden running resources.
-- Environment, file, and secret configuration is decoded through Effect Config or Schema, while Layer construction, resource acquisition, and source execution failures remain in typed Effect error channels.
-- Runtime startup defensively revalidates every common Source Definition envelope before invoking its nominal Source Adapter Runtime Service, even though pure builders already validated it.
-- Every **View Server Topic** appears once in the **View Server Config** and declares zero or one nominal **Source Definition** through the matching adapter's materialized or leased constructor.
-- A materialized Source Definition rejects `routeBy`; a leased Source Definition requires a non-empty unique `routeBy` containing statically named top-level supported scalar fields from its Topic Row Schema, inferred without `as const`.
-- External source names, browser-safe codecs, Mapping functions, Local Row Key functions, Start Position, Schedules, Effects, and other browser-safe Effect requirements may belong to Source Definition options; credentials, concrete client tokens, concrete clients, sockets, transport-driver packages, Node APIs, and platform Layers may not.
-- A **Source Adapter Runtime Service** executes only Source Definitions created by its exact nominal Source Adapter declaration, and View Server rejects structural substitutes.
+- React hooks derive topic names, selected result rows, valid filter paths and operators, sort fields, group fields, aggregate fields, and aliases directly from the **View Server Config** without requiring `as const`. In the accepted target architecture, they will also derive Feed Routes and Source Adapter Failure unions from that config.
+- `runViewServerRuntime(viewServer, options)` returns a **View Server Runtime Effect**. In the accepted target architecture, its requirements will preserve the union inferred from every Source Definition's nominal Source Adapter Runtime Service, retry Schedule, and application dependencies.
+- Application code will satisfy the **View Server Runtime Effect** with aggregate adapter and platform Layers through `Effect.provide(...)` before `NodeRuntime.runMain(...)`.
+- A Source Adapter will never create a hidden ManagedRuntime or call `Effect.run*` inside reusable integration code.
+- Pure View Server Config, Source Definition, and aggregate adapter Layer constructors will throw named configuration errors immediately for deterministic programmer mistakes and return frozen snapshots rather than Effects or hidden running resources.
+- Environment, file, and secret configuration will be decoded through Effect Config or Schema, while Layer construction, resource acquisition, and source execution failures will remain in typed Effect error channels.
+- Runtime startup will defensively revalidate every common Source Definition envelope before invoking its nominal Source Adapter Runtime Service, even though pure builders already validated it.
+- Every **View Server Topic** will appear once in the **View Server Config** and declare zero or one nominal **Source Definition** through the matching adapter's materialized or leased constructor.
+- A materialized Source Definition will reject `routeBy`; a leased Source Definition will require a non-empty unique `routeBy` containing statically named top-level supported scalar fields from its Topic Row Schema, inferred without `as const`.
+- External source names, browser-safe codecs, Mapping functions, Local Row Key functions, Start Position, Schedules, Effects, and other browser-safe Effect requirements may belong to Source Definition options; credentials, concrete client tokens, concrete clients, sockets, transport-driver packages, Node APIs, and platform Layers will not.
+- A **Source Adapter Runtime Service** will execute only Source Definitions created by its exact nominal Source Adapter declaration, and View Server will reject structural substitutes.
 - The **Strict JSON Materializer** makes local semantic materialization and NDJSON acceptance agree; explicit schema codecs restore semantic runtime values after the strict JSON boundary.
 - A **Field Filter Codec** protects the **Wire Protocol** from unsafe or incorrectly typed filter values.
 - A **Raw Query Codec** protects Raw Query wire payloads from unknown fields, unsafe filters, and invalid windows.
@@ -659,9 +665,9 @@ _Avoid_: Browser write, send, emit
 - Every source health payload contains exact Source Adapter Metrics validated by the declared metrics Schema; Remote Browser Client and React types infer that value without casts or `as const`.
 - Serializable adapter option subtrees may use Effect Schema or Effect Config, while executable codecs, Mapping, Row Key functions, Schedules, Effects, and service references use exact TypeScript contracts plus adapter-owned construction validation.
 - The Source Adapter SDK validates and snapshots its common Source Definition envelope, and adapter-specific option validation completes before the Source Adapter Runtime Service starts it.
-- Every **Source Adapter Package Surface** exposes a browser-safe `/contract`, a server-only `/server`, and optional platform-specific Layer exports such as `/node`.
-- View Server exposes the Source Adapter SDK only through `effect-view-server/source-adapter`, `effect-view-server/source-adapter/server`, and `effect-view-server/source-adapter/testing`; package export checks reject deep or internal SDK imports.
-- First-party Kafka and gRPC Source Adapters are ordinary SDK consumers exposed through `effect-view-server/kafka/contract`, `effect-view-server/kafka/server`, `effect-view-server/kafka/node`, `effect-view-server/grpc/contract`, `effect-view-server/grpc/server`, and `effect-view-server/grpc/node`.
+- Every planned **Source Adapter Package Surface** will expose a browser-safe `/contract`, a server-only `/server`, and optional platform-specific Layer exports such as `/node`.
+- View Server will expose the planned Source Adapter SDK only through `effect-view-server/source-adapter`, `effect-view-server/source-adapter/server`, and `effect-view-server/source-adapter/testing`; package export checks will reject deep or internal SDK imports when those surfaces are implemented.
+- First-party Kafka and gRPC Source Adapters will become ordinary SDK consumers exposed through the planned `effect-view-server/kafka/contract`, `effect-view-server/kafka/server`, `effect-view-server/kafka/node`, `effect-view-server/grpc/contract`, `effect-view-server/grpc/server`, and `effect-view-server/grpc/node` package surfaces.
 - A published Source Adapter package declares `effect-view-server` and every Effect ecosystem package used by its public or runtime surfaces as peer dependencies and keeps them as development dependencies for its own build and tests; it never bundles private runtime copies of those packages.
 - While Effect remains beta or View Server remains pre-1.0, a published Source Adapter declares exact peer versions for View Server and every Effect ecosystem package it uses. After both are stable, an adapter may widen a peer range only across versions its conformance matrix executes successfully.
 - Source Adapter SDK conformance tests reject a `/contract` export that resolves Node APIs, Source Adapter Runtime Service implementations, concrete clients, platform Layers, or transport-driver packages.

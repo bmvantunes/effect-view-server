@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted design. Implementation is pending, and every package import described as planned below remains unavailable until its package surface is implemented and verified.
 
 ## Context
 

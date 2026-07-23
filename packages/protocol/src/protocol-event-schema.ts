@@ -8,10 +8,6 @@ export const ViewServerWireRowSchema: Schema.Codec<Schema.JsonObject> = Schema.R
 
 export type ViewServerWireRow = typeof ViewServerWireRowSchema.Type;
 
-export const ViewServerLooseWireRowSchema = Schema.Record(Schema.String, Schema.Unknown);
-
-export type ViewServerLooseWireRow = typeof ViewServerLooseWireRowSchema.Type;
-
 const SnapshotEventSchema = Schema.Struct({
   type: Schema.Literal("snapshot"),
   topic: Schema.String,
@@ -100,59 +96,6 @@ const StatusEventSchema: Schema.Codec<StatusEvent> = Schema.Union([
     message: Schema.optionalKey(Schema.String),
   }),
 ]);
-
-const LooseSnapshotEventSchema = Schema.Struct({
-  type: Schema.Literal("snapshot"),
-  topic: Schema.String,
-  queryId: Schema.String,
-  version: Schema.Number,
-  keys: Schema.Array(Schema.String),
-  rows: Schema.Array(ViewServerLooseWireRowSchema),
-  totalRows: Schema.Number,
-});
-
-const LooseDeltaOperationSchema = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("insert"),
-    key: Schema.String,
-    row: ViewServerLooseWireRowSchema,
-    index: Schema.Number,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("update"),
-    key: Schema.String,
-    row: ViewServerLooseWireRowSchema,
-    index: Schema.Number,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("move"),
-    key: Schema.String,
-    fromIndex: Schema.Number,
-    toIndex: Schema.Number,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("remove"),
-    key: Schema.String,
-  }),
-]);
-
-const LooseDeltaEventSchema = Schema.Struct({
-  type: Schema.Literal("delta"),
-  topic: Schema.String,
-  queryId: Schema.String,
-  fromVersion: Schema.Number,
-  toVersion: Schema.Number,
-  operations: Schema.Array(LooseDeltaOperationSchema),
-  totalRows: Schema.Number,
-});
-
-export const ViewServerLooseWireEventSchema = Schema.Union([
-  LooseSnapshotEventSchema,
-  LooseDeltaEventSchema,
-  StatusEventSchema,
-]);
-
-export type ViewServerLooseWireEvent = typeof ViewServerLooseWireEventSchema.Type;
 
 export const ViewServerWireEventSchema = Schema.Union([
   SnapshotEventSchema,

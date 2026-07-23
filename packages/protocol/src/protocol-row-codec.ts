@@ -1,7 +1,7 @@
 import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
 import { Effect, Schema, SchemaAST } from "effect";
 import { decodeAggregateValue, encodeAggregateValue } from "./protocol-aggregate-row-codec";
-import { type ViewServerLooseWireRow, ViewServerWireRowSchema } from "./protocol-event-schema";
+import { ViewServerWireRowSchema } from "./protocol-event-schema";
 import {
   decodeJsonFieldValue,
   decodeMaterializedJsonFieldValue,
@@ -45,6 +45,8 @@ const rowFieldIsOptional = (schema: Schema.Codec<unknown, unknown, never, never>
   SchemaAST.isOptional(schema.ast);
 
 type RowKind = "row" | "grouped row";
+
+type ViewServerUntrustedWireRow = Readonly<Record<string, unknown>>;
 
 type InspectedRow = {
   readonly entries: ReadonlyArray<readonly [field: string, value: unknown]>;
@@ -107,7 +109,7 @@ const isViewServerWireRow = Schema.is(ViewServerWireRowSchema);
 const materializeWireRow = Effect.fn("ViewServerProtocol.row.materializeWire")(function* (
   topic: string,
   kind: RowKind,
-  row: ViewServerLooseWireRow,
+  row: ViewServerUntrustedWireRow,
 ) {
   const materialized = yield* materializeJsonFieldValue(row, (message) =>
     invalidRow(topic, `Invalid ${kind} for topic ${topic}: ${message}`),
@@ -205,7 +207,7 @@ export const decodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.deco
   config: { readonly topics: Topics },
   topic: Topic,
   selectedFields: ReadonlySet<string>,
-  row: ViewServerLooseWireRow,
+  row: ViewServerUntrustedWireRow,
 ) {
   const output: Record<string, unknown> = {};
   const materialized = yield* materializeWireRow(topic, "row", row);
@@ -295,7 +297,7 @@ export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode
   config: { readonly topics: Topics },
   topic: Topic,
   contract: ViewServerGroupedRowContract,
-  row: ViewServerLooseWireRow,
+  row: ViewServerUntrustedWireRow,
 ) {
   const topicSchema = config.topics[topic]!.schema;
   const { aggregateAliases, aggregates, groupFields } = contract;
@@ -358,7 +360,7 @@ export const encodeSystemRow = Effect.fn("ViewServerProtocol.system.row.encode")
 export const decodeSystemRow = Effect.fn("ViewServerProtocol.system.row.decode")(function* <Row>(
   topic: string,
   schema: Schema.Codec<Row, unknown, never, never>,
-  row: ViewServerLooseWireRow,
+  row: ViewServerUntrustedWireRow,
 ) {
   return yield* decodeJsonFieldValue(schema, row, {
     invalid: (message) => invalidRow(topic, `Invalid system row: ${message}`),

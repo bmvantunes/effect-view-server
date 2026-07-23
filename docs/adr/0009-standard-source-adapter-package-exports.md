@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted design. Implementation is pending, so the package exports specified below are planned rather than currently available.
 
 ## Context
 
@@ -12,13 +12,13 @@ Effect separates portable contracts and services from concrete platform implemen
 
 ## Decision
 
-Every Source Adapter package exposes these standard public seams:
+When implemented, every Source Adapter package will expose these standard public seams:
 
 - `/contract` contains browser-safe Source Definition constructors, Source Adapter Identity metadata, Source Adapter Failure Schemas, and mandatory Source Adapter Metrics Schemas.
 - `/server` contains the matching Source Adapter runtime service implementation, lifecycle factories, and transport-neutral runtime Layers.
 - Platform exports such as `/node` contain concrete transport-driver Services and Layers. Every published platform export provides paired aggregate `layer(...)` and `layerConfig(...)` constructors that derive the exact required logical-client map from the View Server Config and provide the adapter runtime.
 
-The publishable View Server package exposes the SDK through exactly three matching public modules:
+The publishable View Server package will expose the SDK through exactly three matching public modules:
 
 - `effect-view-server/source-adapter` contains the portable declaration and Source Definition API.
 - `effect-view-server/source-adapter/server` contains server-only Source Adapter runtime-service APIs and executable helpers.
@@ -26,7 +26,7 @@ The publishable View Server package exposes the SDK through exactly three matchi
 
 Adapter packages do not import internal workspace packages, `src` paths, `dist` paths, or unapproved nested SDK modules. View Server package-export checks cover all three approved modules and reject those deep alternatives.
 
-Kafka and gRPC prove the extension seam by becoming ordinary first-party SDK consumers. Because this repository publishes only the `effect-view-server` package, their standard adapter surfaces are publishable package subpaths:
+Kafka and gRPC will prove the extension seam by becoming ordinary first-party SDK consumers. Because this repository publishes only the `effect-view-server` package, their planned standard adapter surfaces are these package subpaths:
 
 - `effect-view-server/kafka/contract`
 - `effect-view-server/kafka/server`

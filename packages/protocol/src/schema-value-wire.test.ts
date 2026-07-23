@@ -224,6 +224,136 @@ describe("Schema value wire semantics", () => {
       }),
   );
 
+  it.effect("rejects unencoded semantic values before configured row decoding", () =>
+    Effect.gen(function* () {
+      const query = { select: ["id", "amount"] };
+      const rawBigIntEvent = {
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "raw-bigint",
+        version: 1,
+        keys: ["1"],
+        rows: [{ id: "1", amount: 123n }],
+        totalRows: 1,
+      } as const;
+      expect(Schema.is(ViewServerWireEventSchema)(rawBigIntEvent)).toBe(false);
+      const rawBigIntError = yield* Effect.flip(
+        viewServerDecodeLiveEvent<
+          typeof semanticViewServer.topics,
+          "semantic",
+          typeof SemanticRow.Type
+        >(
+          semanticViewServer,
+          "semantic",
+          query,
+          // @ts-expect-error unencoded bigint bypasses the public JSON wire type.
+          rawBigIntEvent,
+        ),
+      );
+      expect(rawBigIntError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: 'Invalid event: Unsupported JSON value type "bigint" at $.rows[0].amount.',
+        topic: "semantic",
+      });
+
+      const rawBigDecimalEvent = {
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "raw-big-decimal",
+        version: 1,
+        keys: ["1"],
+        rows: [{ id: "1", amount: BigDecimal.make(123n, 2) }],
+        totalRows: 1,
+      } as const;
+      expect(Schema.is(ViewServerWireEventSchema)(rawBigDecimalEvent)).toBe(false);
+      const rawBigDecimalError = yield* Effect.flip(
+        viewServerDecodeLiveEvent<
+          typeof semanticViewServer.topics,
+          "semantic",
+          typeof SemanticRow.Type
+        >(
+          semanticViewServer,
+          "semantic",
+          query,
+          // @ts-expect-error unencoded BigDecimal bypasses the public JSON wire type.
+          rawBigDecimalEvent,
+        ),
+      );
+      expect(rawBigDecimalError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Invalid event: Expected a plain data record or dense array at $.rows[0].amount.",
+        topic: "semantic",
+      });
+    }),
+  );
+
+  it.effect("rejects event and row accessors without invoking them", () =>
+    Effect.gen(function* () {
+      const query = { select: ["id", "amount"] };
+      let accessorReads = 0;
+      const eventAccessor = {
+        type: "snapshot",
+        get topic(): string {
+          accessorReads += 1;
+          throw new Error("event accessor must not run");
+        },
+        queryId: "event-accessor",
+        version: 1,
+        keys: ["1"],
+        rows: [{ id: "1", amount: "1" }],
+        totalRows: 1,
+      } as const;
+      const eventAccessorError = yield* Effect.flip(
+        viewServerDecodeLiveEvent<
+          typeof semanticViewServer.topics,
+          "semantic",
+          typeof SemanticRow.Type
+        >(semanticViewServer, "semantic", query, eventAccessor),
+      );
+      expect(eventAccessorError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Invalid event: Accessor properties are not valid JSON data at $.topic.",
+        topic: "semantic",
+      });
+      expect(accessorReads).toBe(0);
+
+      const rowAccessor = {
+        type: "snapshot",
+        topic: "semantic",
+        queryId: "row-accessor",
+        version: 1,
+        keys: ["1"],
+        rows: [
+          {
+            id: "1",
+            get amount(): string {
+              accessorReads += 1;
+              throw new Error("row accessor must not run");
+            },
+          },
+        ],
+        totalRows: 1,
+      } as const;
+      const rowAccessorError = yield* Effect.flip(
+        viewServerDecodeLiveEvent<
+          typeof semanticViewServer.topics,
+          "semantic",
+          typeof SemanticRow.Type
+        >(semanticViewServer, "semantic", query, rowAccessor),
+      );
+      expect(rowAccessorError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidRow",
+        message: "Invalid event: Accessor properties are not valid JSON data at $.rows[0].amount.",
+        topic: "semantic",
+      });
+      expect(accessorReads).toBe(0);
+    }),
+  );
+
   it.effect("round-trips Schema.Class group fields in grouped Snapshot and update Delta rows", () =>
     Effect.gen(function* () {
       const venue = Venue.make({ code: "XNYS" });

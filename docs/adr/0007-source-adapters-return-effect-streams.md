@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted design. Implementation is pending, so this ADR does not describe currently available Source Adapter runtime APIs.
 
 ## Context
 

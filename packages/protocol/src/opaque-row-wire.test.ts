@@ -98,8 +98,7 @@ describe("Opaque row wire values", () => {
 
       expect(error).toStrictEqual({
         ...expectedOpaqueValueError,
-        message:
-          "Invalid row for topic opaque: Expected a plain data record or dense array at $.payload.",
+        message: "Invalid event: Expected a plain data record or dense array at $.rows[0].payload.",
       });
     }),
   );
@@ -181,7 +180,7 @@ describe("Opaque row wire values", () => {
       expect(directDecodeError).toStrictEqual({
         ...expectedOpaqueValueError,
         message:
-          "Invalid grouped row for topic opaque: Expected a plain data record or dense array at $.firstPayload.value.",
+          "Invalid event: Expected a plain data record or dense array at $.rows[0].firstPayload.value.",
       });
     }),
   );

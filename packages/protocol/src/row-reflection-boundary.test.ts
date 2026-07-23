@@ -167,6 +167,15 @@ describe("Protocol row reflection boundaries", () => {
 
   it.effect("strictly materializes raw and grouped wire rows before decoding fields", () =>
     Effect.gen(function* () {
+      const rawRow = yield* decodeProjectedRow(viewServer, "orders", selectedId, { id: "a" });
+      expect(rawRow).toStrictEqual({ id: "a" });
+
+      const groupedRow = yield* decodeGroupedRow(viewServer, "orders", groupedContract, {
+        id: "a",
+        rowCount: { _viewServerAggregate: "bigint", value: "1" },
+      });
+      expect(groupedRow).toStrictEqual({ id: "a", rowCount: 1n });
+
       const nonEnumerableWireRow = {};
       Object.defineProperty(nonEnumerableWireRow, "id", {
         enumerable: false,

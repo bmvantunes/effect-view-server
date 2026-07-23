@@ -16,8 +16,8 @@ import { materializeJsonFieldValue } from "./protocol-json-field-codec";
 import type { ViewServerEventQuery } from "./protocol-query-schema";
 import {
   compileViewServerGroupedRowContract,
-  decodeGroupedRow,
-  decodeProjectedRow,
+  decodeMaterializedGroupedRow,
+  decodeMaterializedProjectedRow,
   decodeSystemRow,
   encodeGroupedRow,
   encodeProjectedRow,
@@ -190,9 +190,14 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   if (wireEvent.type === "snapshot") {
     const rows = yield* Effect.forEach(wireEvent.rows, (row) => {
       if (rowContract._tag === "raw") {
-        return decodeProjectedRow(config, expectedTopic, rowContract.selectedFields, row);
+        return decodeMaterializedProjectedRow(
+          config,
+          expectedTopic,
+          rowContract.selectedFields,
+          row,
+        );
       }
-      return decodeGroupedRow(config, expectedTopic, rowContract.grouped, row);
+      return decodeMaterializedGroupedRow(config, expectedTopic, rowContract.grouped, row);
     });
     return typedLiveEvent<Row>({
       ...wireEvent,
@@ -207,8 +212,13 @@ const decodeValidatedLiveEvent = Effect.fn("ViewServerProtocol.event.decodeValid
   for (const operation of wireEvent.operations) {
     if (operation.type === "insert" || operation.type === "update") {
       const row = yield* rowContract._tag === "raw"
-        ? decodeProjectedRow(config, expectedTopic, rowContract.selectedFields, operation.row)
-        : decodeGroupedRow(config, expectedTopic, rowContract.grouped, operation.row);
+        ? decodeMaterializedProjectedRow(
+            config,
+            expectedTopic,
+            rowContract.selectedFields,
+            operation.row,
+          )
+        : decodeMaterializedGroupedRow(config, expectedTopic, rowContract.grouped, operation.row);
       operations.push({
         ...operation,
         row,

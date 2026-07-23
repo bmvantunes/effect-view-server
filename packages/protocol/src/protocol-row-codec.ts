@@ -1,7 +1,7 @@
 import type { TopicDefinitions, ViewServerRuntimeError } from "@effect-view-server/config";
 import { Effect, Schema, SchemaAST } from "effect";
 import { decodeAggregateValue, encodeAggregateValue } from "./protocol-aggregate-row-codec";
-import { ViewServerWireRowSchema } from "./protocol-event-schema";
+import { type ViewServerWireRow, ViewServerWireRowSchema } from "./protocol-event-schema";
 import {
   decodeJsonFieldValue,
   decodeMaterializedJsonFieldValue,
@@ -200,26 +200,24 @@ export const encodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.enco
   return output;
 });
 
-export const decodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.decode")(function* <
-  const Topics extends TopicDefinitions,
-  Topic extends Extract<keyof Topics, string>,
->(
+export const decodeMaterializedProjectedRow = Effect.fn(
+  "ViewServerProtocol.row.project.decodeMaterialized",
+)(function* <const Topics extends TopicDefinitions, Topic extends Extract<keyof Topics, string>>(
   config: { readonly topics: Topics },
   topic: Topic,
   selectedFields: ReadonlySet<string>,
-  row: ViewServerUntrustedWireRow,
+  row: ViewServerWireRow,
 ) {
   const output: Record<string, unknown> = {};
-  const materialized = yield* materializeWireRow(topic, "row", row);
   for (const field of selectedFields) {
     const fieldSchema = config.topics[topic]!.schema.fields[field]!;
-    if (!Object.hasOwn(materialized, field) && !rowFieldIsOptional(fieldSchema)) {
+    if (!Object.hasOwn(row, field) && !rowFieldIsOptional(fieldSchema)) {
       return yield* Effect.fail(
         invalidRow(topic, `Missing row field for topic ${topic}: ${field}`),
       );
     }
   }
-  for (const [field, value] of Object.entries(materialized)) {
+  for (const [field, value] of Object.entries(row)) {
     if (!selectedFields.has(field)) {
       return yield* Effect.fail(
         invalidRow(topic, `Unexpected row field for topic ${topic}: ${field}`),
@@ -232,6 +230,19 @@ export const decodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.deco
     defineEnumerableOwn(output, field, decoded);
   }
   return output;
+});
+
+export const decodeProjectedRow = Effect.fn("ViewServerProtocol.row.project.decode")(function* <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  selectedFields: ReadonlySet<string>,
+  row: ViewServerUntrustedWireRow,
+) {
+  const materialized = yield* materializeWireRow(topic, "row", row);
+  return yield* decodeMaterializedProjectedRow(config, topic, selectedFields, materialized);
 });
 
 export const encodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.encode")(function* <
@@ -290,35 +301,33 @@ export const encodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.encode
   return output;
 });
 
-export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode")(function* <
-  const Topics extends TopicDefinitions,
-  Topic extends Extract<keyof Topics, string>,
->(
+export const decodeMaterializedGroupedRow = Effect.fn(
+  "ViewServerProtocol.row.grouped.decodeMaterialized",
+)(function* <const Topics extends TopicDefinitions, Topic extends Extract<keyof Topics, string>>(
   config: { readonly topics: Topics },
   topic: Topic,
   contract: ViewServerGroupedRowContract,
-  row: ViewServerUntrustedWireRow,
+  row: ViewServerWireRow,
 ) {
   const topicSchema = config.topics[topic]!.schema;
   const { aggregateAliases, aggregates, groupFields } = contract;
   const output: Record<string, unknown> = {};
-  const materialized = yield* materializeWireRow(topic, "grouped row", row);
   for (const field of groupFields) {
     const fieldSchema = topicSchema.fields[field]!;
-    if (!Object.hasOwn(materialized, field) && !rowFieldIsOptional(fieldSchema)) {
+    if (!Object.hasOwn(row, field) && !rowFieldIsOptional(fieldSchema)) {
       return yield* Effect.fail(
         invalidRow(topic, `Missing grouped row field for topic ${topic}: ${field}`),
       );
     }
   }
   for (const alias of aggregateAliases) {
-    if (!Object.hasOwn(materialized, alias)) {
+    if (!Object.hasOwn(row, alias)) {
       return yield* Effect.fail(
         invalidRow(topic, `Missing grouped aggregate for topic ${topic}: ${alias}`),
       );
     }
   }
-  for (const [field, value] of Object.entries(materialized)) {
+  for (const [field, value] of Object.entries(row)) {
     if (groupFields.has(field)) {
       const fieldSchema = topicSchema.fields[field]!;
       const decoded = yield* decodeMaterializedJsonFieldValue(fieldSchema, value, {
@@ -341,6 +350,19 @@ export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode
     }
   }
   return output;
+});
+
+export const decodeGroupedRow = Effect.fn("ViewServerProtocol.row.grouped.decode")(function* <
+  const Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: { readonly topics: Topics },
+  topic: Topic,
+  contract: ViewServerGroupedRowContract,
+  row: ViewServerUntrustedWireRow,
+) {
+  const materialized = yield* materializeWireRow(topic, "grouped row", row);
+  return yield* decodeMaterializedGroupedRow(config, topic, contract, materialized);
 });
 
 export const encodeSystemRow = Effect.fn("ViewServerProtocol.system.row.encode")(function* <Row>(

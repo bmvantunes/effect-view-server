@@ -22,11 +22,10 @@ A Source Adapter's shared contract surface creates complete topic-owned Source D
 
 The server-only `/server` surface implements the adapter's nominal runtime service. Platform surfaces such as `/node` provide concrete client Layers and must expose the standard aggregate `layer(...)` and `layerConfig(...)` pair that derives its exact logical-client map from the View Server Config and provides the adapter runtime service. Runtime resources remain scoped, failures remain typed, and no reusable adapter module calls `Effect.run*`.
 
-The first-party Kafka API illustrates the complete composition. The one shared configuration declares each source once using the same concise region strings as the current Kafka API:
+The first-party Kafka API illustrates the complete composition. The one shared configuration declares each source once using the same concise region strings as the current Kafka API. In the pseudocode below, `kafka` comes from the planned `effect-view-server/kafka/contract` export:
 
 ```ts
 import { defineViewServerConfig } from "effect-view-server/config";
-import { kafka } from "effect-view-server/kafka/contract";
 
 export const viewServer = defineViewServerConfig({
   topics: {
@@ -89,12 +88,11 @@ export const viewServer = defineViewServerConfig({
 
 `client` autocompletes only descriptor-record keys, `method` autocompletes only that client's server-streaming methods, `request` is recursively exact against the selected generated request-init type, and Mapping receives the exact generated response message. The gRPC adapter owns method invocation, AsyncIterable-to-Stream conversion, cancellation, and finalization. Its public Source Definition accepts no `acquire` or `release` callback.
 
-The Node entrypoint provides one aggregate Kafka Layer and preserves the current generic runtime options:
+The Node entrypoint provides one aggregate Kafka Layer and preserves the current generic runtime options. In the pseudocode below, `kafkaNode` comes from the planned `effect-view-server/kafka/node` export:
 
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
-import { kafkaNode } from "effect-view-server/kafka/node";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 
 const KafkaLive = kafkaNode.layer(viewServer, {

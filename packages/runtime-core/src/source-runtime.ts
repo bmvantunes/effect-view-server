@@ -249,6 +249,7 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
   readonly acquireLeased: (
     topic: Extract<keyof Topics, string>,
     query: Readonly<Record<string, unknown>>,
+    registerAcquired?: (finalizer: Effect.Effect<void>) => Effect.Effect<void>,
   ) => Effect.Effect<Option.Option<RuntimeCoreSourceLease>, ViewServerRuntimeError>;
   readonly subscribeSourceHealth: ViewServerSourceHealthSubscriber<Topics, ViewServerRuntimeError>;
   readonly subscribeProtocolSourceHealth: (
@@ -1867,7 +1868,11 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               }),
           );
 
-          const acquireLeased: RuntimeCoreSourceManager<Topics>["acquireLeased"] = (topic, query) =>
+          const acquireLeased: RuntimeCoreSourceManager<Topics>["acquireLeased"] = (
+            topic,
+            query,
+            registerAcquired,
+          ) =>
             acquireRuntimeCoreResourceHandoff(
               (markAcquired) =>
                 leaseLock.withPermit(
@@ -1990,6 +1995,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                         release,
                       };
                       yield* markAcquired(release);
+                      yield* registerAcquired?.(release) ?? Effect.void;
                       return Option.some(acquiredSubscriptionLease);
                     }),
                   ),

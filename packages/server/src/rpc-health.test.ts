@@ -144,8 +144,9 @@ describe("Real View Server RPC health", () => {
     }),
   );
 
-  it.effect("streams validated Source Health and closes the source subscription", () =>
+  it.effect("acquires Source Health lazily and closes the scoped source subscription", () =>
     Effect.gen(function* () {
+      let acquisitionCount = 0;
       let closeCount = 0;
       const handlerScope = yield* Scope.make("parallel");
       yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
@@ -157,12 +158,15 @@ describe("Real View Server RPC health", () => {
             subscribeHealthSummary: () => Effect.die("not used"),
             subscribeProtocolQuery: () => Effect.die("not used"),
             subscribeProtocolSourceHealth: () =>
-              Effect.succeed({
-                events: Stream.make(activeSourceHealth),
-                close: () =>
-                  Effect.sync(() => {
-                    closeCount += 1;
-                  }),
+              Effect.sync(() => {
+                acquisitionCount += 1;
+                return {
+                  events: Stream.make(activeSourceHealth),
+                  close: () =>
+                    Effect.sync(() => {
+                      closeCount += 1;
+                    }),
+                };
               }),
           },
           runtime: {
@@ -172,10 +176,13 @@ describe("Real View Server RPC health", () => {
         handlerScope,
       );
 
-      const wireEvents = yield* handlers["ViewServer.SourceHealth"]({
+      const sourceHealthStream = handlers["ViewServer.SourceHealth"]({
         topic: "orders",
         routeBy: { price: 42 },
-      }).pipe(Stream.runCollect);
+      });
+      expect(acquisitionCount).toBe(0);
+      expect(closeCount).toBe(0);
+      const wireEvents = yield* sourceHealthStream.pipe(Stream.runCollect);
       const decoded = yield* viewServerDecodeSourceHealth(
         sourceViewServer,
         "orders",
@@ -184,6 +191,7 @@ describe("Real View Server RPC health", () => {
 
       expect(Array.from(wireEvents)).toHaveLength(1);
       expect(decoded).toStrictEqual(activeSourceHealth);
+      expect(acquisitionCount).toBe(1);
       expect(closeCount).toBe(1);
       yield* Scope.close(handlerScope, Exit.void);
     }).pipe(Effect.scoped),

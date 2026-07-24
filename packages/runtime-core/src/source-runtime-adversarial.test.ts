@@ -345,13 +345,8 @@ describe("Runtime Core adversarial Source runtime", () => {
         const ready = Option.getOrThrow(
           yield* readyDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
         );
-        expect({
-          copied: ready.metrics.adapter.value === decimalMetric,
-          frozen: Object.isFrozen(ready.metrics.adapter.value),
-        }).toStrictEqual({
-          copied: false,
-          frozen: true,
-        });
+        expect(ready.metrics.adapter.value === decimalMetric).toBe(false);
+        expect(Object.isFrozen(ready.metrics.adapter.value)).toBe(true);
         yield* readyDiagnostics.close();
         const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
         const exhausted = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);

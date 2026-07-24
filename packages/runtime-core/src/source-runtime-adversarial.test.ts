@@ -1123,6 +1123,71 @@ describe("Runtime Core adversarial Source runtime", () => {
     }),
   );
 
+  it.effect("supervises invalid lane buffer metrics as an exact runtime failure", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource(
+              {
+                label: "invalid-lane-buffer-metrics",
+              },
+              Schedule.recurs(0),
+            ),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const materialized = materializedLifecycle(service);
+      const invalidBufferMetrics = new Proxy(
+        {
+          _tag: "Unbuffered" as const,
+        },
+        {
+          get: (target, property, receiver) =>
+            property === "_tag" ? "InvalidBufferMetrics" : Reflect.get(target, property, receiver),
+        },
+      );
+      const acquire: typeof materialized.acquire = () =>
+        Effect.succeed(
+          SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "invalid-buffer",
+              events: Stream.never,
+              bufferMetrics: Effect.succeed(invalidBufferMetrics),
+            }),
+          ]),
+        );
+      const lifecycle = new Proxy(materialized, {
+        get: (target, property, receiver) =>
+          property === "acquire" ? acquire : Reflect.get(target, property, receiver),
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: lifecycle,
+        }),
+      );
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+
+      expect((yield* awaitExhausted(diagnostics)).exhaustion.lastTermination).toStrictEqual({
+        _tag: "Failed",
+        failure: {
+          _tag: "RuntimeFailure",
+          failure: {
+            _tag: "InvalidSourceMetrics",
+            message:
+              "Source Adapter controllable-fixture lane invalid-buffer returned buffer metrics outside the Source Buffer Metrics Schema.",
+          },
+        },
+      });
+      yield* runtime.close;
+    }),
+  );
+
   it.effect("runs sibling lanes concurrently while preserving lane-local order", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Row);

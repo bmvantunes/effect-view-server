@@ -26,6 +26,8 @@ const mutationFailure = (): ViewServerRuntimeError => ({
   message: "Injected Source mutation failure.",
 });
 
+const retainLeaseForExplicitTestRelease = () => Effect.void;
+
 describe("Runtime Core Source manager lifecycle", () => {
   it.effect("rolls back a manager handoff failure after a materialized Source starts", () =>
     Effect.gen(function* () {
@@ -113,10 +115,14 @@ describe("Runtime Core Source manager lifecycle", () => {
         },
       }).pipe(Effect.provide(fixture.layer));
       const interruptedAcquisition = yield* manager
-        .acquireLeased("rows", {
-          routeBy: { region: "eu" },
-          select: ["id"],
-        })
+        .acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        )
         .pipe(Effect.forkChild);
       yield* Deferred.await(handoffStarted);
       yield* Fiber.interrupt(interruptedAcquisition);
@@ -127,10 +133,14 @@ describe("Runtime Core Source manager lifecycle", () => {
 
       blockLeaseHandoff = false;
       const reacquired = Option.getOrThrow(
-        yield* manager.acquireLeased("rows", {
-          routeBy: { region: "eu" },
-          select: ["id"],
-        }),
+        yield* manager.acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        ),
       );
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: 2n,
@@ -285,22 +295,34 @@ describe("Runtime Core Source manager lifecycle", () => {
       const firstDiagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
       const secondDiagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
       const firstLease = Option.getOrThrow(
-        yield* manager.acquireLeased("rows", {
-          routeBy: { region: "eu" },
-          select: ["id"],
-        }),
+        yield* manager.acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        ),
       );
       const secondLease = Option.getOrThrow(
-        yield* manager.acquireLeased("rows", {
-          routeBy: { region: "eu" },
-          select: ["id"],
-        }),
+        yield* manager.acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        ),
       );
       const independentlyCleanedLease = Option.getOrThrow(
-        yield* manager.acquireLeased("rows", {
-          routeBy: { region: "us" },
-          select: ["id"],
-        }),
+        yield* manager.acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "us" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        ),
       );
       yield* fixture.controls.awaitActive(leasedTarget);
 
@@ -378,10 +400,14 @@ describe("Runtime Core Source manager lifecycle", () => {
 
       failDeleteStorageKey = false;
       const reacquired = Option.getOrThrow(
-        yield* manager.acquireLeased("rows", {
-          routeBy: { region: "eu" },
-          select: ["id"],
-        }),
+        yield* manager.acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        ),
       );
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: beforeFailedCleanup.acquisitions + 1n,
@@ -401,10 +427,14 @@ describe("Runtime Core Source manager lifecycle", () => {
       yield* secondDiagnostics.close();
 
       const closedAcquire = yield* manager
-        .acquireLeased("rows", {
-          routeBy: { region: "eu" },
-          select: ["id"],
-        })
+        .acquireLeased(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id"],
+          },
+          retainLeaseForExplicitTestRelease,
+        )
         .pipe(Effect.exit);
       expect(Exit.isFailure(closedAcquire)).toBe(true);
     }),

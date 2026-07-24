@@ -108,6 +108,42 @@ const activeSourceHealth = {
 } as const;
 
 describe("Real View Server RPC health", () => {
+  it.effect("interrupts a suspended Source Health subscription acquisition", () =>
+    Effect.gen(function* () {
+      const acquisitionReady = yield* Deferred.make<void>();
+      const acquisitionInterrupted = yield* Deferred.make<void>();
+      const handlerScope = yield* Scope.make("parallel");
+      const handlers = makeViewServerRpcHandlers(
+        sourceViewServer,
+        {
+          liveClient: {
+            subscribeHealth: () => Effect.die("not used"),
+            subscribeHealthSummary: () => Effect.die("not used"),
+            subscribeProtocolQuery: () => Effect.die("not used"),
+            subscribeProtocolSourceHealth: () =>
+              Deferred.succeed(acquisitionReady, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(Deferred.succeed(acquisitionInterrupted, undefined)),
+              ),
+          },
+          runtime: {
+            health: () => Effect.die("not used"),
+          },
+        },
+        handlerScope,
+      );
+      const streamFiber = yield* handlers["ViewServer.SourceHealth"]({
+        topic: "orders",
+        routeBy: { price: 42 },
+      }).pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(acquisitionReady);
+      yield* Fiber.interrupt(streamFiber);
+
+      expect(yield* Deferred.isDone(acquisitionInterrupted)).toBe(true);
+      yield* Scope.close(handlerScope, Exit.void);
+    }),
+  );
+
   it.effect("streams validated Source Health and closes the source subscription", () =>
     Effect.gen(function* () {
       let closeCount = 0;

@@ -62,12 +62,20 @@ export type SourceOwnershipPolicy = {
     topic: string,
     profile: SourceOwnershipAccessProfile,
   ) => SourceOwnershipDecision;
+  readonly publicSubscriptionDecision: (
+    topic: string,
+    profile: SourceOwnershipAccessProfile,
+  ) => SourceOwnershipDecision;
   readonly publicResetDecision: (profile: SourceOwnershipAccessProfile) => SourceOwnershipDecision;
   readonly requirePublicMutationAllowed: (
     topic: string,
     profile: SourceOwnershipAccessProfile,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly requirePublicReadAllowed: (
+    topic: string,
+    profile: SourceOwnershipAccessProfile,
+  ) => Effect.Effect<void, ViewServerRuntimeError>;
+  readonly requirePublicSubscriptionAllowed: (
     topic: string,
     profile: SourceOwnershipAccessProfile,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
@@ -154,6 +162,16 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
     sortedLeasedTopics.has(topic)
       ? rejectedDecision(leasedRuntimeAccessErrorFor(topic, profile))
       : allowedDecision;
+  const publicSubscriptionDecision = (
+    topic: string,
+    profile: SourceOwnershipAccessProfile,
+  ): SourceOwnershipDecision => {
+    const ownership = sortedTopics.get(topic);
+    return ownership?.sourceLeased === true ||
+      (profile === "managedRuntime" && ownership?.grpcLeased === true)
+      ? allowedDecision
+      : publicReadDecision(topic, profile);
+  };
   const publicResetDecision = (profile: SourceOwnershipAccessProfile): SourceOwnershipDecision => {
     if (sortedSourceOwnedTopics.size === 0) {
       return allowedDecision;
@@ -171,11 +189,14 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
     topics: sortedTopics,
     publicMutationDecision,
     publicReadDecision,
+    publicSubscriptionDecision,
     publicResetDecision,
     requirePublicMutationAllowed: (topic, profile) =>
       decisionEffect(publicMutationDecision(topic, profile)),
     requirePublicReadAllowed: (topic, profile) =>
       decisionEffect(publicReadDecision(topic, profile)),
+    requirePublicSubscriptionAllowed: (topic, profile) =>
+      decisionEffect(publicSubscriptionDecision(topic, profile)),
     requirePublicResetAllowed: (profile) => decisionEffect(publicResetDecision(profile)),
     isGrpcLeasedTopic: (topic) => sortedGrpcLeasedTopics.has(topic),
     isLeasedTopic: (topic) => sortedLeasedTopics.has(topic),

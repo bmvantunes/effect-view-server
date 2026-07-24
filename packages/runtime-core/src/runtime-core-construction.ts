@@ -129,10 +129,12 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
             pushedHealth.refresh.pipe(Effect.asVoid),
             pushedHealthClose,
           ]);
-          sourceManager = yield* makeRuntimeCoreSourceManager(
-            config,
-            runtimeClient.internalClient,
-            pushedHealth.requestRefresh,
+          sourceManager = yield* restore(
+            makeRuntimeCoreSourceManager(
+              config,
+              runtimeClient.internalClient,
+              pushedHealth.requestRefresh,
+            ),
           );
           const sourceClose = sourceManager.close;
           const sourceConstructionClose = runAllFinalizers([

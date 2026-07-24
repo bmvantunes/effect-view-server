@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
+import { trustDecodedRuntimeQuery } from "@effect-view-server/config/internal";
 import {
   SourceFixture,
   type SourceFixtureTarget,
@@ -120,6 +121,76 @@ describe("Runtime Core Source Adapter vertical slice", () => {
 
       expect(events.map((event) => event.type)).toStrictEqual(["snapshot", "delta"]);
       yield* subscription.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("routes protocol subscriptions through the shared Leased Source path", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Order);
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source: fixture.leasedSource(["region", "price"], {
+              label: "protocol-leased-orders",
+            }),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCoreInternal(config, {}).pipe(
+        Effect.provide(fixture.layer),
+      );
+      const partialRouteError = yield* runtime.protocolQuerySubscriber
+        .subscribeProtocolQuery(
+          "orders",
+          trustDecodedRuntimeQuery({
+            routeBy: { region: "eu" },
+            select: ["id", "price", "region"],
+          }),
+        )
+        .pipe(Effect.flip);
+      const target: SourceFixtureTarget = {
+        _tag: "Leased",
+        route: { region: "eu", price: 10 },
+      };
+      const subscription = yield* runtime.protocolQuerySubscriber.subscribeProtocolQuery(
+        "orders",
+        trustDecodedRuntimeQuery({
+          routeBy: { region: "eu", price: 10 },
+          select: ["id", "price", "region"],
+        }),
+      );
+      const eventsFiber = yield* subscription.events.pipe(
+        Stream.filter((event) => event.type !== "status"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* fixture.controls.awaitActive(target);
+      yield* fixture.controls.awaitCounts(target, {
+        acquisitions: 1n,
+        finalizations: 0n,
+      });
+      yield* fixture.controls.upsert(target, {
+        id: "protocol",
+        price: 10,
+        region: "eu",
+      });
+      const events = yield* Fiber.join(eventsFiber);
+
+      expect(partialRouteError).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        topic: "orders",
+        message: "Leased topic orders routeBy must contain all and only: region, price.",
+      });
+      expect(events.map((event) => event.type)).toStrictEqual(["snapshot", "delta"]);
+      yield* subscription.close();
+      yield* fixture.controls.awaitCounts(target, {
+        acquisitions: 1n,
+        finalizations: 1n,
+      });
       yield* runtime.close;
     }),
   );

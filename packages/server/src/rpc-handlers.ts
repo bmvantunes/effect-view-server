@@ -176,20 +176,40 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
         Effect.gen(function* () {
           if (payload.topic === VIEW_SERVER_HEALTH_SUMMARY_TOPIC) {
             yield* viewServerDecodeHealthQuery(payload.topic, payload.query);
-            const subscription = yield* input.liveClient.subscribeHealthSummary();
-            return subscription.events.pipe(
-              Stream.mapEffect((event) =>
-                viewServerEncodeHealthSummaryEvent<Topics>(config, event),
+            return Stream.fromEffect(
+              Effect.acquireRelease(
+                input.liveClient.subscribeHealthSummary(),
+                (subscription) => subscription.close().pipe(ignoreSubscriptionCloseFailure),
+                { interruptible: true },
               ),
-              Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+            ).pipe(
+              Stream.flatMap((subscription) =>
+                subscription.events.pipe(
+                  Stream.mapEffect((event) =>
+                    viewServerEncodeHealthSummaryEvent<Topics>(config, event),
+                  ),
+                ),
+              ),
+              Stream.scoped,
             );
           }
           if (payload.topic === VIEW_SERVER_HEALTH_TOPIC) {
             yield* viewServerDecodeHealthQuery(payload.topic, payload.query);
-            const subscription = yield* input.liveClient.subscribeHealth();
-            return subscription.events.pipe(
-              Stream.mapEffect((event) => viewServerEncodeHealthTopicEvent<Topics>(config, event)),
-              Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+            return Stream.fromEffect(
+              Effect.acquireRelease(
+                input.liveClient.subscribeHealth(),
+                (subscription) => subscription.close().pipe(ignoreSubscriptionCloseFailure),
+                { interruptible: true },
+              ),
+            ).pipe(
+              Stream.flatMap((subscription) =>
+                subscription.events.pipe(
+                  Stream.mapEffect((event) =>
+                    viewServerEncodeHealthTopicEvent<Topics>(config, event),
+                  ),
+                ),
+              ),
+              Stream.scoped,
             );
           }
           const topic = yield* viewServerDecodeTopic(config, payload.topic);
@@ -199,10 +219,17 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
             payload.query,
           );
           const eventEncoder = compileViewServerRuntimeLiveEventEncoder(config, topic, query);
-          const subscription = yield* input.liveClient.subscribeProtocolQuery(topic, query);
-          return subscription.events.pipe(
-            Stream.mapEffect(eventEncoder.encode),
-            Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+          return Stream.fromEffect(
+            Effect.acquireRelease(
+              input.liveClient.subscribeProtocolQuery(topic, query),
+              (subscription) => subscription.close().pipe(ignoreSubscriptionCloseFailure),
+              { interruptible: true },
+            ),
+          ).pipe(
+            Stream.flatMap((subscription) =>
+              subscription.events.pipe(Stream.mapEffect(eventEncoder.encode)),
+            ),
+            Stream.scoped,
           );
         }),
       ),
@@ -210,15 +237,21 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
       withTransportLifecycle(
         Effect.gen(function* () {
           const request = yield* viewServerDecodeSourceHealthRequest(config, payload);
-          const subscription = yield* input.liveClient.subscribeProtocolSourceHealth(
-            request.topic,
-            request.route,
-          );
-          return subscription.events.pipe(
-            Stream.mapEffect((health) =>
-              viewServerEncodeSourceHealth(config, request.topic, health),
+          return Stream.fromEffect(
+            Effect.acquireRelease(
+              input.liveClient.subscribeProtocolSourceHealth(request.topic, request.route),
+              (subscription) => subscription.close().pipe(ignoreSubscriptionCloseFailure),
+              { interruptible: true },
             ),
-            Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+          ).pipe(
+            Stream.flatMap((subscription) =>
+              subscription.events.pipe(
+                Stream.mapEffect((health) =>
+                  viewServerEncodeSourceHealth(config, request.topic, health),
+                ),
+              ),
+            ),
+            Stream.scoped,
           );
         }),
       ),

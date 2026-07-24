@@ -314,9 +314,53 @@ describe("Source Adapter portable model", () => {
     class FrozenOption {
       readonly label = "orders";
     }
-    const frozenOption = new FrozenOption();
-    Reflect.apply(adapter.materializedSource, adapter, [frozenOption]);
-    expect(Object.isFrozen(frozenOption)).toBe(true);
+    const classOption = new FrozenOption();
+    expect(() => Reflect.apply(adapter.materializedSource, adapter, [classOption])).toThrow(
+      "plain data objects or supported Effect executable values",
+    );
+    expect(Object.isFrozen(classOption)).toBe(false);
+
+    const dateOption = {
+      label: "orders",
+      cursor: new Date(0),
+    };
+    expect(() => Reflect.apply(adapter.materializedSource, adapter, [dateOption])).toThrow(
+      "plain data objects or supported Effect executable values",
+    );
+    expect(Object.isFrozen(dateOption.cursor)).toBe(false);
+  });
+
+  it("preserves supported executable Source Definition option leaves", () => {
+    const program = Effect.succeed("ready");
+    const schedule = Schedule.recurs(1);
+    const row = Schema.Struct({ id: Schema.String });
+    const map = (value: string) => ({ id: value });
+    const adapter = SourceAdapter.make({
+      identity: { name: "executable-options" },
+      failure: Failure,
+      materialized: {
+        metrics: Metrics,
+        rejectionLocation: Location,
+        definitionOptions: SourceAdapter.definitionOptions<{
+          readonly program: typeof program;
+          readonly schedule: typeof schedule;
+          readonly row: typeof row;
+          readonly map: typeof map;
+        }>(),
+      },
+      leased: undefined,
+    });
+    const definition = adapter.materializedSource({
+      program,
+      schedule,
+      row,
+      map,
+    });
+
+    expect(definition.options.program).toBe(program);
+    expect(definition.options.schedule).toBe(schedule);
+    expect(definition.options.row).toBe(row);
+    expect(definition.options.map).toBe(map);
   });
 
   it("rejects every hostile Source Definition envelope branch without throwing", () => {

@@ -64,9 +64,12 @@ export const exampleSource = <Row extends object>(stream: string, initial: Row) 
   ExampleAdapter.materializedSource<Row>({ stream, initial });
 ```
 
-`materializedSource(...)` snapshots and freezes its input. A leased declaration
-uses `leasedSource(routeBy, options)` with a non-empty exact route-field tuple.
-Consumers do not need `as const`.
+`materializedSource(...)` snapshots and freezes plain-data option subtrees.
+Schema, Effect, Schedule, and function leaves retain their exact executable
+identity; other object instances are rejected so mutable clients, sockets,
+Dates, Maps, and similar platform values cannot masquerade as portable options.
+A leased declaration uses `leasedSource(routeBy, options)` with a non-empty
+exact route-field tuple. Consumers do not need `as const`.
 
 Every Source-Owned Topic in the SDK path has an exact required
 `id: Schema.String` and one canonical `source`:

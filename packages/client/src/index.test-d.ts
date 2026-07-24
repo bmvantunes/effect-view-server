@@ -271,6 +271,11 @@ describe("client type contracts", () => {
     const invalidSourceFree = sourceClient.subscribeSourceHealth("manual");
     // @ts-expect-error Leased diagnostics require one exact route.
     const invalidMissingRoute = sourceClient.subscribeSourceHealth("routed");
+    const invalidPartialRoute = sourceClient.subscribeSourceHealth(
+      "routed",
+      // @ts-expect-error Leased diagnostics require every configured route field.
+      { region: "eu" },
+    );
     const invalidMaterializedRoute = sourceClient.subscribeSourceHealth(
       "all",
       // @ts-expect-error Materialized diagnostics do not accept a route.
@@ -299,6 +304,7 @@ describe("client type contracts", () => {
     };
     void invalidSourceFree;
     void invalidMissingRoute;
+    void invalidPartialRoute;
     void invalidMaterializedRoute;
     void invalidExtraRoute;
     void invalidRouteType;

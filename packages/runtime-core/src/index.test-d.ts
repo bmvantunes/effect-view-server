@@ -8,7 +8,8 @@ import {
   type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import type { Effect } from "effect";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import type { Context, Effect } from "effect";
 import type { Stream } from "effect";
 import { Schema } from "effect";
 import { createViewServerRuntimeCore, makeViewServerRuntimeCore } from "./index";
@@ -45,8 +46,33 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const SourceFailure = Schema.TaggedStruct("RuntimeCoreSourceFailure", {
+  message: Schema.String,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "runtime-core-type-source" },
+  failure: SourceFailure,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+const canonicalSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(undefined),
+    },
+  },
+});
+
 const runtimeCore = createViewServerRuntimeCore(viewServer);
 const runtimeCoreEffect = makeViewServerRuntimeCore(viewServer, {});
+const canonicalSourceRuntimeCoreEffect = makeViewServerRuntimeCore(canonicalSourceViewServer, {});
+// @ts-expect-error synchronous Runtime Core cannot provide a canonical Source Adapter service.
+const invalidCanonicalSourceRuntimeCore = createViewServerRuntimeCore(canonicalSourceViewServer);
 const runtimeCoreWithGroupedAdmissionLimits = createViewServerRuntimeCore(viewServer, {
   groupedIncrementalAdmissionLimits: {
     maxGroups: 1,
@@ -220,6 +246,10 @@ describe("runtime-core type contracts", () => {
 
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
     expectTypeOf<Effect.Success<typeof runtimeCoreEffect>>().toEqualTypeOf<typeof runtimeCore>();
+    expectTypeOf<Effect.Services<typeof canonicalSourceRuntimeCoreEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf(invalidCanonicalSourceRuntimeCore).not.toBeAny();
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;

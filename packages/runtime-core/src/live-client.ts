@@ -74,7 +74,10 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
     engine: ColumnLiveViewEngineInternal<Topics>,
     pushedHealth: RuntimeCorePushedHealthHub<Topics>,
     requestHealthRefresh: Effect.Effect<void>,
-    sourceManager?: RuntimeCoreSourceManager<Topics>,
+    sourceManager?: Pick<
+      RuntimeCoreSourceManager<Topics>,
+      "acquireLeased" | "decorateMaterialized" | "subscribeSourceHealth"
+    >,
   ): Effect.Effect<ViewServerRuntimeCoreLiveClientModule<Topics>> =>
     Effect.sync(() => {
       const subscribeMissingSourceHealth: ViewServerSourceHealthSubscriber<
@@ -147,6 +150,47 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
         onTerminalOccurrence: (event) => delegate?.onTerminalOccurrence(event) ?? Effect.void,
         onTerminalReady: (event) => delegate?.onTerminalReady(event) ?? Effect.void,
       });
+      const subscribeSourceAwareQuery = <Topic extends Extract<keyof Topics, string>>(
+        topic: Topic,
+        query: Readonly<Record<string, unknown>>,
+        engineQuery: Readonly<Record<string, unknown>>,
+        terminalObserver?: ColumnLiveViewTerminalObserver,
+      ): Effect.Effect<
+        ViewServerLiveSubscription<object>,
+        ViewServerRuntimeError | ViewServerTransportError
+      > =>
+        acquireRuntimeCoreResourceHandoff((markAcquired) =>
+          Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const lease = yield* restore(sources.acquireLeased(topic, query, markAcquired));
+              const registeredQueryId = yield* Deferred.make<string>();
+              const capturingObserver = captureQueryId(registeredQueryId, terminalObserver);
+              const subscription = yield* restore(
+                wrapEngineSubscription(
+                  Option.isNone(lease)
+                    ? engine.subscribeRuntimeObserved(topic, engineQuery, capturingObserver)
+                    : engine.subscribeRuntimeObservedPartitioned(
+                        topic,
+                        engineQuery,
+                        lease.value.partition,
+                        capturingObserver,
+                      ),
+                ),
+              );
+              yield* markAcquired(
+                Option.isNone(lease)
+                  ? Effect.ignore(subscription.close())
+                  : Effect.ignore(runAllFinalizers([subscription.close(), lease.value.release])),
+              );
+              const queryId = yield* restore(Deferred.await(registeredQueryId));
+              const result = Option.isNone(lease)
+                ? sources.decorateMaterialized(topic, subscription, queryId)
+                : yield* restore(attachSourceLease(subscription, query, lease.value, queryId));
+              yield* markAcquired(Effect.ignore(result.close()));
+              return result;
+            }),
+          ),
+        );
       const subscribeQuery = (
         topic: Extract<keyof Topics, string>,
         query: Readonly<Record<string, unknown>>,
@@ -157,40 +201,10 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
         const capturedQuery = captureRoutedQuery(topic, query);
         return Effect.gen(function* () {
           const ownedQuery = yield* Effect.fromResult(capturedQuery);
-          const lease = yield* sources.acquireLeased(topic, ownedQuery);
-          return yield* acquireRuntimeCoreResourceHandoff((markAcquired) =>
-            Effect.gen(function* () {
-              if (Option.isSome(lease)) {
-                yield* markAcquired(lease.value.release);
-              }
-              const registeredQueryId = yield* Deferred.make<string>();
-              const terminalObserver = captureQueryId(registeredQueryId);
-              const subscription = yield* wrapEngineSubscription(
-                Option.isNone(lease)
-                  ? engine.subscribeRuntimeObserved(
-                      topic,
-                      engineQueryWithoutRoute(ownedQuery),
-                      terminalObserver,
-                    )
-                  : engine.subscribeRuntimeObservedPartitioned(
-                      topic,
-                      engineQueryWithoutRoute(ownedQuery),
-                      lease.value.partition,
-                      terminalObserver,
-                    ),
-              );
-              yield* markAcquired(
-                Option.isNone(lease)
-                  ? Effect.ignore(subscription.close())
-                  : Effect.ignore(runAllFinalizers([subscription.close(), lease.value.release])),
-              );
-              const queryId = yield* Deferred.await(registeredQueryId);
-              const result = Option.isNone(lease)
-                ? sources.decorateMaterialized(topic, subscription, queryId)
-                : yield* attachSourceLease(subscription, ownedQuery, lease.value, queryId);
-              yield* markAcquired(Effect.ignore(result.close()));
-              return result;
-            }),
+          return yield* subscribeSourceAwareQuery(
+            topic,
+            ownedQuery,
+            engineQueryWithoutRoute(ownedQuery),
           );
         });
       };
@@ -217,37 +231,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
               ),
             );
           }
-          const lease = yield* sources.acquireLeased(topic, ownedQuery);
-          return yield* acquireRuntimeCoreResourceHandoff((markAcquired) =>
-            Effect.gen(function* () {
-              if (Option.isSome(lease)) {
-                yield* markAcquired(lease.value.release);
-              }
-              const registeredQueryId = yield* Deferred.make<string>();
-              const capturingObserver = captureQueryId(registeredQueryId, terminalObserver);
-              const subscription = yield* wrapEngineSubscription(
-                Option.isNone(lease)
-                  ? engine.subscribeRuntimeObserved(topic, engineQuery, capturingObserver)
-                  : engine.subscribeRuntimeObservedPartitioned(
-                      topic,
-                      engineQuery,
-                      lease.value.partition,
-                      capturingObserver,
-                    ),
-              );
-              yield* markAcquired(
-                Option.isNone(lease)
-                  ? Effect.ignore(subscription.close())
-                  : Effect.ignore(runAllFinalizers([subscription.close(), lease.value.release])),
-              );
-              const queryId = yield* Deferred.await(registeredQueryId);
-              const result = Option.isNone(lease)
-                ? sources.decorateMaterialized(topic, subscription, queryId)
-                : yield* attachSourceLease(subscription, ownedQuery, lease.value, queryId);
-              yield* markAcquired(Effect.ignore(result.close()));
-              return result;
-            }),
-          );
+          return yield* subscribeSourceAwareQuery(topic, ownedQuery, engineQuery, terminalObserver);
         });
       };
       const subscribeRuntimeQuery = (
@@ -259,7 +243,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
       > => {
         const acquisition = subscribeQuery(topic, query);
         return sourceOwnership
-          .requirePublicReadAllowed(topic, "runtimeCore")
+          .requirePublicSubscriptionAllowed(topic, "runtimeCore")
           .pipe(Effect.flatMap(() => acquisition));
       };
       const subscribeRuntimeInternal: ViewServerRuntimeCoreInternalLiveClient<Topics>["subscribeRuntimeInternal"] =
@@ -300,9 +284,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
           subscribeQuery,
           subscribeObservedQuery,
           requirePublicReadAllowed: (topic) =>
-            sourceOwnership.topics.get(topic)?.sourceLeased === true
-              ? Effect.void
-              : sourceOwnership.requirePublicReadAllowed(topic, "runtimeCore"),
+            sourceOwnership.requirePublicSubscriptionAllowed(topic, "runtimeCore"),
         });
       const subscribeRuntime = adaptRuntimeQuerySubscriber<Topics>(subscribeRuntimeQuery);
       const protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics> = {

@@ -29,11 +29,16 @@ import type {
   SourceHealth,
   LeasedSourceHealthResult,
   SourceLaneRuntimeMetrics,
+  SourceRuntimeMetrics,
   SourceStatus,
   SourceTarget,
   SourceTermination,
 } from "@effect-view-server/source-adapter";
-import { SourceRuntimeFailureSchema, sourceHealthSchema } from "@effect-view-server/source-adapter";
+import {
+  SourceBufferMetricsSchema,
+  SourceRuntimeFailureSchema,
+  sourceHealthSchema,
+} from "@effect-view-server/source-adapter";
 import {
   isSourceAttempt,
   isSourceDelivery,
@@ -244,6 +249,7 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
   readonly acquireLeased: (
     topic: Extract<keyof Topics, string>,
     query: Readonly<Record<string, unknown>>,
+    markAcquired: (release: Effect.Effect<void>) => Effect.Effect<void>,
   ) => Effect.Effect<Option.Option<RuntimeCoreSourceLease>, ViewServerRuntimeError>;
   readonly subscribeSourceHealth: ViewServerSourceHealthSubscriber<Topics, ViewServerRuntimeError>;
   readonly subscribeProtocolSourceHealth: (
@@ -600,6 +606,10 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   let cachedAdapterMetrics: unknown;
   let hasCachedAdapterMetrics = false;
   const laneCounters = new Map<string, SourceLaneCounters>();
+  let lastValidLaneMetrics: readonly [
+    SourceLaneRuntimeMetrics,
+    ...ReadonlyArray<SourceLaneRuntimeMetrics>,
+  ] = initialLaneMetrics();
   let stableLaneIds: ReadonlyArray<string> | undefined;
   const materializedRetainedIds = new Set<string>();
   const scope = yield* Scope.fork(input.ownerScope, "sequential");
@@ -607,39 +617,59 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   let supervisorFiber: Fiber.Fiber<void> | undefined;
   const healthLock = Semaphore.makeUnsafe(1);
 
+  const validateLaneBufferMetrics = Effect.fn(
+    "ViewServerRuntimeCore.source.metrics.buffer.validate",
+  )(function* (lane: string, metrics: unknown) {
+    const decoded = yield* Schema.decodeUnknownEffect(SourceBufferMetricsSchema)(metrics).pipe(
+      Effect.mapError(() =>
+        sourceRuntimeFailure({
+          _tag: "InvalidSourceMetrics",
+          message: `Source Adapter ${input.entry.definition.identity.name} lane ${lane} returned buffer metrics outside the Source Buffer Metrics Schema.`,
+        }),
+      ),
+    );
+    return Object.freeze(decoded);
+  });
+
+  const runtimeMetricsFromLanes = (
+    lanes: readonly [SourceLaneRuntimeMetrics, ...ReadonlyArray<SourceLaneRuntimeMetrics>],
+  ): SourceRuntimeMetrics => ({
+    startedAtNanos,
+    lastAttemptStartedAtNanos,
+    lastDeliveryAtNanos,
+    lastRejectionAtNanos,
+    lastAppliedMutationAtNanos,
+    lastTerminationAtNanos,
+    currentAttempt,
+    retryCount,
+    receivedDeliveryCount,
+    rejectedItemCount,
+    attemptedMutationCount,
+    appliedUpsertCount,
+    appliedDeleteCount,
+    failedMutationCount,
+    completedSettlementCount,
+    failedSettlementCount,
+    retainedRowCount: input.ownedStorageKeys?.size ?? materializedRetainedIds.size,
+    lanes,
+  });
   const runtimeMetrics = Effect.fn("ViewServerRuntimeCore.source.metrics.runtime")(function* () {
     const lanes: Array<SourceLaneRuntimeMetrics> = [];
     for (const [id, counters] of laneCounters) {
       lanes.push({
         id,
-        buffer: yield* counters.buffer,
+        buffer: yield* counters.buffer.pipe(
+          Effect.flatMap((metrics) => validateLaneBufferMetrics(id, metrics)),
+        ),
       });
     }
     lanes.sort((left, right) => left.id.localeCompare(right.id));
-    const nonEmptyLanes:
-      | readonly [SourceLaneRuntimeMetrics]
-      | readonly [SourceLaneRuntimeMetrics, ...ReadonlyArray<SourceLaneRuntimeMetrics>] =
-      lanes.length === 0 ? initialLaneMetrics() : [lanes[0]!, ...lanes.slice(1)];
-    return {
-      startedAtNanos,
-      lastAttemptStartedAtNanos,
-      lastDeliveryAtNanos,
-      lastRejectionAtNanos,
-      lastAppliedMutationAtNanos,
-      lastTerminationAtNanos,
-      currentAttempt,
-      retryCount,
-      receivedDeliveryCount,
-      rejectedItemCount,
-      attemptedMutationCount,
-      appliedUpsertCount,
-      appliedDeleteCount,
-      failedMutationCount,
-      completedSettlementCount,
-      failedSettlementCount,
-      retainedRowCount: input.ownedStorageKeys?.size ?? materializedRetainedIds.size,
-      lanes: nonEmptyLanes,
-    };
+    const nonEmptyLanes: readonly [
+      SourceLaneRuntimeMetrics,
+      ...ReadonlyArray<SourceLaneRuntimeMetrics>,
+    ] = lanes.length === 0 ? initialLaneMetrics() : [lanes[0]!, ...lanes.slice(1)];
+    lastValidLaneMetrics = nonEmptyLanes;
+    return runtimeMetricsFromLanes(nonEmptyLanes);
   });
 
   const initialStatus: SourceStatus<unknown, unknown> = {
@@ -655,6 +685,10 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     adapterMetrics: unknown,
   ) {
     const sampledAtNanos = yield* Clock.currentTimeNanos;
+    const runtimeMetricsResult = yield* runtimeMetrics().pipe(Effect.result);
+    if (Result.isFailure(runtimeMetricsResult)) {
+      yield* metricFailureObservation.record(Result.fail(runtimeMetricsResult.failure));
+    }
     yield* SubscriptionRef.set(
       health,
       Option.some({
@@ -662,7 +696,9 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         target: input.target,
         status,
         metrics: {
-          runtime: yield* runtimeMetrics(),
+          runtime: Result.isSuccess(runtimeMetricsResult)
+            ? runtimeMetricsResult.success
+            : runtimeMetricsFromLanes(lastValidLaneMetrics),
           adapter: adapterMetrics,
         },
         sampledAtNanos,
@@ -1711,104 +1747,114 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               ),
           );
 
-          const acquireLeased: RuntimeCoreSourceManager<Topics>["acquireLeased"] = (topic, query) =>
+          const acquireLeased: RuntimeCoreSourceManager<Topics>["acquireLeased"] = (
+            topic,
+            query,
+            markAcquired,
+          ) =>
             leaseLock.withPermit(
-              Effect.gen(function* () {
-                if (closed) {
-                  return yield* Effect.fail(
-                    runtimeError(topic, "Runtime Core Source Manager is closed."),
-                  );
-                }
-                const entry = entries.get(topic);
-                if (entry === undefined || entry.definition.lifecycle !== "leased") {
-                  return Option.none<RuntimeCoreSourceLease>();
-                }
-                const routeResult = exactRoute(entry, Reflect.get(query, "routeBy"));
-                const route = yield* Effect.fromResult(routeResult);
-                const feedKey = yield* Effect.fromResult(feedKeyFor(entry, route));
-                let lease = leases.get(feedKey);
-                if (lease === undefined) {
-                  lease = yield* acquireRuntimeCoreResourceHandoff(
-                    (markLeaseAcquired) =>
-                      Effect.gen(function* () {
-                        const scope = yield* Scope.fork(managerScope, "sequential");
-                        yield* markLeaseAcquired(Scope.close(scope, Exit.void));
-                        const ownedStorageKeys = new Set<string>();
-                        leaseSequence += 1n;
-                        const partition: ColumnLiveViewEngineQueryPartition = Object.freeze({
-                          key: `${feedKey}/lease:${leaseSequence}`,
-                          ownedStorageKeys: () => ownedStorageKeys,
-                          matches: (row, storageKey) =>
-                            storageKey === undefined
-                              ? routeMatchesRow(entry.definition.routeBy, route, row)
-                              : ownedStorageKeys.has(storageKey),
-                        });
-                        const runtime = yield* makeLogicalRuntime({
-                          entry,
-                          target: { _tag: "Leased", route },
-                          mutations: sourceMutations,
-                          context,
-                          ownerScope: scope,
-                          partitionKey: partition.key,
-                          feedKey,
-                          ownedStorageKeys,
-                          onStatus: (status) =>
-                            Effect.sync(() => {
-                              sourceStatuses.set(feedKey, {
-                                topic: entry.topic,
-                                status,
-                              });
-                            }).pipe(Effect.andThen(onHealthChange)),
-                        });
-                        const acquiredLease = {
-                          feedKey,
-                          route,
-                          runtime,
-                          ownedStorageKeys,
-                          partition,
-                          scope,
-                          subscribers: 0,
-                        };
-                        yield* markLeaseAcquired(cleanupLease(acquiredLease));
-                        leases.set(feedKey, acquiredLease);
-                        const diagnostics = leasedDiagnostics.get(feedKey);
-                        if (diagnostics !== undefined) {
-                          yield* SubscriptionRef.set(diagnostics.state, runtime);
-                        }
-                        return acquiredLease;
-                      }),
-                    constructionOptions.leaseHandoff,
-                  );
-                }
-                lease.subscribers += 1;
-                let released = false;
-                const release = Effect.suspend(() => {
-                  if (released) {
-                    return Effect.void;
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  if (closed) {
+                    return yield* Effect.fail(
+                      runtimeError(topic, "Runtime Core Source Manager is closed."),
+                    );
                   }
-                  released = true;
-                  return leaseLock.withPermit(
-                    Effect.suspend(() => {
-                      if (leases.get(lease!.feedKey) !== lease) {
-                        return Effect.void;
-                      }
-                      lease!.subscribers -= 1;
-                      return lease!.subscribers === 0 ? cleanupLease(lease!) : Effect.void;
-                    }),
-                  );
-                }).pipe(Effect.uninterruptible);
-                const currentLease = lease;
-                return Option.some({
-                  partition: currentLease.partition,
-                  translate: (subscription, ownedQuery, queryId) =>
-                    attachSourceAvailability(
-                      translateSubscription(subscription, ownedQuery),
-                      currentLease.runtime,
-                      queryId,
-                    ),
-                  release,
-                });
-              }),
+                  const entry = entries.get(topic);
+                  if (entry === undefined || entry.definition.lifecycle !== "leased") {
+                    return Option.none<RuntimeCoreSourceLease>();
+                  }
+                  const routeResult = exactRoute(entry, Reflect.get(query, "routeBy"));
+                  const route = yield* Effect.fromResult(routeResult);
+                  const feedKey = yield* Effect.fromResult(feedKeyFor(entry, route));
+                  let lease = leases.get(feedKey);
+                  if (lease === undefined) {
+                    lease = yield* restore(
+                      acquireRuntimeCoreResourceHandoff(
+                        (markLeaseAcquired) =>
+                          Effect.gen(function* () {
+                            const scope = yield* Scope.fork(managerScope, "sequential");
+                            yield* markLeaseAcquired(Scope.close(scope, Exit.void));
+                            const ownedStorageKeys = new Set<string>();
+                            leaseSequence += 1n;
+                            const partition: ColumnLiveViewEngineQueryPartition = Object.freeze({
+                              key: `${feedKey}/lease:${leaseSequence}`,
+                              ownedStorageKeys: () => ownedStorageKeys,
+                              matches: (row, storageKey) =>
+                                storageKey === undefined
+                                  ? routeMatchesRow(entry.definition.routeBy, route, row)
+                                  : ownedStorageKeys.has(storageKey),
+                            });
+                            const runtime = yield* makeLogicalRuntime({
+                              entry,
+                              target: { _tag: "Leased", route },
+                              mutations: sourceMutations,
+                              context,
+                              ownerScope: scope,
+                              partitionKey: partition.key,
+                              feedKey,
+                              ownedStorageKeys,
+                              onStatus: (status) =>
+                                Effect.sync(() => {
+                                  sourceStatuses.set(feedKey, {
+                                    topic: entry.topic,
+                                    status,
+                                  });
+                                }).pipe(Effect.andThen(onHealthChange)),
+                            });
+                            const acquiredLease = {
+                              feedKey,
+                              route,
+                              runtime,
+                              ownedStorageKeys,
+                              partition,
+                              scope,
+                              subscribers: 0,
+                            };
+                            yield* markLeaseAcquired(cleanupLease(acquiredLease));
+                            leases.set(feedKey, acquiredLease);
+                            const diagnostics = leasedDiagnostics.get(feedKey);
+                            if (diagnostics !== undefined) {
+                              yield* SubscriptionRef.set(diagnostics.state, runtime);
+                            }
+                            return acquiredLease;
+                          }),
+                        constructionOptions.leaseHandoff,
+                      ),
+                    );
+                  }
+                  lease.subscribers += 1;
+                  let released = false;
+                  const release = Effect.suspend(() => {
+                    if (released) {
+                      return Effect.void;
+                    }
+                    released = true;
+                    return leaseLock.withPermit(
+                      Effect.suspend(() => {
+                        if (leases.get(lease!.feedKey) !== lease) {
+                          return Effect.void;
+                        }
+                        lease!.subscribers -= 1;
+                        return lease!.subscribers === 0 ? cleanupLease(lease!) : Effect.void;
+                      }),
+                    );
+                  }).pipe(Effect.uninterruptible);
+                  const currentLease = lease;
+                  const acquiredLease: RuntimeCoreSourceLease = {
+                    partition: currentLease.partition,
+                    translate: (subscription, ownedQuery, queryId) =>
+                      attachSourceAvailability(
+                        translateSubscription(subscription, ownedQuery),
+                        currentLease.runtime,
+                        queryId,
+                      ),
+                    release,
+                  };
+                  yield* markAcquired(release);
+                  return Option.some(acquiredLease);
+                }),
+              ),
             );
 
           const decorateMaterialized: RuntimeCoreSourceManager<Topics>["decorateMaterialized"] = (

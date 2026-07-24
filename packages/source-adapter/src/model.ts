@@ -819,12 +819,14 @@ function snapshotValue(value: unknown, active = new WeakSet<object>()): unknown 
     return Object.freeze(snapshot);
   }
   if (typeof value === "object" && value !== null) {
-    if (Schema.isSchema(value)) {
+    if (Schema.isSchema(value) || Effect.isEffect(value) || Schedule.isSchedule(value)) {
       return value;
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
-      return Object.freeze(value);
+      throw new TypeError(
+        "Source Definition options must use plain data objects or supported Effect executable values.",
+      );
     }
     if (active.has(value)) {
       throw new TypeError("Source Definition options must not contain cycles.");

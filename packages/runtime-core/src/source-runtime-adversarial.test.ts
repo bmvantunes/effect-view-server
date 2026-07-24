@@ -265,7 +265,6 @@ describe("Runtime Core adversarial Source runtime", () => {
               },
             },
           });
-          yield* diagnostics.close();
           yield* runtime.close;
         }
       }),

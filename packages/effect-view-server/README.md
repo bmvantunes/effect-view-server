@@ -14,7 +14,8 @@ import { SourceAdapterServer } from "effect-view-server/source-adapter/server";
 
 Adapter tests and reusable conformance suites are exported from
 `effect-view-server/source-adapter/testing`. That optional testing surface
-requires the exact matching `@effect/vitest` peer. The portable
+requires the exact matching `@effect/vitest` peer. Its package-conformance
+checks use the required TypeScript and Vite peers. The portable
 `effect-view-server/source-adapter` surface is browser-safe and is verified
 against a 32 KiB gzipped fixture budget.
 

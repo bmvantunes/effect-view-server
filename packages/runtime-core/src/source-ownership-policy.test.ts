@@ -115,6 +115,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [],
+          sourceLeased: false,
           sourceOwned: false,
           topic: "externalOrders",
         },
@@ -124,6 +125,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "kafka" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "kafkaOrders",
         },
@@ -133,6 +135,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: true,
           owners: [{ _tag: "grpc", lifecycle: "leased" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "leasedOrders",
         },
@@ -142,6 +145,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "grpc", lifecycle: "materialized" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "materializedOrders",
         },
@@ -159,6 +163,8 @@ describe("SourceOwnershipPolicy", () => {
     expect(policy.isSourceOwnedTopic("materializedOrders")).toStrictEqual(true);
     expect(policy.isGrpcLeasedTopic("leasedOrders")).toStrictEqual(true);
     expect(policy.isGrpcLeasedTopic("kafkaOrders")).toStrictEqual(false);
+    expect(policy.isLeasedTopic("leasedOrders")).toStrictEqual(true);
+    expect(policy.isLeasedTopic("materializedOrders")).toStrictEqual(false);
   });
 
   it.effect("allows direct public mutations, reads, and reset for source-free topics", () =>
@@ -288,6 +294,7 @@ describe("SourceOwnershipPolicy", () => {
           {
             grpcLeased: true,
             owners: [{ _tag: "grpc", lifecycle: "leased" }],
+            sourceLeased: false,
             sourceOwned: true,
             topic: "malformedLeasedOrders",
           },
@@ -356,6 +363,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "grpc", lifecycle: "unknown" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "malformedGrpcOrders",
         },
@@ -365,6 +373,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "kafka" }, { _tag: "grpc", lifecycle: "materialized" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "multiOwnedOrders",
         },
@@ -374,6 +383,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "grpc", lifecycle: "unknown" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "primitiveGrpcOrders",
         },

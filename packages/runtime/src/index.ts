@@ -4,6 +4,7 @@ import type {
   ViewServerConfig,
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
+import type { ViewServerSourceRequirements } from "@effect-view-server/runtime-core";
 import { Config, Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import type { ViewServerGrpcIngressError } from "./grpc-source-lifecycle";
@@ -74,7 +75,8 @@ export function makeViewServerRuntime<
   | Config.ConfigError
   | ViewServerRuntimeError
   | ViewServerRuntimeSourceError
-  | ViewServerTcpPublishIngressError
+  | ViewServerTcpPublishIngressError,
+  ViewServerSourceRequirements<Topics>
 > {
   const options = args[0];
   return makeViewServerRuntimeEffect(config, options);
@@ -123,7 +125,8 @@ export function runViewServerRuntime<
   | Config.ConfigError
   | ViewServerRuntimeError
   | ViewServerRuntimeSourceError
-  | ViewServerTcpPublishIngressError
+  | ViewServerTcpPublishIngressError,
+  ViewServerSourceRequirements<Topics>
 > {
   const options = args[0];
   return runViewServerRuntimeEffect(config, options);

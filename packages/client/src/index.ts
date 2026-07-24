@@ -2,6 +2,11 @@ export type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
+  ViewServerSourceHealthForTopic,
+  ViewServerSourceHealthResultForTopic,
+  ViewServerSourceHealthSubscriber,
+  ViewServerSourceHealthSubscription,
+  ViewServerSourceOwnedTopic,
   ViewServerRuntimeLiveClient,
 } from "./live-client";
 export { liveQueryFailureResult } from "./live-query-error";

@@ -43,10 +43,12 @@ describe("strict Effect diagnostics task graph", () => {
       serverDependency: facadePackage.devDependencies["@effect-view-server/server"],
       uniqueBuildDirectories: [...new Set(buildDirectories)],
     }).toStrictEqual({
-      buildCommands: Array.from({ length: 11 }, () => "vp pack"),
+      buildCommands: Array.from({ length: 13 }, () => "vp pack"),
       buildDirectories: [
-        "packages/config",
         "packages/effect-utils",
+        "packages/source-adapter",
+        "packages/source-adapter-testing",
+        "packages/config",
         "packages/column-live-view-engine",
         "packages/protocol",
         "packages/client",
@@ -61,8 +63,10 @@ describe("strict Effect diagnostics task graph", () => {
         command: "vp pack",
         cwd: "packages/effect-view-server",
         dependsOn: [
-          "build:effect-declarations:config",
           "build:effect-declarations:effect-utils",
+          "build:effect-declarations:source-adapter",
+          "build:effect-declarations:source-adapter-testing",
+          "build:effect-declarations:config",
           "build:effect-declarations:column-live-view-engine",
           "build:effect-declarations:protocol",
           "build:effect-declarations:client",
@@ -74,8 +78,10 @@ describe("strict Effect diagnostics task graph", () => {
         ],
       },
       declarationBuildTaskNames: [
-        "build:effect-declarations:config",
         "build:effect-declarations:effect-utils",
+        "build:effect-declarations:source-adapter",
+        "build:effect-declarations:source-adapter-testing",
+        "build:effect-declarations:config",
         "build:effect-declarations:column-live-view-engine",
         "build:effect-declarations:protocol",
         "build:effect-declarations:client",
@@ -95,6 +101,7 @@ describe("strict Effect diagnostics task graph", () => {
           "build:effect-declarations:effect-utils",
           "build:effect-declarations:runtime-core",
           "build:effect-declarations:server",
+          "build:effect-declarations:source-adapter",
         ],
       },
       runtimeDiagnostics: {
@@ -111,6 +118,7 @@ describe("strict Effect diagnostics task graph", () => {
           "build:effect-declarations:effect-utils",
           "build:effect-declarations:protocol",
           "build:effect-declarations:runtime-core",
+          "build:effect-declarations:source-adapter",
         ],
       },
       serverDependency: "workspace:*",
@@ -168,6 +176,10 @@ describe("strict Effect diagnostics task graph", () => {
         dependsOn: ["build:effect-declarations"],
       },
       diagnosticDependencies: {
+        "check:effect:source-adapter": ["build:effect-declarations:source-adapter"],
+        "check:effect:source-adapter-testing": [
+          "build:effect-declarations:source-adapter-testing",
+        ],
         "check:effect:config": [],
         "check:effect:effect-utils": [],
         "check:effect:protocol": ["build:effect-declarations:protocol"],

@@ -481,6 +481,30 @@ describe("Runtime Core lifecycle", () => {
     }),
   );
 
+  it.effect("releases a lease when interruption happens before downstream ownership", () =>
+    Effect.gen(function* () {
+      const leaseOwned = yield* Deferred.make<void>();
+      let releaseCount = 0;
+      const acquisition = yield* acquireRuntimeCoreResourceHandoff((markAcquired) =>
+        Effect.gen(function* () {
+          yield* markAcquired(
+            Effect.sync(() => {
+              releaseCount += 1;
+            }),
+          );
+          yield* Deferred.succeed(leaseOwned, undefined);
+          return yield* Effect.never;
+        }),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(leaseOwned);
+
+      yield* Fiber.interrupt(acquisition);
+      yield* Fiber.interrupt(acquisition);
+
+      expect(releaseCount).toBe(1);
+    }),
+  );
+
   it.effect("transfers interrupted construction cleanup to the combined owner", () =>
     Effect.gen(function* () {
       const combinedOwnerReady = yield* Deferred.make<void>();
@@ -658,6 +682,12 @@ describe("Runtime Core lifecycle", () => {
           hub,
           requestHealthRefresh,
         );
+        const sourceDiagnostics = yield* Effect.promise(() =>
+          Effect.runPromiseExit(
+            Reflect.apply(liveClient.subscribeSourceHealth, liveClient, ["orders"]),
+          ),
+        );
+        expect(Exit.isFailure(sourceDiagnostics)).toBe(true);
         const subscriptionFiber = yield* liveClient
           .subscribeInternal("orders", { select: ["id"] })
           .pipe(Effect.forkChild({ startImmediately: true }));
@@ -708,6 +738,35 @@ describe("Runtime Core lifecycle", () => {
         closeCount: 1,
         refreshRequestCount: 2,
       });
+    }),
+  );
+
+  it.effect("uses identity Source decoration when the live module has no Source manager", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({
+        topics: viewServer.topics,
+      });
+      const initialHealth = healthFromEngine(yield* engine.health());
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        initialHealth,
+        Effect.succeed(initialHealth),
+        "1 minute",
+      );
+      const { liveClient } = yield* makeRuntimeCoreLiveClientModule(
+        viewServer,
+        engine,
+        hub,
+        Effect.void,
+      );
+      const subscription = yield* liveClient.subscribe("orders", {
+        select: ["id"],
+      });
+      const snapshot = yield* subscription.events.pipe(Stream.take(1), Stream.runHead);
+
+      expect(snapshot._tag).toBe("Some");
+      yield* subscription.close();
+      yield* hub.close;
+      yield* engine.close();
     }),
   );
 

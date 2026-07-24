@@ -14,7 +14,10 @@ truth, not plan text that predates later implementation work.
 
 ## gRPC Plan
 
-`plans/grpc.md` is implemented for the accepted gRPC scope.
+`plans/grpc.md` records the currently implemented transport-specific scope but
+is superseded for future work by PRD #383. Issue #384 implements the
+transport-neutral Source Adapter foundation; Kafka and gRPC migration remain
+separate staged issues.
 
 | Area                                            | Status                 | Evidence                                                                                                                                                     |
 | ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -64,9 +67,9 @@ because it includes explicit future scope.
 
 ### Production-Ready Next Items
 
-No production-ready plan items remain after the production guide set. The next
-step is validation of the documented scope with the readiness and benchmark
-gates.
+Complete the dependency-ordered Source Adapter migration issues from PRD #383.
+The core SDK/runtime/conformance slice is issue #384; first-party adapter
+migration and the final public hard cut remain separate work.
 
 ### Intentionally Deferred
 
@@ -84,6 +87,6 @@ These are in the plan, but should remain future work unless explicitly promoted.
 ## Recommended Implementation Order
 
 1. Run `vp run -w ready`, `vp run -w pre-grpc:gate`, and `vp run -w grpc:gate` to prove the documented current scope still passes.
-2. Do not reopen completed gRPC materialized/leased scope unless new tests reveal a real correctness gap.
+2. Follow the dependency order in PRD #383; do not extend the superseded transport-specific gRPC plan.
 
 After that, next work should come from a new explicit product decision or from promoting one intentionally deferred item.

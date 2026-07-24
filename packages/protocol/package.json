@@ -19,6 +19,7 @@
   "dependencies": {
     "@effect-view-server/config": "workspace:*",
     "@effect-view-server/effect-utils": "workspace:*",
+    "@effect-view-server/source-adapter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

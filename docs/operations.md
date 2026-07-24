@@ -56,10 +56,10 @@ starting points and validate names against the current `/metrics` output.
 
 ## Kubernetes Probes
 
-Use `GET /health` for readiness and startup checks. It returns `200` only when
-the runtime is ready, and returns a non-`200` status while the runtime is
-starting, degraded, or stopping. Each request reads fresh runtime health;
-overlapping concurrent reads share the same coalesced read.
+Use `GET /health` for readiness and startup checks. It returns `200` when the
+runtime is ready or degraded, and returns a non-`200` status while the runtime
+is starting or stopping. Each request reads fresh runtime health; overlapping
+concurrent reads share the same coalesced read.
 
 ```yaml
 readinessProbe:
@@ -75,9 +75,9 @@ livenessProbe:
   failureThreshold: 6
 ```
 
-Do not use `GET /health` as liveness unless degraded source/runtime health
-should restart the only active pod and rebuild in-memory state. Prefer a
-process-level or TCP liveness check until a separate liveness endpoint exists.
+Degraded Source health remains live and ready because retained rows and queries
+remain available. Prefer a process-level or TCP liveness check until a separate
+liveness endpoint exists.
 
 If runtime auth is configured, either allow readiness probe requests in
 `auth.validateRequest` or configure readiness probes to send accepted

@@ -8,6 +8,10 @@ import { Schema } from "effect";
 import { ViewServerTrustedWireEventSchema } from "./protocol-event-schema";
 import { ViewServerHealthSchema } from "./protocol-health-schema";
 import { ViewServerSubscribePayloadSchema } from "./protocol-query-schema";
+import {
+  ViewServerSourceHealthPayloadSchema,
+  ViewServerWireSourceHealthSchema,
+} from "./source-health-wire";
 
 export const ViewServerBackpressureErrorSchema: Schema.Codec<ViewServerBackpressureError> =
   Schema.TaggedStruct("ViewServerBackpressureError", {
@@ -59,6 +63,12 @@ export const ViewServerRpcs = RpcGroup.make(
   Rpc.make("ViewServer.Subscribe", {
     payload: ViewServerSubscribePayloadSchema,
     success: ViewServerTrustedWireEventSchema,
+    error: ViewServerRpcErrorSchema,
+    stream: true,
+  }),
+  Rpc.make("ViewServer.SourceHealth", {
+    payload: ViewServerSourceHealthPayloadSchema,
+    success: ViewServerWireSourceHealthSchema,
     error: ViewServerRpcErrorSchema,
     stream: true,
   }),

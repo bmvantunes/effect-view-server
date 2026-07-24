@@ -1,4 +1,5 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import {
   defineViewServerConfig,
   grpc,
@@ -32,6 +33,28 @@ const Order = Schema.Struct({
 const Position = Schema.Struct({
   id: Schema.String,
   quantity: Schema.Number,
+});
+
+const SourceFailure = Schema.TaggedStruct("ClientTypeSourceFailure", {
+  message: Schema.String,
+});
+const SourceDeclaration = {
+  metrics: Schema.Struct({ observed: Schema.BigInt }),
+  rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+  definitionOptions: SourceAdapter.definitionOptions<{
+    readonly stream: string;
+  }>(),
+};
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "client-type-source" },
+  failure: SourceFailure,
+  materialized: SourceDeclaration,
+  leased: SourceDeclaration,
+});
+const SourceRow = Schema.Struct({
+  id: Schema.String,
+  region: Schema.String,
+  shard: Schema.BigInt,
 });
 
 type ValidClientIdCondition = {
@@ -77,6 +100,23 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
+      key: "id",
+    },
+  },
+});
+
+const sourceViewServer = defineViewServerConfig({
+  topics: {
+    all: {
+      schema: SourceRow,
+      source: sourceAdapter.materializedSource({ stream: "all" }),
+    },
+    routed: {
+      schema: SourceRow,
+      source: sourceAdapter.leasedSource(["region", "shard"], { stream: "routed" }),
+    },
+    manual: {
+      schema: SourceRow,
       key: "id",
     },
   },
@@ -198,6 +238,7 @@ const identicalLeasedViewServer = defineViewServerConfig({
 });
 
 declare const client: ViewServerLiveClient<typeof viewServer.topics>;
+declare const sourceClient: ViewServerLiveClient<typeof sourceViewServer.topics>;
 declare const heterogeneousClient: ViewServerLiveClient<typeof heterogeneousViewServer.topics>;
 declare const heterogeneousTopic: "orders" | "positions";
 declare const leasedClient: ViewServerLiveClient<typeof leasedViewServer.topics>;
@@ -211,6 +252,59 @@ declare const identicalLeasedClient: ViewServerLiveClient<typeof identicalLeased
 declare const identicalLeasedTopic: "orders" | "positions";
 
 describe("client type contracts", () => {
+  it("types exact Materialized and Leased Source Health diagnostics", () => {
+    const materialized = sourceClient.subscribeSourceHealth("all");
+    const leased = sourceClient.subscribeSourceHealth("routed", {
+      region: "eu",
+      shard: 7n,
+    });
+    type MaterializedResult = Stream.Success<Effect.Success<typeof materialized>["events"]>;
+    type LeasedResult = Stream.Success<Effect.Success<typeof leased>["events"]>;
+    expectTypeOf<MaterializedResult["metrics"]["adapter"]["observed"]>().toEqualTypeOf<bigint>();
+    expectTypeOf<LeasedResult["_tag"]>().toEqualTypeOf<"Inactive" | "Active">();
+    expectTypeOf<LeasedResult["route"]>().toEqualTypeOf<{
+      readonly region: string;
+      readonly shard: bigint;
+    }>();
+
+    // @ts-expect-error Source-free topics do not expose Source Health.
+    const invalidSourceFree = sourceClient.subscribeSourceHealth("manual");
+    // @ts-expect-error Leased diagnostics require one exact route.
+    const invalidMissingRoute = sourceClient.subscribeSourceHealth("routed");
+    const invalidMaterializedRoute = sourceClient.subscribeSourceHealth(
+      "all",
+      // @ts-expect-error Materialized diagnostics do not accept a route.
+      { region: "eu", shard: 7n },
+    );
+    const invalidExtraRoute = sourceClient.subscribeSourceHealth(
+      "routed",
+      // @ts-expect-error Leased routes reject extra fields.
+      { region: "eu", shard: 7n, extra: true },
+    );
+    const invalidRouteType = sourceClient.subscribeSourceHealth(
+      "routed",
+      // @ts-expect-error Leased routes preserve configured scalar types.
+      { region: "eu", shard: 7 },
+    );
+    const mixedLifecycleCalls = (mixedLifecycleTopic: "all" | "routed") => {
+      // @ts-expect-error a mixed-lifecycle Topic union must be narrowed before diagnostics.
+      const invalidMixedMissingRoute = sourceClient.subscribeSourceHealth(mixedLifecycleTopic);
+      // @ts-expect-error a mixed-lifecycle Topic union cannot select one route contract safely.
+      const invalidMixedRoute = sourceClient.subscribeSourceHealth(mixedLifecycleTopic, {
+        region: "eu",
+        shard: 7n,
+      });
+      void invalidMixedMissingRoute;
+      void invalidMixedRoute;
+    };
+    void invalidSourceFree;
+    void invalidMissingRoute;
+    void invalidMaterializedRoute;
+    void invalidExtraRoute;
+    void invalidRouteType;
+    void mixedLifecycleCalls;
+  });
+
   it("types schema-aware stable query identity", () => {
     expectTypeOf(stableQueryKeyForRowSchema({ select: ["id"] }, Order)).toEqualTypeOf<string>();
 

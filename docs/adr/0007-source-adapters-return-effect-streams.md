@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted design. Implementation is pending, so this ADR does not describe currently available Source Adapter runtime APIs.
+Accepted. The generic Source Attempt, lane, delivery, rejection, settlement,
+supervision, diagnostics, and conformance contracts are implemented by issue
+#384. First-party Kafka and gRPC implementations remain staged in issues #385
+and #386.
 
 ## Context
 

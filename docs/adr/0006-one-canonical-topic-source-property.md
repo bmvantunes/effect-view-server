@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted design. Implementation is pending, so this ADR does not describe a currently available public configuration contract.
+Accepted. The transport-neutral `source` contract and Runtime Core support are
+implemented by issue #384. First-party Kafka and gRPC adoption and the final
+canonical-only configuration cut remain staged in issues #385–#387.
 
 ## Context
 

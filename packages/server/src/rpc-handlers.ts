@@ -18,6 +18,8 @@ import {
   viewServerDecodeTopic,
   viewServerEncodeHealthSummaryEvent,
   viewServerEncodeHealthTopicEvent,
+  viewServerDecodeSourceHealthRequest,
+  viewServerEncodeSourceHealth,
 } from "@effect-view-server/protocol";
 import { Deferred, Effect, Exit, Fiber, Scope, Semaphore, Stream } from "effect";
 import type { ViewServerWebSocketServerInput } from "./server-types";
@@ -200,6 +202,22 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
           const subscription = yield* input.liveClient.subscribeProtocolQuery(topic, query);
           return subscription.events.pipe(
             Stream.mapEffect(eventEncoder.encode),
+            Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+          );
+        }),
+      ),
+    "ViewServer.SourceHealth": (payload) =>
+      withTransportLifecycle(
+        Effect.gen(function* () {
+          const request = yield* viewServerDecodeSourceHealthRequest(config, payload);
+          const subscription = yield* input.liveClient.subscribeProtocolSourceHealth(
+            request.topic,
+            request.route,
+          );
+          return subscription.events.pipe(
+            Stream.mapEffect((health) =>
+              viewServerEncodeSourceHealth(config, request.topic, health),
+            ),
             Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
           );
         }),

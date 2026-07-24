@@ -11,6 +11,7 @@ import type {
   ViewServerRuntimeCoreInstance,
   ViewServerRuntimeCoreOptionsFor,
 } from "./runtime-core-types";
+import type { ViewServerSourceRequirements } from "./source-runtime";
 
 export type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 export type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/column-live-view-engine";
@@ -26,6 +27,7 @@ export type {
   ViewServerRuntimeCoreOptions,
   ViewServerRuntimeCoreOptionsFor,
 } from "./runtime-core-types";
+export type { ViewServerSourceRequirements } from "./source-runtime";
 
 export const makeViewServerRuntimeCore: <
   const Topics extends DecodableTopicDefinitions,
@@ -34,9 +36,11 @@ export const makeViewServerRuntimeCore: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerRuntimeCoreOptionsFor<Topics>,
-) => Effect.Effect<ViewServerRuntimeCoreInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
-  "ViewServerRuntimeCore.make",
-)(function* <
+) => Effect.Effect<
+  ViewServerRuntimeCoreInstance<Topics>,
+  ViewServerRuntimeError,
+  ViewServerSourceRequirements<Topics>
+> = Effect.fn("ViewServerRuntimeCore.make")(function* <
   const Topics extends DecodableTopicDefinitions,
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,

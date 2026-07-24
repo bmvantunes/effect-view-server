@@ -6,6 +6,7 @@ import type {
   ViewServerRuntimeCoreInternalInstance,
   ViewServerRuntimeCoreInternalOptionsFor,
 } from "./runtime-core-types";
+import type { ViewServerSourceRequirements } from "./source-runtime";
 export {
   collectSourceOwnershipConflicts,
   makeSourceOwnershipPolicy,
@@ -55,11 +56,17 @@ export type {
   ViewServerRuntimeCoreInternalInstance,
   ViewServerRuntimeCoreInternalOptionsFor,
 } from "./runtime-core-types";
+export type {
+  RuntimeCoreSourceLease,
+  RuntimeCoreSourceManager,
+  ViewServerSourceRequirements,
+} from "./source-runtime";
 
 export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
   input: ViewServerRuntimeCoreInternalOptionsFor<Topics>,
-) => Effect.Effect<ViewServerRuntimeCoreInternalInstance<Topics>, ViewServerRuntimeError> = (
-  config,
-  input,
-) => makeViewServerRuntimeCoreInternalWithConstructionOptions(config, input);
+) => Effect.Effect<
+  ViewServerRuntimeCoreInternalInstance<Topics>,
+  ViewServerRuntimeError,
+  ViewServerSourceRequirements<Topics>
+> = (config, input) => makeViewServerRuntimeCoreInternalWithConstructionOptions(config, input);

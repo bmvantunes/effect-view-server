@@ -16,17 +16,17 @@ import {
 
 describe("Package Surface Policy", () => {
   it("owns one unique inventory of private and consumer package specifiers", () => {
-    expect(packageSurfacePolicy.packages).toHaveLength(10);
-    expect(workspacePackageSpecifiers).toHaveLength(22);
-    expect(new Set(workspacePackageSpecifiers).size).toBe(22);
-    expect(consumerPackageSpecifiers).toHaveLength(16);
-    expect(new Set(consumerPackageSpecifiers).size).toBe(16);
+    expect(packageSurfacePolicy.packages).toHaveLength(12);
+    expect(workspacePackageSpecifiers).toHaveLength(26);
+    expect(new Set(workspacePackageSpecifiers).size).toBe(26);
+    expect(consumerPackageSpecifiers).toHaveLength(19);
+    expect(new Set(consumerPackageSpecifiers).size).toBe(19);
     expect(consumerPackageSpecifiers).not.toContain("effect-view-server");
     expect(
       expectedPackageSurfaces
         .filter((surface) => surface.directory !== "effect-view-server")
         .flatMap((surface) => surface.packEntrypoints),
-    ).toHaveLength(23);
+    ).toHaveLength(27);
     expect(packageSurfacePolicy.runtimeSymbols.map((policy) => policy.workspaceSpecifier).sort()).toStrictEqual(
       [...workspacePackageSpecifiers].sort(),
     );
@@ -109,8 +109,8 @@ describe("Package Surface Policy", () => {
         "src/grpc-contract.ts",
       ],
     });
-    expect(facadeSurface?.manifestExports).toHaveLength(16);
-    expect(facadeSurface?.packEntrypoints).toHaveLength(16);
+    expect(facadeSurface?.manifestExports).toHaveLength(19);
+    expect(facadeSurface?.packEntrypoints).toHaveLength(19);
     expect(kafkaProjection.workspaceSpecifier).toBe("@effect-view-server/config/kafka");
     expect(kafkaProjection.consumerSourceEntrypoint).toBe("src/config-kafka.ts");
     expect(kafkaProjection.reexport).toMatchObject({

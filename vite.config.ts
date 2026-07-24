@@ -3,12 +3,18 @@ import { defineConfig } from "vite-plus";
 const declarationBuildTask = "build:effect-declarations";
 
 const declarationProjects = [
-  { name: "config", directory: "packages/config", dependsOn: [] },
   { name: "effect-utils", directory: "packages/effect-utils", dependsOn: [] },
+  { name: "source-adapter", directory: "packages/source-adapter", dependsOn: [] },
+  {
+    name: "source-adapter-testing",
+    directory: "packages/source-adapter-testing",
+    dependsOn: ["source-adapter"],
+  },
+  { name: "config", directory: "packages/config", dependsOn: ["source-adapter"] },
   {
     name: "column-live-view-engine",
     directory: "packages/column-live-view-engine",
-    dependsOn: ["config", "effect-utils"],
+    dependsOn: ["config", "effect-utils", "source-adapter"],
   },
   {
     name: "protocol",
@@ -18,17 +24,17 @@ const declarationProjects = [
   {
     name: "client",
     directory: "packages/client",
-    dependsOn: ["config", "effect-utils", "protocol"],
+    dependsOn: ["config", "effect-utils", "protocol", "source-adapter"],
   },
   {
     name: "runtime-core",
     directory: "packages/runtime-core",
-    dependsOn: ["client", "column-live-view-engine", "config", "effect-utils"],
+    dependsOn: ["client", "column-live-view-engine", "config", "effect-utils", "source-adapter"],
   },
   {
     name: "server",
     directory: "packages/server",
-    dependsOn: ["client", "config", "effect-utils", "protocol", "runtime-core"],
+    dependsOn: ["client", "config", "effect-utils", "protocol", "runtime-core", "source-adapter"],
   },
   {
     name: "in-memory",
@@ -38,7 +44,7 @@ const declarationProjects = [
   {
     name: "runtime",
     directory: "packages/runtime",
-    dependsOn: ["client", "config", "effect-utils", "runtime-core", "server"],
+    dependsOn: ["client", "config", "effect-utils", "runtime-core", "server", "source-adapter"],
   },
   {
     name: "react",
@@ -61,6 +67,16 @@ const declarationTasks = Object.fromEntries(
 );
 
 const diagnosticsProjects = [
+  {
+    name: "source-adapter",
+    project: "packages/source-adapter",
+    declarationTask: declarationTaskName("source-adapter"),
+  },
+  {
+    name: "source-adapter-testing",
+    project: "packages/source-adapter-testing",
+    declarationTask: declarationTaskName("source-adapter-testing"),
+  },
   { name: "config", project: "packages/config", declarationTask: undefined },
   { name: "effect-utils", project: "packages/effect-utils", declarationTask: undefined },
   {

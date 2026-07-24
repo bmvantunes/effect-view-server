@@ -65,3 +65,15 @@ export {
   viewServerDecodeHealthTopicEvent,
   viewServerDecodeHealth,
 } from "./protocol-health-codec";
+
+export {
+  ViewServerSourceHealthPayloadSchema,
+  ViewServerWireSourceHealthSchema,
+  viewServerDecodeSourceHealth,
+  viewServerDecodeSourceHealthRequest,
+  viewServerEncodeSourceHealth,
+  viewServerEncodeSourceHealthRequest,
+  type ViewServerSourceHealthPayload,
+  type ViewServerDecodedSourceHealth,
+  type ViewServerWireSourceHealth,
+} from "./source-health-wire";

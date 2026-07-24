@@ -47,6 +47,7 @@ const makeInMemoryTestingLiveClient = <Topics extends ViewServerInMemoryTopicDef
   subscribeRuntime: adaptRuntimeQuerySubscriber(internalLiveClient.subscribeRuntimeRoutedInternal),
   subscribeHealth: liveClient.subscribeHealth,
   subscribeHealthSummary: liveClient.subscribeHealthSummary,
+  subscribeSourceHealth: liveClient.subscribeSourceHealth,
 });
 
 export const makeInMemoryViewServerTesting: <

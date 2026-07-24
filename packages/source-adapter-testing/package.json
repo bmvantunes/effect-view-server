@@ -1,0 +1,30 @@
+{
+  "name": "@effect-view-server/source-adapter-testing",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp run -t @effect-view-server/runtime-core#build && vp test run --coverage --typecheck"
+  },
+  "dependencies": {
+    "@effect-view-server/source-adapter": "workspace:*",
+    "@effect/vitest": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@vitest/coverage-istanbul": "catalog:",
+    "@vitest/runner": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

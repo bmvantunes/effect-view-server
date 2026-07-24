@@ -170,10 +170,11 @@ production-like machine. Do not copy the resource values above without testing
 your topic count, row count, grouped queries, Kafka rate, gRPC routes, and
 WebSocket fanout.
 
-`GET /health` is a readiness/startup probe: it returns a non-`200` status while
-the runtime is starting, degraded, or stopping. Use a process-level or TCP
-liveness check unless you intentionally want recoverable source degradation to
-restart the pod and rebuild in-memory state.
+`GET /health` is a readiness/startup probe: it returns `200` while the runtime
+is ready or degraded and a non-`200` status while it is starting or stopping.
+An exhausted required source contributes aggregate `starting` health until it
+recovers. Use a process-level or TCP liveness check so recoverable degradation
+does not restart the pod and discard retained in-memory state.
 
 ## Release Candidate Gate
 

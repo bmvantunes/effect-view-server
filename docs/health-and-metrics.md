@@ -27,8 +27,12 @@ Each request performs a fresh runtime health read for infrastructure checks.
 Overlapping concurrent requests are coalesced so they share one runtime read;
 the route does not serve a possibly stale client health atom.
 
-- `200`: runtime is ready.
-- non-`200`: runtime is starting, degraded, or stopping.
+- `200`: runtime is ready or degraded.
+- non-`200`: runtime is starting or stopping.
+
+A settled item rejection leaves the runtime degraded, queryable, and ready. A
+required source whose retries are exhausted contributes `starting` aggregate
+health until recovery, while its exact Source Health remains `Exhausted`.
 
 If runtime auth is configured, health requests are authenticated before the
 health snapshot is served. Kubernetes probes must either send accepted

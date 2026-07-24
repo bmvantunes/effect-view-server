@@ -28,7 +28,9 @@ ownership.
 Use `GET /health` for readiness and startup checks. The endpoint returns `200`
 when the runtime is ready or degraded, and returns a non-`200` status while the
 runtime is starting or stopping. Degraded sources remain queryable and must not
-trigger an automatic restart that discards retained in-memory state. Prefer a
+trigger an automatic restart that discards retained in-memory state. A required
+source whose retries are exhausted contributes `starting` aggregate health, so
+readiness returns a non-`200` response until that source can recover. Prefer a
 process-level or TCP liveness check until a separate liveness endpoint exists.
 If runtime auth is enabled, readiness probes must be
 accepted by `auth.validateRequest` or auth must whitelist the health path;

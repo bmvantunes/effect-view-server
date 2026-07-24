@@ -439,6 +439,16 @@ describe("Source Runtime internal contracts", () => {
       reason: "runtime-shutdown",
       stoppingAtNanos: 3n,
     } as const;
+    const exhausted = {
+      _tag: "Exhausted",
+      exhaustion: {
+        _tag: "RetryExhausted",
+        lastTermination: {
+          _tag: "UnexpectedCompletion",
+        },
+      },
+      exhaustedAtNanos: 3n,
+    } as const;
     const base = healthFromEngine(engineHealth("ready", 0));
     const engineStarting = {
       ...base,
@@ -490,6 +500,11 @@ describe("Source Runtime internal contracts", () => {
         .status,
       sourceRuntimeInternals.overlaySourceHealth(base, [{ topic: "orders", status: stopping }])
         .status,
+      sourceRuntimeInternals.overlaySourceHealth(base, [{ topic: "orders", status: exhausted }])
+        .status,
+      sourceRuntimeInternals.overlaySourceHealth(runtimeDegraded, [
+        { topic: "orders", status: exhausted },
+      ]).status,
       sourceRuntimeInternals.overlaySourceHealth(runtimeStarting, []).status,
       sourceRuntimeInternals.overlaySourceHealth(runtimeDegraded, []).status,
       sourceRuntimeInternals.overlaySourceHealth(runtimeStopping, []).status,
@@ -502,9 +517,11 @@ describe("Source Runtime internal contracts", () => {
       "starting",
       "degraded",
       "starting",
+      "starting",
+      "starting",
       "degraded",
       "stopping",
-      "degraded",
+      "starting",
     ]);
   });
 

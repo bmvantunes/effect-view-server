@@ -640,6 +640,7 @@ _Avoid_: Browser write, send, emit
 - Live Queries map `Ready` and `Degraded` to ready availability, `WaitingToRetry` and `Reacquiring` to stale, `Exhausted` to error, and recovery to ready while retaining their existing Subscription and rows; exact degraded state remains visible through Source Diagnostics.
 - A Source Item Rejection makes its exact Source Health, affected Topic health row, and aggregate View Server health summary degraded, while Live Query availability stays ready and later valid source items continue.
 - Liveness and readiness endpoints remain successful for a degraded source and return the degraded state in their payload; they do not evict or restart the View Server automatically.
+- An exhausted required source keeps its exact `Exhausted` diagnostics and retained rows, but contributes `starting` Topic and aggregate health so readiness remains unsuccessful until the source recovers.
 - Operators may alert on aggregate degraded status or increasing `rejectedItemCount` without putting health RPCs or refresh work on the source-event hot path.
 - Ordinary Live Query Snapshot, Delta, and Status Event APIs remain transport-agnostic and never carry Source Adapter Metrics or full Source Health payloads on the live-event hot path.
 - Remote Browser Client and React expose Source Diagnostics through an explicit separately subscribed or read API whose inputs and exact result are inferred from the selected Topic Source Definition.

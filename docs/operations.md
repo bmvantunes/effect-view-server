@@ -59,7 +59,9 @@ starting points and validate names against the current `/metrics` output.
 Use `GET /health` for readiness and startup checks. It returns `200` when the
 runtime is ready or degraded, and returns a non-`200` status while the runtime
 is starting or stopping. Each request reads fresh runtime health; overlapping
-concurrent reads share the same coalesced read.
+concurrent reads share the same coalesced read. A required source whose retries
+are exhausted contributes `starting` aggregate health until it can recover, so
+the probe does not route new traffic to a runtime serving only retained rows.
 
 ```yaml
 readinessProbe:

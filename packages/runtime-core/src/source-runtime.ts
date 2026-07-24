@@ -1641,6 +1641,18 @@ const sourceAvailabilityEvent = (
   };
 };
 
+type AggregateSourceStatus = "ready" | "degraded" | "starting";
+
+const combineAggregateSourceStatus = (
+  left: AggregateSourceStatus,
+  right: AggregateSourceStatus,
+): AggregateSourceStatus =>
+  left === "starting" || right === "starting"
+    ? "starting"
+    : left === "degraded" || right === "degraded"
+      ? "degraded"
+      : "ready";
+
 const overlaySourceHealth = <
   Topics extends import("@effect-view-server/column-live-view-engine").DecodableTopicDefinitions,
 >(
@@ -1650,51 +1662,45 @@ const overlaySourceHealth = <
     readonly status: SourceStatus<unknown, unknown>;
   }>,
 ): ViewServerHealth<Topics> => {
-  const statusByTopic = new Map<string, "ready" | "degraded" | "starting">();
+  const statusByTopic = new Map<string, AggregateSourceStatus>();
   for (const { topic, status } of statuses) {
     const next =
       status._tag === "Ready"
         ? "ready"
-        : status._tag === "Starting" || status._tag === "Reacquiring"
+        : status._tag === "Starting" || status._tag === "Reacquiring" || status._tag === "Exhausted"
           ? "starting"
           : "degraded";
     const current = statusByTopic.get(topic);
-    if (
-      current === undefined ||
-      next === "degraded" ||
-      (next === "starting" && current === "ready")
-    ) {
-      statusByTopic.set(topic, next);
-    }
+    statusByTopic.set(
+      topic,
+      current === undefined ? next : combineAggregateSourceStatus(current, next),
+    );
   }
   const topics = { ...health.engine.topics };
-  let aggregateSourceStatus: "ready" | "degraded" | "starting" = "ready";
+  let aggregateSourceStatus: AggregateSourceStatus = "ready";
   for (const [topic, sourceStatus] of statusByTopic) {
     const current: unknown = Reflect.get(topics, topic);
     if (typeof current === "object" && current !== null) {
       const engineStatus = Reflect.get(current, "status");
-      const status =
-        engineStatus === "degraded" || sourceStatus === "degraded"
-          ? "degraded"
-          : engineStatus === "starting" || sourceStatus === "starting"
-            ? "starting"
-            : "ready";
+      const status = combineAggregateSourceStatus(
+        engineStatus === "starting"
+          ? "starting"
+          : engineStatus === "degraded"
+            ? "degraded"
+            : "ready",
+        sourceStatus,
+      );
       Reflect.set(topics, topic, { ...current, status });
     }
-    aggregateSourceStatus =
-      aggregateSourceStatus === "degraded" || sourceStatus === "degraded"
-        ? "degraded"
-        : aggregateSourceStatus === "starting" || sourceStatus === "starting"
-          ? "starting"
-          : "ready";
+    aggregateSourceStatus = combineAggregateSourceStatus(aggregateSourceStatus, sourceStatus);
   }
   const status =
     health.status === "stopping"
       ? "stopping"
-      : health.status === "degraded" || aggregateSourceStatus === "degraded"
-        ? "degraded"
-        : health.status === "starting" || aggregateSourceStatus === "starting"
-          ? "starting"
+      : health.status === "starting" || aggregateSourceStatus === "starting"
+        ? "starting"
+        : health.status === "degraded" || aggregateSourceStatus === "degraded"
+          ? "degraded"
           : "ready";
   return {
     ...health,

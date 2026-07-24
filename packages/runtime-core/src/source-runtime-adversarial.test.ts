@@ -680,6 +680,9 @@ describe("Runtime Core adversarial Source runtime", () => {
         },
         exhaustedAtNanos: 0n,
       });
+      const health = yield* runtime.refreshHealth;
+      expect(health.status).toBe("starting");
+      expect(health.engine.topics.rows.status).toBe("starting");
       yield* runtime.close;
     }),
   );

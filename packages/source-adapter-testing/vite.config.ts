@@ -1,11 +1,13 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 import { libraryPack } from "../../vite.pack";
 
 export default defineConfig({
   resolve: {
     alias: {
-      "@effect-view-server/source-adapter-testing": new URL("./src/index.ts", import.meta.url)
-        .pathname,
+      "@effect-view-server/source-adapter-testing": fileURLToPath(
+        new URL("./src/index.ts", import.meta.url),
+      ),
     },
   },
   test: {

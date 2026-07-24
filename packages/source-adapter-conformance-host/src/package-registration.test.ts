@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
@@ -31,8 +32,8 @@ import {
   makeSourceAdapterPackageConformanceRegistrar,
 } from "./package-registration";
 
-const builtPackageRoot = decodeURIComponent(
-  new URL("../../source-adapter-testing/test-fixtures/package-adapter", import.meta.url).pathname,
+const builtPackageRoot = fileURLToPath(
+  new URL("../../source-adapter-testing/test-fixtures/package-adapter", import.meta.url),
 );
 
 const builtPackageInspection: SourceAdapterPackageInspectionOptions = {

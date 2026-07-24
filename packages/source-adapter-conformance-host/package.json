@@ -25,6 +25,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",
     "typescript": "catalog:",

@@ -1336,6 +1336,9 @@ importers:
         specifier: 'catalog:'
         version: 4.0.0-beta.100
     devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.1
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.9(vitest@4.1.9)

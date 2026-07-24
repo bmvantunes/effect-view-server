@@ -668,13 +668,7 @@ describe("Source Adapter low-level conformance driver", () => {
       yield* Fiber.join(completed);
       yield* Scope.close(completeScope, Exit.void);
 
-      for (const fault of [
-        "EmptyLanes",
-        "EmptyLaneId",
-        "DuplicateLaneId",
-        "ChangedLaneIds",
-        "MissingBufferMetrics",
-      ] as const) {
+      for (const fault of ["EmptyLanes", "EmptyLaneId", "DuplicateLaneId"] as const) {
         yield* fixture.controls.configureNextAttempt(target, fault);
         const faulted = yield* Effect.scoped(
           lifecycle.acquire({
@@ -683,12 +677,19 @@ describe("Source Adapter low-level conformance driver", () => {
             toolkit,
           }),
         ).pipe(Effect.exit);
-        expect(
-          fault === "ChangedLaneIds" || fault === "MissingBufferMetrics"
-            ? Exit.isSuccess(faulted)
-            : Exit.isFailure(faulted),
-          fault,
-        ).toBe(true);
+        expect(Exit.isFailure(faulted), fault).toBe(true);
+      }
+
+      for (const fault of ["ChangedLaneIds", "MissingBufferMetrics"] as const) {
+        yield* fixture.controls.configureNextAttempt(target, fault);
+        const faulted = yield* Effect.scoped(
+          lifecycle.acquire({
+            definition: definition.options,
+            target: { _tag: "Materialized" },
+            toolkit,
+          }),
+        ).pipe(Effect.exit);
+        expect(Exit.isSuccess(faulted), fault).toBe(true);
       }
 
       const singleLaneDefinition = fixture.materializedSource({

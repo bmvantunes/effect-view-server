@@ -331,12 +331,12 @@ describe("Runtime Core adversarial Source runtime", () => {
       };
       const decimalMetric = BigDecimal.make(123n, 2);
 
-      for (const [index, invalidMetrics] of [
+      for (const invalidMetrics of [
         accessorMetric,
         new MetricClass(),
         Reflect.construct(Date, [0]),
         symbolMetric,
-      ].entries()) {
+      ]) {
         currentMetrics = {
           value: decimalMetric,
         };
@@ -345,15 +345,13 @@ describe("Runtime Core adversarial Source runtime", () => {
         const ready = Option.getOrThrow(
           yield* readyDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
         );
-        if (index === 0) {
-          expect({
-            copied: ready.metrics.adapter.value === decimalMetric,
-            frozen: Object.isFrozen(ready.metrics.adapter.value),
-          }).toStrictEqual({
-            copied: false,
-            frozen: true,
-          });
-        }
+        expect({
+          copied: ready.metrics.adapter.value === decimalMetric,
+          frozen: Object.isFrozen(ready.metrics.adapter.value),
+        }).toStrictEqual({
+          copied: false,
+          frozen: true,
+        });
         yield* readyDiagnostics.close();
         const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
         const exhausted = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);

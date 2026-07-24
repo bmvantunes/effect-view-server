@@ -3,7 +3,7 @@ import {
   SourceAdapterConformanceRow,
   SourceFixture,
 } from "@effect-view-server/source-adapter-testing";
-import { Effect, Exit, Stream } from "effect";
+import { Effect, Exit, Option, Stream } from "effect";
 import {
   invokeEffect,
   openHealth,
@@ -211,10 +211,21 @@ describe("Source Adapter conformance host probes", () => {
           }),
       });
       expect(yield* health.events.pipe(Stream.runHead)).toStrictEqual(
-        expect.objectContaining({
-          value: expect.objectContaining({
-            statusTag: "Inactive",
-          }),
+        Option.some({
+          statusTag: "Inactive",
+          attempt: undefined,
+          retryAtNanos: undefined,
+          adapterMetrics: undefined,
+          rejectedItemCount: 0n,
+          failedSettlementCount: 0n,
+          lastRuntimeFailureTag: undefined,
+          lastExecutionFailure: undefined,
+          latestRejectionFailureTag: undefined,
+          latestRejectionFailure: undefined,
+          latestRejectionLocation: undefined,
+          latestRejectedAtNanos: undefined,
+          bufferHighWaterMark: 0,
+          bufferOverflowCount: 0n,
         }),
       );
       yield* health.close();

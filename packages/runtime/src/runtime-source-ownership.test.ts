@@ -341,28 +341,28 @@ describe("Runtime source ownership and mutation policy", () => {
           code: "UnsupportedQuery",
           topic: "orders",
           message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "UnsupportedQuery",
           topic: "orders",
           message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "UnsupportedQuery",
           topic: "orders",
           message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "UnsupportedQuery",
           topic: "orders",
           message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
         },
         {
           _tag: "ViewServerRuntimeError",
@@ -411,7 +411,7 @@ describe("Runtime source ownership and mutation policy", () => {
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       };
       const sourceOwnedResetError = {
         _tag: "ViewServerRuntimeError",

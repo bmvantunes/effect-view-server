@@ -107,7 +107,7 @@ export const publicSourceOwnedRuntimeMutationError = {
   code: "UnsupportedQuery",
   topic: "orders",
   message:
-    "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+    "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
 } satisfies ViewServerRuntimeError;
 
 export const publicSourceOwnedRuntimeResetError = {

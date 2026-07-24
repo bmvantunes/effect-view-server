@@ -801,13 +801,8 @@ describe("remote ViewServer client", () => {
       yield* server.awaitSourceHealthSubscriptionCount(1);
       yield* Fiber.interrupt(consumer);
       yield* server.awaitSourceHealthSubscriptionCount(0);
-      expect({
-        activeSubscriptions: server.activeSourceHealthSubscriptions(),
-        sourceHealthRequests: server.sourceHealthRequests(),
-      }).toStrictEqual({
-        activeSubscriptions: 0,
-        sourceHealthRequests: 1,
-      });
+      expect(server.activeSourceHealthSubscriptions()).toBe(0);
+      expect(server.sourceHealthRequests()).toBe(1);
 
       yield* subscription.close();
       yield* client.close;

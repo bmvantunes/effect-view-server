@@ -4,8 +4,7 @@
 
 Accepted. Issue #384 implements and verifies the View Server SDK exports and the
 reusable published-adapter package conformance contract. First-party adapter
-`/contract`, `/server`, and platform exports remain staged in issues #385 and
-#386.
+`/contract`, `/server`, and platform exports remain staged in issues #385 and #386.
 
 ## Context
 

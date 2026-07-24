@@ -24,7 +24,7 @@ const sourceOwnedMutationError = (topic: string): ViewServerRuntimeError => ({
   code: "UnsupportedQuery",
   topic,
   message:
-    "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+    "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
 });
 
 const sourceOwnedResetError: ViewServerRuntimeError = {
@@ -56,6 +56,14 @@ const managedRuntimeLeasedResetError: ViewServerRuntimeError = {
   message:
     "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
 };
+
+const sourceLeasedReadError = (topic: string): ViewServerRuntimeError => ({
+  _tag: "ViewServerRuntimeError",
+  code: "UnsupportedQuery",
+  topic,
+  message:
+    "Leased Source topics do not support one-shot snapshots; use a live subscription so Runtime Core owns the source lease lifecycle.",
+});
 
 const sourceFreeViewServer = defineViewServerConfig({
   topics: {
@@ -302,10 +310,18 @@ describe("SourceOwnershipPolicy", () => {
       const directReadError = yield* policy
         .requirePublicReadAllowed("leasedOrders", "runtimeCore")
         .pipe(Effect.flip);
+      const managedReadError = yield* policy
+        .requirePublicReadAllowed("leasedOrders", "managedRuntime")
+        .pipe(Effect.flip);
       yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "runtimeCore");
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
 
-      expect(directReadError).toStrictEqual(runtimeCoreLeasedAccessError("leasedOrders"));
+      expect(directReadError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
+      expect(managedReadError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
       expect(policy.publicSubscriptionDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+        _tag: "allowed",
+      });
+      expect(policy.publicSubscriptionDecision("leasedOrders", "managedRuntime")).toStrictEqual({
         _tag: "allowed",
       });
     }),

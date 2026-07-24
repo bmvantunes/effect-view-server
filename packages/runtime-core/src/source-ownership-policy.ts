@@ -5,6 +5,7 @@ import {
   leasedManagedRuntimeAccessError,
   leasedManagedRuntimeResetError,
   leasedRuntimeAccessError,
+  sourceLeasedRuntimeReadError,
   sourceOwnedRuntimeMutationError,
   sourceOwnedRuntimeResetError,
 } from "./runtime-error";
@@ -160,7 +161,11 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
     profile: SourceOwnershipAccessProfile,
   ): SourceOwnershipDecision =>
     sortedLeasedTopics.has(topic)
-      ? rejectedDecision(leasedRuntimeAccessErrorFor(topic, profile))
+      ? rejectedDecision(
+          sortedGrpcLeasedTopics.has(topic)
+            ? leasedRuntimeAccessErrorFor(topic, profile)
+            : sourceLeasedRuntimeReadError(topic),
+        )
       : allowedDecision;
   const publicSubscriptionDecision = (
     topic: string,

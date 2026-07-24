@@ -465,56 +465,56 @@ describe("@effect-view-server/in-memory", () => {
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(kafkaPublishMany).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(kafkaPatch).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(kafkaDelete).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(grpcPublish).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(grpcPublishMany).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(grpcPatch).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(grpcDelete).toStrictEqual({
         _tag: "ViewServerRuntimeError",
         code: "UnsupportedQuery",
         topic: "orders",
         message:
-          "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+          "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
       });
       expect(kafkaReset).toStrictEqual({
         _tag: "ViewServerRuntimeError",

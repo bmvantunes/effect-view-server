@@ -74,6 +74,14 @@ export const leasedManagedRuntimeAccessError = (topic: string): ViewServerRuntim
     "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
 });
 
+export const sourceLeasedRuntimeReadError = (topic: string): ViewServerRuntimeError => ({
+  _tag: "ViewServerRuntimeError",
+  code: "UnsupportedQuery",
+  topic,
+  message:
+    "Leased Source topics do not support one-shot snapshots; use a live subscription so Runtime Core owns the source lease lifecycle.",
+});
+
 export const leasedManagedRuntimeResetError: ViewServerRuntimeError = {
   _tag: "ViewServerRuntimeError",
   code: "UnsupportedQuery",
@@ -86,7 +94,7 @@ export const sourceOwnedRuntimeMutationError = (topic: string): ViewServerRuntim
   code: "UnsupportedQuery",
   topic,
   message:
-    "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+    "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
 });
 
 export const sourceOwnedRuntimeResetError: ViewServerRuntimeError = {

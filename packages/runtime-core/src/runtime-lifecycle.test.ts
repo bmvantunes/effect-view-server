@@ -928,11 +928,12 @@ describe("Runtime Core lifecycle", () => {
           hub,
           requestHealthRefresh,
         );
-        const sourceDiagnostics = yield* Effect.promise(() =>
-          Effect.runPromiseExit(
-            Reflect.apply(liveClient.subscribeSourceHealth, liveClient, ["orders"]),
-          ),
+        const unsupportedSourceDiagnostics: Effect.Effect<unknown, unknown> = Reflect.apply(
+          liveClient.subscribeSourceHealth,
+          liveClient,
+          ["orders"],
         );
+        const sourceDiagnostics = yield* Effect.exit(unsupportedSourceDiagnostics);
         expect(Exit.isFailure(sourceDiagnostics)).toBe(true);
         const subscriptionFiber = yield* liveClient
           .subscribeInternal("orders", { select: ["id"] })

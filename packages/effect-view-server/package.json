@@ -109,7 +109,6 @@
     "provenance": true
   },
   "scripts": {
-    "build": "vp pack",
     "test": "vp run -t effect-view-server#build && vp test run --typecheck"
   },
   "dependencies": {

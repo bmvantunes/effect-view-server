@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import facadeConfig from "../packages/effect-view-server/vite.config";
 import config from "../vite.config";
 
 const tasks = config.run?.tasks ?? {};
@@ -17,6 +18,26 @@ const taskDependencies = (task: (typeof tasks)[string]) =>
   typeof task === "object" && !Array.isArray(task) ? (task.dependsOn ?? []) : [];
 
 describe("strict Effect diagnostics task graph", () => {
+  it("builds the facade after every workspace package that it re-exports", () => {
+    const facadeBuild = facadeConfig.run?.tasks?.build;
+
+    expect(facadeBuild).toStrictEqual({
+      command: "vp pack",
+      dependsOn: [
+        "@effect-view-server/client#build",
+        "@effect-view-server/column-live-view-engine#build",
+        "@effect-view-server/config#build",
+        "@effect-view-server/in-memory#build",
+        "@effect-view-server/react#build",
+        "@effect-view-server/runtime#build",
+        "@effect-view-server/server#build",
+        "@effect-view-server/source-adapter#build",
+        "@effect-view-server/source-adapter-conformance-host#build",
+        "@effect-view-server/source-adapter-testing#build",
+      ],
+    });
+  });
+
   it("builds each declaration package once before runtime diagnostics", () => {
     const facadePackage = JSON.parse(
       readFileSync("packages/effect-view-server/package.json", "utf8"),

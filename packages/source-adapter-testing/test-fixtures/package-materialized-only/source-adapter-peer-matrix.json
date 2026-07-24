@@ -1,0 +1,7 @@
+[
+  {
+    "effect-view-server": "0.0.6",
+    "effect": "4.0.0-beta.100",
+    "@effect/platform-node": "4.0.0-beta.100"
+  }
+]

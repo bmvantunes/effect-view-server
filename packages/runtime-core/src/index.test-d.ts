@@ -8,9 +8,9 @@ import {
   type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import type { Effect } from "effect";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import type { Stream } from "effect";
-import { Schema } from "effect";
+import { Context, Effect, Layer, Schedule, Schema } from "effect";
 import { createViewServerRuntimeCore, makeViewServerRuntimeCore } from "./index";
 
 const Order = Schema.Struct({
@@ -45,8 +45,69 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const SourceFailure = Schema.TaggedStruct("RuntimeCoreSourceFailure", {
+  message: Schema.String,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "runtime-core-type-source" },
+  failure: SourceFailure,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+class RetryDependency extends Context.Service<
+  RetryDependency,
+  { readonly delayEnabled: boolean }
+>()("@effect-view-server/runtime-core/type-test/RetryDependency") {}
+const canonicalSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(undefined),
+    },
+  },
+});
+const canonicalRetrySourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(
+        undefined,
+        Schedule.recurs(1).pipe(Schedule.tap(() => RetryDependency.pipe(Effect.asVoid))),
+      ),
+    },
+  },
+});
+
 const runtimeCore = createViewServerRuntimeCore(viewServer);
 const runtimeCoreEffect = makeViewServerRuntimeCore(viewServer, {});
+const canonicalSourceRuntimeCoreEffect = makeViewServerRuntimeCore(canonicalSourceViewServer, {});
+const canonicalRetrySourceRuntimeCoreEffect = makeViewServerRuntimeCore(
+  canonicalRetrySourceViewServer,
+  {},
+);
+declare const sourceAdapterLayer: Layer.Layer<
+  Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+>;
+const retryDependencyLayer = Layer.succeed(RetryDependency)({
+  delayEnabled: true,
+});
+const canonicalRetryAppLayer = Layer.merge(sourceAdapterLayer, retryDependencyLayer);
+const canonicalRetrySourceRuntimeCoreReady = canonicalRetrySourceRuntimeCoreEffect.pipe(
+  Effect.provide(canonicalRetryAppLayer),
+);
+// @effect-diagnostics missingEffectContext:off
+// @ts-expect-error the retry Schedule service remains required when the app Layer omits it.
+const invalidRetrySourceRuntimeCoreReady: Effect.Effect<
+  Effect.Success<typeof canonicalRetrySourceRuntimeCoreEffect>,
+  Effect.Error<typeof canonicalRetrySourceRuntimeCoreEffect>
+> = canonicalRetrySourceRuntimeCoreEffect.pipe(Effect.provide(sourceAdapterLayer));
+// @effect-diagnostics missingEffectContext:on
+// @ts-expect-error synchronous Runtime Core cannot provide a canonical Source Adapter service.
+const invalidCanonicalSourceRuntimeCore = createViewServerRuntimeCore(canonicalSourceViewServer);
 const runtimeCoreWithGroupedAdmissionLimits = createViewServerRuntimeCore(viewServer, {
   groupedIncrementalAdmissionLimits: {
     maxGroups: 1,
@@ -220,6 +281,17 @@ describe("runtime-core type contracts", () => {
 
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
     expectTypeOf<Effect.Success<typeof runtimeCoreEffect>>().toEqualTypeOf<typeof runtimeCore>();
+    expectTypeOf<Effect.Services<typeof canonicalSourceRuntimeCoreEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceRuntimeCoreEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
+    >();
+    expectTypeOf<
+      Effect.Services<typeof canonicalRetrySourceRuntimeCoreReady>
+    >().toEqualTypeOf<never>();
+    expectTypeOf(invalidCanonicalSourceRuntimeCore).not.toBeAny();
+    expectTypeOf(invalidRetrySourceRuntimeCoreReady).not.toBeAny();
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;

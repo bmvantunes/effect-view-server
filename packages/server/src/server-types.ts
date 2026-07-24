@@ -1,6 +1,7 @@
 import type {
   ViewServerLiveSubscription,
   ViewServerRuntimeLiveClient,
+  ViewServerSourceHealthSubscription,
 } from "@effect-view-server/client";
 import type {
   TopicDefinitions,
@@ -27,6 +28,13 @@ type ViewServerValidatedRuntimeLiveClient<Topics extends TopicDefinitions> = Pic
     query: ValidatedRuntimeQuery,
   ) => Effect.Effect<
     ViewServerLiveSubscription<object>,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
+  readonly subscribeProtocolSourceHealth: (
+    topic: string,
+    route: ReadonlyArray<Readonly<Record<string, unknown>>>,
+  ) => Effect.Effect<
+    ViewServerSourceHealthSubscription<unknown>,
     ViewServerRuntimeError | ViewServerTransportError
   >;
 };

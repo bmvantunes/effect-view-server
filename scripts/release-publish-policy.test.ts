@@ -353,6 +353,24 @@ describe("release publish policy", () => {
     });
   });
 
+  it("makes source-adapter package-conformance toolchain peers installable", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../packages/effect-view-server/package.json", import.meta.url), "utf8"),
+    );
+
+    expect({
+      typescript: packageJson.peerDependencies.typescript,
+      typescriptOptional: packageJson.peerDependenciesMeta.typescript,
+      vite: packageJson.peerDependencies.vite,
+      viteOptional: packageJson.peerDependenciesMeta.vite,
+    }).toStrictEqual({
+      typescript: ">=5.7.0 <7.0.0",
+      typescriptOptional: undefined,
+      vite: "*",
+      viteOptional: undefined,
+    });
+  });
+
   it("omits undefined optional manifest fields from the staged npm artifact", () => {
     expect(
       sanitizePublicPackageJson({

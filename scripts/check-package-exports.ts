@@ -212,6 +212,18 @@ const distFiles = (directory: string): ReadonlyArray<string> =>
       : [];
   });
 
+const isApprovedEmittedModuleLoader = (
+  relativePath: string,
+  violation: {
+    readonly kind: string;
+    readonly loader: string;
+  },
+): boolean =>
+  relativePath ===
+    "packages/effect-view-server/dist/source-adapter-testing.js" &&
+  violation.kind === "non-literal-specifier" &&
+  violation.loader === "dynamic-import";
+
 const emittedLeakViolations = distFiles(facadeDistRoot).flatMap((path) => {
   const relativePath = relative(repoRoot, path).replaceAll("\\", "/");
   const inspection = inspectPrivateWorkspaceLeaks({
@@ -223,10 +235,12 @@ const emittedLeakViolations = distFiles(facadeDistRoot).flatMap((path) => {
     ...inspection.privateSpecifiers.map(
       (specifier) => `${relativePath} imports private workspace package ${specifier}.`,
     ),
-    ...inspection.violations.map(
-      (violation) =>
-        `${relativePath}:${violation.line}:${violation.column} contains unsupported ${violation.kind} module loading through ${violation.loader}.`,
-    ),
+    ...inspection.violations
+      .filter((violation) => !isApprovedEmittedModuleLoader(relativePath, violation))
+      .map(
+        (violation) =>
+          `${relativePath}:${violation.line}:${violation.column} contains unsupported ${violation.kind} module loading through ${violation.loader}.`,
+      ),
   ];
 });
 

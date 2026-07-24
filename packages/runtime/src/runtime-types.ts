@@ -136,7 +136,17 @@ type TopicOwnedGrpcSourceTopic<Topics extends object> = Extract<
 
 type TopicOwnedSourceTopic<Topics extends object> =
   | TopicOwnedKafkaSourceTopic<Topics>
-  | TopicOwnedGrpcSourceTopic<Topics>;
+  | TopicOwnedGrpcSourceTopic<Topics>
+  | Extract<
+      {
+        readonly [Topic in keyof Topics]: Topics[Topic] extends {
+          readonly source: object;
+        }
+          ? Topic
+          : never;
+      }[keyof Topics],
+      string
+    >;
 
 type RuntimeSourceOwnedTopic<Topics extends object, _Options> = Extract<
   TopicOwnedSourceTopic<Topics>,

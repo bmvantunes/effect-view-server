@@ -161,6 +161,13 @@ export const serverTestLiveClientWithSubscribe = <const Topics extends TopicDefi
 ): ViewServerWebSocketServerInput<Topics>["liveClient"] => ({
   subscribeHealth: base.subscribeHealth,
   subscribeHealthSummary: base.subscribeHealthSummary,
+  subscribeProtocolSourceHealth: (topic) =>
+    Effect.fail({
+      _tag: "ViewServerRuntimeError",
+      code: "InvalidQuery",
+      message: `Topic ${topic} has no Source.`,
+      topic,
+    }),
   subscribeProtocolQuery: subscribe,
 });
 

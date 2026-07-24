@@ -11,6 +11,7 @@ import type {
   ViewServerRuntimeCoreInstance,
   ViewServerRuntimeCoreOptionsFor,
 } from "./runtime-core-types";
+import type { ViewServerSourceRequirements } from "./source-runtime";
 
 export type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 export type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/column-live-view-engine";
@@ -26,6 +27,14 @@ export type {
   ViewServerRuntimeCoreOptions,
   ViewServerRuntimeCoreOptionsFor,
 } from "./runtime-core-types";
+export type { ViewServerSourceRequirements } from "./source-runtime";
+
+type SynchronousRuntimeCoreConfig<
+  Topics extends DecodableTopicDefinitions,
+  Regions extends RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients,
+> = ViewServerConfig<Topics, Regions, GrpcClients> &
+  ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
 
 export const makeViewServerRuntimeCore: <
   const Topics extends DecodableTopicDefinitions,
@@ -34,9 +43,11 @@ export const makeViewServerRuntimeCore: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerRuntimeCoreOptionsFor<Topics>,
-) => Effect.Effect<ViewServerRuntimeCoreInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
-  "ViewServerRuntimeCore.make",
-)(function* <
+) => Effect.Effect<
+  ViewServerRuntimeCoreInstance<Topics>,
+  ViewServerRuntimeError,
+  ViewServerSourceRequirements<Topics>
+> = Effect.fn("ViewServerRuntimeCore.make")(function* <
   const Topics extends DecodableTopicDefinitions,
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
@@ -60,7 +71,7 @@ export const createViewServerRuntimeCore = <
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  config: SynchronousRuntimeCoreConfig<Topics, Regions, GrpcClients>,
   options: ViewServerRuntimeCoreOptionsFor<Topics> = {},
 ): ViewServerRuntimeCoreInstance<Topics> =>
   Effect.runSync(makeViewServerRuntimeCore(config, options));

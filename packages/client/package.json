@@ -24,6 +24,7 @@
     "@effect-view-server/config": "workspace:*",
     "@effect-view-server/effect-utils": "workspace:*",
     "@effect-view-server/protocol": "workspace:*",
+    "@effect-view-server/source-adapter": "workspace:*",
     "@effect/platform-browser": "catalog:",
     "effect": "catalog:"
   },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import facadeConfig from "../packages/effect-view-server/vite.config";
 import config from "../vite.config";
 
 const tasks = config.run?.tasks ?? {};
@@ -17,6 +18,26 @@ const taskDependencies = (task: (typeof tasks)[string]) =>
   typeof task === "object" && !Array.isArray(task) ? (task.dependsOn ?? []) : [];
 
 describe("strict Effect diagnostics task graph", () => {
+  it("builds the facade after every workspace package that it re-exports", () => {
+    const facadeBuild = facadeConfig.run?.tasks?.build;
+
+    expect(facadeBuild).toStrictEqual({
+      command: "vp pack",
+      dependsOn: [
+        "@effect-view-server/client#build",
+        "@effect-view-server/column-live-view-engine#build",
+        "@effect-view-server/config#build",
+        "@effect-view-server/in-memory#build",
+        "@effect-view-server/react#build",
+        "@effect-view-server/runtime#build",
+        "@effect-view-server/server#build",
+        "@effect-view-server/source-adapter#build",
+        "@effect-view-server/source-adapter-conformance-host#build",
+        "@effect-view-server/source-adapter-testing#build",
+      ],
+    });
+  });
+
   it("builds each declaration package once before runtime diagnostics", () => {
     const facadePackage = JSON.parse(
       readFileSync("packages/effect-view-server/package.json", "utf8"),
@@ -43,14 +64,17 @@ describe("strict Effect diagnostics task graph", () => {
       serverDependency: facadePackage.devDependencies["@effect-view-server/server"],
       uniqueBuildDirectories: [...new Set(buildDirectories)],
     }).toStrictEqual({
-      buildCommands: Array.from({ length: 11 }, () => "vp pack"),
+      buildCommands: Array.from({ length: 14 }, () => "vp pack"),
       buildDirectories: [
-        "packages/config",
         "packages/effect-utils",
+        "packages/source-adapter",
+        "packages/source-adapter-testing",
+        "packages/config",
         "packages/column-live-view-engine",
         "packages/protocol",
         "packages/client",
         "packages/runtime-core",
+        "packages/source-adapter-conformance-host",
         "packages/server",
         "packages/in-memory",
         "packages/runtime",
@@ -61,12 +85,15 @@ describe("strict Effect diagnostics task graph", () => {
         command: "vp pack",
         cwd: "packages/effect-view-server",
         dependsOn: [
-          "build:effect-declarations:config",
           "build:effect-declarations:effect-utils",
+          "build:effect-declarations:source-adapter",
+          "build:effect-declarations:source-adapter-testing",
+          "build:effect-declarations:config",
           "build:effect-declarations:column-live-view-engine",
           "build:effect-declarations:protocol",
           "build:effect-declarations:client",
           "build:effect-declarations:runtime-core",
+          "build:effect-declarations:source-adapter-conformance-host",
           "build:effect-declarations:server",
           "build:effect-declarations:in-memory",
           "build:effect-declarations:runtime",
@@ -74,12 +101,15 @@ describe("strict Effect diagnostics task graph", () => {
         ],
       },
       declarationBuildTaskNames: [
-        "build:effect-declarations:config",
         "build:effect-declarations:effect-utils",
+        "build:effect-declarations:source-adapter",
+        "build:effect-declarations:source-adapter-testing",
+        "build:effect-declarations:config",
         "build:effect-declarations:column-live-view-engine",
         "build:effect-declarations:protocol",
         "build:effect-declarations:client",
         "build:effect-declarations:runtime-core",
+        "build:effect-declarations:source-adapter-conformance-host",
         "build:effect-declarations:server",
         "build:effect-declarations:in-memory",
         "build:effect-declarations:runtime",
@@ -95,6 +125,7 @@ describe("strict Effect diagnostics task graph", () => {
           "build:effect-declarations:effect-utils",
           "build:effect-declarations:runtime-core",
           "build:effect-declarations:server",
+          "build:effect-declarations:source-adapter",
         ],
       },
       runtimeDiagnostics: {
@@ -111,6 +142,7 @@ describe("strict Effect diagnostics task graph", () => {
           "build:effect-declarations:effect-utils",
           "build:effect-declarations:protocol",
           "build:effect-declarations:runtime-core",
+          "build:effect-declarations:source-adapter",
         ],
       },
       serverDependency: "workspace:*",
@@ -168,6 +200,13 @@ describe("strict Effect diagnostics task graph", () => {
         dependsOn: ["build:effect-declarations"],
       },
       diagnosticDependencies: {
+        "check:effect:source-adapter": ["build:effect-declarations:source-adapter"],
+        "check:effect:source-adapter-testing": [
+          "build:effect-declarations:source-adapter-testing",
+        ],
+        "check:effect:source-adapter-conformance-host": [
+          "build:effect-declarations:source-adapter-conformance-host",
+        ],
         "check:effect:config": [],
         "check:effect:effect-utils": [],
         "check:effect:protocol": ["build:effect-declarations:protocol"],

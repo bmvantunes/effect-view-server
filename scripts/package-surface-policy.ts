@@ -2,6 +2,7 @@ export type PackageSurfaceEntrypoint = {
   readonly exportKey: string;
   readonly sourceEntrypoint: string;
   readonly facade?: {
+    readonly additionalAllReexports?: ReadonlyArray<string>;
     readonly exportKey: string;
     readonly reexport?: {
       readonly kind: "named";
@@ -77,6 +78,9 @@ export const packageSurfacePolicy = {
     "@effect-view-server/runtime-core/health",
     "@effect-view-server/server/src/rpc-handlers",
     "@effect-view-server/server/rpc-handlers",
+    "@effect-view-server/source-adapter/src/model",
+    "@effect-view-server/source-adapter/model",
+    "@effect-view-server/source-adapter-testing/src/index",
   ],
   deepImportSuffixes: [
     "dist/index.d.ts",
@@ -100,6 +104,7 @@ export const packageSurfacePolicy = {
           "@effect-view-server/config/internal",
           "@effect-view-server/effect-utils",
           "@effect-view-server/protocol",
+          "@effect-view-server/source-adapter",
         ],
         message: "Client code must not depend on runtime, server, React, in-memory, or engine code.",
         relativeOverrides: [],
@@ -118,6 +123,32 @@ export const packageSurfacePolicy = {
           facade: {
             exportKey: "./client/remote",
             sourceEntrypoint: "src/client-remote.ts",
+          },
+        },
+      ],
+    },
+    {
+      architecture: {
+        allowedWorkspaceSpecifiers: [
+          "@effect-view-server/config",
+          "@effect-view-server/runtime-core",
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter-testing",
+        ],
+        message:
+          "The Source Adapter conformance host may compose Runtime Core with the portable test driver only.",
+        relativeOverrides: [],
+      },
+      directory: "source-adapter-conformance-host",
+      packageName: "@effect-view-server/source-adapter-conformance-host",
+      entrypoints: [
+        {
+          exportKey: ".",
+          sourceEntrypoint: "src/index.ts",
+          facade: {
+            additionalAllReexports: ["@effect-view-server/source-adapter-testing"],
+            exportKey: "./source-adapter/testing",
+            sourceEntrypoint: "src/source-adapter-testing.ts",
           },
         },
       ],
@@ -149,8 +180,11 @@ export const packageSurfacePolicy = {
     },
     {
       architecture: {
-        allowedWorkspaceSpecifiers: [],
-        message: "Config contracts must stay at the bottom of the dependency graph.",
+        allowedWorkspaceSpecifiers: [
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter/internal",
+        ],
+        message: "Config contracts may depend only on the portable Source Adapter SDK.",
         relativeOverrides: [],
       },
       directory: "config",
@@ -283,6 +317,8 @@ export const packageSurfacePolicy = {
           "@effect-view-server/config",
           "@effect-view-server/config/internal",
           "@effect-view-server/effect-utils",
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter/internal",
         ],
         message: "Protocol may depend on config contracts and neutral Effect utilities only.",
         relativeOverrides: [],
@@ -359,6 +395,8 @@ export const packageSurfacePolicy = {
           "@effect-view-server/effect-utils",
           "@effect-view-server/column-live-view-engine",
           "@effect-view-server/column-live-view-engine/internal",
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter/internal",
         ],
         message: "Runtime core may compose client contracts, config, effect utils, and engine only.",
         relativeOverrides: [],
@@ -368,6 +406,53 @@ export const packageSurfacePolicy = {
       entrypoints: [
         { exportKey: ".", sourceEntrypoint: "src/index.ts" },
         { exportKey: "./internal", sourceEntrypoint: "src/internal.ts" },
+      ],
+    },
+    {
+      architecture: {
+        allowedWorkspaceSpecifiers: [],
+        message: "The portable Source Adapter SDK must remain independent of View Server packages.",
+        relativeOverrides: [],
+      },
+      directory: "source-adapter",
+      packageName: "@effect-view-server/source-adapter",
+      entrypoints: [
+        {
+          exportKey: ".",
+          sourceEntrypoint: "src/index.ts",
+          facade: {
+            exportKey: "./source-adapter",
+            sourceEntrypoint: "src/source-adapter.ts",
+          },
+        },
+        {
+          exportKey: "./server",
+          sourceEntrypoint: "src/server.ts",
+          facade: {
+            exportKey: "./source-adapter/server",
+            sourceEntrypoint: "src/source-adapter-server.ts",
+          },
+        },
+        { exportKey: "./internal", sourceEntrypoint: "src/internal.ts" },
+      ],
+    },
+    {
+      architecture: {
+        allowedWorkspaceSpecifiers: [
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter/internal",
+          "@effect-view-server/source-adapter/server",
+        ],
+        message: "Source Adapter test fixtures may depend only on the portable and server SDKs.",
+        relativeOverrides: [],
+      },
+      directory: "source-adapter-testing",
+      packageName: "@effect-view-server/source-adapter-testing",
+      entrypoints: [
+        {
+          exportKey: ".",
+          sourceEntrypoint: "src/index.ts",
+        },
       ],
     },
     {
@@ -516,6 +601,7 @@ export const packageSurfacePolicy = {
         "makeViewServerRuntimeCoreInternal",
         "makeSourceOwnershipPolicy",
         "makeRuntimeCoreMutationPipeline",
+        "makeRuntimeCoreSourceManager",
         "getViewServerRuntimeCoreInternalLiveClient",
         "ViewServerRuntimeCoreInternalInstance",
         "ViewServerRuntimeCoreInternalLiveClient",
@@ -539,6 +625,34 @@ export const packageSurfacePolicy = {
       forbidden: [],
       required: ["makeViewServerWebSocketServer", "createViewServerWebSocketServer"],
       workspaceSpecifier: "@effect-view-server/server",
+    },
+    {
+      forbidden: [],
+      required: ["SourceAdapter"],
+      workspaceSpecifier: "@effect-view-server/source-adapter",
+    },
+    {
+      forbidden: [],
+      required: ["isSourceDefinition"],
+      workspaceSpecifier: "@effect-view-server/source-adapter/internal",
+    },
+    {
+      forbidden: [],
+      required: ["SourceAdapterServer"],
+      workspaceSpecifier: "@effect-view-server/source-adapter/server",
+    },
+    {
+      forbidden: [],
+      required: ["SourceFixture"],
+      workspaceSpecifier: "@effect-view-server/source-adapter-testing",
+    },
+    {
+      forbidden: [],
+      required: [
+        "registerSourceAdapterConformance",
+        "registerSourceAdapterPackageConformance",
+      ],
+      workspaceSpecifier: "@effect-view-server/source-adapter-conformance-host",
     },
   ],
 } as const satisfies PackageSurfacePolicy;
@@ -642,6 +756,12 @@ export const facadeProjections = packageSurfacePolicy.packages.flatMap((packageP
             ? entrypoint.facade.reexport
             : { kind: "all" as const },
         workspaceSpecifier: packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
+        workspaceSpecifiers: [
+          packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
+          ...("additionalAllReexports" in entrypoint.facade
+            ? entrypoint.facade.additionalAllReexports
+            : []),
+        ],
       },
     ];
   }),
@@ -666,18 +786,19 @@ export const runtimeSymbolPolicies = [
     required: symbolPolicy.required,
     specifier: symbolPolicy.workspaceSpecifier,
   })),
-  ...facadeProjections.flatMap((projection) =>
-    packageSurfacePolicy.runtimeSymbols
-      .filter((symbolPolicy) => symbolPolicy.workspaceSpecifier === projection.workspaceSpecifier)
-      .map((symbolPolicy) => ({
-        forbidden: [
-          ...symbolPolicy.forbidden,
-          ...("consumerForbidden" in symbolPolicy ? symbolPolicy.consumerForbidden : []),
-        ],
-        required: symbolPolicy.required,
-        specifier: projection.consumerSpecifier,
-      })),
-  ),
+  ...facadeProjections.map((projection) => {
+    const projectedSymbols = packageSurfacePolicy.runtimeSymbols.filter((symbolPolicy) =>
+      projection.workspaceSpecifiers.includes(symbolPolicy.workspaceSpecifier),
+    );
+    return {
+      forbidden: projectedSymbols.flatMap((symbolPolicy) => [
+        ...symbolPolicy.forbidden,
+        ...("consumerForbidden" in symbolPolicy ? symbolPolicy.consumerForbidden : []),
+      ]),
+      required: projectedSymbols.flatMap((symbolPolicy) => symbolPolicy.required),
+      specifier: projection.consumerSpecifier,
+    };
+  }),
 ];
 
 export type SourceForbiddenExportPolicy = {

@@ -31,7 +31,7 @@ describe("example route cleanup policy", () => {
     ).toStrictEqual(
       exampleDirectories.map((directory) => ({
         cleanRoutes:
-          "node ../../scripts/clean-tanstack-route-tree.mjs src/routeTree.gen.ts && vp check --fix src/routeTree.gen.ts",
+          "node ../../scripts/clean-tanstack-route-tree.mjs src/routeTree.gen.ts && vp fmt src/routeTree.gen.ts --write",
         directory,
       })),
     );
@@ -78,5 +78,4 @@ describe("example route cleanup policy", () => {
     },
     30_000,
   );
-
 });

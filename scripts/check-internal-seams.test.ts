@@ -519,6 +519,33 @@ describe("internal Seam checker", () => {
     ).toStrictEqual([]);
   });
 
+  it("permits dynamic module loading only at the package-conformance Adapter seam", () => {
+    const sourceAdapterTestingPolicy = privatePackageSurfaceFor("source-adapter-testing");
+    const packageRoot = "/repo/packages/source-adapter-testing";
+    const contents = "export const load = (url: URL) => import(url.href);";
+
+    expect(
+      packageImportViolationsForSource({
+        contents,
+        fileName: `${packageRoot}/src/package-export-loader.ts`,
+        packagePolicy: sourceAdapterTestingPolicy,
+        packageRoot,
+        path: `${packageRoot}/src/package-export-loader.ts`,
+      }),
+    ).toStrictEqual([]);
+    expect(
+      packageImportViolationsForSource({
+        contents,
+        fileName: `${packageRoot}/src/package-conformance.ts`,
+        packagePolicy: sourceAdapterTestingPolicy,
+        packageRoot,
+        path: `${packageRoot}/src/package-conformance.ts`,
+      }),
+    ).toStrictEqual([
+      "packages/source-adapter-testing/src/package-conformance.ts:1:35 uses unsupported non-literal-specifier module loading through dynamic-import.",
+    ]);
+  });
+
   it("rejects exact manifest drift and exact Vite+ pack drift", () => {
     const clientSurface = expectedPackageSurfaceFor("client");
     const manifest = JSON.stringify({
@@ -688,6 +715,9 @@ describe("internal Seam checker", () => {
   it("requires facade files to be exact reexport-only projections", () => {
     const clientProjection = facadeProjectionFor("effect-view-server/client");
     const kafkaProjection = facadeProjectionFor("effect-view-server/config/kafka");
+    const sourceAdapterTestingProjection = facadeProjectionFor(
+      "effect-view-server/source-adapter/testing",
+    );
 
     expect(
       facadeProjectionViolationsForSource({
@@ -727,6 +757,17 @@ describe("internal Seam checker", () => {
       }),
     ).toStrictEqual([
       "packages/effect-view-server/src/client.ts must exclusively re-export all of @effect-view-server/client.",
+    ]);
+    expect(
+      facadeProjectionViolationsForSource({
+        contents:
+          'export * from "@effect-view-server/source-adapter-conformance-host";',
+        fileName: "packages/effect-view-server/src/source-adapter-testing.ts",
+        projection: sourceAdapterTestingProjection,
+        relativePath: "packages/effect-view-server/src/source-adapter-testing.ts",
+      }),
+    ).toStrictEqual([
+      "packages/effect-view-server/src/source-adapter-testing.ts must exclusively re-export all of @effect-view-server/source-adapter-conformance-host and @effect-view-server/source-adapter-testing.",
     ]);
   });
 

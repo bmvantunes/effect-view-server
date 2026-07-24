@@ -1876,7 +1876,7 @@ describe("TCP publish Interface", () => {
           _tag: "ViewServerRuntimeError",
           code: "UnsupportedQuery",
           message:
-            "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+            "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
           topic: "orders",
         },
       });

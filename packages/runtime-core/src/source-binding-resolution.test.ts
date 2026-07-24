@@ -374,4 +374,28 @@ describe("source binding resolution", () => {
     expect(topicGrpcSourceMetadataFromUnknown(undefined)).toStrictEqual({ _tag: "absent" });
     expect(topicGrpcSourceMetadataFromUnknown(null)).toStrictEqual({ _tag: "absent" });
   });
+
+  it("does not accept structural values as canonical Source Definitions", () => {
+    const topics = new Proxy(
+      { ...viewServer.topics },
+      {
+        get: (target, property, receiver) =>
+          property === "externalOrders"
+            ? {
+                ...target.externalOrders,
+                source: {
+                  lifecycle: "materialized",
+                },
+              }
+            : Reflect.get(target, property, receiver),
+      },
+    );
+
+    expect(
+      makeTopicSourceBindings({
+        ...viewServer,
+        topics,
+      }).get("externalOrders")?.source,
+    ).toBeUndefined();
+  });
 });

@@ -17,17 +17,20 @@
     }
   },
   "scripts": {
+    "bench:source-adapter-core": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/source-adapter-testing#build && vp test bench src/source-adapter-core.bench.ts --run --testTimeout 0",
     "build": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/effect-utils#build && vp pack",
-    "test": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/effect-utils#build && vp test run --coverage --typecheck"
+    "test": "vp run -t @effect-view-server/client#build && vp run -t @effect-view-server/column-live-view-engine#build && vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/source-adapter-testing#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
     "@effect-view-server/client": "workspace:*",
     "@effect-view-server/column-live-view-engine": "workspace:*",
     "@effect-view-server/config": "workspace:*",
     "@effect-view-server/effect-utils": "workspace:*",
+    "@effect-view-server/source-adapter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect-view-server/source-adapter-testing": "workspace:*",
     "@effect/vitest": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "@vitest/runner": "catalog:",

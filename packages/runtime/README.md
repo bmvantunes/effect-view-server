@@ -38,8 +38,10 @@ fiber is interrupted.
 ## Health
 
 The runtime exposes a same-server `GET /health` endpoint for deployment
-readiness checks. It returns `200` when the runtime status is `ready` and a
-non-`200` status when the runtime is starting, degraded, or stopping.
+readiness checks. It returns `200` when the runtime status is `ready` or
+`degraded` and a non-`200` status when the runtime is `starting` or `stopping`.
+An exhausted required source contributes aggregate `starting` health until it
+recovers, while its exact Source Health remains `Exhausted`.
 
 Each request performs a fresh runtime health read. Overlapping concurrent reads
 are coalesced so they share one runtime read. Internal `bigint` fields, such as

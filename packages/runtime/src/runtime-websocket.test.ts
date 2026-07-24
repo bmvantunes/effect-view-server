@@ -1,8 +1,25 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
+import { defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
-import { Cause, Deferred, Effect, Exit, Fiber, Logger, Option, References, Stream } from "effect";
+import {
+  SourceFixture,
+  type SourceFixtureTarget,
+} from "@effect-view-server/source-adapter-testing";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  Option,
+  References,
+  Schema,
+  Stream,
+} from "effect";
 import { HttpServerError } from "effect/unstable/http";
 import type { ViewServerRuntimeDependencies } from "./internal";
 import { makeDefaultRuntimeDependencies, makeViewServerRuntimeWithDependencies } from "./internal";
@@ -24,6 +41,13 @@ import { bearerAuth, order, viewServer } from "../test-harness/runtime-config";
 const healthStartedPrefix = "View Server health endpoint listening at ";
 const metricsStartedPrefix = "View Server metrics endpoint listening at ";
 const tcpPublishStartedPrefix = "View Server TCP publish endpoint listening at ";
+const sourceTarget: SourceFixtureTarget = {
+  _tag: "Materialized",
+};
+const SourceRow = Schema.Struct({
+  id: Schema.String,
+  value: Schema.String,
+});
 
 const makeRuntimeLaunchSignals = Effect.fn("ViewServerRuntime.test.launchSignals.make")(
   function* () {
@@ -77,6 +101,144 @@ const listenerPort = Effect.fn("ViewServerRuntime.test.listenerPort")(function* 
 });
 
 describe("Runtime WebSocket and operational endpoints", () => {
+  it.live(
+    "requires the nominal Source Adapter service before listening and runs the source through production composition",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* SourceFixture.make(SourceRow);
+        const config = defineViewServerConfig({
+          topics: {
+            sourced: {
+              schema: SourceRow,
+              source: fixture.materializedSource({
+                label: "production-composition",
+              }),
+            },
+          },
+        });
+        const defaultDependencies = makeDefaultRuntimeDependencies<typeof config.topics>();
+        let serverAcquisitions = 0;
+        const missingDependencies: ViewServerRuntimeDependencies<typeof config.topics> = {
+          ...defaultDependencies,
+          makeServer: (serverConfig, input, options) => {
+            serverAcquisitions += 1;
+            return defaultDependencies.makeServer(serverConfig, input, options);
+          },
+        };
+        const missingRuntime: Effect.Effect<unknown, unknown> = Reflect.apply(
+          makeViewServerRuntimeWithDependencies,
+          undefined,
+          [missingDependencies, config],
+        );
+        const missingError = yield* Effect.flip(missingRuntime);
+
+        expect(missingError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "Source Adapter runtime service controllable-fixture is missing.",
+          topic: "sourced",
+        });
+        expect(serverAcquisitions).toBe(0);
+
+        const fixtureContext = yield* Layer.build(fixture.layer);
+        const runtime = yield* makeViewServerRuntime(config).pipe(
+          Effect.provideContext(fixtureContext),
+        );
+        yield* Effect.addFinalizer(() => runtime.close);
+        const subscription = yield* runtime.liveClient.subscribe("sourced", {
+          select: ["id", "value"],
+        });
+        yield* Effect.addFinalizer(() => subscription.close().pipe(Effect.ignore));
+        const eventsFiber = yield* subscription.events.pipe(
+          Stream.filter((event) => event.type !== "status"),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* fixture.controls.awaitActive(sourceTarget);
+        yield* fixture.controls.upsert(sourceTarget, {
+          id: "source-row",
+          value: "through-production-runtime",
+        });
+        const events = yield* Fiber.join(eventsFiber);
+
+        expect(events.map((event) => event.type)).toStrictEqual(["snapshot", "delta"]);
+        yield* subscription.close();
+        yield* runtime.close;
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps scoped adapter Layer resources alive for the public run helper lifetime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* SourceFixture.make(SourceRow);
+        const config = defineViewServerConfig({
+          topics: {
+            sourced: {
+              schema: SourceRow,
+              source: fixture.materializedSource({
+                label: "run-helper-layer-lifetime",
+              }),
+            },
+          },
+        });
+        const acquired = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        let resourceActive = false;
+        const trackedResource = Layer.effectDiscard(
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              resourceActive = true;
+            }).pipe(Effect.andThen(Deferred.succeed(acquired, undefined))),
+            () =>
+              Effect.sync(() => {
+                resourceActive = false;
+              }).pipe(Effect.andThen(Deferred.succeed(released, undefined)), Effect.asVoid),
+          ),
+        );
+        const signals = yield* makeRuntimeLaunchSignals();
+        const runtimeLayer = Layer.mergeAll(
+          fixture.layer,
+          trackedResource,
+          Logger.layer([signals.logger]),
+          Layer.succeed(References.MinimumLogLevel, "Trace"),
+        );
+        const fiber = yield* runViewServerRuntime(config, {
+          host: "127.0.0.1",
+          tcpPublishHost: "127.0.0.1",
+          tcpPublishPort: 0,
+          websocketPort: 0,
+        }).pipe(Effect.provide(runtimeLayer), Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(acquired);
+        yield* fixture.controls.awaitActive(sourceTarget);
+        yield* Deferred.await(signals.healthUrl);
+        const settled = yield* Deferred.make<Exit.Exit<void, unknown>>();
+        yield* fixture.controls.upsert(
+          sourceTarget,
+          {
+            id: "run-helper-resource",
+            value: "alive",
+          },
+          (applicationExit) => Deferred.succeed(settled, applicationExit).pipe(Effect.asVoid),
+        );
+
+        expect({
+          applicationExit: yield* Deferred.await(settled),
+          resourceActive,
+          releasedBeforeStop: yield* Deferred.isDone(released),
+        }).toStrictEqual({
+          applicationExit: Exit.void,
+          resourceActive: true,
+          releasedBeforeStop: false,
+        });
+
+        yield* stopRuntimeLaunch(fiber);
+        yield* Deferred.await(released);
+        expect(resourceActive).toBe(false);
+      }),
+    ),
+  );
+
   it.live("starts a websocket runtime with health endpoint and runtime-core mutation client", () =>
     Effect.gen(function* () {
       const runtime = yield* makeViewServerRuntime(viewServer, {

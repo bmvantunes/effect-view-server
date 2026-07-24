@@ -1,5 +1,29 @@
 import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
-import type { ViewServerTopicConfig } from "@effect-view-server/config";
+import type { RowSchema, ViewServerTopicConfig } from "@effect-view-server/config";
+import { isSourceDefinition } from "@effect-view-server/source-adapter/internal";
+import { Schema } from "effect";
+import type {
+  SourceAdapterHandle,
+  SourceDefinition,
+  SourceDefinitionOptionsFamily,
+  SourceLifecycle,
+  SourceLifecycleDeclaration,
+} from "@effect-view-server/source-adapter";
+
+type SourceDefinitionAny = SourceDefinition<
+  SourceAdapterHandle<
+    string,
+    string | undefined,
+    unknown,
+    | SourceLifecycleDeclaration<unknown, unknown, unknown, SourceDefinitionOptionsFamily>
+    | undefined,
+    SourceLifecycleDeclaration<unknown, unknown, unknown, SourceDefinitionOptionsFamily> | undefined
+  >,
+  SourceLifecycle,
+  unknown,
+  ReadonlyArray<string>,
+  never
+>;
 
 export type TopicDefinitionHasRequiredDefinedObjectProperty<
   Definition,
@@ -13,6 +37,7 @@ export type TopicDefinitionHasRequiredDefinedObjectProperty<
   : false;
 
 export type TopicDefinitionHasSourceOwner<Definition> = true extends
+  | TopicDefinitionHasRequiredDefinedObjectProperty<Definition, "source">
   | TopicDefinitionHasRequiredDefinedObjectProperty<Definition, "kafkaSource">
   | TopicDefinitionHasRequiredDefinedObjectProperty<Definition, "grpcSource">
   ? true
@@ -45,6 +70,10 @@ export type TopicGrpcSourceValidMetadata = Extract<
 
 export type TopicSourceOwner =
   | {
+      readonly _tag: "source";
+      readonly lifecycle: "materialized" | "leased" | "unknown";
+    }
+  | {
       readonly _tag: "kafka";
     }
   | {
@@ -53,6 +82,10 @@ export type TopicSourceOwner =
     };
 
 export type TopicSourceBinding = {
+  readonly schema: RowSchema | undefined;
+  readonly source: SourceDefinitionAny | undefined;
+  readonly sourceLifecycle: "materialized" | "leased" | "unknown";
+  readonly sourceLeased: boolean;
   readonly grpcLeased: boolean;
   readonly grpcMetadata: TopicGrpcSourceMetadata;
   readonly grpcSource: unknown;
@@ -83,6 +116,9 @@ const hasCompleteConcreteGrpcBinding = (source: object): boolean =>
   hasCallableOwnProperty(source, "acquire") &&
   hasCallableOwnProperty(source, "map") &&
   (!hasDefinedOwnProperty(source, "release") || hasCallableOwnProperty(source, "release"));
+
+const isRowSchema = (value: unknown): value is RowSchema =>
+  Schema.isSchema(value) && typeof value === "object" && value !== null && "fields" in value;
 
 const grpcTopicSourceFromUnknown = (source: unknown): TopicGrpcSourceMetadata => {
   if (typeof source !== "object" || source === null) {
@@ -183,6 +219,20 @@ const topicGrpcSourceFromUnknown = (topicDefinition: unknown): unknown => {
     : undefined;
 };
 
+const topicCanonicalSourceFromUnknown = (
+  topicDefinition: unknown,
+): SourceDefinitionAny | undefined => {
+  if (
+    typeof topicDefinition !== "object" ||
+    topicDefinition === null ||
+    !hasDefinedOwnProperty(topicDefinition, "source")
+  ) {
+    return undefined;
+  }
+  const source = Reflect.get(topicDefinition, "source");
+  return isSourceDefinition(source) ? source : undefined;
+};
+
 const grpcDeclaredLifecycleFromUnknown = (source: unknown): TopicGrpcSourceLifecycle => {
   if (typeof source !== "object" || source === null || Reflect.get(source, "kind") !== "grpc") {
     return "unknown";
@@ -194,8 +244,15 @@ const grpcDeclaredLifecycleFromUnknown = (source: unknown): TopicGrpcSourceLifec
 const topicSourceBinding = (topic: string, definition: unknown): TopicSourceBinding => {
   const kafkaSource = topicKafkaSourceFromUnknown(definition);
   const grpcSource = topicGrpcSourceFromUnknown(definition);
+  const source = topicCanonicalSourceFromUnknown(definition);
   const grpcMetadata = topicGrpcSourceMetadataFromUnknown(definition);
   const owners: Array<TopicSourceOwner> = [];
+  if (source !== undefined) {
+    owners.push({
+      _tag: "source",
+      lifecycle: source.lifecycle,
+    });
+  }
   if (kafkaSource !== undefined) {
     owners.push({ _tag: "kafka" });
   }
@@ -205,7 +262,15 @@ const topicSourceBinding = (topic: string, definition: unknown): TopicSourceBind
       lifecycle: grpcDeclaredLifecycleFromUnknown(grpcSource),
     });
   }
+  const schema =
+    typeof definition === "object" && definition !== null
+      ? Reflect.get(definition, "schema")
+      : undefined;
   return {
+    schema: isRowSchema(schema) ? schema : undefined,
+    source,
+    sourceLifecycle: source?.lifecycle ?? "unknown",
+    sourceLeased: source?.lifecycle === "leased",
     grpcLeased: owners.some((owner) => owner._tag === "grpc" && owner.lifecycle === "leased"),
     grpcMetadata,
     grpcSource,

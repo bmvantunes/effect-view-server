@@ -219,6 +219,6 @@ describe("Topic source ownership", () => {
     expect(() =>
       // @ts-expect-error generic source ownership is not part of the public topic API.
       defineViewServerConfig(oldSourceAliasConfig),
-    ).toThrow("View Server topic orders cannot declare source; use kafkaSource or grpcSource.");
+    ).toThrow("View Server topic orders source must be created by SourceAdapter.make(...).");
   });
 });

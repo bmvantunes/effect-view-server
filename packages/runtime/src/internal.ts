@@ -7,7 +7,10 @@ import type {
   ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
-import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import type {
+  ViewServerRuntimeCoreOptionsFor,
+  ViewServerSourceRequirements,
+} from "@effect-view-server/runtime-core";
 import { Config, Effect, Exit, Layer, Scope } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
@@ -56,6 +59,7 @@ const toPublicLiveClient = <const Topics extends ViewServerRuntimeTopicDefinitio
   subscribe: liveClient.subscribe,
   subscribeHealth: liveClient.subscribeHealth,
   subscribeHealthSummary: liveClient.subscribeHealthSummary,
+  subscribeSourceHealth: liveClient.subscribeSourceHealth,
 });
 
 const ignoreRuntimeHealthRefreshFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
@@ -108,7 +112,11 @@ type MakeViewServerRuntimeWithDependencies = {
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
     config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  ): Effect.Effect<ViewServerRuntime<Topics>, ViewServerRuntimeFactoryError>;
+  ): Effect.Effect<
+    ViewServerRuntime<Topics>,
+    ViewServerRuntimeFactoryError,
+    ViewServerSourceRequirements<Topics>
+  >;
   <
     const Topics extends ViewServerRuntimeTopicDefinitions,
     const Regions extends RuntimeRegions = RuntimeRegions,
@@ -118,7 +126,11 @@ type MakeViewServerRuntimeWithDependencies = {
     dependencies: ViewServerRuntimeDependencies<Topics>,
     config: ViewServerConfig<Topics, Regions, GrpcClients>,
     options: Options,
-  ): Effect.Effect<ViewServerRuntime<Topics, Options>, ViewServerRuntimeFactoryError>;
+  ): Effect.Effect<
+    ViewServerRuntime<Topics, Options>,
+    ViewServerRuntimeFactoryError,
+    ViewServerSourceRequirements<Topics>
+  >;
 };
 
 export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDependencies =
@@ -237,6 +249,8 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
           liveClient: {
             subscribeHealth: runtimeLiveClient.subscribeHealth,
             subscribeHealthSummary: runtimeLiveClient.subscribeHealthSummary,
+            subscribeProtocolSourceHealth:
+              runtimeCore.serverLiveClient.subscribeProtocolSourceHealth,
             subscribeProtocolQuery: runtimeProtocolQuerySubscriber.subscribeProtocolQuery,
           },
           runtime: runtimeClient,
@@ -333,17 +347,18 @@ export const runViewServerRuntimeWithDependencies: <
   dependencies: ViewServerRuntimeDependencies<Topics>,
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
-) => Effect.Effect<never, ViewServerRuntimeFactoryError> = Effect.fn(
-  "ViewServerRuntime.runWithDependencies",
-)(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
-  const Options extends object,
->(
-  dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
-) {
-  return yield* makeViewServerRuntimeLaunchLayer(dependencies, config, options).pipe(Layer.launch);
-});
+) => Effect.Effect<never, ViewServerRuntimeFactoryError, ViewServerSourceRequirements<Topics>> =
+  Effect.fn("ViewServerRuntime.runWithDependencies")(function* <
+    const Topics extends ViewServerRuntimeTopicDefinitions,
+    const Regions extends RuntimeRegions,
+    const GrpcClients extends GrpcRuntimeClients,
+    const Options extends object,
+  >(
+    dependencies: ViewServerRuntimeDependencies<Topics>,
+    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+    options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
+  ) {
+    return yield* makeViewServerRuntimeLaunchLayer(dependencies, config, options).pipe(
+      Layer.launch,
+    );
+  });

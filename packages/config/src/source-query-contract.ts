@@ -1,5 +1,9 @@
 import { Result, Schema } from "effect";
 import { make as makeBigDecimal } from "effect/BigDecimal";
+import type {
+  SourceDefinitionLifecycle,
+  SourceDefinitionRouteFields,
+} from "@effect-view-server/source-adapter";
 import type { TopicDefinitions, TopicRow } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
 import type { RouteFieldKey, RouteFieldValue } from "./query-filter";
@@ -26,18 +30,32 @@ type UnionToIntersection<Union> = (Union extends unknown ? (value: Union) => voi
   : never;
 
 export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
-  readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
+  readonly source: infer Source;
 }
-  ? Extract<RouteBy[number], string>
-  : never;
+  ? SourceDefinitionLifecycle<Source> extends "leased"
+    ? Extract<SourceDefinitionRouteFields<Source>[number], string>
+    : never
+  : Topics[Topic] extends {
+        readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
+      }
+    ? Extract<RouteBy[number], string>
+    : never;
 
 export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
-  readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
+  readonly source: infer Source;
 }
-  ? RouteBy extends NonEmptyRouteBy
-    ? RouteBy
+  ? SourceDefinitionLifecycle<Source> extends "leased"
+    ? SourceDefinitionRouteFields<Source> extends NonEmptyRouteBy
+      ? SourceDefinitionRouteFields<Source>
+      : never
     : never
-  : never;
+  : Topics[Topic] extends {
+        readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
+      }
+    ? RouteBy extends NonEmptyRouteBy
+      ? RouteBy
+      : never
+    : never;
 
 export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy] extends [never]
   ? { readonly routeBy?: never }
@@ -259,8 +277,11 @@ const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
   }
   const sourceAwareTopic: {
     readonly grpcSource?: TopicSourceDefinition | undefined;
+    readonly source?: object | undefined;
   } = topicDefinition;
-  const configuredRouteBy = sourceLeasedRouteBy(sourceAwareTopic.grpcSource);
+  const configuredRouteBy = sourceLeasedRouteBy(
+    sourceAwareTopic.source ?? sourceAwareTopic.grpcSource,
+  );
   if (configuredRouteBy === undefined) {
     if (isRecord(query) && Object.hasOwn(query, "routeBy")) {
       return `Topic ${topic} does not accept routeBy.`;

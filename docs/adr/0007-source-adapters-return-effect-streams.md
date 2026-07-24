@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted design. Implementation is pending, so this ADR does not describe currently available Source Adapter runtime APIs.
+Accepted. The generic Source Attempt, lane, delivery, rejection, settlement,
+supervision, diagnostics, and conformance contracts are implemented by issue
+#384. First-party Kafka and gRPC implementations remain staged in issues #385
+and #386.
 
 ## Context
 
@@ -152,7 +155,7 @@ type SourceTarget<Route> =
   | { readonly _tag: "Leased"; readonly route: Route };
 ```
 
-Every source health value always contains Source Adapter Identity, Source Target, Source Status, mandatory `{ runtime, adapter }` metrics, and `sampledAtNanos`. Route, rejection, failure, retry timing, and exhaustion are never optional fields. Live Queries map both `Ready` and `Degraded` to ready availability, `WaitingToRetry` and `Reacquiring` to stale, `Exhausted` to error, and recovery to ready while preserving their Subscription and retained rows. Exact degraded state remains visible through Source Diagnostics. One settled Source Item Rejection also marks the affected Topic health row and aggregate View Server health summary degraded. Liveness and readiness transports continue to respond successfully while returning that degraded state; they do not evict or restart the instance. Operators can alert on degraded status or `rejectedItemCount` without introducing a health refresh on the lane hot path.
+Every source health value always contains Source Adapter Identity, Source Target, Source Status, mandatory `{ runtime, adapter }` metrics, and `sampledAtNanos`. Route, rejection, failure, retry timing, and exhaustion are never optional fields. Live Queries map both `Ready` and `Degraded` to ready availability, `WaitingToRetry` and `Reacquiring` to stale, `Exhausted` to error, and recovery to ready while preserving their Subscription and retained rows. Exact degraded state remains visible through Source Diagnostics. One settled Source Item Rejection also marks the affected Topic health row and aggregate View Server health summary degraded. Liveness and readiness transports continue to respond successfully while returning that degraded state; they do not evict or restart the instance. An exhausted required source retains its exact `Exhausted` diagnostics and rows but contributes `starting` Topic and aggregate health, keeping readiness unsuccessful until recovery. Operators can alert on degraded status or `rejectedItemCount` without introducing a health refresh on the lane hot path.
 
 Ordinary Live Query Snapshot, Delta, and Status Event APIs stay transport-agnostic and do not carry Source Adapter Metrics or complete Source Health values. Remote Browser Client `subscribeSourceHealth(...)` and React `useSourceHealth(...)` expose exact adapter diagnostics addressed solely by selected View Server Topic and, for leased sources, exact Feed Route. Source-free Topics are rejected; materialized Topics reject `routeBy`; leased Topics require an exact route and reject missing, unknown, or extra Route Fields without `as const`. Source Adapter Identity and transport identifiers never become lookup keys. The scoped client subscription emits the latest cached value immediately and subsequent cached changes, is shared across matching local consumers, and is released through Scope on React unmount or client shutdown. There is no separate one-shot source-health API in v1; callers needing one value explicitly take the first subscription element. These APIs consume only View Server's cadence-cached Source Health; they do not perform a broker RPC, run the adapter metrics Effect, recompute health per Live Query event, or poll from React.
 

@@ -33,18 +33,36 @@ import {
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerEncodeLiveQuery,
+  viewServerDecodeSourceHealth,
+  viewServerEncodeSourceHealthRequest,
   type ViewServerRpcError,
   type ViewServerTrustedWireEvent,
   type ViewServerWireHealth,
   type ViewServerWireLiveQuery,
+  type ViewServerWireSourceHealth,
 } from "@effect-view-server/protocol";
-import { Context, Effect, Exit, Layer, ManagedRuntime, Result, Scope, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Result,
+  Semaphore,
+  Scope,
+  Stream,
+} from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
+  ViewServerSourceHealthArguments,
+  ViewServerSourceHealthResultForTopic,
+  ViewServerSourceHealthSubscription,
+  ViewServerSourceOwnedTopic,
   ViewServerStatusEvent,
 } from "./live-client";
 import { makeRemoteHealthState } from "./remote-health";
@@ -57,9 +75,35 @@ export type ViewServerClientOptions = {
   readonly subscriptionBufferSize?: number;
 };
 
+type ViewServerClientConstructionOptions = {
+  readonly sourceHealthHandoff?: {
+    readonly beforeReturn?: Effect.Effect<void>;
+  };
+};
+
 export type ViewServerRemoteClient<Topics extends TopicDefinitions> = ViewServerLiveClient<Topics>;
 
 const defaultSubscriptionBufferSize = 1_024;
+
+const acquireRemoteResourceHandoff = <Value, Error, Requirements>(
+  acquire: (
+    markAcquired: (finalizer: Effect.Effect<void>) => Effect.Effect<void>,
+  ) => Effect.Effect<Value, Error, Requirements>,
+  beforeReturn: Effect.Effect<void> = Effect.void,
+): Effect.Effect<Value, Error, Requirements> =>
+  Effect.suspend(() => {
+    let acquiredFinalizer: Effect.Effect<void> | undefined;
+    const markAcquired = (finalizer: Effect.Effect<void>) =>
+      Effect.sync(() => {
+        acquiredFinalizer = finalizer;
+      });
+    return acquire(markAcquired).pipe(
+      Effect.tap(() => beforeReturn),
+      Effect.onExit((exit) =>
+        Exit.isSuccess(exit) || acquiredFinalizer === undefined ? Effect.void : acquiredFinalizer,
+      ),
+    );
+  });
 
 const normalizeSubscriptionBufferSize = (subscriptionBufferSize: number | undefined): number => {
   if (subscriptionBufferSize === undefined) {
@@ -142,20 +186,25 @@ const subscriptionOverflowStatus = <Topic extends string>(
   message: `Remote subscription buffer exceeded capacity with ${queuedEvents} queued event(s).`,
 });
 
-export const makeViewServerClient: <
+export const makeViewServerClientWithConstructionOptions: <
   const Topics extends TopicDefinitions,
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   options: ViewServerClientOptions,
+  constructionOptions?: ViewServerClientConstructionOptions,
 ) => Effect.Effect<ViewServerRemoteClient<Topics>, ViewServerRemoteClientError> = Effect.fn(
-  "ViewServerClient.remote.make",
+  "ViewServerClient.remote.makeInternal",
 )(function* <
   const Topics extends TopicDefinitions,
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
->(config: ViewServerConfig<Topics, Regions, GrpcClients>, options: ViewServerClientOptions) {
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  options: ViewServerClientOptions,
+  constructionOptions: ViewServerClientConstructionOptions = {},
+) {
   const managedRuntime = ManagedRuntime.make(rpcClientLayer(options.url));
   const cleanupOnConstructionFailure = <Value, Error, Services>(
     effect: Effect.Effect<Value, Error, Services>,
@@ -192,6 +241,13 @@ export const makeViewServerClient: <
   );
   const remoteHealth = makeRemoteHealthState<Topics>(initialHealth);
   const clientScope = yield* Scope.make("parallel");
+  type SharedSourceHealthEntry = {
+    readonly close: Effect.Effect<void>;
+    readonly stream: Stream.Stream<ViewServerWireSourceHealth, ViewServerRemoteClientError>;
+    subscribers: number;
+  };
+  const sharedSourceHealth = new Map<string, SharedSourceHealthEntry>();
+  const sharedSourceHealthLock = Semaphore.makeUnsafe(1);
 
   const close = runAllFinalizers([
     Scope.close(clientScope, Exit.void),
@@ -330,13 +386,144 @@ export const makeViewServerClient: <
     };
   });
 
+  const subscribeSourceHealthWire = Effect.fn("ViewServerClient.remote.sourceHealth.subscribeWire")(
+    function* <Topic extends ViewServerSourceOwnedTopic<Topics>>(
+      topic: Topic,
+      route: ReadonlyArray<object>,
+    ): Effect.fn.Return<
+      ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+      ViewServerRemoteClientError
+    > {
+      return yield* acquireRemoteResourceHandoff(
+        (markAcquired) =>
+          Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const payload = yield* restore(
+                viewServerEncodeSourceHealthRequest(config, topic, route),
+              );
+              const subscriptionKey = JSON.stringify(payload);
+              const shared = yield* sharedSourceHealthLock.withPermit(
+                acquireRemoteResourceHandoff((markEntryAcquired) =>
+                  Effect.gen(function* () {
+                    let entry = sharedSourceHealth.get(subscriptionKey);
+                    if (entry === undefined) {
+                      const entryScope = yield* Scope.fork(clientScope, "sequential");
+                      yield* markEntryAcquired(Scope.close(entryScope, Exit.void));
+                      const stream = yield* restore(
+                        rpc["ViewServer.SourceHealth"](payload, {
+                          streamBufferSize: subscriptionBufferSize,
+                        }).pipe(
+                          Stream.mapError(mapViewServerRemoteError),
+                          Stream.share({
+                            capacity: subscriptionBufferSize,
+                            strategy: "suspend",
+                            replay: 1,
+                          }),
+                          Effect.provideService(Scope.Scope, entryScope),
+                        ),
+                      );
+                      const closeEntry = yield* Effect.cached(Scope.close(entryScope, Exit.void));
+                      entry = {
+                        close: closeEntry,
+                        stream,
+                        subscribers: 0,
+                      };
+                      sharedSourceHealth.set(subscriptionKey, entry);
+                    }
+                    entry.subscribers += 1;
+                    const sharedEntry = entry;
+                    const releaseShared = yield* Effect.cached(
+                      sharedSourceHealthLock.withPermit(
+                        Effect.suspend(() => {
+                          sharedEntry.subscribers -= 1;
+                          if (
+                            sharedEntry.subscribers === 0 &&
+                            sharedSourceHealth.get(subscriptionKey) === sharedEntry
+                          ) {
+                            sharedSourceHealth.delete(subscriptionKey);
+                            return sharedEntry.close;
+                          }
+                          return Effect.void;
+                        }),
+                      ),
+                    );
+                    return {
+                      entry: sharedEntry,
+                      release: releaseShared,
+                    };
+                  }),
+                ),
+              );
+              yield* markAcquired(shared.release);
+              const subscriptionScope = yield* Scope.fork(clientScope, "sequential");
+              yield* markAcquired(
+                runAllFinalizers([Scope.close(subscriptionScope, Exit.void), shared.release]),
+              );
+              const interrupted = yield* Deferred.make<void>();
+              yield* Scope.addFinalizer(
+                subscriptionScope,
+                Deferred.succeed(interrupted, undefined).pipe(
+                  Effect.asVoid,
+                  Effect.andThen(shared.release),
+                ),
+              );
+              const closeSubscription = yield* Effect.cached(
+                Scope.close(subscriptionScope, Exit.void),
+              );
+              yield* markAcquired(closeSubscription);
+              const events = shared.entry.stream.pipe(
+                Stream.mapEffect((value) =>
+                  viewServerDecodeSourceHealth<Topics, Topic>(config, topic, value),
+                ),
+                Stream.interruptWhen(Deferred.await(interrupted)),
+                Stream.ensuring(closeSubscription),
+              );
+              return {
+                events,
+                close: () => closeSubscription,
+              };
+            }),
+          ),
+        constructionOptions.sourceHealthHandoff?.beforeReturn,
+      );
+    },
+  );
+
+  function subscribeSourceHealth<Topic extends ViewServerSourceOwnedTopic<Topics>>(
+    ...arguments_: ViewServerSourceHealthArguments<Topics, Topic>
+  ): Effect.Effect<
+    ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+    ViewServerRemoteClientError
+  > {
+    const [topic, route] = arguments_;
+    return subscribeSourceHealthWire<Topic>(topic, route === undefined ? [] : [route]);
+  }
+
   return {
     subscribe,
     subscribeHealthSummary,
     subscribeHealth,
+    subscribeSourceHealth,
     health: remoteHealth.readonlyHealth,
     close,
   };
+});
+
+export const makeViewServerClient: <
+  const Topics extends TopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(
+  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  options: ViewServerClientOptions,
+) => Effect.Effect<ViewServerRemoteClient<Topics>, ViewServerRemoteClientError> = Effect.fn(
+  "ViewServerClient.remote.make",
+)(function* <
+  const Topics extends TopicDefinitions,
+  const Regions extends RuntimeRegions,
+  const GrpcClients extends GrpcRuntimeClients,
+>(config: ViewServerConfig<Topics, Regions, GrpcClients>, options: ViewServerClientOptions) {
+  return yield* makeViewServerClientWithConstructionOptions(config, options);
 });
 
 export const createViewServerClient = makeViewServerClient;

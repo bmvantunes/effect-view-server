@@ -686,7 +686,7 @@ describe("Kafka runtime options and health", () => {
     }),
   );
 
-  it.live("returns unavailable health when Kafka ingress is degraded", () =>
+  it.live("keeps the readiness route available when Kafka ingress is degraded", () =>
     Effect.gen(function* () {
       const regions = {
         local: "localhost:9092",
@@ -735,7 +735,7 @@ describe("Kafka runtime options and health", () => {
           Effect.gen(function* () {
             const health = yield* fetchHealth(runtime.healthUrl);
 
-            expect(health.response.status).toBe(503);
+            expect(health.response.status).toBe(200);
             expect(health.health.status).toBe("degraded");
             expect(health.health.engine.topics.orders.rowCount).toBe(0);
           }),

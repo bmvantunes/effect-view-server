@@ -1,4 +1,8 @@
-import type { ViewServerLiveClient, ViewServerLiveSubscription } from "@effect-view-server/client";
+import type {
+  ViewServerLiveClient,
+  ViewServerLiveSubscription,
+  ViewServerSourceHealthSubscription,
+} from "@effect-view-server/client";
 import type {
   ExactLiveQueryInputForTopic,
   ExactPatch,
@@ -40,6 +44,19 @@ type RuntimeCoreLeasedTopic<Topics extends TopicDefinitions> = Extract<
   string
 >;
 
+type RuntimeCoreLiveReadableTopic<Topics extends TopicDefinitions> = Extract<
+  {
+    readonly [Topic in keyof Topics]: Topics[Topic] extends {
+      readonly source: object;
+    }
+      ? Topic
+      : [TopicRouteBy<Topics, Topic>] extends [never]
+        ? Topic
+        : never;
+  }[keyof Topics],
+  string
+>;
+
 type RuntimeCoreSourceOwnedTopic<Topics extends TopicDefinitions> = Extract<
   {
     readonly [Topic in keyof Topics]: TopicDefinitionHasSourceOwner<Topics[Topic]> extends true
@@ -73,7 +90,7 @@ type RuntimeCorePublicSnapshot<Topics extends TopicDefinitions> = <
 >;
 
 type RuntimeCorePublicSubscribe<Topics extends TopicDefinitions> = <
-  Topic extends RuntimeCoreReadableTopic<Topics>,
+  Topic extends RuntimeCoreLiveReadableTopic<Topics>,
   const Query extends
     | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
     | GroupedQuery<TopicRow<Topics, NoInfer<Topic>>>,
@@ -121,4 +138,12 @@ export type ViewServerRuntimeCoreServerLiveClient<Topics extends TopicDefinition
   ViewServerLiveClient<Topics>,
   "subscribeHealth" | "subscribeHealthSummary"
 > &
-  ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;
+  ViewServerRuntimeCoreProtocolQuerySubscriber<Topics> & {
+    readonly subscribeProtocolSourceHealth: (
+      topic: string,
+      route: ReadonlyArray<Readonly<Record<string, unknown>>>,
+    ) => Effect.Effect<
+      ViewServerSourceHealthSubscription<unknown>,
+      ViewServerRuntimeError | ViewServerTransportError
+    >;
+  };

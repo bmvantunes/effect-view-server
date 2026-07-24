@@ -1,11 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type ViewServerHealth, type ViewServerRuntimeError } from "@effect-view-server/config";
+import {
+  defineViewServerConfig,
+  type ViewServerHealth,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { ViewServerHealthSchema } from "@effect-view-server/protocol";
-import { Effect, Schema } from "effect";
+import { SourceFixture } from "@effect-view-server/source-adapter-testing";
+import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
+import { Deferred, Effect, Schema } from "effect";
 import { AtomRef } from "effect/unstable/reactivity";
 import { makeViewServerWebSocketServer } from "./index";
 import {
   HealthJson,
+  Order,
   bearerAuth,
   createServerTestRuntime,
   degradedServerHealth,
@@ -164,7 +171,7 @@ describe("Real View Server health route", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("returns 503 for degraded health and serializes bigint fields", () =>
+  it.live("keeps readiness successful for degraded health and serializes bigint fields", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
       yield* Effect.addFinalizer(() => inMemory.close);
@@ -182,11 +189,82 @@ describe("Real View Server health route", () => {
         yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(degradedHealth);
       const health = yield* fetchJson(server.healthUrl);
 
+      expect(health.response.status).toBe(200);
+      expect(health.value).toStrictEqual(expectedHealth);
+
+      yield* server.close;
+      yield* inMemory.close;
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("returns 503 while runtime health is starting", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
+      const baseHealth = yield* inMemory.client.health();
+      const startingHealth: ViewServerHealth<typeof viewServer.topics> = {
+        ...baseHealth,
+        status: "starting",
+      };
+      const server = yield* makeViewServerWebSocketServer(viewServer, {
+        liveClient: inMemory.liveClient,
+        runtime: {
+          health: () => Effect.succeed(startingHealth),
+        },
+      });
+      yield* Effect.addFinalizer(() => server.close);
+
+      const expectedHealth =
+        yield* Schema.encodeUnknownEffect(ViewServerHealthSchema)(startingHealth);
+      const health = yield* fetchJson(server.healthUrl);
       expect(health.response.status).toBe(503);
       expect(health.value).toStrictEqual(expectedHealth);
 
       yield* server.close;
       yield* inMemory.close;
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps readiness successful after a settled Source rejection degrades health", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Order);
+      const sourceConfig = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source: fixture.materializedSource({
+              label: "degraded-readiness",
+            }),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCoreInternal(sourceConfig, {}).pipe(
+        Effect.provide(fixture.layer),
+      );
+      yield* Effect.addFinalizer(() => runtime.close);
+      const server = yield* makeViewServerWebSocketServer(sourceConfig, {
+        liveClient: runtime.serverLiveClient,
+        runtime: runtime.client,
+      });
+      yield* Effect.addFinalizer(() => server.close);
+      yield* fixture.controls.awaitActive({ _tag: "Materialized" });
+      const settled = yield* Deferred.make<void>();
+      yield* fixture.controls.reject(
+        { _tag: "Materialized" },
+        SourceFixture.failure("poison item", "stream"),
+        { lane: "readiness", offset: 1n },
+        () => Deferred.succeed(settled, undefined).pipe(Effect.asVoid),
+      );
+      yield* Deferred.await(settled);
+      yield* runtime.refreshHealth;
+
+      const health = yield* fetchJson(server.healthUrl);
+      const body = yield* Schema.decodeUnknownEffect(HealthJson)(health.value);
+      expect(health.response.status).toBe(200);
+      expect(body.status).toBe("degraded");
+
+      yield* server.close;
+      yield* runtime.close;
     }).pipe(Effect.scoped),
   );
 

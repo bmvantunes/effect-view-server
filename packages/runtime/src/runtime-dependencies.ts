@@ -1,6 +1,9 @@
 import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import type { ViewServerRuntimeDecodedMutationClient } from "@effect-view-server/config/internal";
-import { type ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
+import {
+  type ViewServerRuntimeCoreOptionsFor,
+  type ViewServerSourceRequirements,
+} from "@effect-view-server/runtime-core";
 import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalInstance,
@@ -31,7 +34,11 @@ export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicD
   readonly makeRuntimeCore: (
     config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ViewServerRuntimeCoreOptionsFor<Topics>,
-  ) => Effect.Effect<ViewServerRuntimeCoreInternalInstance<Topics>, ViewServerRuntimeError>;
+  ) => Effect.Effect<
+    ViewServerRuntimeCoreInternalInstance<Topics>,
+    ViewServerRuntimeError,
+    ViewServerSourceRequirements<Topics>
+  >;
   readonly makeServer: (
     config: ViewServerRuntimeDependencyConfig<Topics>,
     input: ViewServerWebSocketServerInput<Topics>,

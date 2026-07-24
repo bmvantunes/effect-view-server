@@ -17,6 +17,39 @@ import {
 } from "../test-harness/server";
 
 describe("Real View Server RPC subscription finalization", () => {
+  it.effect("interrupts a suspended query subscription acquisition", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      const acquisitionReady = yield* Deferred.make<void>();
+      const acquisitionInterrupted = yield* Deferred.make<void>();
+      const liveClient = serverTestLiveClientWithSubscribe(inMemory.liveClient, () =>
+        Deferred.succeed(acquisitionReady, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(acquisitionInterrupted, undefined)),
+        ),
+      );
+      const handlerScope = yield* Scope.make("parallel");
+      const handlers = makeViewServerRpcHandlers(
+        viewServer,
+        {
+          liveClient,
+          runtime: inMemory.client,
+        },
+        handlerScope,
+      );
+      const streamFiber = yield* handlers["ViewServer.Subscribe"]({
+        topic: "orders",
+        query: { select: ["id"] },
+      }).pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(acquisitionReady);
+      yield* Fiber.interrupt(streamFiber);
+
+      expect(yield* Deferred.isDone(acquisitionInterrupted)).toBe(true);
+      yield* Scope.close(handlerScope, Exit.void);
+      yield* inMemory.close;
+    }),
+  );
+
   it.live("closes transport stream counters when subscription acquisition fails", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);

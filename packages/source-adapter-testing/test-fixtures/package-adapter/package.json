@@ -1,0 +1,30 @@
+{
+  "name": "@fixture/source-adapter",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./contract.js",
+    "./contract": {
+      "import": "./contract.js"
+    },
+    "./server": {
+      "default": "./server.js"
+    },
+    "./node": "./node.js",
+    "./bad-node": "./bad-node.js",
+    "./failing-node": "./failing-node.js",
+    "./import-failure-node": "./import-failure-node.js",
+    "./wrong-node": "./wrong-node.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@effect/platform-node": "4.0.0-beta.100",
+    "effect": "4.0.0-beta.100",
+    "effect-view-server": "0.0.6"
+  },
+  "peerDependencies": {
+    "@effect/platform-node": "4.0.0-beta.100",
+    "effect": "4.0.0-beta.100",
+    "effect-view-server": "0.0.6"
+  }
+}

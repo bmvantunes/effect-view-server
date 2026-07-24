@@ -450,67 +450,25 @@ describe("gRPC lease manager route validation", () => {
     }),
   );
 
-  it.live("rejects leased gRPC route extraction when topic source metadata is corrupted", () =>
+  it.live("rejects corrupted leased gRPC source metadata before runtime construction", () =>
     Effect.gen(function* () {
       const localViewServer = cloneWithMutableOrdersGrpcSource(
         grpcLeasedViewServer({
           streamForRegion: () => Stream.never,
         }),
       );
-      const grpcOptions = yield* resolveLeasedGrpcRuntimeOptions(localViewServer);
       Object.defineProperty(localViewServer.topics.orders, "source", {
         value: grpcSourceMarkers.materialized(),
       });
-      const runtimeCore = yield* makeViewServerRuntimeCoreInternal(localViewServer, {});
-      const health = makeViewServerGrpcHealthLedger<typeof localViewServer.topics>({
-        clients: grpcOptions.clientBaseUrls,
-        feeds: {},
-      });
-      const manager = yield* makeViewServerGrpcLeaseManager(
-        localViewServer,
-        runtimeCore.internalClient,
-        runtimeCore.liveClient,
-        runtimeCore.internalLiveClient,
-        Effect.void,
-        grpcOptions,
-        health,
-      );
 
-      const missingRouteError = yield* manager.liveClient
-        // @ts-expect-error runtime validation deliberately exercises a missing leased route.
-        .subscribeRuntime("orders", {
-          select: ["id"],
-          limit: 10,
-        })
-        .pipe(Effect.flip);
-      const filteredWithoutRouteError = yield* manager.liveClient
-        // @ts-expect-error runtime validation proves local filters cannot replace a leased route.
-        .subscribeRuntime("orders", {
-          select: ["id"],
-          where: [{ field: "region", type: "startsWith", filter: "u" }],
-          limit: 10,
-        })
-        .pipe(Effect.flip);
-
-      expect({
-        missingRouteError,
-        filteredWithoutRouteError,
-      }).toStrictEqual({
-        missingRouteError: {
-          _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
-          topic: "orders",
-          message: "Leased topic orders requires routeBy fields: region.",
-        },
-        filteredWithoutRouteError: {
-          _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
-          topic: "orders",
-          message: "Leased topic orders requires routeBy fields: region.",
-        },
+      expect(
+        yield* makeViewServerRuntimeCoreInternal(localViewServer, {}).pipe(Effect.flip),
+      ).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "orders",
+        message: "Source-owned Topic orders has an invalid Source Definition envelope.",
       });
-      yield* manager.close;
-      yield* runtimeCore.close;
     }),
   );
 

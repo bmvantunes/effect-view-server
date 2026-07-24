@@ -7,11 +7,11 @@ import {
   type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import type { Effect } from "effect";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import type { Stream } from "effect";
-import { Schema } from "effect";
-import { createInMemoryViewServer } from "./index";
-import { createInMemoryViewServerTesting } from "./testing";
+import { Context, Effect, Layer, Schedule, Schema } from "effect";
+import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
+import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -32,7 +32,78 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const SourceFailure = Schema.TaggedStruct("InMemorySourceFailure", {
+  message: Schema.String,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "in-memory-type-source" },
+  failure: SourceFailure,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+class RetryDependency extends Context.Service<
+  RetryDependency,
+  { readonly delayEnabled: boolean }
+>()("@effect-view-server/in-memory/type-test/RetryDependency") {}
+const canonicalSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(undefined),
+    },
+  },
+});
+const canonicalRetrySourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(
+        undefined,
+        Schedule.recurs(1).pipe(Schedule.tap(() => RetryDependency.pipe(Effect.asVoid))),
+      ),
+    },
+  },
+});
+
 const inMemory = createInMemoryViewServer(viewServer);
+const canonicalSourceInMemoryEffect = makeInMemoryViewServer(canonicalSourceViewServer, {});
+const canonicalSourceTestingEffect = makeInMemoryViewServerTesting(canonicalSourceViewServer, {});
+const canonicalRetrySourceInMemoryEffect = makeInMemoryViewServer(
+  canonicalRetrySourceViewServer,
+  {},
+);
+const canonicalRetrySourceTestingEffect = makeInMemoryViewServerTesting(
+  canonicalRetrySourceViewServer,
+  {},
+);
+declare const sourceAdapterLayer: Layer.Layer<
+  Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+>;
+const retryDependencyLayer = Layer.succeed(RetryDependency)({
+  delayEnabled: true,
+});
+const canonicalRetryAppLayer = Layer.merge(sourceAdapterLayer, retryDependencyLayer);
+const canonicalRetrySourceInMemoryReady = canonicalRetrySourceInMemoryEffect.pipe(
+  Effect.provide(canonicalRetryAppLayer),
+);
+const canonicalRetrySourceTestingReady = canonicalRetrySourceTestingEffect.pipe(
+  Effect.provide(canonicalRetryAppLayer),
+);
+// @effect-diagnostics missingEffectContext:off
+// @ts-expect-error the in-memory runtime still requires the retry Schedule service.
+const invalidRetrySourceInMemoryReady: Effect.Effect<
+  Effect.Success<typeof canonicalRetrySourceInMemoryEffect>,
+  Effect.Error<typeof canonicalRetrySourceInMemoryEffect>
+> = canonicalRetrySourceInMemoryEffect.pipe(Effect.provide(sourceAdapterLayer));
+// @effect-diagnostics missingEffectContext:on
+// @ts-expect-error synchronous in-memory construction cannot provide a Source Adapter service.
+const invalidCanonicalSourceInMemory = createInMemoryViewServer(canonicalSourceViewServer);
+// @ts-expect-error synchronous in-memory testing construction cannot provide a Source Adapter service.
+const invalidCanonicalSourceTesting = createInMemoryViewServerTesting(canonicalSourceViewServer);
 const inMemoryWithGroupedAdmissionLimits = createInMemoryViewServer(viewServer, {
   groupedIncrementalAdmissionLimits: {
     maxGroups: 1,
@@ -156,6 +227,22 @@ describe("in-memory type contracts", () => {
     });
 
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
+    expectTypeOf<Effect.Services<typeof canonicalSourceInMemoryEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof canonicalSourceTestingEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceInMemoryEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
+    >();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceTestingEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
+    >();
+    expectTypeOf<
+      Effect.Services<typeof canonicalRetrySourceInMemoryReady>
+    >().toEqualTypeOf<never>();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceTestingReady>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;
@@ -170,6 +257,9 @@ describe("in-memory type contracts", () => {
     expectTypeOf(invalidTransportHealthOption).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitKey).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
+    expectTypeOf(invalidCanonicalSourceInMemory).not.toBeAny();
+    expectTypeOf(invalidCanonicalSourceTesting).not.toBeAny();
+    expectTypeOf(invalidRetrySourceInMemoryReady).not.toBeAny();
   });
 
   it("rejects leased gRPC topics from public in-memory clients", () => {

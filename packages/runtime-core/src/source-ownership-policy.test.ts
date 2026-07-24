@@ -5,6 +5,7 @@ import {
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { grpcSourceMarkers } from "@effect-view-server/config/internal";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Effect, Schema } from "effect";
 import {
   collectSourceOwnershipConflicts,
@@ -23,7 +24,7 @@ const sourceOwnedMutationError = (topic: string): ViewServerRuntimeError => ({
   code: "UnsupportedQuery",
   topic,
   message:
-    "Source-owned topics do not support direct runtime mutations; publish through the configured Kafka/gRPC source or use an externally-published topic.",
+    "Source-owned topics do not support direct runtime mutations; publish through the configured Source Adapter or use an externally-published topic.",
 });
 
 const sourceOwnedResetError: ViewServerRuntimeError = {
@@ -55,6 +56,14 @@ const managedRuntimeLeasedResetError: ViewServerRuntimeError = {
   message:
     "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
 };
+
+const sourceLeasedReadError = (topic: string): ViewServerRuntimeError => ({
+  _tag: "ViewServerRuntimeError",
+  code: "UnsupportedQuery",
+  topic,
+  message:
+    "Leased Source topics do not support one-shot snapshots; use a live subscription so Runtime Core owns the source lease lifecycle.",
+});
 
 const sourceFreeViewServer = defineViewServerConfig({
   topics: {
@@ -105,6 +114,34 @@ const sourceOwnedViewServer = defineViewServerConfig({
   },
 });
 
+const SourceFailure = Schema.TaggedStruct("OwnershipSourceFailure", {
+  message: Schema.String,
+});
+const SourceMetrics = Schema.Struct({
+  observed: Schema.BigInt,
+});
+const SourceLocation = Schema.Struct({
+  offset: Schema.BigInt,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "ownership-source" },
+  failure: SourceFailure,
+  materialized: undefined,
+  leased: {
+    metrics: SourceMetrics,
+    rejectionLocation: SourceLocation,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+});
+const canonicalSourceViewServer = defineViewServerConfig({
+  topics: {
+    leasedOrders: {
+      schema: Row,
+      source: sourceAdapter.leasedSource(["region"], undefined),
+    },
+  },
+});
+
 describe("SourceOwnershipPolicy", () => {
   it("classifies source-owned and leased topics behind one Interface", () => {
     const policy = makeSourceOwnershipPolicy(sourceOwnedViewServer);
@@ -115,6 +152,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [],
+          sourceLeased: false,
           sourceOwned: false,
           topic: "externalOrders",
         },
@@ -124,6 +162,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "kafka" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "kafkaOrders",
         },
@@ -133,6 +172,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: true,
           owners: [{ _tag: "grpc", lifecycle: "leased" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "leasedOrders",
         },
@@ -142,6 +182,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "grpc", lifecycle: "materialized" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "materializedOrders",
         },
@@ -159,6 +200,8 @@ describe("SourceOwnershipPolicy", () => {
     expect(policy.isSourceOwnedTopic("materializedOrders")).toStrictEqual(true);
     expect(policy.isGrpcLeasedTopic("leasedOrders")).toStrictEqual(true);
     expect(policy.isGrpcLeasedTopic("kafkaOrders")).toStrictEqual(false);
+    expect(policy.isLeasedTopic("leasedOrders")).toStrictEqual(true);
+    expect(policy.isLeasedTopic("materializedOrders")).toStrictEqual(false);
   });
 
   it.effect("allows direct public mutations, reads, and reset for source-free topics", () =>
@@ -167,6 +210,7 @@ describe("SourceOwnershipPolicy", () => {
 
       yield* policy.requirePublicMutationAllowed("externalOrders", "runtimeCore");
       yield* policy.requirePublicReadAllowed("externalOrders", "runtimeCore");
+      yield* policy.requirePublicSubscriptionAllowed("externalOrders", "runtimeCore");
       yield* policy.requirePublicResetAllowed("runtimeCore");
 
       expect([...policy.sourceOwnedTopics]).toStrictEqual([]);
@@ -234,11 +278,19 @@ describe("SourceOwnershipPolicy", () => {
 
       expect(runtimeCoreReadError).toStrictEqual(runtimeCoreLeasedAccessError("leasedOrders"));
       expect(managedReadError).toStrictEqual(managedRuntimeLeasedAccessError("leasedOrders"));
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
       expect(managedMutationError).toStrictEqual(managedRuntimeLeasedAccessError("leasedOrders"));
       expect(managedResetError).toStrictEqual(managedRuntimeLeasedResetError);
       expect(policy.publicReadDecision("leasedOrders", "managedRuntime")).toStrictEqual({
         _tag: "rejected",
         error: managedRuntimeLeasedAccessError("leasedOrders"),
+      });
+      expect(policy.publicSubscriptionDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+        _tag: "rejected",
+        error: runtimeCoreLeasedAccessError("leasedOrders"),
+      });
+      expect(policy.publicSubscriptionDecision("leasedOrders", "managedRuntime")).toStrictEqual({
+        _tag: "allowed",
       });
       expect(policy.publicMutationDecision("leasedOrders", "managedRuntime")).toStrictEqual({
         _tag: "rejected",
@@ -247,6 +299,30 @@ describe("SourceOwnershipPolicy", () => {
       expect(policy.publicResetDecision("managedRuntime")).toStrictEqual({
         _tag: "rejected",
         error: managedRuntimeLeasedResetError,
+      });
+    }),
+  );
+
+  it.effect("allows Runtime Core to manage canonical Source Adapter leased subscriptions", () =>
+    Effect.gen(function* () {
+      const policy = makeSourceOwnershipPolicy(canonicalSourceViewServer);
+
+      const directReadError = yield* policy
+        .requirePublicReadAllowed("leasedOrders", "runtimeCore")
+        .pipe(Effect.flip);
+      const managedReadError = yield* policy
+        .requirePublicReadAllowed("leasedOrders", "managedRuntime")
+        .pipe(Effect.flip);
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "runtimeCore");
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
+
+      expect(directReadError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
+      expect(managedReadError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
+      expect(policy.publicSubscriptionDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+        _tag: "allowed",
+      });
+      expect(policy.publicSubscriptionDecision("leasedOrders", "managedRuntime")).toStrictEqual({
+        _tag: "allowed",
       });
     }),
   );
@@ -288,6 +364,7 @@ describe("SourceOwnershipPolicy", () => {
           {
             grpcLeased: true,
             owners: [{ _tag: "grpc", lifecycle: "leased" }],
+            sourceLeased: false,
             sourceOwned: true,
             topic: "malformedLeasedOrders",
           },
@@ -356,6 +433,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "grpc", lifecycle: "unknown" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "malformedGrpcOrders",
         },
@@ -365,6 +443,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "kafka" }, { _tag: "grpc", lifecycle: "materialized" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "multiOwnedOrders",
         },
@@ -374,6 +453,7 @@ describe("SourceOwnershipPolicy", () => {
         {
           grpcLeased: false,
           owners: [{ _tag: "grpc", lifecycle: "unknown" }],
+          sourceLeased: false,
           sourceOwned: true,
           topic: "primitiveGrpcOrders",
         },

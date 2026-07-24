@@ -12,9 +12,17 @@ import {
   makeViewServerRuntimeCoreInternal,
   type ViewServerRuntimeCoreInternalLiveClient,
   type ViewServerRuntimeCoreInternalOptionsFor,
+  type ViewServerSourceRequirements,
 } from "@effect-view-server/runtime-core/internal";
 import { Effect } from "effect";
 import type { ViewServerInMemoryOptions, ViewServerInMemoryTopicDefinitions } from "./index";
+
+type SynchronousInMemoryTestingConfig<
+  Topics extends ViewServerInMemoryTopicDefinitions,
+  Regions extends RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients,
+> = ViewServerConfig<Topics, Regions, GrpcClients> &
+  ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
 
 export type ViewServerInMemoryTestingInstance<Topics extends ViewServerInMemoryTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
@@ -47,6 +55,7 @@ const makeInMemoryTestingLiveClient = <Topics extends ViewServerInMemoryTopicDef
   subscribeRuntime: adaptRuntimeQuerySubscriber(internalLiveClient.subscribeRuntimeRoutedInternal),
   subscribeHealth: liveClient.subscribeHealth,
   subscribeHealthSummary: liveClient.subscribeHealthSummary,
+  subscribeSourceHealth: liveClient.subscribeSourceHealth,
 });
 
 export const makeInMemoryViewServerTesting: <
@@ -56,9 +65,11 @@ export const makeInMemoryViewServerTesting: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerInMemoryOptions<Topics>,
-) => Effect.Effect<ViewServerInMemoryTestingInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
-  "ViewServerInMemory.testing.make",
-)(function* <
+) => Effect.Effect<
+  ViewServerInMemoryTestingInstance<Topics>,
+  ViewServerRuntimeError,
+  ViewServerSourceRequirements<Topics>
+> = Effect.fn("ViewServerInMemory.testing.make")(function* <
   const Topics extends ViewServerInMemoryTopicDefinitions,
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
@@ -87,7 +98,7 @@ export const createInMemoryViewServerTesting = <
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  config: SynchronousInMemoryTestingConfig<Topics, Regions, GrpcClients>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryTestingInstance<Topics> =>
   Effect.runSync(makeInMemoryViewServerTesting(config, options));

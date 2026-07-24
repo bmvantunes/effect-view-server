@@ -47,6 +47,7 @@
   "dependencies": {
     "@bufbuild/protobuf": "2.12.0",
     "@connectrpc/connect": "catalog:",
+    "@effect-view-server/source-adapter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

@@ -33,18 +33,36 @@ import {
   viewServerDecodeHealthSummaryEvent,
   viewServerDecodeHealthTopicEvent,
   viewServerEncodeLiveQuery,
+  viewServerDecodeSourceHealth,
+  viewServerEncodeSourceHealthRequest,
   type ViewServerRpcError,
   type ViewServerTrustedWireEvent,
   type ViewServerWireHealth,
   type ViewServerWireLiveQuery,
+  type ViewServerWireSourceHealth,
 } from "@effect-view-server/protocol";
-import { Context, Effect, Exit, Layer, ManagedRuntime, Result, Scope, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Result,
+  Semaphore,
+  Scope,
+  Stream,
+} from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type {
   ViewServerLiveClient,
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
+  ViewServerSourceHealthArguments,
+  ViewServerSourceHealthResultForTopic,
+  ViewServerSourceHealthSubscription,
+  ViewServerSourceOwnedTopic,
   ViewServerStatusEvent,
 } from "./live-client";
 import { makeRemoteHealthState } from "./remote-health";
@@ -192,6 +210,13 @@ export const makeViewServerClient: <
   );
   const remoteHealth = makeRemoteHealthState<Topics>(initialHealth);
   const clientScope = yield* Scope.make("parallel");
+  type SharedSourceHealthEntry = {
+    readonly close: Effect.Effect<void>;
+    readonly stream: Stream.Stream<ViewServerWireSourceHealth, ViewServerRemoteClientError>;
+    subscribers: number;
+  };
+  const sharedSourceHealth = new Map<string, SharedSourceHealthEntry>();
+  const sharedSourceHealthLock = Semaphore.makeUnsafe(1);
 
   const close = runAllFinalizers([
     Scope.close(clientScope, Exit.void),
@@ -330,10 +355,104 @@ export const makeViewServerClient: <
     };
   });
 
+  const subscribeSourceHealthWire = Effect.fn("ViewServerClient.remote.sourceHealth.subscribeWire")(
+    function* <Topic extends ViewServerSourceOwnedTopic<Topics>>(
+      topic: Topic,
+      route: ReadonlyArray<object>,
+    ) {
+      return yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const payload = yield* viewServerEncodeSourceHealthRequest(config, topic, route);
+          const subscriptionKey = JSON.stringify(payload);
+          const shared = yield* sharedSourceHealthLock.withPermit(
+            Effect.gen(function* () {
+              let entry = sharedSourceHealth.get(subscriptionKey);
+              if (entry === undefined) {
+                const entryScope = yield* Scope.fork(clientScope, "sequential");
+                const stream = yield* rpc["ViewServer.SourceHealth"](payload, {
+                  streamBufferSize: subscriptionBufferSize,
+                }).pipe(
+                  Stream.mapError(mapViewServerRemoteError),
+                  Stream.share({
+                    capacity: subscriptionBufferSize,
+                    strategy: "suspend",
+                    replay: 1,
+                  }),
+                  Effect.provideService(Scope.Scope, entryScope),
+                );
+                const closeEntry = yield* Effect.cached(Scope.close(entryScope, Exit.void));
+                entry = {
+                  close: closeEntry,
+                  stream,
+                  subscribers: 0,
+                };
+                sharedSourceHealth.set(subscriptionKey, entry);
+              }
+              entry.subscribers += 1;
+              return entry;
+            }),
+          );
+          const subscriptionScope = yield* Scope.fork(clientScope, "sequential");
+          const interrupted = yield* Deferred.make<void>();
+          yield* Scope.addFinalizer(
+            subscriptionScope,
+            Deferred.succeed(interrupted, undefined).pipe(
+              Effect.asVoid,
+              Effect.andThen(
+                sharedSourceHealthLock
+                  .withPermit(
+                    Effect.sync(() => {
+                      shared.subscribers -= 1;
+                      if (
+                        shared.subscribers === 0 &&
+                        sharedSourceHealth.get(subscriptionKey) === shared
+                      ) {
+                        sharedSourceHealth.delete(subscriptionKey);
+                        return true;
+                      }
+                      return false;
+                    }),
+                  )
+                  .pipe(
+                    Effect.flatMap((lastSubscriber) =>
+                      lastSubscriber ? shared.close : Effect.void,
+                    ),
+                  ),
+              ),
+            ),
+          );
+          const closeSubscription = yield* Effect.cached(Scope.close(subscriptionScope, Exit.void));
+          const events = shared.stream.pipe(
+            Stream.mapEffect((value) =>
+              viewServerDecodeSourceHealth<Topics, Topic>(config, topic, value),
+            ),
+            Stream.interruptWhen(Deferred.await(interrupted)),
+            Stream.ensuring(closeSubscription),
+          );
+          return {
+            events,
+            close: () => closeSubscription,
+          };
+        }),
+      );
+    },
+  );
+
+  function subscribeSourceHealth<Topic extends ViewServerSourceOwnedTopic<Topics>>(
+    ...arguments_: ViewServerSourceHealthArguments<Topics, Topic>
+  ): Effect.Effect<
+    ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+    ViewServerRemoteClientError
+  > {
+    const [topic, route] = arguments_;
+    return subscribeSourceHealthWire<Topic>(topic, route === undefined ? [] : [route]);
+  }
+
   return {
     subscribe,
     subscribeHealthSummary,
     subscribeHealth,
+    subscribeSourceHealth,
     health: remoteHealth.readonlyHealth,
     close,
   };

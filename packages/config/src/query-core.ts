@@ -41,7 +41,7 @@ export type TopicDefinition<S extends RowSchema, Key extends string> = {
   readonly key: Key;
   readonly kafkaSource?: object | undefined;
   readonly grpcSource?: TopicSourceDefinition | undefined;
-  readonly source?: never;
+  readonly source?: object | undefined;
 };
 
 export type TopicDefinitions = Record<
@@ -51,7 +51,7 @@ export type TopicDefinitions = Record<
     readonly key: string;
     readonly kafkaSource?: object | undefined;
     readonly grpcSource?: TopicSourceDefinition | undefined;
-    readonly source?: never;
+    readonly source?: object | undefined;
   }
 >;
 

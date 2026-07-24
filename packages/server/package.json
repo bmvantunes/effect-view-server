@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "vp pack",
-    "test": "vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/runtime-core#build && vp test run --coverage --typecheck"
+    "test": "vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/runtime-core#build && vp run -t @effect-view-server/source-adapter-testing#build && vp test run --coverage --typecheck"
   },
   "dependencies": {
     "@effect-view-server/client": "workspace:*",
@@ -26,6 +26,8 @@
   },
   "devDependencies": {
     "@effect-view-server/runtime-core": "workspace:*",
+    "@effect-view-server/source-adapter": "workspace:*",
+    "@effect-view-server/source-adapter-testing": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",

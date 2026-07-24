@@ -18,6 +18,12 @@ import type {
 } from "@effect-view-server/config";
 import type { Effect, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
+import type {
+  SourceDefinitionLifecycle,
+  SourceHealthForDefinition,
+  SourceHealthResultForDefinition,
+  SourceRouteForDefinition,
+} from "@effect-view-server/source-adapter";
 
 type RowWithKey<Row, Key extends string> = string extends Key
   ? Row
@@ -112,6 +118,66 @@ export type ViewServerLiveSubscription<
   readonly close: () => Effect.Effect<void, ViewServerTransportError>;
 };
 
+type TopicSourceDefinition<
+  Topics extends TopicDefinitions,
+  Topic extends keyof Topics,
+> = Topics[Topic] extends { readonly source: infer Source } ? Source : never;
+
+export type ViewServerSourceOwnedTopic<Topics extends TopicDefinitions> = Extract<
+  {
+    readonly [Topic in keyof Topics]: TopicSourceDefinition<Topics, Topic> extends never
+      ? never
+      : Topic;
+  }[keyof Topics],
+  string
+>;
+
+type SourceRoute<
+  Topics extends TopicDefinitions,
+  Topic extends ViewServerSourceOwnedTopic<Topics>,
+> = SourceRouteForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
+
+export type ViewServerSourceHealthForTopic<
+  Topics extends TopicDefinitions,
+  Topic extends ViewServerSourceOwnedTopic<Topics>,
+> = SourceHealthForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
+
+export type ViewServerSourceHealthResultForTopic<
+  Topics extends TopicDefinitions,
+  Topic extends ViewServerSourceOwnedTopic<Topics>,
+> = SourceHealthResultForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
+
+export type ViewServerSourceHealthSubscription<Result> = {
+  readonly events: Stream.Stream<Result, ViewServerRuntimeError | ViewServerTransportError>;
+  readonly close: () => Effect.Effect<void, ViewServerTransportError>;
+};
+
+type IsUnion<Value, Whole = Value> = Value extends Whole
+  ? [Whole] extends [Value]
+    ? false
+    : true
+  : never;
+
+export type ViewServerSourceHealthArguments<
+  Topics extends TopicDefinitions,
+  Topic extends ViewServerSourceOwnedTopic<Topics>,
+> =
+  IsUnion<Topic> extends true
+    ? never
+    : SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>> extends "leased"
+      ? readonly [topic: Topic, routeBy: SourceRoute<Topics, Topic>]
+      : readonly [topic: Topic];
+
+export type ViewServerSourceHealthSubscriber<
+  Topics extends TopicDefinitions,
+  Error = ViewServerRuntimeError | ViewServerTransportError,
+> = <Topic extends ViewServerSourceOwnedTopic<Topics>>(
+  ...arguments_: ViewServerSourceHealthArguments<Topics, Topic>
+) => Effect.Effect<
+  ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+  Error
+>;
+
 type ViewServerQuerySubscriber<Topics extends TopicDefinitions, EraseRow extends boolean> = <
   Topic extends Extract<keyof Topics, string>,
   const Query extends
@@ -145,6 +211,7 @@ export type ViewServerLiveClient<Topics extends TopicDefinitions> = {
     >,
     ViewServerRuntimeError | ViewServerTransportError
   >;
+  readonly subscribeSourceHealth: ViewServerSourceHealthSubscriber<Topics>;
   readonly health: AtomRef.ReadonlyRef<ViewServerHealth<Topics>>;
   readonly close: Effect.Effect<void>;
 };

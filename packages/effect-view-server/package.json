@@ -91,6 +91,18 @@
     "./server": {
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js"
+    },
+    "./source-adapter": {
+      "types": "./dist/source-adapter.d.ts",
+      "import": "./dist/source-adapter.js"
+    },
+    "./source-adapter/server": {
+      "types": "./dist/source-adapter-server.d.ts",
+      "import": "./dist/source-adapter-server.js"
+    },
+    "./source-adapter/testing": {
+      "types": "./dist/source-adapter-testing.d.ts",
+      "import": "./dist/source-adapter-testing.js"
     }
   },
   "publishConfig": {
@@ -116,6 +128,8 @@
     "@effect-view-server/react": "workspace:*",
     "@effect-view-server/runtime": "workspace:*",
     "@effect-view-server/server": "workspace:*",
+    "@effect-view-server/source-adapter": "workspace:*",
+    "@effect-view-server/source-adapter-testing": "workspace:*",
     "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/react": "19.2.15",
@@ -128,12 +142,16 @@
   },
   "peerDependencies": {
     "@effect/atom-react": "4.0.0-beta.100",
+    "@effect/vitest": "4.0.0-beta.100",
     "effect": "4.0.0-beta.100",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "peerDependenciesMeta": {
     "@effect/atom-react": {
+      "optional": true
+    },
+    "@effect/vitest": {
       "optional": true
     },
     "react": {

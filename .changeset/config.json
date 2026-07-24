@@ -25,6 +25,8 @@
     "@effect-view-server/react",
     "@effect-view-server/runtime",
     "@effect-view-server/runtime-core",
-    "@effect-view-server/server"
+    "@effect-view-server/server",
+    "@effect-view-server/source-adapter",
+    "@effect-view-server/source-adapter-testing"
   ]
 }

@@ -19,6 +19,9 @@ const jsonResponse = (status: number, value: unknown): HttpServerResponse.HttpSe
 const failureJsonResponse = (cause: Cause.Cause<unknown>): HttpServerResponse.HttpServerResponse =>
   jsonResponse(500, Cause.findErrorOption(cause).pipe(Option.getOrElse(() => Cause.pretty(cause))));
 
+const readinessStatus = (status: string): number =>
+  status === "ready" || status === "degraded" ? 200 : 503;
+
 export const makeViewServerHealthRoute = <const Topics extends TopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
   input: ViewServerWebSocketServerInput<Topics>,
@@ -37,7 +40,7 @@ export const makeViewServerHealthRoute = <const Topics extends TopicDefinitions>
               const health = yield* input.runtime.health();
               return yield* viewServerDecodeHealth(config, health);
             }).pipe(
-              Effect.map((health) => jsonResponse(health.status === "ready" ? 200 : 503, health)),
+              Effect.map((health) => jsonResponse(readinessStatus(health.status), health)),
               Effect.catchCause((cause) => Effect.succeed(failureJsonResponse(cause))),
             ),
         }),

@@ -85,6 +85,7 @@ export const assembleGrpcLeaseLiveClient = <
       subscribeRuntime,
       subscribeHealth: input.liveClient.subscribeHealth,
       subscribeHealthSummary: input.liveClient.subscribeHealthSummary,
+      subscribeSourceHealth: input.liveClient.subscribeSourceHealth,
     },
     protocolQuerySubscriber: { subscribeProtocolQuery: input.subscribeRuntimeQuery },
   };

@@ -1,5 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import {
   defineViewServerConfig,
   type RawQuery,
@@ -14,6 +15,7 @@ import {
   Fiber,
   Layer,
   ManagedRuntime,
+  Option,
   Queue,
   Schema,
   SchemaGetter,
@@ -29,10 +31,12 @@ import {
   ViewServerTrustedWireEventSchema,
   ViewServerWireRowSchema,
   viewServerDecodeHealth,
+  viewServerEncodeSourceHealth,
   type ViewServerRpcError,
   type ViewServerTrustedWireEvent,
   type ViewServerWireEvent,
   type ViewServerWireHealth,
+  type ViewServerWireSourceHealth,
 } from "@effect-view-server/protocol";
 import { makeViewServerClient } from "./remote";
 import { mapViewServerRemoteError } from "./remote-client";
@@ -59,6 +63,53 @@ const viewServer = defineViewServerConfig({
     orders: {
       schema: Order,
       key: "id",
+    },
+  },
+});
+
+const SourceFailure = Schema.TaggedStruct("RemoteSourceFailure", {
+  message: Schema.String,
+});
+const SourceMetrics = Schema.Struct({
+  observed: Schema.BigInt,
+});
+const SourceLocation = Schema.Struct({
+  offset: Schema.BigInt,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: {
+    name: "remote-source",
+    version: "1",
+  },
+  failure: SourceFailure,
+  materialized: {
+    metrics: SourceMetrics,
+    rejectionLocation: SourceLocation,
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly stream: string;
+    }>(),
+  },
+  leased: {
+    metrics: SourceMetrics,
+    rejectionLocation: SourceLocation,
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly stream: string;
+    }>(),
+  },
+});
+const sourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.leasedSource(["price"], { stream: "orders-by-price" }),
+    },
+  },
+});
+const materializedSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource({ stream: "all-orders" }),
     },
   },
 });
@@ -143,6 +194,79 @@ const health = (rowCount: number, activeSubscriptions: number): ViewServerWireHe
     lastError: null,
   },
 });
+
+const sourceRuntimeMetrics = {
+  startedAtNanos: 1n,
+  lastAttemptStartedAtNanos: 1n,
+  lastDeliveryAtNanos: null,
+  lastRejectionAtNanos: null,
+  lastAppliedMutationAtNanos: null,
+  lastTerminationAtNanos: null,
+  currentAttempt: 1n,
+  retryCount: 0n,
+  receivedDeliveryCount: 0n,
+  rejectedItemCount: 0n,
+  attemptedMutationCount: 0n,
+  appliedUpsertCount: 0n,
+  appliedDeleteCount: 0n,
+  failedMutationCount: 0n,
+  completedSettlementCount: 0n,
+  failedSettlementCount: 0n,
+  retainedRowCount: 0,
+  lanes: [
+    {
+      id: "remote",
+      buffer: {
+        _tag: "Unbuffered",
+      },
+    },
+  ],
+} as const;
+
+const activeSourceHealth = (price: number, sampledAtNanos: bigint) =>
+  ({
+    _tag: "Active",
+    route: { price },
+    health: {
+      adapter: sourceAdapter.identity,
+      target: {
+        _tag: "Leased",
+        route: { price },
+      },
+      status: {
+        _tag: "Ready",
+        attempt: 1n,
+        readyAtNanos: 1n,
+      },
+      metrics: {
+        runtime: sourceRuntimeMetrics,
+        adapter: {
+          observed: sampledAtNanos,
+        },
+      },
+      sampledAtNanos,
+    },
+  }) as const;
+
+const materializedSourceHealth = (sampledAtNanos: bigint) =>
+  ({
+    adapter: sourceAdapter.identity,
+    target: {
+      _tag: "Materialized",
+    },
+    status: {
+      _tag: "Ready",
+      attempt: 1n,
+      readyAtNanos: 1n,
+    },
+    metrics: {
+      runtime: sourceRuntimeMetrics,
+      adapter: {
+        observed: sampledAtNanos,
+      },
+    },
+    sampledAtNanos,
+  }) as const;
 
 const kafkaHealth = (): NonNullable<ViewServerWireHealth["kafka"]> => ({
   startFrom: {
@@ -276,10 +400,15 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
   const events = yield* Queue.unbounded<ViewServerTrustedWireEvent>();
   const healthSummaryEvents = yield* Queue.unbounded<ViewServerTrustedWireEvent>();
   const healthTopicEvents = yield* Queue.unbounded<ViewServerTrustedWireEvent>();
+  const sourceHealthEvents = yield* Queue.unbounded<ViewServerWireSourceHealth>();
   let lastSubscribeQuery: unknown = undefined;
   let rows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [];
   const activeSubscriptions = yield* SubscriptionRef.make(0);
+  const activeSourceHealthSubscriptions = yield* SubscriptionRef.make(0);
   let healthRequests = 0;
+  let sourceHealthEnabled = false;
+  let sourceHealthError: ViewServerRpcError | undefined = undefined;
+  let sourceHealthRequests = 0;
   let healthOverride: ViewServerWireHealth | undefined = undefined;
   let healthDelay: Duration.Input = "0 millis";
   let healthSummaryRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type> = [
@@ -400,6 +529,45 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
             ),
           );
         },
+        "ViewServer.SourceHealth": (payload) => {
+          if (!sourceHealthEnabled) {
+            return Stream.fail({
+              _tag: "ViewServerRuntimeError",
+              code: "InvalidQuery",
+              message: `Topic ${payload.topic} has no Source.`,
+              topic: payload.topic,
+            });
+          }
+          if (sourceHealthError !== undefined) {
+            return Stream.fail(sourceHealthError);
+          }
+          const price =
+            payload.routeBy === undefined ? Number.NaN : Reflect.get(payload.routeBy, "price");
+          return Stream.unwrap(
+            Effect.gen(function* () {
+              sourceHealthRequests += 1;
+              yield* SubscriptionRef.update(activeSourceHealthSubscriptions, (count) => count + 1);
+              const initial =
+                payload.routeBy === undefined
+                  ? yield* viewServerEncodeSourceHealth(
+                      materializedSourceViewServer,
+                      "orders",
+                      materializedSourceHealth(1n),
+                    )
+                  : yield* viewServerEncodeSourceHealth(
+                      sourceViewServer,
+                      "orders",
+                      activeSourceHealth(typeof price === "number" ? price : Number.NaN, 1n),
+                    );
+              return Stream.make(initial).pipe(
+                Stream.concat(Stream.fromQueue(sourceHealthEvents)),
+                Stream.ensuring(
+                  SubscriptionRef.update(activeSourceHealthSubscriptions, (count) => count - 1),
+                ),
+              );
+            }),
+          );
+        },
       }),
     ),
   );
@@ -427,8 +595,12 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
   }
   return {
     activeSubscriptions: () => SubscriptionRef.getUnsafe(activeSubscriptions),
+    activeSourceHealthSubscriptions: () =>
+      SubscriptionRef.getUnsafe(activeSourceHealthSubscriptions),
     awaitSubscriptionCount: (expected: number) =>
       awaitSubscriptionCount(activeSubscriptions, expected),
+    awaitSourceHealthSubscriptionCount: (expected: number) =>
+      awaitSubscriptionCount(activeSourceHealthSubscriptions, expected),
     close: runtime.disposeEffect,
     emit: (event: ViewServerWireEvent) =>
       Effect.flatMap(trustedEvent(event), (trusted) => Queue.offer(events, trusted)),
@@ -436,6 +608,10 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
       Effect.flatMap(trustedEvent(event), (trusted) => Queue.offer(healthSummaryEvents, trusted)),
     emitHealthTopic: (event: ViewServerWireEvent) =>
       Effect.flatMap(trustedEvent(event), (trusted) => Queue.offer(healthTopicEvents, trusted)),
+    emitSourceHealth: (value: unknown) =>
+      Effect.flatMap(viewServerEncodeSourceHealth(sourceViewServer, "orders", value), (wire) =>
+        Queue.offer(sourceHealthEvents, wire),
+      ),
     emitInsert: (topic: string, row: typeof ViewServerWireRowSchema.Type) =>
       Effect.gen(function* () {
         rows = [...rows, row];
@@ -461,10 +637,17 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
         yield* Queue.offer(events, event);
       }),
     healthRequests: () => healthRequests,
+    enableSourceHealth: () => {
+      sourceHealthEnabled = true;
+    },
+    failSourceHealth: (error: ViewServerRpcError) => {
+      sourceHealthError = error;
+    },
     lastSubscribeQuery: () => lastSubscribeQuery,
     setRows: (nextRows: ReadonlyArray<typeof ViewServerWireRowSchema.Type>) => {
       rows = nextRows;
     },
+    sourceHealthRequests: () => sourceHealthRequests,
     setHealth: (nextHealth: ViewServerWireHealth) => {
       healthOverride = nextHealth;
     },
@@ -495,6 +678,195 @@ describe("remote ViewServer client", () => {
       message: "socket closed",
     });
   });
+
+  it.live("decodes Materialized Source Health directly over the WebSocket transport", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      const client = yield* makeViewServerClient(materializedSourceViewServer, {
+        url: server.url,
+      });
+      const subscription = yield* client.subscribeSourceHealth("orders");
+      const first = yield* subscription.events.pipe(Stream.take(1), Stream.runHead);
+
+      expect(Option.getOrThrow(first)).toStrictEqual(materializedSourceHealth(1n));
+
+      yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("shares same-route Source Health streams while keeping local closes independent", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      const client = yield* makeViewServerClient(sourceViewServer, {
+        url: server.url,
+      });
+      const first = yield* client.subscribeSourceHealth("orders", { price: 10 });
+      const second = yield* client.subscribeSourceHealth("orders", { price: 10 });
+      const firstSeen = yield* Deferred.make<void>();
+      const secondSeen = yield* Deferred.make<void>();
+      const firstFiber = yield* first.events.pipe(
+        Stream.tap(() => Deferred.succeed(firstSeen, undefined)),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const secondFiber = yield* second.events.pipe(
+        Stream.tap(() => Deferred.succeed(secondSeen, undefined)),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* server.awaitSourceHealthSubscriptionCount(1);
+      yield* Effect.all([Deferred.await(firstSeen), Deferred.await(secondSeen)]).pipe(
+        Effect.timeout("1 second"),
+      );
+      expect(server.sourceHealthRequests()).toBe(1);
+      yield* first.close();
+      yield* server.emitSourceHealth(activeSourceHealth(10, 2n));
+
+      const firstEvents = yield* Fiber.join(firstFiber);
+      const secondEvents = yield* Fiber.join(secondFiber);
+      yield* server.awaitSourceHealthSubscriptionCount(0);
+      expect({
+        firstSamples: Array.from(firstEvents, (event) =>
+          event._tag === "Active" ? event.health.sampledAtNanos : null,
+        ),
+        secondSamples: Array.from(secondEvents, (event) =>
+          event._tag === "Active" ? event.health.sampledAtNanos : null,
+        ),
+        sourceHealthRequests: server.sourceHealthRequests(),
+      }).toStrictEqual({
+        firstSamples: [1n],
+        secondSamples: [1n, 2n],
+        sourceHealthRequests: 1,
+      });
+
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live(
+    "isolates distinct Source Health routes and closes active diagnostics with the client",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* makeTestRpcServer();
+        server.enableSourceHealth();
+        const client = yield* makeViewServerClient(sourceViewServer, {
+          url: server.url,
+        });
+        const first = yield* client.subscribeSourceHealth("orders", { price: 10 });
+        const second = yield* client.subscribeSourceHealth("orders", { price: 20 });
+        const firstFiber = yield* first.events.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const secondFiber = yield* second.events.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* server.awaitSourceHealthSubscriptionCount(2);
+        expect(server.sourceHealthRequests()).toBe(2);
+        yield* client.close;
+        yield* Fiber.join(firstFiber);
+        yield* Fiber.join(secondFiber);
+        yield* server.awaitSourceHealthSubscriptionCount(0);
+        expect(server.activeSourceHealthSubscriptions()).toBe(0);
+
+        yield* server.close;
+      }),
+  );
+
+  it.live("releases Source Health when its active consumer is interrupted", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      const client = yield* makeViewServerClient(sourceViewServer, {
+        url: server.url,
+      });
+      const subscription = yield* client.subscribeSourceHealth("orders", { price: 25 });
+      const consumer = yield* subscription.events.pipe(Stream.runDrain, Effect.forkChild);
+
+      yield* server.awaitSourceHealthSubscriptionCount(1);
+      yield* Fiber.interrupt(consumer);
+      yield* server.awaitSourceHealthSubscriptionCount(0);
+      expect({
+        activeSubscriptions: server.activeSourceHealthSubscriptions(),
+        sourceHealthRequests: server.sourceHealthRequests(),
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        sourceHealthRequests: 1,
+      });
+
+      yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("preserves typed Source Health stream failures", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      server.failSourceHealth({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "source diagnostics failed",
+        topic: "orders",
+      });
+      const client = yield* makeViewServerClient(sourceViewServer, {
+        url: server.url,
+      });
+      const subscription = yield* client.subscribeSourceHealth("orders", { price: 30 });
+      const failure = yield* subscription.events.pipe(Stream.runDrain, Effect.flip);
+
+      expect(failure).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "source diagnostics failed",
+        topic: "orders",
+      });
+      yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("preserves Source Health transport failures", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      server.failSourceHealth({
+        _tag: "ViewServerTransportError",
+        code: "TransportError",
+        message: "source diagnostics transport failed",
+        queryId: "source-health-query",
+      });
+      const client = yield* makeViewServerClient(sourceViewServer, {
+        url: server.url,
+      });
+      const subscription = yield* client.subscribeSourceHealth("orders", { price: 35 });
+      const failure = yield* subscription.events.pipe(Stream.runDrain, Effect.flip);
+
+      expect(failure).toStrictEqual({
+        _tag: "ViewServerTransportError",
+        code: "TransportError",
+        message: "source diagnostics transport failed",
+        queryId: "source-health-query",
+      });
+      yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
 
   it.effect("does not let late pushed health summary events overwrite stopping status", () =>
     Effect.gen(function* () {

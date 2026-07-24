@@ -1,8 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
-import { type ViewServerHealth, type ViewServerRuntimeError } from "@effect-view-server/config";
-import { ViewServerRpcErrorSchema } from "@effect-view-server/protocol";
-import { Deferred, Effect, Exit, Fiber, Schema, Scope } from "effect";
+import {
+  defineViewServerConfig,
+  type ViewServerHealth,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
+import {
+  viewServerDecodeSourceHealth,
+  ViewServerRpcErrorSchema,
+} from "@effect-view-server/protocol";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import { Deferred, Effect, Exit, Fiber, Schema, Scope, Stream } from "effect";
 import { makeViewServerWebSocketServer } from "./index";
 import { makeViewServerRpcHandlers } from "./rpc-handlers";
 import {
@@ -13,7 +21,174 @@ import {
   viewServer,
 } from "../test-harness/server";
 
+const SourceFailure = Schema.TaggedStruct("ServerSourceFailure", {
+  message: Schema.String,
+});
+const SourceMetrics = Schema.Struct({
+  observed: Schema.BigInt,
+});
+const SourceLocation = Schema.Struct({
+  offset: Schema.BigInt,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: {
+    name: "server-source",
+    version: "1",
+  },
+  failure: SourceFailure,
+  materialized: undefined,
+  leased: {
+    metrics: SourceMetrics,
+    rejectionLocation: SourceLocation,
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly stream: string;
+    }>(),
+  },
+});
+const sourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Schema.Struct({
+        id: Schema.String,
+        price: Schema.Number,
+      }),
+      source: sourceAdapter.leasedSource(["price"], { stream: "orders-by-price" }),
+    },
+  },
+});
+const sourceRuntimeMetrics = {
+  startedAtNanos: 1n,
+  lastAttemptStartedAtNanos: 1n,
+  lastDeliveryAtNanos: null,
+  lastRejectionAtNanos: null,
+  lastAppliedMutationAtNanos: null,
+  lastTerminationAtNanos: null,
+  currentAttempt: 1n,
+  retryCount: 0n,
+  receivedDeliveryCount: 0n,
+  rejectedItemCount: 0n,
+  attemptedMutationCount: 0n,
+  appliedUpsertCount: 0n,
+  appliedDeleteCount: 0n,
+  failedMutationCount: 0n,
+  completedSettlementCount: 0n,
+  failedSettlementCount: 0n,
+  retainedRowCount: 0,
+  lanes: [
+    {
+      id: "server",
+      buffer: {
+        _tag: "Unbuffered",
+      },
+    },
+  ],
+} as const;
+const activeSourceHealth = {
+  _tag: "Active",
+  route: { price: 42 },
+  health: {
+    adapter: sourceAdapter.identity,
+    target: {
+      _tag: "Leased",
+      route: { price: 42 },
+    },
+    status: {
+      _tag: "Ready",
+      attempt: 1n,
+      readyAtNanos: 2n,
+    },
+    metrics: {
+      runtime: sourceRuntimeMetrics,
+      adapter: {
+        observed: 3n,
+      },
+    },
+    sampledAtNanos: 4n,
+  },
+} as const;
+
 describe("Real View Server RPC health", () => {
+  it.effect("interrupts a suspended Source Health subscription acquisition", () =>
+    Effect.gen(function* () {
+      const acquisitionReady = yield* Deferred.make<void>();
+      const acquisitionInterrupted = yield* Deferred.make<void>();
+      const handlerScope = yield* Scope.make("parallel");
+      const handlers = makeViewServerRpcHandlers(
+        sourceViewServer,
+        {
+          liveClient: {
+            subscribeHealth: () => Effect.die("not used"),
+            subscribeHealthSummary: () => Effect.die("not used"),
+            subscribeProtocolQuery: () => Effect.die("not used"),
+            subscribeProtocolSourceHealth: () =>
+              Deferred.succeed(acquisitionReady, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(Deferred.succeed(acquisitionInterrupted, undefined)),
+              ),
+          },
+          runtime: {
+            health: () => Effect.die("not used"),
+          },
+        },
+        handlerScope,
+      );
+      const streamFiber = yield* handlers["ViewServer.SourceHealth"]({
+        topic: "orders",
+        routeBy: { price: 42 },
+      }).pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(acquisitionReady);
+      yield* Fiber.interrupt(streamFiber);
+
+      expect(yield* Deferred.isDone(acquisitionInterrupted)).toBe(true);
+      yield* Scope.close(handlerScope, Exit.void);
+    }),
+  );
+
+  it.effect("streams validated Source Health and closes the source subscription", () =>
+    Effect.gen(function* () {
+      let closeCount = 0;
+      const handlerScope = yield* Scope.make("parallel");
+      yield* Effect.addFinalizer(() => Scope.close(handlerScope, Exit.void));
+      const handlers = makeViewServerRpcHandlers(
+        sourceViewServer,
+        {
+          liveClient: {
+            subscribeHealth: () => Effect.die("not used"),
+            subscribeHealthSummary: () => Effect.die("not used"),
+            subscribeProtocolQuery: () => Effect.die("not used"),
+            subscribeProtocolSourceHealth: () =>
+              Effect.succeed({
+                events: Stream.make(activeSourceHealth),
+                close: () =>
+                  Effect.sync(() => {
+                    closeCount += 1;
+                  }),
+              }),
+          },
+          runtime: {
+            health: () => Effect.die("not used"),
+          },
+        },
+        handlerScope,
+      );
+
+      const wireEvents = yield* handlers["ViewServer.SourceHealth"]({
+        topic: "orders",
+        routeBy: { price: 42 },
+      }).pipe(Stream.runCollect);
+      const decoded = yield* viewServerDecodeSourceHealth(
+        sourceViewServer,
+        "orders",
+        wireEvents[0],
+      );
+
+      expect(Array.from(wireEvents)).toHaveLength(1);
+      expect(decoded).toStrictEqual(activeSourceHealth);
+      expect(closeCount).toBe(1);
+      yield* Scope.close(handlerScope, Exit.void);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("serves health from the runtime instead of stale live-client state", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);

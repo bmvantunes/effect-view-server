@@ -27,6 +27,9 @@ export default defineConfig({
     "src/react-testing.ts",
     "src/runtime.ts",
     "src/server.ts",
+    "src/source-adapter.ts",
+    "src/source-adapter-server.ts",
+    "src/source-adapter-testing.ts",
   ]),
   lint: {
     options: {

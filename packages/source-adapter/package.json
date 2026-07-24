@@ -1,0 +1,37 @@
+{
+  "name": "@effect-view-server/source-adapter",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "test": "vp test run --coverage --typecheck"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@vitest/coverage-istanbul": "catalog:",
+    "@vitest/runner": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -26,11 +26,11 @@ ownership.
 ## Kubernetes
 
 Use `GET /health` for readiness and startup checks. The endpoint returns `200`
-only when the runtime is ready, and returns a non-`200` status while the runtime
-is starting, degraded, or stopping. Do not use it as liveness unless degraded
-source/runtime health should restart the only active runtime and rebuild
-in-memory state. Prefer a process-level or TCP liveness check until a separate
-liveness endpoint exists. If runtime auth is enabled, readiness probes must be
+when the runtime is ready or degraded, and returns a non-`200` status while the
+runtime is starting or stopping. Degraded sources remain queryable and must not
+trigger an automatic restart that discards retained in-memory state. Prefer a
+process-level or TCP liveness check until a separate liveness endpoint exists.
+If runtime auth is enabled, readiness probes must be
 accepted by `auth.validateRequest` or auth must whitelist the health path;
 otherwise probes can receive auth failures instead of runtime health. Use
 `GET /metrics` for Prometheus scraping.

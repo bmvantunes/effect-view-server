@@ -19,6 +19,7 @@ export type SourceOwnershipGrpcLifecycle = TopicGrpcSourceLifecycle;
 export type SourceOwnershipOwner = TopicSourceOwner;
 
 export type SourceOwnershipTopic = {
+  readonly sourceLeased: boolean;
   readonly grpcLeased: boolean;
   readonly owners: ReadonlyArray<SourceOwnershipOwner>;
   readonly sourceOwned: boolean;
@@ -49,6 +50,7 @@ export type SourceOwnershipGrpcOptions = {
 };
 
 export type SourceOwnershipPolicy = {
+  readonly leasedTopics: ReadonlySet<string>;
   readonly grpcLeasedTopics: ReadonlySet<string>;
   readonly sourceOwnedTopics: ReadonlySet<string>;
   readonly topics: ReadonlyMap<string, SourceOwnershipTopic>;
@@ -57,6 +59,10 @@ export type SourceOwnershipPolicy = {
     profile: SourceOwnershipAccessProfile,
   ) => SourceOwnershipDecision;
   readonly publicReadDecision: (
+    topic: string,
+    profile: SourceOwnershipAccessProfile,
+  ) => SourceOwnershipDecision;
+  readonly publicSubscriptionDecision: (
     topic: string,
     profile: SourceOwnershipAccessProfile,
   ) => SourceOwnershipDecision;
@@ -69,10 +75,15 @@ export type SourceOwnershipPolicy = {
     topic: string,
     profile: SourceOwnershipAccessProfile,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
+  readonly requirePublicSubscriptionAllowed: (
+    topic: string,
+    profile: SourceOwnershipAccessProfile,
+  ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly requirePublicResetAllowed: (
     profile: SourceOwnershipAccessProfile,
   ) => Effect.Effect<void, ViewServerRuntimeError>;
   readonly isGrpcLeasedTopic: (topic: string) => boolean;
+  readonly isLeasedTopic: (topic: string) => boolean;
   readonly isSourceOwnedTopic: (topic: string) => boolean;
   readonly hasSourceOwnedTopics: boolean;
 };
@@ -103,10 +114,12 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
   config: ViewServerTopicConfig<Topics>,
 ): SourceOwnershipPolicy => {
   const grpcLeasedTopics = new Set<string>();
+  const leasedTopics = new Set<string>();
   const sourceOwnedTopics = new Set<string>();
   const topics = new Map<string, SourceOwnershipTopic>();
   for (const [topic, binding] of makeTopicSourceBindings(config)) {
     const ownership = {
+      sourceLeased: binding.sourceLeased,
       grpcLeased: binding.grpcLeased,
       owners: binding.owners,
       sourceOwned: binding.sourceOwned,
@@ -119,7 +132,11 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
     if (ownership.grpcLeased) {
       grpcLeasedTopics.add(topic);
     }
+    if (ownership.grpcLeased || ownership.sourceLeased) {
+      leasedTopics.add(topic);
+    }
   }
+  const sortedLeasedTopics = new Set([...leasedTopics].sort());
   const sortedGrpcLeasedTopics = new Set([...grpcLeasedTopics].sort());
   const sortedSourceOwnedTopics = new Set([...sourceOwnedTopics].sort());
   const sortedTopics = new Map(
@@ -142,9 +159,19 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
     topic: string,
     profile: SourceOwnershipAccessProfile,
   ): SourceOwnershipDecision =>
-    sortedGrpcLeasedTopics.has(topic)
+    sortedLeasedTopics.has(topic)
       ? rejectedDecision(leasedRuntimeAccessErrorFor(topic, profile))
       : allowedDecision;
+  const publicSubscriptionDecision = (
+    topic: string,
+    profile: SourceOwnershipAccessProfile,
+  ): SourceOwnershipDecision => {
+    const ownership = sortedTopics.get(topic);
+    return ownership?.sourceLeased === true ||
+      (profile === "managedRuntime" && ownership?.grpcLeased === true)
+      ? allowedDecision
+      : publicReadDecision(topic, profile);
+  };
   const publicResetDecision = (profile: SourceOwnershipAccessProfile): SourceOwnershipDecision => {
     if (sortedSourceOwnedTopics.size === 0) {
       return allowedDecision;
@@ -157,17 +184,22 @@ export const makeSourceOwnershipPolicy = <const Topics extends DecodableTopicDef
   };
   return {
     grpcLeasedTopics: sortedGrpcLeasedTopics,
+    leasedTopics: sortedLeasedTopics,
     sourceOwnedTopics: sortedSourceOwnedTopics,
     topics: sortedTopics,
     publicMutationDecision,
     publicReadDecision,
+    publicSubscriptionDecision,
     publicResetDecision,
     requirePublicMutationAllowed: (topic, profile) =>
       decisionEffect(publicMutationDecision(topic, profile)),
     requirePublicReadAllowed: (topic, profile) =>
       decisionEffect(publicReadDecision(topic, profile)),
+    requirePublicSubscriptionAllowed: (topic, profile) =>
+      decisionEffect(publicSubscriptionDecision(topic, profile)),
     requirePublicResetAllowed: (profile) => decisionEffect(publicResetDecision(profile)),
     isGrpcLeasedTopic: (topic) => sortedGrpcLeasedTopics.has(topic),
+    isLeasedTopic: (topic) => sortedLeasedTopics.has(topic),
     isSourceOwnedTopic: (topic) => sortedSourceOwnedTopics.has(topic),
     hasSourceOwnedTopics: sortedSourceOwnedTopics.size > 0,
   };

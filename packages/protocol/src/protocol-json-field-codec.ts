@@ -45,6 +45,15 @@ type CompiledJsonFieldCodec<Row> = {
 
 const compiledJsonFieldCodecCache = new WeakMap<JsonFieldSchema, CompiledJsonFieldCodec<unknown>>();
 
+const schemaErrorMessage = (error: Schema.SchemaError): string =>
+  Result.match(
+    Result.try(() => error.message),
+    {
+      onFailure: () => "Schema validation failed without a safely printable diagnostic.",
+      onSuccess: (message) => message,
+    },
+  );
+
 function compiledJsonFieldCodec<Row>(
   schema: Schema.Codec<Row, unknown, never, never>,
 ): CompiledJsonFieldCodec<Row>;
@@ -80,11 +89,12 @@ export const encodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.enco
   const compiled = compiledJsonFieldCodec(schema);
   const encoded = yield* compiled.encode(value).pipe(
     Effect.catch((error) => {
+      const message = schemaErrorMessage(error);
       if (!compiled.accepts(value)) {
-        return Effect.fail(errors.invalid(error.message));
+        return Effect.fail(errors.invalid(message));
       }
       return materializeJsonFieldValue(value, errors.notJsonSafe).pipe(
-        Effect.andThen(Effect.fail(errors.invalid(error.message))),
+        Effect.andThen(Effect.fail(errors.invalid(message))),
       );
     }),
   );
@@ -100,7 +110,7 @@ export const decodeMaterializedJsonFieldValue = Effect.fn(
 ) {
   return yield* compiledJsonFieldCodec(schema)
     .decode(value)
-    .pipe(Effect.mapError((error) => errors.invalid(error.message)));
+    .pipe(Effect.mapError((error) => errors.invalid(schemaErrorMessage(error))));
 });
 
 export const decodeJsonFieldValue = Effect.fn("ViewServerProtocol.jsonField.decode")(function* <

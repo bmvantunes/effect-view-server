@@ -12,6 +12,7 @@ import {
   type ViewServerRuntimeCoreOptionsFor,
   type ViewServerRuntimeCorePublicClient,
   type ViewServerRuntimeCorePublicLiveClient,
+  type ViewServerSourceRequirements,
 } from "@effect-view-server/runtime-core";
 import { Effect } from "effect";
 
@@ -28,6 +29,13 @@ export type ViewServerInMemoryInstance<Topics extends ViewServerInMemoryTopicDef
 export type ViewServerInMemoryOptions<
   Topics extends ViewServerInMemoryTopicDefinitions = ViewServerInMemoryTopicDefinitions,
 > = Omit<ViewServerRuntimeCoreOptionsFor<Topics>, "transportHealth">;
+
+type SynchronousInMemoryConfig<
+  Topics extends ViewServerInMemoryTopicDefinitions,
+  Regions extends RuntimeRegions,
+  GrpcClients extends GrpcRuntimeClients,
+> = ViewServerConfig<Topics, Regions, GrpcClients> &
+  ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
 
 const toRuntimeCoreOptions = <const Topics extends ViewServerInMemoryTopicDefinitions>(
   input: ViewServerInMemoryOptions<Topics>,
@@ -60,9 +68,11 @@ export const makeInMemoryViewServer: <
 >(
   config: ViewServerConfig<Topics, Regions, GrpcClients>,
   input: ViewServerInMemoryOptions<Topics>,
-) => Effect.Effect<ViewServerInMemoryInstance<Topics>, ViewServerRuntimeError> = Effect.fn(
-  "ViewServerInMemory.make",
-)(
+) => Effect.Effect<
+  ViewServerInMemoryInstance<Topics>,
+  ViewServerRuntimeError,
+  ViewServerSourceRequirements<Topics>
+> = Effect.fn("ViewServerInMemory.make")(
   <
     const Topics extends ViewServerInMemoryTopicDefinitions,
     const Regions extends RuntimeRegions,
@@ -81,7 +91,7 @@ export const createInMemoryViewServer = <
   const Regions extends RuntimeRegions,
   const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  config: SynchronousInMemoryConfig<Topics, Regions, GrpcClients>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryInstance<Topics> =>
   toInMemoryInstance(createViewServerRuntimeCore(config, toRuntimeCoreOptions(options)));

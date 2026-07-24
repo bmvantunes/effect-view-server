@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted design. Implementation is pending, and every package import described as planned below remains unavailable until its package surface is implemented and verified.
+Accepted. Issue #384 implements the shared-config Source Definition, nominal
+Layer-provided runtime, browser-safe SDK facade, server facade, testing facade,
+and package-boundary verification. First-party platform aggregate Layers remain
+staged in issues #385 and #386, followed by the final migration in issue #387.
 
 ## Context
 

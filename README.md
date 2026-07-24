@@ -3,6 +3,7 @@
 ## Guides
 
 - [Public API](./docs/public-api.md)
+- [Source Adapter SDK](./docs/source-adapter-sdk.md)
 - [Runtime Config](./docs/runtime-config.md)
 - [Kafka Mapping](./docs/kafka-mapping.md)
 - [In-Memory Browser Testing](./docs/in-memory-browser-testing.md)
@@ -26,6 +27,41 @@ React consumers should also install the React subpath peers:
 ```sh
 npm install effect-view-server react react-dom @effect/atom-react
 ```
+
+## Custom Source Adapters
+
+Custom sources use the portable
+[`effect-view-server/source-adapter`](./docs/source-adapter-sdk.md) contract,
+the server implementation surface, and the shared conformance kit. A Topic
+declares one nominal `source`; Runtime Core owns row validation, ordered
+mutation application, settlement, retry, health, and cleanup. Adapter
+implementations receive a Topic-bound toolkit rather than a Runtime Client or
+Topic Store.
+
+```ts
+import { Effect, Schema } from "effect";
+import { defineViewServerConfig } from "effect-view-server/config";
+import { SourceFixture } from "effect-view-server/source-adapter/testing";
+
+const Order = Schema.Struct({
+  id: Schema.String,
+  price: Schema.Number,
+});
+
+const fixture = await Effect.runPromise(SourceFixture.make(Order));
+const viewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: fixture.materializedSource({ label: "orders" }),
+    },
+  },
+});
+```
+
+The fixture is for tests and adapter conformance. Production adapters define
+their portable contract with `SourceAdapter.make(...)` and provide the exact
+generated service using `SourceAdapterServer.make(...)`.
 
 ## Source-Owned Config
 

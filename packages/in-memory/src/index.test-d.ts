@@ -7,11 +7,12 @@ import {
   type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import type { Effect } from "effect";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import type { Context, Effect } from "effect";
 import type { Stream } from "effect";
 import { Schema } from "effect";
-import { createInMemoryViewServer } from "./index";
-import { createInMemoryViewServerTesting } from "./testing";
+import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
+import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -32,7 +33,35 @@ const viewServer = defineViewServerConfig({
   },
 });
 
+const SourceFailure = Schema.TaggedStruct("InMemorySourceFailure", {
+  message: Schema.String,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "in-memory-type-source" },
+  failure: SourceFailure,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+const canonicalSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(undefined),
+    },
+  },
+});
+
 const inMemory = createInMemoryViewServer(viewServer);
+const canonicalSourceInMemoryEffect = makeInMemoryViewServer(canonicalSourceViewServer, {});
+const canonicalSourceTestingEffect = makeInMemoryViewServerTesting(canonicalSourceViewServer, {});
+// @ts-expect-error synchronous in-memory construction cannot provide a Source Adapter service.
+const invalidCanonicalSourceInMemory = createInMemoryViewServer(canonicalSourceViewServer);
+// @ts-expect-error synchronous in-memory testing construction cannot provide a Source Adapter service.
+const invalidCanonicalSourceTesting = createInMemoryViewServerTesting(canonicalSourceViewServer);
 const inMemoryWithGroupedAdmissionLimits = createInMemoryViewServer(viewServer, {
   groupedIncrementalAdmissionLimits: {
     maxGroups: 1,
@@ -156,6 +185,12 @@ describe("in-memory type contracts", () => {
     });
 
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
+    expectTypeOf<Effect.Services<typeof canonicalSourceInMemoryEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof canonicalSourceTestingEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;
@@ -170,6 +205,8 @@ describe("in-memory type contracts", () => {
     expectTypeOf(invalidTransportHealthOption).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitKey).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
+    expectTypeOf(invalidCanonicalSourceInMemory).not.toBeAny();
+    expectTypeOf(invalidCanonicalSourceTesting).not.toBeAny();
   });
 
   it("rejects leased gRPC topics from public in-memory clients", () => {

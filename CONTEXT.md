@@ -4,7 +4,7 @@ This context defines the language for the View Server project: a type-safe live 
 
 ## Document Status
 
-Runtime code and published package exports are authoritative for currently available behavior. All Source Adapter, Source Definition, Source Adapter Runtime Service, and canonical Topic Row ID material throughout this document describes accepted target architecture whose implementation is pending; none of that material describes a currently available public package export or configuration contract.
+Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, canonical `source` path, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, and conformance foundation described here are implemented. First-party Kafka/gRPC conversion, the React Source Diagnostics hook, and final removal of transport-specific source shapes remain staged work.
 
 ## Language
 
@@ -274,7 +274,7 @@ _Avoid_: Guessed field value, implicit string field, server-side key reconstruct
 
 ### Ingestion Concepts
 
-The Source Adapter concepts in this section describe accepted target architecture whose implementation is pending.
+The Source Adapter concepts in this section describe the implemented core SDK and Runtime Core path. Adapter-specific platform Layer constructors and first-party Kafka/gRPC migration remain owned by their staged adapter work.
 
 **Source Topic**:
 An external Kafka topic or future server-side source that provides messages to be mapped into a View Server Topic.

@@ -8,7 +8,15 @@ This package intentionally has no root export. Import from explicit subpaths so 
 import { defineViewServerConfig } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import { runViewServerRuntime } from "effect-view-server/runtime";
+import { SourceAdapter } from "effect-view-server/source-adapter";
+import { SourceAdapterServer } from "effect-view-server/source-adapter/server";
 ```
+
+Adapter tests and reusable conformance suites are exported from
+`effect-view-server/source-adapter/testing`. That optional testing surface
+requires the exact matching `@effect/vitest` peer. The portable
+`effect-view-server/source-adapter` surface is browser-safe and is verified
+against a 32 KiB gzipped fixture budget.
 
 Topic schemas that use Effect `Option`, `Chunk`, `HashMap`, or `HashSet` values
 use the corresponding `viewSchema` factory from `effect-view-server/config`.

@@ -1,13 +1,19 @@
 import { describe, expect, it } from "@effect/vitest";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import { defineViewServerConfig } from "@effect-view-server/config";
-import { Deferred, Effect, Exit, Fiber, Schema, Stream } from "effect";
+import { SourceFixture } from "@effect-view-server/source-adapter-testing";
+import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { healthFromEngine } from "./health";
 import { makeViewServerRuntimeCore } from "./index";
 import { acquireRuntimeCoreLiveSubscription, makeRuntimeCoreLiveClientModule } from "./live-client";
 import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
 import { makeViewServerRuntimeCoreInternalWithConstructionOptions } from "./runtime-core-construction";
+import {
+  sourceLeaseTerminalObserver,
+  type RuntimeCoreSourceLease,
+  type RuntimeCoreSourceManager,
+} from "./source-runtime";
 import { acquireRuntimeCoreResourceHandoff } from "./subscription-handoff";
 import { engineHealth } from "./test-support/runtime-test-fixtures";
 
@@ -481,6 +487,206 @@ describe("Runtime Core lifecycle", () => {
     }),
   );
 
+  it.effect("releases a lease when interruption happens before downstream ownership", () =>
+    Effect.gen(function* () {
+      const leaseOwned = yield* Deferred.make<void>();
+      let releaseCount = 0;
+      const acquisition = yield* acquireRuntimeCoreResourceHandoff((markAcquired) =>
+        Effect.gen(function* () {
+          yield* markAcquired(
+            Effect.sync(() => {
+              releaseCount += 1;
+            }),
+          );
+          yield* Deferred.succeed(leaseOwned, undefined);
+          return yield* Effect.never;
+        }),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(leaseOwned);
+
+      yield* Fiber.interrupt(acquisition);
+      yield* Fiber.interrupt(acquisition);
+
+      expect(releaseCount).toBe(1);
+    }),
+  );
+
+  it.effect("releases a public Source lease when interruption is pending at its handoff", () =>
+    Effect.gen(function* () {
+      const Row = Schema.Struct({
+        id: Schema.String,
+        region: Schema.String,
+      });
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.leasedSource(["region"], {
+              label: "public-pending-interrupt",
+            }),
+          },
+        },
+      });
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: config.topics });
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        healthFromEngine(yield* engine.health()),
+        Effect.succeed(healthFromEngine(yield* engine.health())),
+        "1 minute",
+      );
+      const leaseAcquired = yield* Deferred.make<void>();
+      const releaseAcquisition = yield* Deferred.make<void>();
+      let releaseCount = 0;
+      const sourceManager = {
+        acquireLeased: (_topic, _query, markAcquired) =>
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              yield* Deferred.succeed(leaseAcquired, undefined);
+              yield* Deferred.await(releaseAcquisition);
+              const lease: RuntimeCoreSourceLease = {
+                partition: Object.freeze({
+                  key: "pending-public",
+                  matches: () => true,
+                  ownedStorageKeys: () => [],
+                }),
+                release: Effect.sync(() => {
+                  releaseCount += 1;
+                }),
+                translate: (subscription) => subscription,
+              };
+              yield* markAcquired(lease.release);
+              return Option.some(lease);
+            }),
+          ),
+        decorateMaterialized: (_topic, subscription) => subscription,
+        subscribeSourceHealth: () => Effect.die("not used"),
+      } satisfies Pick<
+        RuntimeCoreSourceManager<typeof config.topics>,
+        "acquireLeased" | "decorateMaterialized" | "subscribeSourceHealth"
+      >;
+      const { liveClient } = yield* makeRuntimeCoreLiveClientModule(
+        config,
+        engine,
+        hub,
+        Effect.void,
+        sourceManager,
+      );
+      const subscriptionFiber = yield* liveClient
+        .subscribe("rows", {
+          routeBy: { region: "eu" },
+          select: ["id", "region"],
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(leaseAcquired);
+      const interruptFiber = yield* Fiber.interrupt(subscriptionFiber).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      yield* Deferred.succeed(releaseAcquisition, undefined);
+      yield* Fiber.join(interruptFiber);
+
+      expect({
+        activeSubscriptions: (yield* engine.health()).activeSubscriptions,
+        releaseCount,
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        releaseCount: 1,
+      });
+      yield* hub.close;
+      yield* engine.close();
+    }),
+  );
+
+  it.effect("releases an observed Source lease when interruption is pending at its handoff", () =>
+    Effect.gen(function* () {
+      const Row = Schema.Struct({
+        id: Schema.String,
+        region: Schema.String,
+      });
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.leasedSource(["region"], {
+              label: "observed-pending-interrupt",
+            }),
+          },
+        },
+      });
+      const engine = yield* createColumnLiveViewEngineInternal({ topics: config.topics });
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        healthFromEngine(yield* engine.health()),
+        Effect.succeed(healthFromEngine(yield* engine.health())),
+        "1 minute",
+      );
+      const leaseAcquired = yield* Deferred.make<void>();
+      const releaseAcquisition = yield* Deferred.make<void>();
+      let releaseCount = 0;
+      const sourceManager = {
+        acquireLeased: (_topic, _query, markAcquired) =>
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              yield* Deferred.succeed(leaseAcquired, undefined);
+              yield* Deferred.await(releaseAcquisition);
+              const lease: RuntimeCoreSourceLease = {
+                partition: Object.freeze({
+                  key: "pending-observed",
+                  matches: () => true,
+                  ownedStorageKeys: () => [],
+                }),
+                release: Effect.sync(() => {
+                  releaseCount += 1;
+                }),
+                translate: (subscription) => subscription,
+              };
+              yield* markAcquired(lease.release);
+              return Option.some(lease);
+            }),
+          ),
+        decorateMaterialized: (_topic, subscription) => subscription,
+        subscribeSourceHealth: () => Effect.die("not used"),
+      } satisfies Pick<
+        RuntimeCoreSourceManager<typeof config.topics>,
+        "acquireLeased" | "decorateMaterialized" | "subscribeSourceHealth"
+      >;
+      const { liveClient } = yield* makeRuntimeCoreLiveClientModule(
+        config,
+        engine,
+        hub,
+        Effect.void,
+        sourceManager,
+      );
+      const subscriptionFiber = yield* liveClient
+        .subscribeObservedInternal(
+          "rows",
+          {
+            routeBy: { region: "eu" },
+            select: ["id", "region"],
+          },
+          sourceLeaseTerminalObserver,
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(leaseAcquired);
+      const interruptFiber = yield* Fiber.interrupt(subscriptionFiber).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      yield* Deferred.succeed(releaseAcquisition, undefined);
+      yield* Fiber.join(interruptFiber);
+
+      expect({
+        activeSubscriptions: (yield* engine.health()).activeSubscriptions,
+        releaseCount,
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        releaseCount: 1,
+      });
+      yield* hub.close;
+      yield* engine.close();
+    }),
+  );
+
   it.effect("transfers interrupted construction cleanup to the combined owner", () =>
     Effect.gen(function* () {
       const combinedOwnerReady = yield* Deferred.make<void>();
@@ -513,6 +719,51 @@ describe("Runtime Core lifecycle", () => {
         engineCloseCount: 1,
         hubCloseCount: 1,
       });
+    }),
+  );
+
+  it.effect("interrupts suspended Source Manager startup", () =>
+    Effect.gen(function* () {
+      const Row = Schema.Struct({
+        id: Schema.String,
+        region: Schema.String,
+      });
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource({
+              label: "interruptible-source-manager-startup",
+            }),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const materialized = Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
+      const metricsStarted = yield* Deferred.make<void>();
+      const metricsInterrupted = yield* Deferred.make<void>();
+      const metrics: typeof materialized.metrics = () =>
+        Deferred.succeed(metricsStarted, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(metricsInterrupted, undefined)),
+        );
+      const constructionFiber = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: {
+            ...materialized,
+            metrics,
+          },
+        }),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(metricsStarted);
+
+      yield* Fiber.interrupt(constructionFiber);
+
+      expect(yield* Deferred.isDone(metricsInterrupted)).toBe(true);
     }),
   );
 
@@ -658,6 +909,12 @@ describe("Runtime Core lifecycle", () => {
           hub,
           requestHealthRefresh,
         );
+        const sourceDiagnostics = yield* Effect.promise(() =>
+          Effect.runPromiseExit(
+            Reflect.apply(liveClient.subscribeSourceHealth, liveClient, ["orders"]),
+          ),
+        );
+        expect(Exit.isFailure(sourceDiagnostics)).toBe(true);
         const subscriptionFiber = yield* liveClient
           .subscribeInternal("orders", { select: ["id"] })
           .pipe(Effect.forkChild({ startImmediately: true }));
@@ -708,6 +965,35 @@ describe("Runtime Core lifecycle", () => {
         closeCount: 1,
         refreshRequestCount: 2,
       });
+    }),
+  );
+
+  it.effect("uses identity Source decoration when the live module has no Source manager", () =>
+    Effect.gen(function* () {
+      const engine = yield* createColumnLiveViewEngineInternal({
+        topics: viewServer.topics,
+      });
+      const initialHealth = healthFromEngine(yield* engine.health());
+      const hub = yield* makeRuntimeCorePushedHealthHub(
+        initialHealth,
+        Effect.succeed(initialHealth),
+        "1 minute",
+      );
+      const { liveClient } = yield* makeRuntimeCoreLiveClientModule(
+        viewServer,
+        engine,
+        hub,
+        Effect.void,
+      );
+      const subscription = yield* liveClient.subscribe("orders", {
+        select: ["id"],
+      });
+      const snapshot = yield* subscription.events.pipe(Stream.take(1), Stream.runHead);
+
+      expect(snapshot._tag).toBe("Some");
+      yield* subscription.close();
+      yield* hub.close;
+      yield* engine.close();
     }),
   );
 

@@ -30,16 +30,17 @@ describe("Runtime Core Source Adapter vertical slice", () => {
   it.effect("publishes deeply frozen decoded adapter metrics", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Order);
-      const accessorPayload = {
-        get nested() {
-          return ["payload"];
-        },
+      const nestedSample = {
+        nested: ["sample"],
+      };
+      const payload = {
+        nested: ["payload"],
       };
       yield* fixture.controls.setMetrics({
         observed: 1n,
         details: {
-          samples: [1, { nested: ["sample"] }],
-          payload: accessorPayload,
+          samples: [1, nestedSample],
+          payload,
         },
       });
       const config = defineViewServerConfig({
@@ -60,20 +61,32 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
       const details = Option.getOrThrow(Option.fromUndefinedOr(health.metrics.adapter.details));
-      const nestedSample = Option.getOrThrow(Option.fromUndefinedOr(details.samples[1]));
+      const publishedNestedSample = Option.getOrThrow(Option.fromUndefinedOr(details.samples[1]));
 
       expect({
         adapter: Object.isFrozen(health.metrics.adapter),
         details: Object.isFrozen(details),
         samples: Object.isFrozen(details.samples),
-        nestedSample: Object.isFrozen(nestedSample),
+        nestedSample: Object.isFrozen(publishedNestedSample),
         payload: Object.isFrozen(details.payload),
+        inputNestedSample: Object.isFrozen(nestedSample),
+        inputNestedArray: Object.isFrozen(nestedSample.nested),
+        inputPayload: Object.isFrozen(payload),
+        inputPayloadArray: Object.isFrozen(payload.nested),
+        copiedNestedSample: publishedNestedSample === nestedSample,
+        copiedPayload: details.payload === payload,
       }).toStrictEqual({
         adapter: true,
         details: true,
         samples: true,
         nestedSample: true,
         payload: true,
+        inputNestedSample: false,
+        inputNestedArray: false,
+        inputPayload: false,
+        inputPayloadArray: false,
+        copiedNestedSample: false,
+        copiedPayload: false,
       });
 
       yield* diagnostics.close();
@@ -453,7 +466,8 @@ describe("Runtime Core Source Adapter vertical slice", () => {
       yield* fixture.controls.setMetrics({ observed: 2n });
       yield* fixture.controls.delete(materializedTarget, "missing");
       expect(fixture.controls.metricReads()).toBe(1n);
-      const resampledFiber = yield* diagnostics.events.pipe(
+      const resampledDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const resampledFiber = yield* resampledDiagnostics.events.pipe(
         Stream.filter((result) => result.metrics.adapter.observed === 2n),
         Stream.take(1),
         Stream.runHead,
@@ -469,6 +483,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
       });
 
       yield* diagnostics.close();
+      yield* resampledDiagnostics.close();
       yield* runtime.close;
       expect(fixture.controls.counts(materializedTarget)).toStrictEqual({
         acquisitions: 1n,
@@ -564,7 +579,13 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         yield* euSecond.close();
         expect(fixture.controls.counts(euTarget).finalizations).toBe(1n);
         yield* euSnapshotSubscription.close();
-        const inactiveAgain = yield* euDiagnostics.events.pipe(
+        const euDiagnosticsAfterRelease = yield* runtime.liveClient.subscribeSourceHealth(
+          "orders",
+          {
+            region: "eu",
+          },
+        );
+        const inactiveAgain = yield* euDiagnosticsAfterRelease.events.pipe(
           Stream.filter((result) => result._tag === "Inactive"),
           Stream.take(1),
           Stream.runHead,
@@ -593,6 +614,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         yield* euAfterRelease.close();
         yield* us.close();
         yield* euDiagnostics.close();
+        yield* euDiagnosticsAfterRelease.close();
         yield* runtime.close;
         expect(fixture.controls.counts(usTarget).finalizations).toBe(1n);
       }),

@@ -210,12 +210,7 @@ const configWithMaterializedDefinition = (source: typeof materializedDefinition)
 });
 
 const invalidQueryTag = (exit: Exit.Exit<unknown, ViewServerRuntimeError>) => {
-  const error = Option.getOrThrow(Exit.findErrorOption(exit));
-  return {
-    _tag: error._tag,
-    code: error.code,
-    topic: error.topic,
-  };
+  return Option.getOrThrow(Exit.findErrorOption(exit));
 };
 
 describe("Source Health wire contract", () => {
@@ -269,6 +264,65 @@ describe("Source Health wire contract", () => {
       expect(yield* viewServerEncodeSourceHealth(config, "leased", decodedActive)).toStrictEqual(
         encodedActive,
       );
+    }),
+  );
+
+  it.effect("rejects incongruent active Leased health routes on encode and decode", () =>
+    Effect.gen(function* () {
+      const active = {
+        _tag: "Active",
+        route: {
+          ...route,
+          amount: makeBigDecimal(124n, 2),
+        },
+        health: leasedHealth,
+      } as const;
+      const encodeFailure = invalidQueryTag(
+        yield* viewServerEncodeSourceHealth(config, "leased", active).pipe(Effect.exit),
+      );
+
+      const encoded = yield* viewServerEncodeSourceHealth(config, "leased", {
+        _tag: "Active",
+        route,
+        health: leasedHealth,
+      });
+      if (typeof encoded !== "object" || encoded === null || Array.isArray(encoded)) {
+        return yield* Effect.die("Expected encoded Active Source Health to be an object.");
+      }
+      const encodedRoute = Reflect.get(encoded, "route");
+      if (
+        typeof encodedRoute !== "object" ||
+        encodedRoute === null ||
+        Array.isArray(encodedRoute)
+      ) {
+        return yield* Effect.die("Expected encoded Active Source Health route to be an object.");
+      }
+      const decodeFailure = invalidQueryTag(
+        yield* viewServerDecodeSourceHealth(
+          config,
+          "leased",
+          Object.assign({}, encoded, {
+            route: Object.assign({}, encodedRoute, {
+              region: "us",
+            }),
+          }),
+        ).pipe(Effect.exit),
+      );
+
+      expect([encodeFailure, decodeFailure]).toStrictEqual([
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Active Leased Source Health route must match its target route.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Active Leased Source Health route must match its target route.",
+        },
+      ]);
     }),
   );
 
@@ -406,38 +460,105 @@ describe("Source Health wire contract", () => {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Materialized Source Topic materialized does not accept routeBy.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
-        },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "leased" },
-        {
-          _tag: "ViewServerRuntimeError",
-          code: "InvalidQuery",
-          topic: "materialized",
+          message: "Materialized Source Topic materialized does not accept routeBy.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
-          topic: "materialized",
+          topic: "leased",
+          message: "Leased Source Topic leased requires exact routeBy.",
         },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "manual" },
-        { _tag: "ViewServerRuntimeError", code: "InvalidQuery", topic: "missing" },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source routeBy must contain all and only: region, shard, amount.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source Topic leased requires exact routeBy.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source routeBy must contain all and only: region, shard, amount.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source routeBy must contain all and only: region, shard, amount.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source routeBy must contain all and only: region, shard, amount.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message:
+            'Invalid Source Health value: Expected { readonly "_tag": "Inactive", ... } | { readonly "_tag": "Active", ... }, got null',
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message:
+            "Invalid Source Health value: Schema validation failed without a safely printable diagnostic.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source routeBy must contain all and only: region, shard, amount.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "leased",
+          message: "Leased Source routeBy must contain all and only: region, shard, amount.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "materialized",
+          message: 'Invalid Source Health value: Expected bigint, got 12\n  at ["sampledAtNanos"]',
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "materialized",
+          message: 'Invalid Source Health value: Expected 1, got 2n\n  at ["status"]["attempt"]',
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "manual",
+          message: "Topic manual has no canonical Source Definition.",
+        },
+        {
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "missing",
+          message: "Topic missing is not configured.",
+        },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "mismatched",
+          message: "Topic mismatched Source route field missing is missing.",
         },
       ]);
     }),
@@ -486,41 +607,49 @@ describe("Source Health wire contract", () => {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
         {
           _tag: "ViewServerRuntimeError",
           code: "InvalidQuery",
           topic: "materialized",
+          message: "Topic materialized has no canonical Source Definition.",
         },
       ]);
     }),
@@ -577,6 +706,8 @@ describe("Source Health wire contract", () => {
         _tag: "ViewServerRuntimeError",
         code: "InvalidQuery",
         topic: "unsafe",
+        message:
+          'Source Health is not wire-safe: Unsupported JSON value type "symbol" at $.metrics.adapter.',
       });
     }),
   );

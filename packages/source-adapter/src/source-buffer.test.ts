@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { SourceBuffer } from "./server";
 
 describe("Source Buffer primitives", () => {
@@ -99,6 +99,32 @@ describe("Source Buffer primitives", () => {
         });
       }),
     ),
+  );
+
+  it.effect("atomically installs callback cleanup before honoring interruption", () =>
+    Effect.gen(function* () {
+      const resourceEstablished = yield* Deferred.make<void>();
+      const returnCleanup = yield* Deferred.make<void>();
+      const cleanupRan = yield* Deferred.make<void>();
+      const bufferFiber = yield* Effect.scoped(
+        SourceBuffer.backpressurable<number>({
+          capacity: 1,
+          register: () =>
+            Deferred.succeed(resourceEstablished, undefined).pipe(
+              Effect.andThen(Deferred.await(returnCleanup)),
+              Effect.as(Deferred.succeed(cleanupRan, undefined).pipe(Effect.asVoid)),
+            ),
+        }),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(resourceEstablished);
+      const interruption = yield* Fiber.interrupt(bufferFiber).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.succeed(returnCleanup, undefined);
+      yield* Fiber.join(interruption);
+
+      expect(yield* Deferred.isDone(cleanupRan)).toBe(true);
+    }),
   );
 
   it.effect("shuts down retained emitters and releases blocked producers after Scope closure", () =>

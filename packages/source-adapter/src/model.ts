@@ -1058,8 +1058,25 @@ export const sourceDefinitionOptionsFamily = <
   return Object.freeze(token);
 };
 
-export const isSourceAdapterHandle = (value: unknown): boolean =>
-  hasSelfBrand(value, SourceAdapterTypeId);
+export function isSourceAdapterHandle<
+  Name extends string,
+  Version extends string | undefined,
+  AdapterFailure,
+  Materialized extends SourceLifecycleDeclarationAny | undefined,
+  Leased extends SourceLifecycleDeclarationAny | undefined,
+>(value: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>): boolean;
+export function isSourceAdapterHandle(
+  value: unknown,
+): value is SourceAdapterHandle<
+  string,
+  string | undefined,
+  unknown,
+  SourceLifecycleDeclarationAny | undefined,
+  SourceLifecycleDeclarationAny | undefined
+>;
+export function isSourceAdapterHandle(value: unknown): boolean {
+  return hasSelfBrand(value, SourceAdapterTypeId);
+}
 
 const hasExactDefinitionDataKeys = (
   value: object,
@@ -1186,8 +1203,20 @@ export const makeSourceDelete = (id: string): SourceDelete => {
   return mutation;
 };
 
-export const isSourceMutation = (value: unknown): value is SourceMutation<object> =>
-  hasSelfBrand(value, SourceMutationTypeId);
+export const isSourceMutation = (value: unknown): value is SourceMutation<object> => {
+  if (!hasSelfBrand(value, SourceMutationTypeId) || typeof value !== "object" || value === null) {
+    return false;
+  }
+  const inspected = Result.try(() => {
+    const tag = Reflect.get(value, "_tag");
+    if (tag === "Delete") {
+      return typeof Reflect.get(value, "id") === "string";
+    }
+    const row = Reflect.get(value, "row");
+    return tag === "Upsert" && typeof row === "object" && row !== null;
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 const noSettlement = () => Effect.void;
 
@@ -1207,7 +1236,22 @@ export const makeSourceDelivery = <Row extends object, AdapterFailure, Services 
 
 export const isSourceDelivery = (
   value: unknown,
-): value is SourceDelivery<object, unknown, unknown> => hasSelfBrand(value, SourceDeliveryTypeId);
+): value is SourceDelivery<object, unknown, unknown> => {
+  if (!hasSelfBrand(value, SourceDeliveryTypeId) || typeof value !== "object" || value === null) {
+    return false;
+  }
+  const inspected = Result.try(() => {
+    const mutations = Reflect.get(value, "mutations");
+    return (
+      Reflect.get(value, "_tag") === "SourceDelivery" &&
+      Chunk.isChunk(mutations) &&
+      Chunk.isNonEmpty(mutations) &&
+      Chunk.every(mutations, isSourceMutation) &&
+      typeof Reflect.get(value, "settle") === "function"
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const makeSourceItemRejection = <
   AdapterFailure,
@@ -1235,8 +1279,28 @@ export const makeSourceItemRejection = <
 
 export const isSourceItemRejection = (
   value: unknown,
-): value is SourceItemRejection<unknown, unknown, unknown> =>
-  hasSelfBrand(value, SourceItemRejectionTypeId);
+): value is SourceItemRejection<unknown, unknown, unknown> => {
+  if (
+    !hasSelfBrand(value, SourceItemRejectionTypeId) ||
+    typeof value !== "object" ||
+    value === null
+  ) {
+    return false;
+  }
+  const inspected = Result.try(() => {
+    const diagnostic = Reflect.get(value, "diagnostic");
+    return (
+      Reflect.get(value, "_tag") === "SourceItemRejection" &&
+      typeof diagnostic === "object" &&
+      diagnostic !== null &&
+      Reflect.has(diagnostic, "failure") &&
+      Reflect.has(diagnostic, "location") &&
+      typeof Reflect.get(diagnostic, "rejectedAtNanos") === "bigint" &&
+      typeof Reflect.get(value, "settle") === "function"
+    );
+  });
+  return Result.isSuccess(inspected) && inspected.success;
+};
 
 export const markSourceToolkit = <
   Row extends object,

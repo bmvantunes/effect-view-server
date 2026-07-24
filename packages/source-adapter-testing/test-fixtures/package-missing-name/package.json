@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./contract": "./contract.js",
+    "./server": "./server.js"
+  }
+}

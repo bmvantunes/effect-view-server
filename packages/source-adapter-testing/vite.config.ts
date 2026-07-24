@@ -9,11 +9,8 @@ export default defineConfig({
     },
   },
   test: {
-    include: [
-      "src/**/*.test.ts",
-      "../runtime-core/src/source-runtime.test.ts",
-      "../runtime-core/src/source-runtime-conformance.test.ts",
-    ],
+    include: ["src/**/*.test.ts"],
+    testTimeout: 30_000,
     typecheck: {
       enabled: true,
       checker: "tsc",

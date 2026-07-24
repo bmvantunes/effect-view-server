@@ -149,17 +149,21 @@ route even when multiple definitions share one adapter service.
 The generated service remains an explicit production runtime requirement:
 
 ```ts
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
-import { makeViewServerRuntime } from "effect-view-server/runtime";
+import { runViewServerRuntime } from "effect-view-server/runtime";
 import { ExampleAdapterLive } from "./example-adapter-live";
 import { viewServer } from "./view-server";
 
-const runtime = makeViewServerRuntime(viewServer).pipe(Effect.provide(ExampleAdapterLive));
+runViewServerRuntime(viewServer).pipe(Effect.provide(ExampleAdapterLive), NodeRuntime.runMain);
 ```
 
 Without the matching Layer, composition fails before the WebSocket/HTTP server
 starts. Operational attempt failure is supervised independently and does not
-stop unrelated Topics or transports.
+stop unrelated Topics or transports. If an application uses the finite
+`makeViewServerRuntime` constructor instead, it must build and use the returned
+runtime inside the same scope that provides the adapter Layer so shared adapter
+resources remain alive until runtime close.
 
 ## Delivery, rejection, and health
 
@@ -194,28 +198,37 @@ wire path remains Effect RPC WebSocket with NDJSON and configured Schemas.
 an adapter Layer, deliveries, rejections, failures, completion, metrics changes,
 and finalization counters. `registerSourceAdapterConformance(...)` registers the
 shared scoped Layer/TestClock suite used by Runtime Core and future published
-adapters. Its Materialized contract covers ordered and concurrent lanes,
-Delivery settlement for success, typed failure, defect, and interruption,
-Rejection continuation, retries, exhaustion, metrics, invalid attempt metadata,
-and awaited exactly-once finalization. Its Leased contract covers same-route
-sharing, distinct-route isolation, diagnostics without acquisition, release,
-and route incongruence.
+adapters. Registration requires at least one explicitly enabled capability, and
+the Driver supplies adapter-specific failure, rejection-location, and metrics
+expectations so assertions remain exact without depending on the built-in
+fixture's Schema. Every declared lifecycle runs the same complete contract for
+ordered and concurrent lanes, Delivery settlement for success, typed failure,
+defect, and interruption, Rejection continuation, retries, exhaustion, metrics,
+invalid attempt metadata, and awaited exactly-once finalization. Leased
+lifecycles additionally cover same-route sharing, distinct-route isolation,
+diagnostics without acquisition, release, and route incongruence.
 
-Callback-driven adapters can additionally provide `exerciseCallbackBuffer` and
-enable `callbackBuffer: true`. The shared checks require bounded
+Callback-driven adapters can additionally provide `callbackBridge` and enable
+`callbackBridge: true` alongside Materialized lifecycle conformance. The shared checks require bounded
 backpressurable ordering, deterministic non-pausable overflow, high-water and
 overflow metrics, and awaited registration finalization.
 
 Published adapter packages can register
-`registerSourceAdapterPackageConformance(...)`. The package snapshot checks the
+`registerSourceAdapterPackageConformance({ inspection, behavioral })`. The
+package snapshot checks the
 portable `./contract`, `./server`, and platform exports; exact and tested Effect
 peer combinations; matching development peers; absence of bundled peer
-runtimes; nominal Definition linkage; positive and negative public type
-contracts; Schema fidelity; browser purity and gzip budget; and platform
+runtimes; an exact probe for every lifecycle declared by the built adapter;
+nominal Definition linkage; contract-linked positive and negative public type
+expressions; Schema fidelity; pre-tree-shake browser dependency purity and gzip budget; and platform
 `layer`/`layerConfig` resource validation plus exact runtime-service provision.
-The package must supply a real scoped inspector Layer, so the same reusable
-suite can validate its built artifact rather than relying on source-only
-assertions.
+The linked-package check requires the behavioral Driver to carry the exact
+adapter handle and lifecycle Definitions imported from that inspected built
+`./contract`. Every built lifecycle and every Driver capability must be enabled
+for the behavioral registration, which then runs the full suite against the
+same Driver Layer. Type evidence counts only assertions and negative cases that
+directly reference bindings imported from the exact contract entry, and the
+browser build always starts from that same manifest export.
 
 Repository package-surface validation rejects deep/internal imports and
 browser/server dependency leaks. The real portable-facade browser fixture has a

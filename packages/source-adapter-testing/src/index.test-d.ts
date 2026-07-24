@@ -1,16 +1,20 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { SourceDefinitionRouteFields } from "@effect-view-server/source-adapter";
+import type {
+  SourceDefinition,
+  SourceDefinitionRouteFields,
+} from "@effect-view-server/source-adapter";
 import { Context, Effect, Layer, Schema } from "effect";
 import {
-  SourceAdapterConformanceSubject,
-  SourceAdapterPackageConformanceSubject,
+  SourceAdapterConformanceDriver,
+  SourceAdapterConformanceRow,
   SourceFixture,
-  registerSourceAdapterConformance,
-  registerSourceAdapterPackageConformance,
+  inspectSourceAdapterPackageConformance,
+  makeSourceAdapterConformanceDriver,
+  sourceAdapterConformanceDefinitionIsLinked,
   type ControllableSourceFixture,
-  type SourceAdapterConformanceMaterializedSnapshot,
-  type SourceAdapterConformanceSubjectValue,
-  type SourceAdapterPackageConformanceSubjectValue,
+  type SourceAdapterConformanceDriverInput,
+  type SourceAdapterConformanceDriverValue,
+  type SourceAdapterPackageInspectionOptions,
   type SourceFixtureFailure,
   type SourceFixtureLeasedDefinition,
   type SourceFixtureMaterializedDefinition,
@@ -22,8 +26,31 @@ const FixtureRow = Schema.Struct({
 });
 
 declare const fixture: ControllableSourceFixture<typeof FixtureRow.Type>;
-declare const conformanceSubject: SourceAdapterConformanceSubjectValue;
-declare const packageConformanceSubject: SourceAdapterPackageConformanceSubjectValue;
+declare const conformanceFixture: ControllableSourceFixture<SourceAdapterConformanceRow>;
+declare const conformanceDriver: SourceAdapterConformanceDriverValue;
+declare const unrelatedMaterializedDefinition: SourceDefinition<
+  {
+    readonly identity: {
+      readonly name: "unrelated-adapter";
+    };
+  },
+  "materialized",
+  unknown,
+  readonly [],
+  unknown,
+  SourceAdapterConformanceRow
+>;
+declare const unbrandedConformanceDriver: Pick<
+  SourceAdapterConformanceDriverValue<typeof conformanceFixture.adapter>,
+  | "adapter"
+  | "expectations"
+  | "runtimeContext"
+  | "materialized"
+  | "leased"
+  | "callbackBridge"
+  | "transport"
+>;
+declare const packageInspectionOptions: SourceAdapterPackageInspectionOptions;
 
 const materialized = fixture.materializedSource({
   label: "orders",
@@ -88,57 +115,86 @@ describe("Source Adapter testing surface type contracts", () => {
     });
   });
 
-  it("exposes an exact active conformance Layer contract", () => {
-    const layer = Layer.succeed(SourceAdapterConformanceSubject, conformanceSubject);
-    expectTypeOf(layer).toEqualTypeOf<Layer.Layer<SourceAdapterConformanceSubject>>();
+  it("exposes a raw driver without host-level behavioral results", () => {
+    const exactDriver = SourceFixture.conformanceDriver(conformanceFixture);
+    const layer = Layer.succeed(SourceAdapterConformanceDriver, conformanceDriver);
+    expectTypeOf(layer).toEqualTypeOf<Layer.Layer<SourceAdapterConformanceDriver>>();
+    expectTypeOf(exactDriver).toExtend<SourceAdapterConformanceDriverValue>();
+    expectTypeOf(exactDriver.adapter).toEqualTypeOf<typeof conformanceFixture.adapter>();
+    expectTypeOf<SourceAdapterConformanceDriverInput<never, never>>().not.toBeAny();
+    expectTypeOf(conformanceDriver.transport.command).not.toBeAny();
+    expectTypeOf(conformanceDriver.transport.observe).not.toBeAny();
     expectTypeOf(
-      registerSourceAdapterConformance({
-        name: "third-party adapter",
-        layer,
-        materialized: true,
-        leased: true,
-      }),
-    ).toEqualTypeOf<void>();
-    expectTypeOf<SourceAdapterConformanceMaterializedSnapshot>().not.toBeAny();
+      sourceAdapterConformanceDefinitionIsLinked(
+        exactDriver.materialized?.source,
+        exactDriver.adapter,
+        "materialized",
+      ),
+    ).toEqualTypeOf<boolean>();
 
-    registerSourceAdapterConformance({
-      name: "invalid",
-      // @ts-expect-error conformance requires its exact nominal Subject Layer.
-      layer: Layer.empty,
-      materialized: true,
-    });
-
-    registerSourceAdapterConformance({
-      name: "invalid callback option",
-      layer,
-      // @ts-expect-error callback-buffer conformance is enabled with a boolean.
-      callbackBuffer: "yes",
-    });
+    // @ts-expect-error the canonical conformance driver requires the canonical row contract.
+    SourceFixture.conformanceDriver(fixture);
   });
 
-  it("exposes an exact package conformance Layer contract", () => {
-    const layer = Layer.succeed(SourceAdapterPackageConformanceSubject, packageConformanceSubject);
-    expectTypeOf(layer).toEqualTypeOf<Layer.Layer<SourceAdapterPackageConformanceSubject>>();
-    expectTypeOf(
-      registerSourceAdapterPackageConformance({
-        name: "published adapter package",
-        layer,
-        platformExports: ["./kafka"],
-        effectPeerDependencies: ["@effect/platform"],
+  it("keeps every definition linked to the factory adapter", () => {
+    const exactDriver = SourceFixture.conformanceDriver(conformanceFixture);
+    const materialized = {
+      source: conformanceFixture.materializedSource({
+        label: "materialized",
       }),
-    ).toEqualTypeOf<void>();
+      delayedRetrySource: conformanceFixture.materializedSource({
+        label: "materialized-delayed",
+      }),
+      singleRetrySource: conformanceFixture.materializedSource({
+        label: "materialized-single",
+      }),
+    };
+    const leased = {
+      source: conformanceFixture.leasedSource(["region"], {
+        label: "leased",
+      }),
+      delayedRetrySource: conformanceFixture.leasedSource(["region"], {
+        label: "leased-delayed",
+      }),
+      singleRetrySource: conformanceFixture.leasedSource(["region"], {
+        label: "leased-single",
+      }),
+      sameRoute: { region: "eu" },
+      distinctRoute: { region: "us" },
+    };
+    const validInput = {
+      adapter: conformanceFixture.adapter,
+      expectations: exactDriver.expectations,
+      transport: exactDriver.transport,
+      runtimeLayer: conformanceFixture.layer,
+      materialized,
+      leased,
+      callbackBridge: conformanceFixture.callbackBridge,
+    };
+    const linked = makeSourceAdapterConformanceDriver(validInput);
+    expectTypeOf(linked.adapter).toEqualTypeOf<typeof conformanceFixture.adapter>();
 
-    registerSourceAdapterPackageConformance({
-      name: "invalid platform list",
-      layer,
+    makeSourceAdapterConformanceDriver({
+      ...validInput,
+      materialized: {
+        ...materialized,
+        // @ts-expect-error every conformance definition must use the factory adapter.
+        source: unrelatedMaterializedDefinition,
+      },
+    });
+
+    // @ts-expect-error Context layers require the nominal conformance Driver brand.
+    Layer.succeed(SourceAdapterConformanceDriver, unbrandedConformanceDriver);
+  });
+
+  it("requires a real package root and executable artifact fixtures", () => {
+    expectTypeOf(inspectSourceAdapterPackageConformance(packageInspectionOptions)).not.toBeAny();
+
+    const invalidInspection = inspectSourceAdapterPackageConformance({
+      ...packageInspectionOptions,
       // @ts-expect-error a published adapter must declare at least one platform export.
-      platformExports: [],
+      platforms: [],
     });
-    registerSourceAdapterPackageConformance({
-      name: "invalid package subject",
-      // @ts-expect-error package conformance requires its exact nominal Subject Layer.
-      layer: Layer.empty,
-      platformExports: ["./kafka"],
-    });
+    expectTypeOf(invalidInspection).not.toBeAny();
   });
 });

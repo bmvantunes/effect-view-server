@@ -2,6 +2,14 @@ import { defineConfig } from "vite-plus";
 import { libraryPack } from "../../vite.pack";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@effect-view-server/source-adapter-testing": new URL(
+        "../source-adapter-testing/src/index.ts",
+        import.meta.url,
+      ).pathname,
+    },
+  },
   test: {
     include: ["src/**/*.test.ts"],
     typecheck: {

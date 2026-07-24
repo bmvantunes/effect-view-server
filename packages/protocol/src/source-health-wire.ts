@@ -9,7 +9,7 @@ import {
   type SourceHealthResultForDefinition,
 } from "@effect-view-server/source-adapter";
 import { isSourceDefinition } from "@effect-view-server/source-adapter/internal";
-import { Effect, Option, Result, Schema } from "effect";
+import { BigDecimal, Effect, Option, Result, Schema } from "effect";
 import { decodeJsonFieldValue, encodeJsonFieldValue } from "./protocol-json-field-codec";
 
 const ViewServerSourceHealthRoutePayloadSchema = Schema.Record(Schema.String, Schema.Json);
@@ -89,6 +89,7 @@ const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.c
     route,
     adapterMetrics,
     rejectionLocation,
+    lifecycle,
   });
   const result =
     lifecycle === "materialized"
@@ -146,6 +147,17 @@ const readProperty = (candidate: unknown, key: string): unknown => {
   return Result.isSuccess(property) ? property.success : undefined;
 };
 
+const equalRouteValue = (left: unknown, right: unknown): boolean => {
+  if (BigDecimal.isBigDecimal(left)) {
+    return (
+      BigDecimal.isBigDecimal(right) &&
+      left.value === right.value &&
+      Object.is(left.scale, right.scale)
+    );
+  }
+  return Object.is(left, right);
+};
+
 const requireExactLeasedHealthRoutes = Effect.fn(
   "ViewServerProtocol.sourceHealth.leasedRoutes.exact",
 )(function* (
@@ -159,10 +171,25 @@ const requireExactLeasedHealthRoutes = Effect.fn(
     return;
   }
   if (tag === "Active") {
-    yield* requireExactRoute(topic, routeFields, readProperty(candidate, "route"));
+    const outerRoute = readProperty(candidate, "route");
+    yield* requireExactRoute(topic, routeFields, outerRoute);
     const health = readProperty(candidate, "health");
     const target = readProperty(health, "target");
-    yield* requireExactRoute(topic, routeFields, readProperty(target, "route"));
+    const targetRoute = readProperty(target, "route");
+    yield* requireExactRoute(topic, routeFields, targetRoute);
+    if (
+      readProperty(target, "_tag") !== "Leased" ||
+      !Object.keys(routeFields).every((field) =>
+        equalRouteValue(readProperty(outerRoute, field), readProperty(targetRoute, field)),
+      )
+    ) {
+      return yield* Effect.fail(
+        invalidSourceHealth(
+          topic,
+          "Active Leased Source Health route must match its target route.",
+        ),
+      );
+    }
   }
 });
 
@@ -249,15 +276,18 @@ export const viewServerEncodeSourceHealth = Effect.fn("ViewServerProtocol.source
   },
 );
 
-export const viewServerDecodeSourceHealth = Effect.fn("ViewServerProtocol.sourceHealth.decode")(
-  function* <
+export const viewServerDecodeSourceHealth: <
+  Topics extends ViewServerConfigTopicShape,
+  Topic extends Extract<keyof Topics, string>,
+>(
+  config: ViewServerTopicConfig<Topics>,
+  topic: Topic,
+  value: unknown,
+) => Effect.Effect<ViewServerDecodedSourceHealth<Topics, Topic>, ViewServerRuntimeError> =
+  Effect.fn("ViewServerProtocol.sourceHealth.decode")(function* <
     Topics extends ViewServerConfigTopicShape,
     Topic extends Extract<keyof Topics, string>,
-  >(
-    config: ViewServerTopicConfig<Topics>,
-    topic: Topic,
-    value: unknown,
-  ): Effect.fn.Return<ViewServerDecodedSourceHealth<Topics, Topic>, ViewServerRuntimeError> {
+  >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: unknown) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
       yield* requireExactLeasedHealthRoutes(topic, contract.routeFields, value);
@@ -276,5 +306,4 @@ export const viewServerDecodeSourceHealth = Effect.fn("ViewServerProtocol.source
     ): candidate is ViewServerDecodedSourceHealth<Topics, Topic> {
       return Schema.is(codec)(candidate);
     }
-  },
-);
+  });

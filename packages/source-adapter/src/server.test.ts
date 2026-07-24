@@ -22,7 +22,7 @@ import {
   markSourceToolkit,
 } from "./internal";
 import type { SourceToolkit } from "./index";
-import { SourceAdapterServer } from "./server";
+import { SourceAdapterServer, type SourceAdapterServerLifecycle } from "./server";
 
 const Failure = Schema.TaggedStruct("ServerFixtureFailure", {
   message: Schema.String,
@@ -59,6 +59,69 @@ const toolkit: SourceToolkit<
   delivery: (mutations, settlement) => Effect.succeed(makeSourceDelivery(mutations, settlement)),
   reject: (input) => Effect.succeed(makeSourceItemRejection(input)),
 });
+
+const nominalClone = <Value extends object>(
+  value: Value,
+  overrides: Readonly<Record<string, unknown>>,
+): Value => {
+  const clone: Value = Object.create(Object.getPrototypeOf(value));
+  for (const property of Reflect.ownKeys(value)) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, property);
+    if (descriptor === undefined) {
+      continue;
+    }
+    const next =
+      typeof property === "symbol" &&
+      "value" in descriptor &&
+      typeof descriptor.value === "function"
+        ? {
+            ...descriptor,
+            value: () => clone,
+          }
+        : typeof property === "string" &&
+            Object.hasOwn(overrides, property) &&
+            "value" in descriptor
+          ? {
+              ...descriptor,
+              value: overrides[property],
+            }
+          : descriptor;
+    Object.defineProperty(clone, property, next);
+  }
+  return Object.freeze(clone);
+};
+
+const hostileNominalClone = <Value extends object>(
+  value: Value,
+  propertyToThrow: string,
+): Value => {
+  const clone: Value = Object.create(Object.getPrototypeOf(value));
+  for (const property of Reflect.ownKeys(value)) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, property);
+    if (descriptor === undefined) {
+      continue;
+    }
+    const next =
+      typeof property === "symbol" &&
+      "value" in descriptor &&
+      typeof descriptor.value === "function"
+        ? {
+            ...descriptor,
+            value: () => clone,
+          }
+        : property === propertyToThrow
+          ? {
+              configurable: false,
+              enumerable: descriptor.enumerable === true,
+              get() {
+                throw new Error(`hostile ${propertyToThrow}`);
+              },
+            }
+          : descriptor;
+    Object.defineProperty(clone, property, next);
+  }
+  return Object.freeze(clone);
+};
 
 describe("Source Adapter server SDK", () => {
   it.effect("keeps attempt resources in the caller attempt Scope", () =>
@@ -213,6 +276,210 @@ describe("Source Adapter server SDK", () => {
       ).toStrictEqual({
         active: true,
       });
+    }),
+  );
+
+  it.effect("maps hostile adapter output to typed runtime failures", () =>
+    Effect.gen(function* () {
+      let output:
+        | "forged-attempt"
+        | "empty-attempt"
+        | "hostile-attempt"
+        | "forged-event"
+        | "forged-rejection"
+        | "invalid-inner-mutation"
+        | "invalid-rejection-diagnostic"
+        | "hostile-event" = "forged-attempt";
+      const lifecycle: SourceAdapterServerLifecycle<
+        typeof Failure.Type,
+        NonNullable<typeof Adapter.materialized>,
+        "materialized",
+        never
+      > = {
+        acquire: (input) =>
+          Effect.gen(function* () {
+            const mutation = yield* input.toolkit.delete("hostile");
+            const delivery = yield* input.toolkit.delivery(Chunk.of(mutation));
+            const forgedDelivery =
+              output === "hostile-event"
+                ? new Proxy(delivery, {
+                    get: (target, property, receiver) => {
+                      if (property === "_tag") {
+                        throw new Error("hostile event tag");
+                      }
+                      return Reflect.get(target, property, receiver);
+                    },
+                  })
+                : new Proxy(delivery, {});
+            const failure = yield* Adapter.failure({
+              _tag: "ServerFixtureFailure",
+              message: "type witness",
+            }).pipe(Effect.orDie);
+            const rejection = yield* input.toolkit.reject({
+              failure,
+              location: { offset: 1n },
+              rejectedAtNanos: 1n,
+            });
+            const invalidInnerMutation = nominalClone(delivery, {
+              mutations: Chunk.of(nominalClone(mutation, { id: 1 })),
+            });
+            const invalidRejectionDiagnostic = nominalClone(rejection, {
+              diagnostic: {
+                ...rejection.diagnostic,
+                rejectedAtNanos: "invalid",
+              },
+            });
+            const firstEvent =
+              output === "forged-rejection"
+                ? new Proxy(rejection, {})
+                : output === "invalid-inner-mutation"
+                  ? invalidInnerMutation
+                  : output === "invalid-rejection-diagnostic"
+                    ? invalidRejectionDiagnostic
+                    : forgedDelivery;
+            const lane = SourceAdapterServer.lane({
+              id: "hostile",
+              events: Stream.make(firstEvent, rejection),
+            });
+            const validAttempt = SourceAdapterServer.attempt([lane]);
+            const hostileAttempt = hostileNominalClone(validAttempt, "lanes");
+            return output === "forged-attempt"
+              ? new Proxy(validAttempt, {})
+              : output === "empty-attempt"
+                ? nominalClone(validAttempt, { lanes: [] })
+                : output === "hostile-attempt"
+                  ? hostileAttempt
+                  : validAttempt;
+          }),
+        metrics: () => Effect.succeed({ active: true }),
+        retry: Schedule.recurs(0),
+      };
+      const adapterLayer = SourceAdapterServer.make(Adapter, {
+        materialized: lifecycle,
+      });
+      const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
+      const runtimeService = Context.getUnsafe(runtimeContext, Adapter.runtimeService);
+      const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
+
+      const forgedAttemptFailure = yield* Effect.flip(
+        Effect.scoped(
+          materialized.acquire({
+            definition: { label: "orders" },
+            target: { _tag: "Materialized" },
+            toolkit,
+          }),
+        ),
+      );
+      expect(forgedAttemptFailure).toStrictEqual({
+        _tag: "RuntimeFailure",
+        failure: {
+          _tag: "InvalidSourceDefinition",
+          message: "Source Adapter lifecycle returned a structurally forged Source Attempt.",
+        },
+      });
+
+      output = "empty-attempt";
+      const invalidNominalAttemptFailure = yield* Effect.flip(
+        Effect.scoped(
+          materialized.acquire({
+            definition: { label: "orders" },
+            target: { _tag: "Materialized" },
+            toolkit,
+          }),
+        ),
+      );
+      expect(invalidNominalAttemptFailure).toStrictEqual({
+        _tag: "RuntimeFailure",
+        failure: {
+          _tag: "InvalidSourceDefinition",
+          message: "Source Adapter lifecycle returned an invalid nominal Source Attempt.",
+        },
+      });
+
+      output = "hostile-attempt";
+      const hostileNominalAttemptFailure = yield* Effect.flip(
+        Effect.scoped(
+          materialized.acquire({
+            definition: { label: "orders" },
+            target: { _tag: "Materialized" },
+            toolkit,
+          }),
+        ),
+      );
+      expect(hostileNominalAttemptFailure).toStrictEqual(invalidNominalAttemptFailure);
+
+      output = "forged-event";
+      const closedAttempt = yield* Effect.scoped(
+        materialized.acquire({
+          definition: { label: "orders" },
+          target: { _tag: "Materialized" },
+          toolkit,
+        }),
+      );
+      const forgedEventFailure = yield* Effect.flip(
+        closedAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
+      );
+      expect(forgedEventFailure).toStrictEqual({
+        _tag: "RuntimeFailure",
+        failure: {
+          _tag: "InvalidSourceDefinition",
+          message: "Source Adapter lifecycle emitted a structurally forged Source Lane Event.",
+        },
+      });
+
+      output = "forged-rejection";
+      const forgedRejectionAttempt = yield* Effect.scoped(
+        materialized.acquire({
+          definition: { label: "orders" },
+          target: { _tag: "Materialized" },
+          toolkit,
+        }),
+      );
+      const forgedRejectionFailure = yield* Effect.flip(
+        forgedRejectionAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
+      );
+      expect(forgedRejectionFailure).toStrictEqual(forgedEventFailure);
+
+      output = "invalid-inner-mutation";
+      const invalidInnerMutationAttempt = yield* Effect.scoped(
+        materialized.acquire({
+          definition: { label: "orders" },
+          target: { _tag: "Materialized" },
+          toolkit,
+        }),
+      );
+      expect(
+        yield* Effect.flip(
+          invalidInnerMutationAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
+        ),
+      ).toStrictEqual(forgedEventFailure);
+
+      output = "invalid-rejection-diagnostic";
+      const invalidRejectionDiagnosticAttempt = yield* Effect.scoped(
+        materialized.acquire({
+          definition: { label: "orders" },
+          target: { _tag: "Materialized" },
+          toolkit,
+        }),
+      );
+      expect(
+        yield* Effect.flip(
+          invalidRejectionDiagnosticAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
+        ),
+      ).toStrictEqual(forgedEventFailure);
+
+      output = "hostile-event";
+      const hostileEventAttempt = yield* Effect.scoped(
+        materialized.acquire({
+          definition: { label: "orders" },
+          target: { _tag: "Materialized" },
+          toolkit,
+        }),
+      );
+      const hostileEventFailure = yield* Effect.flip(
+        hostileEventAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
+      );
+      expect(hostileEventFailure).toStrictEqual(forgedEventFailure);
     }),
   );
 

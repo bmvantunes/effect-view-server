@@ -44,9 +44,7 @@ const registerScoped = <Emitter, Error, Services>(
 ): Effect.Effect<void, Error, Services | Scope.Scope> =>
   register === undefined
     ? Effect.void
-    : Effect.acquireRelease(register(emitter), (unregister) => unregister, {
-        interruptible: true,
-      }).pipe(Effect.asVoid);
+    : Effect.acquireRelease(register(emitter), (unregister) => unregister).pipe(Effect.asVoid);
 
 const acquireBackpressurableSourceBuffer = Effect.fn("SourceBuffer.backpressurable.acquire")(
   function* <Value, Error, Services>(

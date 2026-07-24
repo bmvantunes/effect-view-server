@@ -1,10 +1,14 @@
-import { Context, Effect, Layer, Schedule, Scope, Stream } from "effect";
+import { Context, Effect, Layer, Result, Schedule, Scope, Stream } from "effect";
 import {
   decodeSourceToolkitUpsert,
   isSourceAdapterHandle,
+  isSourceAttempt,
+  isSourceDelivery,
+  isSourceItemRejection,
   makeSourceAttempt,
   makeSourceDelivery,
   makeSourceItemRejection,
+  makeRuntimeSourceFailure,
   markSourceToolkit,
 } from "./model";
 import type {
@@ -52,6 +56,12 @@ type AdapterLeased<Adapter> = Adapter extends {
 }
   ? Leased
   : never;
+
+const invalidLifecycleOutput = (message: string) =>
+  makeRuntimeSourceFailure({
+    _tag: "InvalidSourceDefinition",
+    message,
+  });
 
 const closeToolkitEnvironment = <
   Row extends object,
@@ -164,23 +174,37 @@ const closeLaneEnvironment = <Row extends object, AdapterFailure, RejectionLocat
 ): SourceDeliveryLane<Row, AdapterFailure, RejectionLocation> => ({
   id: lane.id,
   events: lane.events.pipe(
-    Stream.map((event) =>
-      event._tag === "SourceDelivery"
-        ? makeSourceDelivery(event.mutations, (exit) =>
-            event
-              .settle(exit)
-              .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context)),
-          )
-        : makeSourceItemRejection({
-            failure: event.diagnostic.failure,
-            location: event.diagnostic.location,
-            rejectedAtNanos: event.diagnostic.rejectedAtNanos,
-            settlement: (exit) =>
-              event
-                .settle(exit)
-                .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context)),
-          }),
-    ),
+    Stream.mapEffect((event) => {
+      const closed = Result.try(() => {
+        if (event._tag === "SourceDelivery") {
+          return isSourceDelivery(event)
+            ? makeSourceDelivery<Row, AdapterFailure>(event.mutations, (exit) =>
+                event
+                  .settle(exit)
+                  .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context)),
+              )
+            : undefined;
+        }
+        return isSourceItemRejection(event)
+          ? makeSourceItemRejection<AdapterFailure, RejectionLocation>({
+              failure: event.diagnostic.failure,
+              location: event.diagnostic.location,
+              rejectedAtNanos: event.diagnostic.rejectedAtNanos,
+              settlement: (exit) =>
+                event
+                  .settle(exit)
+                  .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context)),
+            })
+          : undefined;
+      });
+      return Result.isSuccess(closed) && closed.success !== undefined
+        ? Effect.succeed(closed.success)
+        : Effect.fail(
+            invalidLifecycleOutput(
+              "Source Adapter lifecycle emitted a structurally forged Source Lane Event.",
+            ),
+          );
+    }),
     Stream.provideService(Scope.Scope, scope),
     Stream.provideContext(context),
   ),
@@ -191,12 +215,33 @@ const closeAttemptEnvironment = <Row extends object, AdapterFailure, RejectionLo
   attempt: SourceAttempt<Row, AdapterFailure, RejectionLocation, Services>,
   context: Context.Context<Services>,
   scope: Scope.Scope,
-): SourceAttempt<Row, AdapterFailure, RejectionLocation> => {
-  const [first, ...rest] = attempt.lanes;
-  return makeSourceAttempt([
-    closeLaneEnvironment(first, context, scope),
-    ...rest.map((lane) => closeLaneEnvironment(lane, context, scope)),
-  ]);
+): Effect.Effect<
+  SourceAttempt<Row, AdapterFailure, RejectionLocation>,
+  SourceExecutionFailure<AdapterFailure>
+> => {
+  if (!isSourceAttempt(attempt)) {
+    return Effect.fail(
+      invalidLifecycleOutput(
+        "Source Adapter lifecycle returned a structurally forged Source Attempt.",
+      ),
+    );
+  }
+  const closed = Result.try(() => {
+    const [first, ...rest] = attempt.lanes;
+    return first === undefined
+      ? undefined
+      : makeSourceAttempt([
+          closeLaneEnvironment(first, context, scope),
+          ...rest.map((lane) => closeLaneEnvironment(lane, context, scope)),
+        ]);
+  });
+  return Result.isSuccess(closed) && closed.success !== undefined
+    ? Effect.succeed(closed.success)
+    : Effect.fail(
+        invalidLifecycleOutput(
+          "Source Adapter lifecycle returned an invalid nominal Source Attempt.",
+        ),
+      );
 };
 
 const closeLifecycleEnvironment = <
@@ -231,7 +276,7 @@ const closeLifecycleEnvironment = <
           toolkit: closeToolkitEnvironment(input.toolkit, context),
         })
         .pipe(Effect.provideService(Scope.Scope, scope), Effect.provide(context));
-      return closeAttemptEnvironment(attempt, context, scope);
+      return yield* closeAttemptEnvironment(attempt, context, scope);
     },
   );
   const metrics: ClosedLifecycle["metrics"] = Effect.fn("SourceAdapterServer.lifecycle.metrics")(

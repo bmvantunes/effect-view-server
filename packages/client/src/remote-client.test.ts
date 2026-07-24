@@ -39,7 +39,10 @@ import {
   type ViewServerWireSourceHealth,
 } from "@effect-view-server/protocol";
 import { makeViewServerClient } from "./remote";
-import { mapViewServerRemoteError } from "./remote-client";
+import {
+  makeViewServerClientWithConstructionOptions,
+  mapViewServerRemoteError,
+} from "./remote-client";
 import { makeRemoteHealthState } from "./remote-health";
 
 const Order = Schema.Struct({
@@ -807,6 +810,53 @@ describe("remote ViewServer client", () => {
       });
 
       yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("releases Source Health when subscription acquisition is interrupted at handoff", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      const handoffStarted = yield* Deferred.make<void>();
+      let blockHandoff = true;
+      const client = yield* makeViewServerClientWithConstructionOptions(
+        sourceViewServer,
+        {
+          url: server.url,
+        },
+        {
+          sourceHealthHandoff: {
+            beforeReturn: Effect.suspend(() =>
+              blockHandoff
+                ? Deferred.succeed(handoffStarted, undefined).pipe(Effect.andThen(Effect.never))
+                : Effect.void,
+            ),
+          },
+        },
+      );
+      const interruptedSubscription = yield* client
+        .subscribeSourceHealth("orders", { price: 25 })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(handoffStarted);
+      yield* Fiber.interrupt(interruptedSubscription);
+
+      blockHandoff = false;
+      const subscription = yield* client.subscribeSourceHealth("orders", { price: 25 });
+      const consumer = yield* subscription.events.pipe(Stream.runDrain, Effect.forkChild);
+      yield* server.awaitSourceHealthSubscriptionCount(1);
+      yield* subscription.close();
+      yield* server.awaitSourceHealthSubscriptionCount(0);
+
+      expect({
+        activeSubscriptions: server.activeSourceHealthSubscriptions(),
+        sourceHealthRequests: server.sourceHealthRequests(),
+      }).toStrictEqual({
+        activeSubscriptions: 0,
+        sourceHealthRequests: 1,
+      });
+      yield* Fiber.interrupt(consumer);
       yield* client.close;
       yield* server.close;
     }),

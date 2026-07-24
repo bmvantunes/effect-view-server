@@ -538,25 +538,27 @@ describe("Runtime Core lifecycle", () => {
       const releaseAcquisition = yield* Deferred.make<void>();
       let releaseCount = 0;
       const sourceManager = {
-        acquireLeased: (_topic, _query, markAcquired) =>
-          Effect.uninterruptible(
-            Effect.gen(function* () {
-              yield* Deferred.succeed(leaseAcquired, undefined);
-              yield* Deferred.await(releaseAcquisition);
-              const lease: RuntimeCoreSourceLease = {
-                partition: Object.freeze({
-                  key: "pending-public",
-                  matches: () => true,
-                  ownedStorageKeys: () => [],
-                }),
-                release: Effect.sync(() => {
-                  releaseCount += 1;
-                }),
-                translate: (subscription) => subscription,
-              };
-              yield* markAcquired(lease.release);
-              return Option.some(lease);
-            }),
+        acquireLeased: () =>
+          acquireRuntimeCoreResourceHandoff((markAcquired) =>
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(leaseAcquired, undefined);
+                yield* Deferred.await(releaseAcquisition);
+                const lease: RuntimeCoreSourceLease = {
+                  partition: Object.freeze({
+                    key: "pending-public",
+                    matches: () => true,
+                    ownedStorageKeys: () => [],
+                  }),
+                  release: Effect.sync(() => {
+                    releaseCount += 1;
+                  }),
+                  translate: (subscription) => subscription,
+                };
+                yield* markAcquired(lease.release);
+                return Option.some(lease);
+              }),
+            ),
           ),
         decorateMaterialized: (_topic, subscription) => subscription,
         subscribeSourceHealth: () => Effect.die("not used"),
@@ -624,25 +626,27 @@ describe("Runtime Core lifecycle", () => {
       const releaseAcquisition = yield* Deferred.make<void>();
       let releaseCount = 0;
       const sourceManager = {
-        acquireLeased: (_topic, _query, markAcquired) =>
-          Effect.uninterruptible(
-            Effect.gen(function* () {
-              yield* Deferred.succeed(leaseAcquired, undefined);
-              yield* Deferred.await(releaseAcquisition);
-              const lease: RuntimeCoreSourceLease = {
-                partition: Object.freeze({
-                  key: "pending-observed",
-                  matches: () => true,
-                  ownedStorageKeys: () => [],
-                }),
-                release: Effect.sync(() => {
-                  releaseCount += 1;
-                }),
-                translate: (subscription) => subscription,
-              };
-              yield* markAcquired(lease.release);
-              return Option.some(lease);
-            }),
+        acquireLeased: () =>
+          acquireRuntimeCoreResourceHandoff((markAcquired) =>
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(leaseAcquired, undefined);
+                yield* Deferred.await(releaseAcquisition);
+                const lease: RuntimeCoreSourceLease = {
+                  partition: Object.freeze({
+                    key: "pending-observed",
+                    matches: () => true,
+                    ownedStorageKeys: () => [],
+                  }),
+                  release: Effect.sync(() => {
+                    releaseCount += 1;
+                  }),
+                  translate: (subscription) => subscription,
+                };
+                yield* markAcquired(lease.release);
+                return Option.some(lease);
+              }),
+            ),
           ),
         decorateMaterialized: (_topic, subscription) => subscription,
         subscribeSourceHealth: () => Effect.die("not used"),
@@ -744,12 +748,21 @@ describe("Runtime Core lifecycle", () => {
       const materialized = Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
       const metricsStarted = yield* Deferred.make<void>();
       const metricsInterrupted = yield* Deferred.make<void>();
+      let engineCloseCount = 0;
       const metrics: typeof materialized.metrics = () =>
         Deferred.succeed(metricsStarted, undefined).pipe(
           Effect.andThen(Effect.never),
           Effect.ensuring(Deferred.succeed(metricsInterrupted, undefined)),
         );
-      const constructionFiber = yield* makeViewServerRuntimeCore(config, {}).pipe(
+      const constructionFiber = yield* makeViewServerRuntimeCoreInternalWithConstructionOptions(
+        config,
+        {},
+        {
+          afterEngineClose: Effect.sync(() => {
+            engineCloseCount += 1;
+          }),
+        },
+      ).pipe(
         Effect.provideService(fixture.adapter.runtimeService, {
           ...service,
           materialized: {
@@ -763,7 +776,13 @@ describe("Runtime Core lifecycle", () => {
 
       yield* Fiber.interrupt(constructionFiber);
 
-      expect(yield* Deferred.isDone(metricsInterrupted)).toBe(true);
+      expect({
+        engineCloseCount,
+        metricsInterrupted: yield* Deferred.isDone(metricsInterrupted),
+      }).toStrictEqual({
+        engineCloseCount: 1,
+        metricsInterrupted: true,
+      });
     }),
   );
 

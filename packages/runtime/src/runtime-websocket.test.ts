@@ -13,6 +13,7 @@ import {
   Effect,
   Exit,
   Fiber,
+  Layer,
   Logger,
   Option,
   References,
@@ -139,7 +140,10 @@ describe("Runtime WebSocket and operational endpoints", () => {
         });
         expect(serverAcquisitions).toBe(0);
 
-        const runtime = yield* makeViewServerRuntime(config).pipe(Effect.provide(fixture.layer));
+        const fixtureContext = yield* Layer.build(fixture.layer);
+        const runtime = yield* makeViewServerRuntime(config).pipe(
+          Effect.provideContext(fixtureContext),
+        );
         yield* Effect.addFinalizer(() => runtime.close);
         const subscription = yield* runtime.liveClient.subscribe("sourced", {
           select: ["id", "value"],
@@ -162,6 +166,77 @@ describe("Runtime WebSocket and operational endpoints", () => {
         yield* subscription.close();
         yield* runtime.close;
       }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps scoped adapter Layer resources alive for the public run helper lifetime", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* SourceFixture.make(SourceRow);
+        const config = defineViewServerConfig({
+          topics: {
+            sourced: {
+              schema: SourceRow,
+              source: fixture.materializedSource({
+                label: "run-helper-layer-lifetime",
+              }),
+            },
+          },
+        });
+        const acquired = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        let resourceActive = false;
+        const trackedResource = Layer.effectDiscard(
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              resourceActive = true;
+            }).pipe(Effect.andThen(Deferred.succeed(acquired, undefined))),
+            () =>
+              Effect.sync(() => {
+                resourceActive = false;
+              }).pipe(Effect.andThen(Deferred.succeed(released, undefined)), Effect.asVoid),
+          ),
+        );
+        const signals = yield* makeRuntimeLaunchSignals();
+        const runtimeLayer = Layer.mergeAll(
+          fixture.layer,
+          trackedResource,
+          Logger.layer([signals.logger]),
+          Layer.succeed(References.MinimumLogLevel, "Trace"),
+        );
+        const fiber = yield* runViewServerRuntime(config, {
+          host: "127.0.0.1",
+          tcpPublishHost: "127.0.0.1",
+          tcpPublishPort: 0,
+          websocketPort: 0,
+        }).pipe(Effect.provide(runtimeLayer), Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(acquired);
+        yield* fixture.controls.awaitActive(sourceTarget);
+        yield* Deferred.await(signals.healthUrl);
+        const settled = yield* Deferred.make<Exit.Exit<void, unknown>>();
+        yield* fixture.controls.upsert(
+          sourceTarget,
+          {
+            id: "run-helper-resource",
+            value: "alive",
+          },
+          (applicationExit) => Deferred.succeed(settled, applicationExit).pipe(Effect.asVoid),
+        );
+
+        expect({
+          applicationExit: yield* Deferred.await(settled),
+          resourceActive,
+          releasedBeforeStop: yield* Deferred.isDone(released),
+        }).toStrictEqual({
+          applicationExit: Exit.void,
+          resourceActive: true,
+          releasedBeforeStop: false,
+        });
+
+        yield* stopRuntimeLaunch(fiber);
+        yield* Deferred.await(released);
+        expect(resourceActive).toBe(false);
+      }),
+    ),
   );
 
   it.live("starts a websocket runtime with health endpoint and runtime-core mutation client", () =>

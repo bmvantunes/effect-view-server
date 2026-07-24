@@ -8,9 +8,8 @@ import {
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
-import type { Context, Effect } from "effect";
 import type { Stream } from "effect";
-import { Schema } from "effect";
+import { Context, Effect, Layer, Schedule, Schema } from "effect";
 import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
 import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
 
@@ -46,6 +45,10 @@ const sourceAdapter = SourceAdapter.make({
   },
   leased: undefined,
 });
+class RetryDependency extends Context.Service<
+  RetryDependency,
+  { readonly delayEnabled: boolean }
+>()("@effect-view-server/in-memory/type-test/RetryDependency") {}
 const canonicalSourceViewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -54,10 +57,49 @@ const canonicalSourceViewServer = defineViewServerConfig({
     },
   },
 });
+const canonicalRetrySourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(
+        undefined,
+        Schedule.recurs(1).pipe(Schedule.tap(() => RetryDependency.pipe(Effect.asVoid))),
+      ),
+    },
+  },
+});
 
 const inMemory = createInMemoryViewServer(viewServer);
 const canonicalSourceInMemoryEffect = makeInMemoryViewServer(canonicalSourceViewServer, {});
 const canonicalSourceTestingEffect = makeInMemoryViewServerTesting(canonicalSourceViewServer, {});
+const canonicalRetrySourceInMemoryEffect = makeInMemoryViewServer(
+  canonicalRetrySourceViewServer,
+  {},
+);
+const canonicalRetrySourceTestingEffect = makeInMemoryViewServerTesting(
+  canonicalRetrySourceViewServer,
+  {},
+);
+declare const sourceAdapterLayer: Layer.Layer<
+  Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+>;
+const retryDependencyLayer = Layer.succeed(RetryDependency)({
+  delayEnabled: true,
+});
+const canonicalRetryAppLayer = Layer.merge(sourceAdapterLayer, retryDependencyLayer);
+const canonicalRetrySourceInMemoryReady = canonicalRetrySourceInMemoryEffect.pipe(
+  Effect.provide(canonicalRetryAppLayer),
+);
+const canonicalRetrySourceTestingReady = canonicalRetrySourceTestingEffect.pipe(
+  Effect.provide(canonicalRetryAppLayer),
+);
+// @effect-diagnostics missingEffectContext:off
+// @ts-expect-error the in-memory runtime still requires the retry Schedule service.
+const invalidRetrySourceInMemoryReady: Effect.Effect<
+  Effect.Success<typeof canonicalRetrySourceInMemoryEffect>,
+  Effect.Error<typeof canonicalRetrySourceInMemoryEffect>
+> = canonicalRetrySourceInMemoryEffect.pipe(Effect.provide(sourceAdapterLayer));
+// @effect-diagnostics missingEffectContext:on
 // @ts-expect-error synchronous in-memory construction cannot provide a Source Adapter service.
 const invalidCanonicalSourceInMemory = createInMemoryViewServer(canonicalSourceViewServer);
 // @ts-expect-error synchronous in-memory testing construction cannot provide a Source Adapter service.
@@ -191,6 +233,16 @@ describe("in-memory type contracts", () => {
     expectTypeOf<Effect.Services<typeof canonicalSourceTestingEffect>>().toEqualTypeOf<
       Context.Service.Identifier<typeof sourceAdapter.runtimeService>
     >();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceInMemoryEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
+    >();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceTestingEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
+    >();
+    expectTypeOf<
+      Effect.Services<typeof canonicalRetrySourceInMemoryReady>
+    >().toEqualTypeOf<never>();
+    expectTypeOf<Effect.Services<typeof canonicalRetrySourceTestingReady>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;
@@ -207,6 +259,7 @@ describe("in-memory type contracts", () => {
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
     expectTypeOf(invalidCanonicalSourceInMemory).not.toBeAny();
     expectTypeOf(invalidCanonicalSourceTesting).not.toBeAny();
+    expectTypeOf(invalidRetrySourceInMemoryReady).not.toBeAny();
   });
 
   it("rejects leased gRPC topics from public in-memory clients", () => {

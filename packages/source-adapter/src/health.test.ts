@@ -165,6 +165,7 @@ describe("Source Health schemas", () => {
         route: Route,
         adapterMetrics: Metrics,
         rejectionLocation: Location,
+        lifecycle: "leased",
       });
 
       expect(
@@ -179,7 +180,7 @@ describe("Source Health schemas", () => {
         yield* Schema.decodeUnknownEffect(SourceRuntimeMetricsSchema)(runtimeMetrics),
       ).toStrictEqual(runtimeMetrics);
       expect(
-        yield* Schema.decodeUnknownEffect(sourceTargetSchema(Route))(health.target),
+        yield* Schema.decodeUnknownEffect(sourceTargetSchema("leased", Route))(health.target),
       ).toStrictEqual(health.target);
       expect(
         yield* Schema.decodeUnknownEffect(sourceTerminationSchema(Failure))(termination),
@@ -200,4 +201,152 @@ describe("Source Health schemas", () => {
       expect(Exit.isFailure(invalid)).toBe(true);
     }),
   );
+
+  it.effect("rejects semantically impossible bounded Source Buffer metrics", () =>
+    Effect.gen(function* () {
+      const invalidMetrics = [
+        {
+          _tag: "Bounded",
+          capacity: 0,
+          depth: 0,
+          highWaterMark: 0,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 1.5,
+          depth: 0,
+          highWaterMark: 0,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 2,
+          depth: -1,
+          highWaterMark: 0,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 2,
+          depth: 1,
+          highWaterMark: -1,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 2,
+          depth: 3,
+          highWaterMark: 3,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 2,
+          depth: 1,
+          highWaterMark: 3,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 2,
+          depth: 2,
+          highWaterMark: 1,
+          overflowCount: 0n,
+        },
+        {
+          _tag: "Bounded",
+          capacity: 2,
+          depth: 1,
+          highWaterMark: 1,
+          overflowCount: -1n,
+        },
+      ];
+      const exits = yield* Effect.forEach(invalidMetrics, (metrics) =>
+        Schema.decodeUnknownEffect(SourceBufferMetricsSchema)(metrics).pipe(Effect.exit),
+      );
+
+      expect(exits.map(Exit.isFailure)).toStrictEqual(invalidMetrics.map(() => true));
+    }),
+  );
+
+  it("enforces lifecycle-exact targets", () => {
+    expect(Schema.is(sourceTargetSchema("materialized", Route))({ _tag: "Materialized" })).toBe(
+      true,
+    );
+    expect(
+      Schema.is(sourceTargetSchema("materialized", Route))({
+        _tag: "Leased",
+        route: { region: "eu" },
+      }),
+    ).toBe(false);
+    expect(
+      Schema.is(sourceTargetSchema("leased", Route))({
+        _tag: "Leased",
+        route: { region: "eu" },
+      }),
+    ).toBe(true);
+    expect(Schema.is(sourceTargetSchema("leased", Route))({ _tag: "Materialized" })).toBe(false);
+  });
+
+  it("rejects semantically impossible Source Runtime metrics and statuses", () => {
+    const validMetrics = {
+      startedAtNanos: 0n,
+      lastAttemptStartedAtNanos: 0n,
+      lastDeliveryAtNanos: null,
+      lastRejectionAtNanos: null,
+      lastAppliedMutationAtNanos: null,
+      lastTerminationAtNanos: null,
+      currentAttempt: 1n,
+      retryCount: 0n,
+      receivedDeliveryCount: 0n,
+      rejectedItemCount: 0n,
+      attemptedMutationCount: 0n,
+      appliedUpsertCount: 0n,
+      appliedDeleteCount: 0n,
+      failedMutationCount: 0n,
+      completedSettlementCount: 0n,
+      failedSettlementCount: 0n,
+      retainedRowCount: 0,
+      lanes: [{ id: "events", buffer: { _tag: "Unbuffered" } }],
+    } as const;
+    const invalidMetrics = [
+      { ...validMetrics, startedAtNanos: -1n },
+      { ...validMetrics, currentAttempt: 0n },
+      { ...validMetrics, retryCount: -1n },
+      { ...validMetrics, retainedRowCount: -1 },
+      { ...validMetrics, retainedRowCount: 0.5 },
+      {
+        ...validMetrics,
+        lanes: [
+          { id: "events", buffer: { _tag: "Unbuffered" } },
+          { id: "events", buffer: { _tag: "Unbuffered" } },
+        ],
+      },
+    ];
+    expect(
+      invalidMetrics.map((candidate) => Schema.is(SourceRuntimeMetricsSchema)(candidate)),
+    ).toStrictEqual(invalidMetrics.map(() => false));
+
+    const status = sourceStatusSchema(Failure, Location);
+    const invalidStatuses = [
+      { _tag: "Ready", attempt: 0n, readyAtNanos: 0n },
+      { _tag: "Ready", attempt: 1n, readyAtNanos: -1n },
+      {
+        _tag: "WaitingToRetry",
+        nextAttempt: 0n,
+        termination,
+        retryAtNanos: 0n,
+      },
+      {
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        latestRejection: { ...rejection, rejectedAtNanos: -1n },
+      },
+    ];
+    expect(invalidStatuses.map((candidate) => Schema.is(status)(candidate))).toStrictEqual(
+      invalidStatuses.map(() => false),
+    );
+  });
 });

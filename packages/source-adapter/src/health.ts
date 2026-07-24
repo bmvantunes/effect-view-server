@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { sourceExecutionFailureSchema } from "./model";
 import type {
   SourceAdapterIdentity,
   SourceAdapterFailure,
@@ -7,9 +8,10 @@ import type {
   SourceDefinitionLifecycle,
   SourceDefinitionRouteFields,
   SourceItemRejectionDiagnostic,
+  SourceLifecycle,
   SourceLifecycleLocation,
   SourceLifecycleMetrics,
-  SourceTarget,
+  SourceTargetForLifecycle,
   SourceTermination,
 } from "./model";
 
@@ -31,11 +33,17 @@ type SourceDeclarationForDefinition<Definition> =
         : never
     : never;
 
+type SourceLifecycleForDefinition<Definition> =
+  SourceDefinitionLifecycle<Definition> extends SourceLifecycle
+    ? SourceDefinitionLifecycle<Definition>
+    : never;
+
 export type SourceHealthForDefinition<Definition, Row extends object> = SourceHealth<
   SourceAdapterFailure<SourceDefinitionAdapter<Definition>>,
   SourceRouteForDefinition<Definition, Row>,
   SourceLifecycleMetrics<SourceDeclarationForDefinition<Definition>>,
-  SourceLifecycleLocation<SourceDeclarationForDefinition<Definition>>
+  SourceLifecycleLocation<SourceDeclarationForDefinition<Definition>>,
+  SourceLifecycleForDefinition<Definition>
 >;
 
 export type SourceHealthResultForDefinition<Definition, Row extends object> =
@@ -124,9 +132,10 @@ export type SourceHealth<
   Route extends Readonly<Record<string, unknown>>,
   AdapterMetrics,
   RejectionLocation,
+  Lifecycle extends SourceLifecycle = SourceLifecycle,
 > = {
   readonly adapter: SourceAdapterIdentity;
-  readonly target: SourceTarget<Route>;
+  readonly target: SourceTargetForLifecycle<Lifecycle, Route>;
   readonly status: SourceStatus<AdapterFailure, RejectionLocation>;
   readonly metrics: {
     readonly runtime: SourceRuntimeMetrics;
@@ -148,14 +157,29 @@ export type LeasedSourceHealthResult<Route extends Readonly<Record<string, unkno
       readonly health: Health;
     };
 
+const PositiveFiniteInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const NonNegativeFiniteInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const NonNegativeBigInt = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+const PositiveBigInt = Schema.BigInt.check(Schema.isGreaterThanBigInt(0n));
+
+const BoundedSourceBufferMetricsSchema = Schema.TaggedStruct("Bounded", {
+  capacity: PositiveFiniteInteger,
+  depth: NonNegativeFiniteInteger,
+  highWaterMark: NonNegativeFiniteInteger,
+  overflowCount: NonNegativeBigInt,
+}).check(
+  Schema.makeFilter(
+    ({ capacity, depth, highWaterMark }) => depth <= highWaterMark && highWaterMark <= capacity,
+    {
+      expected:
+        "Source Buffer depth must not exceed its high-water mark and neither may exceed capacity",
+    },
+  ),
+);
+
 export const SourceBufferMetricsSchema = Schema.Union([
   Schema.TaggedStruct("Unbuffered", {}),
-  Schema.TaggedStruct("Bounded", {
-    capacity: Schema.Number,
-    depth: Schema.Number,
-    highWaterMark: Schema.Number,
-    overflowCount: Schema.BigInt,
-  }),
+  BoundedSourceBufferMetricsSchema,
 ]);
 
 export const SourceLaneRuntimeMetricsSchema = Schema.Struct({
@@ -163,59 +187,47 @@ export const SourceLaneRuntimeMetricsSchema = Schema.Struct({
   buffer: SourceBufferMetricsSchema,
 });
 
+const SourceLaneRuntimeMetricsArraySchema = Schema.NonEmptyArray(
+  SourceLaneRuntimeMetricsSchema,
+).check(
+  Schema.makeFilter((lanes) => new Set(lanes.map((lane) => lane.id)).size === lanes.length, {
+    expected: "Source Lane Runtime Metrics must contain unique Lane IDs",
+  }),
+);
+
 export const SourceRuntimeMetricsSchema = Schema.Struct({
-  startedAtNanos: Schema.BigInt,
-  lastAttemptStartedAtNanos: Schema.BigInt,
-  lastDeliveryAtNanos: Schema.NullOr(Schema.BigInt),
-  lastRejectionAtNanos: Schema.NullOr(Schema.BigInt),
-  lastAppliedMutationAtNanos: Schema.NullOr(Schema.BigInt),
-  lastTerminationAtNanos: Schema.NullOr(Schema.BigInt),
-  currentAttempt: Schema.BigInt,
-  retryCount: Schema.BigInt,
-  receivedDeliveryCount: Schema.BigInt,
-  rejectedItemCount: Schema.BigInt,
-  attemptedMutationCount: Schema.BigInt,
-  appliedUpsertCount: Schema.BigInt,
-  appliedDeleteCount: Schema.BigInt,
-  failedMutationCount: Schema.BigInt,
-  completedSettlementCount: Schema.BigInt,
-  failedSettlementCount: Schema.BigInt,
-  retainedRowCount: Schema.Number,
-  lanes: Schema.NonEmptyArray(SourceLaneRuntimeMetricsSchema),
+  startedAtNanos: NonNegativeBigInt,
+  lastAttemptStartedAtNanos: NonNegativeBigInt,
+  lastDeliveryAtNanos: Schema.NullOr(NonNegativeBigInt),
+  lastRejectionAtNanos: Schema.NullOr(NonNegativeBigInt),
+  lastAppliedMutationAtNanos: Schema.NullOr(NonNegativeBigInt),
+  lastTerminationAtNanos: Schema.NullOr(NonNegativeBigInt),
+  currentAttempt: PositiveBigInt,
+  retryCount: NonNegativeBigInt,
+  receivedDeliveryCount: NonNegativeBigInt,
+  rejectedItemCount: NonNegativeBigInt,
+  attemptedMutationCount: NonNegativeBigInt,
+  appliedUpsertCount: NonNegativeBigInt,
+  appliedDeleteCount: NonNegativeBigInt,
+  failedMutationCount: NonNegativeBigInt,
+  completedSettlementCount: NonNegativeBigInt,
+  failedSettlementCount: NonNegativeBigInt,
+  retainedRowCount: NonNegativeFiniteInteger,
+  lanes: SourceLaneRuntimeMetricsArraySchema,
 });
 
-export const sourceTargetSchema = <Route>(route: Schema.Codec<Route, unknown, never, never>) =>
-  Schema.Union([Schema.TaggedStruct("Materialized", {}), Schema.TaggedStruct("Leased", { route })]);
+export const sourceTargetSchema = <Route>(
+  lifecycle: SourceLifecycle,
+  route: Schema.Codec<Route, unknown, never, never>,
+) =>
+  lifecycle === "materialized"
+    ? Schema.TaggedStruct("Materialized", {})
+    : Schema.TaggedStruct("Leased", { route });
 
 export const sourceTerminationSchema = <AdapterFailure>(
   adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>,
 ) => {
-  const failure = Schema.Union([
-    Schema.TaggedStruct("AdapterFailure", { failure: adapterFailure }),
-    Schema.TaggedStruct("RuntimeFailure", {
-      failure: Schema.Union([
-        Schema.TaggedStruct("InvalidSourceDefinition", { message: Schema.String }),
-        Schema.TaggedStruct("InvalidSourceDelivery", { message: Schema.String }),
-        Schema.TaggedStruct("InvalidTopicRow", {
-          message: Schema.String,
-          topic: Schema.String,
-        }),
-        Schema.TaggedStruct("InvalidCanonicalId", {
-          message: Schema.String,
-          topic: Schema.String,
-        }),
-        Schema.TaggedStruct("InvalidFeedRoute", {
-          message: Schema.String,
-          topic: Schema.String,
-        }),
-        Schema.TaggedStruct("InvalidSourceMetrics", { message: Schema.String }),
-        Schema.TaggedStruct("SourceBufferOverflow", {
-          message: Schema.String,
-          capacity: Schema.Number,
-        }),
-      ]),
-    }),
-  ]);
+  const failure = sourceExecutionFailureSchema(adapterFailure);
   return Schema.Union([
     Schema.TaggedStruct("Failed", { failure }),
     Schema.TaggedStruct("UnexpectedCompletion", {}),
@@ -227,34 +239,9 @@ export const sourceRejectionDiagnosticSchema = <AdapterFailure, RejectionLocatio
   rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>,
 ) =>
   Schema.Struct({
-    failure: Schema.Union([
-      Schema.TaggedStruct("AdapterFailure", { failure: adapterFailure }),
-      Schema.TaggedStruct("RuntimeFailure", {
-        failure: Schema.Union([
-          Schema.TaggedStruct("InvalidSourceDefinition", { message: Schema.String }),
-          Schema.TaggedStruct("InvalidSourceDelivery", { message: Schema.String }),
-          Schema.TaggedStruct("InvalidTopicRow", {
-            message: Schema.String,
-            topic: Schema.String,
-          }),
-          Schema.TaggedStruct("InvalidCanonicalId", {
-            message: Schema.String,
-            topic: Schema.String,
-          }),
-          Schema.TaggedStruct("InvalidFeedRoute", {
-            message: Schema.String,
-            topic: Schema.String,
-          }),
-          Schema.TaggedStruct("InvalidSourceMetrics", { message: Schema.String }),
-          Schema.TaggedStruct("SourceBufferOverflow", {
-            message: Schema.String,
-            capacity: Schema.Number,
-          }),
-        ]),
-      }),
-    ]),
+    failure: sourceExecutionFailureSchema(adapterFailure),
     location: rejectionLocation,
-    rejectedAtNanos: Schema.BigInt,
+    rejectedAtNanos: NonNegativeBigInt,
   });
 
 export const sourceStatusSchema = <AdapterFailure, RejectionLocation>(
@@ -268,34 +255,34 @@ export const sourceStatusSchema = <AdapterFailure, RejectionLocation>(
   return Schema.Union([
     Schema.TaggedStruct("Starting", {
       attempt: Schema.Literal(1n),
-      startedAtNanos: Schema.BigInt,
+      startedAtNanos: NonNegativeBigInt,
     }),
     Schema.TaggedStruct("Ready", {
-      attempt: Schema.BigInt,
-      readyAtNanos: Schema.BigInt,
+      attempt: PositiveBigInt,
+      readyAtNanos: NonNegativeBigInt,
     }),
     Schema.TaggedStruct("Degraded", {
-      attempt: Schema.BigInt,
-      degradedAtNanos: Schema.BigInt,
+      attempt: PositiveBigInt,
+      degradedAtNanos: NonNegativeBigInt,
       latestRejection: sourceRejectionDiagnosticSchema(adapterFailure, rejectionLocation),
     }),
     Schema.TaggedStruct("WaitingToRetry", {
-      nextAttempt: Schema.BigInt,
+      nextAttempt: PositiveBigInt,
       termination,
-      retryAtNanos: Schema.BigInt,
+      retryAtNanos: NonNegativeBigInt,
     }),
     Schema.TaggedStruct("Reacquiring", {
       previousTermination: termination,
-      attempt: Schema.BigInt,
-      startedAtNanos: Schema.BigInt,
+      attempt: PositiveBigInt,
+      startedAtNanos: NonNegativeBigInt,
     }),
     Schema.TaggedStruct("Exhausted", {
       exhaustion,
-      exhaustedAtNanos: Schema.BigInt,
+      exhaustedAtNanos: NonNegativeBigInt,
     }),
     Schema.TaggedStruct("Stopping", {
       reason: Schema.Literals(["runtime-shutdown", "lease-release"]),
-      stoppingAtNanos: Schema.BigInt,
+      stoppingAtNanos: NonNegativeBigInt,
     }),
   ]);
 };
@@ -310,17 +297,18 @@ export const sourceHealthSchema = <
   readonly route: Schema.Codec<Route, unknown, never, never>;
   readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
   readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
+  readonly lifecycle: SourceLifecycle;
 }) =>
   Schema.Struct({
     adapter: Schema.Struct({
       name: Schema.NonEmptyString,
       version: Schema.optionalKey(Schema.NonEmptyString),
     }),
-    target: sourceTargetSchema(input.route),
+    target: sourceTargetSchema(input.lifecycle, input.route),
     status: sourceStatusSchema(input.adapterFailure, input.rejectionLocation),
     metrics: Schema.Struct({
       runtime: SourceRuntimeMetricsSchema,
       adapter: input.adapterMetrics,
     }),
-    sampledAtNanos: Schema.BigInt,
+    sampledAtNanos: NonNegativeBigInt,
   });

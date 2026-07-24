@@ -2,6 +2,7 @@ export type PackageSurfaceEntrypoint = {
   readonly exportKey: string;
   readonly sourceEntrypoint: string;
   readonly facade?: {
+    readonly additionalAllReexports?: ReadonlyArray<string>;
     readonly exportKey: string;
     readonly reexport?: {
       readonly kind: "named";
@@ -122,6 +123,32 @@ export const packageSurfacePolicy = {
           facade: {
             exportKey: "./client/remote",
             sourceEntrypoint: "src/client-remote.ts",
+          },
+        },
+      ],
+    },
+    {
+      architecture: {
+        allowedWorkspaceSpecifiers: [
+          "@effect-view-server/config",
+          "@effect-view-server/runtime-core",
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter-testing",
+        ],
+        message:
+          "The Source Adapter conformance host may compose Runtime Core with the portable test driver only.",
+        relativeOverrides: [],
+      },
+      directory: "source-adapter-conformance-host",
+      packageName: "@effect-view-server/source-adapter-conformance-host",
+      entrypoints: [
+        {
+          exportKey: ".",
+          sourceEntrypoint: "src/index.ts",
+          facade: {
+            additionalAllReexports: ["@effect-view-server/source-adapter-testing"],
+            exportKey: "./source-adapter/testing",
+            sourceEntrypoint: "src/source-adapter-testing.ts",
           },
         },
       ],
@@ -425,10 +452,6 @@ export const packageSurfacePolicy = {
         {
           exportKey: ".",
           sourceEntrypoint: "src/index.ts",
-          facade: {
-            exportKey: "./source-adapter/testing",
-            sourceEntrypoint: "src/source-adapter-testing.ts",
-          },
         },
       ],
     },
@@ -578,6 +601,7 @@ export const packageSurfacePolicy = {
         "makeViewServerRuntimeCoreInternal",
         "makeSourceOwnershipPolicy",
         "makeRuntimeCoreMutationPipeline",
+        "makeRuntimeCoreSourceManager",
         "getViewServerRuntimeCoreInternalLiveClient",
         "ViewServerRuntimeCoreInternalInstance",
         "ViewServerRuntimeCoreInternalLiveClient",
@@ -621,6 +645,14 @@ export const packageSurfacePolicy = {
       forbidden: [],
       required: ["SourceFixture"],
       workspaceSpecifier: "@effect-view-server/source-adapter-testing",
+    },
+    {
+      forbidden: [],
+      required: [
+        "registerSourceAdapterConformance",
+        "registerSourceAdapterPackageConformance",
+      ],
+      workspaceSpecifier: "@effect-view-server/source-adapter-conformance-host",
     },
   ],
 } as const satisfies PackageSurfacePolicy;
@@ -724,6 +756,12 @@ export const facadeProjections = packageSurfacePolicy.packages.flatMap((packageP
             ? entrypoint.facade.reexport
             : { kind: "all" as const },
         workspaceSpecifier: packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
+        workspaceSpecifiers: [
+          packageSpecifierFor(packagePolicy.packageName, entrypoint.exportKey),
+          ...("additionalAllReexports" in entrypoint.facade
+            ? entrypoint.facade.additionalAllReexports
+            : []),
+        ],
       },
     ];
   }),
@@ -748,18 +786,19 @@ export const runtimeSymbolPolicies = [
     required: symbolPolicy.required,
     specifier: symbolPolicy.workspaceSpecifier,
   })),
-  ...facadeProjections.flatMap((projection) =>
-    packageSurfacePolicy.runtimeSymbols
-      .filter((symbolPolicy) => symbolPolicy.workspaceSpecifier === projection.workspaceSpecifier)
-      .map((symbolPolicy) => ({
-        forbidden: [
-          ...symbolPolicy.forbidden,
-          ...("consumerForbidden" in symbolPolicy ? symbolPolicy.consumerForbidden : []),
-        ],
-        required: symbolPolicy.required,
-        specifier: projection.consumerSpecifier,
-      })),
-  ),
+  ...facadeProjections.map((projection) => {
+    const projectedSymbols = packageSurfacePolicy.runtimeSymbols.filter((symbolPolicy) =>
+      projection.workspaceSpecifiers.includes(symbolPolicy.workspaceSpecifier),
+    );
+    return {
+      forbidden: projectedSymbols.flatMap((symbolPolicy) => [
+        ...symbolPolicy.forbidden,
+        ...("consumerForbidden" in symbolPolicy ? symbolPolicy.consumerForbidden : []),
+      ]),
+      required: projectedSymbols.flatMap((symbolPolicy) => symbolPolicy.required),
+      specifier: projection.consumerSpecifier,
+    };
+  }),
 ];
 
 export type SourceForbiddenExportPolicy = {

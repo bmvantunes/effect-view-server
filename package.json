@@ -59,6 +59,7 @@
     "@effect-view-server/runtime-core": "workspace:*",
     "@effect-view-server/server": "workspace:*",
     "@effect-view-server/source-adapter": "workspace:*",
+    "@effect-view-server/source-adapter-conformance-host": "workspace:*",
     "@effect-view-server/source-adapter-testing": "workspace:*",
     "@effect/language-service": "catalog:",
     "@effect/vitest": "catalog:",

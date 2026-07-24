@@ -129,6 +129,7 @@
     "@effect-view-server/runtime": "workspace:*",
     "@effect-view-server/server": "workspace:*",
     "@effect-view-server/source-adapter": "workspace:*",
+    "@effect-view-server/source-adapter-conformance-host": "workspace:*",
     "@effect-view-server/source-adapter-testing": "workspace:*",
     "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
@@ -138,6 +139,7 @@
     "@vitest/runner": "catalog:",
     "effect": "catalog:",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
@@ -145,7 +147,9 @@
     "@effect/vitest": "4.0.0-beta.100",
     "effect": "4.0.0-beta.100",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "typescript": ">=5.7.0 <7.0.0",
+    "vite": "*"
   },
   "peerDependenciesMeta": {
     "@effect/atom-react": {
@@ -158,6 +162,12 @@
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    },
+    "vite": {
       "optional": true
     }
   },

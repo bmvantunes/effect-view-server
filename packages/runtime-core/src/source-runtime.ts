@@ -36,7 +36,7 @@ import type {
 } from "@effect-view-server/source-adapter";
 import {
   SourceBufferMetricsSchema,
-  SourceRuntimeFailureSchema,
+  sourceExecutionFailureSchema,
   sourceHealthSchema,
 } from "@effect-view-server/source-adapter";
 import {
@@ -54,6 +54,7 @@ import {
   type SourceRuntimeLifecycle,
 } from "@effect-view-server/source-adapter/internal";
 import {
+  BigDecimal,
   Chunk,
   Clock,
   Context,
@@ -71,7 +72,6 @@ import {
   Stream,
   SubscriptionRef,
 } from "effect";
-import { isBigDecimal } from "effect/BigDecimal";
 import type { ViewServerRuntimeCoreInternalMutations } from "./source-mutation-pipeline";
 import { makeTopicSourceBindings } from "./source-binding-resolution";
 import {
@@ -249,7 +249,6 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
   readonly acquireLeased: (
     topic: Extract<keyof Topics, string>,
     query: Readonly<Record<string, unknown>>,
-    markAcquired: (release: Effect.Effect<void>) => Effect.Effect<void>,
   ) => Effect.Effect<Option.Option<RuntimeCoreSourceLease>, ViewServerRuntimeError>;
   readonly subscribeSourceHealth: ViewServerSourceHealthSubscriber<Topics, ViewServerRuntimeError>;
   readonly subscribeProtocolSourceHealth: (
@@ -268,6 +267,9 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
 export type RuntimeCoreSourceManagerConstructionOptions = {
   readonly handoff?: RuntimeCoreResourceHandoffOptions;
   readonly leaseHandoff?: RuntimeCoreResourceHandoffOptions;
+  readonly leaseSubscriberHandoff?: RuntimeCoreResourceHandoffOptions;
+  readonly sourceHealthHandoff?: RuntimeCoreResourceHandoffOptions;
+  readonly afterSourceHealthObservationClose?: Effect.Effect<void>;
 };
 
 const runtimeError = (
@@ -292,8 +294,12 @@ const sourceApplicationFailure = (message: string): SourceRuntimeError => ({
 });
 
 const equalRouteValue = (left: unknown, right: unknown): boolean => {
-  if (isBigDecimal(left)) {
-    return isBigDecimal(right) && left.value === right.value && Object.is(left.scale, right.scale);
+  if (BigDecimal.isBigDecimal(left)) {
+    return (
+      BigDecimal.isBigDecimal(right) &&
+      left.value === right.value &&
+      Object.is(left.scale, right.scale)
+    );
   }
   return Object.is(left, right);
 };
@@ -320,11 +326,13 @@ const copyRoute = (
   return Object.freeze(route);
 };
 
+const sourceDefinitionFailure = (topic: string, message: string): SourceRuntimeError => ({
+  _tag: "InvalidSourceDefinition",
+  message: `${topic}: ${message}`,
+});
+
 const sourceDefinitionError = (topic: string, message: string): SourceExecutionError =>
-  sourceRuntimeFailure({
-    _tag: "InvalidSourceDefinition",
-    message: `${topic}: ${message}`,
-  });
+  sourceRuntimeFailure(sourceDefinitionFailure(topic, message));
 
 const sourceRowFailure = (topic: string, message: string): SourceRuntimeError => ({
   _tag: "InvalidTopicRow",
@@ -549,9 +557,56 @@ type LogicalRuntimeInput<
   readonly onStatus: (status: SourceStatus<unknown, unknown>) => Effect.Effect<void>;
 };
 
+function snapshotDecodedMetrics<Value>(value: Value): Value;
+function snapshotDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
+function snapshotDecodedMetrics(value: unknown, active = new WeakSet<object>()): unknown {
+  if (Array.isArray(value)) {
+    if (active.has(value)) {
+      throw new TypeError("Source Adapter metrics must not contain cycles.");
+    }
+    active.add(value);
+    const snapshot = value.map((entry) => snapshotDecodedMetrics(entry, active));
+    active.delete(value);
+    return Object.freeze(snapshot);
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  if (BigDecimal.isBigDecimal(value)) {
+    return Object.freeze(BigDecimal.make(value.value, value.scale));
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError("Source Adapter metrics must contain only immutable data values.");
+  }
+  if (active.has(value)) {
+    throw new TypeError("Source Adapter metrics must not contain cycles.");
+  }
+  active.add(value);
+  const snapshot: Record<string, unknown> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") {
+      throw new TypeError("Source Adapter metrics must use string data fields.");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
+      throw new TypeError("Source Adapter metrics must contain enumerable data properties.");
+    }
+    Object.defineProperty(snapshot, key, {
+      enumerable: true,
+      value: snapshotDecodedMetrics(descriptor.value, active),
+    });
+  }
+  active.delete(value);
+  return Object.freeze(snapshot);
+}
+
 function freezeDecodedMetrics<Value>(value: Value): Value;
 function freezeDecodedMetrics(value: unknown, active?: WeakSet<object>): unknown;
 function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): unknown {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
   if (Array.isArray(value)) {
     if (active.has(value)) {
       throw new TypeError("Source Adapter metrics must not contain cycles.");
@@ -563,18 +618,19 @@ function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): u
     active.delete(value);
     return Object.freeze(value);
   }
-  if (typeof value !== "object" || value === null) {
-    return value;
-  }
   if (active.has(value)) {
     throw new TypeError("Source Adapter metrics must not contain cycles.");
   }
   active.add(value);
   for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor !== undefined && "value" in descriptor) {
-      freezeDecodedMetrics(descriptor.value, active);
+    if (typeof key !== "string") {
+      throw new TypeError("Source Adapter metrics must use string data fields.");
     }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
+      throw new TypeError("Source Adapter metrics must contain enumerable data properties.");
+    }
+    freezeDecodedMetrics(descriptor.value, active);
   }
   active.delete(value);
   return Object.freeze(value);
@@ -723,9 +779,8 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
 
   const validateAdapterMetrics = Effect.fn("ViewServerRuntimeCore.source.metrics.adapter.validate")(
     function* (metrics: unknown) {
-      const decoded = yield* Schema.decodeUnknownEffect(input.entry.declaration.metrics)(
-        metrics,
-      ).pipe(
+      const codec = input.entry.declaration.metrics;
+      const decoded = yield* Schema.decodeUnknownEffect(codec)(metrics).pipe(
         Effect.mapError(() =>
           sourceRuntimeFailure({
             _tag: "InvalidSourceMetrics",
@@ -733,8 +788,32 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
           }),
         ),
       );
+      const encoded = yield* Schema.encodeUnknownEffect(codec)(decoded).pipe(
+        Effect.mapError(() =>
+          sourceRuntimeFailure({
+            _tag: "InvalidSourceMetrics",
+            message: `Source Adapter ${input.entry.definition.identity.name} returned metrics that cannot be frozen.`,
+          }),
+        ),
+      );
+      const encodedSnapshot = yield* Effect.try({
+        try: () => snapshotDecodedMetrics(encoded),
+        catch: () =>
+          sourceRuntimeFailure({
+            _tag: "InvalidSourceMetrics",
+            message: `Source Adapter ${input.entry.definition.identity.name} returned metrics that cannot be frozen.`,
+          }),
+      });
+      const snapshot = yield* Schema.decodeUnknownEffect(codec)(encodedSnapshot).pipe(
+        Effect.mapError(() =>
+          sourceRuntimeFailure({
+            _tag: "InvalidSourceMetrics",
+            message: `Source Adapter ${input.entry.definition.identity.name} returned metrics that cannot be frozen.`,
+          }),
+        ),
+      );
       const frozen = yield* Effect.try({
-        try: () => freezeDecodedMetrics(decoded),
+        try: () => freezeDecodedMetrics(snapshot),
         catch: () =>
           sourceRuntimeFailure({
             _tag: "InvalidSourceMetrics",
@@ -768,22 +847,31 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   const validateFailure = Effect.fn("ViewServerRuntimeCore.source.failure.validate")(function* (
     failure: SourceExecutionError,
   ) {
-    if (failure._tag === "AdapterFailure") {
-      return yield* input.entry.definition.adapter
-        .failure(failure.failure)
-        .pipe(Effect.mapError(sourceRuntimeFailure));
-    }
-    const runtime = yield* Schema.decodeUnknownEffect(SourceRuntimeFailureSchema)(
-      failure.failure,
-    ).pipe(
+    return yield* Schema.decodeUnknownEffect(
+      sourceExecutionFailureSchema(input.entry.definition.adapter.failureSchema),
+    )(failure).pipe(
       Effect.mapError(() =>
         sourceDefinitionError(
           input.entry.topic,
-          "Source Runtime Failure did not satisfy the SDK Schema.",
+          "Source Execution Failure did not satisfy the SDK Schema.",
         ),
       ),
     );
-    return sourceRuntimeFailure(runtime);
+  });
+
+  const validateRejectionFailure = Effect.fn(
+    "ViewServerRuntimeCore.source.rejection.failure.validate",
+  )(function* (failure: SourceExecutionError) {
+    return yield* Schema.decodeUnknownEffect(
+      sourceExecutionFailureSchema(input.entry.definition.adapter.failureSchema),
+    )(failure).pipe(
+      Effect.mapError(() =>
+        sourceDefinitionFailure(
+          input.entry.topic,
+          "Source Execution Failure did not satisfy the SDK Schema.",
+        ),
+      ),
+    );
   });
 
   const makeToolkit = () => {
@@ -853,11 +941,11 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
               ),
             ),
           );
-          if (typeof rejection.rejectedAtNanos !== "bigint") {
+          if (typeof rejection.rejectedAtNanos !== "bigint" || rejection.rejectedAtNanos < 0n) {
             return yield* Effect.fail(
               sourceDefinitionError(
                 input.entry.topic,
-                "Source Rejection timestamp must be epoch nanoseconds.",
+                "Source Rejection timestamp must be non-negative epoch nanoseconds.",
               ),
             );
           }
@@ -992,7 +1080,26 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     settlement: import("@effect-view-server/source-adapter").SourceSettlement<unknown>,
     applicationExit: import("@effect-view-server/source-adapter").SourceApplicationExit,
   ) {
-    yield* Effect.uninterruptible(settlement(applicationExit)).pipe(
+    const settlementResult = yield* Effect.try({
+      try: () => {
+        const candidate = settlement(applicationExit);
+        return Effect.isEffect(candidate) ? Option.some(candidate) : Option.none();
+      },
+      catch: () =>
+        sourceDefinitionError(
+          input.entry.topic,
+          "Source settlement must return an Effect without throwing.",
+        ),
+    });
+    if (Option.isNone(settlementResult)) {
+      return yield* Effect.fail(
+        sourceDefinitionError(
+          input.entry.topic,
+          "Source settlement must return an Effect without throwing.",
+        ),
+      );
+    }
+    yield* Effect.uninterruptible(settlementResult.value).pipe(
       Effect.tap(() =>
         Effect.sync(() => {
           completedSettlementCount += 1n;
@@ -1014,10 +1121,11 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         ),
       ),
       Effect.mapError(
-        (failure): SourceExecutionError => ({
-          _tag: "AdapterFailure",
-          failure,
-        }),
+        (failure) =>
+          ({
+            _tag: "AdapterFailure",
+            failure,
+          }) as const,
       ),
     );
   });
@@ -1040,25 +1148,25 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         Effect.void,
         () =>
           Effect.gen(function* () {
-            const failure = yield* validateFailure(event.diagnostic.failure);
+            if (event.diagnostic.rejectedAtNanos < 0n) {
+              return yield* Effect.fail(
+                sourceDefinitionFailure(
+                  input.entry.topic,
+                  "Source Rejection timestamp must be non-negative epoch nanoseconds.",
+                ),
+              );
+            }
+            const failure = yield* validateRejectionFailure(event.diagnostic.failure);
             const location = yield* Schema.decodeUnknownEffect(
               input.entry.declaration.rejectionLocation,
             )(event.diagnostic.location).pipe(
               Effect.mapError(() =>
-                sourceDefinitionError(
+                sourceDefinitionFailure(
                   input.entry.topic,
                   "Source Rejection Location does not satisfy its declared Schema.",
                 ),
               ),
             );
-            if (typeof event.diagnostic.rejectedAtNanos !== "bigint") {
-              return yield* Effect.fail(
-                sourceDefinitionError(
-                  input.entry.topic,
-                  "Source Rejection timestamp must be epoch nanoseconds.",
-                ),
-              );
-            }
             latestRejection = {
               failure,
               location,
@@ -1074,7 +1182,13 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
               latestRejection,
             });
           }),
-        () => settle(event.settle, Exit.void),
+        (_resource, applicationExit) => settle(event.settle, applicationExit),
+      ).pipe(
+        Effect.mapError((failure) =>
+          failure._tag === "AdapterFailure" || failure._tag === "RuntimeFailure"
+            ? failure
+            : sourceRuntimeFailure(failure),
+        ),
       );
     }
     if (!isSourceDelivery(event)) {
@@ -1656,18 +1770,17 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
           const managerScope = yield* Scope.make("sequential");
           yield* markAcquired(Scope.close(managerScope, Exit.void));
           const materialized = new Map<string, SourceLogicalRuntime>();
-          const leases = new Map<
-            string,
-            {
-              readonly feedKey: string;
-              readonly route: Readonly<Record<string, unknown>>;
-              readonly runtime: SourceLogicalRuntime;
-              readonly ownedStorageKeys: Set<string>;
-              readonly partition: ColumnLiveViewEngineQueryPartition;
-              readonly scope: Scope.Closeable;
-              subscribers: number;
-            }
-          >();
+          type ManagedLeasedSource = {
+            readonly entry: SourceRuntimeEntry;
+            readonly feedKey: string;
+            readonly route: Readonly<Record<string, unknown>>;
+            runtime: SourceLogicalRuntime | undefined;
+            readonly ownedStorageKeys: Set<string>;
+            readonly partition: ColumnLiveViewEngineQueryPartition;
+            readonly scope: Scope.Closeable;
+            subscribers: number;
+          };
+          const leases = new Map<string, ManagedLeasedSource>();
           const leasedDiagnostics = new Map<
             string,
             {
@@ -1676,6 +1789,9 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               observers: number;
             }
           >();
+          const sourceHealthObservations = new Set<{
+            readonly close: Effect.Effect<void>;
+          }>();
           const leaseLock = Semaphore.makeUnsafe(1);
           const sourceStatuses = new Map<
             string,
@@ -1709,152 +1825,176 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
           }
 
           const cleanupLease = Effect.fn("ViewServerRuntimeCore.source.lease.cleanup")(
-            (lease: {
-              readonly feedKey: string;
-              readonly runtime: SourceLogicalRuntime;
-              readonly ownedStorageKeys: Set<string>;
-              readonly partition: ColumnLiveViewEngineQueryPartition;
-              readonly scope: Scope.Closeable;
-            }) =>
-              runAllFinalizers([
-                lease.runtime.stop("lease-release"),
-                runAllFinalizers(
-                  Array.from(lease.ownedStorageKeys, (storageKey) =>
-                    sourceMutations.deleteStorageKey(
-                      lease.runtime.entry.topic,
-                      storageKey,
-                      lease.partition.key,
+            (lease: ManagedLeasedSource) =>
+              Effect.gen(function* () {
+                yield* runAllFinalizers([
+                  lease.runtime === undefined ? Effect.void : lease.runtime.stop("lease-release"),
+                  Scope.close(lease.scope, Exit.void),
+                ]);
+                const deletion = yield* Effect.exit(
+                  runAllFinalizers(
+                    Array.from(lease.ownedStorageKeys, (storageKey) =>
+                      sourceMutations.deleteStorageKey(
+                        lease.entry.topic,
+                        storageKey,
+                        lease.partition.key,
+                      ),
                     ),
                   ),
-                ),
-                Effect.sync(() => {
+                );
+                const diagnostics = leasedDiagnostics.get(lease.feedKey);
+                yield* runAllFinalizers([
+                  diagnostics === undefined
+                    ? Effect.void
+                    : SubscriptionRef.set(diagnostics.state, undefined),
+                  Effect.sync(() => {
+                    sourceStatuses.delete(lease.feedKey);
+                  }),
+                  onHealthChange,
+                ]);
+                if (Exit.isFailure(deletion)) {
+                  yield* Effect.logWarning(
+                    "Source lease row cleanup failed; ownership is retained for retry.",
+                    deletion.cause,
+                  );
+                  return false;
+                }
+                yield* Effect.sync(() => {
                   lease.ownedStorageKeys.clear();
                   leases.delete(lease.feedKey);
-                  sourceStatuses.delete(lease.feedKey);
-                }),
-                Effect.suspend(() => {
-                  const diagnostics = leasedDiagnostics.get(lease.feedKey);
-                  return diagnostics === undefined
-                    ? Effect.void
-                    : SubscriptionRef.set(diagnostics.state, undefined);
-                }),
-                onHealthChange,
-                Scope.close(lease.scope, Exit.void),
-              ]).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Source lease cleanup failed.", cause),
-                ),
-              ),
+                });
+                return true;
+              }),
           );
 
-          const acquireLeased: RuntimeCoreSourceManager<Topics>["acquireLeased"] = (
-            topic,
-            query,
-            markAcquired,
-          ) =>
-            leaseLock.withPermit(
-              Effect.uninterruptibleMask((restore) =>
-                Effect.gen(function* () {
-                  if (closed) {
-                    return yield* Effect.fail(
-                      runtimeError(topic, "Runtime Core Source Manager is closed."),
-                    );
-                  }
-                  const entry = entries.get(topic);
-                  if (entry === undefined || entry.definition.lifecycle !== "leased") {
-                    return Option.none<RuntimeCoreSourceLease>();
-                  }
-                  const routeResult = exactRoute(entry, Reflect.get(query, "routeBy"));
-                  const route = yield* Effect.fromResult(routeResult);
-                  const feedKey = yield* Effect.fromResult(feedKeyFor(entry, route));
-                  let lease = leases.get(feedKey);
-                  if (lease === undefined) {
-                    lease = yield* restore(
-                      acquireRuntimeCoreResourceHandoff(
-                        (markLeaseAcquired) =>
-                          Effect.gen(function* () {
-                            const scope = yield* Scope.fork(managerScope, "sequential");
-                            yield* markLeaseAcquired(Scope.close(scope, Exit.void));
-                            const ownedStorageKeys = new Set<string>();
-                            leaseSequence += 1n;
-                            const partition: ColumnLiveViewEngineQueryPartition = Object.freeze({
-                              key: `${feedKey}/lease:${leaseSequence}`,
-                              ownedStorageKeys: () => ownedStorageKeys,
-                              matches: (row, storageKey) =>
-                                storageKey === undefined
-                                  ? routeMatchesRow(entry.definition.routeBy, route, row)
-                                  : ownedStorageKeys.has(storageKey),
-                            });
-                            const runtime = yield* makeLogicalRuntime({
-                              entry,
-                              target: { _tag: "Leased", route },
-                              mutations: sourceMutations,
-                              context,
-                              ownerScope: scope,
-                              partitionKey: partition.key,
-                              feedKey,
-                              ownedStorageKeys,
-                              onStatus: (status) =>
-                                Effect.sync(() => {
-                                  sourceStatuses.set(feedKey, {
-                                    topic: entry.topic,
-                                    status,
-                                  });
-                                }).pipe(Effect.andThen(onHealthChange)),
-                            });
-                            const acquiredLease = {
-                              feedKey,
-                              route,
-                              runtime,
-                              ownedStorageKeys,
-                              partition,
-                              scope,
-                              subscribers: 0,
-                            };
-                            yield* markLeaseAcquired(cleanupLease(acquiredLease));
-                            leases.set(feedKey, acquiredLease);
-                            const diagnostics = leasedDiagnostics.get(feedKey);
-                            if (diagnostics !== undefined) {
-                              yield* SubscriptionRef.set(diagnostics.state, runtime);
-                            }
-                            return acquiredLease;
-                          }),
-                        constructionOptions.leaseHandoff,
-                      ),
-                    );
-                  }
-                  lease.subscribers += 1;
-                  let released = false;
-                  const release = Effect.suspend(() => {
-                    if (released) {
-                      return Effect.void;
-                    }
-                    released = true;
-                    return leaseLock.withPermit(
-                      Effect.suspend(() => {
-                        if (leases.get(lease!.feedKey) !== lease) {
+          const acquireLeased: RuntimeCoreSourceManager<Topics>["acquireLeased"] = (topic, query) =>
+            acquireRuntimeCoreResourceHandoff(
+              (markAcquired) =>
+                leaseLock.withPermit(
+                  Effect.uninterruptibleMask((restore) =>
+                    Effect.gen(function* () {
+                      if (closed) {
+                        return yield* Effect.fail(
+                          runtimeError(topic, "Runtime Core Source Manager is closed."),
+                        );
+                      }
+                      const entry = entries.get(topic);
+                      if (entry === undefined || entry.definition.lifecycle !== "leased") {
+                        return Option.none<RuntimeCoreSourceLease>();
+                      }
+                      const routeResult = exactRoute(entry, Reflect.get(query, "routeBy"));
+                      const route = yield* Effect.fromResult(routeResult);
+                      const feedKey = yield* Effect.fromResult(feedKeyFor(entry, route));
+                      let lease = leases.get(feedKey);
+                      if (lease !== undefined && lease.subscribers === 0) {
+                        const cleaned = yield* cleanupLease(lease);
+                        if (!cleaned) {
+                          return yield* Effect.fail(
+                            runtimeError(
+                              topic,
+                              "Source lease row cleanup is pending retry.",
+                              "RuntimeUnavailable",
+                            ),
+                          );
+                        }
+                        lease = undefined;
+                      }
+                      if (lease === undefined) {
+                        lease = yield* restore(
+                          acquireRuntimeCoreResourceHandoff((markLeaseAcquired) =>
+                            Effect.gen(function* () {
+                              const scope = yield* Scope.fork(managerScope, "sequential");
+                              const ownedStorageKeys = new Set<string>();
+                              leaseSequence += 1n;
+                              const partition: ColumnLiveViewEngineQueryPartition = Object.freeze({
+                                key: `${feedKey}/lease:${leaseSequence}`,
+                                ownedStorageKeys: () => ownedStorageKeys,
+                                matches: (row, storageKey) =>
+                                  storageKey === undefined
+                                    ? routeMatchesRow(entry.definition.routeBy, route, row)
+                                    : ownedStorageKeys.has(storageKey),
+                              });
+                              const acquiredLease: ManagedLeasedSource = {
+                                entry,
+                                feedKey,
+                                route,
+                                runtime: undefined,
+                                ownedStorageKeys,
+                                partition,
+                                scope,
+                                subscribers: 0,
+                              };
+                              leases.set(feedKey, acquiredLease);
+                              yield* markLeaseAcquired(
+                                cleanupLease(acquiredLease).pipe(Effect.asVoid),
+                              );
+                              const runtime = yield* makeLogicalRuntime({
+                                entry,
+                                target: { _tag: "Leased", route },
+                                mutations: sourceMutations,
+                                context,
+                                ownerScope: scope,
+                                partitionKey: partition.key,
+                                feedKey,
+                                ownedStorageKeys,
+                                onStatus: (status) =>
+                                  Effect.sync(() => {
+                                    sourceStatuses.set(feedKey, {
+                                      topic: entry.topic,
+                                      status,
+                                    });
+                                  }).pipe(Effect.andThen(onHealthChange)),
+                              });
+                              acquiredLease.runtime = runtime;
+                              yield* constructionOptions.leaseHandoff?.beforeReturn ?? Effect.void;
+                              const diagnostics = leasedDiagnostics.get(feedKey);
+                              if (diagnostics !== undefined) {
+                                yield* SubscriptionRef.set(diagnostics.state, runtime);
+                              }
+                              return acquiredLease;
+                            }),
+                          ),
+                        );
+                      }
+                      const currentRuntime = Option.getOrThrow(
+                        Option.fromUndefinedOr(lease.runtime),
+                      );
+                      lease.subscribers += 1;
+                      let released = false;
+                      const release = Effect.suspend(() => {
+                        if (released) {
                           return Effect.void;
                         }
-                        lease!.subscribers -= 1;
-                        return lease!.subscribers === 0 ? cleanupLease(lease!) : Effect.void;
-                      }),
-                    );
-                  }).pipe(Effect.uninterruptible);
-                  const currentLease = lease;
-                  const acquiredLease: RuntimeCoreSourceLease = {
-                    partition: currentLease.partition,
-                    translate: (subscription, ownedQuery, queryId) =>
-                      attachSourceAvailability(
-                        translateSubscription(subscription, ownedQuery),
-                        currentLease.runtime,
-                        queryId,
-                      ),
-                    release,
-                  };
-                  yield* markAcquired(release);
-                  return Option.some(acquiredLease);
-                }),
-              ),
+                        released = true;
+                        return leaseLock.withPermit(
+                          Effect.suspend(() => {
+                            if (leases.get(lease!.feedKey) !== lease) {
+                              return Effect.void;
+                            }
+                            lease!.subscribers -= 1;
+                            return lease!.subscribers === 0
+                              ? cleanupLease(lease!).pipe(Effect.asVoid)
+                              : Effect.void;
+                          }),
+                        );
+                      }).pipe(Effect.uninterruptible);
+                      const currentLease = lease;
+                      const acquiredSubscriptionLease: RuntimeCoreSourceLease = {
+                        partition: currentLease.partition,
+                        translate: (subscription, ownedQuery, queryId) =>
+                          attachSourceAvailability(
+                            translateSubscription(subscription, ownedQuery),
+                            currentRuntime,
+                            queryId,
+                          ),
+                        release,
+                      };
+                      yield* markAcquired(release);
+                      return Option.some(acquiredSubscriptionLease);
+                    }),
+                  ),
+                ),
+              constructionOptions.leaseSubscriberHandoff,
             );
 
           const decorateMaterialized: RuntimeCoreSourceManager<Topics>["decorateMaterialized"] = (
@@ -1894,13 +2034,46 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                   const runtime = Option.getOrThrow(
                     Option.fromUndefinedOr(materialized.get(topic)),
                   );
-                  return {
-                    events: SubscriptionRef.changes(runtime.health).pipe(
-                      Stream.filter(Option.isSome),
-                      Stream.map((value) => value.value),
+                  return yield* acquireRuntimeCoreResourceHandoff((markAcquired) =>
+                    leaseLock.withPermit(
+                      Effect.uninterruptibleMask((restore) =>
+                        Effect.gen(function* () {
+                          if (closed) {
+                            return yield* Effect.fail(
+                              runtimeError(topic, "Runtime Core Source Manager is closed."),
+                            );
+                          }
+                          const stopped = yield* Deferred.make<void>();
+                          let observationClosed = false;
+                          const observation = {
+                            close: Effect.suspend(() => {
+                              if (observationClosed) {
+                                return Effect.void;
+                              }
+                              observationClosed = true;
+                              sourceHealthObservations.delete(observation);
+                              return Deferred.succeed(stopped, undefined).pipe(Effect.asVoid);
+                            }),
+                          };
+                          sourceHealthObservations.add(observation);
+                          yield* markAcquired(observation.close);
+                          const subscription = {
+                            events: SubscriptionRef.changes(runtime.health).pipe(
+                              Stream.filter(Option.isSome),
+                              Stream.map((value) => value.value),
+                              Stream.interruptWhen(Deferred.await(stopped)),
+                              Stream.ensuring(observation.close),
+                            ),
+                            close: () => observation.close,
+                          };
+                          yield* restore(
+                            constructionOptions.sourceHealthHandoff?.beforeReturn ?? Effect.void,
+                          );
+                          return subscription;
+                        }),
+                      ),
                     ),
-                    close: () => Effect.void,
-                  };
+                  );
                 }
                 const routeCandidate = routeArgs[0];
                 if (routeArgs.length !== 1 || routeCandidate === undefined) {
@@ -1912,60 +2085,87 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                     ),
                   );
                 }
-                return yield* leaseLock.withPermit(
-                  Effect.gen(function* () {
-                    const route = yield* Effect.fromResult(exactRoute(entry, routeCandidate));
-                    const feedKey = yield* Effect.fromResult(feedKeyFor(entry, route));
-                    let diagnostics = leasedDiagnostics.get(feedKey);
-                    if (diagnostics === undefined) {
-                      const state = yield* SubscriptionRef.make(leases.get(feedKey)?.runtime);
-                      diagnostics = {
-                        route,
-                        state,
-                        observers: 0,
-                      };
-                      leasedDiagnostics.set(feedKey, diagnostics);
-                    }
-                    diagnostics.observers += 1;
-                    let observationClosed = false;
-                    const observation = diagnostics;
-                    const closeObservation = leaseLock.withPermit(
-                      Effect.sync(() => {
-                        if (observationClosed) {
-                          return;
-                        }
-                        observationClosed = true;
-                        observation.observers -= 1;
-                        if (
-                          observation.observers === 0 &&
-                          leasedDiagnostics.get(feedKey) === observation
-                        ) {
-                          leasedDiagnostics.delete(feedKey);
-                        }
-                      }),
-                    );
-                    const observeRuntime = (
-                      runtime: SourceLogicalRuntime | undefined,
-                    ): Stream.Stream<RuntimeLeasedSourceHealthResult> =>
-                      runtime === undefined
-                        ? Stream.succeed({ _tag: "Inactive", route })
-                        : SubscriptionRef.changes(runtime.health).pipe(
-                            Stream.filter(Option.isSome),
-                            Stream.map((value) => value.value),
-                            Stream.map((health) => ({
-                              _tag: "Active" as const,
-                              route,
-                              health,
-                            })),
+                return yield* acquireRuntimeCoreResourceHandoff((markAcquired) =>
+                  leaseLock.withPermit(
+                    Effect.uninterruptibleMask((restore) =>
+                      Effect.gen(function* () {
+                        if (closed) {
+                          return yield* Effect.fail(
+                            runtimeError(topic, "Runtime Core Source Manager is closed."),
                           );
-                    return {
-                      events: SubscriptionRef.changes(observation.state).pipe(
-                        Stream.switchMap(observeRuntime),
-                        Stream.ensuring(closeObservation),
-                      ),
-                      close: () => closeObservation,
-                    };
-                  }),
+                        }
+                        const route = yield* Effect.fromResult(exactRoute(entry, routeCandidate));
+                        const feedKey = yield* Effect.fromResult(feedKeyFor(entry, route));
+                        let diagnostics = leasedDiagnostics.get(feedKey);
+                        if (diagnostics === undefined) {
+                          const state = yield* SubscriptionRef.make(leases.get(feedKey)?.runtime);
+                          diagnostics = {
+                            route,
+                            state,
+                            observers: 0,
+                          };
+                          leasedDiagnostics.set(feedKey, diagnostics);
+                        }
+                        diagnostics.observers += 1;
+                        const stopped = yield* Deferred.make<void>();
+                        let observationClosed = false;
+                        const observationState = diagnostics;
+                        const observation = {
+                          close: leaseLock.withPermit(
+                            Effect.suspend(() => {
+                              if (observationClosed) {
+                                return Effect.void;
+                              }
+                              observationClosed = true;
+                              observationState.observers -= 1;
+                              if (
+                                observationState.observers === 0 &&
+                                leasedDiagnostics.get(feedKey) === observationState
+                              ) {
+                                leasedDiagnostics.delete(feedKey);
+                              }
+                              sourceHealthObservations.delete(observation);
+                              return Deferred.succeed(stopped, undefined).pipe(
+                                Effect.andThen(
+                                  constructionOptions.afterSourceHealthObservationClose ??
+                                    Effect.void,
+                                ),
+                                Effect.asVoid,
+                              );
+                            }),
+                          ),
+                        };
+                        sourceHealthObservations.add(observation);
+                        yield* markAcquired(observation.close);
+                        const observeRuntime = (
+                          runtime: SourceLogicalRuntime | undefined,
+                        ): Stream.Stream<RuntimeLeasedSourceHealthResult> =>
+                          runtime === undefined
+                            ? Stream.succeed({ _tag: "Inactive", route })
+                            : SubscriptionRef.changes(runtime.health).pipe(
+                                Stream.filter(Option.isSome),
+                                Stream.map((value) => value.value),
+                                Stream.map((health) => ({
+                                  _tag: "Active" as const,
+                                  route,
+                                  health,
+                                })),
+                              );
+                        const subscription = {
+                          events: SubscriptionRef.changes(observationState.state).pipe(
+                            Stream.switchMap(observeRuntime),
+                            Stream.interruptWhen(Deferred.await(stopped)),
+                            Stream.ensuring(observation.close),
+                          ),
+                          close: () => observation.close,
+                        };
+                        yield* restore(
+                          constructionOptions.sourceHealthHandoff?.beforeReturn ?? Effect.void,
+                        );
+                        return subscription;
+                      }),
+                    ),
+                  ),
                 );
               },
             );
@@ -1984,6 +2184,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               route,
               adapterMetrics: entry.declaration.metrics,
               rejectionLocation: entry.declaration.rejectionLocation,
+              lifecycle: entry.definition.lifecycle,
             });
             return entry.definition.lifecycle === "materialized"
               ? health
@@ -2033,18 +2234,28 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
             overlaySourceHealth(health, sourceStatuses.values());
 
           const close = (yield* Effect.cached(
-            leaseLock.withPermit(
-              Effect.suspend(() => {
-                closed = true;
-                return runAllFinalizers([
-                  ...Array.from(leases.values(), cleanupLease),
-                  ...Array.from(materialized.values(), (runtime) =>
-                    runtime.stop("runtime-shutdown"),
-                  ),
-                  Scope.close(managerScope, Exit.void),
-                ]);
-              }),
-            ),
+            leaseLock
+              .withPermit(
+                Effect.sync(() => {
+                  closed = true;
+                  return {
+                    leases: Array.from(leases.values()),
+                    observations: Array.from(sourceHealthObservations),
+                  };
+                }),
+              )
+              .pipe(
+                Effect.flatMap(({ leases: activeLeases, observations }) =>
+                  runAllFinalizers([
+                    ...observations.map((observation) => observation.close),
+                    ...activeLeases.map((lease) => cleanupLease(lease).pipe(Effect.asVoid)),
+                    ...Array.from(materialized.values(), (runtime) =>
+                      runtime.stop("runtime-shutdown"),
+                    ),
+                    Scope.close(managerScope, Exit.void),
+                  ]),
+                ),
+              ),
           )).pipe(Effect.uninterruptible);
 
           yield* markAcquired(close);
@@ -2073,6 +2284,7 @@ export const sourceRuntimeInternals = {
   equalRouteValue,
   exactRoute,
   feedKeyFor,
+  freezeDecodedMetrics,
   internalPublicId,
   internalStorageKey,
   makeMetricFailureObservation,

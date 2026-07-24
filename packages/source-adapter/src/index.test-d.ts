@@ -13,6 +13,7 @@ import {
   type SourceDefinitionOptions,
   type SourceDefinitionRouteFields,
   type SourceExecutionFailure,
+  type SourceHealthForDefinition,
   type SourceLifecycleDeclaration,
   type SourceMutation,
   type SourceToolkit,
@@ -106,10 +107,35 @@ const leased = adapter.leasedSource(["region", "desk"], {
   batchSize: 100,
 });
 
+type TypeFixtureRow = {
+  readonly id: string;
+  readonly region: string;
+  readonly desk: string;
+};
+type MaterializedHealthTarget = SourceHealthForDefinition<
+  typeof materialized,
+  TypeFixtureRow
+>["target"];
+type LeasedHealthTarget = SourceHealthForDefinition<typeof leased, TypeFixtureRow>["target"];
+
+const _materializedHealthTarget: MaterializedHealthTarget = { _tag: "Materialized" };
+const _leasedHealthTarget: LeasedHealthTarget = {
+  _tag: "Leased",
+  route: { region: "eu", desk: "cash" },
+};
+// @ts-expect-error Materialized Source Health cannot expose a Leased target.
+const _invalidMaterializedHealthTarget: MaterializedHealthTarget = _leasedHealthTarget;
+// @ts-expect-error Leased Source Health cannot expose a Materialized target.
+const _invalidLeasedHealthTarget: LeasedHealthTarget = _materializedHealthTarget;
+
 class AdapterDependency extends Context.Service<
   AdapterDependency,
   { readonly connected: boolean }
 >()("@effect-view-server/source-adapter/type-test/AdapterDependency") {}
+class RetryOnlyDependency extends Context.Service<
+  RetryOnlyDependency,
+  { readonly enabled: boolean }
+>()("@effect-view-server/source-adapter/type-test/RetryOnlyDependency") {}
 
 const materializedLifecycle: SourceAdapterServerLifecycle<
   typeof Failure.Type,
@@ -187,6 +213,97 @@ const serverLayer = SourceAdapterServer.make(adapter, {
   materialized: materializedLifecycle,
   leased: leasedLifecycle,
 });
+
+const _invalidMetricsLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  acquire: materializedLifecycle.acquire,
+  // @ts-expect-error lifecycle metrics must return the declaration's exact metrics output.
+  metrics: () => Effect.succeed({ connected: "yes" }),
+  retry: Schedule.recurs(0),
+};
+const _invalidMetricsFailureLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  acquire: materializedLifecycle.acquire,
+  // This deliberately invalid Effect error channel is the contract under test.
+  // @effect-diagnostics missingEffectError:off
+  // @ts-expect-error lifecycle metrics must remain infallible.
+  metrics: () => Effect.fail("metrics failure"),
+  retry: Schedule.recurs(0),
+};
+// @effect-diagnostics missingEffectError:on
+expectTypeOf(_invalidMetricsFailureLifecycle.metrics).not.toBeAny();
+// This deliberately invalid Effect error channel is the contract under test.
+// @effect-diagnostics missingEffectError:off
+const _invalidFailureLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  // @ts-expect-error lifecycle acquisition preserves the exact Source Execution Failure channel.
+  acquire: () => Effect.fail("wrong failure"),
+  metrics: materializedLifecycle.metrics,
+  retry: Schedule.recurs(0),
+};
+// @effect-diagnostics missingEffectError:on
+const _invalidRetryInputLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  acquire: materializedLifecycle.acquire,
+  metrics: materializedLifecycle.metrics,
+  // @ts-expect-error retry input is the exact Source Termination union.
+  retry: Schedule.identity<string>(),
+};
+const _invalidRetryEnvironmentLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  acquire: materializedLifecycle.acquire,
+  metrics: materializedLifecycle.metrics,
+  // @ts-expect-error retry requirements must be included in the lifecycle Services generic.
+  retry: Schedule.recurs(0).pipe(Schedule.tap(() => RetryOnlyDependency.pipe(Effect.asVoid))),
+};
+const _rejectionLocationLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  acquire: (input) => {
+    const invalidRejection = input.toolkit.reject({
+      failure: {
+        _tag: "AdapterFailure",
+        failure: {
+          _tag: "TypeFixtureFailure",
+          message: "invalid location",
+        },
+      },
+      location: {
+        partition: 1,
+        // @ts-expect-error lifecycle rejection locations preserve the declared Schema type.
+        offset: "1",
+      },
+      rejectedAtNanos: 1n,
+    });
+    expectTypeOf(invalidRejection).not.toBeAny();
+    return materializedLifecycle.acquire(input);
+  },
+  metrics: materializedLifecycle.metrics,
+  retry: Schedule.recurs(0),
+};
 
 const mappedServerLayer = SourceAdapterServer.make(mappedAdapter, {
   materialized: {

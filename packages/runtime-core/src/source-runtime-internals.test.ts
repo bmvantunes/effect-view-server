@@ -38,6 +38,23 @@ const entry: SourceRuntimeRouteEntry = {
 };
 
 describe("Source Runtime internal contracts", () => {
+  it("rejects cyclic and non-data values while freezing decoded metrics", () => {
+    const cyclicArray: Array<unknown> = [];
+    cyclicArray.push(cyclicArray);
+    const cyclicObject: { self?: object } = {};
+    cyclicObject.self = cyclicObject;
+    const symbolKeyed = {
+      [Symbol("metric")]: 1,
+    };
+    const accessor = Object.defineProperty({}, "metric", {
+      enumerable: true,
+      get: () => 1,
+    });
+
+    for (const value of [cyclicArray, cyclicObject, symbolKeyed, accessor]) {
+      expect(() => sourceRuntimeInternals.freezeDecodedMetrics(value)).toThrow();
+    }
+  });
   it("compares exact route scalars including BigDecimal storage identity", () => {
     expect(
       sourceRuntimeInternals.equalRouteValue(makeBigDecimal(100n, 2), makeBigDecimal(100n, 2)),

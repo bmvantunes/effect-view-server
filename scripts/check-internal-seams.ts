@@ -79,6 +79,15 @@ const inspectionViolationMessage = (
 ): string =>
   `${relativePath}:${violation.line}:${violation.column} uses unsupported ${violation.kind} module loading through ${violation.loader}.`;
 
+const isApprovedPackageModuleLoader = (
+  displayPath: string,
+  violation: UnsupportedModuleLoad,
+): boolean =>
+  displayPath ===
+    "packages/source-adapter-testing/src/package-export-loader.ts" &&
+  violation.kind === "non-literal-specifier" &&
+  violation.loader === "dynamic-import";
+
 export const consumerImportViolationsFor = ({
   contents,
   fileName,
@@ -317,9 +326,9 @@ export const packageImportViolationsForSource = ({
     }
   }
   violations.push(
-    ...inspection.violations.map((violation) =>
-      inspectionViolationMessage(displayPath, violation),
-    ),
+    ...inspection.violations
+      .filter((violation) => !isApprovedPackageModuleLoader(displayPath, violation))
+      .map((violation) => inspectionViolationMessage(displayPath, violation)),
   );
   return violations;
 };
@@ -476,14 +485,18 @@ export const facadeProjectionViolationsForSource = ({
     violations.push(`${relativePath} must contain only package re-export declarations.`);
   }
   if (projection.reexport.kind === "all") {
+    const expectedWorkspaceSpecifiers = projection.workspaceSpecifiers;
     if (
-      inspection.reexports.length !== 1 ||
-      inspection.reexports[0]?.kind !== "all" ||
-      inspection.reexports[0].moduleSpecifier !== projection.workspaceSpecifier ||
-      inspection.reexports[0].typeOnly
+      inspection.reexports.length !== expectedWorkspaceSpecifiers.length ||
+      inspection.reexports.some(
+        (reexport, index) =>
+          reexport.kind !== "all" ||
+          reexport.moduleSpecifier !== expectedWorkspaceSpecifiers[index] ||
+          reexport.typeOnly,
+      )
     ) {
       violations.push(
-        `${relativePath} must exclusively re-export all of ${projection.workspaceSpecifier}.`,
+        `${relativePath} must exclusively re-export all of ${expectedWorkspaceSpecifiers.join(" and ")}.`,
       );
     }
     return violations;

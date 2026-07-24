@@ -56,11 +56,7 @@ export type {
   ViewServerRuntimeCoreInternalInstance,
   ViewServerRuntimeCoreInternalOptionsFor,
 } from "./runtime-core-types";
-export type {
-  RuntimeCoreSourceLease,
-  RuntimeCoreSourceManager,
-  ViewServerSourceRequirements,
-} from "./source-runtime";
+export type { ViewServerSourceRequirements } from "./source-runtime";
 
 export const makeViewServerRuntimeCoreInternal: <const Topics extends DecodableTopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,

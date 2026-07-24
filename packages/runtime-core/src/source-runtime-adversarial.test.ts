@@ -4,6 +4,7 @@ import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
   SourceAdapter,
   type SourceDeliveryLane,
+  type SourceExecutionFailure,
   type SourceStatus,
 } from "@effect-view-server/source-adapter";
 import {
@@ -14,18 +15,23 @@ import {
 import {
   SourceFixture,
   type ControllableSourceFixture,
+  type SourceFixtureFailure,
 } from "@effect-view-server/source-adapter-testing";
 import {
+  BigDecimal,
   Chunk,
   Context,
   Deferred,
   Duration,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Option,
   Schedule,
   Schema,
+  SchemaGetter,
+  SchemaIssue,
   Stream,
 } from "effect";
 import { TestClock } from "effect/testing";
@@ -146,11 +152,302 @@ const withChangingLaneId = <Row extends object, AdapterFailure, RejectionLocatio
 };
 
 describe("Runtime Core adversarial Source runtime", () => {
+  it.effect(
+    "maps encode, re-decode, and post-decode freeze failures into typed metrics errors",
+    () =>
+      Effect.gen(function* () {
+        const MetricsValue = Schema.Struct({
+          value: Schema.Unknown,
+        });
+        const MetricsFailure = Schema.TaggedStruct("MetricsStageFailure", {
+          message: Schema.String,
+        });
+        const MetricsLocation = Schema.Struct({
+          offset: Schema.BigInt,
+        });
+        const schemaFailure = (value: { readonly value: unknown }) =>
+          new SchemaIssue.Forbidden(Option.some(value), {
+            message: "deliberate metrics-stage failure",
+          });
+        let encodeCount = 0;
+        const encodeFailure = MetricsValue.pipe(
+          Schema.decodeTo(MetricsValue, {
+            decode: SchemaGetter.transform((value) => value),
+            encode: SchemaGetter.transformOrFail((value) => {
+              encodeCount += 1;
+              return encodeCount === 2 ? Effect.fail(schemaFailure(value)) : Effect.succeed(value);
+            }),
+          }),
+        );
+        let decodeCount = 0;
+        const reDecodeFailure = MetricsValue.pipe(
+          Schema.decodeTo(MetricsValue, {
+            decode: SchemaGetter.transformOrFail((value) => {
+              decodeCount += 1;
+              return decodeCount === 4 ? Effect.fail(schemaFailure(value)) : Effect.succeed(value);
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+        );
+        let hostileDecodeCount = 0;
+        const cyclic: Array<unknown> = [];
+        cyclic.push(cyclic);
+        const postDecodeFreezeFailure = MetricsValue.pipe(
+          Schema.decodeTo(MetricsValue, {
+            decode: SchemaGetter.transform((value) => {
+              hostileDecodeCount += 1;
+              return hostileDecodeCount === 4 ? { value: cyclic } : value;
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+        );
+
+        for (const [name, metrics] of [
+          ["metrics-encode-failure", encodeFailure],
+          ["metrics-redecode-failure", reDecodeFailure],
+          ["metrics-freeze-failure", postDecodeFreezeFailure],
+        ] as const) {
+          const adapter = SourceAdapter.make({
+            identity: { name },
+            failure: MetricsFailure,
+            materialized: {
+              metrics,
+              rejectionLocation: MetricsLocation,
+              definitionOptions: SourceAdapter.definitionOptions<void>(),
+            },
+            leased: undefined,
+          });
+          const layer = SourceAdapterServer.make(adapter, {
+            materialized: {
+              acquire: () =>
+                Effect.succeed(
+                  SourceAdapterServer.attempt([
+                    SourceAdapterServer.lane({
+                      id: name,
+                      events: Stream.never,
+                    }),
+                  ]),
+                ),
+              metrics: () => Effect.succeed({ value: "valid" }),
+              retry: Schedule.recurs(0),
+            },
+          });
+          const config = defineViewServerConfig({
+            topics: {
+              rows: {
+                schema: Row,
+                source: adapter.materializedSource(undefined),
+              },
+            },
+          });
+          const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+          const readyDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+          expect(
+            Option.getOrThrow(
+              yield* readyDiagnostics.events.pipe(
+                Stream.filter((health) => health.status._tag === "Ready"),
+                Stream.take(1),
+                Stream.runHead,
+              ),
+            ).status._tag,
+          ).toBe("Ready");
+          yield* readyDiagnostics.close();
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+          const exhausted = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);
+          yield* TestClock.adjust("1 second");
+          expect((yield* Fiber.join(exhausted)).exhaustion.lastTermination).toStrictEqual({
+            _tag: "Failed",
+            failure: {
+              _tag: "RuntimeFailure",
+              failure: {
+                _tag: "InvalidSourceMetrics",
+                message: `Source Adapter ${name} returned metrics that cannot be frozen.`,
+              },
+            },
+          });
+          yield* diagnostics.close();
+          yield* runtime.close;
+        }
+      }),
+  );
+
+  it.effect("rejects accessor, class, Date, and symbol-keyed adapter metric values", () =>
+    Effect.gen(function* () {
+      const OpaqueFailure = Schema.TaggedStruct("OpaqueMetricsFailure", {
+        message: Schema.String,
+      });
+      const OpaqueLocation = Schema.Struct({
+        offset: Schema.BigInt,
+      });
+      const adapter = SourceAdapter.make({
+        identity: {
+          name: "opaque-metrics",
+        },
+        failure: OpaqueFailure,
+        materialized: {
+          metrics: Schema.Struct({
+            value: Schema.Unknown,
+          }),
+          rejectionLocation: OpaqueLocation,
+          definitionOptions: SourceAdapter.definitionOptions<void>(),
+        },
+        leased: undefined,
+      });
+      let currentMetrics: { readonly value: unknown } = {
+        value: {},
+      };
+      const layer = SourceAdapterServer.make(adapter, {
+        materialized: {
+          acquire: () =>
+            Effect.succeed(
+              SourceAdapterServer.attempt([
+                SourceAdapterServer.lane({
+                  id: "opaque-metrics",
+                  events: Stream.never,
+                }),
+              ]),
+            ),
+          metrics: () => Effect.sync(() => currentMetrics),
+          retry: Schedule.recurs(0),
+        },
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: adapter.materializedSource(undefined),
+          },
+        },
+      });
+      class MetricClass {
+        readonly value = 1;
+      }
+      const accessorMetric = Object.defineProperty({}, "value", {
+        enumerable: true,
+        get: () => 1,
+      });
+      const symbolMetric = {
+        [Symbol("metric")]: 1,
+      };
+      const decimalMetric = BigDecimal.make(123n, 2);
+
+      for (const [index, invalidMetrics] of [
+        accessorMetric,
+        new MetricClass(),
+        Reflect.construct(Date, [0]),
+        symbolMetric,
+      ].entries()) {
+        currentMetrics = {
+          value: decimalMetric,
+        };
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+        const readyDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const ready = Option.getOrThrow(
+          yield* readyDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
+        );
+        if (index === 0) {
+          expect({
+            copied: ready.metrics.adapter.value === decimalMetric,
+            frozen: Object.isFrozen(ready.metrics.adapter.value),
+          }).toStrictEqual({
+            copied: false,
+            frozen: true,
+          });
+        }
+        yield* readyDiagnostics.close();
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const exhausted = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);
+        currentMetrics = {
+          value: invalidMetrics,
+        };
+        yield* TestClock.adjust("1 second");
+        expect((yield* Fiber.join(exhausted)).exhaustion.lastTermination).toStrictEqual({
+          _tag: "Failed",
+          failure: {
+            _tag: "RuntimeFailure",
+            failure: {
+              _tag: "InvalidSourceMetrics",
+              message: "Source Adapter opaque-metrics returned metrics that cannot be frozen.",
+            },
+          },
+        });
+        expect(Object.isFrozen(invalidMetrics)).toBe(false);
+        yield* runtime.close;
+      }
+    }),
+  );
+
+  it.effect("snapshots metrics explicitly admitted by a Schema Class", () =>
+    Effect.gen(function* () {
+      class DeclaredMetrics extends Schema.Class<DeclaredMetrics>("DeclaredMetrics")({
+        observed: Schema.BigInt,
+      }) {}
+      const Failure = Schema.TaggedStruct("DeclaredMetricsFailure", {
+        message: Schema.String,
+      });
+      const Location = Schema.Struct({
+        offset: Schema.BigInt,
+      });
+      const adapter = SourceAdapter.make({
+        identity: {
+          name: "declared-class-metrics",
+        },
+        failure: Failure,
+        materialized: {
+          metrics: DeclaredMetrics,
+          rejectionLocation: Location,
+          definitionOptions: SourceAdapter.definitionOptions<void>(),
+        },
+        leased: undefined,
+      });
+      const supplied = new DeclaredMetrics({ observed: 7n });
+      const layer = SourceAdapterServer.make(adapter, {
+        materialized: {
+          acquire: () =>
+            Effect.succeed(
+              SourceAdapterServer.attempt([
+                SourceAdapterServer.lane({
+                  id: "declared-class-metrics",
+                  events: Stream.never,
+                }),
+              ]),
+            ),
+          metrics: () => Effect.succeed(supplied),
+          retry: Schedule.recurs(0),
+        },
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: adapter.materializedSource(undefined),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const health = Option.getOrThrow(
+        yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+      );
+
+      expect({
+        copied: health.metrics.adapter === supplied,
+        frozen: Object.isFrozen(health.metrics.adapter),
+        instance: health.metrics.adapter instanceof DeclaredMetrics,
+        observed: health.metrics.adapter.observed,
+      }).toStrictEqual({
+        copied: false,
+        frozen: true,
+        instance: true,
+        observed: 7n,
+      });
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
   it.effect("supervises cyclic adapter metric arrays and objects as invalid metrics", () =>
     Effect.gen(function* () {
-      class CyclicMetrics {
-        constructor(readonly nested: object) {}
-      }
       const CyclicFailure = Schema.TaggedStruct("CyclicFailure", {
         message: Schema.String,
       });
@@ -163,13 +460,17 @@ describe("Runtime Core adversarial Source runtime", () => {
         },
         failure: CyclicFailure,
         materialized: {
-          metrics: Schema.instanceOf(CyclicMetrics),
+          metrics: Schema.Struct({
+            nested: Schema.Unknown,
+          }),
           rejectionLocation: CyclicLocation,
           definitionOptions: SourceAdapter.definitionOptions<void>(),
         },
         leased: undefined,
       });
-      let currentMetrics = new CyclicMetrics({});
+      let currentMetrics: { readonly nested: unknown } = {
+        nested: {},
+      };
       const layer = SourceAdapterServer.make(adapter, {
         materialized: {
           acquire: () =>
@@ -199,11 +500,15 @@ describe("Runtime Core adversarial Source runtime", () => {
       cyclicObject.self = cyclicObject;
 
       for (const cyclic of [cyclicArray, cyclicObject]) {
-        currentMetrics = new CyclicMetrics({});
+        currentMetrics = {
+          nested: {},
+        };
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
         const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
         const exhaustedFiber = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);
-        currentMetrics = new CyclicMetrics(cyclic);
+        currentMetrics = {
+          nested: cyclic,
+        };
         yield* TestClock.adjust("1 second");
         const exhausted = yield* Fiber.join(exhaustedFiber);
         expect(exhausted.exhaustion.lastTermination).toStrictEqual({
@@ -435,6 +740,38 @@ describe("Runtime Core adversarial Source runtime", () => {
         },
       });
       yield* forgedAttemptRuntime.close;
+
+      const acquireMalformedAttempt: typeof lifecycle.acquire = (input) =>
+        lifecycle
+          .acquire(input)
+          .pipe(Effect.map((attempt) => nominalClone(attempt, { lanes: [] })));
+      const malformedAttemptRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: new Proxy(lifecycle, {
+            get: (target, property, receiver) =>
+              property === "acquire"
+                ? acquireMalformedAttempt
+                : Reflect.get(target, property, receiver),
+          }),
+        }),
+      );
+      expect(
+        (yield* awaitExhausted(
+          yield* malformedAttemptRuntime.liveClient.subscribeSourceHealth("rows"),
+        )).exhaustion.lastTermination,
+      ).toStrictEqual({
+        _tag: "Failed",
+        failure: {
+          _tag: "RuntimeFailure",
+          failure: {
+            _tag: "InvalidSourceDefinition",
+            message:
+              "rows: Source Attempt requires non-empty unique lane IDs, Streams, and buffer metrics.",
+          },
+        },
+      });
+      yield* malformedAttemptRuntime.close;
 
       const acquireForgedEvent: typeof lifecycle.acquire = (input) =>
         Effect.gen(function* () {
@@ -775,6 +1112,7 @@ describe("Runtime Core adversarial Source runtime", () => {
       const context = yield* Layer.build(fixture.layer);
       const service = Context.get(context, fixture.adapter.runtimeService);
       const materialized = materializedLifecycle(service);
+      const invalidLocationSettlement = yield* Deferred.make<Exit.Exit<void, unknown>>();
 
       const invalidLocationAcquire: typeof materialized.acquire = (input) =>
         Effect.gen(function* () {
@@ -788,6 +1126,8 @@ describe("Runtime Core adversarial Source runtime", () => {
               offset: 1n,
             },
             rejectedAtNanos: 1n,
+            settlement: (applicationExit) =>
+              Deferred.succeed(invalidLocationSettlement, applicationExit).pipe(Effect.asVoid),
           });
           const forged = nominalClone(rejection, {
             diagnostic: {
@@ -831,6 +1171,55 @@ describe("Runtime Core adversarial Source runtime", () => {
             }),
           ]);
         });
+      const invalidRuntimeFailureAcquire: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const rejection = yield* input.toolkit.reject({
+            failure: makeRuntimeSourceFailure({
+              _tag: "InvalidSourceDelivery",
+              message: "valid runtime rejection",
+            }),
+            location: {
+              lane: "fixture",
+              offset: 1n,
+            },
+            rejectedAtNanos: 1n,
+          });
+          const forged = nominalClone(rejection, {
+            diagnostic: {
+              ...rejection.diagnostic,
+              failure: invalidRuntimeFailure(),
+            },
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "invalid-runtime-failure",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
+      const runtimeFailureSettlement = yield* Deferred.make<Exit.Exit<void, unknown>>();
+      const validRuntimeFailureAcquire: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const rejection = yield* input.toolkit.reject({
+            failure: makeRuntimeSourceFailure({
+              _tag: "InvalidSourceDelivery",
+              message: "valid runtime rejection",
+            }),
+            location: {
+              lane: "fixture",
+              offset: 2n,
+            },
+            rejectedAtNanos: 2n,
+            settlement: (applicationExit) =>
+              Deferred.succeed(runtimeFailureSettlement, applicationExit).pipe(Effect.asVoid),
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "valid-runtime-failure",
+              events: Stream.make(rejection).pipe(Stream.concat(Stream.never)),
+            }),
+          ]);
+        });
 
       const exhaustRejection = Effect.fn("RuntimeCore.sourceAdversarial.exhaustRejection")(
         function* (acquire: typeof materialized.acquire) {
@@ -861,16 +1250,74 @@ describe("Runtime Core adversarial Source runtime", () => {
           },
         },
       });
+      expect((yield* Deferred.await(invalidLocationSettlement))._tag).toBe("Failure");
       expect(yield* exhaustRejection(invalidTimestampAcquire)).toStrictEqual({
         _tag: "Failed",
         failure: {
           _tag: "RuntimeFailure",
           failure: {
             _tag: "InvalidSourceDefinition",
-            message: "rows: Source Rejection timestamp must be epoch nanoseconds.",
+            message: "rows: Source Lane emitted a structurally forged event.",
           },
         },
       });
+      expect(yield* exhaustRejection(invalidRuntimeFailureAcquire)).toStrictEqual({
+        _tag: "Failed",
+        failure: {
+          _tag: "RuntimeFailure",
+          failure: {
+            _tag: "InvalidSourceDefinition",
+            message: "rows: Source Execution Failure did not satisfy the SDK Schema.",
+          },
+        },
+      });
+
+      const runtimeFailureLifecycle = new Proxy(materialized, {
+        get: (target, property, receiver) =>
+          property === "acquire"
+            ? validRuntimeFailureAcquire
+            : Reflect.get(target, property, receiver),
+      });
+      const runtimeFailureRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          materialized: runtimeFailureLifecycle,
+        }),
+      );
+      const runtimeFailureHealth = yield* runtimeFailureRuntime.liveClient
+        .subscribeSourceHealth("rows")
+        .pipe(
+          Effect.flatMap((diagnostics) =>
+            diagnostics.events.pipe(
+              Stream.filter((health) => health.status._tag === "Degraded"),
+              Stream.take(1),
+              Stream.runHead,
+              Effect.ensuring(diagnostics.close().pipe(Effect.orDie)),
+            ),
+          ),
+          Effect.map(Option.getOrThrow),
+        );
+      expect(runtimeFailureHealth.status).toStrictEqual({
+        _tag: "Degraded",
+        attempt: 1n,
+        degradedAtNanos: 0n,
+        latestRejection: {
+          failure: {
+            _tag: "RuntimeFailure",
+            failure: {
+              _tag: "InvalidSourceDelivery",
+              message: "valid runtime rejection",
+            },
+          },
+          location: {
+            lane: "fixture",
+            offset: 2n,
+          },
+          rejectedAtNanos: 2n,
+        },
+      });
+      expect(yield* Deferred.await(runtimeFailureSettlement)).toStrictEqual(Exit.void);
+      yield* runtimeFailureRuntime.close;
     }),
   );
 
@@ -985,6 +1432,17 @@ describe("Runtime Core adversarial Source runtime", () => {
             rejectedAtNanos: 1,
           },
         ]).pipe(Effect.andThen(Effect.die(new Error("Invalid rejection timestamp accepted."))));
+      const negativeRejectionTimestamp: typeof materialized.acquire = (input) =>
+        input.toolkit
+          .reject({
+            failure: {
+              _tag: "AdapterFailure",
+              failure: SourceFixture.failure("rejected", "stream"),
+            },
+            location: { lane: "fixture", offset: 1n },
+            rejectedAtNanos: -1n,
+          })
+          .pipe(Effect.andThen(Effect.die(new Error("Negative rejection timestamp accepted."))));
       const invalidRuntimeRejection: typeof materialized.acquire = (input) =>
         input.toolkit
           .reject({
@@ -1004,6 +1462,136 @@ describe("Runtime Core adversarial Source runtime", () => {
             }),
           ]),
         );
+      const invalidSettlementReturn: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const mutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+            id: "invalid-settlement-return",
+            region: "eu",
+            value: "invalid",
+          });
+          const delivery = yield* input.toolkit.delivery(Chunk.of(mutation));
+          const forged = nominalClone(delivery, {
+            settle: () => "not-an-effect",
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "invalid-settlement-return",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
+      const throwingSettlement: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const mutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+            id: "throwing-settlement",
+            region: "eu",
+            value: "invalid",
+          });
+          const delivery = yield* input.toolkit.delivery(Chunk.of(mutation));
+          const forged = nominalClone(delivery, {
+            settle: () => {
+              throw new Error("settlement threw");
+            },
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "throwing-settlement",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
+      const hostileSettlementReturn: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const mutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+            id: "hostile-settlement-return",
+            region: "eu",
+            value: "invalid",
+          });
+          const delivery = yield* input.toolkit.delivery(Chunk.of(mutation));
+          const hostile = new Proxy(
+            {},
+            {
+              get: () => {
+                throw new Error("settlement result inspection threw");
+              },
+              has: () => {
+                throw new Error("settlement result inspection threw");
+              },
+            },
+          );
+          const forged = nominalClone(delivery, {
+            settle: () => hostile,
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "hostile-settlement-return",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
+      const negativeForgedRejection: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const rejection = yield* input.toolkit.reject({
+            failure: {
+              _tag: "AdapterFailure",
+              failure: SourceFixture.failure("rejected", "stream"),
+            },
+            location: { lane: "fixture", offset: 1n },
+            rejectedAtNanos: 1n,
+          });
+          const forged = nominalClone(rejection, {
+            diagnostic: {
+              ...rejection.diagnostic,
+              rejectedAtNanos: -1n,
+            },
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "negative-forged-rejection",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
+      const failExecution = (
+        failure: SourceExecutionFailure<SourceFixtureFailure>,
+      ): Effect.Effect<never, SourceExecutionFailure<SourceFixtureFailure>> => Effect.fail(failure);
+      const failLane = (
+        failure: SourceExecutionFailure<SourceFixtureFailure>,
+      ): Stream.Stream<never, SourceExecutionFailure<SourceFixtureFailure>> => Stream.fail(failure);
+      const nullAcquisitionFailure: typeof materialized.acquire = () =>
+        invokeHostile(failExecution, undefined, [null]);
+      const nullLaneFailure: typeof materialized.acquire = () =>
+        Effect.succeed(
+          SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "null-lane-failure",
+              events: invokeHostile(failLane, undefined, [null]),
+            }),
+          ]),
+        );
+      const nullRejectionFailure: typeof materialized.acquire = (input) =>
+        Effect.gen(function* () {
+          const rejection = yield* input.toolkit.reject({
+            failure: {
+              _tag: "AdapterFailure",
+              failure: SourceFixture.failure("rejected", "stream"),
+            },
+            location: { lane: "fixture", offset: 1n },
+            rejectedAtNanos: 1n,
+          });
+          const forged = nominalClone(rejection, {
+            diagnostic: {
+              ...rejection.diagnostic,
+              failure: null,
+            },
+          });
+          return SourceAdapterServer.attempt([
+            SourceAdapterServer.lane({
+              id: "null-rejection-failure",
+              events: Stream.make(forged),
+            }),
+          ]);
+        });
 
       const expectInvalidDefinition = Effect.fn(
         "RuntimeCore.sourceAdversarial.expectInvalidDefinition",
@@ -1046,19 +1634,51 @@ describe("Runtime Core adversarial Source runtime", () => {
       );
       yield* expectInvalidDefinition(
         invalidRejectionTimestamp,
-        "rows: Source Rejection timestamp must be epoch nanoseconds.",
+        "rows: Source Rejection timestamp must be non-negative epoch nanoseconds.",
+      );
+      yield* expectInvalidDefinition(
+        negativeRejectionTimestamp,
+        "rows: Source Rejection timestamp must be non-negative epoch nanoseconds.",
       );
       yield* expectInvalidDefinition(
         invalidRuntimeRejection,
-        "rows: Source Runtime Failure did not satisfy the SDK Schema.",
+        "rows: Source Execution Failure did not satisfy the SDK Schema.",
       );
       yield* expectInvalidDefinition(
         invalidAcquisitionFailure,
-        "rows: Source Runtime Failure did not satisfy the SDK Schema.",
+        "rows: Source Execution Failure did not satisfy the SDK Schema.",
       );
       yield* expectInvalidDefinition(
         invalidLaneFailure,
-        "rows: Source Runtime Failure did not satisfy the SDK Schema.",
+        "rows: Source Execution Failure did not satisfy the SDK Schema.",
+      );
+      yield* expectInvalidDefinition(
+        invalidSettlementReturn,
+        "rows: Source settlement must return an Effect without throwing.",
+      );
+      yield* expectInvalidDefinition(
+        throwingSettlement,
+        "rows: Source settlement must return an Effect without throwing.",
+      );
+      yield* expectInvalidDefinition(
+        hostileSettlementReturn,
+        "rows: Source settlement must return an Effect without throwing.",
+      );
+      yield* expectInvalidDefinition(
+        negativeForgedRejection,
+        "rows: Source Rejection timestamp must be non-negative epoch nanoseconds.",
+      );
+      yield* expectInvalidDefinition(
+        nullAcquisitionFailure,
+        "rows: Source Execution Failure did not satisfy the SDK Schema.",
+      );
+      yield* expectInvalidDefinition(
+        nullLaneFailure,
+        "rows: Source Execution Failure did not satisfy the SDK Schema.",
+      );
+      yield* expectInvalidDefinition(
+        nullRejectionFailure,
+        "rows: Source Execution Failure did not satisfy the SDK Schema.",
       );
     }),
   );

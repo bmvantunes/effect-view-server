@@ -8,6 +8,16 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+!packages/source-adapter-testing/test-fixtures/node_modules/
+!packages/source-adapter-testing/test-fixtures/node_modules/effect-view-server/
+!packages/source-adapter-testing/test-fixtures/node_modules/effect-view-server/**
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/node_modules/
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/node_modules/@effect/
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/node_modules/@effect/platform-node/
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/node_modules/@effect/platform-node/**
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/private-peer-runtime/node_modules/
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/private-peer-runtime/node_modules/effect/
+!packages/source-adapter-testing/test-fixtures/package-browser-leaks/private-peer-runtime/node_modules/effect/**
 .pnpm-store/
 dist
 dist-ssr

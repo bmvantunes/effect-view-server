@@ -4,6 +4,7 @@ import {
   consumerPackageSpecifiers,
   expectedPackageSurfaces,
   forbiddenDeepImportSpecifiers,
+  facadeProjectionFor,
   namedFacadeProjectionFor,
   packageDistStemForSourceEntrypoint,
   packageSurfacePolicy,
@@ -16,9 +17,9 @@ import {
 
 describe("Package Surface Policy", () => {
   it("owns one unique inventory of private and consumer package specifiers", () => {
-    expect(packageSurfacePolicy.packages).toHaveLength(12);
-    expect(workspacePackageSpecifiers).toHaveLength(26);
-    expect(new Set(workspacePackageSpecifiers).size).toBe(26);
+    expect(packageSurfacePolicy.packages).toHaveLength(13);
+    expect(workspacePackageSpecifiers).toHaveLength(27);
+    expect(new Set(workspacePackageSpecifiers).size).toBe(27);
     expect(consumerPackageSpecifiers).toHaveLength(19);
     expect(new Set(consumerPackageSpecifiers).size).toBe(19);
     expect(consumerPackageSpecifiers).not.toContain("effect-view-server");
@@ -26,7 +27,7 @@ describe("Package Surface Policy", () => {
       expectedPackageSurfaces
         .filter((surface) => surface.directory !== "effect-view-server")
         .flatMap((surface) => surface.packEntrypoints),
-    ).toHaveLength(27);
+    ).toHaveLength(28);
     expect(packageSurfacePolicy.runtimeSymbols.map((policy) => policy.workspaceSpecifier).sort()).toStrictEqual(
       [...workspacePackageSpecifiers].sort(),
     );
@@ -63,6 +64,9 @@ describe("Package Surface Policy", () => {
       (surface) => surface.directory === "effect-view-server",
     );
     const kafkaProjection = namedFacadeProjectionFor("effect-view-server/config/kafka");
+    const sourceAdapterTestingProjection = facadeProjectionFor(
+      "effect-view-server/source-adapter/testing",
+    );
 
     expect(configSurface).toStrictEqual({
       directory: "config",
@@ -118,6 +122,10 @@ describe("Package Surface Policy", () => {
       runtime: ["decodeKafkaCodec", "kafka", "kafkaErrorIsMapping"],
     });
     expect(kafkaProjection.reexport.types).toHaveLength(27);
+    expect(sourceAdapterTestingProjection.workspaceSpecifiers).toStrictEqual([
+      "@effect-view-server/source-adapter-conformance-host",
+      "@effect-view-server/source-adapter-testing",
+    ]);
     expect(() => namedFacadeProjectionFor("effect-view-server/client")).toThrowError(
       "Unknown named facade projection policy directory: effect-view-server/client",
     );

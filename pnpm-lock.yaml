@@ -145,6 +145,9 @@ importers:
       '@effect-view-server/source-adapter':
         specifier: workspace:*
         version: link:packages/source-adapter
+      '@effect-view-server/source-adapter-conformance-host':
+        specifier: workspace:*
+        version: link:packages/source-adapter-conformance-host
       '@effect-view-server/source-adapter-testing':
         specifier: workspace:*
         version: link:packages/source-adapter-testing
@@ -946,6 +949,9 @@ importers:
       react-dom:
         specifier: 19.2.6
         version: 19.2.6(react@19.2.6)
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@0.2.1
+        version: '@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0)'
     devDependencies:
       '@effect-view-server/client':
         specifier: workspace:*
@@ -971,6 +977,9 @@ importers:
       '@effect-view-server/source-adapter':
         specifier: workspace:*
         version: link:../source-adapter
+      '@effect-view-server/source-adapter-conformance-host':
+        specifier: workspace:*
+        version: link:../source-adapter-conformance-host
       '@effect-view-server/source-adapter-testing':
         specifier: workspace:*
         version: link:../source-adapter-testing
@@ -1306,11 +1315,20 @@ importers:
         specifier: 'catalog:'
         version: 4.1.9(@types/node@25.9.1)(@vitest/browser-playwright@4.1.9)(@vitest/browser-preview@4.1.9)(@vitest/coverage-istanbul@4.1.9)(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
 
-  packages/source-adapter-testing:
+  packages/source-adapter-conformance-host:
     dependencies:
+      '@effect-view-server/config':
+        specifier: workspace:*
+        version: link:../config
+      '@effect-view-server/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
       '@effect-view-server/source-adapter':
         specifier: workspace:*
         version: link:../source-adapter
+      '@effect-view-server/source-adapter-testing':
+        specifier: workspace:*
+        version: link:../source-adapter-testing
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.100(effect@4.0.0-beta.100)(vitest@4.1.9)
@@ -1327,6 +1345,34 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.9(@types/node@25.9.1)(@vitest/browser-playwright@4.1.9)(@vitest/browser-preview@4.1.9)(@vitest/coverage-istanbul@4.1.9)(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
+
+  packages/source-adapter-testing:
+    dependencies:
+      '@effect-view-server/source-adapter':
+        specifier: workspace:*
+        version: link:../source-adapter
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.100(effect@4.0.0-beta.100)(vitest@4.1.9)
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.100
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@0.2.1
+        version: '@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0)'
+    devDependencies:
+      '@vitest/coverage-istanbul':
+        specifier: 'catalog:'
+        version: 4.1.9(vitest@4.1.9)
+      '@vitest/runner':
+        specifier: 'catalog:'
+        version: 4.1.9
       vitest:
         specifier: 'catalog:'
         version: 4.1.9(@types/node@25.9.1)(@vitest/browser-playwright@4.1.9)(@vitest/browser-preview@4.1.9)(@vitest/coverage-istanbul@4.1.9)(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))

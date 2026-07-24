@@ -46,6 +46,7 @@ describe("Source Adapter browser contract", () => {
         (id) =>
           id.includes("/packages/source-adapter/src/server.ts") ||
           id.includes("/packages/source-adapter-testing/") ||
+          id.includes("/packages/source-adapter-conformance-host/") ||
           id.includes("/packages/server/") ||
           id.includes("/@effect/platform-node/") ||
           id.startsWith("node:"),

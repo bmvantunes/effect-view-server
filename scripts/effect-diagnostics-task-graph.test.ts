@@ -43,7 +43,7 @@ describe("strict Effect diagnostics task graph", () => {
       serverDependency: facadePackage.devDependencies["@effect-view-server/server"],
       uniqueBuildDirectories: [...new Set(buildDirectories)],
     }).toStrictEqual({
-      buildCommands: Array.from({ length: 13 }, () => "vp pack"),
+      buildCommands: Array.from({ length: 14 }, () => "vp pack"),
       buildDirectories: [
         "packages/effect-utils",
         "packages/source-adapter",
@@ -53,6 +53,7 @@ describe("strict Effect diagnostics task graph", () => {
         "packages/protocol",
         "packages/client",
         "packages/runtime-core",
+        "packages/source-adapter-conformance-host",
         "packages/server",
         "packages/in-memory",
         "packages/runtime",
@@ -71,6 +72,7 @@ describe("strict Effect diagnostics task graph", () => {
           "build:effect-declarations:protocol",
           "build:effect-declarations:client",
           "build:effect-declarations:runtime-core",
+          "build:effect-declarations:source-adapter-conformance-host",
           "build:effect-declarations:server",
           "build:effect-declarations:in-memory",
           "build:effect-declarations:runtime",
@@ -86,6 +88,7 @@ describe("strict Effect diagnostics task graph", () => {
         "build:effect-declarations:protocol",
         "build:effect-declarations:client",
         "build:effect-declarations:runtime-core",
+        "build:effect-declarations:source-adapter-conformance-host",
         "build:effect-declarations:server",
         "build:effect-declarations:in-memory",
         "build:effect-declarations:runtime",
@@ -179,6 +182,9 @@ describe("strict Effect diagnostics task graph", () => {
         "check:effect:source-adapter": ["build:effect-declarations:source-adapter"],
         "check:effect:source-adapter-testing": [
           "build:effect-declarations:source-adapter-testing",
+        ],
+        "check:effect:source-adapter-conformance-host": [
+          "build:effect-declarations:source-adapter-conformance-host",
         ],
         "check:effect:config": [],
         "check:effect:effect-utils": [],

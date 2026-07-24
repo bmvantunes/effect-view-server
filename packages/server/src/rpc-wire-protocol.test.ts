@@ -1,12 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
+import { defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
-import { Deferred, Effect, Fiber, Stream } from "effect";
+import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
+import { SourceFixture } from "@effect-view-server/source-adapter-testing";
+import { Deferred, Effect, Fiber, Layer, Option, Schedule, Stream } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { makeViewServerWebSocketServer } from "./index";
 import {
   createServerTestRuntime,
   makeServerTransportLifecycleProbe,
+  Order,
   order,
   quote,
   trade,
@@ -111,6 +115,180 @@ describe("Real View Server RPC wire protocol composition", () => {
       });
       yield* server.close;
       yield* inMemory.close;
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("isolates an exhausted Source Topic from an unrelated Topic over WebSocket", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Order);
+      const config = defineViewServerConfig({
+        topics: {
+          source_orders: {
+            schema: Order,
+            source: fixture.materializedSource(
+              {
+                label: "websocket-source-isolation",
+              },
+              Schedule.recurs(0),
+            ),
+          },
+          manual_orders: {
+            schema: Order,
+            key: "id",
+          },
+        },
+      });
+      const fixtureContext = yield* Layer.build(fixture.layer);
+      const runtime = yield* makeViewServerRuntimeCoreInternal(config, {}).pipe(
+        Effect.provideContext(fixtureContext),
+      );
+      yield* Effect.addFinalizer(() => runtime.close);
+      const server = yield* makeViewServerWebSocketServer(config, {
+        liveClient: runtime.serverLiveClient,
+        runtime: runtime.client,
+      });
+      yield* Effect.addFinalizer(() => server.close);
+      const client = yield* makeViewServerClient(config, { url: server.url });
+      yield* Effect.addFinalizer(() => client.close);
+      const manualSubscription = yield* client.subscribe("manual_orders", {
+        select: ["id", "price"],
+        orderBy: [{ field: "id", direction: "asc" }],
+      });
+      yield* Effect.addFinalizer(() => manualSubscription.close().pipe(Effect.orDie));
+      const sourceHealth = yield* client.subscribeSourceHealth("source_orders");
+      yield* Effect.addFinalizer(() => sourceHealth.close().pipe(Effect.orDie));
+      const initialSnapshotSeen = yield* Deferred.make<void>();
+      const manualEvents = yield* manualSubscription.events.pipe(
+        Stream.tap((event) =>
+          event.type === "snapshot"
+            ? Deferred.succeed(initialSnapshotSeen, undefined)
+            : Effect.void,
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const exhausted = yield* sourceHealth.events.pipe(
+        Stream.filter((health) => health.status._tag === "Exhausted"),
+        Stream.take(1),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(initialSnapshotSeen).pipe(Effect.timeout("1 second"));
+      yield* fixture.controls.awaitActive({ _tag: "Materialized" });
+
+      yield* fixture.controls.fail(
+        { _tag: "Materialized" },
+        SourceFixture.failure("source topic failed", "stream"),
+      );
+      const exhaustedHealth = yield* Fiber.join(exhausted);
+      yield* runtime.client.publish("manual_orders", {
+        id: "survives",
+        price: 42,
+      });
+      const events = yield* Fiber.join(manualEvents);
+
+      if (exhaustedHealth.status._tag !== "Exhausted") {
+        return yield* Effect.die("Expected exhausted Source Health.");
+      }
+      const { startedAtNanos, lastAttemptStartedAtNanos, lastTerminationAtNanos } =
+        exhaustedHealth.metrics.runtime;
+      const { exhaustedAtNanos } = exhaustedHealth.status;
+      const { sampledAtNanos } = exhaustedHealth;
+      expect([
+        typeof startedAtNanos,
+        typeof lastAttemptStartedAtNanos,
+        typeof lastTerminationAtNanos,
+        typeof exhaustedAtNanos,
+        typeof sampledAtNanos,
+      ]).toStrictEqual(["bigint", "bigint", "bigint", "bigint", "bigint"]);
+      expect(exhaustedHealth).toStrictEqual({
+        adapter: {
+          name: "controllable-fixture",
+          version: "1",
+        },
+        target: {
+          _tag: "Materialized",
+        },
+        status: {
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: {
+              _tag: "Failed",
+              failure: {
+                _tag: "AdapterFailure",
+                failure: {
+                  _tag: "SourceFixtureFailure",
+                  message: "source topic failed",
+                  phase: "stream",
+                },
+              },
+            },
+          },
+          exhaustedAtNanos,
+        },
+        metrics: {
+          runtime: {
+            startedAtNanos,
+            lastAttemptStartedAtNanos,
+            lastDeliveryAtNanos: null,
+            lastRejectionAtNanos: null,
+            lastAppliedMutationAtNanos: null,
+            lastTerminationAtNanos,
+            currentAttempt: 1n,
+            retryCount: 0n,
+            receivedDeliveryCount: 0n,
+            rejectedItemCount: 0n,
+            attemptedMutationCount: 0n,
+            appliedUpsertCount: 0n,
+            appliedDeleteCount: 0n,
+            failedMutationCount: 0n,
+            completedSettlementCount: 0n,
+            failedSettlementCount: 0n,
+            retainedRowCount: 0,
+            lanes: [
+              {
+                id: "fixture",
+                buffer: {
+                  _tag: "Unbuffered",
+                },
+              },
+            ],
+          },
+          adapter: {
+            observed: 0n,
+          },
+        },
+        sampledAtNanos,
+      });
+      expect(Array.from(events, (event) => event.type)).toStrictEqual(["snapshot", "delta"]);
+      expect(events[1]).toStrictEqual({
+        type: "delta",
+        topic: "manual_orders",
+        queryId: "query-0",
+        fromVersion: 0,
+        toVersion: 1,
+        operations: [
+          {
+            type: "insert",
+            key: "survives",
+            row: {
+              id: "survives",
+              price: 42,
+            },
+            index: 0,
+          },
+        ],
+        totalRows: 1,
+      });
+
+      yield* sourceHealth.close();
+      yield* manualSubscription.close();
+      yield* client.close;
+      yield* server.close;
+      yield* runtime.close;
     }).pipe(Effect.scoped),
   );
 

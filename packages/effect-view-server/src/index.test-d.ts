@@ -15,6 +15,14 @@ import { createInMemoryViewServer } from "effect-view-server/in-memory";
 import { Schema } from "effect";
 import type * as EffectOption from "effect/Option";
 import type { ViewServerLiveClient } from "effect-view-server/client";
+import {
+  SourceFixture,
+  registerSourceAdapterConformance,
+  registerSourceAdapterPackageConformance,
+  sourceAdapterConformanceDefinitionIsLinked,
+  type SourceAdapterConformanceOptions,
+  type SourceAdapterPackageConformanceOptions,
+} from "effect-view-server/source-adapter/testing";
 
 const Order = Schema.Struct({
   id: Schema.String,
@@ -98,6 +106,12 @@ describe("public effect-view-server subpath type contracts", () => {
     >();
     expectTypeOf(kafkaOrderCodec).not.toHaveProperty("schema");
     expectTypeOf<ViewServerLiveClient<typeof viewServer.topics>>().not.toBeAny();
+    expectTypeOf(SourceFixture).not.toBeAny();
+    expectTypeOf(registerSourceAdapterConformance).not.toBeAny();
+    expectTypeOf(registerSourceAdapterPackageConformance).not.toBeAny();
+    expectTypeOf(sourceAdapterConformanceDefinitionIsLinked).not.toBeAny();
+    expectTypeOf<SourceAdapterConformanceOptions>().not.toBeAny();
+    expectTypeOf<SourceAdapterPackageConformanceOptions>().not.toBeAny();
   });
 
   it("preserves query result inference through public subpaths", () => {

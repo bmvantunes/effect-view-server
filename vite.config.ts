@@ -32,6 +32,11 @@ const declarationProjects = [
     dependsOn: ["client", "column-live-view-engine", "config", "effect-utils", "source-adapter"],
   },
   {
+    name: "source-adapter-conformance-host",
+    directory: "packages/source-adapter-conformance-host",
+    dependsOn: ["config", "runtime-core", "source-adapter", "source-adapter-testing"],
+  },
+  {
     name: "server",
     directory: "packages/server",
     dependsOn: ["client", "config", "effect-utils", "protocol", "runtime-core", "source-adapter"],
@@ -98,6 +103,11 @@ const diagnosticsProjects = [
     name: "runtime-core",
     project: "packages/runtime-core",
     declarationTask: declarationTaskName("runtime-core"),
+  },
+  {
+    name: "source-adapter-conformance-host",
+    project: "packages/source-adapter-conformance-host",
+    declarationTask: declarationTaskName("source-adapter-conformance-host"),
   },
   {
     name: "in-memory",
@@ -222,7 +232,12 @@ export default defineConfig({
     ignorePatterns: [".pnpm-store/**", ".repos/**", "scripts/**"],
   },
   lint: {
-    ignorePatterns: [".pnpm-store/**", ".repos/**", "scripts/**"],
+    ignorePatterns: [
+      ".pnpm-store/**",
+      ".repos/**",
+      "scripts/**",
+      "packages/source-adapter-testing/test-fixtures/package-adapter/invalid-types/**",
+    ],
     options: { typeAware: true, typeCheck: true },
   },
   run: {

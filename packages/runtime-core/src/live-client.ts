@@ -162,7 +162,10 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
         acquireRuntimeCoreResourceHandoff((markAcquired) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
-              const lease = yield* restore(sources.acquireLeased(topic, query, markAcquired));
+              const lease = yield* restore(sources.acquireLeased(topic, query));
+              if (Option.isSome(lease)) {
+                yield* markAcquired(Effect.ignore(lease.value.release));
+              }
               const registeredQueryId = yield* Deferred.make<string>();
               const capturingObserver = captureQueryId(registeredQueryId, terminalObserver);
               const subscription = yield* restore(

@@ -31,16 +31,16 @@ const Row = Schema.Struct({
 
 type BenchmarkTopic = {
   readonly schema: typeof Row;
-  readonly source: SourceFixtureMaterializedDefinition;
+  readonly source: SourceFixtureMaterializedDefinition<typeof Row.Type>;
 };
 type ClosableRuntime = {
   readonly close: Effect.Effect<void>;
 };
 type BenchmarkState = {
   readonly clock: TestClock.TestClock;
-  readonly eventFixture: ControllableSourceFixture;
+  readonly eventFixture: ControllableSourceFixture<typeof Row.Type>;
   readonly eventRuntime: ClosableRuntime;
-  readonly manyFixture: ControllableSourceFixture;
+  readonly manyFixture: ControllableSourceFixture<typeof Row.Type>;
   readonly manyRuntime: ClosableRuntime;
   readonly lookup: Effect.Effect<ReadonlyMap<string, unknown>, ViewServerRuntimeError>;
 };
@@ -56,7 +56,7 @@ const requireState = (): BenchmarkState => {
 };
 
 const makeTopics = (
-  fixture: ControllableSourceFixture,
+  fixture: ControllableSourceFixture<typeof Row.Type>,
   count: number,
   label: string,
 ): Readonly<Record<string, BenchmarkTopic>> => {

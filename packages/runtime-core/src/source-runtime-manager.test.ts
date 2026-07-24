@@ -1,11 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-view-server/config";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
   SourceFixture,
   type SourceFixtureTarget,
 } from "@effect-view-server/source-adapter-testing";
 import type { SourceApplicationExit } from "@effect-view-server/source-adapter";
-import { Cause, Deferred, Effect, Exit, Fiber, Option, Schedule, Schema } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Option, Schedule, Schema, Stream } from "effect";
 import type { ViewServerRuntimeCoreInternalMutations } from "./source-mutation-pipeline";
 import { makeRuntimeCoreSourceManager } from "./source-runtime";
 
@@ -26,9 +28,83 @@ const mutationFailure = (): ViewServerRuntimeError => ({
   message: "Injected Source mutation failure.",
 });
 
-const retainLeaseForExplicitTestRelease = () => Effect.void;
-
 describe("Runtime Core Source manager lifecycle", () => {
+  it.effect("cleans a leased placeholder interrupted before its logical runtime exists", () =>
+    Effect.gen(function* () {
+      const Failure = Schema.TaggedStruct("PendingLeaseFailure", {
+        message: Schema.String,
+      });
+      const Metrics = Schema.Struct({
+        observed: Schema.BigInt,
+      });
+      const Location = Schema.Struct({
+        offset: Schema.BigInt,
+      });
+      const adapter = SourceAdapter.make({
+        identity: { name: "pending-lease" },
+        failure: Failure,
+        materialized: undefined,
+        leased: {
+          metrics: Metrics,
+          rejectionLocation: Location,
+          definitionOptions: SourceAdapter.definitionOptions<void>(),
+        },
+      });
+      const metricsStarted = yield* Deferred.make<void>();
+      const layer = SourceAdapterServer.make(adapter, {
+        leased: {
+          acquire: () => Effect.die(new Error("Acquisition must not start before metrics.")),
+          metrics: () =>
+            Deferred.succeed(metricsStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          retry: Schedule.recurs(0),
+        },
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: adapter.leasedSource(["region"], undefined),
+          },
+        },
+      });
+      const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
+        publish: () => Effect.void,
+        publishMany: () => Effect.void,
+        patch: () => Effect.void,
+        delete: () => Effect.void,
+        reset: () => Effect.void,
+        deleteStorageKey: () => Effect.void,
+        patchDecodedFields: () => Effect.void,
+        publishManyDecodedRows: () => Effect.void,
+        publishManyDecodedRowsWithStorageKeys: () => Effect.void,
+        publishManyWithStorageKeys: () => Effect.void,
+      };
+      const manager = yield* makeRuntimeCoreSourceManager(config, mutations, Effect.void).pipe(
+        Effect.provide(layer),
+      );
+      const acquisition = yield* manager
+        .acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(metricsStarted);
+      yield* Fiber.interrupt(acquisition);
+
+      const diagnostics = yield* manager.subscribeSourceHealth("rows", {
+        region: "eu",
+      });
+      expect(
+        Option.getOrThrow(yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead)),
+      ).toStrictEqual({
+        _tag: "Inactive",
+        route: { region: "eu" },
+      });
+      yield* diagnostics.close();
+      yield* manager.close;
+    }),
+  );
+
   it.effect("rolls back a manager handoff failure after a materialized Source starts", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Row);
@@ -86,16 +162,25 @@ describe("Runtime Core Source manager lifecycle", () => {
           },
         },
       });
+      const retainedStorageKeys = new Set<string>();
       const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
         publish: () => Effect.void,
         publishMany: () => Effect.void,
         patch: () => Effect.void,
         delete: () => Effect.void,
         reset: () => Effect.void,
-        deleteStorageKey: () => Effect.void,
+        deleteStorageKey: (_topic, storageKey) =>
+          Effect.sync(() => {
+            retainedStorageKeys.delete(storageKey);
+          }),
         patchDecodedFields: () => Effect.void,
         publishManyDecodedRows: () => Effect.void,
-        publishManyDecodedRowsWithStorageKeys: () => Effect.void,
+        publishManyDecodedRowsWithStorageKeys: (_topic, rows) =>
+          Effect.sync(() => {
+            for (const row of rows) {
+              retainedStorageKeys.add(row.storageKey);
+            }
+          }),
         publishManyWithStorageKeys: () => Effect.void,
       };
       const handoffStarted = yield* Deferred.make<void>();
@@ -115,32 +200,33 @@ describe("Runtime Core Source manager lifecycle", () => {
         },
       }).pipe(Effect.provide(fixture.layer));
       const interruptedAcquisition = yield* manager
-        .acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "eu" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        )
+        .acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        })
         .pipe(Effect.forkChild);
       yield* Deferred.await(handoffStarted);
+      const applied = yield* Deferred.make<boolean>();
+      yield* fixture.controls.upsert(
+        leasedTarget,
+        { id: "interrupted-row", region: "eu", value: "owned" },
+        (exit) => Deferred.succeed(applied, Exit.isSuccess(exit)).pipe(Effect.asVoid),
+      );
+      expect(yield* Deferred.await(applied)).toBe(true);
+      expect(retainedStorageKeys.size).toBe(1);
       yield* Fiber.interrupt(interruptedAcquisition);
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: 1n,
         finalizations: 1n,
       });
+      expect(retainedStorageKeys.size).toBe(0);
 
       blockLeaseHandoff = false;
       const reacquired = Option.getOrThrow(
-        yield* manager.acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "eu" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        ),
+        yield* manager.acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        }),
       );
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: 2n,
@@ -152,6 +238,106 @@ describe("Runtime Core Source manager lifecycle", () => {
         finalizations: 2n,
       });
       yield* manager.close;
+    }),
+  );
+
+  it.effect("releases a leased Source Health observer interrupted at its return handoff", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.leasedSource(["region"], {
+              label: "source-health-handoff-interruption",
+            }),
+          },
+        },
+      });
+      const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
+        publish: () => Effect.void,
+        publishMany: () => Effect.void,
+        patch: () => Effect.void,
+        delete: () => Effect.void,
+        reset: () => Effect.void,
+        deleteStorageKey: () => Effect.void,
+        patchDecodedFields: () => Effect.void,
+        publishManyDecodedRows: () => Effect.void,
+        publishManyDecodedRowsWithStorageKeys: () => Effect.void,
+        publishManyWithStorageKeys: () => Effect.void,
+      };
+      const handoffStarted = yield* Deferred.make<void>();
+      const observerClosed = yield* Deferred.make<void>();
+      const manager = yield* makeRuntimeCoreSourceManager(config, mutations, Effect.void, {
+        sourceHealthHandoff: {
+          beforeReturn: Deferred.succeed(handoffStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+        },
+        afterSourceHealthObservationClose: Deferred.succeed(observerClosed, undefined).pipe(
+          Effect.asVoid,
+        ),
+      }).pipe(Effect.provide(fixture.layer));
+      const subscriptionFiber = yield* manager
+        .subscribeSourceHealth("rows", { region: "eu" })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(handoffStarted);
+
+      yield* Fiber.interrupt(subscriptionFiber);
+      yield* Deferred.await(observerClosed);
+      expect(fixture.controls.counts(leasedTarget)).toStrictEqual({
+        acquisitions: 0n,
+        finalizations: 0n,
+      });
+      yield* manager.close;
+    }),
+  );
+
+  it.effect("halts active Source Health streams during manager shutdown", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.leasedSource(["region"], {
+              label: "source-health-shutdown",
+            }),
+          },
+        },
+      });
+      const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
+        publish: () => Effect.void,
+        publishMany: () => Effect.void,
+        patch: () => Effect.void,
+        delete: () => Effect.void,
+        reset: () => Effect.void,
+        deleteStorageKey: () => Effect.void,
+        patchDecodedFields: () => Effect.void,
+        publishManyDecodedRows: () => Effect.void,
+        publishManyDecodedRowsWithStorageKeys: () => Effect.void,
+        publishManyWithStorageKeys: () => Effect.void,
+      };
+      let observerCloseCount = 0;
+      const manager = yield* makeRuntimeCoreSourceManager(config, mutations, Effect.void, {
+        afterSourceHealthObservationClose: Effect.sync(() => {
+          observerCloseCount += 1;
+        }),
+      }).pipe(Effect.provide(fixture.layer));
+      const diagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
+      const streamHalted = yield* Deferred.make<void>();
+      const streamFiber = yield* diagnostics.events.pipe(
+        Stream.runDrain,
+        Effect.ensuring(Deferred.succeed(streamHalted, undefined)),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      yield* manager.close;
+      yield* Deferred.await(streamHalted);
+      yield* Fiber.join(streamFiber);
+      yield* diagnostics.close();
+
+      expect(observerCloseCount).toBe(1);
     }),
   );
 
@@ -274,14 +460,17 @@ describe("Runtime Core Source manager lifecycle", () => {
       });
       let failPublish = false;
       let failDeleteStorageKey = false;
+      let deleteStorageKeyAttempts = 0;
       const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
         publish: () => Effect.void,
         publishMany: () => Effect.void,
         patch: () => Effect.void,
         delete: () => Effect.void,
         reset: () => Effect.void,
-        deleteStorageKey: () =>
-          failDeleteStorageKey ? Effect.fail(mutationFailure()) : Effect.void,
+        deleteStorageKey: () => {
+          deleteStorageKeyAttempts += 1;
+          return failDeleteStorageKey ? Effect.fail(mutationFailure()) : Effect.void;
+        },
         patchDecodedFields: () => Effect.void,
         publishManyDecodedRows: () => Effect.void,
         publishManyDecodedRowsWithStorageKeys: () =>
@@ -295,34 +484,22 @@ describe("Runtime Core Source manager lifecycle", () => {
       const firstDiagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
       const secondDiagnostics = yield* manager.subscribeSourceHealth("rows", { region: "eu" });
       const firstLease = Option.getOrThrow(
-        yield* manager.acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "eu" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        ),
+        yield* manager.acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        }),
       );
       const secondLease = Option.getOrThrow(
-        yield* manager.acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "eu" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        ),
+        yield* manager.acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        }),
       );
       const independentlyCleanedLease = Option.getOrThrow(
-        yield* manager.acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "us" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        ),
+        yield* manager.acquireLeased("rows", {
+          routeBy: { region: "us" },
+          select: ["id"],
+        }),
       );
       yield* fixture.controls.awaitActive(leasedTarget);
 
@@ -391,28 +568,43 @@ describe("Runtime Core Source manager lifecycle", () => {
       yield* firstLease.release;
 
       const beforeFailedCleanup = fixture.controls.counts(leasedTarget);
+      const deleteAttemptsBeforeCleanup = deleteStorageKeyAttempts;
       failDeleteStorageKey = true;
       yield* secondLease.release;
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: beforeFailedCleanup.acquisitions,
         finalizations: beforeFailedCleanup.finalizations + 1n,
       });
+      expect(deleteStorageKeyAttempts).toBe(deleteAttemptsBeforeCleanup + 1);
+
+      const pendingCleanup = yield* manager
+        .acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        })
+        .pipe(Effect.exit);
+      expect(Exit.findErrorOption(pendingCleanup)).toStrictEqual(
+        Option.some({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "Source lease row cleanup is pending retry.",
+          topic: "rows",
+        }),
+      );
+      expect(deleteStorageKeyAttempts).toBe(deleteAttemptsBeforeCleanup + 2);
 
       failDeleteStorageKey = false;
       const reacquired = Option.getOrThrow(
-        yield* manager.acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "eu" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        ),
+        yield* manager.acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        }),
       );
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: beforeFailedCleanup.acquisitions + 1n,
         finalizations: beforeFailedCleanup.finalizations + 1n,
       });
+      expect(deleteStorageKeyAttempts).toBe(deleteAttemptsBeforeCleanup + 3);
       yield* reacquired.release;
       yield* fixture.controls.awaitCounts(leasedTarget, {
         acquisitions: beforeFailedCleanup.acquisitions + 1n,
@@ -427,16 +619,81 @@ describe("Runtime Core Source manager lifecycle", () => {
       yield* secondDiagnostics.close();
 
       const closedAcquire = yield* manager
-        .acquireLeased(
-          "rows",
-          {
-            routeBy: { region: "eu" },
-            select: ["id"],
-          },
-          retainLeaseForExplicitTestRelease,
-        )
+        .acquireLeased("rows", {
+          routeBy: { region: "eu" },
+          select: ["id"],
+        })
         .pipe(Effect.exit);
       expect(Exit.isFailure(closedAcquire)).toBe(true);
+      const closedHealth = yield* manager
+        .subscribeSourceHealth("rows", { region: "eu" })
+        .pipe(Effect.exit);
+      expect(Exit.findErrorOption(closedHealth)).toStrictEqual(
+        Option.some({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "Runtime Core Source Manager is closed.",
+          topic: "rows",
+        }),
+      );
+    }),
+  );
+
+  it.effect("serializes materialized Source Health handoff with manager shutdown", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.materializedSource({
+              label: "materialized-source-health-close-race",
+            }),
+          },
+        },
+      });
+      const mutations: ViewServerRuntimeCoreInternalMutations<typeof config.topics> = {
+        publish: () => Effect.void,
+        publishMany: () => Effect.void,
+        patch: () => Effect.void,
+        delete: () => Effect.void,
+        reset: () => Effect.void,
+        deleteStorageKey: () => Effect.void,
+        patchDecodedFields: () => Effect.void,
+        publishManyDecodedRows: () => Effect.void,
+        publishManyDecodedRowsWithStorageKeys: () => Effect.void,
+        publishManyWithStorageKeys: () => Effect.void,
+      };
+      const handoffStarted = yield* Deferred.make<void>();
+      const releaseHandoff = yield* Deferred.make<void>();
+      const manager = yield* makeRuntimeCoreSourceManager(config, mutations, Effect.void, {
+        sourceHealthHandoff: {
+          beforeReturn: Deferred.succeed(handoffStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseHandoff)),
+          ),
+        },
+      }).pipe(Effect.provide(fixture.layer));
+      const subscriptionFiber = yield* manager
+        .subscribeSourceHealth("rows")
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(handoffStarted);
+      const closeFiber = yield* manager.close.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+      expect(closeFiber.pollUnsafe()).toBeUndefined();
+
+      yield* Deferred.succeed(releaseHandoff, undefined);
+      const subscription = yield* Fiber.join(subscriptionFiber);
+      yield* Fiber.join(closeFiber);
+      yield* subscription.close();
+      const closedHealth = yield* manager.subscribeSourceHealth("rows").pipe(Effect.exit);
+      expect(Exit.findErrorOption(closedHealth)).toStrictEqual(
+        Option.some({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "Runtime Core Source Manager is closed.",
+          topic: "rows",
+        }),
+      );
     }),
   );
 

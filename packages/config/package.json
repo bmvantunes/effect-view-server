@@ -42,7 +42,7 @@
   },
   "scripts": {
     "build": "vp pack",
-    "test": "vp test run --coverage && tsc -p tsconfig.json --noEmit"
+    "test": "vp run -t @effect-view-server/source-adapter#build && vp test run --coverage && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.12.0",

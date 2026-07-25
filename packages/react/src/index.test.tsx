@@ -2188,6 +2188,10 @@ describe("createViewServerReact", () => {
       readonly statusCode: string;
     }> = [];
     const rowDataLog: Array<Record<number, object>> = [];
+    const rowCountLog: Array<{
+      readonly count: number;
+      readonly keepRenderedRows: boolean | undefined;
+    }> = [];
 
     function GridView(props: { readonly topic: "orders" | "trades" }) {
       const grid = useLiveGrid(props.topic);
@@ -2202,7 +2206,9 @@ describe("createViewServerReact", () => {
             type="button"
             onClick={() => {
               grid.datasource.init({
-                setRowCount: () => undefined,
+                setRowCount: (count, keepRenderedRows) => {
+                  rowCountLog.push({ count, keepRenderedRows });
+                },
                 setRowData: (rowData) => {
                   rowDataLog.push(rowData);
                 },
@@ -2237,6 +2243,13 @@ describe("createViewServerReact", () => {
         totalRows: 1,
         statusCode: "Ready",
       });
+    await expect
+      .poll(() => rowDataLog.at(-1))
+      .toStrictEqual({
+        0: { id: "a" },
+      });
+    const rowDataBeforeTopicChange = rowDataLog.length;
+    const rowCountBeforeTopicChange = rowCountLog.length;
     await view.rerender(
       <ViewServerClientProvider client={inMemory.liveClient}>
         <GridView topic="trades" />
@@ -2250,6 +2263,11 @@ describe("createViewServerReact", () => {
         totalRows: 0,
         statusCode: "none",
       });
+    // Commit-phase topic reset must also clear the external sink (Cubic P1).
+    await expect.poll(() => rowCountLog.at(-1)).toStrictEqual({ count: 0, keepRenderedRows: true });
+    await expect.poll(() => rowDataLog.at(-1)).toStrictEqual({});
+    expect(rowCountLog.length).toBeGreaterThan(rowCountBeforeTopicChange);
+    expect(rowDataLog.length).toBeGreaterThan(rowDataBeforeTopicChange);
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });

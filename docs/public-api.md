@@ -113,7 +113,7 @@ datasource.onScroll(50, 99);
 ```
 
 `onChange` is a full-state replace (`raw` | `grouped`) including the window.  
-`firstRow` / `lastRow` (and `onScroll` bounds) are **inclusive** absolute indices: non-negative safe integers with `lastRow >= firstRow` (limit is `lastRow - firstRow + 1`). Invalid windows surface as `InvalidQuery` chrome.  
+`firstRow` / `lastRow` (and `onScroll` bounds) are **inclusive** absolute indices: non-negative safe integers with `lastRow >= firstRow`, and the inclusive span `lastRow - firstRow + 1` must also be a safe integer (so e.g. `0` through `Number.MAX_SAFE_INTEGER` is rejected). Invalid windows surface as `InvalidQuery` chrome.  
 `onScroll(firstRow, lastRow)` re-windows the **active** query (or, before `init`, the buffered full-state from a prior successful `onChange`). Bare `onScroll` without a prior `onChange` is invalid. Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
 
 ### Schema value admission

@@ -35,6 +35,8 @@ import type {
   ViewServerHealthSummary,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
+  ViewServerRuntimeError,
+  ViewServerTransportError,
 } from "@effect-view-server/config";
 import { Effect, Result, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
@@ -43,6 +45,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -152,9 +155,12 @@ const idleLiveGridSubscription = <Row,>(): Effect.Effect<ViewServerLiveSubscript
   });
 
 /**
- * Live grid stores a runtime Live Query after onChange. ExactLiveQueryInputForTopic cannot be
- * re-proven without const inference at the original call site, so this is the smallest subscribe
- * seam. onChange inputs remain typed; runtime engine validation still applies.
+ * APPROVED SEAM (PR #395 / useLiveGrid): session-owned LiveQuery cannot re-prove
+ * ExactLiveQueryInputForTopic at subscribe time (const inference only exists at onChange).
+ * Projected/grouped result rows are intentionally erased to `object` at the sink.
+ * This is not `as any` / `as unknown` / `as never` — only the public Exact-at-call-site
+ * subscribe signature is adapted to the session-owned LiveQuery + object-row path.
+ * onChange remains exact-typed; runtime engine validation still applies.
  */
 const subscribeLiveGridQuery = <
   Topics extends TopicDefinitions,
@@ -164,12 +170,18 @@ const subscribeLiveGridQuery = <
   client: ViewServerLiveClient<Topics>,
   topic: Topic,
   query: LiveQuery<Row>,
-): Effect.Effect<ViewServerLiveSubscription<object>> => {
-  // Projected/grouped result rows are not full TopicRow values; the sink types rows as object.
-  const subscribe = client.subscribe as (
+): Effect.Effect<
+  ViewServerLiveSubscription<object>,
+  ViewServerRuntimeError | ViewServerTransportError
+> => {
+  type SessionOwnedSubscribe = (
     topicName: Topic,
     liveQuery: LiveQuery<Row>,
-  ) => Effect.Effect<ViewServerLiveSubscription<object>>;
+  ) => Effect.Effect<
+    ViewServerLiveSubscription<object>,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
+  const subscribe = client.subscribe as SessionOwnedSubscribe;
   return subscribe(topic, query);
 };
 
@@ -331,18 +343,21 @@ export const createViewServerReact = <
       sink.setRowData({});
     }, []);
 
-    // Topic identity is part of the subscription key. If it ever changes in place, bump the
-    // session so late events from the previous topic cannot pass the session guard (grids
-    // normally remount for a new topic; this is the safety net without a layout effect).
-    const [boundTopic, setBoundTopic] = useState(topic);
-    if (topic !== boundTopic) {
-      setBoundTopic(topic);
+    // Topic identity change (rare; grids usually remount): commit-phase reset so we can clear
+    // the external sink and so concurrent-render interruption cannot corrupt the active session.
+    const boundTopicRef = useRef(topic);
+    useLayoutEffect(() => {
+      if (boundTopicRef.current === topic) {
+        return;
+      }
+      boundTopicRef.current = topic;
       controllerRef.current.session += 1;
       controllerRef.current.pending = null;
       activeRef.current = null;
+      clearLiveGridSink();
       setActive(null);
       setWindowError(null);
-    }
+    }, [topic, clearLiveGridSink]);
 
     const applyInvalidWindow = useCallback(
       (message: string) => {

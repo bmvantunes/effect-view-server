@@ -1980,6 +1980,106 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(inMemory.close);
   });
 
+  it("does not recurse when sink clear re-enters onChange", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowCountLog: Array<number> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly statusCode: string;
+      readonly message: string;
+    }> = [];
+    let reenterOnChangeFromClear = false;
+    let nestedOnChangeCalls = 0;
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        statusCode: grid.statusCode ?? "none",
+        message: grid.message ?? "",
+      });
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              reenterOnChangeFromClear = false;
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                  if (count === 0 && reenterOnChangeFromClear) {
+                    nestedOnChangeCalls += 1;
+                    // Hostile sink: every clear setRowCount re-fires onChange. Nested clear is a
+                    // no-op (clearing guard), so this must not stack-overflow.
+                    grid.datasource.onChange({
+                      mode: "raw",
+                      firstRow: 0,
+                      lastRow: 4,
+                      select: ["id"],
+                      where: [],
+                      orderBy: [],
+                    });
+                  }
+                },
+                setRowData: () => undefined,
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            open
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reenterOnChangeFromClear = true;
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 1,
+                lastRow: 5,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            replace
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "open" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await expect.poll(() => rowCountLog.includes(1)).toBe(true);
+    const countsBeforeReplace = rowCountLog.length;
+    await view.getByRole("button", { name: "replace" }).click();
+    // Nested onChange runs once from setRowCount(0); nested clear is a no-op (no second 0).
+    expect(nestedOnChangeCalls).toBe(1);
+    expect(rowCountLog.slice(countsBeforeReplace).filter((count) => count === 0).length).toBe(1);
+    // Nested activation wins the session; chrome stays live for the nested query.
+    await expect
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "ready",
+        statusCode: "Ready",
+        message: "",
+      });
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
   it("aborts query activation when sink clear re-enters destroy", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowCountLog: Array<number> = [];

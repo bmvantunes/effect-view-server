@@ -146,6 +146,8 @@ type LiveGridControllerState<Row> = {
   sink: LiveGridDatasourceParams | null;
   pending: LiveGridOnChange<Row> | null;
   session: number;
+  /** True while clearLiveGridSink is invoking the external sink (re-entrancy guard). */
+  clearing: boolean;
 };
 
 const idleLiveGridSubscription = <Row,>(): Effect.Effect<ViewServerLiveSubscription<Row>> =>
@@ -325,22 +327,30 @@ export const createViewServerReact = <
       sink: null,
       pending: null,
       session: 0,
+      clearing: false,
     });
     const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
     const activeRef = useRef<LiveGridActiveQuery<Row> | null>(null);
     const [windowError, setWindowError] = useState<string | null>(null);
 
     const clearLiveGridSink = useCallback(() => {
-      const sink = controllerRef.current.sink;
-      if (sink === null) {
+      const controller = controllerRef.current;
+      const sink = controller.sink;
+      // Nested clear (setRowCount → onChange → activate → clear) must not recurse.
+      if (sink === null || controller.clearing) {
         return;
       }
-      sink.setRowCount(0, true);
-      // setRowCount may re-enter destroy and null the sink; never write setRowData on a dead sink.
-      if (controllerRef.current.sink !== sink) {
-        return;
+      controller.clearing = true;
+      try {
+        sink.setRowCount(0, true);
+        // setRowCount may re-enter destroy and null the sink; never write setRowData on a dead sink.
+        if (controller.sink !== sink) {
+          return;
+        }
+        sink.setRowData({});
+      } finally {
+        controller.clearing = false;
       }
-      sink.setRowData({});
     }, []);
 
     // Topic identity change (rare; grids usually remount): commit-phase reset so we can clear
@@ -351,10 +361,12 @@ export const createViewServerReact = <
         return;
       }
       boundTopicRef.current = topic;
+      // Clear first: a one-shot setRowCount re-entry into onChange is suppressed while clearing.
+      // Finalize session/ref reset afterward so a nested activation cannot stick as activeRef.
+      clearLiveGridSink();
       controllerRef.current.session += 1;
       controllerRef.current.pending = null;
       activeRef.current = null;
-      clearLiveGridSink();
       setActive(null);
       setWindowError(null);
     }, [topic, clearLiveGridSink]);
@@ -464,6 +476,8 @@ export const createViewServerReact = <
         onChange: (state) => {
           // Exact input is State & refinements where State extends LiveGridOnChange at the
           // call site; liveGridOnChangeFromExact is the typed runtime boundary (no cast).
+          // Re-entry from setRowCount during clear is allowed; nested clear is a no-op
+          // (controller.clearing) so activation cannot recurse into stack overflow.
           const change = liveGridOnChangeFromExact(state);
           if (controller.sink === null) {
             const mapped = liveGridOnChangeToQuery(change);

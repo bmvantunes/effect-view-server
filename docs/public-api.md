@@ -77,7 +77,7 @@ export const { ViewServerProvider, useLiveQuery, useLiveGrid, useViewServerHealt
 ### Live query vs live grid
 
 - Use **`useLiveQuery(topic, query)`** when React owns a fixed Live Query and renders `rows` (client-side grids, simple lists).
-- Use **`useLiveGrid(topic)`** for dumb virtualized / viewport tables. The hook returns a **datasource** plus Live Query chrome (`totalRows`, `version`, `status`, …) **without** a public `rows` list. The grid calls:
+- Use **`useLiveGrid(topic)`** for dumb virtualized / viewport tables on topics that do **not** use `routeBy` (leased topics are not supported in v1; the type system rejects them). The hook returns a **datasource** plus Live Query chrome (`totalRows`, `version`, `status`, …) **without** a public `rows` list. The grid calls:
 
 ```ts
 const { datasource, totalRows, status, version } = useLiveGrid("orders");
@@ -110,11 +110,15 @@ datasource.onChange({
 // server page-cache / seek optimizations (warm pages above/below the cursor).
 // firstRow/lastRow are inclusive non-negative safe integers with lastRow >= firstRow.
 datasource.onScroll(50, 99);
+
+// When the grid is disposed while the React owner stays mounted, tear down the sink
+// and active subscription (unmount of the hook owner also releases the subscription).
+datasource.destroy();
 ```
 
 `onChange` is a full-state replace (`raw` | `grouped`) including the window.  
 `firstRow` / `lastRow` (and `onScroll` bounds) are **inclusive** absolute indices: non-negative safe integers with `lastRow >= firstRow`, and the inclusive span `lastRow - firstRow + 1` must also be a safe integer (so e.g. `0` through `Number.MAX_SAFE_INTEGER` is rejected). Invalid windows surface as `InvalidQuery` chrome.  
-`onScroll(firstRow, lastRow)` re-windows the **active** query (or, before `init`, the buffered full-state from a prior successful `onChange`). Bare `onScroll` without a prior `onChange` is invalid. Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
+`onScroll(firstRow, lastRow)` re-windows the **active** query (or, before `init`, the buffered full-state from a prior successful `onChange`). Bare `onScroll` without a prior `onChange` is invalid. Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink. Call `datasource.destroy()` when the grid is disposed without unmounting the React owner so the sink and active subscription are released.
 
 ### Schema value admission
 

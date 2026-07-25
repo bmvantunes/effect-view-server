@@ -639,6 +639,60 @@ describe("React type contracts", () => {
       orderBy: [],
     });
 
+    // Full-state onChange contract: every raw field is required (no partial patches).
+    // @ts-expect-error omitted where is rejected for live grid onChange.
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      orderBy: [],
+    });
+    // @ts-expect-error omitted orderBy is rejected for live grid onChange.
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [],
+    });
+    // @ts-expect-error omitted firstRow is rejected for live grid onChange.
+    grid.datasource.onChange({
+      mode: "raw",
+      lastRow: 9,
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    });
+    // @ts-expect-error omitted lastRow is rejected for live grid onChange.
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    });
+    // Mixed raw/grouped members: mode must match the body shape.
+    // @ts-expect-error raw mode cannot include groupBy (mode must be grouped).
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      groupBy: ["status"],
+      where: [],
+      orderBy: [],
+    });
+    // @ts-expect-error grouped mode cannot use select (body must be grouped).
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [],
+      orderBy: [],
+    });
+
     // @ts-expect-error empty aggregates are rejected for live grid onChange.
     grid.datasource.onChange({
       mode: "grouped",

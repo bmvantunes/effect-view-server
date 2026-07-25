@@ -157,11 +157,12 @@ const subscribeLiveGridQuery = <
   client: ViewServerLiveClient<Topics>,
   topic: Topic,
   query: LiveQuery<Row>,
-): Effect.Effect<ViewServerLiveSubscription<Row>> => {
+): Effect.Effect<ViewServerLiveSubscription<object>> => {
+  // Projected/grouped result rows are not full TopicRow values; the sink types rows as object.
   const subscribe = client.subscribe as (
     topicName: Topic,
     liveQuery: LiveQuery<Row>,
-  ) => Effect.Effect<ViewServerLiveSubscription<Row>>;
+  ) => Effect.Effect<ViewServerLiveSubscription<object>>;
   return subscribe(topic, query);
 };
 
@@ -242,13 +243,20 @@ export const createViewServerReact = <
             Stream.unwrap(
               Effect.gen(function* () {
                 const subscription = yield* subscribe();
-                return subscription.events.pipe(
+                const scanned = subscription.events.pipe(
                   Stream.scan(initialClientState<Row>(), applyEvent),
-                  Stream.tap((state) =>
-                    Effect.sync(() => {
-                      onState?.(state);
-                    }),
-                  ),
+                );
+                const projected =
+                  onState === undefined
+                    ? scanned
+                    : scanned.pipe(
+                        Stream.tap((state) =>
+                          Effect.sync(() => {
+                            onState(state);
+                          }),
+                        ),
+                      );
+                return projected.pipe(
                   Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
                 );
               }),
@@ -303,6 +311,15 @@ export const createViewServerReact = <
     const activeRef = useRef<LiveGridActiveQuery<Row> | null>(null);
     const [windowError, setWindowError] = useState<string | null>(null);
 
+    const clearLiveGridSink = useCallback(() => {
+      const sink = controllerRef.current.sink;
+      if (sink === null) {
+        return;
+      }
+      sink.setRowCount(0, true);
+      sink.setRowData({});
+    }, []);
+
     const applyChange = useCallback(
       (state: LiveGridOnChange<Row>) => {
         const mapped = liveGridOnChangeToQuery(state);
@@ -311,6 +328,7 @@ export const createViewServerReact = <
           activeRef.current = null;
           setActive(null);
           controllerRef.current.session += 1;
+          clearLiveGridSink();
           return;
         }
         // Match useLiveQuery: prefer a frozen snapshot, fall back to the mapped query on failure.
@@ -330,20 +348,21 @@ export const createViewServerReact = <
           key,
           firstRow: mapped.firstRow,
         });
+        // Deduplicate identical full-state onChange (same query identity + firstRow).
         if (decision._tag === "Unchanged") {
           return;
         }
         setWindowError(null);
         controllerRef.current.session += 1;
         const nextActive = {
-          key: decision.key,
-          query: decision.query,
-          firstRow: decision.firstRow,
+          key,
+          query: ownedQuery,
+          firstRow: mapped.firstRow,
         };
         activeRef.current = nextActive;
         setActive(nextActive);
       },
-      [topicDefinition],
+      [clearLiveGridSink, topicDefinition],
     );
 
     const datasource = useMemo((): LiveGridDatasource<Row> => {
@@ -359,6 +378,11 @@ export const createViewServerReact = <
         },
         onChange: (state) => {
           if (controller.sink === null) {
+            const mapped = liveGridOnChangeToQuery(state);
+            if (mapped._tag === "InvalidWindow") {
+              applyChange(state);
+              return;
+            }
             controller.pending = state;
             return;
           }
@@ -383,11 +407,11 @@ export const createViewServerReact = <
 
     const activeQuery = active?.query;
     const subscriptionFirstRow = active?.firstRow ?? 0;
-    const result = useSubscription<Row>(
+    const result = useSubscription<object>(
       subscriptionKey,
       () => {
         if (activeQuery === undefined) {
-          return idleLiveGridSubscription<Row>();
+          return idleLiveGridSubscription<object>();
         }
         return subscribeLiveGridQuery(client, topic, activeQuery);
       },

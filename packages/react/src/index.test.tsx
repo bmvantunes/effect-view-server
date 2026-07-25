@@ -1822,6 +1822,12 @@ describe("createViewServerReact", () => {
         <GridView />
       </ViewServerClientProvider>,
     );
+    await view.getByRole("button", { name: "invalid-window" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-buffer-chrome", { exact: true }))
+      .toHaveTextContent(
+        /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
+      );
     await view.getByRole("button", { name: "buffer-change" }).click();
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     expect(rowCountLog).toStrictEqual([]);
@@ -1832,10 +1838,11 @@ describe("createViewServerReact", () => {
     expect(rowCountLog.length).toBe(afterInitCount);
     await view.getByRole("button", { name: "invalid-window" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-buffer-chrome"))
+      .element(view.getByLabelText("live-grid-buffer-chrome", { exact: true }))
       .toHaveTextContent(
-        "error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow.",
+        /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
       );
+    expect(rowCountLog.at(-1)).toBe(0);
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });

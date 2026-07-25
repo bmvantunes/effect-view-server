@@ -1661,14 +1661,21 @@ describe("createViewServerReact", () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowDataLog: Array<Record<number, object>> = [];
     const rowCountLog: Array<number> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly totalRows: number;
+      readonly statusCode: string;
+    }> = [];
 
     function GridView() {
       const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        totalRows: grid.totalRows,
+        statusCode: grid.statusCode ?? "none",
+      });
       return (
         <div>
-          <p aria-label="live-grid-chrome">
-            {`${grid.status}:${grid.totalRows}:${grid.statusCode ?? "none"}`}
-          </p>
           <button
             type="button"
             onClick={() => {
@@ -1710,28 +1717,29 @@ describe("createViewServerReact", () => {
       </ViewServerClientProvider>,
     );
     await expect
-      .element(view.getByLabelText("live-grid-chrome", { exact: true }))
-      .toHaveTextContent(/^loading:0:none$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "loading",
+        totalRows: 0,
+        statusCode: "none",
+      });
     await view.getByRole("button", { name: "mount-grid" }).click();
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
-    await expect.poll(() => rowCountLog.at(-1) ?? -1).toBe(2);
+    await expect.poll(() => rowCountLog.at(-1)).toBe(2);
     await expect
-      .poll(() => {
-        const latest = rowDataLog.at(-1);
-        if (latest === undefined) {
-          return "";
-        }
-        const first = latest[0];
-        const second = latest[1];
-        const firstId = first !== undefined && "id" in first ? String(first.id) : "";
-        const secondId = second !== undefined && "id" in second ? String(second.id) : "";
-        return `${firstId}|${secondId}`;
-      })
-      .toBe("a|b");
+      .poll(() => rowDataLog.at(-1))
+      .toStrictEqual({
+        0: { id: "a", price: 10 },
+        1: { id: "b", price: 20 },
+      });
     await expect
-      .element(view.getByLabelText("live-grid-chrome", { exact: true }))
-      .toHaveTextContent(/^ready:2:Ready$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "ready",
+        totalRows: 2,
+        statusCode: "Ready",
+      });
 
     await view.getByRole("button", { name: "destroy-grid" }).click();
     await expect
@@ -1747,14 +1755,21 @@ describe("createViewServerReact", () => {
   it("buffers useLiveGrid onChange until init and rejects inverted windows", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowCountLog: Array<number> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly statusCode: string;
+      readonly message: string;
+    }> = [];
 
     function GridView() {
       const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        statusCode: grid.statusCode ?? "none",
+        message: grid.message ?? "",
+      });
       return (
         <div>
-          <p aria-label="live-grid-buffer-chrome">
-            {`${grid.status}:${grid.statusCode ?? "none"}:${grid.message ?? ""}`}
-          </p>
           <button
             type="button"
             onClick={() => {
@@ -1824,15 +1839,21 @@ describe("createViewServerReact", () => {
     );
     await view.getByRole("button", { name: "invalid-window" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-buffer-chrome", { exact: true }))
-      .toHaveTextContent(
-        /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
-      );
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Live grid window lastRow must be greater than or equal to firstRow.",
+      });
     await view.getByRole("button", { name: "buffer-change" }).click();
     // Valid pre-init full-state buffer clears prior invalid-window chrome (idle until init).
     await expect
-      .element(view.getByLabelText("live-grid-buffer-chrome", { exact: true }))
-      .toHaveTextContent(/^loading:none:$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "loading",
+        statusCode: "none",
+        message: "",
+      });
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     expect(rowCountLog).toStrictEqual([]);
     await view.getByRole("button", { name: "init-grid" }).click();
@@ -1842,10 +1863,12 @@ describe("createViewServerReact", () => {
     expect(rowCountLog.length).toBe(afterInitCount);
     await view.getByRole("button", { name: "invalid-window" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-buffer-chrome", { exact: true }))
-      .toHaveTextContent(
-        /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
-      );
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Live grid window lastRow must be greater than or equal to firstRow.",
+      });
     expect(rowCountLog.at(-1)).toBe(0);
     await view.unmount();
     await Effect.runPromise(inMemory.close);
@@ -1859,7 +1882,6 @@ describe("createViewServerReact", () => {
       const grid = useLiveGrid("orders");
       return (
         <div>
-          <p aria-label="live-grid-grouped-chrome">{`${grid.status}:${grid.totalRows}`}</p>
           <button
             type="button"
             onClick={() => {
@@ -1897,29 +1919,31 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
     await expect
-      .poll(() => {
-        const latest = rowDataLog.at(-1);
-        const first = latest?.[0];
-        if (first === undefined || !("status" in first) || !("count" in first)) {
-          return "";
-        }
-        return `${String(first.status)}:${String(first.count)}`;
-      })
-      .toBe("open:2");
+      .poll(() => rowDataLog.at(-1))
+      .toStrictEqual({
+        0: { status: "open", count: 2n },
+      });
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });
 
   it("rejects non-snapshot-safe pre-init grid changes as invalid query chrome", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly statusCode: string;
+      readonly message: string;
+    }> = [];
 
     function GridView() {
       const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        statusCode: grid.statusCode ?? "none",
+        message: grid.message ?? "",
+      });
       return (
         <div>
-          <p aria-label="live-grid-ownership-chrome">
-            {`${grid.status}:${grid.statusCode ?? "none"}:${grid.message ?? ""}`}
-          </p>
           <button
             type="button"
             onClick={() => {
@@ -1946,8 +1970,12 @@ describe("createViewServerReact", () => {
     );
     await view.getByRole("button", { name: "buffer-non-finite" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-ownership-chrome", { exact: true }))
-      .toHaveTextContent(/^error:InvalidQuery:Query input numbers must be finite\.$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Query input numbers must be finite.",
+      });
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });
@@ -1955,15 +1983,20 @@ describe("createViewServerReact", () => {
   it("aborts query activation when sink clear re-enters destroy", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowCountLog: Array<number> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly statusCode: string;
+    }> = [];
     let allowReenterDestroy = false;
 
     function GridView() {
       const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        statusCode: grid.statusCode ?? "none",
+      });
       return (
         <div>
-          <p aria-label="live-grid-reenter-chrome">
-            {`${grid.status}:${grid.statusCode ?? "none"}`}
-          </p>
           <button
             type="button"
             onClick={() => {
@@ -2060,8 +2093,11 @@ describe("createViewServerReact", () => {
     await expect.poll(() => rowCountLog.includes(1)).toBe(true);
     await view.getByRole("button", { name: "beta" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-reenter-chrome", { exact: true }))
-      .toHaveTextContent(/^loading:none$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "loading",
+        statusCode: "none",
+      });
     const countsBeforeGamma = rowCountLog.length;
     await view.getByRole("button", { name: "gamma" }).click();
     await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
@@ -2070,8 +2106,11 @@ describe("createViewServerReact", () => {
       .toBe(true);
     await view.getByRole("button", { name: "delta" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-reenter-chrome", { exact: true }))
-      .toHaveTextContent(/^loading:none$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "loading",
+        statusCode: "none",
+      });
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });
@@ -2079,12 +2118,21 @@ describe("createViewServerReact", () => {
   it("re-windows the active query with onScroll without a full onChange", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowDataLog: Array<Record<number, object>> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly totalRows: number;
+      readonly statusCode: string;
+    }> = [];
 
     function GridView() {
       const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        totalRows: grid.totalRows,
+        statusCode: grid.statusCode ?? "none",
+      });
       return (
         <div>
-          <p aria-label="live-grid-scroll-chrome">{`${grid.status}:${grid.totalRows}`}</p>
           <button
             type="button"
             onClick={() => {
@@ -2135,22 +2183,24 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
     await expect
-      .poll(() => {
-        const latest = rowDataLog.at(-1);
-        return latest?.[0] !== undefined && "id" in latest[0] ? String(latest[0].id) : "";
-      })
-      .toBe("a");
+      .poll(() => rowDataLog.at(-1))
+      .toStrictEqual({
+        0: { id: "a", price: 10 },
+      });
     await view.getByRole("button", { name: "pan viewport" }).click();
     await expect
-      .poll(() => {
-        const latest = rowDataLog.at(-1);
-        return latest?.[1] !== undefined && "id" in latest[1] ? String(latest[1].id) : "";
-      })
-      .toBe("b");
+      .poll(() => rowDataLog.at(-1))
+      .toStrictEqual({
+        1: { id: "b", price: 20 },
+      });
     await view.getByRole("button", { name: "break viewport" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-scroll-chrome", { exact: true }))
-      .toHaveTextContent(/^error:0$/);
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        totalRows: 0,
+        statusCode: "InvalidQuery",
+      });
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });
@@ -2158,14 +2208,21 @@ describe("createViewServerReact", () => {
   it("buffers onScroll against pre-init pending onChange and rejects bare onScroll", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowDataLog: Array<Record<number, object>> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly statusCode: string;
+      readonly message: string;
+    }> = [];
 
     function GridView() {
       const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        statusCode: grid.statusCode ?? "none",
+        message: grid.message ?? "",
+      });
       return (
         <div>
-          <p aria-label="live-grid-pending-scroll-chrome">
-            {`${grid.status}:${grid.statusCode ?? "none"}:${grid.message ?? ""}`}
-          </p>
           <button
             type="button"
             onClick={() => {
@@ -2243,32 +2300,37 @@ describe("createViewServerReact", () => {
     );
     await view.getByRole("button", { name: "alpha" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-pending-scroll-chrome", { exact: true }))
-      .toHaveTextContent(
-        /^error:InvalidQuery:Live grid onScroll requires an active query from onChange\.$/,
-      );
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Live grid onScroll requires an active query from onChange.",
+      });
     await view.getByRole("button", { name: "beta" }).click();
     await view.getByRole("button", { name: "delta" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-pending-scroll-chrome", { exact: true }))
-      .toHaveTextContent(
-        /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
-      );
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Live grid window lastRow must be greater than or equal to firstRow.",
+      });
     await view.getByRole("button", { name: "epsilon" }).click();
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
     await expect
-      .poll(() => {
-        const latest = rowDataLog.at(-1);
-        return latest?.[1] !== undefined && "id" in latest[1] ? String(latest[1].id) : "";
-      })
-      .toBe("b");
+      .poll(() => rowDataLog.at(-1))
+      .toStrictEqual({
+        1: { id: "b", price: 20 },
+      });
     await view.getByRole("button", { name: "zeta" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-pending-scroll-chrome", { exact: true }))
-      .toHaveTextContent(
-        /^error:InvalidQuery:Live grid onScroll requires an active query from onChange\.$/,
-      );
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Live grid onScroll requires an active query from onChange.",
+      });
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });

@@ -529,45 +529,41 @@ describe("React type contracts", () => {
       orderBy: [],
     });
 
+    // @ts-expect-error invalid select field is rejected for live grid onChange.
     grid.datasource.onChange({
       mode: "raw",
       firstRow: 0,
       lastRow: 9,
-      // @ts-expect-error invalid select field is rejected for live grid onChange.
       select: ["prcie"],
       where: [],
       orderBy: [],
     });
 
+    // @ts-expect-error invalid where field is rejected for live grid onChange.
     grid.datasource.onChange({
       mode: "raw",
       firstRow: 0,
       lastRow: 9,
       select: ["id"],
-      where: [
-        // @ts-expect-error invalid where field is rejected for live grid onChange.
-        { field: "missingField", type: "equals", filter: "x" },
-      ],
+      where: [{ field: "missingField", type: "equals", filter: "x" }],
       orderBy: [],
     });
 
+    // @ts-expect-error invalid orderBy field is rejected for live grid onChange.
     grid.datasource.onChange({
       mode: "raw",
       firstRow: 0,
       lastRow: 9,
       select: ["id"],
       where: [],
-      orderBy: [
-        // @ts-expect-error invalid orderBy field is rejected for live grid onChange.
-        { field: "missingField", direction: "asc" },
-      ],
+      orderBy: [{ field: "missingField", direction: "asc" }],
     });
 
+    // @ts-expect-error invalid groupBy field is rejected for live grid onChange.
     grid.datasource.onChange({
       mode: "grouped",
       firstRow: 0,
       lastRow: 9,
-      // @ts-expect-error invalid groupBy field is rejected for live grid onChange.
       groupBy: ["missingField"],
       aggregates: {
         count: { aggFunc: "count" },
@@ -576,14 +572,48 @@ describe("React type contracts", () => {
       orderBy: [],
     });
 
+    // @ts-expect-error invalid aggregate field is rejected for live grid onChange.
     grid.datasource.onChange({
       mode: "grouped",
       firstRow: 0,
       lastRow: 9,
       groupBy: ["status"],
       aggregates: {
-        // @ts-expect-error invalid aggregate field is rejected for live grid onChange.
         bad: { aggFunc: "sum", field: "missingField" },
+      },
+      where: [],
+      orderBy: [],
+    });
+
+    // @ts-expect-error empty select is rejected for live grid onChange.
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: [],
+      where: [],
+      orderBy: [],
+    });
+
+    // @ts-expect-error empty aggregates are rejected for live grid onChange.
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      groupBy: ["status"],
+      aggregates: {},
+      where: [],
+      orderBy: [],
+    });
+
+    // @ts-expect-error aggregate aliases cannot collide with groupBy fields.
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      groupBy: ["status"],
+      aggregates: {
+        status: { aggFunc: "count" },
       },
       where: [],
       orderBy: [],
@@ -591,6 +621,30 @@ describe("React type contracts", () => {
 
     // @ts-expect-error unknown topics are rejected by useLiveGrid.
     useLiveGrid("missing");
+
+    // @ts-expect-error leased topics are rejected by useLiveGrid until routeBy is supported.
+    leasedReact.useLiveGrid("orders");
+
+    // Module-level declare keeps Topic as the full union (initializer would narrow).
+    const unionGrid = heterogeneousReact.useLiveGrid(heterogeneousTopic);
+    // @ts-expect-error union topics require where fields common to every topic member.
+    unionGrid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [{ field: "price", type: "equals", filter: 1 }],
+      orderBy: [],
+    });
+    // Common field is accepted across the union.
+    unionGrid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [{ field: "id", type: "equals", filter: "x" }],
+      orderBy: [],
+    });
   });
 
   it("preserves consumer testing types through @effect-view-server/react/testing package imports", () => {

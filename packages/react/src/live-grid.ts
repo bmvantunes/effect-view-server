@@ -1,11 +1,14 @@
 import type {
   Aggregates,
+  ExactLiveQueryInputForTopic,
   GroupedOrderBy,
   GroupedQuery,
   LiveQuery,
   LiveQueryResult,
   OrderBy,
   RawQuery,
+  TopicDefinitions,
+  TopicRow,
   Where,
 } from "@effect-view-server/config";
 import type { ClientState } from "@effect-view-server/client";
@@ -24,7 +27,7 @@ export type LiveGridRawOnChange<Row> = {
   readonly mode: "raw";
   readonly firstRow: number;
   readonly lastRow: number;
-  /** Non-empty select; empty projections are rejected. */
+  /** Non-empty select; empty projections are rejected by exact validation. */
   readonly select: readonly [
     RawQuery<Row>["select"][number],
     ...Array<RawQuery<Row>["select"][number]>,
@@ -45,18 +48,95 @@ export type LiveGridGroupedOnChange<Row> = {
 
 export type LiveGridOnChange<Row> = LiveGridRawOnChange<Row> | LiveGridGroupedOnChange<Row>;
 
+/**
+ * Full onChange payload shape used as the const-generic inference source.
+ * Window (`firstRow`/`lastRow`) and `mode` are grid chrome; the query body is
+ * exact-validated the same way as `useLiveQuery` (after stripping those keys).
+ */
+export type LiveGridOnChangeStateCandidate<Row> = LiveGridOnChange<Row>;
+
+/** Query body only — never pass mode/window through ExactLiveQuery (extra keys → never). */
+export type LiveGridQueryBodyFromOnChangeState<State> = Omit<
+  State,
+  "mode" | "firstRow" | "lastRow"
+>;
+
+/**
+ * Exact onChange input. Structured like ExactLiveQueryInputForTopic (`State & NoInfer<…>`):
+ * `State` is the inference source; exact query validation runs on the query body only
+ * (mode/window stripped so RejectExtraKeys does not collapse valid calls to never).
+ * Mode must match the body (`raw` without groupBy, `grouped` with groupBy).
+ */
+export type ExactLiveGridOnChangeInputForTopic<
+  Topics extends TopicDefinitions,
+  Topic extends keyof Topics,
+  State,
+> = State &
+  NoInfer<
+    {
+      readonly mode: LiveGridQueryBodyFromOnChangeState<State> extends {
+        readonly groupBy: unknown;
+      }
+        ? "grouped"
+        : "raw";
+    } & ExactLiveQueryInputForTopic<Topics, Topic, LiveGridQueryBodyFromOnChangeState<State>>
+  >;
+
+/** @deprecated Use LiveGridOnChangeStateCandidate; kept for re-exports/docs. */
+export type LiveGridQueryCandidate<Row> = LiveGridQueryBodyFromOnChangeState<
+  LiveGridOnChangeStateCandidate<Row>
+>;
+
+/**
+ * Runtime boundary from exact onChange input to the structural LiveGridOnChange shape.
+ * ExactLiveGridOnChangeInputForTopic is State & refinements with State extends LiveGridOnChange.
+ */
+export const liveGridOnChangeFromExact = <
+  Topics extends TopicDefinitions,
+  Topic extends keyof Topics,
+  State extends LiveGridOnChange<TopicRow<Topics, Topic>>,
+>(
+  state: ExactLiveGridOnChangeInputForTopic<Topics, Topic, State>,
+): LiveGridOnChange<TopicRow<Topics, Topic>> => state;
+
+export type LiveGridDatasourceForTopic<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = {
+  readonly init: (params: LiveGridDatasourceParams) => void;
+  readonly onChange: <
+    const State extends LiveGridOnChangeStateCandidate<TopicRow<Topics, NoInfer<Topic>>>,
+  >(
+    state: ExactLiveGridOnChangeInputForTopic<Topics, NoInfer<Topic>, State>,
+  ) => void;
+  readonly destroy: () => void;
+};
+
+/** @deprecated Prefer LiveGridDatasourceForTopic for exact topic-bound validation. */
 export type LiveGridDatasource<Row> = {
   readonly init: (params: LiveGridDatasourceParams) => void;
   readonly onChange: (state: LiveGridOnChange<Row>) => void;
   readonly destroy: () => void;
 };
 
+export type UseLiveGridResultForTopic<
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+> = {
+  readonly datasource: LiveGridDatasourceForTopic<Topics, Topic>;
+  readonly totalRows: number;
+  readonly version: number;
+  readonly status: LiveQueryResult<object>["status"];
+  readonly statusCode?: LiveQueryResult<object>["statusCode"];
+  readonly message?: string | undefined;
+};
+
 export type UseLiveGridResult<Row> = {
   readonly datasource: LiveGridDatasource<Row>;
   readonly totalRows: number;
   readonly version: number;
-  readonly status: LiveQueryResult<Row>["status"];
-  readonly statusCode?: LiveQueryResult<Row>["statusCode"];
+  readonly status: LiveQueryResult<object>["status"];
+  readonly statusCode?: LiveQueryResult<object>["statusCode"];
   readonly message?: string | undefined;
 };
 

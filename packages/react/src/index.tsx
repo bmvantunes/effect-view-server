@@ -53,25 +53,30 @@ import {
   liveGridChromeFromResult,
   liveGridIdleChrome,
   liveGridInvalidWindowChrome,
+  liveGridOnChangeFromExact,
   liveGridOnChangeToQuery,
   liveGridQueryIdentityKey,
   decideLiveGridActivation,
   projectLiveGridSinkIfPresent,
   liveGridOwnedQueryOrFallback,
   resolveLiveGridOwnedQuery,
-  type LiveGridDatasource,
+  type LiveGridDatasourceForTopic,
   type LiveGridDatasourceParams,
   type LiveGridOnChange,
-  type UseLiveGridResult,
+  type UseLiveGridResultForTopic,
 } from "./live-grid";
 
 export type {
+  ExactLiveGridOnChangeInputForTopic,
   LiveGridDatasource,
+  LiveGridDatasourceForTopic,
   LiveGridDatasourceParams,
   LiveGridGroupedOnChange,
   LiveGridOnChange,
+  LiveGridQueryCandidate,
   LiveGridRawOnChange,
   UseLiveGridResult,
+  UseLiveGridResultForTopic,
 } from "./live-grid";
 
 export type ViewServerReactBindings<
@@ -124,7 +129,7 @@ export type UseLiveGridHook<Topics extends TopicDefinitions> = <
   Topic extends LiveGridTopicName<Topics>,
 >(
   topic: Topic,
-) => UseLiveGridResult<TopicRow<Topics, Topic>>;
+) => UseLiveGridResultForTopic<Topics, Topic>;
 
 type LiveGridActiveQuery<Row> = {
   readonly key: string;
@@ -298,7 +303,7 @@ export const createViewServerReact = <
 
   function useLiveGrid<Topic extends LiveGridTopicName<Topics>>(
     topic: Topic,
-  ): UseLiveGridResult<TopicRow<Topics, Topic>> {
+  ): UseLiveGridResultForTopic<Topics, Topic> {
     type Row = TopicRow<Topics, Topic>;
     const client = useClient();
     const topicDefinition = config.topics[topic];
@@ -365,7 +370,7 @@ export const createViewServerReact = <
       [clearLiveGridSink, topicDefinition],
     );
 
-    const datasource = useMemo((): LiveGridDatasource<Row> => {
+    const datasource = useMemo((): LiveGridDatasourceForTopic<Topics, Topic> => {
       const controller = controllerRef.current;
       return {
         init: (params) => {
@@ -377,16 +382,19 @@ export const createViewServerReact = <
           }
         },
         onChange: (state) => {
+          // Exact input is State & refinements where State extends LiveGridOnChange at the
+          // call site; liveGridOnChangeFromExact is the typed runtime boundary (no cast).
+          const change = liveGridOnChangeFromExact(state);
           if (controller.sink === null) {
-            const mapped = liveGridOnChangeToQuery(state);
+            const mapped = liveGridOnChangeToQuery(change);
             if (mapped._tag === "InvalidWindow") {
-              applyChange(state);
+              applyChange(change);
               return;
             }
-            controller.pending = state;
+            controller.pending = change;
             return;
           }
-          applyChange(state);
+          applyChange(change);
         },
         destroy: () => {
           controller.sink = null;
@@ -428,13 +436,13 @@ export const createViewServerReact = <
     if (windowError !== null) {
       return {
         datasource,
-        ...liveGridInvalidWindowChrome<Row>(windowError),
+        ...liveGridInvalidWindowChrome(windowError),
       };
     }
     if (active === null) {
       return {
         datasource,
-        ...liveGridIdleChrome<Row>(),
+        ...liveGridIdleChrome(),
       };
     }
     return {

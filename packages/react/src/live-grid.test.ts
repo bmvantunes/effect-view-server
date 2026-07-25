@@ -6,6 +6,7 @@ import {
   liveGridInvalidWindowChrome,
   liveGridOnChangeToQuery,
   liveGridQueryIdentityKey,
+  liveGridWindowSchemaErrorMessage,
   projectLiveGridSink,
   projectLiveGridSinkIfPresent,
   validateLiveGridWindow,
@@ -34,9 +35,15 @@ describe("live grid helpers", () => {
   });
 
   it("rejects invalid windows", () => {
-    expect(validateLiveGridWindow(10, 9)._tag).toBe("Invalid");
+    expect(validateLiveGridWindow(10, 9)).toStrictEqual({
+      _tag: "Invalid",
+      message: "Live grid window lastRow must be greater than or equal to firstRow.",
+    });
     expect(validateLiveGridWindow(-1, 2)._tag).toBe("Invalid");
     expect(validateLiveGridWindow(1.5, 2)._tag).toBe("Invalid");
+    expect(validateLiveGridWindow(Number.NaN, 2)._tag).toBe("Invalid");
+    expect(liveGridWindowSchemaErrorMessage("SchemaError(bad window)")).toBe("bad window");
+    expect(liveGridWindowSchemaErrorMessage("not a schema error")).toBe("not a schema error");
   });
 
   it("maps raw onChange to live query offset/limit", () => {

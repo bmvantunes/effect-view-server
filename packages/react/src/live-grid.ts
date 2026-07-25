@@ -9,6 +9,7 @@ import type {
   Where,
 } from "@effect-view-server/config";
 import type { ClientState } from "@effect-view-server/client";
+import { Result, Schema } from "effect";
 
 export type LiveGridDatasourceParams<Row> = {
   readonly setRowCount: (count: number, keepRenderedRows?: boolean) => void;
@@ -60,33 +61,50 @@ export type LiveGridWindowValidation =
     }
   | { readonly _tag: "Invalid"; readonly message: string };
 
+/** Non-negative safe integer row index (Schema.Int uses Number.isSafeInteger). */
+const LiveGridWindowIndex = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+/**
+ * Inclusive absolute window. lastRow must be >= firstRow so limit is always >= 1.
+ */
+export const LiveGridWindowSchema = Schema.Struct({
+  firstRow: LiveGridWindowIndex,
+  lastRow: LiveGridWindowIndex,
+}).check(
+  Schema.makeFilter((window) =>
+    window.lastRow >= window.firstRow
+      ? undefined
+      : "Live grid window lastRow must be greater than or equal to firstRow.",
+  ),
+);
+
+const decodeLiveGridWindow = Schema.decodeUnknownResult(LiveGridWindowSchema);
+
+export const liveGridWindowSchemaErrorMessage = (error: unknown): string => {
+  const text = String(error);
+  const schemaErrorPrefix = "SchemaError(";
+  if (text.startsWith(schemaErrorPrefix) && text.endsWith(")")) {
+    return text.slice(schemaErrorPrefix.length, -1);
+  }
+  return text;
+};
+
 export const validateLiveGridWindow = (
   firstRow: number,
   lastRow: number,
 ): LiveGridWindowValidation => {
-  if (!Number.isSafeInteger(firstRow) || !Number.isSafeInteger(lastRow)) {
+  const decoded = decodeLiveGridWindow({ firstRow, lastRow });
+  if (Result.isFailure(decoded)) {
     return {
       _tag: "Invalid",
-      message: "Live grid window firstRow and lastRow must be safe integers.",
-    };
-  }
-  if (firstRow < 0 || lastRow < 0) {
-    return {
-      _tag: "Invalid",
-      message: "Live grid window firstRow and lastRow must be non-negative.",
-    };
-  }
-  if (lastRow < firstRow) {
-    return {
-      _tag: "Invalid",
-      message: "Live grid window lastRow must be greater than or equal to firstRow.",
+      message: liveGridWindowSchemaErrorMessage(decoded.failure),
     };
   }
   return {
     _tag: "Valid",
-    firstRow,
-    lastRow,
-    limit: lastRow - firstRow + 1,
+    firstRow: decoded.success.firstRow,
+    lastRow: decoded.success.lastRow,
+    limit: decoded.success.lastRow - decoded.success.firstRow + 1,
   };
 };
 

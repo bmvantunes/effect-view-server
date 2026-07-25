@@ -140,6 +140,27 @@ describe("public effect-view-server subpath type contracts", () => {
         readonly score: number;
       }>
     >();
+
+    const grid = react.useLiveGrid("orders");
+    expectTypeOf(grid.totalRows).toEqualTypeOf<number>();
+    expectTypeOf(grid).not.toHaveProperty("rows");
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id", "price"],
+      where: [],
+      orderBy: [],
+    });
+    // @ts-expect-error public facade useLiveGrid rejects invalid select fields.
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["prcie"],
+      where: [],
+      orderBy: [],
+    });
   });
 
   it("rejects invalid query and config contracts through public subpaths", () => {

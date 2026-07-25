@@ -496,6 +496,27 @@ describe("React type contracts", () => {
     consumerReact.useLiveQuery("orders", {
       select: [null],
     });
+
+    const packageGrid = consumerReact.useLiveGrid("orders");
+    expectTypeOf(packageGrid.totalRows).toEqualTypeOf<number>();
+    expectTypeOf(packageGrid).not.toHaveProperty("rows");
+    packageGrid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id", "price"],
+      where: [],
+      orderBy: [],
+    });
+    // @ts-expect-error package-imported useLiveGrid still rejects invalid select fields.
+    packageGrid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["prcie"],
+      where: [],
+      orderBy: [],
+    });
   });
 
   it("types useLiveGrid chrome without a public rows list", () => {
@@ -546,6 +567,16 @@ describe("React type contracts", () => {
       lastRow: 9,
       select: ["id"],
       where: [{ field: "missingField", type: "equals", filter: "x" }],
+      orderBy: [],
+    });
+
+    // @ts-expect-error text operators are rejected on numeric live grid where fields.
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [{ field: "price", type: "startsWith", filter: "1" }],
       orderBy: [],
     });
 

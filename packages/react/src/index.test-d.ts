@@ -539,6 +539,56 @@ describe("React type contracts", () => {
       orderBy: [],
     });
 
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [
+        // @ts-expect-error invalid where field is rejected for live grid onChange.
+        { field: "missingField", type: "equals", filter: "x" },
+      ],
+      orderBy: [],
+    });
+
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id"],
+      where: [],
+      orderBy: [
+        // @ts-expect-error invalid orderBy field is rejected for live grid onChange.
+        { field: "missingField", direction: "asc" },
+      ],
+    });
+
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      // @ts-expect-error invalid groupBy field is rejected for live grid onChange.
+      groupBy: ["missingField"],
+      aggregates: {
+        count: { aggFunc: "count" },
+      },
+      where: [],
+      orderBy: [],
+    });
+
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      groupBy: ["status"],
+      aggregates: {
+        // @ts-expect-error invalid aggregate field is rejected for live grid onChange.
+        bad: { aggFunc: "sum", field: "missingField" },
+      },
+      where: [],
+      orderBy: [],
+    });
+
     // @ts-expect-error unknown topics are rejected by useLiveGrid.
     useLiveGrid("missing");
   });

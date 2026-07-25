@@ -55,6 +55,7 @@ import {
   liveGridOnChangeToQuery,
   liveGridQueryIdentityKey,
   projectLiveGridSinkIfPresent,
+  resolveLiveGridOwnedQuery,
   type LiveGridDatasource,
   type LiveGridDatasourceParams,
   type LiveGridOnChange,
@@ -124,7 +125,6 @@ type LiveGridActiveQuery<Row> = {
 type LiveGridControllerState<Row> = {
   sink: LiveGridDatasourceParams<Row> | null;
   pending: LiveGridOnChange<Row> | null;
-  firstRow: number;
   session: number;
 };
 
@@ -287,7 +287,6 @@ export const createViewServerReact = <
     const controllerRef = useRef<LiveGridControllerState<Row>>({
       sink: null,
       pending: null,
-      firstRow: 0,
       session: 0,
     });
     const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
@@ -302,7 +301,9 @@ export const createViewServerReact = <
           controllerRef.current.session += 1;
           return;
         }
-        const ownedQuery = snapshotViewServerQuery(mapped.query);
+        const ownedQuery = resolveLiveGridOwnedQuery(mapped.query, (query) =>
+          snapshotViewServerQuery(query),
+        );
         const key = liveGridQueryIdentityKey(
           ownedQuery,
           topicDefinition?.schema,
@@ -311,7 +312,6 @@ export const createViewServerReact = <
         );
         setWindowError(null);
         controllerRef.current.session += 1;
-        controllerRef.current.firstRow = mapped.firstRow;
         setActive({
           key,
           query: ownedQuery,
@@ -342,7 +342,6 @@ export const createViewServerReact = <
         destroy: () => {
           controller.sink = null;
           controller.pending = null;
-          controller.firstRow = 0;
           controller.session += 1;
           setWindowError(null);
           setActive(null);

@@ -224,3 +224,12 @@ export const liveGridQueryIdentityKey = <Row, Schema>(
   stableKey: (query: LiveQuery<Row>) => string,
   stableKeyForSchema: (query: LiveQuery<Row>, schema: Schema) => string,
 ): string => (schema === undefined ? stableKey(query) : stableKeyForSchema(query, schema));
+
+/** Snapshot query ownership for identity; fall back to the input when snapshotting throws. */
+export const resolveLiveGridOwnedQuery = <Query>(
+  query: Query,
+  snapshot: (query: Query) => Query,
+): Query => {
+  const captured = Result.try(() => snapshot(query));
+  return Result.isSuccess(captured) ? captured.success : query;
+};

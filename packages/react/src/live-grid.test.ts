@@ -9,6 +9,7 @@ import {
   liveGridWindowSchemaErrorMessage,
   projectLiveGridSink,
   projectLiveGridSinkIfPresent,
+  resolveLiveGridOwnedQuery,
   validateLiveGridWindow,
 } from "./live-grid";
 
@@ -185,6 +186,22 @@ describe("live grid helpers", () => {
     expect(dataMaps).toHaveLength(1);
     expect(isLiveGridSessionCurrent(1, 1)).toBe(true);
     expect(isLiveGridSessionCurrent(2, 1)).toBe(false);
+  });
+
+  it("falls back to the input query when snapshot ownership throws", () => {
+    const query = {
+      select: ["id"],
+      where: [],
+      orderBy: [],
+      offset: 0,
+      limit: 1,
+    } as const;
+    expect(resolveLiveGridOwnedQuery(query, (value) => value)).toBe(query);
+    expect(
+      resolveLiveGridOwnedQuery(query, () => {
+        throw new TypeError("Query input could not be snapshotted.");
+      }),
+    ).toBe(query);
   });
 
   it("builds query identity keys with and without a row schema", () => {

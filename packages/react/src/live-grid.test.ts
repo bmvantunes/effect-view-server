@@ -7,6 +7,7 @@ import {
   liveGridOnChangeToQuery,
   liveGridQueryIdentityKey,
   liveGridWindowSchemaErrorMessage,
+  ownLiveGridOnChangeForPending,
   projectLiveGridSink,
   projectLiveGridSinkIfPresent,
   decideLiveGridActivation,
@@ -187,11 +188,35 @@ describe("live grid helpers", () => {
         status: "ready",
         version: 2,
       },
-      { activeSession: 2, subscriptionSession: 1 },
+      {
+        getActiveSession: () => 2,
+        subscriptionSession: 1,
+      },
     );
     expect(dataMaps).toHaveLength(1);
     expect(isLiveGridSessionCurrent(1, 1)).toBe(true);
     expect(isLiveGridSessionCurrent(2, 1)).toBe(false);
+
+    // setRowCount re-entrancy that bumps the session must not push setRowData.
+    let session = 1;
+    const reentrantData: Array<object> = [];
+    projectLiveGridSink(
+      {
+        setRowCount: () => {
+          session = 2;
+        },
+        setRowData: (rowData) => {
+          reentrantData.push(rowData);
+        },
+      },
+      0,
+      {
+        totalRows: 1,
+        rows: [{ id: "stale" }],
+      },
+      () => session === 1,
+    );
+    expect(reentrantData).toStrictEqual([]);
   });
 
   it("surfaces snapshot ownership failures", () => {
@@ -215,6 +240,24 @@ describe("live grid helpers", () => {
     });
     expect(liveGridOwnedQueryOrFallback(failed, query)).toBe(query);
     expect(liveGridOwnedQueryOrFallback({ _tag: "Owned", query }, query)).toBe(query);
+    const pendingChange = {
+      mode: "raw" as const,
+      firstRow: 0,
+      lastRow: 4,
+      select: ["id"] as const,
+      where: [] as const,
+      orderBy: [] as const,
+    };
+    const snappedPending = {
+      ...pendingChange,
+      firstRow: 3,
+    };
+    expect(ownLiveGridOnChangeForPending(pendingChange, () => snappedPending)).toBe(snappedPending);
+    expect(
+      ownLiveGridOnChangeForPending(pendingChange, () => {
+        throw new TypeError("cannot snapshot");
+      }),
+    ).toBe(pendingChange);
     expect(
       resolveLiveGridOwnedQuery(query, () => {
         throw "not-an-error";

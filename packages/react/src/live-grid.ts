@@ -244,8 +244,13 @@ export const projectLiveGridSink = (
   params: LiveGridDatasourceParams,
   firstRow: number,
   state: Pick<ClientState<object>, "rows" | "totalRows">,
+  isSessionCurrent?: () => boolean,
 ): void => {
   params.setRowCount(state.totalRows, true);
+  // setRowCount may re-enter datasource.onChange/destroy and bump the session.
+  if (isSessionCurrent !== undefined && !isSessionCurrent()) {
+    return;
+  }
   const rowData: { [index: number]: object } = {};
   for (let index = 0; index < state.rows.length; index += 1) {
     rowData[firstRow + index] = state.rows[index]!;
@@ -263,26 +268,32 @@ export const projectLiveGridSinkIfPresent = (
   firstRow: number,
   state: Pick<ClientState<object>, "rows" | "totalRows" | "status" | "version">,
   options?: {
-    readonly activeSession?: number;
+    /** Re-read on each check — must not capture a stale session snapshot. */
+    readonly getActiveSession?: () => number;
     readonly subscriptionSession?: number;
   },
 ): void => {
   if (params === null) {
     return;
   }
-  if (
-    options !== undefined &&
-    options.activeSession !== undefined &&
-    options.subscriptionSession !== undefined &&
-    !isLiveGridSessionCurrent(options.activeSession, options.subscriptionSession)
-  ) {
+  const isSessionCurrent = (): boolean => {
+    if (
+      options === undefined ||
+      options.getActiveSession === undefined ||
+      options.subscriptionSession === undefined
+    ) {
+      return true;
+    }
+    return isLiveGridSessionCurrent(options.getActiveSession(), options.subscriptionSession);
+  };
+  if (!isSessionCurrent()) {
     return;
   }
   // Stream.scan emits the loading seed before the first live event; never push that into the sink.
   if (state.status === "loading" && state.version === 0 && state.totalRows === 0) {
     return;
   }
-  projectLiveGridSink(params, firstRow, state);
+  projectLiveGridSink(params, firstRow, state, isSessionCurrent);
 };
 
 export const liveGridChromeFromResult = <Row>(
@@ -344,6 +355,13 @@ export const liveGridOwnedQueryOrFallback = <Query>(
   owned: LiveGridOwnedQueryResolution<Query>,
   fallback: Query,
 ): Query => (owned._tag === "Owned" ? owned.query : fallback);
+
+/** Own a pre-init onChange payload so caller mutation cannot alter the buffered state. */
+export const ownLiveGridOnChangeForPending = <Row>(
+  state: LiveGridOnChange<Row>,
+  snapshot: (state: LiveGridOnChange<Row>) => LiveGridOnChange<Row>,
+): LiveGridOnChange<Row> =>
+  liveGridOwnedQueryOrFallback(resolveLiveGridOwnedQuery(state, snapshot), state);
 
 export type LiveGridActivationDecision<Query> =
   | { readonly _tag: "Unchanged" }

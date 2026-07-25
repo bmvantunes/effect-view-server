@@ -59,6 +59,7 @@ import {
   decideLiveGridActivation,
   projectLiveGridSinkIfPresent,
   liveGridOwnedQueryOrFallback,
+  ownLiveGridOnChangeForPending,
   resolveLiveGridOwnedQuery,
   type LiveGridDatasourceForTopic,
   type LiveGridDatasourceParams,
@@ -359,6 +360,8 @@ export const createViewServerReact = <
         }
         setWindowError(null);
         controllerRef.current.session += 1;
+        // Drop previous viewport rows before the replacement subscription delivers data.
+        clearLiveGridSink();
         const nextActive = {
           key,
           query: ownedQuery,
@@ -388,10 +391,13 @@ export const createViewServerReact = <
           if (controller.sink === null) {
             const mapped = liveGridOnChangeToQuery(change);
             if (mapped._tag === "InvalidWindow") {
+              // Full-state replacement: an invalid last change supersedes any buffered valid one.
+              controller.pending = null;
               applyChange(change);
               return;
             }
-            controller.pending = change;
+            // Own the change at submission so later caller mutation cannot alter the buffer.
+            controller.pending = ownLiveGridOnChangeForPending(change, snapshotViewServerQuery);
             return;
           }
           applyChange(change);
@@ -427,7 +433,7 @@ export const createViewServerReact = <
         ? undefined
         : (state) => {
             projectLiveGridSinkIfPresent(controllerRef.current.sink, subscriptionFirstRow, state, {
-              activeSession: controllerRef.current.session,
+              getActiveSession: () => controllerRef.current.session,
               subscriptionSession,
             });
           },

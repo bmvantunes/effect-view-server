@@ -3,8 +3,9 @@
 ## Status
 
 Accepted. Issue #384 implements and verifies the View Server SDK exports and the
-reusable published-adapter package conformance contract. First-party adapter
-`/contract`, `/server`, and platform exports remain staged in issues #385 and #386.
+reusable published-adapter package conformance contract. Issue #386 implements
+the first-party gRPC `/contract`, `/server`, and `/node` exports. The equivalent
+Kafka exports remain staged in issue #385.
 
 ## Context
 
@@ -28,7 +29,10 @@ The publishable View Server package will expose the SDK through exactly three ma
 
 Adapter packages do not import internal workspace packages, `src` paths, `dist` paths, or unapproved nested SDK modules. View Server package-export checks cover all three approved modules and reject those deep alternatives.
 
-Kafka and gRPC will prove the extension seam by becoming ordinary first-party SDK consumers. Because this repository publishes only the `effect-view-server` package, their planned standard adapter surfaces are these package subpaths:
+gRPC proves the extension seam as an ordinary first-party SDK consumer; Kafka
+will complete the pair in issue #385. Because this repository publishes only
+the `effect-view-server` package, the standard adapter surfaces are these
+package subpaths:
 
 - `effect-view-server/kafka/contract`
 - `effect-view-server/kafka/server`

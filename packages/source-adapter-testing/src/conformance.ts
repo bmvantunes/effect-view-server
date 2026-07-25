@@ -126,6 +126,7 @@ export type SourceAdapterLifecycleConformanceExpectations<
   Target extends SourceAdapterConformanceTarget,
 > = {
   readonly acquisitionFailure: unknown;
+  readonly partialAcquisitionFinalizationCount: bigint;
   readonly streamFailure: unknown;
   readonly settlementFailure: unknown;
   readonly rejectionFailure: (phase: "acquire" | "stream" | "settlement") => unknown;
@@ -236,9 +237,17 @@ type SourceAdapterConformanceCapabilitySelection =
       readonly callbackBridge?: false;
     };
 
+export type SourceAdapterConformanceEventModel = "complete-deliveries" | "continuous-upserts";
+
 export type SourceAdapterConformanceSuiteOptions = {
   readonly name: string;
   readonly layer: Layer.Layer<SourceAdapterConformanceDriver, unknown>;
+  /**
+   * Describes only the events the real transport can produce. Lifecycle,
+   * acquisition, retry, rejection, metrics, sharing, and finalization
+   * invariants are always registered.
+   */
+  readonly eventModel?: SourceAdapterConformanceEventModel;
 } & SourceAdapterConformanceCapabilitySelection;
 
 export type SourceAdapterConformanceDriverInput<
@@ -294,6 +303,22 @@ const validateLifecycleExpectations = (
     throw new TypeError(
       `Source Adapter conformance requires exact ${lifecycle} expectations for every supplied lifecycle.`,
     );
+  }
+  if (expectations !== undefined) {
+    const countDescriptor =
+      typeof expectations === "object" && expectations !== null
+        ? Object.getOwnPropertyDescriptor(expectations, "partialAcquisitionFinalizationCount")
+        : undefined;
+    if (
+      countDescriptor === undefined ||
+      !("value" in countDescriptor) ||
+      typeof countDescriptor.value !== "bigint" ||
+      countDescriptor.value <= 0n
+    ) {
+      throw new TypeError(
+        `Source Adapter conformance requires a positive ${lifecycle} partial-acquisition finalization count.`,
+      );
+    }
   }
 };
 

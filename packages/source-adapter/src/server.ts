@@ -3,6 +3,7 @@ import {
   decodeSourceToolkitUpsert,
   isSourceAdapterHandle,
   isSourceAttempt,
+  isSourceDefinition,
   isSourceDelivery,
   isSourceItemRejection,
   makeSourceAttempt,
@@ -20,6 +21,7 @@ import type {
   SourceDeliveryLane,
   SourceExecutionFailure,
   SourceDefinitionOptionsFamily,
+  SourceDefinitionAny,
   SourceLifecycleDeclaration,
   SourceLifecycleFactoryInput,
   SourceLifecycle,
@@ -410,8 +412,54 @@ export const makeSourceDeliveryLane = <
   });
 };
 
+export type SourceAdapterServerView = {
+  readonly topics: Readonly<Record<string, unknown>>;
+};
+
+export type SourceAdapterServerDefinition<
+  Adapter extends SourceDefinitionAny["adapter"] = SourceDefinitionAny["adapter"],
+> = SourceDefinitionAny & {
+  readonly adapter: Adapter;
+};
+
+export type SourceAdapterServerDefinitionEntry<
+  Adapter extends SourceDefinitionAny["adapter"] = SourceDefinitionAny["adapter"],
+> = {
+  readonly topic: string;
+  readonly definition: SourceAdapterServerDefinition<Adapter>;
+};
+
+const sourceDefinitionUsesAdapter = <const Adapter extends SourceDefinitionAny["adapter"]>(
+  value: unknown,
+  adapter: Adapter,
+): value is SourceAdapterServerDefinition<Adapter> =>
+  isSourceDefinition(value) && value.adapter === adapter;
+
+export const collectSourceAdapterDefinitions = <
+  const Adapter extends SourceDefinitionAny["adapter"],
+>(
+  viewServer: SourceAdapterServerView,
+  adapter: Adapter,
+): ReadonlyArray<SourceAdapterServerDefinitionEntry<Adapter>> => {
+  const definitions: Array<SourceAdapterServerDefinitionEntry<Adapter>> = [];
+  for (const [topic, configured] of Object.entries(viewServer.topics)) {
+    const source =
+      typeof configured === "object" && configured !== null
+        ? Object.getOwnPropertyDescriptor(configured, "source")?.value
+        : undefined;
+    if (sourceDefinitionUsesAdapter(source, adapter)) {
+      definitions.push({
+        topic,
+        definition: source,
+      });
+    }
+  }
+  return Object.freeze(definitions);
+};
+
 export const SourceAdapterServer = {
   attempt: makeSourceAttempt,
+  definitions: collectSourceAdapterDefinitions,
   lane: makeSourceDeliveryLane,
   make: makeSourceAdapterServer,
 } as const;

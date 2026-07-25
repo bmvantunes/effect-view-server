@@ -124,6 +124,53 @@ const hostileNominalClone = <Value extends object>(
 };
 
 describe("Source Adapter server SDK", () => {
+  it("collects only nominal definitions belonging to the requested Adapter", () => {
+    const definition = Adapter.materializedSource({ label: "orders" });
+    const otherAdapter = SourceAdapter.make({
+      identity: { name: "other-server-fixture" },
+      failure: Failure,
+      materialized: {
+        metrics: Metrics,
+        rejectionLocation: Location,
+        definitionOptions: SourceAdapter.definitionOptions<void>(),
+      },
+      leased: undefined,
+    });
+    const otherDefinition = otherAdapter.materializedSource(undefined);
+    let sourceAccessorCalls = 0;
+    const accessorTopic = {};
+    Object.defineProperty(accessorTopic, "source", {
+      enumerable: true,
+      get: () => {
+        sourceAccessorCalls += 1;
+        return definition;
+      },
+    });
+    const definitions = SourceAdapterServer.definitions(
+      {
+        topics: {
+          orders: { source: definition },
+          other: { source: otherDefinition },
+          absent: {},
+          sourceFree: { schema: "source-free" },
+          primitive: "source-free",
+          accessor: accessorTopic,
+          forged: { source: { adapter: Adapter } },
+        },
+      },
+      Adapter,
+    );
+
+    expect(definitions).toStrictEqual([
+      {
+        topic: "orders",
+        definition,
+      },
+    ]);
+    expect(Object.isFrozen(definitions)).toBe(true);
+    expect(sourceAccessorCalls).toBe(0);
+  });
+
   it.effect("keeps attempt resources in the caller attempt Scope", () =>
     Effect.gen(function* () {
       let finalized = 0;

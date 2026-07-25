@@ -14,18 +14,19 @@ truth, not plan text that predates later implementation work.
 
 ## gRPC Plan
 
-`plans/grpc.md` records the currently implemented transport-specific scope but
-is superseded for future work by PRD #383. Issue #384 implements the
-transport-neutral Source Adapter foundation; Kafka and gRPC migration remain
-separate staged issues.
+`plans/grpc.md` records the implemented transport-specific scope but is
+superseded for future work by PRD #383. Issue #384 implements the
+transport-neutral Source Adapter foundation and issue #386 implements its
+first-party gRPC adapter. Kafka migration and final legacy removal remain staged
+in issues #385 and #387.
 
 | Area                                            | Status                 | Evidence                                                                                                                                                     |
 | ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Source contracts and type gates                 | Implemented            | `packages/config/src/grpc-contract.ts`, `packages/config/src/grpc-source-contract.test-d.ts`, `packages/runtime/src/runtime-grpc-options-contract.test-d.ts` |
 | Runtime ownership validation                    | Implemented            | Runtime validation tests reject Kafka/gRPC and multi-feed ownership conflicts.                                                                               |
-| Materialized gRPC runtime                       | Implemented            | `packages/runtime/src/grpc-ingress.ts`, materialized runtime tests, ConnectRPC tests.                                                                        |
-| Leased gRPC runtime                             | Implemented            | `packages/runtime/src/grpc-lease-manager.ts`, leased runtime tests, ConnectRPC tests.                                                                        |
-| gRPC health/lifecycle                           | Implemented            | `packages/runtime/src/grpc-health.ts`, runtime health tests, `vp run -w grpc:gate`.                                                                          |
+| Materialized gRPC runtime                       | Implemented            | `packages/grpc/src/server.ts`, Source Adapter conformance, runtime tests, and real ConnectRPC tests.                                                         |
+| Leased gRPC runtime                             | Implemented            | `packages/grpc/src/server.ts`, exact-route sharing/release tests, and real ConnectRPC tests.                                                                 |
+| gRPC health/lifecycle                           | Implemented            | Schema-backed adapter metrics/rejections in `packages/grpc`, Source Diagnostics tests, and `vp run -w grpc:gate`.                                            |
 | gRPC benchmark gates                            | Implemented            | `benchmarks/baselines/grpc-materialized.json`, `grpc-leased.json`, `grpc-leased-retained.json`, `vp run -w grpc:gate`.                                       |
 | Topic-owned source constructors                 | Implemented            | ADR 0001, `kafka.source(...)`, `grpc.topicSources(...).materialized(...)`, and `.leased(...)` in current examples.                                           |
 | Session-scoped leased feeds and auth forwarding | Deferred intentionally | Runtime auth validates edge requests; gRPC feeds still use system-scoped shared feed identity.                                                               |
@@ -52,7 +53,7 @@ because it includes explicit future scope.
 | Effect RPC WebSocket production transport                     | Implemented | `packages/server`, `packages/client/remote.ts`, protocol package, WebSocket/runtime tests.                                                                                                                                                            |
 | Health hook, `/health`, and `/metrics` endpoints              | Implemented | `useViewServerHealth`, runtime/server health tests, health codecs, metrics route/runtime tests, root/runtime README docs.                                                                                                                             |
 | Kafka runtime ingress                                         | Implemented | `@platformatic/kafka`, JSON/protobuf/custom codecs, source mapping, Docker Apache Kafka e2e, restart/startFrom policy.                                                                                                                                |
-| gRPC runtime ingress                                          | Implemented | Covered by `plans/grpc.md` implementation.                                                                                                                                                                                                            |
+| gRPC runtime ingress                                          | Implemented | First-party Source Adapter contract/server/node modules under `packages/grpc`, documented in `docs/grpc-source-adapter.md`.                                                                                                                           |
 | Runtime auth/session validation seam                          | Implemented | Optional `auth.validateRequest` on server/runtime validates WebSocket upgrades, `/health`, and `/metrics`; default remains anonymous.                                                                                                                 |
 | Snapshot/delta convergence                                    | Implemented | Engine/runtime/client tests cover raw, grouped, retained deltas, cleanup, and convergence.                                                                                                                                                            |
 | Grouped queries and aggregates                                | Implemented | Grouped query tests, grouped aggregate/write benchmarks and gates.                                                                                                                                                                                    |
@@ -67,9 +68,10 @@ because it includes explicit future scope.
 
 ### Production-Ready Next Items
 
-Complete the dependency-ordered Source Adapter migration issues from PRD #383.
-The core SDK/runtime/conformance slice is issue #384; first-party adapter
-migration and the final public hard cut remain separate work.
+Complete the remaining dependency-ordered Source Adapter migration issues from
+PRD #383. The core SDK/runtime/conformance slice is issue #384 and first-party
+gRPC is implemented by issue #386; first-party Kafka and the final public hard cut remain
+issues #385 and #387.
 
 ### Intentionally Deferred
 

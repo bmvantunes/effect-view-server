@@ -55,6 +55,7 @@ export type {
   SourceAdapterConformanceExpectations,
   SourceAdapterLifecycleConformanceExpectations,
   SourceAdapterConformanceMutation,
+  SourceAdapterConformanceEventModel,
   SourceAdapterConformanceSuiteOptions,
   SourceAdapterConformanceTarget,
   SourceAdapterConformanceTransport,
@@ -1138,6 +1139,7 @@ export const SourceFixture = {
       expectations: {
         materialized: {
           acquisitionFailure: fixtureFailure("conformance acquisition failure", "acquire"),
+          partialAcquisitionFinalizationCount: 1n,
           streamFailure: fixtureFailure("conformance lane failure", "stream"),
           settlementFailure: fixtureFailure("conformance settlement failure", "settlement"),
           rejectionFailure: (phase) => fixtureFailure("conformance rejection", phase),
@@ -1151,6 +1153,7 @@ export const SourceFixture = {
         },
         leased: {
           acquisitionFailure: fixtureFailure("conformance acquisition failure", "acquire"),
+          partialAcquisitionFinalizationCount: 1n,
           streamFailure: fixtureFailure("conformance lane failure", "stream"),
           settlementFailure: fixtureFailure("conformance settlement failure", "settlement"),
           rejectionFailure: (phase) => fixtureFailure("conformance rejection", phase),

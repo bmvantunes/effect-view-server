@@ -1352,36 +1352,43 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   });
 
   let previousTermination: SourceTermination<unknown> | undefined;
-  const attemptWithObservation = Effect.scoped(
-    Effect.gen(function* () {
-      const metricFailure = yield* Deferred.make<SourceExecutionError>();
-      const registration = yield* metricFailureObservation.register(metricFailure);
-      if (registration._tag === "Failed") {
-        return yield* Effect.fail<SourceTermination<unknown>>({
-          _tag: "Failed",
-          failure: registration.failure,
-        });
-      }
-      return yield* Effect.raceFirst(
-        runAttempt(previousTermination),
-        Deferred.await(metricFailure).pipe(
-          Effect.flatMap((failure) =>
-            Effect.fail<SourceTermination<unknown>>({
-              _tag: "Failed",
-              failure,
-            }),
+  const attemptWithObservation = Effect.suspend(() => {
+    const attempt = previousTermination === undefined ? currentAttempt : currentAttempt + 1n;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const metricFailure = yield* Deferred.make<SourceExecutionError>();
+        const registration = yield* metricFailureObservation.register(metricFailure);
+        if (registration._tag === "Failed") {
+          return yield* Effect.fail<SourceTermination<unknown>>({
+            _tag: "Failed",
+            failure: registration.failure,
+          });
+        }
+        return yield* Effect.raceFirst(
+          runAttempt(previousTermination),
+          Deferred.await(metricFailure).pipe(
+            Effect.flatMap((failure) =>
+              Effect.fail<SourceTermination<unknown>>({
+                _tag: "Failed",
+                failure,
+              }),
+            ),
           ),
+        ).pipe(Effect.ensuring(metricFailureObservation.unregister(metricFailure)));
+      }).pipe(
+        Effect.tapError((termination) =>
+          Effect.gen(function* () {
+            previousTermination = termination;
+            lastTerminationAtNanos = yield* Clock.currentTimeNanos;
+          }),
         ),
-      ).pipe(Effect.ensuring(metricFailureObservation.unregister(metricFailure)));
-    }).pipe(
-      Effect.tapError((termination) =>
-        Effect.gen(function* () {
-          previousTermination = termination;
-          lastTerminationAtNanos = yield* Clock.currentTimeNanos;
-        }),
       ),
-    ),
-  );
+    ).pipe(
+      Effect.annotateLogs({
+        attempt,
+      }),
+    );
+  });
   const onRetry = Effect.fn("ViewServerRuntimeCore.source.retry.waiting")(function* (
     metadata: Schedule.Metadata<unknown, SourceTermination<unknown>>,
   ) {

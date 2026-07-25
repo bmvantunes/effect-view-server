@@ -42,6 +42,21 @@ describe("Source Adapter conformance host type contracts", () => {
       callbackBridge: true,
     });
 
+    registerSourceAdapterConformance({
+      name: "continuous upsert",
+      layer,
+      materialized: true,
+      eventModel: "continuous-upserts",
+    });
+
+    registerSourceAdapterConformance({
+      name: "invalid event model",
+      layer,
+      materialized: true,
+      // @ts-expect-error transport event models are exact.
+      eventModel: "unknown",
+    });
+
     // @ts-expect-error callback checks supplement materialized lifecycle conformance.
     registerSourceAdapterConformance({
       name: "callback only",

@@ -11,16 +11,24 @@ import type {
 import type { ClientState } from "@effect-view-server/client";
 import { Result, Schema } from "effect";
 
-export type LiveGridDatasourceParams<Row> = {
+export type LiveGridDatasourceParams = {
   readonly setRowCount: (count: number, keepRenderedRows?: boolean) => void;
-  readonly setRowData: (rowData: { readonly [index: number]: Row }) => void;
+  /**
+   * Absolute index → projected result rows for the active query (selected fields or
+   * grouped aggregates), not necessarily full topic rows.
+   */
+  readonly setRowData: (rowData: { readonly [index: number]: object }) => void;
 };
 
 export type LiveGridRawOnChange<Row> = {
   readonly mode: "raw";
   readonly firstRow: number;
   readonly lastRow: number;
-  readonly select: RawQuery<Row>["select"];
+  /** Non-empty select; empty projections are rejected. */
+  readonly select: readonly [
+    RawQuery<Row>["select"][number],
+    ...Array<RawQuery<Row>["select"][number]>,
+  ];
   readonly where: Where<Row>;
   readonly orderBy: ReadonlyArray<OrderBy<Row>>;
 };
@@ -38,7 +46,7 @@ export type LiveGridGroupedOnChange<Row> = {
 export type LiveGridOnChange<Row> = LiveGridRawOnChange<Row> | LiveGridGroupedOnChange<Row>;
 
 export type LiveGridDatasource<Row> = {
-  readonly init: (params: LiveGridDatasourceParams<Row>) => void;
+  readonly init: (params: LiveGridDatasourceParams) => void;
   readonly onChange: (state: LiveGridOnChange<Row>) => void;
   readonly destroy: () => void;
 };
@@ -71,11 +79,16 @@ export const LiveGridWindowSchema = Schema.Struct({
   firstRow: LiveGridWindowIndex,
   lastRow: LiveGridWindowIndex,
 }).check(
-  Schema.makeFilter((window) =>
-    window.lastRow >= window.firstRow
-      ? undefined
-      : "Live grid window lastRow must be greater than or equal to firstRow.",
-  ),
+  Schema.makeFilter((window) => {
+    if (window.lastRow < window.firstRow) {
+      return "Live grid window lastRow must be greater than or equal to firstRow.";
+    }
+    // lastRow - firstRow + 1 must stay a safe integer (avoid MAX_SAFE_INTEGER + 1).
+    if (window.lastRow - window.firstRow >= Number.MAX_SAFE_INTEGER) {
+      return "Live grid window limit must be a safe integer.";
+    }
+    return undefined;
+  }),
 );
 
 const decodeLiveGridWindow = Schema.decodeUnknownResult(LiveGridWindowSchema);
@@ -147,13 +160,13 @@ export const liveGridOnChangeToQuery = <Row>(
   return { _tag: "Query", firstRow: window.firstRow, query };
 };
 
-export const projectLiveGridSink = <Row>(
-  params: LiveGridDatasourceParams<Row>,
+export const projectLiveGridSink = (
+  params: LiveGridDatasourceParams,
   firstRow: number,
-  state: Pick<ClientState<Row>, "rows" | "totalRows">,
+  state: Pick<ClientState<object>, "rows" | "totalRows">,
 ): void => {
   params.setRowCount(state.totalRows, true);
-  const rowData: { [index: number]: Row } = {};
+  const rowData: { [index: number]: object } = {};
   for (let index = 0; index < state.rows.length; index += 1) {
     rowData[firstRow + index] = state.rows[index]!;
   }
@@ -165,10 +178,10 @@ export const isLiveGridSessionCurrent = (
   subscriptionSession: number,
 ): boolean => activeSession === subscriptionSession;
 
-export const projectLiveGridSinkIfPresent = <Row>(
-  params: LiveGridDatasourceParams<Row> | null,
+export const projectLiveGridSinkIfPresent = (
+  params: LiveGridDatasourceParams | null,
   firstRow: number,
-  state: Pick<ClientState<Row>, "rows" | "totalRows" | "status" | "version">,
+  state: Pick<ClientState<object>, "rows" | "totalRows" | "status" | "version">,
   options?: {
     readonly activeSession?: number;
     readonly subscriptionSession?: number;
@@ -225,11 +238,59 @@ export const liveGridQueryIdentityKey = <Row, Schema>(
   stableKeyForSchema: (query: LiveQuery<Row>, schema: Schema) => string,
 ): string => (schema === undefined ? stableKey(query) : stableKeyForSchema(query, schema));
 
-/** Snapshot query ownership for identity; fall back to the input when snapshotting throws. */
+export type LiveGridOwnedQueryResolution<Query> =
+  | { readonly _tag: "Owned"; readonly query: Query }
+  | { readonly _tag: "SnapshotFailed"; readonly message: string };
+
+/** Snapshot query ownership for identity; surface snapshot failures for typed chrome. */
 export const resolveLiveGridOwnedQuery = <Query>(
   query: Query,
   snapshot: (query: Query) => Query,
-): Query => {
+): LiveGridOwnedQueryResolution<Query> => {
   const captured = Result.try(() => snapshot(query));
-  return Result.isSuccess(captured) ? captured.success : query;
+  if (Result.isSuccess(captured)) {
+    return { _tag: "Owned", query: captured.success };
+  }
+  return {
+    _tag: "SnapshotFailed",
+    message:
+      captured.failure instanceof Error
+        ? captured.failure.message
+        : "Query input could not be snapshotted.",
+  };
+};
+
+export const liveGridOwnedQueryOrFallback = <Query>(
+  owned: LiveGridOwnedQueryResolution<Query>,
+  fallback: Query,
+): Query => (owned._tag === "Owned" ? owned.query : fallback);
+
+export type LiveGridActivationDecision<Query> =
+  | { readonly _tag: "Unchanged" }
+  | {
+      readonly _tag: "Activate";
+      readonly query: Query;
+      readonly key: string;
+      readonly firstRow: number;
+    };
+
+export const decideLiveGridActivation = <Query>(input: {
+  readonly query: Query;
+  readonly current: { readonly key: string; readonly firstRow: number } | null;
+  readonly key: string;
+  readonly firstRow: number;
+}): LiveGridActivationDecision<Query> => {
+  if (
+    input.current !== null &&
+    input.current.key === input.key &&
+    input.current.firstRow === input.firstRow
+  ) {
+    return { _tag: "Unchanged" };
+  }
+  return {
+    _tag: "Activate",
+    query: input.query,
+    key: input.key,
+    firstRow: input.firstRow,
+  };
 };

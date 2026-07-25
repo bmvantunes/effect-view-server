@@ -1659,7 +1659,7 @@ describe("createViewServerReact", () => {
 
   it("pushes absolute index rows through useLiveGrid datasource sink", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
-    const rowDataLog: Array<Record<number, { readonly id: string; readonly price: number }>> = [];
+    const rowDataLog: Array<Record<number, object>> = [];
     const rowCountLog: Array<number> = [];
 
     function GridView() {
@@ -1719,7 +1719,14 @@ describe("createViewServerReact", () => {
     await expect
       .poll(() => {
         const latest = rowDataLog.at(-1);
-        return latest === undefined ? "" : `${latest[0]?.id ?? ""}|${latest[1]?.id ?? ""}`;
+        if (latest === undefined) {
+          return "";
+        }
+        const first = latest[0];
+        const second = latest[1];
+        const firstId = first !== undefined && "id" in first ? String(first.id) : "";
+        const secondId = second !== undefined && "id" in second ? String(second.id) : "";
+        return `${firstId}|${secondId}`;
       })
       .toBe("a|b");
     await expect
@@ -1791,6 +1798,21 @@ describe("createViewServerReact", () => {
           >
             invalid-window
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            same-change
+          </button>
         </div>
       );
     }
@@ -1805,6 +1827,9 @@ describe("createViewServerReact", () => {
     expect(rowCountLog).toStrictEqual([]);
     await view.getByRole("button", { name: "init-grid" }).click();
     await expect.poll(() => rowCountLog.length > 0).toBe(true);
+    const afterInitCount = rowCountLog.length;
+    await view.getByRole("button", { name: "same-change" }).click();
+    expect(rowCountLog.length).toBe(afterInitCount);
     await view.getByRole("button", { name: "invalid-window" }).click();
     await expect
       .element(view.getByLabelText("live-grid-buffer-chrome"))

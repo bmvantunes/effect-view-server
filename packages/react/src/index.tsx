@@ -27,6 +27,7 @@ import type {
   RawQuery,
   RuntimeRegions,
   TopicDefinitions,
+  TopicRouteBy,
   TopicRow,
   ViewServerConfig,
   ViewServerHealthConnectionStatus,
@@ -54,7 +55,9 @@ import {
   liveGridInvalidWindowChrome,
   liveGridOnChangeToQuery,
   liveGridQueryIdentityKey,
+  decideLiveGridActivation,
   projectLiveGridSinkIfPresent,
+  liveGridOwnedQueryOrFallback,
   resolveLiveGridOwnedQuery,
   type LiveGridDatasource,
   type LiveGridDatasourceParams,
@@ -110,8 +113,15 @@ export type UseLiveQueryHook<Topics extends TopicDefinitions> = <
   query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
 
+/** Live grid v1 targets non-leased topics; leased routes need a follow-up routeBy API. */
+type LiveGridTopicName<Topics extends TopicDefinitions> = {
+  [Topic in Extract<keyof Topics, string>]: [TopicRouteBy<Topics, Topic>] extends [never]
+    ? Topic
+    : never;
+}[Extract<keyof Topics, string>];
+
 export type UseLiveGridHook<Topics extends TopicDefinitions> = <
-  Topic extends Extract<keyof Topics, string>,
+  Topic extends LiveGridTopicName<Topics>,
 >(
   topic: Topic,
 ) => UseLiveGridResult<TopicRow<Topics, Topic>>;
@@ -123,7 +133,7 @@ type LiveGridActiveQuery<Row> = {
 };
 
 type LiveGridControllerState<Row> = {
-  sink: LiveGridDatasourceParams<Row> | null;
+  sink: LiveGridDatasourceParams | null;
   pending: LiveGridOnChange<Row> | null;
   session: number;
 };
@@ -278,7 +288,7 @@ export const createViewServerReact = <
     );
   }
 
-  function useLiveGrid<Topic extends Extract<keyof Topics, string>>(
+  function useLiveGrid<Topic extends LiveGridTopicName<Topics>>(
     topic: Topic,
   ): UseLiveGridResult<TopicRow<Topics, Topic>> {
     type Row = TopicRow<Topics, Topic>;
@@ -290,6 +300,7 @@ export const createViewServerReact = <
       session: 0,
     });
     const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
+    const activeRef = useRef<LiveGridActiveQuery<Row> | null>(null);
     const [windowError, setWindowError] = useState<string | null>(null);
 
     const applyChange = useCallback(
@@ -297,12 +308,15 @@ export const createViewServerReact = <
         const mapped = liveGridOnChangeToQuery(state);
         if (mapped._tag === "InvalidWindow") {
           setWindowError(mapped.message);
+          activeRef.current = null;
           setActive(null);
           controllerRef.current.session += 1;
           return;
         }
-        const ownedQuery = resolveLiveGridOwnedQuery(mapped.query, (query) =>
-          snapshotViewServerQuery(query),
+        // Match useLiveQuery: prefer a frozen snapshot, fall back to the mapped query on failure.
+        const ownedQuery = liveGridOwnedQueryOrFallback(
+          resolveLiveGridOwnedQuery(mapped.query, (query) => snapshotViewServerQuery(query)),
+          mapped.query,
         );
         const key = liveGridQueryIdentityKey(
           ownedQuery,
@@ -310,13 +324,24 @@ export const createViewServerReact = <
           stableQueryKey,
           stableQueryKeyForRowSchema,
         );
-        setWindowError(null);
-        controllerRef.current.session += 1;
-        setActive({
-          key,
+        const decision = decideLiveGridActivation({
           query: ownedQuery,
+          current: activeRef.current,
+          key,
           firstRow: mapped.firstRow,
         });
+        if (decision._tag === "Unchanged") {
+          return;
+        }
+        setWindowError(null);
+        controllerRef.current.session += 1;
+        const nextActive = {
+          key: decision.key,
+          query: decision.query,
+          firstRow: decision.firstRow,
+        };
+        activeRef.current = nextActive;
+        setActive(nextActive);
       },
       [topicDefinition],
     );
@@ -344,6 +369,7 @@ export const createViewServerReact = <
           controller.pending = null;
           controller.session += 1;
           setWindowError(null);
+          activeRef.current = null;
           setActive(null);
         },
       };

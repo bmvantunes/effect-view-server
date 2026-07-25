@@ -9,6 +9,8 @@ import {
   liveGridWindowSchemaErrorMessage,
   projectLiveGridSink,
   projectLiveGridSinkIfPresent,
+  decideLiveGridActivation,
+  liveGridOwnedQueryOrFallback,
   resolveLiveGridOwnedQuery,
   validateLiveGridWindow,
 } from "./live-grid";
@@ -43,6 +45,10 @@ describe("live grid helpers", () => {
     expect(validateLiveGridWindow(-1, 2)._tag).toBe("Invalid");
     expect(validateLiveGridWindow(1.5, 2)._tag).toBe("Invalid");
     expect(validateLiveGridWindow(Number.NaN, 2)._tag).toBe("Invalid");
+    expect(validateLiveGridWindow(0, Number.MAX_SAFE_INTEGER)).toStrictEqual({
+      _tag: "Invalid",
+      message: "Live grid window limit must be a safe integer.",
+    });
     expect(liveGridWindowSchemaErrorMessage("SchemaError(bad window)")).toBe("bad window");
     expect(liveGridWindowSchemaErrorMessage("not a schema error")).toBe("not a schema error");
   });
@@ -111,7 +117,7 @@ describe("live grid helpers", () => {
 
   it("projects absolute index maps into the sink", () => {
     const counts: Array<{ count: number; keep?: boolean }> = [];
-    const dataMaps: Array<Record<number, OrderRow>> = [];
+    const dataMaps: Array<Record<number, object>> = [];
     projectLiveGridSink(
       {
         setRowCount: (count, keepRenderedRows) => {
@@ -188,7 +194,7 @@ describe("live grid helpers", () => {
     expect(isLiveGridSessionCurrent(2, 1)).toBe(false);
   });
 
-  it("falls back to the input query when snapshot ownership throws", () => {
+  it("surfaces snapshot ownership failures", () => {
     const query = {
       select: ["id"],
       where: [],
@@ -196,12 +202,48 @@ describe("live grid helpers", () => {
       offset: 0,
       limit: 1,
     } as const;
-    expect(resolveLiveGridOwnedQuery(query, (value) => value)).toBe(query);
+    expect(resolveLiveGridOwnedQuery(query, (value) => value)).toStrictEqual({
+      _tag: "Owned",
+      query,
+    });
+    const failed = resolveLiveGridOwnedQuery(query, () => {
+      throw new TypeError("Query input could not be snapshotted.");
+    });
+    expect(failed).toStrictEqual({
+      _tag: "SnapshotFailed",
+      message: "Query input could not be snapshotted.",
+    });
+    expect(liveGridOwnedQueryOrFallback(failed, query)).toBe(query);
+    expect(liveGridOwnedQueryOrFallback({ _tag: "Owned", query }, query)).toBe(query);
     expect(
       resolveLiveGridOwnedQuery(query, () => {
-        throw new TypeError("Query input could not be snapshotted.");
+        throw "not-an-error";
       }),
-    ).toBe(query);
+    ).toStrictEqual({
+      _tag: "SnapshotFailed",
+      message: "Query input could not be snapshotted.",
+    });
+    expect(
+      decideLiveGridActivation({
+        query,
+        current: { key: "k", firstRow: 0 },
+        key: "k",
+        firstRow: 0,
+      }),
+    ).toStrictEqual({ _tag: "Unchanged" });
+    expect(
+      decideLiveGridActivation({
+        query,
+        current: null,
+        key: "k",
+        firstRow: 2,
+      }),
+    ).toStrictEqual({
+      _tag: "Activate",
+      query,
+      key: "k",
+      firstRow: 2,
+    });
   });
 
   it("builds query identity keys with and without a row schema", () => {

@@ -5,7 +5,9 @@ import {
   liveGridIdleChrome,
   liveGridInvalidWindowChrome,
   liveGridOnChangeToQuery,
+  liveGridOnScrollRequiresActiveQueryMessage,
   liveGridQueryIdentityKey,
+  liveGridScrollQuery,
   liveGridWindowSchemaErrorMessage,
   ownLiveGridOnChangeForPending,
   projectLiveGridSink,
@@ -114,6 +116,97 @@ describe("live grid helpers", () => {
       orderBy: [],
     });
     expect(mapped._tag).toBe("InvalidWindow");
+  });
+
+  it("re-windows an active raw or grouped query for onScroll", () => {
+    const raw = liveGridScrollQuery<OrderRow>(
+      {
+        select: ["id", "price"],
+        where: [],
+        orderBy: [{ field: "price", direction: "asc" }],
+        offset: 0,
+        limit: 10,
+      },
+      20,
+      29,
+    );
+    expect(raw).toStrictEqual({
+      _tag: "Query",
+      firstRow: 20,
+      query: {
+        select: ["id", "price"],
+        where: [],
+        orderBy: [{ field: "price", direction: "asc" }],
+        offset: 20,
+        limit: 10,
+      },
+    });
+    const grouped = liveGridScrollQuery<OrderRow>(
+      {
+        groupBy: ["status"],
+        aggregates: { count: { aggFunc: "count" } },
+        where: [],
+        orderBy: [],
+        offset: 0,
+        limit: 5,
+      },
+      5,
+      9,
+    );
+    expect(grouped).toStrictEqual({
+      _tag: "Query",
+      firstRow: 5,
+      query: {
+        groupBy: ["status"],
+        aggregates: { count: { aggFunc: "count" } },
+        where: [],
+        orderBy: [],
+        offset: 5,
+        limit: 5,
+      },
+    });
+    expect(liveGridScrollQuery<OrderRow>({ select: ["id"] }, 3, 1)._tag).toBe("InvalidWindow");
+    expect(
+      liveGridScrollQuery<OrderRow>(
+        {
+          select: ["id"],
+          offset: 0,
+          limit: 1,
+        },
+        2,
+        2,
+      ),
+    ).toStrictEqual({
+      _tag: "Query",
+      firstRow: 2,
+      query: {
+        select: ["id"],
+        offset: 2,
+        limit: 1,
+      },
+    });
+    expect(
+      liveGridScrollQuery<OrderRow>(
+        {
+          groupBy: ["status"],
+          aggregates: { count: { aggFunc: "count" } },
+          offset: 0,
+          limit: 2,
+        },
+        4,
+        5,
+      ),
+    ).toStrictEqual({
+      _tag: "Query",
+      firstRow: 4,
+      query: {
+        groupBy: ["status"],
+        aggregates: { count: { aggFunc: "count" } },
+        offset: 4,
+        limit: 2,
+      },
+    });
+    expect(liveGridOnScrollRequiresActiveQueryMessage.length).toBeGreaterThan(0);
   });
 
   it("projects absolute index maps into the sink", () => {

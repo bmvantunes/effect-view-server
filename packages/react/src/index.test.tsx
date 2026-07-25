@@ -2072,35 +2072,51 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(inMemory.close);
   });
 
-  it("clears live grid sink state when the topic prop changes", async () => {
+  it("re-windows the active query with onScroll without a full onChange", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
-    const rowCountLog: Array<number> = [];
+    const rowDataLog: Array<Record<number, object>> = [];
 
-    function GridView(props: { readonly topic: "orders" | "trades" }) {
-      const grid = useLiveGrid(props.topic);
+    function GridView() {
+      const grid = useLiveGrid("orders");
       return (
         <div>
-          <p aria-label="live-grid-topic-chrome">{`${props.topic}:${grid.status}:${grid.totalRows}`}</p>
+          <p aria-label="live-grid-scroll-chrome">{`${grid.status}:${grid.totalRows}`}</p>
           <button
             type="button"
             onClick={() => {
               grid.datasource.init({
-                setRowCount: (count) => {
-                  rowCountLog.push(count);
+                setRowCount: () => undefined,
+                setRowData: (rowData) => {
+                  rowDataLog.push(rowData);
                 },
-                setRowData: () => undefined,
               });
               grid.datasource.onChange({
                 mode: "raw",
                 firstRow: 0,
-                lastRow: 4,
-                select: ["id"],
+                lastRow: 0,
+                select: ["id", "price"],
                 where: [],
-                orderBy: [],
+                orderBy: [{ field: "price", direction: "asc" }],
               });
             }}
           >
-            mount-topic-grid
+            open viewport
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(1, 1);
+            }}
+          >
+            pan viewport
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(3, 1);
+            }}
+          >
+            break viewport
           </button>
         </div>
       );
@@ -2108,24 +2124,155 @@ describe("createViewServerReact", () => {
 
     const view = await render(
       <ViewServerClientProvider client={inMemory.liveClient}>
-        <GridView topic="orders" />
+        <GridView />
       </ViewServerClientProvider>,
     );
-    await view.getByRole("button", { name: "mount-topic-grid" }).click();
+    await view.getByRole("button", { name: "open viewport" }).click();
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
-    await expect.poll(() => rowCountLog.at(-1) === 1).toBe(true);
+    await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
     await expect
-      .element(view.getByLabelText("live-grid-topic-chrome", { exact: true }))
-      .toHaveTextContent(/^orders:ready:1$/);
-    await view.rerender(
+      .poll(() => {
+        const latest = rowDataLog.at(-1);
+        return latest?.[0] !== undefined && "id" in latest[0] ? String(latest[0].id) : "";
+      })
+      .toBe("a");
+    await view.getByRole("button", { name: "pan viewport" }).click();
+    await expect
+      .poll(() => {
+        const latest = rowDataLog.at(-1);
+        return latest?.[1] !== undefined && "id" in latest[1] ? String(latest[1].id) : "";
+      })
+      .toBe("b");
+    await view.getByRole("button", { name: "break viewport" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-scroll-chrome", { exact: true }))
+      .toHaveTextContent(/^error:0$/);
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("buffers onScroll against pre-init pending onChange and rejects bare onScroll", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowDataLog: Array<Record<number, object>> = [];
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      return (
+        <div>
+          <p aria-label="live-grid-pending-scroll-chrome">
+            {`${grid.status}:${grid.statusCode ?? "none"}:${grid.message ?? ""}`}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(0, 4);
+            }}
+          >
+            alpha
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 0,
+                select: ["id", "price"],
+                where: [],
+                orderBy: [{ field: "price", direction: "asc" }],
+              });
+            }}
+          >
+            beta
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(1, 1);
+            }}
+          >
+            gamma
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(9, 1);
+            }}
+          >
+            delta
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 0,
+                select: ["id", "price"],
+                where: [],
+                orderBy: [{ field: "price", direction: "asc" }],
+              });
+              grid.datasource.onScroll(1, 1);
+              grid.datasource.init({
+                setRowCount: () => undefined,
+                setRowData: (rowData) => {
+                  rowDataLog.push(rowData);
+                },
+              });
+            }}
+          >
+            epsilon
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.destroy();
+              grid.datasource.init({
+                setRowCount: () => undefined,
+                setRowData: () => undefined,
+              });
+              grid.datasource.onScroll(0, 0);
+            }}
+          >
+            zeta
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
       <ViewServerClientProvider client={inMemory.liveClient}>
-        <GridView topic="trades" />
+        <GridView />
       </ViewServerClientProvider>,
     );
+    await view.getByRole("button", { name: "alpha" }).click();
     await expect
-      .element(view.getByLabelText("live-grid-topic-chrome", { exact: true }))
-      .toHaveTextContent(/^trades:loading:0$/);
-    expect(rowCountLog.at(-1)).toBe(0);
+      .element(view.getByLabelText("live-grid-pending-scroll-chrome", { exact: true }))
+      .toHaveTextContent(
+        /^error:InvalidQuery:Live grid onScroll requires an active query from onChange\.$/,
+      );
+    await view.getByRole("button", { name: "beta" }).click();
+    await view.getByRole("button", { name: "delta" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-pending-scroll-chrome", { exact: true }))
+      .toHaveTextContent(
+        /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
+      );
+    await view.getByRole("button", { name: "epsilon" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
+    await expect
+      .poll(() => {
+        const latest = rowDataLog.at(-1);
+        return latest?.[1] !== undefined && "id" in latest[1] ? String(latest[1].id) : "";
+      })
+      .toBe("b");
+    await view.getByRole("button", { name: "zeta" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-pending-scroll-chrome", { exact: true }))
+      .toHaveTextContent(
+        /^error:InvalidQuery:Live grid onScroll requires an active query from onChange\.$/,
+      );
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });

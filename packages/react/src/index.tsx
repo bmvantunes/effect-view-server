@@ -43,7 +43,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -56,12 +55,15 @@ import {
   liveGridInvalidWindowChrome,
   liveGridOnChangeFromExact,
   liveGridOnChangeToQuery,
+  liveGridOnScrollRequiresActiveQueryMessage,
   liveGridQueryIdentityKey,
+  liveGridScrollQuery,
   decideLiveGridActivation,
   projectLiveGridSinkIfPresent,
   liveGridOwnedQueryOrFallback,
   ownLiveGridOnChangeForPending,
   resolveLiveGridOwnedQuery,
+  validateLiveGridWindow,
   type LiveGridDatasourceForTopic,
   type LiveGridDatasourceParams,
   type LiveGridOnChange,
@@ -316,7 +318,6 @@ export const createViewServerReact = <
     const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
     const activeRef = useRef<LiveGridActiveQuery<Row> | null>(null);
     const [windowError, setWindowError] = useState<string | null>(null);
-    const boundTopicRef = useRef(topic);
 
     const clearLiveGridSink = useCallback(() => {
       const sink = controllerRef.current.sink;
@@ -327,36 +328,8 @@ export const createViewServerReact = <
       sink.setRowData({});
     }, []);
 
-    // Topic identity change (e.g. runtime-union prop): drop previous subscription state + sink.
-    // External sink callbacks must not run during render.
-    useLayoutEffect(() => {
-      if (boundTopicRef.current === topic) {
-        return;
-      }
-      boundTopicRef.current = topic;
-      controllerRef.current.pending = null;
-      controllerRef.current.session += 1;
-      activeRef.current = null;
-      clearLiveGridSink();
-      setActive(null);
-      setWindowError(null);
-    }, [topic, clearLiveGridSink]);
-
-    const applyChange = useCallback(
-      (state: LiveGridOnChange<Row>) => {
-        const mapped = liveGridOnChangeToQuery(state);
-        if (mapped._tag === "InvalidWindow") {
-          const invalidSession = controllerRef.current.session + 1;
-          controllerRef.current.session = invalidSession;
-          clearLiveGridSink();
-          if (controllerRef.current.session !== invalidSession) {
-            return;
-          }
-          setWindowError(mapped.message);
-          activeRef.current = null;
-          setActive(null);
-          return;
-        }
+    const activateMappedQuery = useCallback(
+      (mapped: { readonly firstRow: number; readonly query: LiveQuery<Row> }) => {
         // Match useLiveQuery: prefer a frozen snapshot, fall back to the mapped query on failure.
         const ownedQuery = liveGridOwnedQueryOrFallback(
           resolveLiveGridOwnedQuery(mapped.query, (query) => snapshotViewServerQuery(query)),
@@ -374,7 +347,7 @@ export const createViewServerReact = <
           key,
           firstRow: mapped.firstRow,
         });
-        // Deduplicate identical full-state onChange (same query identity + firstRow).
+        // Deduplicate identical activation (same query identity + firstRow).
         if (decision._tag === "Unchanged") {
           return;
         }
@@ -396,6 +369,50 @@ export const createViewServerReact = <
         setActive(nextActive);
       },
       [clearLiveGridSink, topicDefinition],
+    );
+
+    const applyInvalidWindow = useCallback(
+      (message: string) => {
+        const invalidSession = controllerRef.current.session + 1;
+        controllerRef.current.session = invalidSession;
+        clearLiveGridSink();
+        if (controllerRef.current.session !== invalidSession) {
+          return;
+        }
+        setWindowError(message);
+        activeRef.current = null;
+        setActive(null);
+      },
+      [clearLiveGridSink],
+    );
+
+    const applyChange = useCallback(
+      (state: LiveGridOnChange<Row>) => {
+        const mapped = liveGridOnChangeToQuery(state);
+        if (mapped._tag === "InvalidWindow") {
+          applyInvalidWindow(mapped.message);
+          return;
+        }
+        activateMappedQuery(mapped);
+      },
+      [activateMappedQuery, applyInvalidWindow],
+    );
+
+    const applyScroll = useCallback(
+      (firstRow: number, lastRow: number) => {
+        const current = activeRef.current;
+        if (current === null) {
+          applyInvalidWindow(liveGridOnScrollRequiresActiveQueryMessage);
+          return;
+        }
+        const mapped = liveGridScrollQuery(current.query, firstRow, lastRow);
+        if (mapped._tag === "InvalidWindow") {
+          applyInvalidWindow(mapped.message);
+          return;
+        }
+        activateMappedQuery(mapped);
+      },
+      [activateMappedQuery, applyInvalidWindow],
     );
 
     const datasource = useMemo((): LiveGridDatasourceForTopic<Topics, Topic> => {
@@ -436,6 +453,28 @@ export const createViewServerReact = <
           }
           applyChange(change);
         },
+        onScroll: (firstRow, lastRow) => {
+          if (controller.sink === null) {
+            if (controller.pending === null) {
+              applyInvalidWindow(liveGridOnScrollRequiresActiveQueryMessage);
+              return;
+            }
+            // Pre-init: re-window the buffered full-state onChange (no active query yet).
+            const window = validateLiveGridWindow(firstRow, lastRow);
+            if (window._tag === "Invalid") {
+              controller.pending = null;
+              applyInvalidWindow(window.message);
+              return;
+            }
+            controller.pending = {
+              ...controller.pending,
+              firstRow: window.firstRow,
+              lastRow: window.lastRow,
+            };
+            return;
+          }
+          applyScroll(firstRow, lastRow);
+        },
         destroy: () => {
           controller.sink = null;
           controller.pending = null;
@@ -445,7 +484,7 @@ export const createViewServerReact = <
           setActive(null);
         },
       };
-    }, [applyChange]);
+    }, [applyChange, applyInvalidWindow, applyScroll]);
 
     const subscriptionSession = controllerRef.current.session;
     const subscriptionKey =

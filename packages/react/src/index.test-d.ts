@@ -526,8 +526,10 @@ describe("React type contracts", () => {
     expectTypeOf(grid.status).toEqualTypeOf<"loading" | "ready" | "stale" | "closed" | "error">();
     expectTypeOf(grid.datasource.init).toBeFunction();
     expectTypeOf(grid.datasource.onChange).toBeFunction();
+    expectTypeOf(grid.datasource.onScroll).toBeFunction();
     expectTypeOf(grid.datasource.destroy).toBeFunction();
     expectTypeOf(grid).not.toHaveProperty("rows");
+    grid.datasource.onScroll(0, 9);
 
     grid.datasource.onChange({
       mode: "raw",

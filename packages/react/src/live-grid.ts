@@ -99,11 +99,23 @@ export type LiveGridDatasourceForTopic<
   Topic extends Extract<keyof Topics, string>,
 > = {
   readonly init: (params: LiveGridDatasourceParams) => void;
+  /**
+   * Full-state query + window replace. Every field is required (e.g. clear filters with
+   * `where: []`, clear sort with `orderBy: []`). Prefer this when select/where/orderBy/group
+   * change; include the new window (usually top of grid after filter/sort reset).
+   */
   readonly onChange: <
     const State extends LiveGridOnChangeStateCandidate<TopicRow<Topics, NoInfer<Topic>>>,
   >(
     state: ExactLiveGridOnChangeInputForTopic<Topics, NoInfer<Topic>, State>,
   ) => void;
+  /**
+   * Window-only update for the active query. Prefer this for scroll/viewport moves: it keeps
+   * the query plan identity (select/where/orderBy/groupBy) and only moves offset/limit, which
+   * is the path reserved for server page-cache / seek optimizations. Do not use this for
+   * filter/sort/column changes — call `onChange` with a full state (including the new window).
+   */
+  readonly onScroll: (firstRow: number, lastRow: number) => void;
   readonly destroy: () => void;
 };
 
@@ -227,6 +239,42 @@ export const liveGridOnChangeToQuery = <Row>(
   };
   return { _tag: "Query", firstRow: window.firstRow, query };
 };
+
+/**
+ * Re-window an owned live query for `onScroll`. Keeps plan fields; only offset/limit move.
+ */
+export const liveGridScrollQuery = <Row>(
+  query: LiveQuery<Row>,
+  firstRow: number,
+  lastRow: number,
+): LiveGridMappedQuery<Row> => {
+  const window = validateLiveGridWindow(firstRow, lastRow);
+  if (window._tag === "Invalid") {
+    return { _tag: "InvalidWindow", message: window.message };
+  }
+  if ("groupBy" in query) {
+    const scrolled: GroupedQuery<Row> = {
+      groupBy: query.groupBy,
+      aggregates: query.aggregates,
+      ...(query.where === undefined ? {} : { where: query.where }),
+      ...(query.orderBy === undefined ? {} : { orderBy: query.orderBy }),
+      offset: window.firstRow,
+      limit: window.limit,
+    };
+    return { _tag: "Query", firstRow: window.firstRow, query: scrolled };
+  }
+  const scrolled: RawQuery<Row> = {
+    select: query.select,
+    ...(query.where === undefined ? {} : { where: query.where }),
+    ...(query.orderBy === undefined ? {} : { orderBy: query.orderBy }),
+    offset: window.firstRow,
+    limit: window.limit,
+  };
+  return { _tag: "Query", firstRow: window.firstRow, query: scrolled };
+};
+
+export const liveGridOnScrollRequiresActiveQueryMessage =
+  "Live grid onScroll requires an active query from onChange.";
 
 export const projectLiveGridSink = (
   params: LiveGridDatasourceParams,

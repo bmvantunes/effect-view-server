@@ -91,6 +91,9 @@ datasource.init({
   },
 });
 
+// Full-state replace: every field is required (no partial patches).
+// Clear filters with where: []; clear sort with orderBy: [].
+// After filter/sort/column changes, include the new window (usually top of grid).
 datasource.onChange({
   mode: "raw",
   firstRow: 0,
@@ -99,9 +102,15 @@ datasource.onChange({
   where: [], // required; [] matches all
   orderBy: [{ field: "price", direction: "asc" }], // required; [] allowed
 });
+
+// Scroll / viewport only — keeps the active query plan (select/where/orderBy/groupBy).
+// Prefer this over onChange for high-frequency window moves; it is the path reserved for
+// server page-cache / seek optimizations (warm pages above/below the cursor).
+datasource.onScroll(50, 99);
 ```
 
-`onChange` is a full-state replace (`raw` | `grouped`). Window maps to Live Query `offset`/`limit`. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
+`onChange` is a full-state replace (`raw` | `grouped`) including the window.  
+`onScroll(firstRow, lastRow)` re-windows the **active** query only (requires a prior successful `onChange`). Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
 
 ### Schema value admission
 

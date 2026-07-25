@@ -1710,8 +1710,8 @@ describe("createViewServerReact", () => {
       </ViewServerClientProvider>,
     );
     await expect
-      .element(view.getByLabelText("live-grid-chrome"))
-      .toHaveTextContent("loading:0:none");
+      .element(view.getByLabelText("live-grid-chrome", { exact: true }))
+      .toHaveTextContent(/^loading:0:none$/);
     await view.getByRole("button", { name: "mount-grid" }).click();
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
@@ -1730,8 +1730,8 @@ describe("createViewServerReact", () => {
       })
       .toBe("a|b");
     await expect
-      .element(view.getByLabelText("live-grid-chrome"))
-      .toHaveTextContent("ready:2:Ready");
+      .element(view.getByLabelText("live-grid-chrome", { exact: true }))
+      .toHaveTextContent(/^ready:2:Ready$/);
 
     await view.getByRole("button", { name: "destroy-grid" }).click();
     await expect
@@ -2184,14 +2184,6 @@ describe("createViewServerReact", () => {
             }}
           >
             beta
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              grid.datasource.onScroll(1, 1);
-            }}
-          >
-            gamma
           </button>
           <button
             type="button"

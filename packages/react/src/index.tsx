@@ -448,6 +448,8 @@ export const createViewServerReact = <
               controller.session += 1;
               return;
             }
+            // Successful full-state buffer replaces any prior invalid-window chrome.
+            setWindowError(null);
             controller.pending = ownedPending.state;
             return;
           }

@@ -206,7 +206,9 @@ describe("live grid helpers", () => {
         limit: 2,
       },
     });
-    expect(liveGridOnScrollRequiresActiveQueryMessage.length).toBeGreaterThan(0);
+    expect(liveGridOnScrollRequiresActiveQueryMessage).toBe(
+      "Live grid onScroll requires an active query from onChange.",
+    );
   });
 
   it("projects absolute index maps into the sink", () => {

@@ -209,6 +209,63 @@ describe("live grid helpers", () => {
     expect(liveGridOnScrollRequiresActiveQueryMessage).toBe(
       "Live grid onScroll requires an active query from onChange.",
     );
+
+    // High pagination windows (deep scroll) must map inclusive bounds to offset/limit.
+    expect(
+      liveGridScrollQuery<OrderRow>(
+        {
+          select: ["id", "price"],
+          where: [],
+          orderBy: [{ field: "price", direction: "asc" }],
+          offset: 0,
+          limit: 30,
+        },
+        450,
+        480,
+      ),
+    ).toStrictEqual({
+      _tag: "Query",
+      firstRow: 450,
+      query: {
+        select: ["id", "price"],
+        where: [],
+        orderBy: [{ field: "price", direction: "asc" }],
+        offset: 450,
+        limit: 31,
+      },
+    });
+    expect(
+      liveGridOnChangeToQuery<OrderRow>({
+        mode: "raw",
+        firstRow: 900,
+        lastRow: 929,
+        select: ["id"],
+        where: [],
+        orderBy: [{ field: "price", direction: "desc" }],
+      }),
+    ).toStrictEqual({
+      _tag: "Query",
+      firstRow: 900,
+      query: {
+        select: ["id"],
+        where: [],
+        orderBy: [{ field: "price", direction: "desc" }],
+        offset: 900,
+        limit: 30,
+      },
+    });
+    expect(validateLiveGridWindow(450, 480)).toStrictEqual({
+      _tag: "Valid",
+      firstRow: 450,
+      lastRow: 480,
+      limit: 31,
+    });
+    expect(validateLiveGridWindow(10_000, 10_049)).toStrictEqual({
+      _tag: "Valid",
+      firstRow: 10_000,
+      lastRow: 10_049,
+      limit: 50,
+    });
   });
 
   it("projects absolute index maps into the sink", () => {
@@ -241,13 +298,42 @@ describe("live grid helpers", () => {
         11: { id: "b", price: 2, status: "open" },
       },
     ]);
+    projectLiveGridSink(
+      {
+        setRowCount: (count, keepRenderedRows) => {
+          counts.push(
+            keepRenderedRows === undefined ? { count } : { count, keep: keepRenderedRows },
+          );
+        },
+        setRowData: (rowData) => {
+          dataMaps.push(rowData);
+        },
+      },
+      450,
+      {
+        totalRows: 500,
+        rows: [
+          { id: "row-450", price: 450, status: "open" },
+          { id: "row-451", price: 451, status: "open" },
+          { id: "row-480", price: 480, status: "open" },
+        ],
+      },
+    );
+    expect(counts.at(-1)).toStrictEqual({ count: 500, keep: true });
+    expect(dataMaps.at(-1)).toStrictEqual({
+      450: { id: "row-450", price: 450, status: "open" },
+      451: { id: "row-451", price: 451, status: "open" },
+      452: { id: "row-480", price: 480, status: "open" },
+    });
+    const mapsAfterDeep = dataMaps.length;
+    const countsAfterDeep = counts.length;
     projectLiveGridSinkIfPresent(null, 0, {
       totalRows: 1,
       rows: [{ id: "x", price: 0, status: "open" }],
       status: "ready",
       version: 1,
     });
-    expect(dataMaps).toHaveLength(1);
+    expect(dataMaps.length).toBe(mapsAfterDeep);
     projectLiveGridSinkIfPresent(
       {
         setRowCount: (count) => {
@@ -265,8 +351,8 @@ describe("live grid helpers", () => {
         version: 0,
       },
     );
-    expect(dataMaps).toHaveLength(1);
-    expect(counts).toStrictEqual([{ count: 100, keep: true }]);
+    expect(dataMaps.length).toBe(mapsAfterDeep);
+    expect(counts.length).toBe(countsAfterDeep);
     projectLiveGridSinkIfPresent(
       {
         setRowCount: (count) => {
@@ -288,7 +374,7 @@ describe("live grid helpers", () => {
         subscriptionSession: 1,
       },
     );
-    expect(dataMaps).toHaveLength(1);
+    expect(dataMaps.length).toBe(mapsAfterDeep);
     expect(isLiveGridSessionCurrent(1, 1)).toBe(true);
     expect(isLiveGridSessionCurrent(2, 1)).toBe(false);
 

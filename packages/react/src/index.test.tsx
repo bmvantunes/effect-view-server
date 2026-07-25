@@ -2115,6 +2115,145 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(inMemory.close);
   });
 
+  it("paginates deep windows (450-480) via onChange and onScroll", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowDataLog: Array<Record<number, object>> = [];
+    const rowCountLog: Array<number> = [];
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly totalRows: number;
+      readonly statusCode: string;
+    }> = [];
+    const bulkOrders = Array.from({ length: 500 }, (_, index) => order(`row-${index}`, index));
+    // Expected absolute-index map for inclusive window [450, 480] (31 rows).
+    const expectedDeepPage: Record<number, object> = {};
+    for (let index = 450; index <= 480; index += 1) {
+      expectedDeepPage[index] = { id: `row-${index}`, price: index };
+    }
+    const expectedTailPage: Record<number, object> = {};
+    for (let index = 470; index <= 499; index += 1) {
+      expectedTailPage[index] = { id: `row-${index}`, price: index };
+    }
+    const expectedMidPage: Record<number, object> = {};
+    for (let index = 200; index <= 229; index += 1) {
+      expectedMidPage[index] = { id: `row-${index}`, price: index };
+    }
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        totalRows: grid.totalRows,
+        statusCode: grid.statusCode ?? "none",
+      });
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                },
+                setRowData: (rowData) => {
+                  rowDataLog.push(rowData);
+                },
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 450,
+                lastRow: 480,
+                select: ["id", "price"],
+                where: [],
+                orderBy: [{ field: "price", direction: "asc" }],
+              });
+            }}
+          >
+            open deep page
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(470, 499);
+            }}
+          >
+            scroll tail
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onScroll(200, 229);
+            }}
+          >
+            jump mid
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 450,
+                lastRow: 480,
+                select: ["id", "price"],
+                where: [],
+                orderBy: [{ field: "price", direction: "asc" }],
+              });
+            }}
+          >
+            onChange deep again
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await Effect.runPromise(inMemory.client.publishMany("orders", bulkOrders));
+    await view.getByRole("button", { name: "open deep page" }).click();
+    await expect.poll(() => rowCountLog.at(-1)).toBe(500);
+    await expect.poll(() => rowDataLog.at(-1)).toStrictEqual(expectedDeepPage);
+    await expect
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "ready",
+        totalRows: 500,
+        statusCode: "Ready",
+      });
+    expect(Object.keys(rowDataLog.at(-1) ?? {}).length).toBe(31);
+    expect((rowDataLog.at(-1) ?? {})[450]).toStrictEqual({ id: "row-450", price: 450 });
+    expect((rowDataLog.at(-1) ?? {})[480]).toStrictEqual({ id: "row-480", price: 480 });
+    expect((rowDataLog.at(-1) ?? {})[449]).toBe(undefined);
+    expect((rowDataLog.at(-1) ?? {})[481]).toBe(undefined);
+
+    await view.getByRole("button", { name: "scroll tail" }).click();
+    await expect.poll(() => rowDataLog.at(-1)).toStrictEqual(expectedTailPage);
+    expect(Object.keys(rowDataLog.at(-1) ?? {}).length).toBe(30);
+    expect((rowDataLog.at(-1) ?? {})[470]).toStrictEqual({ id: "row-470", price: 470 });
+    expect((rowDataLog.at(-1) ?? {})[499]).toStrictEqual({ id: "row-499", price: 499 });
+    await expect.poll(() => rowCountLog.at(-1)).toBe(500);
+
+    await view.getByRole("button", { name: "jump mid" }).click();
+    await expect.poll(() => rowDataLog.at(-1)).toStrictEqual(expectedMidPage);
+    expect((rowDataLog.at(-1) ?? {})[200]).toStrictEqual({ id: "row-200", price: 200 });
+    expect((rowDataLog.at(-1) ?? {})[229]).toStrictEqual({ id: "row-229", price: 229 });
+    expect((rowDataLog.at(-1) ?? {})[450]).toBe(undefined);
+
+    await view.getByRole("button", { name: "onChange deep again" }).click();
+    await expect.poll(() => rowDataLog.at(-1)).toStrictEqual(expectedDeepPage);
+    await expect
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "ready",
+        totalRows: 500,
+        statusCode: "Ready",
+      });
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
   it("re-windows the active query with onScroll without a full onChange", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowDataLog: Array<Record<number, object>> = [];

@@ -74,7 +74,7 @@ const leasedAmountViewServer = defineViewServerConfig({
 });
 
 const react = createViewServerReact(viewServer);
-const { useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
+const { useLiveQuery, useLiveGrid, useViewServerHealth, useViewServerHealthSummary } = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
 const leasedAmountReact = createViewServerReact(leasedAmountViewServer);
 const LeasedAmountClientProvider = leasedAmountReact[ViewServerReactClientProvider];
@@ -1655,5 +1655,222 @@ describe("createViewServerReact", () => {
       .element(view.getByText("closed:BackpressureExceeded", { exact: true }))
       .toBeVisible();
     await view.unmount();
+  });
+
+  it("pushes absolute index rows through useLiveGrid datasource sink", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowDataLog: Array<Record<number, { readonly id: string; readonly price: number }>> = [];
+    const rowCountLog: Array<number> = [];
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      return (
+        <div>
+          <p aria-label="live-grid-chrome">
+            {`${grid.status}:${grid.totalRows}:${grid.statusCode ?? "none"}`}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                },
+                setRowData: (rowData) => {
+                  rowDataLog.push(rowData);
+                },
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 9,
+                select: ["id", "price"],
+                where: [],
+                orderBy: [{ field: "price", direction: "asc" }],
+              });
+            }}
+          >
+            mount-grid
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.destroy();
+            }}
+          >
+            destroy-grid
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await expect
+      .element(view.getByLabelText("live-grid-chrome"))
+      .toHaveTextContent("loading:0:none");
+    await view.getByRole("button", { name: "mount-grid" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
+    await expect.poll(() => rowCountLog.at(-1) ?? -1).toBe(2);
+    await expect
+      .poll(() => {
+        const latest = rowDataLog.at(-1);
+        return latest === undefined ? "" : `${latest[0]?.id ?? ""}|${latest[1]?.id ?? ""}`;
+      })
+      .toBe("a|b");
+    await expect
+      .element(view.getByLabelText("live-grid-chrome"))
+      .toHaveTextContent("ready:2:Ready");
+
+    await view.getByRole("button", { name: "destroy-grid" }).click();
+    await expect
+      .poll(async () => {
+        const health = await Effect.runPromise(inMemory.client.health());
+        return health.engine.topics.orders.activeSubscriptions;
+      })
+      .toBe(0);
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("buffers useLiveGrid onChange until init and rejects inverted windows", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowCountLog: Array<number> = [];
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      return (
+        <div>
+          <p aria-label="live-grid-buffer-chrome">
+            {`${grid.status}:${grid.statusCode ?? "none"}:${grid.message ?? ""}`}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            buffer-change
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                },
+                setRowData: () => undefined,
+              });
+            }}
+          >
+            init-grid
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 5,
+                lastRow: 1,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            invalid-window
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "buffer-change" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    expect(rowCountLog).toStrictEqual([]);
+    await view.getByRole("button", { name: "init-grid" }).click();
+    await expect.poll(() => rowCountLog.length > 0).toBe(true);
+    await view.getByRole("button", { name: "invalid-window" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-buffer-chrome"))
+      .toHaveTextContent(
+        "error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow.",
+      );
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("supports grouped useLiveGrid onChange and live updates", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowDataLog: Array<Record<number, object>> = [];
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      return (
+        <div>
+          <p aria-label="live-grid-grouped-chrome">{`${grid.status}:${grid.totalRows}`}</p>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: () => undefined,
+                setRowData: (rowData) => {
+                  rowDataLog.push(rowData);
+                },
+              });
+              grid.datasource.onChange({
+                mode: "grouped",
+                firstRow: 0,
+                lastRow: 9,
+                groupBy: ["status"],
+                aggregates: {
+                  count: { aggFunc: "count" },
+                },
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            mount-grouped
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "mount-grouped" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
+    await expect
+      .poll(() => {
+        const latest = rowDataLog.at(-1);
+        const first = latest?.[0];
+        if (first === undefined || !("status" in first) || !("count" in first)) {
+          return "";
+        }
+        return `${String(first.status)}:${String(first.count)}`;
+      })
+      .toBe("open:2");
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
   });
 });

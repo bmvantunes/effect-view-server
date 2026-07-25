@@ -70,8 +70,38 @@ export const viewServer = defineViewServerConfig({
 });
 
 export const viewServerReact = createViewServerReact(viewServer);
-export const { ViewServerProvider, useLiveQuery, useViewServerHealthSummary } = viewServerReact;
+export const { ViewServerProvider, useLiveQuery, useLiveGrid, useViewServerHealthSummary } =
+  viewServerReact;
 ```
+
+### Live query vs live grid
+
+- Use **`useLiveQuery(topic, query)`** when React owns a fixed Live Query and renders `rows` (client-side grids, simple lists).
+- Use **`useLiveGrid(topic)`** for dumb virtualized / viewport tables. The hook returns a **datasource** plus Live Query chrome (`totalRows`, `version`, `status`, …) **without** a public `rows` list. The grid calls:
+
+```ts
+const { datasource, totalRows, status, version } = useLiveGrid("orders");
+
+datasource.init({
+  setRowCount(count) {
+    /* drive scroll height / chrome */
+  },
+  setRowData(rowData) {
+    /* absolute index → row map, same shape as AG Grid Viewport */
+  },
+});
+
+datasource.onChange({
+  mode: "raw",
+  firstRow: 0,
+  lastRow: 49,
+  select: ["id", "price", "status"], // visible columns only
+  where: [], // required; [] matches all
+  orderBy: [{ field: "price", direction: "asc" }], // required; [] allowed
+});
+```
+
+`onChange` is a full-state replace (`raw` | `grouped`). Window maps to Live Query `offset`/`limit`. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
 
 ### Schema value admission
 

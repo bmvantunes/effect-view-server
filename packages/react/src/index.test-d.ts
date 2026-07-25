@@ -82,7 +82,13 @@ const leasedViewServer = defineViewServerConfig({
 });
 
 const react = createViewServerReact(viewServer);
-const { ViewServerProvider, useLiveQuery, useViewServerHealth, useViewServerHealthSummary } = react;
+const {
+  ViewServerProvider,
+  useLiveQuery,
+  useLiveGrid,
+  useViewServerHealth,
+  useViewServerHealthSummary,
+} = react;
 const ViewServerClientProvider = react[ViewServerReactClientProvider];
 const leasedReact = createViewServerReact(leasedViewServer);
 const heterogeneousReact = createViewServerReact(heterogeneousViewServer);
@@ -490,6 +496,51 @@ describe("React type contracts", () => {
     consumerReact.useLiveQuery("orders", {
       select: [null],
     });
+  });
+
+  it("types useLiveGrid chrome without a public rows list", () => {
+    const grid = useLiveGrid("orders");
+    expectTypeOf(grid.totalRows).toEqualTypeOf<number>();
+    expectTypeOf(grid.version).toEqualTypeOf<number>();
+    expectTypeOf(grid.status).toEqualTypeOf<"loading" | "ready" | "stale" | "closed" | "error">();
+    expectTypeOf(grid.datasource.init).toBeFunction();
+    expectTypeOf(grid.datasource.onChange).toBeFunction();
+    expectTypeOf(grid.datasource.destroy).toBeFunction();
+    expectTypeOf(grid).not.toHaveProperty("rows");
+
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      select: ["id", "price"],
+      where: [],
+      orderBy: [],
+    });
+
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      groupBy: ["status"],
+      aggregates: {
+        count: { aggFunc: "count" },
+      },
+      where: [],
+      orderBy: [],
+    });
+
+    grid.datasource.onChange({
+      mode: "raw",
+      firstRow: 0,
+      lastRow: 9,
+      // @ts-expect-error invalid select field is rejected for live grid onChange.
+      select: ["prcie"],
+      where: [],
+      orderBy: [],
+    });
+
+    // @ts-expect-error unknown topics are rejected by useLiveGrid.
+    useLiveGrid("missing");
   });
 
   it("preserves consumer testing types through @effect-view-server/react/testing package imports", () => {

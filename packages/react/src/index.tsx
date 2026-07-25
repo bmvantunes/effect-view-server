@@ -9,6 +9,7 @@ import {
   liveQueryResultFromAsyncResult,
   stableQueryKey,
   stableQueryKeyForRowSchema,
+  type ClientState,
   type ViewServerLiveClient,
   type ViewServerLiveSubscription,
 } from "@effect-view-server/client";
@@ -20,6 +21,7 @@ import type {
   ExactLiveQueryInputForTopic,
   GrpcRuntimeClients,
   GroupedQuery,
+  LiveQuery,
   LiveQueryResult,
   LiveQueryRow,
   RawQuery,
@@ -36,8 +38,37 @@ import type {
 import { Effect, Result, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { ViewServerReactClientProvider, ViewServerReactConfig } from "./internal";
+import {
+  liveGridChromeFromResult,
+  liveGridIdleChrome,
+  liveGridInvalidWindowChrome,
+  liveGridOnChangeToQuery,
+  liveGridQueryIdentityKey,
+  projectLiveGridSinkIfPresent,
+  type LiveGridDatasource,
+  type LiveGridDatasourceParams,
+  type LiveGridOnChange,
+  type UseLiveGridResult,
+} from "./live-grid";
+
+export type {
+  LiveGridDatasource,
+  LiveGridDatasourceParams,
+  LiveGridGroupedOnChange,
+  LiveGridOnChange,
+  LiveGridRawOnChange,
+  UseLiveGridResult,
+} from "./live-grid";
 
 export type ViewServerReactBindings<
   Topics extends TopicDefinitions,
@@ -49,6 +80,7 @@ export type ViewServerReactBindings<
     props: ViewServerClientProviderProps<Topics>,
   ) => ReactNode;
   readonly useLiveQuery: UseLiveQueryHook<Topics>;
+  readonly useLiveGrid: UseLiveGridHook<Topics>;
   readonly useViewServerHealth: () => ViewServerHealthDetails<Extract<keyof Topics, string>>;
   readonly useViewServerHealthSummary: () => ViewServerHealthSummary<Topics>;
   readonly ViewServerProvider: (props: ViewServerProviderProps) => ReactNode;
@@ -76,6 +108,52 @@ export type UseLiveQueryHook<Topics extends TopicDefinitions> = <
   topic: Topic,
   query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
+
+export type UseLiveGridHook<Topics extends TopicDefinitions> = <
+  Topic extends Extract<keyof Topics, string>,
+>(
+  topic: Topic,
+) => UseLiveGridResult<TopicRow<Topics, Topic>>;
+
+type LiveGridActiveQuery<Row> = {
+  readonly key: string;
+  readonly query: LiveQuery<Row>;
+  readonly firstRow: number;
+};
+
+type LiveGridControllerState<Row> = {
+  sink: LiveGridDatasourceParams<Row> | null;
+  pending: LiveGridOnChange<Row> | null;
+  firstRow: number;
+  session: number;
+};
+
+const idleLiveGridSubscription = <Row,>(): Effect.Effect<ViewServerLiveSubscription<Row>> =>
+  Effect.succeed({
+    events: Stream.never,
+    close: () => Effect.void,
+  });
+
+/**
+ * Live grid stores a runtime Live Query after onChange. ExactLiveQueryInputForTopic cannot be
+ * re-proven without const inference at the original call site, so this is the smallest subscribe
+ * seam. onChange inputs remain typed; runtime engine validation still applies.
+ */
+const subscribeLiveGridQuery = <
+  Topics extends TopicDefinitions,
+  Topic extends Extract<keyof Topics, string>,
+  Row extends TopicRow<Topics, Topic>,
+>(
+  client: ViewServerLiveClient<Topics>,
+  topic: Topic,
+  query: LiveQuery<Row>,
+): Effect.Effect<ViewServerLiveSubscription<Row>> => {
+  const subscribe = client.subscribe as (
+    topicName: Topic,
+    liveQuery: LiveQuery<Row>,
+  ) => Effect.Effect<ViewServerLiveSubscription<Row>>;
+  return subscribe(topic, query);
+};
 
 export const createViewServerReact = <
   const Topics extends TopicDefinitions,
@@ -145,6 +223,7 @@ export const createViewServerReact = <
   const useSubscription = <Row,>(
     subscriptionKey: string,
     subscribe: () => Effect.Effect<ViewServerLiveSubscription<Row>, unknown>,
+    onState?: (state: ClientState<Row>) => void,
   ): LiveQueryResult<Row> => {
     const liveAtom = useMemo(
       () =>
@@ -155,6 +234,11 @@ export const createViewServerReact = <
                 const subscription = yield* subscribe();
                 return subscription.events.pipe(
                   Stream.scan(initialClientState<Row>(), applyEvent),
+                  Stream.tap((state) =>
+                    Effect.sync(() => {
+                      onState?.(state);
+                    }),
+                  ),
                   Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
                 );
               }),
@@ -192,6 +276,122 @@ export const createViewServerReact = <
       `${client.health.key}:query:${topic}:${queryIdentity.key}`,
       () => client.subscribe<Topic, Query>(topic, queryIdentity.query),
     );
+  }
+
+  function useLiveGrid<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): UseLiveGridResult<TopicRow<Topics, Topic>> {
+    type Row = TopicRow<Topics, Topic>;
+    const client = useClient();
+    const topicDefinition = config.topics[topic];
+    const controllerRef = useRef<LiveGridControllerState<Row>>({
+      sink: null,
+      pending: null,
+      firstRow: 0,
+      session: 0,
+    });
+    const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
+    const [windowError, setWindowError] = useState<string | null>(null);
+
+    const applyChange = useCallback(
+      (state: LiveGridOnChange<Row>) => {
+        const mapped = liveGridOnChangeToQuery(state);
+        if (mapped._tag === "InvalidWindow") {
+          setWindowError(mapped.message);
+          setActive(null);
+          controllerRef.current.session += 1;
+          return;
+        }
+        const ownedQuery = snapshotViewServerQuery(mapped.query);
+        const key = liveGridQueryIdentityKey(
+          ownedQuery,
+          topicDefinition?.schema,
+          stableQueryKey,
+          stableQueryKeyForRowSchema,
+        );
+        setWindowError(null);
+        controllerRef.current.session += 1;
+        controllerRef.current.firstRow = mapped.firstRow;
+        setActive({
+          key,
+          query: ownedQuery,
+          firstRow: mapped.firstRow,
+        });
+      },
+      [topicDefinition],
+    );
+
+    const datasource = useMemo((): LiveGridDatasource<Row> => {
+      const controller = controllerRef.current;
+      return {
+        init: (params) => {
+          controller.sink = params;
+          if (controller.pending !== null) {
+            const pending = controller.pending;
+            controller.pending = null;
+            applyChange(pending);
+          }
+        },
+        onChange: (state) => {
+          if (controller.sink === null) {
+            controller.pending = state;
+            return;
+          }
+          applyChange(state);
+        },
+        destroy: () => {
+          controller.sink = null;
+          controller.pending = null;
+          controller.firstRow = 0;
+          controller.session += 1;
+          setWindowError(null);
+          setActive(null);
+        },
+      };
+    }, [applyChange]);
+
+    const subscriptionSession = controllerRef.current.session;
+    const subscriptionKey =
+      active === null
+        ? `${client.health.key}:grid:${topic}:idle:${subscriptionSession}`
+        : `${client.health.key}:grid:${topic}:${active.key}:${subscriptionSession}`;
+
+    const activeQuery = active?.query;
+    const subscriptionFirstRow = active?.firstRow ?? 0;
+    const result = useSubscription<Row>(
+      subscriptionKey,
+      () => {
+        if (activeQuery === undefined) {
+          return idleLiveGridSubscription<Row>();
+        }
+        return subscribeLiveGridQuery(client, topic, activeQuery);
+      },
+      activeQuery === undefined
+        ? undefined
+        : (state) => {
+            projectLiveGridSinkIfPresent(controllerRef.current.sink, subscriptionFirstRow, state, {
+              activeSession: controllerRef.current.session,
+              subscriptionSession,
+            });
+          },
+    );
+
+    if (windowError !== null) {
+      return {
+        datasource,
+        ...liveGridInvalidWindowChrome<Row>(windowError),
+      };
+    }
+    if (active === null) {
+      return {
+        datasource,
+        ...liveGridIdleChrome<Row>(),
+      };
+    }
+    return {
+      datasource,
+      ...liveGridChromeFromResult(result),
+    };
   }
 
   const connectionStatusFromLiveQueryStatus = (
@@ -268,6 +468,7 @@ export const createViewServerReact = <
     [ViewServerReactConfig]: config,
     [ViewServerReactClientProvider]: ViewServerClientProvider,
     useLiveQuery,
+    useLiveGrid,
     useViewServerHealth,
     useViewServerHealthSummary,
     ViewServerProvider,

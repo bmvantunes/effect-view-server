@@ -209,7 +209,9 @@ describe("live grid helpers", () => {
     expect(liveGridOnScrollRequiresActiveQueryMessage).toBe(
       "Live grid onScroll requires an active query from onChange.",
     );
+  });
 
+  it("maps deep pagination windows to offset/limit", () => {
     // High pagination windows (deep scroll) must map inclusive bounds to offset/limit.
     expect(
       liveGridScrollQuery<OrderRow>(

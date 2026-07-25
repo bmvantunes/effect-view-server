@@ -103,13 +103,17 @@ datasource.onChange({
   orderBy: [{ field: "price", direction: "asc" }], // required; [] allowed
 });
 
-// Scroll / viewport only — keeps the active query plan (select/where/orderBy/groupBy).
+// Scroll / viewport only — keeps the active query plan.
+// Raw queries retain select/where/orderBy; grouped queries retain
+// groupBy/aggregates/where/orderBy.
 // Prefer this over onChange for high-frequency window moves; it is the path reserved for
 // server page-cache / seek optimizations (warm pages above/below the cursor).
+// firstRow/lastRow are inclusive non-negative safe integers with lastRow >= firstRow.
 datasource.onScroll(50, 99);
 ```
 
 `onChange` is a full-state replace (`raw` | `grouped`) including the window.  
+`firstRow` / `lastRow` (and `onScroll` bounds) are **inclusive** absolute indices: non-negative safe integers with `lastRow >= firstRow` (limit is `lastRow - firstRow + 1`). Invalid windows surface as `InvalidQuery` chrome.  
 `onScroll(firstRow, lastRow)` re-windows the **active** query (or, before `init`, the buffered full-state from a prior successful `onChange`). Bare `onScroll` without a prior `onChange` is invalid. Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
 
 ### Schema value admission

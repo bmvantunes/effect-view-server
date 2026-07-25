@@ -524,12 +524,23 @@ describe("React type contracts", () => {
     expectTypeOf(grid.totalRows).toEqualTypeOf<number>();
     expectTypeOf(grid.version).toEqualTypeOf<number>();
     expectTypeOf(grid.status).toEqualTypeOf<"loading" | "ready" | "stale" | "closed" | "error">();
-    expectTypeOf(grid.datasource.init).toBeFunction();
+    expectTypeOf(grid.datasource.init).toEqualTypeOf<
+      (params: {
+        readonly setRowCount: (count: number, keepRenderedRows?: boolean) => void;
+        readonly setRowData: (rowData: { readonly [index: number]: object }) => void;
+      }) => void
+    >();
+    expectTypeOf(grid.datasource.onScroll).toEqualTypeOf<
+      (firstRow: number, lastRow: number) => void
+    >();
+    expectTypeOf(grid.datasource.destroy).toEqualTypeOf<() => void>();
     expectTypeOf(grid.datasource.onChange).toBeFunction();
-    expectTypeOf(grid.datasource.onScroll).toBeFunction();
-    expectTypeOf(grid.datasource.destroy).toBeFunction();
     expectTypeOf(grid).not.toHaveProperty("rows");
     grid.datasource.onScroll(0, 9);
+    // @ts-expect-error onScroll requires both window bounds.
+    grid.datasource.onScroll(0);
+    // @ts-expect-error onScroll window bounds must be numbers.
+    grid.datasource.onScroll("0", "9");
 
     grid.datasource.onChange({
       mode: "raw",

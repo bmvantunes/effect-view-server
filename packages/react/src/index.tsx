@@ -60,7 +60,6 @@ import {
   liveGridScrollQuery,
   decideLiveGridActivation,
   projectLiveGridSinkIfPresent,
-  liveGridOwnedQueryOrFallback,
   ownLiveGridOnChangeForPending,
   resolveLiveGridOwnedQuery,
   validateLiveGridWindow,
@@ -325,16 +324,52 @@ export const createViewServerReact = <
         return;
       }
       sink.setRowCount(0, true);
+      // setRowCount may re-enter destroy and null the sink; never write setRowData on a dead sink.
+      if (controllerRef.current.sink !== sink) {
+        return;
+      }
       sink.setRowData({});
     }, []);
 
+    // Topic identity is part of the subscription key. If it ever changes in place, bump the
+    // session so late events from the previous topic cannot pass the session guard (grids
+    // normally remount for a new topic; this is the safety net without a layout effect).
+    const [boundTopic, setBoundTopic] = useState(topic);
+    if (topic !== boundTopic) {
+      setBoundTopic(topic);
+      controllerRef.current.session += 1;
+      controllerRef.current.pending = null;
+      activeRef.current = null;
+      setActive(null);
+      setWindowError(null);
+    }
+
+    const applyInvalidWindow = useCallback(
+      (message: string) => {
+        const invalidSession = controllerRef.current.session + 1;
+        controllerRef.current.session = invalidSession;
+        clearLiveGridSink();
+        if (controllerRef.current.session !== invalidSession) {
+          return;
+        }
+        setWindowError(message);
+        activeRef.current = null;
+        setActive(null);
+      },
+      [clearLiveGridSink],
+    );
+
     const activateMappedQuery = useCallback(
       (mapped: { readonly firstRow: number; readonly query: LiveQuery<Row> }) => {
-        // Match useLiveQuery: prefer a frozen snapshot, fall back to the mapped query on failure.
-        const ownedQuery = liveGridOwnedQueryOrFallback(
-          resolveLiveGridOwnedQuery(mapped.query, (query) => snapshotViewServerQuery(query)),
-          mapped.query,
+        // Fail closed on snapshot failure (same as pre-init): never subscribe an unowned query.
+        const owned = resolveLiveGridOwnedQuery(mapped.query, (query) =>
+          snapshotViewServerQuery(query),
         );
+        if (owned._tag === "SnapshotFailed") {
+          applyInvalidWindow(owned.message);
+          return;
+        }
+        const ownedQuery = owned.query;
         const key = liveGridQueryIdentityKey(
           ownedQuery,
           topicDefinition?.schema,
@@ -368,22 +403,7 @@ export const createViewServerReact = <
         activeRef.current = nextActive;
         setActive(nextActive);
       },
-      [clearLiveGridSink, topicDefinition],
-    );
-
-    const applyInvalidWindow = useCallback(
-      (message: string) => {
-        const invalidSession = controllerRef.current.session + 1;
-        controllerRef.current.session = invalidSession;
-        clearLiveGridSink();
-        if (controllerRef.current.session !== invalidSession) {
-          return;
-        }
-        setWindowError(message);
-        activeRef.current = null;
-        setActive(null);
-      },
-      [clearLiveGridSink],
+      [applyInvalidWindow, clearLiveGridSink, topicDefinition],
     );
 
     const applyChange = useCallback(

@@ -2115,6 +2115,145 @@ describe("createViewServerReact", () => {
     await Effect.runPromise(inMemory.close);
   });
 
+  it("fails closed when post-init onChange cannot own the query snapshot", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly statusCode: string;
+      readonly message: string;
+    }> = [];
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      chromeLog.push({
+        status: grid.status,
+        statusCode: grid.statusCode ?? "none",
+        message: grid.message ?? "",
+      });
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: () => undefined,
+                setRowData: () => undefined,
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id", "price"],
+                where: [],
+                orderBy: [],
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id", "price"],
+                where: [{ field: "price", type: "equals", filter: Number.POSITIVE_INFINITY }],
+                orderBy: [],
+              });
+            }}
+          >
+            mount then poison
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "mount then poison" }).click();
+    await expect
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "error",
+        statusCode: "InvalidQuery",
+        message: "Query input numbers must be finite.",
+      });
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("bumps session when the topic prop changes without remounting", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const chromeLog: Array<{
+      readonly status: string;
+      readonly totalRows: number;
+      readonly statusCode: string;
+    }> = [];
+    const rowDataLog: Array<Record<number, object>> = [];
+
+    function GridView(props: { readonly topic: "orders" | "trades" }) {
+      const grid = useLiveGrid(props.topic);
+      chromeLog.push({
+        status: grid.status,
+        totalRows: grid.totalRows,
+        statusCode: grid.statusCode ?? "none",
+      });
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: () => undefined,
+                setRowData: (rowData) => {
+                  rowDataLog.push(rowData);
+                },
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 0,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            mount topic grid
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView topic="orders" />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "mount topic grid" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await expect
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "ready",
+        totalRows: 1,
+        statusCode: "Ready",
+      });
+    await view.rerender(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView topic="trades" />
+      </ViewServerClientProvider>,
+    );
+    // Topic change clears active query; chrome returns to idle until a new onChange.
+    await expect
+      .poll(() => chromeLog.at(-1))
+      .toStrictEqual({
+        status: "loading",
+        totalRows: 0,
+        statusCode: "none",
+      });
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
   it("paginates deep windows (450-480) via onChange and onScroll", async () => {
     const inMemory = createCoreInMemoryViewServer(viewServer);
     const rowDataLog: Array<Record<number, object>> = [];

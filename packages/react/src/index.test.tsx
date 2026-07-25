@@ -1829,6 +1829,10 @@ describe("createViewServerReact", () => {
         /^error:InvalidQuery:Live grid window lastRow must be greater than or equal to firstRow\.$/,
       );
     await view.getByRole("button", { name: "buffer-change" }).click();
+    // Valid pre-init full-state buffer clears prior invalid-window chrome (idle until init).
+    await expect
+      .element(view.getByLabelText("live-grid-buffer-chrome", { exact: true }))
+      .toHaveTextContent(/^loading:none:$/);
     await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
     expect(rowCountLog).toStrictEqual([]);
     await view.getByRole("button", { name: "init-grid" }).click();

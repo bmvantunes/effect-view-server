@@ -110,7 +110,7 @@ datasource.onScroll(50, 99);
 ```
 
 `onChange` is a full-state replace (`raw` | `grouped`) including the window.  
-`onScroll(firstRow, lastRow)` re-windows the **active** query only (requires a prior successful `onChange`). Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
+`onScroll(firstRow, lastRow)` re-windows the **active** query (or, before `init`, the buffered full-state from a prior successful `onChange`). Bare `onScroll` without a prior `onChange` is invalid. Do not call both for a filter reset: one `onChange` with the new query and top window is enough. Live updates use the same WebSocket subscription path as `useLiveQuery` and push into the sink.
 
 ### Schema value admission
 

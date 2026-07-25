@@ -2058,8 +2058,12 @@ describe("createViewServerReact", () => {
     await expect
       .element(view.getByLabelText("live-grid-reenter-chrome", { exact: true }))
       .toHaveTextContent(/^loading:none$/);
+    const countsBeforeGamma = rowCountLog.length;
     await view.getByRole("button", { name: "gamma" }).click();
-    await expect.poll(() => rowCountLog.filter((count) => count === 1).length >= 1).toBe(true);
+    await Effect.runPromise(inMemory.client.publish("orders", order("b", 20)));
+    await expect
+      .poll(() => rowCountLog.slice(countsBeforeGamma).some((count) => count >= 1))
+      .toBe(true);
     await view.getByRole("button", { name: "delta" }).click();
     await expect
       .element(view.getByLabelText("live-grid-reenter-chrome", { exact: true }))

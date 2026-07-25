@@ -43,6 +43,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -75,7 +76,6 @@ export type {
   LiveGridGroupedOnChange,
   LiveGridOnChange,
   LiveGridOnChangeStateCandidate,
-  LiveGridQueryCandidate,
   LiveGridRawOnChange,
   UseLiveGridResultForTopic,
 } from "./live-grid";
@@ -316,7 +316,7 @@ export const createViewServerReact = <
     const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
     const activeRef = useRef<LiveGridActiveQuery<Row> | null>(null);
     const [windowError, setWindowError] = useState<string | null>(null);
-    const [boundTopic, setBoundTopic] = useState(topic);
+    const boundTopicRef = useRef(topic);
 
     const clearLiveGridSink = useCallback(() => {
       const sink = controllerRef.current.sink;
@@ -328,15 +328,19 @@ export const createViewServerReact = <
     }, []);
 
     // Topic identity change (e.g. runtime-union prop): drop previous subscription state + sink.
-    if (boundTopic !== topic) {
-      setBoundTopic(topic);
+    // External sink callbacks must not run during render.
+    useLayoutEffect(() => {
+      if (boundTopicRef.current === topic) {
+        return;
+      }
+      boundTopicRef.current = topic;
       controllerRef.current.pending = null;
       controllerRef.current.session += 1;
       activeRef.current = null;
       clearLiveGridSink();
       setActive(null);
       setWindowError(null);
-    }
+    }, [topic, clearLiveGridSink]);
 
     const applyChange = useCallback(
       (state: LiveGridOnChange<Row>) => {

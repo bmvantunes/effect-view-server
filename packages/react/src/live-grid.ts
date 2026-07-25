@@ -82,11 +82,6 @@ export type ExactLiveGridOnChangeInputForTopic<
     } & ExactLiveQueryInputForTopic<Topics, Topic, LiveGridQueryBodyFromOnChangeState<State>>
   >;
 
-/** @deprecated Use LiveGridOnChangeStateCandidate; kept for re-exports/docs. */
-export type LiveGridQueryCandidate<Row> = LiveGridQueryBodyFromOnChangeState<
-  LiveGridOnChangeStateCandidate<Row>
->;
-
 /**
  * Runtime boundary from exact onChange input to the structural LiveGridOnChange shape.
  * ExactLiveGridOnChangeInputForTopic is State & refinements with State extends LiveGridOnChange.

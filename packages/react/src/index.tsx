@@ -69,14 +69,14 @@ import {
 
 export type {
   ExactLiveGridOnChangeInputForTopic,
-  LiveGridDatasource,
+  LiveGridChrome,
   LiveGridDatasourceForTopic,
   LiveGridDatasourceParams,
   LiveGridGroupedOnChange,
   LiveGridOnChange,
+  LiveGridOnChangeStateCandidate,
   LiveGridQueryCandidate,
   LiveGridRawOnChange,
-  UseLiveGridResult,
   UseLiveGridResultForTopic,
 } from "./live-grid";
 
@@ -316,6 +316,7 @@ export const createViewServerReact = <
     const [active, setActive] = useState<LiveGridActiveQuery<Row> | null>(null);
     const activeRef = useRef<LiveGridActiveQuery<Row> | null>(null);
     const [windowError, setWindowError] = useState<string | null>(null);
+    const [boundTopic, setBoundTopic] = useState(topic);
 
     const clearLiveGridSink = useCallback(() => {
       const sink = controllerRef.current.sink;
@@ -326,15 +327,30 @@ export const createViewServerReact = <
       sink.setRowData({});
     }, []);
 
+    // Topic identity change (e.g. runtime-union prop): drop previous subscription state + sink.
+    if (boundTopic !== topic) {
+      setBoundTopic(topic);
+      controllerRef.current.pending = null;
+      controllerRef.current.session += 1;
+      activeRef.current = null;
+      clearLiveGridSink();
+      setActive(null);
+      setWindowError(null);
+    }
+
     const applyChange = useCallback(
       (state: LiveGridOnChange<Row>) => {
         const mapped = liveGridOnChangeToQuery(state);
         if (mapped._tag === "InvalidWindow") {
+          const invalidSession = controllerRef.current.session + 1;
+          controllerRef.current.session = invalidSession;
+          clearLiveGridSink();
+          if (controllerRef.current.session !== invalidSession) {
+            return;
+          }
           setWindowError(mapped.message);
           activeRef.current = null;
           setActive(null);
-          controllerRef.current.session += 1;
-          clearLiveGridSink();
           return;
         }
         // Match useLiveQuery: prefer a frozen snapshot, fall back to the mapped query on failure.
@@ -358,10 +374,15 @@ export const createViewServerReact = <
         if (decision._tag === "Unchanged") {
           return;
         }
-        setWindowError(null);
-        controllerRef.current.session += 1;
+        const activationSession = controllerRef.current.session + 1;
+        controllerRef.current.session = activationSession;
         // Drop previous viewport rows before the replacement subscription delivers data.
         clearLiveGridSink();
+        // setRowCount(0) may re-enter destroy/onChange and advance the session further.
+        if (controllerRef.current.session !== activationSession) {
+          return;
+        }
+        setWindowError(null);
         const nextActive = {
           key,
           query: ownedQuery,
@@ -397,7 +418,16 @@ export const createViewServerReact = <
               return;
             }
             // Own the change at submission so later caller mutation cannot alter the buffer.
-            controller.pending = ownLiveGridOnChangeForPending(change, snapshotViewServerQuery);
+            const ownedPending = ownLiveGridOnChangeForPending(change, snapshotViewServerQuery);
+            if (ownedPending._tag === "SnapshotFailed") {
+              controller.pending = null;
+              setWindowError(ownedPending.message);
+              activeRef.current = null;
+              setActive(null);
+              controller.session += 1;
+              return;
+            }
+            controller.pending = ownedPending.state;
             return;
           }
           applyChange(change);

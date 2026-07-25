@@ -112,13 +112,6 @@ export type LiveGridDatasourceForTopic<
   readonly destroy: () => void;
 };
 
-/** @deprecated Prefer LiveGridDatasourceForTopic for exact topic-bound validation. */
-export type LiveGridDatasource<Row> = {
-  readonly init: (params: LiveGridDatasourceParams) => void;
-  readonly onChange: (state: LiveGridOnChange<Row>) => void;
-  readonly destroy: () => void;
-};
-
 export type UseLiveGridResultForTopic<
   Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
@@ -131,8 +124,8 @@ export type UseLiveGridResultForTopic<
   readonly message?: string | undefined;
 };
 
-export type UseLiveGridResult<Row> = {
-  readonly datasource: LiveGridDatasource<Row>;
+/** Chrome fields returned beside the datasource (no public rows list). */
+export type LiveGridChrome = {
   readonly totalRows: number;
   readonly version: number;
   readonly status: LiveQueryResult<object>["status"];
@@ -296,9 +289,7 @@ export const projectLiveGridSinkIfPresent = (
   projectLiveGridSink(params, firstRow, state, isSessionCurrent);
 };
 
-export const liveGridChromeFromResult = <Row>(
-  result: LiveQueryResult<Row>,
-): Omit<UseLiveGridResult<Row>, "datasource"> => ({
+export const liveGridChromeFromResult = <Row>(result: LiveQueryResult<Row>): LiveGridChrome => ({
   totalRows: result.totalRows,
   version: result.version,
   status: result.status,
@@ -306,9 +297,7 @@ export const liveGridChromeFromResult = <Row>(
   message: result.message,
 });
 
-export const liveGridInvalidWindowChrome = <Row>(
-  message: string,
-): Omit<UseLiveGridResult<Row>, "datasource"> => ({
+export const liveGridInvalidWindowChrome = (message: string): LiveGridChrome => ({
   totalRows: 0,
   version: 0,
   status: "error",
@@ -316,7 +305,7 @@ export const liveGridInvalidWindowChrome = <Row>(
   message,
 });
 
-export const liveGridIdleChrome = <Row>(): Omit<UseLiveGridResult<Row>, "datasource"> => ({
+export const liveGridIdleChrome = (): LiveGridChrome => ({
   totalRows: 0,
   version: 0,
   status: "loading",
@@ -356,12 +345,25 @@ export const liveGridOwnedQueryOrFallback = <Query>(
   fallback: Query,
 ): Query => (owned._tag === "Owned" ? owned.query : fallback);
 
-/** Own a pre-init onChange payload so caller mutation cannot alter the buffered state. */
+export type OwnLiveGridOnChangeForPendingResult<Row> =
+  | { readonly _tag: "Owned"; readonly state: LiveGridOnChange<Row> }
+  | { readonly _tag: "SnapshotFailed"; readonly message: string };
+
+/**
+ * Own a pre-init onChange payload so caller mutation cannot alter the buffered state.
+ * Snapshot failure is surfaced as typed invalid-query chrome rather than buffering the
+ * caller-owned reference.
+ */
 export const ownLiveGridOnChangeForPending = <Row>(
   state: LiveGridOnChange<Row>,
   snapshot: (state: LiveGridOnChange<Row>) => LiveGridOnChange<Row>,
-): LiveGridOnChange<Row> =>
-  liveGridOwnedQueryOrFallback(resolveLiveGridOwnedQuery(state, snapshot), state);
+): OwnLiveGridOnChangeForPendingResult<Row> => {
+  const owned = resolveLiveGridOwnedQuery(state, snapshot);
+  if (owned._tag === "Owned") {
+    return { _tag: "Owned", state: owned.query };
+  }
+  return { _tag: "SnapshotFailed", message: owned.message };
+};
 
 export type LiveGridActivationDecision<Query> =
   | { readonly _tag: "Unchanged" }

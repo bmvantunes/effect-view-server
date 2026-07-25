@@ -1905,4 +1905,224 @@ describe("createViewServerReact", () => {
     await view.unmount();
     await Effect.runPromise(inMemory.close);
   });
+
+  it("rejects non-snapshot-safe pre-init grid changes as invalid query chrome", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      return (
+        <div>
+          <p aria-label="live-grid-ownership-chrome">
+            {`${grid.status}:${grid.statusCode ?? "none"}:${grid.message ?? ""}`}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id", "price"],
+                where: [{ field: "price", type: "equals", filter: Number.POSITIVE_INFINITY }],
+                orderBy: [],
+              });
+            }}
+          >
+            buffer-non-finite
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "buffer-non-finite" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-ownership-chrome", { exact: true }))
+      .toHaveTextContent(/^error:InvalidQuery:Query input numbers must be finite\.$/);
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("aborts query activation when sink clear re-enters destroy", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowCountLog: Array<number> = [];
+    let allowReenterDestroy = false;
+
+    function GridView() {
+      const grid = useLiveGrid("orders");
+      return (
+        <div>
+          <p aria-label="live-grid-reenter-chrome">
+            {`${grid.status}:${grid.statusCode ?? "none"}`}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              allowReenterDestroy = false;
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                  if (count === 0 && allowReenterDestroy) {
+                    grid.datasource.destroy();
+                  }
+                },
+                setRowData: () => undefined,
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            alpha
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              allowReenterDestroy = true;
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 1,
+                lastRow: 5,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            beta
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              allowReenterDestroy = false;
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                  if (count === 0 && allowReenterDestroy) {
+                    grid.datasource.destroy();
+                  }
+                },
+                setRowData: () => undefined,
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 2,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            gamma
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              allowReenterDestroy = true;
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 9,
+                lastRow: 1,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            delta
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "alpha" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await expect.poll(() => rowCountLog.includes(1)).toBe(true);
+    await view.getByRole("button", { name: "beta" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-reenter-chrome", { exact: true }))
+      .toHaveTextContent(/^loading:none$/);
+    await view.getByRole("button", { name: "gamma" }).click();
+    await expect.poll(() => rowCountLog.filter((count) => count === 1).length >= 1).toBe(true);
+    await view.getByRole("button", { name: "delta" }).click();
+    await expect
+      .element(view.getByLabelText("live-grid-reenter-chrome", { exact: true }))
+      .toHaveTextContent(/^loading:none$/);
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
+
+  it("clears live grid sink state when the topic prop changes", async () => {
+    const inMemory = createCoreInMemoryViewServer(viewServer);
+    const rowCountLog: Array<number> = [];
+
+    function GridView(props: { readonly topic: "orders" | "trades" }) {
+      const grid = useLiveGrid(props.topic);
+      return (
+        <div>
+          <p aria-label="live-grid-topic-chrome">{`${props.topic}:${grid.status}:${grid.totalRows}`}</p>
+          <button
+            type="button"
+            onClick={() => {
+              grid.datasource.init({
+                setRowCount: (count) => {
+                  rowCountLog.push(count);
+                },
+                setRowData: () => undefined,
+              });
+              grid.datasource.onChange({
+                mode: "raw",
+                firstRow: 0,
+                lastRow: 4,
+                select: ["id"],
+                where: [],
+                orderBy: [],
+              });
+            }}
+          >
+            mount-topic-grid
+          </button>
+        </div>
+      );
+    }
+
+    const view = await render(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView topic="orders" />
+      </ViewServerClientProvider>,
+    );
+    await view.getByRole("button", { name: "mount-topic-grid" }).click();
+    await Effect.runPromise(inMemory.client.publish("orders", order("a", 10)));
+    await expect.poll(() => rowCountLog.at(-1) === 1).toBe(true);
+    await expect
+      .element(view.getByLabelText("live-grid-topic-chrome", { exact: true }))
+      .toHaveTextContent(/^orders:ready:1$/);
+    await view.rerender(
+      <ViewServerClientProvider client={inMemory.liveClient}>
+        <GridView topic="trades" />
+      </ViewServerClientProvider>,
+    );
+    await expect
+      .element(view.getByLabelText("live-grid-topic-chrome", { exact: true }))
+      .toHaveTextContent(/^trades:loading:0$/);
+    expect(rowCountLog.at(-1)).toBe(0);
+    await view.unmount();
+    await Effect.runPromise(inMemory.close);
+  });
 });

@@ -619,6 +619,35 @@ describe("React type contracts", () => {
       orderBy: [],
     });
 
+    // @ts-expect-error grouped orderBy fields must be groupBy fields or aggregate aliases.
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      groupBy: ["status"],
+      aggregates: {
+        count: { aggFunc: "count" },
+      },
+      where: [],
+      orderBy: [{ field: "price", direction: "asc" }],
+    });
+
+    // Valid grouped orderBy uses groupBy field or aggregate alias form.
+    grid.datasource.onChange({
+      mode: "grouped",
+      firstRow: 0,
+      lastRow: 9,
+      groupBy: ["status"],
+      aggregates: {
+        count: { aggFunc: "count" },
+      },
+      where: [],
+      orderBy: [
+        { field: "status", direction: "asc" },
+        { aggregate: "count", direction: "desc" },
+      ],
+    });
+
     // @ts-expect-error unknown topics are rejected by useLiveGrid.
     useLiveGrid("missing");
 

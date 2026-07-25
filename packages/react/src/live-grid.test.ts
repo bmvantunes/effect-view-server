@@ -252,12 +252,18 @@ describe("live grid helpers", () => {
       ...pendingChange,
       firstRow: 3,
     };
-    expect(ownLiveGridOnChangeForPending(pendingChange, () => snappedPending)).toBe(snappedPending);
+    expect(ownLiveGridOnChangeForPending(pendingChange, () => snappedPending)).toStrictEqual({
+      _tag: "Owned",
+      state: snappedPending,
+    });
     expect(
       ownLiveGridOnChangeForPending(pendingChange, () => {
         throw new TypeError("cannot snapshot");
       }),
-    ).toBe(pendingChange);
+    ).toStrictEqual({
+      _tag: "SnapshotFailed",
+      message: "cannot snapshot",
+    });
     expect(
       resolveLiveGridOwnedQuery(query, () => {
         throw "not-an-error";

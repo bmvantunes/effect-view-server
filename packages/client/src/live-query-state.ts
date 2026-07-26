@@ -169,6 +169,11 @@ export type IncrementalClientStateResult<Row> = {
 };
 
 export type IncrementalClientState<Row> = {
+  /**
+   * Applies an event in place. `current.rows` and `current.keys` are stable,
+   * controller-owned arrays that may be mutated by later calls to `apply`.
+   * Consumers that retain historical states must copy them at that boundary.
+   */
   readonly apply: (event: ViewServerLiveEvent<Row>) => IncrementalClientStateResult<Row>;
 };
 
@@ -214,7 +219,7 @@ export const makeIncrementalClientState = <Row>(
         rows.length = 0;
         keys.length = 0;
         keyIndexes.clear();
-        current = initialClientState<Row>();
+        current = { ...initialClientState<Row>(), rows, keys };
       }
       current = {
         ...current,
@@ -325,4 +330,15 @@ export const makeIncrementalClientState = <Row>(
 export const applyEvent = <Row>(
   state: ClientState<Row>,
   event: ViewServerLiveEvent<Row>,
-): ClientState<Row> => makeIncrementalClientState(state).apply(event).current;
+): ClientState<Row> => {
+  if (event.type !== "snapshot" && event.type !== "delta") {
+    const current = event.status === "closed" ? initialClientState<Row>() : state;
+    return {
+      ...current,
+      status: event.status,
+      statusCode: event.code,
+      message: event.message,
+    };
+  }
+  return makeIncrementalClientState(state).apply(event).current;
+};

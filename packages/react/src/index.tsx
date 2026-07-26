@@ -220,6 +220,8 @@ export const createViewServerReact = <
     topic: Topic,
   ): UseLiveQueryViewportResult<Topics, Topic> {
     const client = useClient();
+    // Topic identity owns the public facade. Client changes replace the installed
+    // controller below without invalidating viewport references held by the grid.
     const binding = useMemo(() => makeLiveQueryViewportBinding<Topics, Topic>(), [topic]);
     const viewportState = useMemo(() => makeLiveQueryViewportAtom(), [client, topic]);
     const [result, publish] = AtomReact.useAtom(viewportState.atom);

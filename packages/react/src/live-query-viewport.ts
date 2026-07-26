@@ -8,6 +8,8 @@ import type {
   RawQuery,
   TopicDefinitions,
   TopicRow,
+  ViewServerRuntimeError,
+  ViewServerTransportError,
   Where,
 } from "@effect-view-server/config";
 import {
@@ -117,7 +119,10 @@ export type LiveQueryViewportChrome = Omit<LiveQueryResult<never>, "rows">;
 
 type LiveQueryViewportCommand = {
   readonly owner: number;
-  readonly stream: Stream.Stream<LiveQueryViewportChrome, unknown>;
+  readonly stream: Stream.Stream<
+    LiveQueryViewportChrome,
+    ViewServerRuntimeError | ViewServerTransportError
+  >;
 };
 
 type OwnedLiveQueryViewportChrome = {
@@ -138,6 +143,26 @@ const invalidWindowChrome = (message: string): LiveQueryViewportChrome => ({
   statusCode: "InvalidQuery",
   message,
 });
+
+const invalidQueryChrome = (message: string): LiveQueryViewportChrome => ({
+  totalRows: 0,
+  version: 0,
+  status: "error",
+  statusCode: "InvalidQuery",
+  message,
+});
+
+export const liveQueryViewportFailureMessage = (failure: unknown): string => {
+  if (
+    typeof failure === "object" &&
+    failure !== null &&
+    "message" in failure &&
+    typeof failure.message === "string"
+  ) {
+    return failure.message;
+  }
+  return String(failure);
+};
 
 const holdChrome = (chrome: LiveQueryViewportChrome): Stream.Stream<LiveQueryViewportChrome> =>
   Stream.concat(Stream.succeed(chrome), Stream.never);
@@ -402,8 +427,41 @@ export const makeLiveQueryViewport = <
     generation: number,
     request: number,
   ): boolean => {
+    if (!isCurrent(generation, request)) {
+      return false;
+    }
     sink.setRowCount(totalRows, false);
     return isCurrent(generation, request);
+  };
+
+  const installActive = <SinkRow>(input_: {
+    readonly generation: number;
+    readonly criteriaKey: string;
+    readonly window: LiveQueryViewportWindow;
+    readonly latestTotalRows: { value: number };
+    readonly sink: LiveQueryViewportSink<SinkRow>;
+    readonly live: boolean;
+  }): { readonly request: number; readonly isCurrent: boolean } => {
+    const request = ++requestCounter;
+    const previous = active;
+    active = {
+      generation: input_.generation,
+      request,
+      criteriaKey: input_.criteriaKey,
+      firstRow: input_.window.firstRow,
+      lastRow: input_.window.lastRow,
+      latestTotalRows: input_.latestTotalRows,
+      sink: input_.sink,
+      clearSink: () => input_.sink.setRowCount(0, false),
+      live: input_.live,
+    };
+    if (previous !== undefined && !Object.is(previous.sink, input_.sink)) {
+      previous.clearSink();
+    }
+    return {
+      request,
+      isCurrent: clearSink(input_.sink, input_.latestTotalRows.value, input_.generation, request),
+    };
   };
 
   const makeSubscriptionStream = <const Query extends LiveQueryViewportQuery<Row>>(
@@ -413,7 +471,7 @@ export const makeLiveQueryViewport = <
     generation: number,
     request: number,
     updateTotalRows: (totalRows: number) => void,
-  ): Stream.Stream<LiveQueryViewportChrome, unknown> => {
+  ): Stream.Stream<LiveQueryViewportChrome, ViewServerRuntimeError | ViewServerTransportError> => {
     const windowedQuery = queryWithWindow<Row, Query>(query, window);
     const projection = makeIncrementalClientState<LiveQueryRow<Row, Query>>();
     const acquireSubscription = Effect.fn("ViewServerReact.LiveQueryViewport.acquireSubscription")(
@@ -489,42 +547,33 @@ export const makeLiveQueryViewport = <
     readonly window: LiveQueryViewportWindow;
     readonly latestTotalRows: { value: number };
   }): void => {
-    const request = ++requestCounter;
     const window = validateLiveQueryViewportWindow(input_.window);
-    const previous = active;
-    const nextActive: ActiveRequest = {
+    const installed = installActive({
       generation: input_.generation,
-      request,
       criteriaKey: input_.criteriaKey,
-      firstRow: input_.window.firstRow,
-      lastRow: input_.window.lastRow,
+      window: input_.window,
       latestTotalRows: input_.latestTotalRows,
       sink: input_.sink,
-      clearSink: () => input_.sink.setRowCount(0, false),
       live: window._tag === "Valid",
-    };
-    active = nextActive;
-    if (previous !== undefined && !Object.is(previous.sink, input_.sink)) {
-      previous.clearSink();
-    }
-    if (!clearSink(input_.sink, input_.latestTotalRows.value, input_.generation, request)) {
+    });
+    if (!installed.isCurrent) {
       return;
     }
     if (window._tag === "Invalid") {
       input.publish({
-        owner: request,
+        owner: installed.request,
         stream: holdChrome(invalidWindowChrome(window.message)),
       });
       return;
     }
     input.publish({
-      owner: request,
+      owner: installed.request,
       stream: makeSubscriptionStream(
         input_.query,
         input_.sink,
         window,
         input_.generation,
-        request,
+        installed.request,
         (totalRows) => {
           input_.latestTotalRows.value = totalRows;
         },
@@ -549,32 +598,23 @@ export const makeLiveQueryViewport = <
     }
     if (Result.isFailure(captured)) {
       const generation = ++generationCounter;
-      const requestId = ++requestCounter;
-      const previous = active;
-      const nextActive: ActiveRequest = {
+      const installed = installActive({
         generation,
-        request: requestId,
         criteriaKey: "",
-        firstRow: request.window.firstRow,
-        lastRow: request.window.lastRow,
+        window: request.window,
         latestTotalRows: { value: 0 },
         sink: request.sink,
-        clearSink: () => request.sink.setRowCount(0, false),
         live: false,
-      };
-      active = nextActive;
-      if (previous !== undefined && !Object.is(previous.sink, request.sink)) {
-        previous.clearSink();
-      }
-      if (!clearSink(request.sink, 0, generation, requestId)) {
+      });
+      if (!installed.isCurrent) {
         return {
           setWindow: () => undefined,
           release: () => undefined,
         };
       }
       input.publish({
-        owner: requestId,
-        stream: holdChrome(invalidWindowChrome(String(captured.failure))),
+        owner: installed.request,
+        stream: holdChrome(invalidQueryChrome(liveQueryViewportFailureMessage(captured.failure))),
       });
       return {
         setWindow: () => undefined,

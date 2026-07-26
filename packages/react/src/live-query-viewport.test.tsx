@@ -17,7 +17,7 @@ import {
 } from "@effect-view-server/config";
 import { createInMemoryViewServer } from "@effect-view-server/in-memory";
 import { Deferred, Effect, Queue, Schema, Stream } from "effect";
-import type * as BigDecimal from "effect/BigDecimal";
+import * as BigDecimal from "effect/BigDecimal";
 import { StrictMode, useLayoutEffect } from "react";
 import { renderToString } from "react-dom/server";
 import { render } from "vitest-browser-react";
@@ -297,7 +297,8 @@ describe("useLiveQueryViewport", () => {
         return health.engine.topics.orders.activeSubscriptions;
       })
       .toBe(0);
-    generation?.setWindow({ firstRow: 0, lastRow: 4 });
+    expect(generation).toBeDefined();
+    generation!.setWindow({ firstRow: 0, lastRow: 4 });
     await expect
       .poll(async () => {
         const health = await Effect.runPromise(runtime.client.health());
@@ -847,12 +848,14 @@ describe("useLiveQueryViewport", () => {
         return health.engine.topics.orders.activeSubscriptions;
       })
       .toBe(0);
-    retainedViewport?.replace({
+    expect(retainedViewport).toBeDefined();
+    expect(retainedGeneration).toBeDefined();
+    retainedViewport!.replace({
       window: { firstRow: 20, lastRow: 29 },
       query: { select: ["id"], where: [], orderBy: [] },
       sink: grid.sink,
     });
-    retainedGeneration?.setWindow({ firstRow: 10, lastRow: 19 });
+    retainedGeneration!.setWindow({ firstRow: 10, lastRow: 19 });
     await expect
       .poll(async () => {
         const health = await Effect.runPromise(runtime.client.health());
@@ -1043,7 +1046,8 @@ describe("useLiveQueryViewport", () => {
         <ClientViewport />
       </ViewServerClientProvider>,
     );
-    retainedViewport?.replace({
+    expect(retainedViewport).toBeDefined();
+    retainedViewport!.replace({
       window: { firstRow: 0, lastRow: 9 },
       query: { select: ["id"], where: [], orderBy: [] },
       sink: grid.sink,
@@ -1131,7 +1135,7 @@ describe("useLiveQueryViewport", () => {
     await expect.poll(grid.rowCount).toBe(2);
     await expect.poll(() => grid.rows()[0]?.status).toBe("open");
     expect(grid.rows()[0]?.rowCount).toBe(2n);
-    expect(String(grid.rows()[0]?.totalPrice)).toBe("BigDecimal(30)");
+    expect(BigDecimal.equals(grid.rows()[0]!.totalPrice, BigDecimal.make(30n, 0))).toBe(true);
 
     await Effect.runPromise(
       runtime.client.publish("orders", {
@@ -1141,7 +1145,7 @@ describe("useLiveQueryViewport", () => {
       }),
     );
     await expect.poll(() => grid.rows()[0]?.rowCount).toBe(3n);
-    expect(String(grid.rows()[0]?.totalPrice)).toBe("BigDecimal(40)");
+    expect(BigDecimal.equals(grid.rows()[0]!.totalPrice, BigDecimal.make(40n, 0))).toBe(true);
 
     await view.unmount();
     await Effect.runPromise(runtime.close);

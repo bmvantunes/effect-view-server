@@ -79,6 +79,27 @@ type ViewportBenchmark = {
   readonly close: () => Promise<void>;
 };
 
+const waitForSinkWrite = (
+  write: Promise<void>,
+  label: string,
+  timeoutMilliseconds = 10_000,
+): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Timed out waiting for ${label} after ${timeoutMilliseconds}ms`));
+    }, timeoutMilliseconds);
+    write.then(
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+
 const makeViewportBenchmark = async (rowCount: number): Promise<ViewportBenchmark> => {
   const runtime = createInMemoryViewServer(viewServer);
   const events = await Effect.runPromise(Queue.unbounded<ViewServerLiveEvent<object>>());
@@ -130,7 +151,7 @@ const makeViewportBenchmark = async (rowCount: number): Promise<ViewportBenchmar
       version: 1,
     }),
   );
-  await snapshotWritten;
+  await waitForSinkWrite(snapshotWritten, `${rowCount}-row snapshot`);
 
   const index = Math.floor(rowCount / 2);
   let version = 1;
@@ -159,7 +180,7 @@ const makeViewportBenchmark = async (rowCount: number): Promise<ViewportBenchmar
         }),
       );
       version = nextVersion;
-      await written;
+      await waitForSinkWrite(written, `${rowCount}-row delta`);
     },
     close: async () => {
       viewport.destroy();

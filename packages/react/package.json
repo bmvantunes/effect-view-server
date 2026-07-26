@@ -18,7 +18,7 @@
   },
   "scripts": {
     "bench:in-memory-live-query": "vp run -t @effect-view-server/in-memory#build && sh -c 'rows=${VIEW_SERVER_REACT_BENCH_ROWS:-10000}; browser=${VIEW_SERVER_REACT_BENCH_BROWSER:-chromium}; output=${VIEW_SERVER_REACT_BENCH_OUTPUT_JSON:-.artifacts/in-memory-live-query-${rows}rows-${browser}.json}; mkdir -p .artifacts; VIEW_SERVER_REACT_SKIP_REMOTE_GLOBAL_SETUP=1 VITE_VIEW_SERVER_REACT_BENCH_ROWS=$rows VITE_VIEW_SERVER_REACT_BENCH_BATCH_SIZE=${VIEW_SERVER_REACT_BENCH_BATCH_SIZE:-1000} VITE_VIEW_SERVER_REACT_BENCH_ITERATIONS=${VIEW_SERVER_REACT_BENCH_ITERATIONS:-5} VITE_VIEW_SERVER_REACT_BENCH_TIME_MS=${VIEW_SERVER_REACT_BENCH_TIME_MS:-250} VITE_VIEW_SERVER_REACT_BENCH_WARMUP_ITERATIONS=${VIEW_SERVER_REACT_BENCH_WARMUP_ITERATIONS:-0} VITE_VIEW_SERVER_REACT_BENCH_WARMUP_TIME_MS=${VIEW_SERVER_REACT_BENCH_WARMUP_TIME_MS:-0} VITE_VIEW_SERVER_REACT_BENCH_OUTPUT_JSON=$output vp test bench src/in-memory-live-query.bench.tsx --run --testTimeout 0 --project $browser --outputJson $output'",
-    "bench:live-query-viewport": "vp test bench src/live-query-viewport.bench.tsx --run --project chromium",
+    "bench:live-query-viewport": "vp run -t @effect-view-server/in-memory#build && vp test bench src/live-query-viewport.bench.tsx --run --testTimeout 0 --project chromium",
     "build": "vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/in-memory#build && vp pack",
     "test": "vp run -t @effect-view-server/effect-utils#build && vp run -t @effect-view-server/in-memory#build && vp run -t @effect-view-server/server#build && vp test run --coverage --typecheck"
   },

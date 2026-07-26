@@ -163,6 +163,9 @@ describe("public effect-view-server subpath type contracts", () => {
   });
 
   it("rejects invalid query and config contracts through public subpaths", () => {
+    // @ts-expect-error viewport topics must exist in the configured topic map.
+    react.useLiveQueryViewport("missing");
+
     // @ts-expect-error raw queries must explicitly select columns.
     react.useLiveQuery("orders", { where: [{ field: "status", type: "equals", filter: "open" }] });
 

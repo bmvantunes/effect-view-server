@@ -338,6 +338,65 @@ describe("@effect-view-server/client", () => {
     }
   });
 
+  it("updates incremental status chrome and clears closed subscriptions in place", () => {
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    const ready = projection.apply({
+      type: "snapshot",
+      topic: "orders",
+      queryId: "query-status",
+      version: 1,
+      keys: ["a"],
+      rows: [{ id: "a" }],
+      totalRows: 1,
+    }).current;
+    const stale = projection.apply({
+      type: "status",
+      topic: "orders",
+      queryId: "query-status",
+      status: "stale",
+      code: "SnapshotStale",
+      message: "refreshing",
+    });
+    expect(stale).toStrictEqual({
+      current: {
+        rows: [{ id: "a" }],
+        keys: ["a"],
+        totalRows: 1,
+        version: 1,
+        status: "stale",
+        statusCode: "SnapshotStale",
+        message: "refreshing",
+      },
+      change: { _tag: "None" },
+    });
+    expect(stale.current.rows).toBe(ready.rows);
+    expect(stale.current.keys).toBe(ready.keys);
+
+    const closed = projection.apply({
+      type: "status",
+      topic: "orders",
+      queryId: "query-status",
+      status: "closed",
+      code: "SubscriptionClosed",
+    });
+    expect(closed).toStrictEqual({
+      current: {
+        rows: [],
+        keys: [],
+        totalRows: 0,
+        version: 0,
+        status: "closed",
+        statusCode: "SubscriptionClosed",
+        message: undefined,
+      },
+      change: { _tag: "None" },
+    });
+    expect(ready.rows).toStrictEqual([]);
+    expect(ready.keys).toStrictEqual([]);
+    expect(closed.current.rows).toBe(ready.rows);
+    expect(closed.current.keys).toBe(ready.keys);
+  });
+
   it("moves rows by key even when the row value is undefined", () => {
     const previous = applyEvent(initialClientState<undefined>(), {
       type: "snapshot",

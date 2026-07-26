@@ -27,6 +27,7 @@ import {
   validateLiveQueryViewportWindow,
   type LiveQueryViewport,
   type LiveQueryViewportChrome,
+  type LiveQueryViewportGeneration,
   type LiveQueryViewportSink,
 } from "./live-query-viewport";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -47,6 +48,11 @@ const viewServer = defineViewServerConfig({
 });
 
 type Topics = typeof viewServer.topics;
+
+type ViewportChromeStream = Stream.Stream<
+  LiveQueryViewportChrome,
+  ViewServerRuntimeError | ViewServerTransportError
+>;
 
 const LeasedOrder = Schema.Struct({
   id: Schema.String,
@@ -206,12 +212,7 @@ const makeSwitchingPublisher = () => {
   let current: Fiber.Fiber<void, ViewServerRuntimeError | ViewServerTransportError> | undefined;
   let publishCount = 0;
   return {
-    publish: (command: {
-      readonly stream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      >;
-    }) => {
+    publish: (command: { readonly stream: ViewportChromeStream }) => {
       publishCount += 1;
       if (current !== undefined) {
         Effect.runFork(Fiber.interrupt(current));
@@ -356,10 +357,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -467,10 +465,7 @@ describe("Live Query Viewport Module", () => {
         health: base.liveClient.health,
         close: Effect.void,
       } satisfies ViewServerLiveClient<LeasedTopics>;
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport<LeasedTopics, "orders">({
         client: leasedClient,
         config: leasedViewServer,
@@ -524,10 +519,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -604,10 +596,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -668,10 +657,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -721,10 +707,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -795,15 +778,12 @@ describe("Live Query Viewport Module", () => {
     }),
   );
 
-  it.effect("rejects invalid windows without subscribing and retries terminal identities", () =>
+  it.effect("rejects invalid windows, retries closed identities, and retains error rows", () =>
     Effect.gen(function* () {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -853,6 +833,8 @@ describe("Live Query Viewport Module", () => {
       const retryFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
       yield* flush;
       expect(requests).toHaveLength(2);
+      yield* Queue.offer(requests[1]!.events, snapshot("retained", 7, 2));
+      yield* flush;
       yield* Queue.offer(requests[1]!.events, {
         type: "status",
         topic: "orders",
@@ -862,17 +844,459 @@ describe("Live Query Viewport Module", () => {
         message: "terminal error",
       });
       yield* flush;
+      expect(projected.rowData.at(-1)).toStrictEqual({ 0: { id: "retained", price: 7 } });
+      expect(projected.rowCounts.at(-1)).toStrictEqual([1, true]);
 
       replaceValid();
-      const errorRetryFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
       yield* flush;
-      expect(requests).toHaveLength(3);
+      expect(requests).toHaveLength(2);
+      yield* Queue.offer(requests[1]!.events, {
+        type: "status",
+        topic: "orders",
+        queryId: "manual",
+        status: "ready",
+        code: "Ready",
+      });
+      yield* flush;
+      expect(projected.rowData.at(-1)).toStrictEqual({ 0: { id: "retained", price: 7 } });
+      expect(projected.rowCounts.at(-1)).toStrictEqual([1, true]);
 
       yield* Fiber.interrupt(firstFiber);
       yield* Fiber.interrupt(retryFiber);
-      yield* Fiber.interrupt(errorRetryFiber);
       viewport.destroy();
       viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("does not overwrite a replacement started by a window accessor", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const client = makeManualClient(base.liveClient, requests);
+      const published: Array<
+        Stream.Stream<LiveQueryViewportChrome, ViewServerRuntimeError | ViewServerTransportError>
+      > = [];
+      const viewport = makeLiveQueryViewport({
+        client,
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const sink = makeSink<{ readonly id: string }>();
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      const initialFiber = yield* published[0]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      const hostileWindow = { firstRow: 0, lastRow: 9 };
+      let replaceOnRead = true;
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          if (replaceOnRead) {
+            replaceOnRead = false;
+            viewport.replace({
+              window: { firstRow: 20, lastRow: 29 },
+              query: {
+                select: ["id"],
+                where: [{ field: "status", type: "equals", filter: "closed" }],
+                orderBy: [],
+              },
+              sink: sink.sink,
+            });
+          }
+          return 0;
+        },
+      });
+
+      const obsolete = viewport.replace({
+        window: hostileWindow,
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      expect(published).toHaveLength(2);
+      const fiber = yield* published[1]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.query).toStrictEqual({
+        select: ["id"],
+        where: [{ field: "status", type: "equals", filter: "closed" }],
+        orderBy: [],
+        offset: 20,
+        limit: 10,
+      });
+
+      obsolete.setWindow({ firstRow: 30, lastRow: 39 });
+      obsolete.release();
+      expect(published).toHaveLength(2);
+      viewport.destroy();
+      yield* Fiber.interrupt(initialFiber);
+      yield* Fiber.interrupt(fiber);
+      yield* base.close;
+    }),
+  );
+
+  it.effect("keeps a replacement installed by a setWindow accessor", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const published: Array<ViewportChromeStream> = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const sink = makeSink<{ readonly id: string }>();
+      const generation = viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      const initialFiber = yield* published[0]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      const hostileWindow = { firstRow: 10, lastRow: 19 };
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          viewport.replace({
+            window: { firstRow: 20, lastRow: 29 },
+            query: {
+              select: ["id"],
+              where: [{ field: "status", type: "equals", filter: "open" }],
+              orderBy: [],
+            },
+            sink: sink.sink,
+          });
+          return 10;
+        },
+      });
+
+      generation.setWindow(hostileWindow);
+      expect(published).toHaveLength(2);
+      const successorFiber = yield* published[1]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.query).toStrictEqual({
+        select: ["id"],
+        where: [{ field: "status", type: "equals", filter: "open" }],
+        orderBy: [],
+        offset: 20,
+        limit: 10,
+      });
+
+      generation.setWindow({ firstRow: 30, lastRow: 39 });
+      generation.release();
+      expect(published).toHaveLength(2);
+      viewport.destroy();
+      yield* Fiber.interrupt(initialFiber);
+      yield* Fiber.interrupt(successorFiber);
+      yield* base.close;
+    }),
+  );
+
+  it.effect("does not resurrect a generation released by a setWindow accessor", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const published: Array<ViewportChromeStream> = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const generation = viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: makeSink<{ readonly id: string }>().sink,
+      });
+      const fiber = yield* published[0]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      const hostileWindow = { firstRow: 10, lastRow: 19 };
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          generation.release();
+          return 10;
+        },
+      });
+
+      generation.setWindow(hostileWindow);
+      expect(requests).toHaveLength(1);
+      expect(published).toHaveLength(2);
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "loading",
+        }),
+      );
+      generation.setWindow({ firstRow: 30, lastRow: 39 });
+      generation.release();
+      expect(published).toHaveLength(2);
+      yield* Fiber.interrupt(fiber);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("keeps identical replacement ownership transferred by a window accessor", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const published: Array<ViewportChromeStream> = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const sink = makeSink<{ readonly id: string }>();
+      const first = viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      const initialFiber = yield* published[0]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      let successor: LiveQueryViewportGeneration | undefined;
+      const hostileWindow = { firstRow: 0, lastRow: 9 };
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          successor = viewport.replace({
+            window: { firstRow: 0, lastRow: 9 },
+            query: { select: ["id"], where: [], orderBy: [] },
+            sink: sink.sink,
+          });
+          return 0;
+        },
+      });
+
+      const obsolete = viewport.replace({
+        window: hostileWindow,
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      expect(published).toHaveLength(1);
+      successor!.setWindow({ firstRow: 20, lastRow: 29 });
+      expect(published).toHaveLength(2);
+      const successorFiber = yield* published[1]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.query).toStrictEqual({
+        select: ["id"],
+        where: [],
+        orderBy: [],
+        offset: 20,
+        limit: 10,
+      });
+
+      first.release();
+      obsolete.setWindow({ firstRow: 30, lastRow: 39 });
+      obsolete.release();
+      expect(published).toHaveLength(2);
+      successor!.release();
+      expect(published).toHaveLength(3);
+      yield* Fiber.interrupt(initialFiber);
+      yield* Fiber.interrupt(successorFiber);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("keeps invalid-query ownership installed by a window accessor", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const published: Array<ViewportChromeStream> = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const sink = makeSink<{ readonly id: string }>();
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      const initialFiber = yield* published[0]!.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      const hostileQuery = {
+        select: ["id"],
+        where: [],
+        orderBy: [],
+      } satisfies {
+        readonly select: readonly ["id"];
+        readonly where: readonly [];
+        readonly orderBy: readonly [];
+      };
+      Object.defineProperty(hostileQuery, "where", {
+        enumerable: true,
+        get: () => {
+          throw new Error("hostile query");
+        },
+      });
+      const hostileWindow = { firstRow: 10, lastRow: 19 };
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          viewport.replace({
+            window: { firstRow: 20, lastRow: 29 },
+            query: hostileQuery,
+            sink: sink.sink,
+          });
+          return 10;
+        },
+      });
+
+      const obsolete = viewport.replace({
+        window: hostileWindow,
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: sink.sink,
+      });
+      expect(requests).toHaveLength(1);
+      expect(published).toHaveLength(2);
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "error",
+          statusCode: "InvalidQuery",
+          message: "Query input fields must be own enumerable data properties.",
+        }),
+      );
+      obsolete.setWindow({ firstRow: 30, lastRow: 39 });
+      obsolete.release();
+      expect(published).toHaveLength(2);
+      yield* Fiber.interrupt(initialFiber);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("does not overwrite invalid-query release from a window accessor", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const published: Array<ViewportChromeStream> = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const hostileQuery = {
+        select: ["id"],
+        where: [],
+        orderBy: [],
+      } satisfies {
+        readonly select: readonly ["id"];
+        readonly where: readonly [];
+        readonly orderBy: readonly [];
+      };
+      Object.defineProperty(hostileQuery, "where", {
+        enumerable: true,
+        get: () => {
+          throw new Error("hostile query");
+        },
+      });
+      const invalidGeneration = viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: hostileQuery,
+        sink: makeSink<{ readonly id: string }>().sink,
+      });
+      const hostileWindow = { firstRow: 10, lastRow: 19 };
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          invalidGeneration.release();
+          return 10;
+        },
+      });
+
+      const obsolete = viewport.replace({
+        window: hostileWindow,
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: makeSink<{ readonly id: string }>().sink,
+      });
+      expect(requests).toStrictEqual([]);
+      expect(published).toHaveLength(2);
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "loading",
+        }),
+      );
+      obsolete.setWindow({ firstRow: 30, lastRow: 39 });
+      obsolete.release();
+      invalidGeneration.release();
+      expect(published).toHaveLength(2);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("does not start a request when a window accessor destroys the viewport", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const published: Array<
+        Stream.Stream<LiveQueryViewportChrome, ViewServerRuntimeError | ViewServerTransportError>
+      > = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const hostileWindow = { firstRow: 0, lastRow: 9 };
+      Object.defineProperty(hostileWindow, "firstRow", {
+        enumerable: true,
+        get: () => {
+          viewport.destroy();
+          return 0;
+        },
+      });
+
+      const obsolete = viewport.replace({
+        window: hostileWindow,
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: makeSink<{ readonly id: string }>().sink,
+      });
+      expect(requests).toStrictEqual([]);
+      expect(published).toHaveLength(1);
+      expect(yield* published[0]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "loading",
+        }),
+      );
+      obsolete.setWindow({ firstRow: 30, lastRow: 39 });
+      obsolete.release();
+      expect(published).toHaveLength(1);
       yield* base.close;
     }),
   );
@@ -920,10 +1344,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -1005,10 +1426,7 @@ describe("Live Query Viewport Module", () => {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
       const client = makeManualClient(base.liveClient, requests);
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       let publishCount = 0;
       const viewport = makeLiveQueryViewport({
         client,
@@ -1065,10 +1483,7 @@ describe("Live Query Viewport Module", () => {
         subscribe: (topic, query) =>
           base.liveClient.subscribe(topic, query).pipe(Effect.flatMap(() => Effect.fail(failure))),
       } satisfies ViewServerLiveClient<Topics>;
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client: failingClient,
         config: viewServer,
@@ -1121,10 +1536,7 @@ describe("Live Query Viewport Module", () => {
           }),
         ),
       } satisfies ViewServerLiveClient<Topics>;
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -1193,10 +1605,7 @@ describe("Live Query Viewport Module", () => {
           }),
         ),
       } satisfies ViewServerLiveClient<Topics>;
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -1254,10 +1663,7 @@ describe("Live Query Viewport Module", () => {
 
       const sinkReentryRequests: Array<ManualRequest> = [];
       const sinkReentryClient = makeManualClient(base.liveClient, sinkReentryRequests);
-      let sinkReentryStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let sinkReentryStream: ViewportChromeStream = Stream.never;
       const sinkReentryViewport = makeLiveQueryViewport({
         client: sinkReentryClient,
         config: viewServer,
@@ -1813,10 +2219,7 @@ describe("Live Query Viewport Module", () => {
       const client = makeManualClient(base.liveClient, requests);
       const first = makeSink<{ readonly id: string }>();
       const second = makeSink<{ readonly id: string }>();
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
@@ -1859,10 +2262,7 @@ describe("Live Query Viewport Module", () => {
       const requests: Array<ManualRequest> = [];
       const first = makeSink<{ readonly id: string }>();
       const second = makeSink<{ readonly id: string }>();
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client: makeManualClient(base.liveClient, requests),
         config: viewServer,
@@ -1912,10 +2312,7 @@ describe("Live Query Viewport Module", () => {
       const requests: Array<ManualRequest> = [];
       const first = makeSink<{ readonly id: string }>();
       const second = makeSink<{ readonly id: string }>();
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client: makeManualClient(base.liveClient, requests),
         config: viewServer,
@@ -1956,10 +2353,7 @@ describe("Live Query Viewport Module", () => {
       const requests: Array<ManualRequest> = [];
       const successor = makeSink<{ readonly id: string }>();
       let installSuccessor = false;
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const viewport = makeLiveQueryViewport({
         client: makeManualClient(base.liveClient, requests),
         config: viewServer,
@@ -2016,10 +2410,7 @@ describe("Live Query Viewport Module", () => {
       const successor = makeSink<{ readonly id: string }>();
       let replaceDuringClear = false;
       let publishCount = 0;
-      let currentStream: Stream.Stream<
-        LiveQueryViewportChrome,
-        ViewServerRuntimeError | ViewServerTransportError
-      > = Stream.never;
+      let currentStream: ViewportChromeStream = Stream.never;
       const previousRowCounts: Array<readonly [number, boolean | undefined]> = [];
       const viewport = makeLiveQueryViewport({
         client,
@@ -2087,14 +2478,8 @@ describe("Live Query Viewport Module", () => {
         const currentRequests: Array<ManualRequest> = [];
         const binding = makeLiveQueryViewportBinding<Topics, "orders">();
         const sink = makeSink<{ readonly id: string }>();
-        let oldStream: Stream.Stream<
-          LiveQueryViewportChrome,
-          ViewServerRuntimeError | ViewServerTransportError
-        > = Stream.never;
-        let currentStream: Stream.Stream<
-          LiveQueryViewportChrome,
-          ViewServerRuntimeError | ViewServerTransportError
-        > = Stream.never;
+        let oldStream: ViewportChromeStream = Stream.never;
+        let currentStream: ViewportChromeStream = Stream.never;
         const oldViewport = makeLiveQueryViewport({
           client: makeManualClient(base.liveClient, oldRequests),
           config: viewServer,

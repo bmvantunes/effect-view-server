@@ -435,6 +435,7 @@ export const makeLiveQueryViewport = <
   let ownerCounter = 0;
   let requestCounter = 0;
   let replaceInvocation = 0;
+  let mutationEpoch = 0;
   let active: ActiveRequest | undefined;
   let pendingCleanups: Array<SinkCleanup> = [];
   let latestPendingCleanupBySink = new Map<unknown, SinkCleanup>();
@@ -535,6 +536,7 @@ export const makeLiveQueryViewport = <
         }
         if (isCurrent(request)) {
           active = undefined;
+          mutationEpoch += 1;
         }
         const cleanup = Result.try(() => runSinkCleanups([current.cleanup]));
         if (Result.isFailure(activation)) {
@@ -581,7 +583,7 @@ export const makeLiveQueryViewport = <
                 return;
               }
               updateTotalRows(state.current.totalRows);
-              if (state.current.status === "closed" || state.current.status === "error") {
+              if (state.current.status === "closed") {
                 active!.live = false;
                 sink.setRowCount(0, false);
                 return;
@@ -609,6 +611,7 @@ export const makeLiveQueryViewport = <
           const current = active;
           if (current !== undefined && current.request === request) {
             active = undefined;
+            mutationEpoch += 1;
             cleanupRequest(current);
           }
         }),
@@ -621,14 +624,18 @@ export const makeLiveQueryViewport = <
     readonly criteriaKey: string;
     readonly query: ExactLiveQueryInputForTopic<Topics, Topic, Query>;
     readonly sink: LiveQueryViewportSink<LiveQueryRow<Row, Query>>;
-    readonly window: LiveQueryViewportWindow;
+    readonly window: LiveQueryViewportWindowValidation;
     readonly latestTotalRows: { value: number };
   }): void => {
-    const window = validateLiveQueryViewportWindow(input_.window);
+    const window = input_.window;
+    const installedWindow =
+      window._tag === "Valid"
+        ? { firstRow: window.firstRow, lastRow: window.lastRow }
+        : { firstRow: 0, lastRow: 0 };
     const installed = installActive({
       owner: input_.owner,
       criteriaKey: input_.criteriaKey,
-      window: input_.window,
+      window: installedWindow,
       latestTotalRows: input_.latestTotalRows,
       sink: input_.sink,
       live: window._tag === "Valid",
@@ -672,8 +679,9 @@ export const makeLiveQueryViewport = <
       };
     }
     const invocation = ++replaceInvocation;
+    const epoch = ++mutationEpoch;
     const captured = Result.try(() => snapshotViewServerQuery(request.query));
-    if (invocation !== replaceInvocation) {
+    if (invocation !== replaceInvocation || epoch !== mutationEpoch || terminal) {
       return {
         setWindow: () => undefined,
         release: () => undefined,
@@ -684,7 +692,7 @@ export const makeLiveQueryViewport = <
       const installed = installActive({
         owner,
         criteriaKey: "",
-        window: request.window,
+        window: { firstRow: 0, lastRow: 0 },
         latestTotalRows: { value: 0 },
         sink: request.sink,
         live: false,
@@ -703,6 +711,7 @@ export const makeLiveQueryViewport = <
         setWindow: () => undefined,
         release: () => {
           if (active?.owner === owner) {
+            mutationEpoch += 1;
             const current = active;
             active = undefined;
             try {
@@ -718,13 +727,21 @@ export const makeLiveQueryViewport = <
     const query = captured.success;
     const topicDefinition = input.config.topics[input.topic]!;
     const criteriaKey = stableQueryKeyForRowSchema(query, topicDefinition.schema);
+    const window = validateLiveQueryViewportWindow(request.window);
+    if (epoch !== mutationEpoch || terminal) {
+      return {
+        setWindow: () => undefined,
+        release: () => undefined,
+      };
+    }
     const current = active;
     if (
       current !== undefined &&
       current.live &&
+      window._tag === "Valid" &&
       current.criteriaKey === criteriaKey &&
-      current.firstRow === request.window.firstRow &&
-      current.lastRow === request.window.lastRow &&
+      current.firstRow === window.firstRow &&
+      current.lastRow === window.lastRow &&
       Object.is(current.sink, request.sink)
     ) {
       const owner = ++ownerCounter;
@@ -739,7 +756,7 @@ export const makeLiveQueryViewport = <
       criteriaKey,
       query,
       sink: request.sink,
-      window: request.window,
+      window,
       latestTotalRows,
     });
     return makeGeneration(owner, criteriaKey, query, request.sink, latestTotalRows);
@@ -757,10 +774,22 @@ export const makeLiveQueryViewport = <
         if (active?.owner !== owner) {
           return;
         }
+        const epoch = ++mutationEpoch;
+        const request = active.request;
+        const validatedWindow = validateLiveQueryViewportWindow(window);
+        if (
+          epoch !== mutationEpoch ||
+          active?.owner !== owner ||
+          active.request !== request ||
+          terminal
+        ) {
+          return;
+        }
         if (
           active.live &&
-          active.firstRow === window.firstRow &&
-          active.lastRow === window.lastRow
+          validatedWindow._tag === "Valid" &&
+          active.firstRow === validatedWindow.firstRow &&
+          active.lastRow === validatedWindow.lastRow
         ) {
           return;
         }
@@ -769,7 +798,7 @@ export const makeLiveQueryViewport = <
           criteriaKey,
           query,
           sink,
-          window,
+          window: validatedWindow,
           latestTotalRows,
         });
       },
@@ -777,6 +806,7 @@ export const makeLiveQueryViewport = <
         if (active?.owner !== owner) {
           return;
         }
+        mutationEpoch += 1;
         const request = ++requestCounter;
         const current = active;
         active = undefined;
@@ -792,6 +822,7 @@ export const makeLiveQueryViewport = <
   const deactivate = (): void => {
     terminal = true;
     replaceInvocation += 1;
+    mutationEpoch += 1;
     requestCounter += 1;
     const current = active;
     active = undefined;
@@ -808,6 +839,7 @@ export const makeLiveQueryViewport = <
       }
       terminal = true;
       replaceInvocation += 1;
+      mutationEpoch += 1;
       const request = ++requestCounter;
       const current = active;
       active = undefined;

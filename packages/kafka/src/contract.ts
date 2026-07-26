@@ -1083,14 +1083,15 @@ const isDurationString = (value: unknown): value is KafkaDurationString =>
       value,
     ));
 
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
 const durationFromUnknown = (input: unknown): Option.Option<Duration.Duration> =>
   Result.try(() => {
-    if (
-      typeof input === "number" ||
-      typeof input === "bigint" ||
-      isDurationString(input) ||
-      Duration.isDuration(input)
-    ) {
+    if (typeof input === "number") {
+      return isFiniteNumber(input) ? Duration.fromInput(input) : Option.none();
+    }
+    if (typeof input === "bigint" || isDurationString(input) || Duration.isDuration(input)) {
       return Duration.fromInput(input);
     }
     if (Array.isArray(input)) {
@@ -1107,8 +1108,8 @@ const durationFromUnknown = (input: unknown): Option.Option<Duration.Duration> =
         nanos.enumerable !== true ||
         !("value" in seconds) ||
         !("value" in nanos) ||
-        typeof seconds.value !== "number" ||
-        typeof nanos.value !== "number"
+        !isFiniteNumber(seconds.value) ||
+        !isFiniteNumber(nanos.value)
       ) {
         return Option.none();
       }
@@ -1133,7 +1134,7 @@ const durationFromUnknown = (input: unknown): Option.Option<Duration.Duration> =
         (key) =>
           typeof key === "string" &&
           allowed.some((allowedKey) => allowedKey === key) &&
-          (captured.get(key) === undefined || typeof captured.get(key) === "number"),
+          (captured.get(key) === undefined || isFiniteNumber(captured.get(key))),
       )
     ) {
       return Option.none();

@@ -956,6 +956,10 @@ describe("Kafka Source Adapter contract", () => {
           fallback: "latest",
         },
       },
+      durationInput(Number.NaN),
+      durationInput([Number.NaN, 0]),
+      durationInput([0, Number.NaN]),
+      durationInput({ seconds: Number.NaN }),
       {
         ...validSourceInput(),
         startFrom: {

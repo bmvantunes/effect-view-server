@@ -8,6 +8,7 @@ import {
   liveQueryFailureResult,
   liveQueryResult,
   liveQueryResultFromAsyncResult,
+  makeIncrementalClientState,
   stableQueryKey,
   type ClientState,
 } from "./index";
@@ -263,6 +264,78 @@ describe("@effect-view-server/client", () => {
     expect(next.keys).toStrictEqual(["c", "a", "d"]);
     expect(next.totalRows).toBe(3);
     expect(next.version).toBe(2);
+  });
+
+  it("reports changed ranges and rolls every mutation kind back transactionally", () => {
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    const snapshot = {
+      type: "snapshot" as const,
+      topic: "orders",
+      queryId: "query-incremental",
+      version: 1,
+      keys: ["a", "b", "c"],
+      rows: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      totalRows: 3,
+    };
+    expect(projection.apply(snapshot).change).toStrictEqual({ _tag: "All" });
+    expect(
+      projection.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-incremental",
+        fromVersion: 1,
+        toVersion: 2,
+        totalRows: 3,
+        operations: [{ type: "update", key: "b", row: { id: "b-updated" }, index: 1 }],
+      }).change,
+    ).toStrictEqual({ _tag: "Range", start: 1, end: 1 });
+    expect(
+      projection.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-incremental",
+        fromVersion: 2,
+        toVersion: 3,
+        totalRows: 3,
+        operations: [],
+      }).change,
+    ).toStrictEqual({ _tag: "None" });
+
+    const rollbackCases = [
+      [
+        { type: "insert" as const, key: "d", row: { id: "d" }, index: 1 },
+        { type: "insert" as const, key: "a", row: { id: "duplicate" }, index: 0 },
+      ],
+      [
+        { type: "update" as const, key: "b", row: { id: "changed" }, index: 1 },
+        { type: "update" as const, key: "missing", row: { id: "missing" }, index: 1 },
+      ],
+      [
+        { type: "move" as const, key: "c", fromIndex: 2, toIndex: 0 },
+        { type: "move" as const, key: "missing", fromIndex: 2, toIndex: 0 },
+      ],
+      [
+        { type: "remove" as const, key: "b" },
+        { type: "remove" as const, key: "missing" },
+      ],
+    ];
+    for (const operations of rollbackCases) {
+      const transactional = makeIncrementalClientState<{ readonly id: string }>();
+      transactional.apply(snapshot);
+      const result = transactional.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-incremental",
+        fromVersion: 1,
+        toVersion: 2,
+        totalRows: 3,
+        operations,
+      });
+      expect(result.change).toStrictEqual({ _tag: "None" });
+      expect(result.current.rows).toStrictEqual([{ id: "a" }, { id: "b" }, { id: "c" }]);
+      expect(result.current.keys).toStrictEqual(["a", "b", "c"]);
+      expect(result.current.status).toBe("stale");
+    }
   });
 
   it("moves rows by key even when the row value is undefined", () => {

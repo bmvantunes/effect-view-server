@@ -264,6 +264,10 @@ _Avoid_: Runtime provider, in-memory provider when discussing the generic provid
 The React testing provider that owns an In-Memory View Server and supplies its Live Client to the same hooks used in production.
 _Avoid_: Seed provider, mock provider
 
+**Live Query Viewport**:
+The transport-neutral React integration Module for virtualized grids. It binds one typed Live Query, one inclusive absolute row window, and one caller-owned sparse row sink. React observes only query chrome; row payloads flow directly to the sink. Every full replacement and scroll-only window change has switch-latest ownership, so older snapshots, deltas, statuses, failures, and sink writes cannot mutate the current generation.
+_Avoid_: Live grid, grid query language, rows in React state, best-effort cancellation
+
 **AG Grid Adapter**:
 The client integration boundary that translates AG Grid viewport, filter, sort, and grouping state into typed Live Queries while keeping the View Server query language independent of AG Grid.
 _Avoid_: AG Grid where model, AG Grid query language, core FilterModel
@@ -610,6 +614,7 @@ _Avoid_: Browser write, send, emit
 - A **Health Payload Codec** protects full runtime health payloads from missing or unknown configured topics.
 - A **View Server Provider** supplies a **Live Client** to React hooks.
 - A **View Server In-Memory Provider** supplies the same hook behavior through an **In-Memory View Server**.
+- A **Live Query Viewport** keeps viewport rows out of React state, derives its query window, and gives every replacement or scroll-only window change switch-latest ownership over row, count, status, and failure delivery.
 - An **AG Grid Adapter** accepts AG Grid state without making AG Grid state the canonical View Server query language.
 - An **AG Grid Adapter** validates every **AG Grid Set Key** against the bound Topic Row field schema without attempting to repair a lossy key creator.
 - A **Real View Server** and **In-Memory View Server** differ only by transport and ingress **Adapters**, not by query, storage, health, or subscription logic.

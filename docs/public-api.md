@@ -70,7 +70,12 @@ export const viewServer = defineViewServerConfig({
 });
 
 export const viewServerReact = createViewServerReact(viewServer);
-export const { ViewServerProvider, useLiveQuery, useViewServerHealthSummary } = viewServerReact;
+export const {
+  ViewServerProvider,
+  useLiveQuery,
+  useLiveQueryViewport,
+  useViewServerHealthSummary,
+} = viewServerReact;
 ```
 
 ### Schema value admission
@@ -224,3 +229,54 @@ const totals = useLiveQuery("orders", {
 The public API is designed so consumers do not need `as const` to keep type
 safety for normal `select`, `where`, `orderBy`, `groupBy`, and aggregate
 queries.
+
+## Live Query Viewports
+
+`useLiveQueryViewport(topic)` is the transport-neutral integration seam for
+virtualized grids. It exposes status, version, and total-row chrome through
+React while delivering row payloads directly into a caller-owned sparse sink.
+The hook never stores or returns viewport rows.
+
+```tsx
+function OrdersGrid() {
+  const result = useLiveQueryViewport("orders");
+
+  return (
+    <VirtualizedGrid
+      status={`${result.status}:${result.totalRows}`}
+      connect={(grid) =>
+        result.viewport.replace({
+          window: { firstRow: 0, lastRow: 99 },
+          query: {
+            select: ["id", "status", "price"],
+            where: [{ field: "status", type: "equals", filter: "open" }],
+            orderBy: [{ field: "price", direction: "desc" }],
+          },
+          sink: {
+            setRowCount: (count, keepRenderedRows) => grid.setRowCount(count, keepRenderedRows),
+            setRowData: (rows) => grid.setRowData(rows),
+          },
+        })
+      }
+    />
+  );
+}
+```
+
+`replace` atomically binds one exact raw or grouped Live Query, one inclusive
+absolute row window, and one sink. Raw viewport queries require explicit
+`select`, `where`, and `orderBy`; grouped viewport queries require
+`aggregates`, `where`, and `orderBy`. The hook derives `offset` and `limit`, so
+callers cannot provide them.
+
+Use the returned generation's `setWindow` operation for scroll-only changes. It
+reuses the captured filter, sort, grouping, route, and sink without requiring a
+grid scroll event or a complete replacement object. The grid adapter keeps the
+returned generation, calls `generation.setWindow(...)` while scrolling, and
+calls `generation.release()` when that data source is retired.
+`viewport.destroy()` releases the controller.
+
+Every `replace` and `setWindow` is switch-latest. Starting a newer request
+immediately clears rendered rows and invalidates every older request. Late
+snapshots, deltas, status changes, failures, and sink callbacks from an older
+request cannot overwrite the current viewport.

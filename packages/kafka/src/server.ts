@@ -221,18 +221,49 @@ const recordLocation = (
   message,
 });
 
+const invalidRecordMetadataMessage = (region: string): string =>
+  `Kafka Region ${JSON.stringify(region)} returned invalid record metadata.`;
+
+const invalidRecordMetadata = (region: string): never => {
+  throw new KafkaSourceConfigurationError(invalidRecordMetadataMessage(region));
+};
+
 const snapshotHeaders = (
   headers: KafkaMessageMetadata["headers"],
+  region: string,
 ): KafkaMessageMetadata["headers"] => {
+  if (typeof headers !== "object" || headers === null || Array.isArray(headers)) {
+    return invalidRecordMetadata(region);
+  }
+  const prototype = Object.getPrototypeOf(headers);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return invalidRecordMetadata(region);
+  }
   const snapshot: Record<string, Uint8Array | ReadonlyArray<Uint8Array>> = Object.create(null);
-  for (const name of Object.keys(headers)) {
-    const value = headers[name];
-    if (value !== undefined) {
-      snapshot[name] =
-        value instanceof Uint8Array
-          ? Uint8Array.from(value)
-          : Object.freeze(value.map((entry) => Uint8Array.from(entry)));
+  for (const name of Reflect.ownKeys(headers)) {
+    if (typeof name !== "string") {
+      return invalidRecordMetadata(region);
     }
+    const descriptor = Object.getOwnPropertyDescriptor(headers, name);
+    if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
+      return invalidRecordMetadata(region);
+    }
+    const value = descriptor.value;
+    if (value instanceof Uint8Array) {
+      snapshot[name] = Uint8Array.from(value);
+      continue;
+    }
+    if (!Array.isArray(value)) {
+      return invalidRecordMetadata(region);
+    }
+    const repeated: Array<Uint8Array> = [];
+    for (const entry of value) {
+      if (!(entry instanceof Uint8Array)) {
+        return invalidRecordMetadata(region);
+      }
+      repeated.push(Uint8Array.from(entry));
+    }
+    snapshot[name] = Object.freeze(repeated);
   }
   return Object.freeze(snapshot);
 };
@@ -240,6 +271,7 @@ const snapshotHeaders = (
 const snapshotMetadata = <const Region extends string>(
   metadata: KafkaMessageMetadata,
   region: Region,
+  sourceTopic: string,
 ): KafkaMessageMetadata<Region> => {
   const sourceRegion = metadata.sourceRegion;
   if (sourceRegion !== region) {
@@ -247,19 +279,58 @@ const snapshotMetadata = <const Region extends string>(
       `Kafka Region ${JSON.stringify(region)} returned record metadata for ${JSON.stringify(sourceRegion)}.`,
     );
   }
-  const headers = snapshotHeaders(metadata.headers);
+  const recordSourceTopic = metadata.sourceTopic;
+  const partition = metadata.partition;
+  const offset = metadata.offset;
+  const timestampNanos = metadata.timestampNanos;
+  if (
+    recordSourceTopic !== sourceTopic ||
+    typeof partition !== "number" ||
+    !Number.isSafeInteger(partition) ||
+    partition < 0 ||
+    typeof offset !== "bigint" ||
+    offset < 0n ||
+    typeof timestampNanos !== "bigint" ||
+    timestampNanos < 0n
+  ) {
+    return invalidRecordMetadata(region);
+  }
+  const headers = snapshotHeaders(metadata.headers, region);
   return Object.freeze({
-    sourceTopic: metadata.sourceTopic,
+    sourceTopic,
     sourceRegion: region,
-    partition: metadata.partition,
-    offset: metadata.offset,
-    timestampNanos: metadata.timestampNanos,
+    partition,
+    offset,
+    timestampNanos,
     headers,
   });
 };
 
+const invalidRecordMessage = (region: string): string =>
+  `Kafka Region ${JSON.stringify(region)} returned an invalid record.`;
+
+const bindRegionRecordFailure = <const Region extends string>(
+  region: Region,
+  cause: unknown,
+): KafkaAdapterFailure<Region> =>
+  configurationFailure<Region>(
+    Result.try(() => {
+      if (!(cause instanceof KafkaSourceConfigurationError)) {
+        return invalidRecordMessage(region);
+      }
+      const message = cause.message;
+      return typeof message === "string" ? message : invalidRecordMessage(region);
+    }).pipe(
+      Result.match({
+        onFailure: () => invalidRecordMessage(region),
+        onSuccess: (message) => message,
+      }),
+    ),
+  );
+
 const bindRegionRecord = <const Region extends string>(
   region: Region,
+  sourceTopic: string,
   record: KafkaServerRecord,
 ): Effect.Effect<KafkaServerRecord<Region>, KafkaAdapterFailure<Region>> =>
   Effect.try({
@@ -267,7 +338,7 @@ const bindRegionRecord = <const Region extends string>(
       const key = record.key;
       const value = record.value;
       const settlement = record.settlement;
-      const metadata = snapshotMetadata(record.metadata, region);
+      const metadata = snapshotMetadata(record.metadata, region, sourceTopic);
       return {
         key,
         value,
@@ -278,12 +349,7 @@ const bindRegionRecord = <const Region extends string>(
           ),
       };
     },
-    catch: (cause) =>
-      configurationFailure<Region>(
-        cause instanceof KafkaSourceConfigurationError
-          ? cause.message
-          : `Kafka Region ${JSON.stringify(region)} returned an invalid record.`,
-      ),
+    catch: (cause) => bindRegionRecordFailure(region, cause),
   });
 
 const codecRejectionMessage = (
@@ -697,7 +763,7 @@ export const makeKafkaServerLayer = (
                             adapterExecutionFailure(bindRegionFailure(region, failure)),
                           ),
                           Stream.mapEffect((record) =>
-                            bindRegionRecord(region, record).pipe(
+                            bindRegionRecord(region, definition.topic, record).pipe(
                               Effect.mapError(adapterExecutionFailure),
                               Effect.flatMap((boundRecord) =>
                                 recordEvent(

@@ -70,11 +70,11 @@
       "benchmarks": [
         {
           "groupName": "src/source-broker.bench.ts > Kafka Source Adapter production broker",
-          "maxMs": 737.1713749999999,
-          "meanMs": 654.5709413999999,
-          "minMs": 606.1379159999997,
+          "maxMs": 690.7156669999999,
+          "meanMs": 597.9757499999998,
+          "minMs": 528.3953339999998,
           "name": "production Node Adapter broker ingest and commit (64 rows)",
-          "p99Ms": 737.1713749999999,
+          "p99Ms": 690.7156669999999,
           "sampleCount": 5
         }
       ],
@@ -83,7 +83,7 @@
       "benchmarkScope": "kafka-source-adapter-broker",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 39059456,
+      "memoryRssTotalDeltaBytes": 26886144,
       "minimumSampleCount": 5,
       "mutationCount": 64,
       "outputJsonPath": "packages/kafka/.artifacts/source-broker-64rows.json",

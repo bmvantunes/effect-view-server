@@ -592,8 +592,8 @@ export const KafkaRejectionPhaseSchema = Schema.Literals([
 export const KafkaSourceRejectionLocation = Schema.Struct({
   region: Schema.NonEmptyString,
   topic: Schema.NonEmptyString,
-  partition: Schema.Int,
-  offset: Schema.BigInt,
+  partition: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  offset: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
   phase: KafkaRejectionPhaseSchema,
   message: Schema.String,
 });

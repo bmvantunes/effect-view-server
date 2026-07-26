@@ -5,6 +5,7 @@ import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/
 import { describe, expect, it } from "@effect/vitest";
 import { Duration, Effect, Option, Schema } from "effect";
 import {
+  KafkaSourceRejectionLocation,
   KafkaSourceConfigurationError,
   decodeKafkaCodec,
   decodeKafkaRowId,
@@ -78,6 +79,34 @@ const validSourceInput = () => ({
 });
 
 describe("Kafka Source Adapter contract", () => {
+  it.effect("enforces non-negative Kafka rejection coordinates", () =>
+    Effect.gen(function* () {
+      const location = {
+        region: "eu",
+        topic: "orders-source",
+        partition: 0,
+        offset: 0n,
+        phase: "keyDecode",
+        message: "rejected",
+      } as const;
+      const valid = yield* Schema.decodeUnknownEffect(KafkaSourceRejectionLocation)(location);
+      const negativePartition = yield* Schema.decodeUnknownEffect(KafkaSourceRejectionLocation)({
+        ...location,
+        partition: -1,
+      }).pipe(Effect.flip);
+      const negativeOffset = yield* Schema.decodeUnknownEffect(KafkaSourceRejectionLocation)({
+        ...location,
+        offset: -1n,
+      }).pipe(Effect.flip);
+
+      expect(valid).toStrictEqual(location);
+      expect([
+        Schema.isSchemaError(negativePartition),
+        Schema.isSchemaError(negativeOffset),
+      ]).toStrictEqual([true, true]);
+    }),
+  );
+
   it.effect("decodes bytes, strings, JSON, protobuf, and custom codecs", () =>
     Effect.gen(function* () {
       const bytes = Uint8Array.from([1, 2, 3]);

@@ -776,11 +776,10 @@ describe("Kafka Source Adapter Server", () => {
 
       const singleHeader = bytes("single");
       const repeatedHeaders = [bytes("first"), bytes("second")];
-      const goodHeaders: Record<string, Uint8Array | ReadonlyArray<Uint8Array>> = {
-        single: singleHeader,
-        repeated: repeatedHeaders,
-      };
-      Reflect.set(goodHeaders, "absent", undefined);
+      const goodHeaders: Record<string, Uint8Array | ReadonlyArray<Uint8Array>> =
+        Object.create(null);
+      goodHeaders["single"] = singleHeader;
+      goodHeaders["repeated"] = repeatedHeaders;
       let headerReads = 0;
       const observedHeaders = new Proxy(goodHeaders, {
         get: (target, property, receiver) => {
@@ -800,6 +799,13 @@ describe("Kafka Source Adapter Server", () => {
         metadataFrozen: Object.isFrozen(capturedMetadata),
         headersFrozen: Object.isFrozen(capturedMetadata.headers),
         repeatedFrozen: Object.isFrozen(capturedMetadata.headers["repeated"]),
+        scalarEnvelope: {
+          sourceTopic: capturedMetadata.sourceTopic,
+          sourceRegion: capturedMetadata.sourceRegion,
+          partition: capturedMetadata.partition,
+          offset: capturedMetadata.offset,
+          timestampNanos: capturedMetadata.timestampNanos,
+        },
         entries: Object.entries(capturedMetadata.headers),
         singleDetached: capturedMetadata.headers["single"] !== singleHeader,
         repeatedDetached:
@@ -810,13 +816,20 @@ describe("Kafka Source Adapter Server", () => {
         metadataFrozen: true,
         headersFrozen: true,
         repeatedFrozen: true,
+        scalarEnvelope: {
+          sourceTopic: "source-orders",
+          sourceRegion: "eu",
+          partition: 0,
+          offset: 4n,
+          timestampNanos: 4_000_000n,
+        },
         entries: [
           ["single", bytes("single")],
           ["repeated", [bytes("first"), bytes("second")]],
         ],
         singleDetached: true,
         repeatedDetached: true,
-        headerReads: 3,
+        headerReads: 0,
       });
       expect(
         yield* runtime.client.snapshot("orders", {
@@ -1707,6 +1720,43 @@ describe("Kafka Source Adapter Server", () => {
         recordMappingFailure: Effect.void,
         recordRejection: Effect.void,
       });
+      let invalidMetadataCallbackCount = 0;
+      let invalidMetadataSettlementCount = 0;
+      const invalidMetadataConsumer = (
+        candidate: KafkaMessageMetadata,
+      ): import("./server").KafkaServerRegionConsumer => {
+        const recordCallback = Effect.sync(() => {
+          invalidMetadataCallbackCount += 1;
+        });
+        return {
+          records: Stream.make({
+            key: bytes("metadata"),
+            value: bytes(JSON.stringify({ price: 1 })),
+            metadata: candidate,
+            settlement: () =>
+              Effect.sync(() => {
+                invalidMetadataSettlementCount += 1;
+              }),
+          }),
+          recordDecoded: recordCallback,
+          recordDecodeFailure: recordCallback,
+          recordMapped: recordCallback,
+          recordMappingFailure: recordCallback,
+          recordRejection: recordCallback,
+        };
+      };
+      const invalidMetadataRegion = (candidate: KafkaMessageMetadata): KafkaServerRegion => ({
+        acquire: () => Effect.succeed(invalidMetadataConsumer(candidate)),
+        metrics: () => Effect.succeed(metrics),
+      });
+      const metadataWithValue = (
+        property: keyof KafkaMessageMetadata,
+        value: unknown,
+      ): KafkaMessageMetadata =>
+        new Proxy(metadata("eu", 1n), {
+          get: (target, current, receiver) =>
+            current === property ? value : Reflect.get(target, current, receiver),
+        });
       const expectConfigurationExhaustion = Effect.fn(
         "KafkaSourceAdapter.test.configurationExhaustion",
       )(function* (regionRuntime: KafkaServerRegion, message: string) {
@@ -1791,6 +1841,98 @@ describe("Kafka Source Adapter Server", () => {
           ),
         metrics: () => Effect.succeed(metrics),
       };
+      const wrongTopicMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("sourceTopic", "other-source"),
+      );
+      const negativePartitionMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("partition", -1),
+      );
+      const fractionalPartitionMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("partition", 0.5),
+      );
+      const nonNumberPartitionMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("partition", "0"),
+      );
+      const negativeOffsetMetadataRegion = invalidMetadataRegion(metadataWithValue("offset", -1n));
+      const nonBigIntOffsetMetadataRegion = invalidMetadataRegion(metadataWithValue("offset", 0));
+      const negativeTimestampMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("timestampNanos", -1n),
+      );
+      const nonBigIntTimestampMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("timestampNanos", 0),
+      );
+      const primitiveHeadersMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", "invalid"),
+      );
+      const nullHeadersMetadataRegion = invalidMetadataRegion(metadataWithValue("headers", null));
+      const arrayHeadersMetadataRegion = invalidMetadataRegion(metadataWithValue("headers", []));
+      const nonPlainHeadersMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", new Map()),
+      );
+      const symbolHeaders = {};
+      Reflect.set(symbolHeaders, Symbol("invalid"), bytes("invalid"));
+      const symbolHeadersMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", symbolHeaders),
+      );
+      const ghostHeaders = new Proxy(
+        {},
+        {
+          ownKeys: () => ["ghost"],
+        },
+      );
+      const ghostHeadersMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", ghostHeaders),
+      );
+      const hiddenHeaders = {};
+      Object.defineProperty(hiddenHeaders, "hidden", {
+        value: bytes("hidden"),
+      });
+      const hiddenHeadersMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", hiddenHeaders),
+      );
+      const accessorHeaders = {};
+      Object.defineProperty(accessorHeaders, "accessor", {
+        enumerable: true,
+        get: () => bytes("accessor"),
+      });
+      const accessorHeadersMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", accessorHeaders),
+      );
+      const invalidHeaderValueMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", { invalid: 1 }),
+      );
+      const invalidRepeatedHeaderMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("headers", { invalid: [bytes("valid"), 1] }),
+      );
+      const hostilePrototypeCause = new Proxy(
+        {},
+        {
+          getPrototypeOf: () => {
+            throw new Error("hostile metadata cause prototype inspected");
+          },
+        },
+      );
+      const hostilePrototypeMetadataRegion = invalidMetadataRegion(
+        new Proxy(metadata("eu", 1n), {
+          get: () => {
+            throw hostilePrototypeCause;
+          },
+        }),
+      );
+      const hostileMessageCause = new Proxy(
+        new kafkaContract.KafkaSourceConfigurationError("invalid"),
+        {
+          get: (target, property, receiver) =>
+            property === "message" ? {} : Reflect.get(target, property, receiver),
+        },
+      );
+      const hostileMessageMetadataRegion = invalidMetadataRegion(
+        new Proxy(metadata("eu", 1n), {
+          get: () => {
+            throw hostileMessageCause;
+          },
+        }),
+      );
       const hostileRecord = new Proxy(
         {
           key: bytes("hostile"),
@@ -1862,6 +2004,86 @@ describe("Kafka Source Adapter Server", () => {
         'Kafka Region "eu" returned record metadata for "apac".',
       );
       yield* expectConfigurationExhaustion(
+        wrongTopicMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        negativePartitionMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        fractionalPartitionMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        nonNumberPartitionMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        negativeOffsetMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        nonBigIntOffsetMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        negativeTimestampMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        nonBigIntTimestampMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        primitiveHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        nullHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        arrayHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        nonPlainHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        symbolHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        ghostHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        hiddenHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        accessorHeadersMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        invalidHeaderValueMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        invalidRepeatedHeaderMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        hostilePrototypeMetadataRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        hostileMessageMetadataRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
         hostileRecordRegion,
         'Kafka Region "eu" returned an invalid record.',
       );
@@ -1873,6 +2095,13 @@ describe("Kafka Source Adapter Server", () => {
         hostileSettlementFailureRegion,
         'Kafka Region "eu" returned an invalid failure.',
       );
+      expect({
+        invalidMetadataCallbackCount,
+        invalidMetadataSettlementCount,
+      }).toStrictEqual({
+        invalidMetadataCallbackCount: 0,
+        invalidMetadataSettlementCount: 0,
+      });
     }),
   );
 

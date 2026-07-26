@@ -82,11 +82,13 @@ let memoryAfterSetup = memoryBefore;
 
 type BenchmarkState = {
   readonly ingest: (batch: number) => Effect.Effect<void, unknown>;
+  readonly verifyFinalState: Effect.Effect<number, unknown>;
 };
 
 let state: BenchmarkState | undefined;
 let benchmarkScope: Scope.Closeable | undefined;
 let nextBatch = 0;
+let retainedRowsAfterBenchmark = 0;
 
 const requireState = (): BenchmarkState => {
   if (state === undefined) {
@@ -216,7 +218,8 @@ beforeAll(async () => {
         }
         yield* Effect.sleep("5 millis");
       }
-      let expectedRows = 0;
+      let expectedCommittedOffset = 0n;
+      let lastCompletedBatch: number | undefined;
       state = {
         ingest: (batch) =>
           Effect.gen(function* () {
@@ -225,8 +228,8 @@ beforeAll(async () => {
                 producer.send({
                   messages: Array.from({ length: rowCount }, (_, index) => ({
                     topic: sourceTopic,
-                    key: Buffer.from(encoder.encode(`row-${batch}-${index}`)),
-                    value: Buffer.from(encoder.encode(JSON.stringify({ value: index }))),
+                    key: Buffer.from(encoder.encode(`row-${index}`)),
+                    value: Buffer.from(encoder.encode(JSON.stringify({ value: batch }))),
                   })),
                 }),
               catch: (cause) =>
@@ -235,11 +238,8 @@ beforeAll(async () => {
                   cause,
                 }),
             });
-            expectedRows += rowCount;
+            expectedCommittedOffset += BigInt(rowCount);
             for (let poll = 0; poll < 4_000; poll += 1) {
-              const snapshot = yield* runtime.client.snapshot("rows", {
-                select: ["id"],
-              });
               const groups = yield* Effect.tryPromise({
                 try: () =>
                   admin.listConsumerGroupOffsets({
@@ -263,7 +263,8 @@ beforeAll(async () => {
                   }),
               });
               const committedOffset = groups[0]?.topics[0]?.partitions[0]?.committedOffset ?? -1n;
-              if (snapshot.totalRows === expectedRows && committedOffset >= BigInt(expectedRows)) {
+              if (committedOffset >= expectedCommittedOffset) {
+                lastCompletedBatch = batch;
                 return;
               }
               yield* Effect.sleep("5 millis");
@@ -272,6 +273,35 @@ beforeAll(async () => {
               message: "Kafka Source benchmark did not converge and commit its broker batch.",
             });
           }),
+        verifyFinalState: Effect.gen(function* () {
+          const completedBatch = lastCompletedBatch;
+          if (completedBatch === undefined) {
+            return yield* new KafkaSourceBrokerBenchmarkError({
+              message: "Kafka Source benchmark did not complete a broker batch.",
+            });
+          }
+          const snapshot = yield* runtime.client.snapshot("rows", {
+            select: ["id", "value"],
+          });
+          if (
+            snapshot.status !== "ready" ||
+            snapshot.totalRows !== rowCount ||
+            snapshot.rows.length !== rowCount
+          ) {
+            return yield* new KafkaSourceBrokerBenchmarkError({
+              message: "Kafka Source benchmark retained state did not remain fixed-size.",
+            });
+          }
+          const rowsById = new Map(snapshot.rows.map((row) => [row.id, row.value]));
+          for (let index = 0; index < rowCount; index += 1) {
+            if (rowsById.get(`local:row-${index}`) !== completedBatch) {
+              return yield* new KafkaSourceBrokerBenchmarkError({
+                message: "Kafka Source benchmark retained state did not converge.",
+              });
+            }
+          }
+          return snapshot.totalRows;
+        }),
       };
       memoryAfterSetup = memorySnapshot();
     }).pipe(
@@ -283,7 +313,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (benchmarkScope !== undefined) {
-    await Effect.runPromise(Scope.close(benchmarkScope, Exit.void));
+    const current = requireState();
+    retainedRowsAfterBenchmark = await Effect.runPromise(
+      current.verifyFinalState.pipe(Effect.ensuring(Scope.close(benchmarkScope, Exit.void))),
+    );
   }
   const memoryAfterBenchmark = memorySnapshot();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
@@ -308,10 +341,11 @@ afterAll(async () => {
     mutationCount: rowCount,
     notes: [
       "Exercises the production Platformatic Kafka Node Adapter against a real Apache Kafka broker.",
-      "Each sample waits for both Runtime Core convergence and the active consumer-group commit.",
+      "Each sample overwrites a fixed key set and waits for the post-application consumer-group commit.",
+      "A final untimed snapshot verifies exact fixed-size Runtime Core convergence.",
     ],
     queuedEventCount: 0,
-    rowCount,
+    rowCount: retainedRowsAfterBenchmark,
     subscriberCount: 0,
     topics: ["rows"],
   });

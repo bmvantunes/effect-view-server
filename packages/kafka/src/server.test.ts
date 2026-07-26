@@ -76,6 +76,7 @@ type FakeRegion = {
     readonly commitFailure?: KafkaAdapterFailure;
     readonly headers?: KafkaMessageMetadata["headers"];
   }) => Effect.Effect<void>;
+  readonly offerRecord: (record: KafkaServerRecord) => Effect.Effect<void>;
   readonly failStream: (failure: KafkaAdapterFailure) => Effect.Effect<void>;
   readonly counts: () => {
     readonly acquisitions: number;
@@ -189,6 +190,14 @@ const makeFakeRegion = (
             settlement: (applicationExit) =>
               Exit.isSuccess(applicationExit) ? commit : Effect.void,
           });
+        }),
+      offerRecord: (record) =>
+        Effect.gen(function* () {
+          const queue = active;
+          if (queue === undefined) {
+            return yield* Effect.die(new Error(`Kafka fake Region ${region} is not active.`));
+          }
+          yield* Queue.offer(queue, record);
         }),
       failStream: (failure) =>
         Effect.gen(function* () {
@@ -354,6 +363,81 @@ const makeFaultSource = (keyDecodeStarted?: Deferred.Deferred<void>) => {
 };
 
 describe("Kafka Source Adapter Server", () => {
+  it.effect("publishes exact configured Region lanes while acquisition is pending and ready", () =>
+    Effect.gen(function* () {
+      const acquisitionOrder: Array<string> = [];
+      const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+      const us = yield* makeFakeRegion("us", acquisitionOrder);
+      const continueAcquisition = yield* Deferred.make<void>();
+      const pendingEu: KafkaServerRegion = {
+        acquire: (input) =>
+          Deferred.await(continueAcquisition).pipe(Effect.andThen(eu.runtime.acquire(input))),
+        metrics: eu.runtime.metrics,
+      };
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source: makeSource("earliest"),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          makeKafkaServerLayer({
+            consumerGroupPrefix: "replica",
+            regions: new Map([
+              ["eu", pendingEu],
+              ["us", us.runtime],
+            ]),
+          }),
+        ),
+      );
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const starting = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Starting"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect(starting.metrics.runtime.lanes).toStrictEqual([
+        { id: "eu", buffer: { _tag: "Unbuffered" } },
+        { id: "us", buffer: { _tag: "Unbuffered" } },
+      ]);
+      expect(starting.metrics.adapter.start).toStrictEqual({ _tag: "Pending" });
+
+      yield* Deferred.succeed(continueAcquisition, undefined);
+      const ready = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Ready"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect(ready.metrics.runtime.lanes).toStrictEqual([
+        { id: "eu", buffer: { _tag: "Unbuffered" } },
+        { id: "us", buffer: { _tag: "Unbuffered" } },
+      ]);
+      expect(ready.metrics.adapter.start).toStrictEqual({ _tag: "Pending" });
+      yield* TestClock.adjust("1 second");
+      const refreshed = Option.getOrThrow(
+        yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+      );
+      expect(refreshed.status._tag).toBe("Ready");
+      expect(refreshed.metrics.runtime.lanes).toStrictEqual([
+        { id: "eu", buffer: { _tag: "Unbuffered" } },
+        { id: "us", buffer: { _tag: "Unbuffered" } },
+      ]);
+      expect(refreshed.metrics.adapter.start).toStrictEqual({
+        _tag: "Resolved",
+        position: { mode: "earliest" },
+      });
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
   it.effect(
     "runs the complete materialized slice across Regions, commits poison items, and applies tombstones",
     () =>
@@ -618,6 +702,10 @@ describe("Kafka Source Adapter Server", () => {
         message: "private decoder detail",
       } as const;
       let goodMetadata: KafkaMessageMetadata | undefined;
+      let originalKeyPayload: Uint8Array | undefined;
+      let originalValuePayload: Uint8Array | undefined;
+      let keyPayloadDetached = false;
+      let valuePayloadDetached = false;
       const NamedValue = Schema.Struct({
         price: Schema.Number,
       });
@@ -627,6 +715,9 @@ describe("Kafka Source Adapter Server", () => {
         key: kafka.codec({
           name: "key\ncodec",
           decode: ({ bytes: input, metadata: inputMetadata }) => {
+            if (originalKeyPayload !== undefined) {
+              keyPayloadDetached = input !== originalKeyPayload;
+            }
             const key = decoder.decode(input);
             if (key === "key-fail") {
               return Reflect.set(inputMetadata, "sourceRegion", "")
@@ -645,6 +736,9 @@ describe("Kafka Source Adapter Server", () => {
         value: kafka.codec({
           name: "value-codec",
           decode: ({ bytes: input }) => {
+            if (originalValuePayload !== undefined) {
+              valuePayloadDetached = input !== originalValuePayload;
+            }
             const value = decoder.decode(input);
             if (value === "value-fail") {
               return Effect.fail(namedCodecFailure);
@@ -842,6 +936,51 @@ describe("Kafka Source Adapter Server", () => {
         status: "ready",
         statusCode: "Ready",
       });
+
+      originalKeyPayload = bytes("detached");
+      originalValuePayload = bytes(JSON.stringify({ price: 4 }));
+      const mutableRecord: KafkaServerRecord = {
+        key: originalKeyPayload,
+        value: originalValuePayload,
+        metadata: metadata("eu", 5n),
+        settlement: () =>
+          Effect.sync(() => {
+            eu.commits.push(5n);
+          }),
+      };
+      yield* eu.offerRecord(
+        new Proxy(mutableRecord, {
+          get: (target, property, receiver) => {
+            if (property === "value") {
+              originalKeyPayload?.fill(0);
+            }
+            if (property === "metadata") {
+              originalValuePayload?.fill(0);
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        }),
+      );
+      yield* awaitCondition(() => eu.commits.length === 5);
+      expect({ keyPayloadDetached, valuePayloadDetached }).toStrictEqual({
+        keyPayloadDetached: true,
+        valuePayloadDetached: true,
+      });
+      expect(
+        yield* runtime.client.snapshot("orders", {
+          select: ["id", "price", "region"],
+          orderBy: [{ field: "id", direction: "asc" }],
+        }),
+      ).toStrictEqual({
+        rows: [
+          { id: "eu:detached", price: 4, region: "eu" },
+          { id: "eu:good", price: 3, region: "eu" },
+        ],
+        totalRows: 2,
+        version: 2,
+        status: "ready",
+        statusCode: "Ready",
+      });
       const metrics = yield* eu.runtime.metrics({
         activeGroupId: "replica:orders",
         lifetimeScope: Option.getOrThrow(Option.fromUndefinedOr(eu.acquisitions[0])).lifetimeScope,
@@ -855,8 +994,8 @@ describe("Kafka Source Adapter Server", () => {
         decodeFailures: metrics.decodeFailures,
         rejections: metrics.rejections,
       }).toStrictEqual({
-        commits: [1n, 2n, 3n, 4n],
-        decoded: 1n,
+        commits: [1n, 2n, 3n, 4n, 5n],
+        decoded: 2n,
         decodeFailures: 3n,
         rejections: 3n,
       });
@@ -1749,6 +1888,24 @@ describe("Kafka Source Adapter Server", () => {
         acquire: () => Effect.succeed(invalidMetadataConsumer(candidate)),
         metrics: () => Effect.succeed(metrics),
       });
+      const validRecord = (): KafkaServerRecord => ({
+        key: bytes("record"),
+        value: bytes(JSON.stringify({ price: 1 })),
+        metadata: metadata("eu", 1n),
+        settlement: () => Effect.void,
+      });
+      const recordWithValue = (
+        property: keyof KafkaServerRecord,
+        value: unknown,
+      ): KafkaServerRecord =>
+        new Proxy(validRecord(), {
+          get: (target, current, receiver) =>
+            current === property ? value : Reflect.get(target, current, receiver),
+        });
+      const invalidRecordRegion = (record: KafkaServerRecord): KafkaServerRegion => ({
+        acquire: () => Effect.succeed(consumer(Stream.make(record))),
+        metrics: () => Effect.succeed(metrics),
+      });
       const metadataWithValue = (
         property: keyof KafkaMessageMetadata,
         value: unknown,
@@ -1797,6 +1954,22 @@ describe("Kafka Source Adapter Server", () => {
         yield* runtime.close;
       });
       const wrongRegionFailure = acquisitionFailure("apac");
+      const wrongTopicFailure = new Proxy(acquisitionFailure("eu"), {
+        get: (target, property, receiver) =>
+          property === "topic" ? "other-source" : Reflect.get(target, property, receiver),
+      });
+      const emptyTopicFailure = new Proxy(acquisitionFailure("eu"), {
+        get: (target, property, receiver) =>
+          property === "topic" ? "" : Reflect.get(target, property, receiver),
+      });
+      const nonStringMessageFailure = new Proxy(acquisitionFailure("eu"), {
+        get: (target, property, receiver) =>
+          property === "message" ? {} : Reflect.get(target, property, receiver),
+      });
+      const unknownTagFailure = new Proxy(acquisitionFailure("eu"), {
+        get: (target, property, receiver) =>
+          property === "_tag" ? "KafkaUnknownFailure" : Reflect.get(target, property, receiver),
+      });
       const hostileFailure = () =>
         new Proxy(acquisitionFailure("eu"), {
           get: () => {
@@ -1817,6 +1990,22 @@ describe("Kafka Source Adapter Server", () => {
       };
       const streamFailureRegion: KafkaServerRegion = {
         acquire: () => Effect.succeed(consumer(Stream.fail(wrongRegionFailure))),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const wrongTopicFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(wrongTopicFailure),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const emptyTopicFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(emptyTopicFailure),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const nonStringMessageFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(nonStringMessageFailure),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const unknownTagFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(unknownTagFailure),
         metrics: () => Effect.succeed(metrics),
       };
       const hostileAcquireFailureRegion: KafkaServerRegion = {
@@ -1849,6 +2038,9 @@ describe("Kafka Source Adapter Server", () => {
       );
       const fractionalPartitionMetadataRegion = invalidMetadataRegion(
         metadataWithValue("partition", 0.5),
+      );
+      const oversizedPartitionMetadataRegion = invalidMetadataRegion(
+        metadataWithValue("partition", 2_147_483_648),
       );
       const nonNumberPartitionMetadataRegion = invalidMetadataRegion(
         metadataWithValue("partition", "0"),
@@ -1950,6 +2142,31 @@ describe("Kafka Source Adapter Server", () => {
         acquire: () => Effect.succeed(consumer(Stream.make(hostileRecord))),
         metrics: () => Effect.succeed(metrics),
       };
+      const invalidKeyRegion = invalidRecordRegion(recordWithValue("key", "invalid"));
+      const invalidValueRegion = invalidRecordRegion(recordWithValue("value", "invalid"));
+      const invalidSettlementRegion = invalidRecordRegion(recordWithValue("settlement", "invalid"));
+      const throwingSettlementRegion = invalidRecordRegion(
+        recordWithValue("settlement", () => {
+          throw new Error("settlement invocation failed");
+        }),
+      );
+      const nonEffectSettlementRegion = invalidRecordRegion(
+        recordWithValue("settlement", () => "invalid"),
+      );
+      const hostileSettlementResultRegion = invalidRecordRegion(
+        recordWithValue(
+          "settlement",
+          () =>
+            new Proxy(
+              {},
+              {
+                has: () => {
+                  throw new Error("settlement result inspection failed");
+                },
+              },
+            ),
+        ),
+      );
       const settlementFailureRegion: KafkaServerRegion = {
         acquire: () =>
           Effect.succeed(
@@ -1992,6 +2209,22 @@ describe("Kafka Source Adapter Server", () => {
         'Kafka Region "eu" returned a failure for "apac".',
       );
       yield* expectConfigurationExhaustion(
+        wrongTopicFailureRegion,
+        'Kafka Region "eu" returned a failure for source Topic "other-source".',
+      );
+      yield* expectConfigurationExhaustion(
+        emptyTopicFailureRegion,
+        'Kafka Region "eu" returned a failure for source Topic "".',
+      );
+      yield* expectConfigurationExhaustion(
+        nonStringMessageFailureRegion,
+        'Kafka Region "eu" returned an invalid failure.',
+      );
+      yield* expectConfigurationExhaustion(
+        unknownTagFailureRegion,
+        'Kafka Region "eu" returned an invalid failure.',
+      );
+      yield* expectConfigurationExhaustion(
         hostileAcquireFailureRegion,
         'Kafka Region "eu" returned an invalid failure.',
       );
@@ -2013,6 +2246,10 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* expectConfigurationExhaustion(
         fractionalPartitionMetadataRegion,
+        'Kafka Region "eu" returned invalid record metadata.',
+      );
+      yield* expectConfigurationExhaustion(
+        oversizedPartitionMetadataRegion,
         'Kafka Region "eu" returned invalid record metadata.',
       );
       yield* expectConfigurationExhaustion(
@@ -2085,6 +2322,30 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* expectConfigurationExhaustion(
         hostileRecordRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        invalidKeyRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        invalidValueRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        invalidSettlementRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        throwingSettlementRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        nonEffectSettlementRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        hostileSettlementResultRegion,
         'Kafka Region "eu" returned an invalid record.',
       );
       yield* expectConfigurationExhaustion(

@@ -18,6 +18,7 @@ import {
   makeSourceUpsert,
   markSourceToolkit,
 } from "./internal";
+import { resolveSourceAdapterHandle } from "./model";
 import { SourceAdapter, sourceExecutionFailureSchema } from "./index";
 
 const Failure = Schema.TaggedStruct("FixtureFailure", {
@@ -127,7 +128,54 @@ describe("Source Adapter portable model", () => {
     });
     const Row = Schema.Struct({ id: Schema.String });
     const definition = adapter.materializedSource<typeof Row.Type>({ row: Row });
+    const delegatedDefinition = SourceAdapter.materializedSource(adapter, {
+      row: Row,
+    });
     expect(definition.options.row).toBe(Row);
+    expect(delegatedDefinition.options.row).toBe(Row);
+  });
+
+  it("creates stable runtime descriptors without delegated lifecycle builders", () => {
+    const handle = makeMaterializedAdapter();
+    const descriptor = SourceAdapter.descriptor(handle);
+    const directDefinition = handle.materializedSource({ label: "direct" });
+    const definition = SourceAdapter.materializedSource(handle, { label: "orders" });
+    const symbolValues = Reflect.ownKeys(descriptor)
+      .filter((key): key is symbol => typeof key === "symbol")
+      .map((key) => Reflect.get(descriptor, key));
+    const copiedHandle = Object.defineProperties({}, Object.getOwnPropertyDescriptors(handle));
+    const copiedDescriptor = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(descriptor),
+    );
+
+    expect(SourceAdapter.descriptor(handle)).toBe(descriptor);
+    expect(directDefinition.adapter).toBe(handle);
+    expect(definition.adapter).toBe(descriptor);
+    expect(isSourceDefinition(definition)).toBe(true);
+    expect(isSourceAdapterHandle(descriptor)).toBe(true);
+    expect(Object.keys(descriptor)).toStrictEqual([
+      "identity",
+      "failureSchema",
+      "materialized",
+      "leased",
+      "runtimeService",
+      "failure",
+    ]);
+    expect(Reflect.get(descriptor, "materializedSource")).toBeUndefined();
+    expect(Reflect.get(descriptor, "leasedSource")).toBeUndefined();
+    expect(symbolValues).toHaveLength(1);
+    expect(typeof symbolValues[0]).toBe("symbol");
+    expect(Object.isFrozen(descriptor)).toBe(true);
+    expect(() => Reflect.apply(SourceAdapter.descriptor, undefined, [copiedHandle])).toThrow(
+      "requires a nominal Source Adapter handle",
+    );
+    expect(() => Reflect.apply(resolveSourceAdapterHandle, undefined, [copiedDescriptor])).toThrow(
+      "is not linked to a nominal handle",
+    );
+    expect(() =>
+      Reflect.apply(SourceAdapter.materializedSource, undefined, [descriptor, { label: "orders" }]),
+    ).toThrow("delegated construction requires a nominal Source Adapter handle");
   });
 
   it.effect("creates nominal adapters and validates safe adapter failures", () =>

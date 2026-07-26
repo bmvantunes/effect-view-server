@@ -88,7 +88,7 @@ type SourceLifecycleDeclarationAny =
   >;
 
 type RuntimeSourceDefinition = SourceDefinition<
-  import("@effect-view-server/source-adapter").SourceAdapterHandle<
+  import("@effect-view-server/source-adapter").SourceAdapterDescriptor<
     string,
     string | undefined,
     unknown,
@@ -421,7 +421,7 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
       return yield* Effect.fail(
         runtimeError(
           topic,
-          `Source Adapter runtime service for ${definition.identity.name} does not match its nominal definition handle.`,
+          `Source Adapter runtime service for ${definition.identity.name} does not match its nominal definition descriptor.`,
         ),
       );
     }
@@ -672,6 +672,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
   const materializedRetainedIds = new Set<string>();
   const scope = yield* Scope.fork(input.ownerScope, "sequential");
   const metricFailureObservation = makeMetricFailureObservation();
+  let declaredLaneFailure: SourceExecutionError | undefined;
   let supervisorFiber: Fiber.Fiber<void> | undefined;
   const healthLock = Semaphore.makeUnsafe(1);
 
@@ -729,6 +730,50 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     lastValidLaneMetrics = nonEmptyLanes;
     return runtimeMetricsFromLanes(nonEmptyLanes);
   });
+  const initializeDeclaredLanes = Effect.fn(
+    "ViewServerRuntimeCore.source.lanes.initializeDeclared",
+  )(() =>
+    Effect.sync(() => {
+      const initialLaneIds = input.entry.lifecycle.initialLaneIds;
+      if (initialLaneIds === undefined) {
+        return;
+      }
+      const candidate = Result.try(() =>
+        initialLaneIds({
+          topic: input.entry.topic,
+          definition: input.entry.definition.options,
+          lifetimeScope: scope,
+          target: input.target,
+        }),
+      );
+      if (Result.isFailure(candidate)) {
+        return sourceDefinitionError(
+          input.entry.topic,
+          "Source Adapter initial Lane IDs must be returned without throwing.",
+        );
+      }
+      const snapshot = Result.try(() => Array.from(candidate.success));
+      if (
+        Result.isFailure(snapshot) ||
+        snapshot.success.length === 0 ||
+        snapshot.success.some((laneId) => typeof laneId !== "string" || laneId.length === 0) ||
+        new Set(snapshot.success).size !== snapshot.success.length
+      ) {
+        return sourceDefinitionError(
+          input.entry.topic,
+          "Source Adapter initial Lane IDs must be non-empty, unique strings.",
+        );
+      }
+      const laneIds = snapshot.success.sort((left, right) => left.localeCompare(right));
+      stableLaneIds = laneIds;
+      for (const laneId of laneIds) {
+        laneCounters.set(laneId, {
+          buffer: Effect.succeed({ _tag: "Unbuffered" }),
+        });
+      }
+      return undefined;
+    }),
+  );
 
   const initialStatus: SourceStatus<unknown, unknown> = {
     _tag: "Starting",
@@ -1359,6 +1404,12 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     const attempt = previousTermination === undefined ? currentAttempt : currentAttempt + 1n;
     return Effect.scoped(
       Effect.gen(function* () {
+        if (declaredLaneFailure !== undefined) {
+          return yield* Effect.fail<SourceTermination<unknown>>({
+            _tag: "Failed",
+            failure: declaredLaneFailure,
+          });
+        }
         const metricFailure = yield* Deferred.make<SourceExecutionError>();
         const registration = yield* metricFailureObservation.register(metricFailure);
         if (registration._tag === "Failed") {
@@ -1459,7 +1510,11 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     run,
     stop,
   };
+  declaredLaneFailure = yield* initializeDeclaredLanes();
   yield* sampleAdapterMetrics();
+  supervisorFiber = yield* Effect.forkIn(run, scope, {
+    startImmediately: true,
+  });
   yield* Effect.forkIn(
     Effect.forever(Effect.sleep("1 second").pipe(Effect.andThen(sampleAdapterMetrics()))),
     scope,
@@ -1467,9 +1522,6 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       startImmediately: true,
     },
   );
-  supervisorFiber = yield* Effect.forkIn(run, scope, {
-    startImmediately: true,
-  });
   return logical;
 });
 

@@ -653,7 +653,7 @@ const packageInspection: SourceAdapterPackageInspectionOptions = {
           valid: {
             activeGroupId: "conformance:rows",
             start: { _tag: "Pending" },
-            regions: [],
+            regions: [emptyRegionMetrics("primary"), emptyRegionMetrics("sibling")],
           },
           invalid: {
             activeGroupId: 1,

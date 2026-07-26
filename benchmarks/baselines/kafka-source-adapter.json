@@ -8,38 +8,38 @@
       "benchmarks": [
         {
           "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
-          "maxMs": 13.913875000000075,
-          "meanMs": 12.170766600000025,
-          "minMs": 10.93445799999995,
+          "maxMs": 15.216957999999977,
+          "meanMs": 13.21389999999999,
+          "minMs": 12.198499999999967,
           "name": "single Region Lane (64 accepted records across 64 partitions)",
-          "p99Ms": 13.913875000000075,
+          "p99Ms": 15.216957999999977,
           "sampleCount": 5
         },
         {
           "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
-          "maxMs": 12.414083000000005,
-          "meanMs": 11.690541600000007,
-          "minMs": 10.74529199999995,
+          "maxMs": 12.555375000000026,
+          "meanMs": 11.82344999999998,
+          "minMs": 11.27137499999992,
           "name": "poison Rejection plus valid continuation (64 records across 64 partitions)",
-          "p99Ms": 12.414083000000005,
+          "p99Ms": 12.555375000000026,
           "sampleCount": 5
         },
         {
           "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
-          "maxMs": 10.627917000000025,
-          "meanMs": 9.968833199999995,
-          "minMs": 9.416624999999954,
+          "maxMs": 10.872582999999963,
+          "meanMs": 10.121216599999979,
+          "minMs": 9.710666999999944,
           "name": "four concurrent Region Lanes (64 accepted records across 64 partitions)",
-          "p99Ms": 10.627917000000025,
+          "p99Ms": 10.872582999999963,
           "sampleCount": 5
         },
         {
           "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
-          "maxMs": 0.05104200000005221,
-          "meanMs": 0.044308599999999386,
-          "minMs": 0.03812500000003638,
+          "maxMs": 0.0561249999999518,
+          "meanMs": 0.048525000000017825,
+          "minMs": 0.04450000000008458,
           "name": "64-partition assignment, commit, lag, and snapshot metrics",
-          "p99Ms": 0.05104200000005221,
+          "p99Ms": 0.0561249999999518,
           "sampleCount": 5
         }
       ],
@@ -53,7 +53,7 @@
       "benchmarkScope": "kafka-source-adapter",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 19202048,
+      "memoryRssTotalDeltaBytes": 20185088,
       "minimumSampleCount": 5,
       "mutationCount": 64,
       "outputJsonPath": "packages/kafka/.artifacts/source-lanes-64rows-64partitions.json",
@@ -70,11 +70,11 @@
       "benchmarks": [
         {
           "groupName": "src/source-broker.bench.ts > Kafka Source Adapter production broker",
-          "maxMs": 690.7156669999999,
-          "meanMs": 597.9757499999998,
-          "minMs": 528.3953339999998,
+          "maxMs": 641.0855409999999,
+          "meanMs": 589.2356918000002,
+          "minMs": 547.8841670000002,
           "name": "production Node Adapter broker ingest and commit (64 rows)",
-          "p99Ms": 690.7156669999999,
+          "p99Ms": 641.0855409999999,
           "sampleCount": 5
         }
       ],
@@ -83,7 +83,7 @@
       "benchmarkScope": "kafka-source-adapter-broker",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 26886144,
+      "memoryRssTotalDeltaBytes": 36143104,
       "minimumSampleCount": 5,
       "mutationCount": 64,
       "outputJsonPath": "packages/kafka/.artifacts/source-broker-64rows.json",

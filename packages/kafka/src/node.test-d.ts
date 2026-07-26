@@ -1,6 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { Config, Effect, Layer, Schema, Scope } from "effect";
+import { SourceAdapter } from "effect-view-server/source-adapter";
 import {
   KafkaSourceAdapter,
   kafka,
@@ -57,6 +58,28 @@ const sourceFreeConfig = defineViewServerConfig({
   },
 });
 
+const OtherAdapter = SourceAdapter.make({
+  identity: {
+    name: "other",
+    version: "1",
+  },
+  failure: Schema.String,
+  materialized: {
+    metrics: Schema.Struct({}),
+    rejectionLocation: Schema.Struct({}),
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+  leased: undefined,
+});
+const otherSource = OtherAdapter.materializedSource<{ readonly id: string }>(undefined);
+type ConditionalSourceViewServer = {
+  readonly topics: {
+    readonly orders: {
+      readonly source: (typeof config)["topics"]["orders"]["source"] | typeof otherSource;
+    };
+  };
+};
+
 declare const unsafeAny: any;
 declare const euRegion: KafkaServerRegion<"eu">;
 declare const euAcquireInput: KafkaServerRegionAcquireInput<"eu">;
@@ -85,6 +108,7 @@ describe("Kafka Node type contract", () => {
 
   it("requires all and only source Regions", () => {
     expectTypeOf<KafkaRequiredRegion<typeof config>>().toEqualTypeOf<"eu" | "us">();
+    expectTypeOf<KafkaRequiredRegion<ConditionalSourceViewServer>>().toEqualTypeOf<"eu" | "us">();
     const runtimeLayer = layer(config, {
       consumerGroupPrefix: "replica",
       regions: {

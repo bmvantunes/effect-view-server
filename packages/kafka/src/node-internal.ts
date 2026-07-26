@@ -38,10 +38,14 @@ type KafkaNodeViewServer = {
   readonly topics: Readonly<Record<string, object>>;
 };
 
-type KafkaDefinitionForTopic<Topic> = Topic extends { readonly source: infer Source }
+type KafkaDefinitionForSource<Source> = Source extends unknown
   ? SourceDefinitionAdapter<Source> extends typeof KafkaSourceAdapter
     ? Source
     : never
+  : never;
+
+type KafkaDefinitionForTopic<Topic> = Topic extends { readonly source: infer Source }
+  ? KafkaDefinitionForSource<Source>
   : never;
 
 type KafkaRegionsForTopic<Topic> = [KafkaDefinitionForTopic<Topic>] extends [never]
@@ -1037,7 +1041,7 @@ const activeOffsets = Effect.fn("KafkaNode.offsets.active")(function* (
   });
 });
 
-const textDecoder = new TextDecoder();
+const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 const headersFromMessage = (
   headers: ReadonlyMap<Buffer, Buffer>,
@@ -1268,6 +1272,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
     };
     const rebalance = (): void => {
       metrics.rebalances += 1n;
+      metrics.activePartitions.clear();
     };
     const lag = (current: Offsets): void => {
       updateLag(metrics, input.sourceTopic, current);
@@ -1309,41 +1314,40 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
     const records = Stream.fromAsyncIterable(scopedKafkaIterable(iterator), () =>
       consumeFailure(input),
     ).pipe(
-      Stream.map(
-        (message): KafkaServerRecord => ({
-          key:
-            message.key === null || message.key === undefined ? null : Uint8Array.from(message.key),
-          value:
-            message.value === null || message.value === undefined
-              ? null
-              : Uint8Array.from(message.value),
-          metadata: {
-            sourceTopic: input.sourceTopic,
-            sourceRegion: input.region,
-            partition: message.partition,
-            offset: message.offset,
-            timestampNanos: message.timestamp * 1_000_000n,
-            headers: headersFromMessage(message.headers),
-          },
-          settlement: settleCommittedRecord(
-            Effect.tryPromise({
-              try: () => Promise.resolve(message.commit()),
-              catch: () => commitFailure(input),
-            }).pipe(
-              Effect.tap(() =>
-                Effect.sync(() => {
-                  metrics.commits += 1n;
-                  updateCommit(metrics, initial, message.partition, message.offset + 1n);
-                  state.committedPartitions.add(message.partition);
-                }),
-              ),
-              Effect.tapError(() =>
-                Effect.sync(() => {
-                  metrics.commitFailures += 1n;
-                }),
+      Stream.mapEffect((message) =>
+        Effect.try({
+          try: (): KafkaServerRecord => ({
+            key: message.key === null || message.key === undefined ? null : message.key,
+            value: message.value === null || message.value === undefined ? null : message.value,
+            metadata: {
+              sourceTopic: input.sourceTopic,
+              sourceRegion: input.region,
+              partition: message.partition,
+              offset: message.offset,
+              timestampNanos: message.timestamp * 1_000_000n,
+              headers: headersFromMessage(message.headers),
+            },
+            settlement: settleCommittedRecord(
+              Effect.tryPromise({
+                try: () => Promise.resolve(message.commit()),
+                catch: () => commitFailure(input),
+              }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    metrics.commits += 1n;
+                    updateCommit(metrics, initial, message.partition, message.offset + 1n);
+                    state.committedPartitions.add(message.partition);
+                  }),
+                ),
+                Effect.tapError(() =>
+                  Effect.sync(() => {
+                    metrics.commitFailures += 1n;
+                  }),
+                ),
               ),
             ),
-          ),
+          }),
+          catch: () => consumeFailure(input),
         }),
       ),
     );

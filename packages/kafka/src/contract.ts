@@ -4,7 +4,6 @@ import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
 import { Duration, Effect, Option, Result, Schedule, Schema } from "effect";
 import {
   SourceAdapter,
-  type SourceAdapterHandle,
   type SourceDefinition,
   type SourceLifecycleDeclaration,
   type SourceRetryPolicy,
@@ -284,7 +283,7 @@ type KafkaProtobufAdditionalArguments<Descriptor> =
       ? readonly [never]
       : IsNever<Descriptor> extends true
         ? readonly [never]
-        : Descriptor extends DescMessage
+        : [Descriptor] extends [DescMessage]
           ? readonly []
           : readonly [never];
 
@@ -589,11 +588,17 @@ export const KafkaRejectionPhaseSchema = Schema.Literals([
   "topicSchema",
 ]);
 
+const KafkaPartition = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(2_147_483_647),
+);
+const KafkaNonNegativeBigInt = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+
 export const KafkaSourceRejectionLocation = Schema.Struct({
   region: Schema.NonEmptyString,
   topic: Schema.NonEmptyString,
-  partition: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  offset: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  partition: KafkaPartition,
+  offset: KafkaNonNegativeBigInt,
   phase: KafkaRejectionPhaseSchema,
   message: Schema.String,
 });
@@ -653,26 +658,26 @@ export type KafkaAdapterFailure<Region extends string = string> = KafkaAdapterFa
 >;
 
 export const KafkaPartitionMetrics = Schema.Struct({
-  partition: Schema.Int,
-  offset: Schema.BigInt,
-  lag: Schema.BigInt,
+  partition: KafkaPartition,
+  offset: KafkaNonNegativeBigInt,
+  lag: KafkaNonNegativeBigInt,
 });
 export type KafkaPartitionMetrics = typeof KafkaPartitionMetrics.Type;
 
 export const KafkaRegionMetrics = Schema.Struct({
   region: Schema.NonEmptyString,
   assignments: Schema.Array(KafkaPartitionMetrics),
-  commits: Schema.BigInt,
-  commitFailures: Schema.BigInt,
-  decoded: Schema.BigInt,
-  decodeFailures: Schema.BigInt,
-  mapped: Schema.BigInt,
-  mappingFailures: Schema.BigInt,
-  rejections: Schema.BigInt,
-  reconnects: Schema.BigInt,
-  rebalances: Schema.BigInt,
-  closes: Schema.BigInt,
-  closeFailures: Schema.BigInt,
+  commits: KafkaNonNegativeBigInt,
+  commitFailures: KafkaNonNegativeBigInt,
+  decoded: KafkaNonNegativeBigInt,
+  decodeFailures: KafkaNonNegativeBigInt,
+  mapped: KafkaNonNegativeBigInt,
+  mappingFailures: KafkaNonNegativeBigInt,
+  rejections: KafkaNonNegativeBigInt,
+  reconnects: KafkaNonNegativeBigInt,
+  rebalances: KafkaNonNegativeBigInt,
+  closes: KafkaNonNegativeBigInt,
+  closeFailures: KafkaNonNegativeBigInt,
 });
 export type KafkaRegionMetrics<Region extends string = string> = Omit<
   typeof KafkaRegionMetrics.Type,
@@ -684,13 +689,29 @@ export type KafkaRegionMetrics<Region extends string = string> = Omit<
 export const KafkaMaterializedMetrics = Schema.Struct({
   activeGroupId: Schema.NonEmptyString,
   start: KafkaStartResolutionSchema,
-  regions: Schema.Array(KafkaRegionMetrics),
+  regions: Schema.NonEmptyArray(KafkaRegionMetrics),
 });
-export type KafkaMaterializedMetrics<Region extends string = string> = Omit<
-  typeof KafkaMaterializedMetrics.Type,
-  "regions"
-> & {
-  readonly regions: ReadonlyArray<KafkaRegionMetrics<Region>>;
+type KafkaRegionMetricsForRemainingRegions<Regions extends ReadonlyArray<string>> =
+  number extends Regions["length"]
+    ? ReadonlyArray<KafkaRegionMetrics<Regions[number]>>
+    : Regions extends readonly [
+          infer First extends string,
+          ...infer Remaining extends ReadonlyArray<string>,
+        ]
+      ? readonly [KafkaRegionMetrics<First>, ...KafkaRegionMetricsForRemainingRegions<Remaining>]
+      : readonly [];
+
+type KafkaRegionMetricsForRegions<Regions extends KafkaNonEmptyReadonlyArray<string>> =
+  Regions extends readonly [
+    infer First extends string,
+    ...infer Remaining extends ReadonlyArray<string>,
+  ]
+    ? readonly [KafkaRegionMetrics<First>, ...KafkaRegionMetricsForRemainingRegions<Remaining>]
+    : never;
+export type KafkaMaterializedMetrics<
+  Regions extends KafkaNonEmptyReadonlyArray<string> = KafkaNonEmptyReadonlyArray<string>,
+> = Omit<typeof KafkaMaterializedMetrics.Type, "regions"> & {
+  readonly regions: KafkaRegionMetricsForRegions<Regions>;
 };
 
 export type KafkaLocalRowKeyInput<
@@ -727,13 +748,13 @@ type KafkaMaterializedLifecycle = SourceLifecycleDeclaration<
   KafkaRuntimeDefinitionOptions
 >;
 
-export const KafkaSourceAdapter: SourceAdapterHandle<
+const KafkaSourceAdapterHandle = SourceAdapter.make<
   "kafka",
   "1",
   KafkaAdapterFailure,
   KafkaMaterializedLifecycle,
   undefined
-> = SourceAdapter.make({
+>({
   identity: {
     name: "kafka",
     version: "1",
@@ -746,6 +767,8 @@ export const KafkaSourceAdapter: SourceAdapterHandle<
   },
   leased: undefined,
 });
+
+export const KafkaSourceAdapter = SourceAdapter.descriptor(KafkaSourceAdapterHandle);
 
 export type KafkaSourceInput<
   Regions extends KafkaNonEmptyReadonlyArray<string>,
@@ -904,8 +927,8 @@ type RejectAnySourceField<Input, Key extends PropertyKey> =
 type RejectUnsafeSourceRegions<Input> = Input extends { readonly regions: infer Regions }
   ? IsAny<Regions> extends true
     ? { readonly regions: never }
-    : Regions extends readonly [infer Region, ...ReadonlyArray<unknown>]
-      ? IsAny<Region> extends true
+    : Regions extends readonly [unknown, ...ReadonlyArray<unknown>]
+      ? IsAny<Regions[number]> extends true
         ? { readonly regions: never }
         : unknown
       : { readonly regions: never }
@@ -1022,7 +1045,7 @@ export type KafkaSourceDefinition<
   RetryServices,
   KafkaTopicRow<Mapping>,
   KafkaAdapterFailure<Regions[number]>,
-  KafkaMaterializedMetrics<Regions[number]>,
+  KafkaMaterializedMetrics<Regions>,
   KafkaSourceRejectionLocation<Regions[number]>,
   Regions[number]
 >;
@@ -1256,6 +1279,10 @@ type KafkaSourceMapping<
   >,
 ) => Result;
 
+type KafkaRegionsWithoutAny<Regions extends KafkaNonEmptyReadonlyArray<string>> = {
+  readonly [Index in keyof Regions]: IsAny<Regions[Index]> extends true ? never : Regions[Index];
+};
+
 type KafkaSourceCandidate<
   Topic extends string,
   Regions extends KafkaNonEmptyReadonlyArray<string>,
@@ -1266,7 +1293,7 @@ type KafkaSourceCandidate<
   StartFrom extends KafkaStartPosition,
 > = {
   readonly topic: Topic;
-  readonly regions: Regions;
+  readonly regions: Regions & KafkaRegionsWithoutAny<NoInfer<Regions>>;
   readonly key: KeyCodec;
   readonly value: ValueCodec;
   readonly localRowKey: LocalRowKey;
@@ -1494,8 +1521,8 @@ function makeKafkaSource(
     startFrom: captureStartPosition(startFrom),
   };
   return retry === undefined
-    ? KafkaSourceAdapter.materializedSource(options)
-    : KafkaSourceAdapter.materializedSource(options, retry);
+    ? SourceAdapter.materializedSource(KafkaSourceAdapterHandle, options)
+    : SourceAdapter.materializedSource(KafkaSourceAdapterHandle, options, retry);
 }
 
 export const kafkaRowId = (input: {

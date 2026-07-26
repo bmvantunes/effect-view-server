@@ -190,6 +190,7 @@ describe("Source Adapter server SDK", () => {
       let finalized = 0;
       const adapterLayer = SourceAdapterServer.make(Adapter, {
         materialized: {
+          initialLaneIds: () => ["materialized", "sibling"],
           acquire: (input) =>
             Effect.gen(function* () {
               yield* Scope.addFinalizer(
@@ -228,9 +229,19 @@ describe("Source Adapter server SDK", () => {
       });
       const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
       const runtimeService = Context.getUnsafe(runtimeContext, Adapter.runtimeService);
+      expect(runtimeService.adapter).toBe(Adapter);
+      expect(Reflect.has(runtimeService.adapter, "materializedSource")).toBe(true);
       const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
       const lifetimeScope = yield* Scope.make();
       const attemptScope = yield* Scope.make();
+      expect(
+        materialized.initialLaneIds?.({
+          topic: "orders",
+          definition: { label: "orders" },
+          lifetimeScope,
+          target: { _tag: "Materialized" },
+        }),
+      ).toStrictEqual(["materialized", "sibling"]);
       const attempt = yield* materialized
         .acquire({
           definition: { label: "orders" },
@@ -611,7 +622,7 @@ describe("Source Adapter server SDK", () => {
         copiedAdapter,
         { materialized: lifecycle },
       ]),
-    ).toThrow("nominal Source Adapter handle");
+    ).toThrow("nominal Source Adapter descriptor");
   });
 
   it.effect("builds leased-only services and rejects undefined implementations", () =>

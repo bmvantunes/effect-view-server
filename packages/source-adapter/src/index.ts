@@ -6,6 +6,7 @@ export {
 } from "./model";
 export type {
   SourceAdapterFailure,
+  SourceAdapterDescriptor,
   SourceAdapterHandle,
   SourceAdapterIdentity,
   SourceApplicationExit,

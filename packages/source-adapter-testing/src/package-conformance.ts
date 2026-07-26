@@ -660,7 +660,7 @@ const runtimeServiceMatchesAdapter = (
 const inspectPlatform = (
   module: object,
   probe: SourceAdapterPackagePlatformProbe,
-  adapter: import("@effect-view-server/source-adapter").SourceAdapterHandle<
+  adapter: import("@effect-view-server/source-adapter").SourceAdapterDescriptor<
     string,
     string | undefined,
     unknown,

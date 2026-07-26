@@ -1,11 +1,13 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
   SourceAdapter,
+  type SourceAdapterDescriptor,
   type SourceApplicationExit,
   type SourceAdapterFailure,
   type SourceAdapterHandle,
   type SourceAttempt,
   type SourceDefinition,
+  type SourceDefinitionAdapter,
   type SourceDefinitionOptionsFamily,
   type SourceDefinitionRow,
   type SourceDelivery,
@@ -13,6 +15,7 @@ import {
   type SourceDefinitionLifecycle,
   type SourceDefinitionOptions,
   type SourceDefinitionRouteFields,
+  type SourceDefinitionRetryServices,
   type SourceExecutionFailure,
   type SourceHealthForDefinition,
   type SourceLifecycleDeclaration,
@@ -123,6 +126,14 @@ const leased = adapter.leasedSource(["region", "desk"], {
   label: "orders",
   batchSize: 100,
 });
+const adapterDescriptor = SourceAdapter.descriptor(adapter);
+const _adapterDescriptorContract: SourceAdapterDescriptor<
+  "type-fixture",
+  "1",
+  typeof Failure.Type,
+  typeof adapter.materialized,
+  typeof adapter.leased
+> = adapterDescriptor;
 
 type TypeFixtureRow = {
   readonly id: string;
@@ -198,12 +209,33 @@ class RetryOnlyDependency extends Context.Service<
   { readonly enabled: boolean }
 >()("@effect-view-server/source-adapter/type-test/RetryOnlyDependency") {}
 
+const delegatedDefinition = SourceAdapter.materializedSource(
+  adapter,
+  {
+    label: "delegated",
+    batchSize: 64,
+  },
+  Schedule.recurs(0).pipe(Schedule.tap(() => RetryOnlyDependency.pipe(Effect.asVoid))),
+);
+
 const materializedLifecycle: SourceAdapterServerLifecycle<
   typeof Failure.Type,
   NonNullable<typeof adapter.materialized>,
   "materialized",
   AdapterDependency
 > = {
+  initialLaneIds: (input) => {
+    void input.topic;
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
+    expectTypeOf(input.definition).toEqualTypeOf<{
+      readonly label: string;
+      readonly batchSize: number;
+    }>();
+    expectTypeOf(input.target).toEqualTypeOf<{
+      readonly _tag: "Materialized";
+    }>();
+    return ["materialized", "sibling"];
+  },
   acquire: (input) => {
     expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.definition).toEqualTypeOf<{
@@ -329,6 +361,18 @@ const _invalidMetricsLifecycle: SourceAdapterServerLifecycle<
   acquire: materializedLifecycle.acquire,
   // @ts-expect-error lifecycle metrics must return the declaration's exact metrics output.
   metrics: () => Effect.succeed({ connected: "yes" }),
+  retry: Schedule.recurs(0),
+};
+const _invalidInitialLaneIdsLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  // @ts-expect-error initial Lane declarations must return a non-empty string tuple.
+  initialLaneIds: () => [],
+  acquire: materializedLifecycle.acquire,
+  metrics: materializedLifecycle.metrics,
   retry: Schedule.recurs(0),
 };
 const _invalidMetricsFailureLifecycle: SourceAdapterServerLifecycle<
@@ -504,6 +548,20 @@ describe("Source Adapter public type contracts", () => {
     expectTypeOf(adapter.identity.name).toEqualTypeOf<"type-fixture">();
     expectTypeOf(adapter.identity.version).toEqualTypeOf<"1" | undefined>();
     expectTypeOf<SourceAdapterFailure<typeof adapter>>().toEqualTypeOf<typeof Failure.Type>();
+    expectTypeOf(adapterDescriptor).toEqualTypeOf<
+      Omit<typeof adapter, "materializedSource" | "leasedSource">
+    >();
+    expectTypeOf<SourceDefinitionAdapter<typeof delegatedDefinition>>().toEqualTypeOf<
+      typeof adapterDescriptor
+    >();
+    expectTypeOf<SourceDefinitionOptions<typeof delegatedDefinition>>().toEqualTypeOf<{
+      readonly label: "delegated";
+      readonly batchSize: 64;
+    }>();
+    expectTypeOf<SourceDefinitionRow<typeof delegatedDefinition>>().toEqualTypeOf<object>();
+    expectTypeOf<
+      SourceDefinitionRetryServices<typeof delegatedDefinition>
+    >().toEqualTypeOf<RetryOnlyDependency>();
     expectTypeOf<SourceDefinitionLifecycle<typeof materialized>>().toEqualTypeOf<"materialized">();
     expectTypeOf<SourceDefinitionLifecycle<typeof leased>>().toEqualTypeOf<"leased">();
     expectTypeOf<SourceDefinitionRouteFields<typeof leased>>().toEqualTypeOf<
@@ -562,6 +620,23 @@ describe("Source Adapter public type contracts", () => {
       // @ts-expect-error definition options reject extra fields.
       unexpected: true,
     });
+    // @ts-expect-error delegated Source Definition options must include every adapter field.
+    SourceAdapter.materializedSource(adapter, {
+      label: "orders",
+    });
+    SourceAdapter.materializedSource(adapter, {
+      label: "orders",
+      batchSize: 100,
+      // @ts-expect-error delegated Source Definition options reject extra fields.
+      unexpected: true,
+    });
+    // @ts-expect-error public descriptors cannot recover the delegated SDK builder.
+    SourceAdapter.materializedSource(adapterDescriptor, {
+      label: "orders",
+      batchSize: 100,
+    });
+    // @ts-expect-error public descriptors cannot be projected as SDK handles.
+    SourceAdapter.descriptor(adapterDescriptor);
     // @ts-expect-error Leased Source routes must be non-empty tuples.
     adapter.leasedSource([], {
       label: "orders",

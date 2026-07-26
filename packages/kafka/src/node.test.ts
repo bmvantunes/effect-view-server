@@ -948,10 +948,25 @@ describe("Kafka Node Adapter", () => {
         active?.emitLag(new Map([["source-orders", [40n, 7n]]]));
         const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
         yield* TestClock.adjust("1 second");
-        const health = Option.getOrThrow(
+        const rebalancing = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
         );
-        expect(health.metrics.adapter.regions[0]).toStrictEqual({
+        expect(rebalancing.metrics.adapter.regions[0]?.assignments).toStrictEqual([]);
+
+        active?.emit("consumer:group:join", {
+          assignments: [
+            {
+              topic: "source-orders",
+              partitions: [0, 1],
+            },
+          ],
+        });
+        active?.emitLag(new Map([["source-orders", [40n, 7n]]]));
+        yield* TestClock.adjust("1 second");
+        const rejoined = Option.getOrThrow(
+          yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+        );
+        expect(rejoined.metrics.adapter.regions[0]).toStrictEqual({
           region: "eu",
           assignments: [
             { partition: 0, offset: 50n, lag: 40n },
@@ -1393,6 +1408,64 @@ describe("Kafka Node Adapter", () => {
     }),
   );
 
+  it.effect("surfaces malformed UTF-8 header names as typed consume failures", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [10n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      const config = makeConfig("latest", Schedule.recurs(0));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      yield* awaitCondition(() => platformatic.state.streams.length === 1);
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      platformatic.state.streams[0]?.push(
+        message({
+          groupId: "replica:orders",
+          key: "malformed-header",
+          price: 1,
+          offset: 0n,
+          headers: new Map([[Buffer.from([0xff]), Buffer.from("value")]]),
+        }),
+      );
+      const exhausted = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Exhausted"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect(exhausted.status).toStrictEqual({
+        _tag: "Exhausted",
+        exhaustion: {
+          _tag: "RetryExhausted",
+          lastTermination: {
+            _tag: "Failed",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaConsumeFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Region consumer stream failed.",
+              },
+            },
+          },
+        },
+        exhaustedAtNanos: 0n,
+      });
+      expect(platformatic.state.committedByGroup.get("replica:orders")).toStrictEqual([]);
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
   it.effect(
     "closes consumers on every driver acquisition failure and surfaces stream failures",
     () =>
@@ -1544,124 +1617,52 @@ describe("Kafka Node Adapter", () => {
     }),
   );
 
-  it.effect("does not inspect unexpected Config validation causes", () =>
-    Effect.gen(function* () {
-      const config = makeConfig("earliest");
-      const hostileCause = Object.defineProperty({}, "toString", {
-        get: () => {
-          throw new Error("hostile cause inspected");
-        },
-      });
-      const hostileConfig = new Proxy(config, {
-        get: (target, property, receiver) => {
-          if (property === "topics") {
-            throw hostileCause;
-          }
-          return Reflect.get(target, property, receiver);
-        },
-      });
-      const failure = yield* Effect.flip(
-        Effect.scoped(
-          EffectLayer.build(
-            layerConfig(hostileConfig, {
-              consumerGroupPrefix: Config.succeed("replica"),
-              regions: {
-                eu: {
-                  bootstrapServers: Config.succeed("one:9092"),
-                },
-              },
-            }),
-          ),
-        ),
-      );
-      expect(failure).toBeInstanceOf(Config.ConfigError);
-      expect(failure.message).toContain("Kafka Node Layer configuration validation failed.");
-    }),
-  );
-
-  it.effect("does not inspect the prototype of unexpected Config validation causes", () =>
-    Effect.gen(function* () {
-      const config = makeConfig("earliest");
-      const hostileCause = new Proxy(
-        {},
-        {
-          getPrototypeOf: () => {
-            throw new Error("hostile cause prototype inspected");
+  it.effect.each([
+    {
+      label: "unexpected value coercion",
+      makeCause: () =>
+        Object.defineProperty({}, "toString", {
+          get: () => {
+            throw new Error("hostile cause inspected");
           },
-        },
-      );
-      const hostileConfig = new Proxy(config, {
-        get: (target, property, receiver) => {
-          if (property === "topics") {
-            throw hostileCause;
-          }
-          return Reflect.get(target, property, receiver);
-        },
-      });
-      const failure = yield* Effect.flip(
-        Effect.scoped(
-          EffectLayer.build(
-            layerConfig(hostileConfig, {
-              consumerGroupPrefix: Config.succeed("replica"),
-              regions: {
-                eu: {
-                  bootstrapServers: Config.succeed("one:9092"),
-                },
-              },
-            }),
-          ),
+        }),
+    },
+    {
+      label: "unexpected value prototypes",
+      makeCause: () =>
+        new Proxy(
+          {},
+          {
+            getPrototypeOf: () => {
+              throw new Error("hostile cause prototype inspected");
+            },
+          },
         ),
-      );
-      expect(failure).toBeInstanceOf(Config.ConfigError);
-      expect(failure.message).toContain("Kafka Node Layer configuration validation failed.");
-    }),
-  );
-
-  it.effect("does not inspect hostile messages on Config validation causes", () =>
+    },
+    {
+      label: "hostile configuration error messages",
+      makeCause: () =>
+        new Proxy(new KafkaSourceConfigurationError("invalid"), {
+          get: (target, property, receiver) => {
+            if (property === "message") {
+              throw new Error("hostile cause message inspected");
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        }),
+    },
+    {
+      label: "non-string configuration error messages",
+      makeCause: () =>
+        new Proxy(new KafkaSourceConfigurationError("invalid"), {
+          get: (target, property, receiver) =>
+            property === "message" ? {} : Reflect.get(target, property, receiver),
+        }),
+    },
+  ])("does not inspect $label during Config validation", ({ makeCause }) =>
     Effect.gen(function* () {
       const config = makeConfig("earliest");
-      const hostileCause = new Proxy(new KafkaSourceConfigurationError("invalid"), {
-        get: (target, property, receiver) => {
-          if (property === "message") {
-            throw new Error("hostile cause message inspected");
-          }
-          return Reflect.get(target, property, receiver);
-        },
-      });
-      const hostileConfig = new Proxy(config, {
-        get: (target, property, receiver) => {
-          if (property === "topics") {
-            throw hostileCause;
-          }
-          return Reflect.get(target, property, receiver);
-        },
-      });
-      const failure = yield* Effect.flip(
-        Effect.scoped(
-          EffectLayer.build(
-            layerConfig(hostileConfig, {
-              consumerGroupPrefix: Config.succeed("replica"),
-              regions: {
-                eu: {
-                  bootstrapServers: Config.succeed("one:9092"),
-                },
-              },
-            }),
-          ),
-        ),
-      );
-      expect(failure).toBeInstanceOf(Config.ConfigError);
-      expect(failure.message).toContain("Kafka Node Layer configuration validation failed.");
-    }),
-  );
-
-  it.effect("does not trust non-string Config validation cause messages", () =>
-    Effect.gen(function* () {
-      const config = makeConfig("earliest");
-      const hostileCause = new Proxy(new KafkaSourceConfigurationError("invalid"), {
-        get: (target, property, receiver) =>
-          property === "message" ? {} : Reflect.get(target, property, receiver),
-      });
+      const hostileCause = makeCause();
       const hostileConfig = new Proxy(config, {
         get: (target, property, receiver) => {
           if (property === "topics") {

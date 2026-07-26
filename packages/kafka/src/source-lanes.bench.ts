@@ -114,11 +114,21 @@ type BenchmarkRegion = {
 
 type BenchmarkState = {
   readonly regions: ReadonlyMap<string, BenchmarkRegion>;
+  readonly retainedRowIds: Effect.Effect<
+    {
+      readonly accepted: ReadonlyArray<string>;
+      readonly poisoned: ReadonlyArray<string>;
+      readonly multiRegion: ReadonlyArray<string>;
+    },
+    unknown
+  >;
 };
 
 let state: BenchmarkState | undefined;
 let benchmarkScope: Scope.Closeable | undefined;
-let nextBatch = 0;
+let acceptedRevision = 0;
+let poisonedRevision = 0;
+let multiRegionRevision = 0;
 
 const requireState = (): BenchmarkState => {
   if (state === undefined) {
@@ -298,7 +308,7 @@ beforeAll(async () => {
         consumerGroupPrefix: "kafka-source-benchmark",
         regions: new Map(Array.from(regions, ([name, value]) => [name, value.runtime])),
       });
-      yield* Effect.acquireRelease(
+      const runtime = yield* Effect.acquireRelease(
         makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer)),
         (runtime) => runtime.close,
       );
@@ -314,6 +324,25 @@ beforeAll(async () => {
       );
       state = {
         regions,
+        retainedRowIds: Effect.gen(function* () {
+          const accepted = yield* runtime.client.snapshot("accepted", {
+            select: ["id"],
+            orderBy: [{ field: "id", direction: "asc" }],
+          });
+          const poisoned = yield* runtime.client.snapshot("poisoned", {
+            select: ["id"],
+            orderBy: [{ field: "id", direction: "asc" }],
+          });
+          const multiRegion = yield* runtime.client.snapshot("multiRegion", {
+            select: ["id"],
+            orderBy: [{ field: "id", direction: "asc" }],
+          });
+          return {
+            accepted: accepted.rows.map((row) => row.id),
+            poisoned: poisoned.rows.map((row) => row.id),
+            multiRegion: multiRegion.rows.map((row) => row.id),
+          };
+        }),
       };
       memoryAfterSetup = memorySnapshot();
     }).pipe(
@@ -324,8 +353,33 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (benchmarkScope !== undefined) {
-    await Effect.runPromise(Scope.close(benchmarkScope, Exit.void));
+  const scope = benchmarkScope;
+  const retainedRowIds = await Effect.runPromise(
+    Effect.sync(requireState).pipe(
+      Effect.flatMap((current) => current.retainedRowIds),
+      Effect.ensuring(scope === undefined ? Effect.void : Scope.close(scope, Exit.void)),
+    ),
+  );
+  benchmarkScope = undefined;
+  const expectedRetainedRowIds = {
+    accepted: Array.from({ length: laneBatchSize }, (_, index) => `single:accepted-${index}`).sort(
+      (left, right) => left.localeCompare(right),
+    ),
+    poisoned: Array.from(
+      { length: laneBatchSize - 1 },
+      (_, index) => `single:poisoned-${index}`,
+    ).sort((left, right) => left.localeCompare(right)),
+    multiRegion: Array.from({ length: multiRegionCount }, (_, regionIndex) =>
+      Array.from(
+        { length: multiRegionBatchSize },
+        (_, rowIndex) => `region-${regionIndex + 1}:region-${regionIndex + 1}-${rowIndex}`,
+      ),
+    )
+      .flat()
+      .sort((left, right) => left.localeCompare(right)),
+  };
+  if (JSON.stringify(retainedRowIds) !== JSON.stringify(expectedRetainedRowIds)) {
+    throw new Error("Kafka Source Lane benchmark retained rows diverged from its fixed state.");
   }
   const memoryAfterBenchmark = memorySnapshot();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
@@ -354,16 +408,25 @@ afterAll(async () => {
       "The metrics case exercises assignment, commit, lag, and sampling bookkeeping across 64 partitions.",
     ],
     queuedEventCount: 0,
-    rowCount: laneBatchSize,
+    retainedRowsByTopic: {
+      accepted: retainedRowIds.accepted.length,
+      poisoned: retainedRowIds.poisoned.length,
+      multiRegion: retainedRowIds.multiRegion.length,
+    },
+    rowCount: retainedRowIds.accepted.length,
     subscriberCount: 0,
     topics: ["accepted", "poisoned", "multiRegion"],
   });
 });
 
-const validBatch = (label: string, batch: number, count: number): ReadonlyArray<BenchmarkRecord> =>
+const validBatch = (
+  label: string,
+  revision: number,
+  count: number,
+): ReadonlyArray<BenchmarkRecord> =>
   Array.from({ length: count }, (_, index) => ({
-    key: `${label}-${batch}-${index}`,
-    value: JSON.stringify({ value: index }),
+    key: `${label}-${index}`,
+    value: JSON.stringify({ value: revision * laneBatchSize + index }),
   }));
 
 describe("Kafka Source Adapter lanes", () => {
@@ -371,13 +434,12 @@ describe("Kafka Source Adapter lanes", () => {
     benchmarkCaseNames[0],
     async () => {
       const current = requireState();
-      const batch = nextBatch;
-      nextBatch += 1;
+      acceptedRevision += 1;
       await Effect.runPromise(
         requireRegion(current, "single").offerBatch(
           "accepted",
           "accepted-source",
-          validBatch("accepted", batch, laneBatchSize),
+          validBatch("accepted", acceptedRevision, laneBatchSize),
         ),
       );
     },
@@ -388,13 +450,12 @@ describe("Kafka Source Adapter lanes", () => {
     benchmarkCaseNames[1],
     async () => {
       const current = requireState();
-      const batch = nextBatch;
-      nextBatch += 1;
-      const valid = validBatch("poisoned", batch, laneBatchSize - 1);
+      poisonedRevision += 1;
+      const valid = validBatch("poisoned", poisonedRevision, laneBatchSize - 1);
       await Effect.runPromise(
         requireRegion(current, "single").offerBatch("poisoned", "poisoned-source", [
           {
-            key: `poisoned-${batch}-invalid`,
+            key: "poisoned-invalid",
             value: "{not-json",
           },
           ...valid,
@@ -408,8 +469,7 @@ describe("Kafka Source Adapter lanes", () => {
     benchmarkCaseNames[2],
     async () => {
       const current = requireState();
-      const batch = nextBatch;
-      nextBatch += 1;
+      multiRegionRevision += 1;
       await Effect.runPromise(
         Effect.forEach(
           ["region-1", "region-2", "region-3", "region-4"],
@@ -417,7 +477,7 @@ describe("Kafka Source Adapter lanes", () => {
             requireRegion(current, region).offerBatch(
               "multiRegion",
               "multi-region-source",
-              validBatch(region, batch, multiRegionBatchSize),
+              validBatch(region, multiRegionRevision, multiRegionBatchSize),
             ),
           { concurrency: "unbounded", discard: true },
         ),

@@ -1,9 +1,10 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { DescMessage } from "@bufbuild/protobuf";
-import type {
-  SourceDefinitionRetryServices,
-  SourceHealthForDefinition,
-  SourceTermination,
+import {
+  SourceAdapter,
+  type SourceDefinitionRetryServices,
+  type SourceHealthForDefinition,
+  type SourceTermination,
 } from "effect-view-server/source-adapter";
 import { Context, Effect, Option, Schedule, Schema } from "effect";
 import {
@@ -14,6 +15,8 @@ import {
   type KafkaCodecDecodeInput,
   type KafkaCodecFailure,
   type KafkaCodecValue,
+  type KafkaMaterializedMetrics,
+  type KafkaRegionMetrics,
   type KafkaSourceDefinition,
   type KafkaSourceRetryPolicy,
 } from "@effect-view-server/kafka/contract";
@@ -137,6 +140,10 @@ declare const unsafeUnknownSuccessEffect: Effect.Effect<unknown, { readonly _tag
 declare const unsafeAnyFailureEffect: Effect.Effect<string, any>;
 declare const unsafeUnknownFailureEffect: Effect.Effect<string, unknown>;
 declare const protobufDescriptor: DescMessage;
+declare const protobufDescriptorOrString: DescMessage | string;
+declare const kafkaRuntimeService: Context.Service.Identifier<
+  typeof KafkaSourceAdapter.runtimeService
+>;
 
 class DecodeService extends Context.Service<DecodeService, true>()("KafkaDecodeService") {}
 class EncodeService extends Context.Service<EncodeService, true>()("KafkaEncodeService") {}
@@ -232,6 +239,17 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf<Health["metrics"]["adapter"]["regions"][number]["region"]>().toEqualTypeOf<
       "eu" | "us"
     >();
+    expectTypeOf<KafkaMaterializedMetrics<readonly ["eu", "us"]>["regions"]>().toEqualTypeOf<
+      readonly [KafkaRegionMetrics<"eu">, KafkaRegionMetrics<"us">]
+    >();
+    expectTypeOf<Health["metrics"]["adapter"]["regions"]>().toEqualTypeOf<
+      readonly [KafkaRegionMetrics<"eu">, KafkaRegionMetrics<"us">]
+    >();
+    expectTypeOf<Health["metrics"]["adapter"]["regions"][0]["region"]>().toEqualTypeOf<"eu">();
+    expectTypeOf<Health["metrics"]["adapter"]["regions"][1]["region"]>().toEqualTypeOf<"us">();
+    // @ts-expect-error materialized Kafka health always has one metric per configured Region.
+    const emptyRegionMetrics: Health["metrics"]["adapter"]["regions"] = [];
+    expectTypeOf(emptyRegionMetrics).not.toBeAny();
     expectTypeOf<Health["metrics"]["runtime"]["lanes"][number]["id"]>().toEqualTypeOf<
       "eu" | "us"
     >();
@@ -274,6 +292,8 @@ describe("Kafka Source Adapter type contract", () => {
     kafka.json(() => Schema.toCodecJson(Schema.String));
     // @ts-expect-error protobuf descriptors cannot be any.
     kafka.protobuf(unsafeAny);
+    // @ts-expect-error protobuf descriptor unions cannot contain non-descriptor members.
+    kafka.protobuf(protobufDescriptorOrString);
     // @ts-expect-error custom codec definitions cannot be any.
     kafka.codec(unsafeAny);
     kafka.codec({
@@ -354,6 +374,50 @@ describe("Kafka Source Adapter type contract", () => {
       value,
       localRowKey: ({ key }: { readonly key: string }) => key,
       map: ({ value }) => ({ price: value.price }),
+      startFrom: "earliest",
+    });
+
+    kafka.source({
+      topic: "orders-source",
+      // @ts-expect-error every Kafka Region tuple member must reject any.
+      regions: ["eu", unsafeAny],
+      key,
+      value,
+      localRowKey: ({ key }) => key,
+      map: ({ value }) => ({ price: value.price }),
+      startFrom: "earliest",
+    });
+
+    // @ts-expect-error Kafka definitions must be constructed through kafka.source.
+    KafkaSourceAdapter.materializedSource({
+      topic: "orders-source",
+      regions: ["eu"],
+      key,
+      value,
+      localRowKey: () => 1,
+      map: async () => ({ price: 1 }),
+      startFrom: "earliest",
+    });
+
+    // @ts-expect-error The public descriptor cannot be passed to the delegated SDK builder.
+    SourceAdapter.materializedSource(KafkaSourceAdapter, {
+      topic: "orders-source",
+      regions: ["eu"],
+      key,
+      value,
+      localRowKey: () => 1,
+      map: async () => ({ price: 1 }),
+      startFrom: "earliest",
+    });
+
+    // @ts-expect-error Runtime service lookup must not recover the hidden SDK builder.
+    kafkaRuntimeService.adapter.materializedSource({
+      topic: "orders-source",
+      regions: ["eu"],
+      key,
+      value,
+      localRowKey: () => 1,
+      map: async () => ({ price: 1 }),
       startFrom: "earliest",
     });
 

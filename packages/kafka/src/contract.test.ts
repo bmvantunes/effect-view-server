@@ -3,8 +3,11 @@ import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
+import { SourceAdapter } from "effect-view-server/source-adapter";
 import { Duration, Effect, Option, Schema } from "effect";
 import {
+  KafkaMaterializedMetrics,
+  KafkaSourceAdapter,
   KafkaSourceRejectionLocation,
   KafkaSourceConfigurationError,
   decodeKafkaCodec,
@@ -78,7 +81,189 @@ const validSourceInput = () => ({
   startFrom: "earliest" as const,
 });
 
+const validRegionMetrics = () => ({
+  region: "eu",
+  assignments: [],
+  commits: 0n,
+  commitFailures: 0n,
+  decoded: 0n,
+  decodeFailures: 0n,
+  mapped: 0n,
+  mappingFailures: 0n,
+  rejections: 0n,
+  reconnects: 0n,
+  rebalances: 0n,
+  closes: 0n,
+  closeFailures: 0n,
+});
+
 describe("Kafka Source Adapter contract", () => {
+  it("exports a frozen nominal descriptor without generic lifecycle builders", () => {
+    const source = kafka.source(validSourceInput());
+    const symbolValues = Reflect.ownKeys(KafkaSourceAdapter)
+      .filter((key): key is symbol => typeof key === "symbol")
+      .map((key) => Reflect.get(KafkaSourceAdapter, key));
+
+    expect(source.adapter).toBe(KafkaSourceAdapter);
+    expect(Object.keys(KafkaSourceAdapter)).toStrictEqual([
+      "identity",
+      "failureSchema",
+      "materialized",
+      "leased",
+      "runtimeService",
+      "failure",
+    ]);
+    expect(Reflect.get(KafkaSourceAdapter, "materializedSource")).toBeUndefined();
+    expect(Reflect.get(KafkaSourceAdapter, "leasedSource")).toBeUndefined();
+    expect(symbolValues).toHaveLength(1);
+    expect(typeof symbolValues[0]).toBe("symbol");
+    expect(Object.isFrozen(KafkaSourceAdapter)).toBe(true);
+    expect(() =>
+      Reflect.apply(SourceAdapter.materializedSource, undefined, [
+        KafkaSourceAdapter,
+        validSourceInput(),
+      ]),
+    ).toThrow("delegated construction requires a nominal Source Adapter handle");
+  });
+
+  it.effect("requires at least one Region metric in materialized health", () =>
+    Effect.gen(function* () {
+      const region = validRegionMetrics();
+      const input = {
+        activeGroupId: "replica:orders",
+        start: { _tag: "Pending" },
+        regions: [region],
+      };
+      const valid = yield* Schema.decodeUnknownEffect(KafkaMaterializedMetrics)(input);
+      const empty = yield* Schema.decodeUnknownEffect(KafkaMaterializedMetrics)({
+        ...input,
+        regions: [],
+      }).pipe(Effect.flip);
+
+      expect(valid).toStrictEqual(input);
+      expect(Schema.isSchemaError(empty)).toBe(true);
+    }),
+  );
+
+  it.effect.each([
+    {
+      label: "negative partitions",
+      region: {
+        ...validRegionMetrics(),
+        assignments: [{ partition: -1, offset: 0n, lag: 0n }],
+      },
+    },
+    {
+      label: "partitions beyond Kafka's signed 32-bit bound",
+      region: {
+        ...validRegionMetrics(),
+        assignments: [{ partition: 2_147_483_648, offset: 0n, lag: 0n }],
+      },
+    },
+    {
+      label: "negative offsets",
+      region: {
+        ...validRegionMetrics(),
+        assignments: [{ partition: 0, offset: -1n, lag: 0n }],
+      },
+    },
+    {
+      label: "negative lag",
+      region: {
+        ...validRegionMetrics(),
+        assignments: [{ partition: 0, offset: 0n, lag: -1n }],
+      },
+    },
+    {
+      label: "negative commits",
+      region: {
+        ...validRegionMetrics(),
+        commits: -1n,
+      },
+    },
+    {
+      label: "negative commit failures",
+      region: {
+        ...validRegionMetrics(),
+        commitFailures: -1n,
+      },
+    },
+    {
+      label: "negative decoded count",
+      region: {
+        ...validRegionMetrics(),
+        decoded: -1n,
+      },
+    },
+    {
+      label: "negative decode failures",
+      region: {
+        ...validRegionMetrics(),
+        decodeFailures: -1n,
+      },
+    },
+    {
+      label: "negative mapped count",
+      region: {
+        ...validRegionMetrics(),
+        mapped: -1n,
+      },
+    },
+    {
+      label: "negative mapping failures",
+      region: {
+        ...validRegionMetrics(),
+        mappingFailures: -1n,
+      },
+    },
+    {
+      label: "negative rejections",
+      region: {
+        ...validRegionMetrics(),
+        rejections: -1n,
+      },
+    },
+    {
+      label: "negative reconnects",
+      region: {
+        ...validRegionMetrics(),
+        reconnects: -1n,
+      },
+    },
+    {
+      label: "negative rebalances",
+      region: {
+        ...validRegionMetrics(),
+        rebalances: -1n,
+      },
+    },
+    {
+      label: "negative closes",
+      region: {
+        ...validRegionMetrics(),
+        closes: -1n,
+      },
+    },
+    {
+      label: "negative close failures",
+      region: {
+        ...validRegionMetrics(),
+        closeFailures: -1n,
+      },
+    },
+  ])("rejects $label in materialized health", ({ region }) =>
+    Schema.decodeUnknownEffect(KafkaMaterializedMetrics)({
+      activeGroupId: "replica:orders",
+      start: { _tag: "Pending" },
+      regions: [region],
+    }).pipe(
+      Effect.flip,
+      Effect.map((failure) => {
+        expect(Schema.isSchemaError(failure)).toBe(true);
+      }),
+    ),
+  );
+
   it.effect("enforces non-negative Kafka rejection coordinates", () =>
     Effect.gen(function* () {
       const location = {

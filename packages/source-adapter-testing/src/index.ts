@@ -1,12 +1,10 @@
 import {
   SourceAdapter,
-  type SourceAdapterHandle,
   type SourceApplicationExit,
   type SourceDefinition,
   type SourceDefinitionOptionsFamily,
   type SourceExecutionFailure,
   type SourceLaneEvent,
-  type SourceLifecycleDeclaration,
   type SourceMutation,
   type SourceRetryPolicy,
   type SourceToolkit,
@@ -133,22 +131,7 @@ interface SourceFixtureDefinitionOptionsFamily extends SourceDefinitionOptionsFa
   readonly type: SourceFixtureDefinitionOptions<this["Row"]>;
 }
 
-type SourceFixtureLifecycle = SourceLifecycleDeclaration<
-  SourceFixtureMetrics,
-  SourceFixtureRejectionLocation,
-  SourceFixtureDefinitionOptions,
-  SourceFixtureDefinitionOptionsFamily
->;
-
-type SourceFixtureAdapter = SourceAdapterHandle<
-  "controllable-fixture",
-  "1",
-  SourceFixtureFailure,
-  SourceFixtureLifecycle,
-  SourceFixtureLifecycle
->;
-
-const FixtureAdapter: SourceFixtureAdapter = SourceAdapter.make({
+const FixtureAdapter = SourceAdapter.make({
   identity: {
     name: "controllable-fixture",
     version: "1",

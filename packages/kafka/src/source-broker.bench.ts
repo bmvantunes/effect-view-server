@@ -313,9 +313,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (benchmarkScope !== undefined) {
-    const current = requireState();
     retainedRowsAfterBenchmark = await Effect.runPromise(
-      current.verifyFinalState.pipe(Effect.ensuring(Scope.close(benchmarkScope, Exit.void))),
+      Effect.suspend(() => requireState().verifyFinalState).pipe(
+        Effect.ensuring(Scope.close(benchmarkScope, Exit.void)),
+      ),
     );
   }
   const memoryAfterBenchmark = memorySnapshot();

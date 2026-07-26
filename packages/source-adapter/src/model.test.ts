@@ -138,6 +138,16 @@ describe("Source Adapter portable model", () => {
   it("creates stable runtime descriptors without delegated lifecycle builders", () => {
     const handle = makeMaterializedAdapter();
     const descriptor = SourceAdapter.descriptor(handle);
+    const leasedOnly = SourceAdapter.make({
+      identity: { name: "leased-only-fixture" },
+      failure: Failure,
+      materialized: undefined,
+      leased: {
+        metrics: Metrics,
+        rejectionLocation: Location,
+        definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+      },
+    });
     const directDefinition = handle.materializedSource({ label: "direct" });
     const definition = SourceAdapter.materializedSource(handle, { label: "orders" });
     const symbolValues = Reflect.ownKeys(descriptor)
@@ -176,6 +186,9 @@ describe("Source Adapter portable model", () => {
     expect(() =>
       Reflect.apply(SourceAdapter.materializedSource, undefined, [descriptor, { label: "orders" }]),
     ).toThrow("delegated construction requires a nominal Source Adapter handle");
+    expect(() =>
+      Reflect.apply(SourceAdapter.materializedSource, undefined, [leasedOnly, { label: "orders" }]),
+    ).toThrow("This Source Adapter does not declare a Materialized lifecycle.");
   });
 
   it.effect("creates nominal adapters and validates safe adapter failures", () =>

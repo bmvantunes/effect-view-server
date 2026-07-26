@@ -1143,6 +1143,9 @@ export const makeMaterializedSourceDefinition = <
       "Source Adapter delegated construction requires a nominal Source Adapter handle.",
     );
   }
+  if (adapter.materialized === undefined) {
+    throw new TypeError("This Source Adapter does not declare a Materialized lifecycle.");
+  }
   return makeDescriptorDefinition(
     makeSourceAdapterDescriptor(adapter),
     "materialized",

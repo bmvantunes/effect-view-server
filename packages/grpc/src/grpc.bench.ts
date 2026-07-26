@@ -350,10 +350,12 @@ const makeBenchmarkState = Effect.gen(function* () {
   const leasedSubscriptions = yield* Effect.forEach(
     routes,
     (route) =>
-      leasedRuntime.liveClient.subscribe("rows", {
-        routeBy: route,
-        select: ["id"],
-      }),
+      leasedRuntime.liveClient
+        .subscribe("rows", {
+          routeBy: route,
+          select: ["id"],
+        })
+        .pipe(Effect.provideService(Clock.Clock, clock)),
     { concurrency: "unbounded" },
   );
   const leasedDiagnostics = yield* Effect.forEach(

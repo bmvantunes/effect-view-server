@@ -9,7 +9,7 @@ export const awaitTestCondition = (
   Effect.suspend(() =>
     predicate()
       ? Effect.void
-      : remaining === 0
+      : remaining <= 0
         ? Effect.die(new TypeError(`Timed out waiting for ${label()}.`))
         : backoff.pipe(
             Effect.andThen(awaitTestCondition(label, predicate, remaining - 1, backoff)),

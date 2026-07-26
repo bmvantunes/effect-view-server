@@ -181,7 +181,7 @@ const nativeJsonFieldValueIsValid = (
 
 const fieldValueIsValid = (field: DescField, value: unknown, active: WeakSet<object>): boolean => {
   if (value === undefined) {
-    return true;
+    return false;
   }
   switch (field.fieldKind) {
     case "scalar":
@@ -415,9 +415,6 @@ const materializeGeneratedMessage = (
       continue;
     }
     const value = supplied.get(field.localName);
-    if (value === undefined) {
-      continue;
-    }
     switch (field.fieldKind) {
       case "message":
         if (usesNativeJsonRepresentation(field)) {

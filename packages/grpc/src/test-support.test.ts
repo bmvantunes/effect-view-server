@@ -55,4 +55,24 @@ describe("gRPC test polling support", () => {
       );
     }),
   );
+
+  it.effect("treats a negative initial budget as already exhausted", () =>
+    Effect.gen(function* () {
+      const observed = yield* awaitTestCondition(
+        () => "a negative-budget condition",
+        () => false,
+        -1,
+        Effect.void,
+      ).pipe(
+        Effect.matchCause({
+          onFailure: Cause.squash,
+          onSuccess: () => undefined,
+        }),
+      );
+
+      expect(observed).toStrictEqual(
+        new TypeError("Timed out waiting for a negative-budget condition."),
+      );
+    }),
+  );
 });

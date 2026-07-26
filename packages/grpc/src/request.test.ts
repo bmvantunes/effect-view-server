@@ -430,6 +430,13 @@ const wrapperDescriptorFile = fileDesc(
                   type: FieldDescriptorProto_Type.MESSAGE,
                   typeName: ".google.protobuf.StringValue",
                 },
+                {
+                  name: "wrapped_values",
+                  number: 2,
+                  label: FieldDescriptorProto_Label.REPEATED,
+                  type: FieldDescriptorProto_Type.MESSAGE,
+                  typeName: ".google.protobuf.StringValue",
+                },
               ],
             },
           ],
@@ -602,9 +609,6 @@ describe("generated gRPC request validation", () => {
     const emptyOneofSnapshot = validateAndSnapshotGrpcRequest(RequestSchema, {
       selector: { case: undefined },
     });
-    const undefinedFieldSnapshot = validateAndSnapshotGrpcRequest(RequestSchema, {
-      stringValue: undefined,
-    });
     const messageChoiceSnapshot = validateAndSnapshotGrpcRequest(RequestSchema, {
       selector: { case: "childChoice", value: { label: "choice" } },
     });
@@ -632,8 +636,6 @@ describe("generated gRPC request validation", () => {
       expectedNullPrototypeWire: wireBytes(RequestSchema, nullPrototype),
       emptyOneofWire: wireBytes(RequestSchema, emptyOneofSnapshot),
       expectedEmptyOneofWire: wireBytes(RequestSchema, { selector: { case: undefined } }),
-      undefinedFieldWire: wireBytes(RequestSchema, undefinedFieldSnapshot),
-      expectedUndefinedFieldWire: wireBytes(RequestSchema, { stringValue: undefined }),
       messageChoiceWire: wireBytes(RequestSchema, messageChoiceSnapshot),
       expectedMessageChoiceWire: wireBytes(RequestSchema, {
         selector: { case: "childChoice", value: { label: "choice" } },
@@ -659,8 +661,6 @@ describe("generated gRPC request validation", () => {
       expectedNullPrototypeWire: wireBytes(RequestSchema, nullPrototype),
       emptyOneofWire: wireBytes(RequestSchema, { selector: { case: undefined } }),
       expectedEmptyOneofWire: wireBytes(RequestSchema, { selector: { case: undefined } }),
-      undefinedFieldWire: wireBytes(RequestSchema, { stringValue: undefined }),
-      expectedUndefinedFieldWire: wireBytes(RequestSchema, { stringValue: undefined }),
       messageChoiceWire: wireBytes(RequestSchema, {
         selector: { case: "childChoice", value: { label: "choice" } },
       }),
@@ -717,7 +717,10 @@ describe("generated gRPC request validation", () => {
 
     const closedEnumRequest = { mode: 1 };
     const requiredRequest = { requiredValue: "present" };
-    const wrapperRequest = { wrapped: "unwrapped" };
+    const wrapperRequest = {
+      wrapped: "unwrapped",
+      wrappedValues: [{ value: "one" }, { value: "two" }],
+    };
     expect({
       openEnum: wireBytes(RequestSchema, validateAndSnapshotGrpcRequest(RequestSchema, request)),
       closedEnum: wireBytes(
@@ -1172,15 +1175,19 @@ describe("generated gRPC request validation", () => {
       { stringUint64Value: "18446744073709551616" },
       { boolValue: 1 },
       { stringValue: 1 },
+      { stringValue: undefined },
       { bytesValue: [1, 2] },
       { mode: "active" },
       { mode: 1.5 },
       { mode: 2_147_483_648 },
       { child: "child" },
+      { child: undefined },
       { child: { extra: true } },
       { child: nestedSymbolExtra },
       { numbers: "numbers" },
+      { numbers: undefined },
       { numbers: [1, "2"] },
+      { numbers: [undefined] },
       { numbers: [2_147_483_648] },
       { numbers: sparseNumbers },
       { numbers: symbolNumbers },
@@ -1191,12 +1198,16 @@ describe("generated gRPC request validation", () => {
       { modes: [0, "active"] },
       { modes: [1.5] },
       { children: [{ label: 1 }] },
+      { children: [undefined] },
       { scalarMap: [] },
+      { scalarMap: undefined },
       { scalarMap: { one: "1" } },
+      { scalarMap: { one: undefined } },
       { scalarMap: { one: 2_147_483_648 } },
       { enumMap: { one: "active" } },
       { enumMap: { one: 2_147_483_648 } },
       { messageMap: { one: { label: 1 } } },
+      { messageMap: { one: undefined } },
       { int32Map: { notANumber: "value" } },
       { int32Map: { "2147483648": "value" } },
       { boolMap: { yes: "value" } },
@@ -1234,8 +1245,18 @@ describe("generated gRPC request validation", () => {
       "request-init value does not match",
     );
     expect(() =>
+      validateAndSnapshotGrpcRequest(RequiredRequestSchema, {
+        requiredValue: undefined,
+      }),
+    ).toThrow("request-init value does not match");
+    expect(() =>
       validateAndSnapshotGrpcRequest(WrapperRequestSchema, {
         wrapped: 1,
+      }),
+    ).toThrow("request-init value does not match");
+    expect(() =>
+      validateAndSnapshotGrpcRequest(WrapperRequestSchema, {
+        wrappedValues: ["one"],
       }),
     ).toThrow("request-init value does not match");
     expect(() =>

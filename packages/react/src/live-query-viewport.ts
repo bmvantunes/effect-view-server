@@ -372,8 +372,9 @@ export const makeLiveQueryViewportBinding = <
       if (current === entry) {
         return;
       }
-      current?.deactivate();
+      const previous = current;
       current = entry;
+      previous?.deactivate();
     },
     uninstall: (entry) => {
       if (current !== entry) {
@@ -386,15 +387,38 @@ export const makeLiveQueryViewportBinding = <
 };
 
 type ActiveRequest = {
-  readonly generation: number;
+  owner: number;
   readonly request: number;
   readonly criteriaKey: string;
   readonly firstRow: number;
   readonly lastRow: number;
   readonly latestTotalRows: { value: number };
   readonly sink: unknown;
-  readonly clearSink: () => void;
+  readonly cleanup: SinkCleanup;
   live: boolean;
+};
+
+type SinkCleanup = {
+  readonly sink: unknown;
+  readonly discard: () => void;
+  readonly run: () => void;
+};
+
+const makeSinkCleanup = (sink: unknown, clear: () => void): SinkCleanup => {
+  let pending = true;
+  return {
+    sink,
+    discard: () => {
+      pending = false;
+    },
+    run: () => {
+      if (!pending) {
+        return;
+      }
+      pending = false;
+      clear();
+    },
+  };
 };
 
 const ignoreSubscriptionCloseFailure = ignoreLoggedTypedFailuresPreserveNonTypedFailures(
@@ -408,14 +432,45 @@ export const makeLiveQueryViewport = <
   input: LiveQueryViewportControllerInput<Topics, Topic>,
 ): LiveQueryViewport<Topics, Topic> & { readonly deactivate: () => void } => {
   type Row = TopicRow<Topics, Topic>;
-  let generationCounter = 0;
+  let ownerCounter = 0;
   let requestCounter = 0;
   let replaceInvocation = 0;
   let active: ActiveRequest | undefined;
+  let pendingCleanups: Array<SinkCleanup> = [];
+  let latestPendingCleanupBySink = new Map<unknown, SinkCleanup>();
   let terminal = false;
 
-  const isCurrent = (generation: number, request: number): boolean =>
-    active?.generation === generation && active.request === request;
+  const isCurrent = (request: number): boolean => active?.request === request;
+
+  const runSinkCleanups = (cleanups: ReadonlyArray<SinkCleanup>): void => {
+    let firstFailure: unknown;
+    let failed = false;
+    for (const cleanup of cleanups) {
+      const result = Result.try(() => {
+        if (active !== undefined && Object.is(active.sink, cleanup.sink)) {
+          cleanup.discard();
+        } else {
+          cleanup.run();
+        }
+      });
+      if (!failed && Result.isFailure(result)) {
+        failed = true;
+        firstFailure = result.failure;
+      }
+    }
+    if (failed) {
+      throw firstFailure;
+    }
+  };
+
+  const cleanupRequest = (request: ActiveRequest): void => {
+    const cleanups = pendingCleanups;
+    pendingCleanups = [];
+    latestPendingCleanupBySink.get(request.sink)?.discard();
+    latestPendingCleanupBySink = new Map();
+    cleanups.push(request.cleanup);
+    runSinkCleanups(cleanups);
+  };
 
   const publishIdle = (owner: number): void => {
     input.publish({ owner, stream: Stream.succeed(idleChrome()) });
@@ -424,43 +479,72 @@ export const makeLiveQueryViewport = <
   const clearSink = <SinkRow>(
     sink: LiveQueryViewportSink<SinkRow>,
     totalRows: number,
-    generation: number,
     request: number,
   ): boolean => {
-    if (!isCurrent(generation, request)) {
+    if (!isCurrent(request)) {
       return false;
     }
     sink.setRowCount(totalRows, false);
-    return isCurrent(generation, request);
+    return isCurrent(request);
   };
 
   const installActive = <SinkRow>(input_: {
-    readonly generation: number;
+    readonly owner: number;
     readonly criteriaKey: string;
     readonly window: LiveQueryViewportWindow;
     readonly latestTotalRows: { value: number };
     readonly sink: LiveQueryViewportSink<SinkRow>;
     readonly live: boolean;
-  }): { readonly request: number; readonly isCurrent: boolean } => {
+  }): { readonly request: number; readonly activate: () => boolean } => {
     const request = ++requestCounter;
     const previous = active;
-    active = {
-      generation: input_.generation,
+    if (previous !== undefined) {
+      latestPendingCleanupBySink.get(previous.sink)?.discard();
+      pendingCleanups.push(previous.cleanup);
+      latestPendingCleanupBySink.set(previous.sink, previous.cleanup);
+    }
+    const current: ActiveRequest = {
+      owner: input_.owner,
       request,
       criteriaKey: input_.criteriaKey,
       firstRow: input_.window.firstRow,
       lastRow: input_.window.lastRow,
       latestTotalRows: input_.latestTotalRows,
       sink: input_.sink,
-      clearSink: () => input_.sink.setRowCount(0, false),
+      cleanup: makeSinkCleanup(input_.sink, () => input_.sink.setRowCount(0, false)),
       live: input_.live,
     };
-    if (previous !== undefined && !Object.is(previous.sink, input_.sink)) {
-      previous.clearSink();
-    }
+    active = current;
     return {
       request,
-      isCurrent: clearSink(input_.sink, input_.latestTotalRows.value, input_.generation, request),
+      activate: () => {
+        let activated = false;
+        const predecessors = pendingCleanups;
+        pendingCleanups = [];
+        latestPendingCleanupBySink = new Map();
+        const activation = Result.try(() => {
+          runSinkCleanups(predecessors);
+          if (!clearSink(input_.sink, input_.latestTotalRows.value, request)) {
+            return false;
+          }
+          activated = true;
+          return true;
+        });
+        if (activated) {
+          return true;
+        }
+        if (isCurrent(request)) {
+          active = undefined;
+        }
+        const cleanup = Result.try(() => runSinkCleanups([current.cleanup]));
+        if (Result.isFailure(activation)) {
+          throw activation.failure;
+        }
+        if (Result.isFailure(cleanup)) {
+          throw cleanup.failure;
+        }
+        return false;
+      },
     };
   };
 
@@ -468,7 +552,6 @@ export const makeLiveQueryViewport = <
     query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
     sink: LiveQueryViewportSink<LiveQueryRow<Row, Query>>,
     window: Extract<LiveQueryViewportWindowValidation, { readonly _tag: "Valid" }>,
-    generation: number,
     request: number,
     updateTotalRows: (totalRows: number) => void,
   ): Stream.Stream<LiveQueryViewportChrome, ViewServerRuntimeError | ViewServerTransportError> => {
@@ -481,7 +564,7 @@ export const makeLiveQueryViewport = <
           windowedQuery,
         );
         return subscription.events.pipe(
-          Stream.filter(() => isCurrent(generation, request)),
+          Stream.filter(() => isCurrent(request)),
           Stream.map((event) => {
             const state = projection.apply(event);
             return {
@@ -494,7 +577,7 @@ export const makeLiveQueryViewport = <
           }),
           Stream.tap((state) =>
             Effect.sync(() => {
-              if (!isCurrent(generation, request)) {
+              if (!isCurrent(request)) {
                 return;
               }
               updateTotalRows(state.current.totalRows);
@@ -507,32 +590,26 @@ export const makeLiveQueryViewport = <
               if (state.rowData === undefined) {
                 return;
               }
-              if (!isCurrent(generation, request)) {
+              if (!isCurrent(request)) {
                 return;
               }
               sink.setRowData(state.rowData);
             }),
           ),
-          Stream.filter(() => isCurrent(generation, request)),
+          Stream.filter(() => isCurrent(request)),
           Stream.map((state) => chromeFromClientState(state.current)),
           Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
         );
       },
     );
     return Stream.scoped(Stream.unwrap(acquireSubscription())).pipe(
-      Stream.catchCause((cause) =>
-        isCurrent(generation, request) ? Stream.failCause(cause) : Stream.empty,
-      ),
+      Stream.catchCause((cause) => (isCurrent(request) ? Stream.failCause(cause) : Stream.empty)),
       Stream.ensuring(
         Effect.sync(() => {
           const current = active;
-          if (
-            current !== undefined &&
-            current.generation === generation &&
-            current.request === request
-          ) {
+          if (current !== undefined && current.request === request) {
             active = undefined;
-            current.clearSink();
+            cleanupRequest(current);
           }
         }),
       ),
@@ -540,7 +617,7 @@ export const makeLiveQueryViewport = <
   };
 
   const start = <const Query extends LiveQueryViewportQuery<Row>>(input_: {
-    readonly generation: number;
+    readonly owner: number;
     readonly criteriaKey: string;
     readonly query: ExactLiveQueryInputForTopic<Topics, Topic, Query>;
     readonly sink: LiveQueryViewportSink<LiveQueryRow<Row, Query>>;
@@ -549,34 +626,40 @@ export const makeLiveQueryViewport = <
   }): void => {
     const window = validateLiveQueryViewportWindow(input_.window);
     const installed = installActive({
-      generation: input_.generation,
+      owner: input_.owner,
       criteriaKey: input_.criteriaKey,
       window: input_.window,
       latestTotalRows: input_.latestTotalRows,
       sink: input_.sink,
       live: window._tag === "Valid",
     });
-    if (!installed.isCurrent) {
-      return;
-    }
     if (window._tag === "Invalid") {
       input.publish({
         owner: installed.request,
-        stream: holdChrome(invalidWindowChrome(window.message)),
+        stream: Stream.unwrap(
+          Effect.sync(() =>
+            installed.activate() ? holdChrome(invalidWindowChrome(window.message)) : Stream.empty,
+          ),
+        ),
       });
       return;
     }
     input.publish({
       owner: installed.request,
-      stream: makeSubscriptionStream(
-        input_.query,
-        input_.sink,
-        window,
-        input_.generation,
-        installed.request,
-        (totalRows) => {
-          input_.latestTotalRows.value = totalRows;
-        },
+      stream: Stream.unwrap(
+        Effect.sync(() =>
+          installed.activate()
+            ? makeSubscriptionStream(
+                input_.query,
+                input_.sink,
+                window,
+                installed.request,
+                (totalRows) => {
+                  input_.latestTotalRows.value = totalRows;
+                },
+              )
+            : Stream.empty,
+        ),
       ),
     });
   };
@@ -597,31 +680,36 @@ export const makeLiveQueryViewport = <
       };
     }
     if (Result.isFailure(captured)) {
-      const generation = ++generationCounter;
+      const owner = ++ownerCounter;
       const installed = installActive({
-        generation,
+        owner,
         criteriaKey: "",
         window: request.window,
         latestTotalRows: { value: 0 },
         sink: request.sink,
         live: false,
       });
-      if (!installed.isCurrent) {
-        return {
-          setWindow: () => undefined,
-          release: () => undefined,
-        };
-      }
       input.publish({
         owner: installed.request,
-        stream: holdChrome(invalidQueryChrome(liveQueryViewportFailureMessage(captured.failure))),
+        stream: Stream.unwrap(
+          Effect.sync(() =>
+            installed.activate()
+              ? holdChrome(invalidQueryChrome(liveQueryViewportFailureMessage(captured.failure)))
+              : Stream.empty,
+          ),
+        ),
       });
       return {
         setWindow: () => undefined,
         release: () => {
-          if (active?.generation === generation) {
+          if (active?.owner === owner) {
+            const current = active;
             active = undefined;
-            publishIdle(++requestCounter);
+            try {
+              publishIdle(++requestCounter);
+            } finally {
+              cleanupRequest(current);
+            }
           }
         },
       };
@@ -639,30 +727,26 @@ export const makeLiveQueryViewport = <
       current.lastRow === request.window.lastRow &&
       Object.is(current.sink, request.sink)
     ) {
-      return makeGeneration(
-        current.generation,
-        criteriaKey,
-        query,
-        request.sink,
-        current.latestTotalRows,
-      );
+      const owner = ++ownerCounter;
+      current.owner = owner;
+      return makeGeneration(owner, criteriaKey, query, request.sink, current.latestTotalRows);
     }
 
-    const generation = ++generationCounter;
+    const owner = ++ownerCounter;
     const latestTotalRows = { value: 0 };
     start({
-      generation,
+      owner,
       criteriaKey,
       query,
       sink: request.sink,
       window: request.window,
       latestTotalRows,
     });
-    return makeGeneration(generation, criteriaKey, query, request.sink, latestTotalRows);
+    return makeGeneration(owner, criteriaKey, query, request.sink, latestTotalRows);
   };
 
   function makeGeneration<const Query extends LiveQueryViewportQuery<Row>>(
-    generation: number,
+    owner: number,
     criteriaKey: string,
     query: ExactLiveQueryInputForTopic<Topics, Topic, Query>,
     sink: LiveQueryViewportSink<LiveQueryRow<Row, Query>>,
@@ -670,7 +754,7 @@ export const makeLiveQueryViewport = <
   ): LiveQueryViewportGeneration {
     return {
       setWindow: (window) => {
-        if (active?.generation !== generation) {
+        if (active?.owner !== owner) {
           return;
         }
         if (
@@ -681,7 +765,7 @@ export const makeLiveQueryViewport = <
           return;
         }
         start({
-          generation,
+          owner,
           criteriaKey,
           query,
           sink,
@@ -690,14 +774,16 @@ export const makeLiveQueryViewport = <
         });
       },
       release: () => {
-        if (active?.generation !== generation) {
+        if (active?.owner !== owner) {
           return;
         }
         const request = ++requestCounter;
+        const current = active;
         active = undefined;
-        sink.setRowCount(0, false);
-        if (active === undefined && request === requestCounter) {
+        try {
           publishIdle(request);
+        } finally {
+          cleanupRequest(current);
         }
       },
     };
@@ -709,7 +795,9 @@ export const makeLiveQueryViewport = <
     requestCounter += 1;
     const current = active;
     active = undefined;
-    current?.clearSink();
+    if (current !== undefined) {
+      cleanupRequest(current);
+    }
   };
 
   return {
@@ -723,10 +811,13 @@ export const makeLiveQueryViewport = <
       const request = ++requestCounter;
       const current = active;
       active = undefined;
-      if (current !== undefined) {
-        current.clearSink();
+      try {
+        publishIdle(request);
+      } finally {
+        if (current !== undefined) {
+          cleanupRequest(current);
+        }
       }
-      publishIdle(request);
     },
     deactivate,
   };

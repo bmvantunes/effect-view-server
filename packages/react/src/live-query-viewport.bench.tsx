@@ -76,6 +76,9 @@ const adaptQuerySubstrate = <Topics_ extends TopicDefinitions>(
 
 type ViewportBenchmark = {
   readonly update: () => Promise<void>;
+  readonly replaceAll: () => Promise<void>;
+  readonly moveAll: () => Promise<void>;
+  readonly replaceTail: () => Promise<void>;
   readonly close: () => Promise<void>;
 };
 
@@ -154,6 +157,36 @@ const makeViewportBenchmark = async (rowCount: number): Promise<ViewportBenchmar
   await waitForSinkWrite(snapshotWritten, `${rowCount}-row snapshot`);
 
   const index = Math.floor(rowCount / 2);
+  const replacementRows = Array.from({ length: rowCount }, (_, rowIndex) => ({
+    id: `replacement-${rowIndex}`,
+    price: rowIndex,
+  }));
+  const replaceWithReplacement = [
+    ...rows.map((row) => ({ type: "remove" as const, key: row.id })),
+    ...replacementRows.map((row, rowIndex) => ({
+      type: "insert" as const,
+      key: row.id,
+      row,
+      index: rowIndex,
+    })),
+  ];
+  const replaceWithOriginal = [
+    ...replacementRows.map((row) => ({ type: "remove" as const, key: row.id })),
+    ...rows.map((row, rowIndex) => ({
+      type: "insert" as const,
+      key: row.id,
+      row,
+      index: rowIndex,
+    })),
+  ];
+  const moveAll = Array.from({ length: rowCount }, (_, moveIndex) => ({
+    type: "move" as const,
+    key: `row-${rowCount - moveIndex - 1}`,
+    fromIndex: rowCount - 1,
+    toIndex: 0,
+  }));
+  let replacementIsCurrent = false;
+  let replacementTailIsCurrent = false;
   let version = 1;
   return {
     update: async () => {
@@ -182,6 +215,75 @@ const makeViewportBenchmark = async (rowCount: number): Promise<ViewportBenchmar
       version = nextVersion;
       await waitForSinkWrite(written, `${rowCount}-row delta`);
     },
+    replaceAll: async () => {
+      const nextVersion = version + 1;
+      const written = new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+      await Effect.runPromise(
+        Queue.offer(events, {
+          type: "delta",
+          topic: "orders",
+          queryId: "viewport-benchmark",
+          operations: replacementIsCurrent ? replaceWithOriginal : replaceWithReplacement,
+          totalRows: rowCount,
+          fromVersion: version,
+          toVersion: nextVersion,
+        }),
+      );
+      replacementIsCurrent = !replacementIsCurrent;
+      version = nextVersion;
+      await waitForSinkWrite(written, `${rowCount}-row replacement delta`);
+    },
+    moveAll: async () => {
+      const nextVersion = version + 1;
+      const written = new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+      await Effect.runPromise(
+        Queue.offer(events, {
+          type: "delta",
+          topic: "orders",
+          queryId: "viewport-benchmark",
+          operations: moveAll,
+          totalRows: rowCount,
+          fromVersion: version,
+          toVersion: nextVersion,
+        }),
+      );
+      version = nextVersion;
+      await waitForSinkWrite(written, `${rowCount}-row move delta`);
+    },
+    replaceTail: async () => {
+      const nextVersion = version + 1;
+      const currentKey = replacementTailIsCurrent ? "replacement-tail" : `row-${rowCount - 1}`;
+      const nextKey = replacementTailIsCurrent ? `row-${rowCount - 1}` : "replacement-tail";
+      const written = new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      });
+      await Effect.runPromise(
+        Queue.offer(events, {
+          type: "delta",
+          topic: "orders",
+          queryId: "viewport-benchmark",
+          operations: [
+            { type: "remove", key: currentKey },
+            {
+              type: "insert",
+              key: nextKey,
+              row: { id: nextKey, price: nextVersion },
+              index: rowCount - 1,
+            },
+          ],
+          totalRows: rowCount,
+          fromVersion: version,
+          toVersion: nextVersion,
+        }),
+      );
+      replacementTailIsCurrent = !replacementTailIsCurrent;
+      version = nextVersion;
+      await waitForSinkWrite(written, `${rowCount}-row tail replacement delta`);
+    },
     close: async () => {
       viewport.destroy();
       await Effect.runPromise(Fiber.interrupt(fiber));
@@ -192,13 +294,67 @@ const makeViewportBenchmark = async (rowCount: number): Promise<ViewportBenchmar
 
 const update100Rows = await makeViewportBenchmark(100);
 const update10000Rows = await makeViewportBenchmark(10_000);
+const replace1000Rows = await makeViewportBenchmark(1_000);
+const replace10000Rows = await makeViewportBenchmark(10_000);
+const move1000Rows = await makeViewportBenchmark(1_000);
+const move10000Rows = await makeViewportBenchmark(10_000);
+const replaceTail10000Rows = await makeViewportBenchmark(10_000);
+const scrollSchedulingRuntime = createInMemoryViewServer(viewServer);
+
+const schedulePreActivationScrollBurst = async (): Promise<void> => {
+  let publishCount = 0;
+  let clearCount = 0;
+  const viewport = makeLiveQueryViewport({
+    client: scrollSchedulingRuntime.liveClient,
+    config: viewServer,
+    topic: "orders",
+    publish: () => {
+      publishCount += 1;
+    },
+  });
+  const generation = viewport.replace({
+    window: { firstRow: 0, lastRow: 9 },
+    query: { select: ["id"], where: [], orderBy: [] },
+    sink: {
+      setRowCount: () => {
+        clearCount += 1;
+      },
+      setRowData: () => undefined,
+    },
+  });
+  for (let firstRow = 1; firstRow <= 10_000; firstRow += 1) {
+    generation.setWindow({ firstRow, lastRow: firstRow + 9 });
+  }
+  viewport.destroy();
+  if (publishCount !== 10_002 || clearCount !== 1) {
+    throw new Error("Pre-activation scroll burst did not retain only the latest request.");
+  }
+  await Promise.resolve();
+};
 
 afterAll(async () => {
   await update100Rows.close();
   await update10000Rows.close();
+  await replace1000Rows.close();
+  await replace10000Rows.close();
+  await move1000Rows.close();
+  await move10000Rows.close();
+  await replaceTail10000Rows.close();
+  await Effect.runPromise(scrollSchedulingRuntime.close);
 });
 
 describe("Live Query Viewport subscription-to-sink projection", () => {
   bench("single-row update in a 100-row viewport", () => update100Rows.update());
   bench("single-row update in a 10000-row viewport", () => update10000Rows.update());
+  bench("full replacement in a 1000-row viewport", () => replace1000Rows.replaceAll());
+  bench("full replacement in a 10000-row viewport", () => replace10000Rows.replaceAll());
+  bench("full reorder in a 1000-row viewport", () => move1000Rows.moveAll());
+  bench("full reorder in a 10000-row viewport", () => move10000Rows.moveAll());
+  bench("tail replacement in a 10000-row viewport", () => replaceTail10000Rows.replaceTail());
+  bench("schedule 10000 pre-activation scroll windows", () => schedulePreActivationScrollBurst(), {
+    iterations: 5,
+    time: 0,
+    warmupIterations: 0,
+    warmupTime: 0,
+  });
 });

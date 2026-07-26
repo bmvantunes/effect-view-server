@@ -202,6 +202,27 @@ const makeSink = <Row>() => {
 
 const flush = Effect.yieldNow;
 
+const makeSwitchingPublisher = () => {
+  let current: Fiber.Fiber<void, ViewServerRuntimeError | ViewServerTransportError> | undefined;
+  let publishCount = 0;
+  return {
+    publish: (command: {
+      readonly stream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      >;
+    }) => {
+      publishCount += 1;
+      if (current !== undefined) {
+        Effect.runFork(Fiber.interrupt(current));
+      }
+      current = Effect.runFork(command.stream.pipe(Stream.runDrain));
+    },
+    current: () => current,
+    publishCount: () => publishCount,
+  };
+};
+
 describe("Live Query Viewport Module", () => {
   it("validates inclusive absolute windows", () => {
     expect(validateLiveQueryViewportWindow({ firstRow: 10, lastRow: 19 })).toStrictEqual({
@@ -642,6 +663,59 @@ describe("Live Query Viewport Module", () => {
     }),
   );
 
+  it.effect("coalesces a large pre-activation scroll burst into the latest acquisition", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const client = makeManualClient(base.liveClient, requests);
+      let currentStream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      > = Stream.never;
+      const viewport = makeLiveQueryViewport({
+        client,
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          currentStream = command.stream;
+        },
+      });
+      const projected = makeSink<{ readonly id: string }>();
+      const generation = viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: projected.sink,
+      });
+
+      for (let firstRow = 1; firstRow <= 10_000; firstRow += 1) {
+        generation.setWindow({ firstRow, lastRow: firstRow + 9 });
+      }
+      expect(requests).toStrictEqual([]);
+      expect(projected.rowCounts).toStrictEqual([]);
+
+      const fiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.query).toStrictEqual({
+        select: ["id"],
+        where: [],
+        orderBy: [],
+        offset: 10_000,
+        limit: 10,
+      });
+      expect(projected.rowCounts).toStrictEqual([[0, false]]);
+
+      generation.release();
+      expect(projected.rowCounts).toStrictEqual([
+        [0, false],
+        [0, false],
+      ]);
+      yield* Fiber.interrupt(fiber);
+      expect(requests[0]!.closes).toBe(1);
+      yield* base.close;
+    }),
+  );
+
   it.effect("replaces filter, sort, selection, and query mode as distinct identities", () =>
     Effect.gen(function* () {
       const base = createInMemoryViewServer(viewServer);
@@ -803,6 +877,44 @@ describe("Live Query Viewport Module", () => {
     }),
   );
 
+  it.effect("does not publish invalid-window chrome after sink clearing destroys ownership", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const published: Array<
+        Stream.Stream<LiveQueryViewportChrome, ViewServerRuntimeError | ViewServerTransportError>
+      > = [];
+      const viewport = makeLiveQueryViewport({
+        client: base.liveClient,
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      viewport.replace({
+        window: { firstRow: 2, lastRow: 1 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => {
+            viewport.destroy();
+          },
+          setRowData: () => undefined,
+        },
+      });
+
+      expect(yield* published[0]!.pipe(Stream.runHead)).toStrictEqual(Option.none());
+      expect(published).toHaveLength(2);
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "loading",
+        }),
+      );
+      yield* base.close;
+    }),
+  );
+
   it.effect("projects every Delta operation shape and ignores non-row events", () =>
     Effect.gen(function* () {
       const base = createInMemoryViewServer(viewServer);
@@ -917,14 +1029,25 @@ describe("Live Query Viewport Module", () => {
       const first = replace();
       const duplicate = replace();
       duplicate.setWindow({ firstRow: 0, lastRow: 9 });
+      first.setWindow({ firstRow: 20, lastRow: 29 });
+      first.release();
       expect(publishCount).toBe(1);
 
       const fiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
       yield* flush;
       expect(requests).toHaveLength(1);
-      first.release();
+      yield* Queue.offer(requests[0]!.events, snapshot("still-current", 1, 1));
+      yield* flush;
+      expect(projected.rowData).toStrictEqual([{ 0: { id: "still-current", price: 1 } }]);
+
+      duplicate.setWindow({ firstRow: 10, lastRow: 19 });
+      expect(publishCount).toBe(2);
+      const replacementFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      expect(requests).toHaveLength(2);
       duplicate.release();
       yield* Fiber.interrupt(fiber);
+      yield* Fiber.interrupt(replacementFiber);
       yield* base.close;
     }),
   );
@@ -1219,6 +1342,15 @@ describe("Live Query Viewport Module", () => {
         query: hostile,
         sink: { setRowCount: () => undefined, setRowData: () => undefined },
       });
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "error",
+          statusCode: "InvalidQuery",
+          message: "Query input fields must be own enumerable data properties.",
+        }),
+      );
       hostileGeneration.setWindow({ firstRow: 10, lastRow: 19 });
       hostileGeneration.release();
       hostileGeneration.release();
@@ -1231,15 +1363,6 @@ describe("Live Query Viewport Module", () => {
 
       expect(requests).toHaveLength(0);
       expect(published).toHaveLength(5);
-      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
-        Option.some({
-          totalRows: 0,
-          version: 0,
-          status: "error",
-          statusCode: "InvalidQuery",
-          message: "Query input fields must be own enumerable data properties.",
-        }),
-      );
       yield* base.close;
     }),
   );
@@ -1293,14 +1416,69 @@ describe("Live Query Viewport Module", () => {
       invalidReentrantGeneration.release();
 
       expect(requests).toHaveLength(0);
-      expect(published).toHaveLength(1);
-      expect(yield* published[0]!.pipe(Stream.runHead)).toStrictEqual(
+      expect(yield* published[0]!.pipe(Stream.runHead)).toStrictEqual(Option.none());
+      expect(published).toHaveLength(3);
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
         Option.some({
           totalRows: 0,
           version: 0,
           status: "loading",
         }),
       );
+      expect(yield* published[2]!.pipe(Stream.runHead)).toStrictEqual(
+        Option.some({
+          totalRows: 0,
+          version: 0,
+          status: "loading",
+        }),
+      );
+      yield* base.close;
+    }),
+  );
+
+  it.effect("preserves a cleanup defect after activation is made obsolete reentrantly", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const published: Array<
+        Stream.Stream<LiveQueryViewportChrome, ViewServerRuntimeError | ViewServerTransportError>
+      > = [];
+      const viewport = makeLiveQueryViewport({
+        client: base.liveClient,
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          published.push(command.stream);
+        },
+      });
+      const successor = makeSink<{ readonly id: string }>();
+      let clearCount = 0;
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => {
+            clearCount += 1;
+            if (clearCount === 1) {
+              viewport.replace({
+                window: { firstRow: 10, lastRow: 19 },
+                query: { select: ["id"], where: [], orderBy: [] },
+                sink: successor.sink,
+              });
+              return;
+            }
+            throw new Error("cleanup defect");
+          },
+          setRowData: () => undefined,
+        },
+      });
+
+      const obsoleteExit = yield* published[0]!.pipe(Stream.runHead, Effect.exit);
+      expect(obsoleteExit._tag).toBe("Failure");
+      expect(clearCount).toBe(2);
+      expect(published).toHaveLength(2);
+
+      viewport.destroy();
+      expect(successor.rowCounts).toStrictEqual([[0, false]]);
       yield* base.close;
     }),
   );
@@ -1389,8 +1567,9 @@ describe("Live Query Viewport Module", () => {
       });
 
       expect(requests).toHaveLength(0);
-      expect(published).toHaveLength(1);
-      expect(yield* published[0]!.pipe(Stream.runHead)).toStrictEqual(
+      expect(yield* published[0]!.pipe(Stream.runHead)).toStrictEqual(Option.none());
+      expect(published).toHaveLength(2);
+      expect(yield* published[1]!.pipe(Stream.runHead)).toStrictEqual(
         Option.some({
           totalRows: 0,
           version: 0,
@@ -1401,7 +1580,7 @@ describe("Live Query Viewport Module", () => {
     }),
   );
 
-  it.effect("does not publish idle over a replacement started reentrantly during release", () =>
+  it.effect("publishes cancellation before release cleanup installs a replacement", () =>
     Effect.gen(function* () {
       const base = createInMemoryViewServer(viewServer);
       const requests: Array<ManualRequest> = [];
@@ -1423,7 +1602,7 @@ describe("Live Query Viewport Module", () => {
             viewport.replace({
               window: { firstRow: 10, lastRow: 19 },
               query: { select: ["id"], where: [], orderBy: [] },
-              sink: { setRowCount: () => undefined, setRowData: () => undefined },
+              sink,
             });
           }
         },
@@ -1437,7 +1616,191 @@ describe("Live Query Viewport Module", () => {
       replaceDuringRelease = true;
       generation.release();
 
-      expect(publishCount).toBe(2);
+      expect(publishCount).toBe(3);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("cancels the subscription before release cleanup can throw", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const publisher = makeSwitchingPublisher();
+      let throwOnClear = false;
+      const rowData: Array<{ readonly [index: number]: { readonly id: string } }> = [];
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: publisher.publish,
+      });
+      const generation = viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => {
+            if (throwOnClear) {
+              throw new Error("disposed release sink");
+            }
+          },
+          setRowData: (rows) => {
+            rowData.push(rows);
+          },
+        },
+      });
+      yield* flush;
+      expect(requests).toHaveLength(1);
+
+      throwOnClear = true;
+      expect(() => generation.release()).toThrow("disposed release sink");
+      yield* flush;
+      expect(publisher.publishCount()).toBe(2);
+      expect(requests[0]!.closes).toBe(1);
+      yield* Queue.offer(requests[0]!.events, snapshot("late", 1, 1));
+      yield* flush;
+      expect(rowData).toStrictEqual([]);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("cancels the subscription before terminal destroy cleanup can throw", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const publisher = makeSwitchingPublisher();
+      let throwOnClear = false;
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: publisher.publish,
+      });
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => {
+            if (throwOnClear) {
+              throw new Error("disposed destroy sink");
+            }
+          },
+          setRowData: () => undefined,
+        },
+      });
+      yield* flush;
+      expect(requests).toHaveLength(1);
+
+      throwOnClear = true;
+      expect(() => viewport.destroy()).toThrow("disposed destroy sink");
+      yield* flush;
+      expect(publisher.publishCount()).toBe(2);
+      expect(requests[0]!.closes).toBe(1);
+      viewport.replace({
+        window: { firstRow: 10, lastRow: 19 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      });
+      expect(publisher.publishCount()).toBe(2);
+      yield* base.close;
+    }),
+  );
+
+  it.effect("cancels the old subscription before previous-sink cleanup can throw", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const publisher = makeSwitchingPublisher();
+      let throwOnClear = false;
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: publisher.publish,
+      });
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => {
+            if (throwOnClear) {
+              throw new Error("disposed previous sink");
+            }
+          },
+          setRowData: () => undefined,
+        },
+      });
+      yield* flush;
+      expect(requests).toHaveLength(1);
+
+      throwOnClear = true;
+      viewport.replace({
+        window: { firstRow: 10, lastRow: 19 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      });
+      const failed = publisher.current();
+      expect(failed).toBeDefined();
+      expect((yield* Fiber.await(failed!))._tag).toBe("Failure");
+      expect(requests[0]!.closes).toBe(1);
+      expect(requests).toHaveLength(1);
+
+      throwOnClear = false;
+      viewport.replace({
+        window: { firstRow: 20, lastRow: 29 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      });
+      yield* flush;
+      expect(requests).toHaveLength(2);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("does not acquire after the successor sink initial clear throws", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const publisher = makeSwitchingPublisher();
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: publisher.publish,
+      });
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      });
+      yield* flush;
+      expect(requests).toHaveLength(1);
+
+      viewport.replace({
+        window: { firstRow: 10, lastRow: 19 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: {
+          setRowCount: () => {
+            throw new Error("disposed successor sink");
+          },
+          setRowData: () => undefined,
+        },
+      });
+      const failed = publisher.current();
+      expect(failed).toBeDefined();
+      expect((yield* Fiber.await(failed!))._tag).toBe("Failure");
+      expect(requests[0]!.closes).toBe(1);
+      expect(requests).toHaveLength(1);
+
+      viewport.replace({
+        window: { firstRow: 20, lastRow: 29 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: { setRowCount: () => undefined, setRowData: () => undefined },
+      });
+      yield* flush;
+      expect(requests).toHaveLength(2);
       viewport.destroy();
       yield* base.close;
     }),
@@ -1450,11 +1813,17 @@ describe("Live Query Viewport Module", () => {
       const client = makeManualClient(base.liveClient, requests);
       const first = makeSink<{ readonly id: string }>();
       const second = makeSink<{ readonly id: string }>();
+      let currentStream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      > = Stream.never;
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
         topic: "orders",
-        publish: () => undefined,
+        publish: (command) => {
+          currentStream = command.stream;
+        },
       });
 
       viewport.replace({
@@ -1462,11 +1831,16 @@ describe("Live Query Viewport Module", () => {
         query: { select: ["id"], where: [], orderBy: [] },
         sink: first.sink,
       });
+      const firstFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
       viewport.replace({
         window: { firstRow: 10, lastRow: 19 },
         query: { select: ["id"], where: [], orderBy: [] },
         sink: second.sink,
       });
+      yield* Fiber.interrupt(firstFiber);
+      const secondFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
 
       expect(first.rowCounts).toStrictEqual([
         [0, false],
@@ -1474,6 +1848,162 @@ describe("Live Query Viewport Module", () => {
       ]);
       expect(second.rowCounts).toStrictEqual([[0, false]]);
       viewport.destroy();
+      yield* Fiber.interrupt(secondFiber);
+      yield* base.close;
+    }),
+  );
+
+  it.effect("clears both sinks when a replacement is released before activation", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const first = makeSink<{ readonly id: string }>();
+      const second = makeSink<{ readonly id: string }>();
+      let currentStream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      > = Stream.never;
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          currentStream = command.stream;
+        },
+      });
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: first.sink,
+      });
+      const firstFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      yield* Queue.offer(requests[0]!.events, snapshot("rendered", 1, 4));
+      yield* flush;
+
+      const replacement = viewport.replace({
+        window: { firstRow: 10, lastRow: 19 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: second.sink,
+      });
+      yield* Fiber.interrupt(firstFiber);
+      replacement.release();
+      yield* Queue.offer(requests[0]!.events, snapshot("late", 2, 5));
+      yield* flush;
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.closes).toBe(1);
+      expect(first.rowCounts).toStrictEqual([
+        [0, false],
+        [1, true],
+        [0, false],
+      ]);
+      expect(first.rowData).toStrictEqual([{ 0: { id: "rendered", price: 1 } }]);
+      expect(second.rowCounts).toStrictEqual([[0, false]]);
+      expect(second.rowData).toStrictEqual([]);
+      viewport.destroy();
+      yield* base.close;
+    }),
+  );
+
+  it.effect("clears both sinks when destroyed before replacement activation", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const first = makeSink<{ readonly id: string }>();
+      const second = makeSink<{ readonly id: string }>();
+      let currentStream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      > = Stream.never;
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          currentStream = command.stream;
+        },
+      });
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: first.sink,
+      });
+      const firstFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      viewport.replace({
+        window: { firstRow: 10, lastRow: 19 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: second.sink,
+      });
+      yield* Fiber.interrupt(firstFiber);
+      viewport.destroy();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.closes).toBe(1);
+      expect(first.rowCounts).toStrictEqual([
+        [0, false],
+        [0, false],
+      ]);
+      expect(second.rowCounts).toStrictEqual([[0, false]]);
+      yield* base.close;
+    }),
+  );
+
+  it.effect("does not clear a cleanup-installed successor sharing the pending sink", () =>
+    Effect.gen(function* () {
+      const base = createInMemoryViewServer(viewServer);
+      const requests: Array<ManualRequest> = [];
+      const successor = makeSink<{ readonly id: string }>();
+      let installSuccessor = false;
+      let currentStream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      > = Stream.never;
+      const viewport = makeLiveQueryViewport({
+        client: makeManualClient(base.liveClient, requests),
+        config: viewServer,
+        topic: "orders",
+        publish: (command) => {
+          currentStream = command.stream;
+        },
+      });
+      const previousSink: LiveQueryViewportSink<{ readonly id: string }> = {
+        setRowCount: (count) => {
+          if (count === 0 && installSuccessor) {
+            installSuccessor = false;
+            viewport.replace({
+              window: { firstRow: 20, lastRow: 29 },
+              query: { select: ["id"], where: [], orderBy: [] },
+              sink: successor.sink,
+            });
+          }
+        },
+        setRowData: () => undefined,
+      };
+      viewport.replace({
+        window: { firstRow: 0, lastRow: 9 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: previousSink,
+      });
+      const firstFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      const pending = viewport.replace({
+        window: { firstRow: 10, lastRow: 19 },
+        query: { select: ["id"], where: [], orderBy: [] },
+        sink: successor.sink,
+      });
+      yield* Fiber.interrupt(firstFiber);
+      installSuccessor = true;
+      pending.release();
+      expect(successor.rowCounts).toStrictEqual([]);
+
+      const successorFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
+      expect(successor.rowCounts).toStrictEqual([[0, false]]);
+      expect(requests).toHaveLength(2);
+      viewport.destroy();
+      yield* Fiber.interrupt(successorFiber);
       yield* base.close;
     }),
   );
@@ -1486,13 +2016,18 @@ describe("Live Query Viewport Module", () => {
       const successor = makeSink<{ readonly id: string }>();
       let replaceDuringClear = false;
       let publishCount = 0;
+      let currentStream: Stream.Stream<
+        LiveQueryViewportChrome,
+        ViewServerRuntimeError | ViewServerTransportError
+      > = Stream.never;
       const previousRowCounts: Array<readonly [number, boolean | undefined]> = [];
       const viewport = makeLiveQueryViewport({
         client,
         config: viewServer,
         topic: "orders",
-        publish: () => {
+        publish: (command) => {
           publishCount += 1;
+          currentStream = command.stream;
         },
       });
       const previous = {
@@ -1517,21 +2052,28 @@ describe("Live Query Viewport Module", () => {
         query: { select: ["id"], where: [], orderBy: [] },
         sink: previous.sink,
       });
+      const previousFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
       replaceDuringClear = true;
       viewport.replace({
         window: { firstRow: 10, lastRow: 19 },
         query: { select: ["id"], where: [], orderBy: [] },
         sink: successor.sink,
       });
+      yield* Fiber.interrupt(previousFiber);
+      expect(yield* currentStream.pipe(Stream.runHead)).toStrictEqual(Option.none());
+      const successorFiber = yield* currentStream.pipe(Stream.runDrain, Effect.forkChild);
+      yield* flush;
 
       expect(previousRowCounts).toStrictEqual([
         [0, false],
         [0, false],
       ]);
       expect(successor.rowCounts).toStrictEqual([[0, false]]);
-      expect(publishCount).toBe(2);
-      expect(requests).toHaveLength(0);
+      expect(publishCount).toBe(3);
+      expect(requests).toHaveLength(2);
       viewport.destroy();
+      yield* Fiber.interrupt(successorFiber);
       yield* base.close;
     }),
   );

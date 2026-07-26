@@ -67,6 +67,264 @@ const isValidSnapshotEvent = <Row>(
   event.keys.length === event.rows.length &&
   hasUniqueKeys(event.keys);
 
+type StructuralBatch<Row> =
+  | { readonly _tag: "NotStaged" }
+  | { readonly _tag: "Invalid" }
+  | {
+      readonly _tag: "Staged";
+      readonly rows: ReadonlyArray<Row>;
+      readonly keys: ReadonlyArray<string>;
+      readonly start: number;
+      readonly end: number;
+    };
+
+type SequenceNode<Row> = {
+  readonly id: number;
+  readonly priority: bigint;
+  readonly key: string;
+  row: Row;
+  left: SequenceNode<Row> | undefined;
+  right: SequenceNode<Row> | undefined;
+  parent: SequenceNode<Row> | undefined;
+  size: number;
+};
+
+const sequenceSize = <Row>(node: SequenceNode<Row> | undefined): number => node?.size ?? 0;
+
+const updateSequenceNode = <Row>(node: SequenceNode<Row>): void => {
+  node.size = sequenceSize(node.left) + sequenceSize(node.right) + 1;
+  if (node.left !== undefined) {
+    node.left.parent = node;
+  }
+  if (node.right !== undefined) {
+    node.right.parent = node;
+  }
+};
+
+const sequencePrecedes = <Row>(left: SequenceNode<Row>, right: SequenceNode<Row>): boolean =>
+  left.priority < right.priority;
+
+const mergeSequence = <Row>(
+  left: SequenceNode<Row> | undefined,
+  right: SequenceNode<Row> | undefined,
+): SequenceNode<Row> | undefined => {
+  if (left === undefined) {
+    if (right !== undefined) {
+      right.parent = undefined;
+    }
+    return right;
+  }
+  if (right === undefined) {
+    left.parent = undefined;
+    return left;
+  }
+  if (sequencePrecedes(left, right)) {
+    left.right = mergeSequence(left.right, right);
+    updateSequenceNode(left);
+    left.parent = undefined;
+    return left;
+  }
+  right.left = mergeSequence(left, right.left);
+  updateSequenceNode(right);
+  right.parent = undefined;
+  return right;
+};
+
+const splitSequence = <Row>(
+  root: SequenceNode<Row> | undefined,
+  count: number,
+): readonly [SequenceNode<Row> | undefined, SequenceNode<Row> | undefined] => {
+  if (root === undefined) {
+    return [undefined, undefined];
+  }
+  const leftSize = sequenceSize(root.left);
+  if (count <= leftSize) {
+    const [left, right] = splitSequence(root.left, count);
+    root.left = right;
+    updateSequenceNode(root);
+    root.parent = undefined;
+    if (left !== undefined) {
+      left.parent = undefined;
+    }
+    return [left, root];
+  }
+  const [left, right] = splitSequence(root.right, count - leftSize - 1);
+  root.right = left;
+  updateSequenceNode(root);
+  root.parent = undefined;
+  if (right !== undefined) {
+    right.parent = undefined;
+  }
+  return [root, right];
+};
+
+const sequenceNodeAt = <Row>(
+  root: SequenceNode<Row> | undefined,
+  index: number,
+): SequenceNode<Row> | undefined => {
+  let current = root;
+  let remaining = index;
+  while (current !== undefined) {
+    const leftSize = sequenceSize(current.left);
+    if (remaining === leftSize) {
+      return current;
+    }
+    if (remaining < leftSize) {
+      current = current.left;
+    } else {
+      remaining -= leftSize + 1;
+      current = current.right;
+    }
+  }
+  return undefined;
+};
+
+const sequenceNodeIndex = <Row>(node: SequenceNode<Row>): number => {
+  let index = sequenceSize(node.left);
+  let current = node;
+  while (current.parent !== undefined) {
+    if (current.parent.right === current) {
+      index += sequenceSize(current.parent.left) + 1;
+    }
+    current = current.parent;
+  }
+  return index;
+};
+
+const sequencePriority = (id: number): bigint => {
+  let value = id + 0x9e3779b9;
+  value = Math.imul(value ^ (value >>> 16), 0x21f0aaad);
+  value = Math.imul(value ^ (value >>> 15), 0x735a2d97);
+  return (BigInt((value ^ (value >>> 15)) >>> 0) << 53n) | BigInt(id);
+};
+
+const makeSequenceNode = <Row>(id: number, key: string, row: Row): SequenceNode<Row> => ({
+  id,
+  priority: sequencePriority(id),
+  key,
+  row,
+  left: undefined,
+  right: undefined,
+  parent: undefined,
+  size: 1,
+});
+
+const materializeSequence = <Row>(
+  root: SequenceNode<Row> | undefined,
+): { readonly rows: ReadonlyArray<Row>; readonly keys: ReadonlyArray<string> } => {
+  const rows: Array<Row> = [];
+  const keys: Array<string> = [];
+  const stack: Array<SequenceNode<Row>> = [];
+  let current = root;
+  while (current !== undefined || stack.length > 0) {
+    while (current !== undefined) {
+      stack.push(current);
+      current = current.left;
+    }
+    const node = stack.pop()!;
+    rows.push(node.row);
+    keys.push(node.key);
+    current = node.right;
+  }
+  return { rows, keys };
+};
+
+const shouldStageStructuralBatch = <Row>(
+  rowCount: number,
+  operations: DeltaEvent<Row>["operations"],
+): boolean => {
+  let structuralCount = 0;
+  for (const operation of operations) {
+    if (operation.type !== "update") {
+      structuralCount += 1;
+    }
+  }
+  // Below this benchmark-derived density, the in-place path avoids materializing
+  // the whole viewport and preserves cheap, narrow changes such as a tail replace.
+  return structuralCount >= 64 && structuralCount * 4 >= Math.max(rowCount, 1);
+};
+
+const stageStructuralBatch = <Row>(
+  rows: ReadonlyArray<Row>,
+  keys: ReadonlyArray<string>,
+  operations: DeltaEvent<Row>["operations"],
+): StructuralBatch<Row> => {
+  if (!shouldStageStructuralBatch(rows.length, operations)) {
+    return { _tag: "NotStaged" };
+  }
+
+  const nodes = new Map<string, SequenceNode<Row>>();
+  let root: SequenceNode<Row> | undefined;
+  let nextId = 0;
+  for (let index = 0; index < keys.length; index += 1) {
+    const node = makeSequenceNode(++nextId, keys[index]!, rows[index]!);
+    nodes.set(node.key, node);
+    root = mergeSequence(root, node);
+  }
+
+  let start = Number.POSITIVE_INFINITY;
+  let end = -1;
+  let throughEnd = false;
+  for (const operation of operations) {
+    const length = sequenceSize(root);
+    if (operation.type === "insert") {
+      if (!isInsertIndex(operation.index, length) || nodes.has(operation.key)) {
+        return { _tag: "Invalid" };
+      }
+      const [left, right] = splitSequence(root, operation.index);
+      const node = makeSequenceNode(++nextId, operation.key, operation.row);
+      nodes.set(operation.key, node);
+      root = mergeSequence(mergeSequence(left, node), right);
+      start = Math.min(start, operation.index);
+      throughEnd = true;
+    } else if (operation.type === "update") {
+      const node = sequenceNodeAt(root, operation.index);
+      if (node === undefined || node.key !== operation.key) {
+        return { _tag: "Invalid" };
+      }
+      node.row = operation.row;
+      start = Math.min(start, operation.index);
+      end = Math.max(end, operation.index);
+    } else if (operation.type === "move") {
+      const node = sequenceNodeAt(root, operation.fromIndex);
+      if (
+        node === undefined ||
+        node.key !== operation.key ||
+        !isExistingIndex(operation.toIndex, length)
+      ) {
+        return { _tag: "Invalid" };
+      }
+      const [before, from] = splitSequence(root, operation.fromIndex);
+      const [moved, after] = splitSequence(from, 1);
+      root = mergeSequence(before, after);
+      const [left, right] = splitSequence(root, operation.toIndex);
+      root = mergeSequence(mergeSequence(left, moved), right);
+      start = Math.min(start, operation.fromIndex, operation.toIndex);
+      end = Math.max(end, operation.fromIndex, operation.toIndex);
+    } else {
+      const node = nodes.get(operation.key);
+      if (node === undefined) {
+        return { _tag: "Invalid" };
+      }
+      const index = sequenceNodeIndex(node);
+      const [before, from] = splitSequence(root, index);
+      const [, after] = splitSequence(from, 1);
+      root = mergeSequence(before, after);
+      nodes.delete(operation.key);
+      start = Math.min(start, index);
+      throughEnd = true;
+    }
+  }
+  const materialized = materializeSequence(root);
+  return {
+    _tag: "Staged",
+    rows: materialized.rows,
+    keys: materialized.keys,
+    start,
+    end: throughEnd ? materialized.rows.length - 1 : Math.min(end, materialized.rows.length - 1),
+  };
+};
+
 type ClientStateMutation<Row> =
   | {
       readonly _tag: "Insert";
@@ -231,6 +489,40 @@ export const makeIncrementalClientState = <Row>(
     }
     if (!canApplyDeltaFromVersion(current, event)) {
       return staleDelta();
+    }
+
+    const replacement = stageStructuralBatch(rows, keys, event.operations);
+    if (
+      replacement._tag === "Invalid" ||
+      (replacement._tag === "Staged" && event.totalRows < replacement.rows.length)
+    ) {
+      return staleDelta();
+    }
+    if (replacement._tag === "Staged") {
+      rows.length = 0;
+      keys.length = 0;
+      for (let index = 0; index < replacement.rows.length; index += 1) {
+        rows.push(replacement.rows[index]!);
+        keys.push(replacement.keys[index]!);
+      }
+      keyIndexes.clear();
+      reindexKeys(keys, keyIndexes, 0);
+      current = {
+        rows,
+        keys,
+        totalRows: event.totalRows,
+        version: event.toVersion,
+        status: "ready",
+        statusCode: "Ready",
+      };
+      return {
+        current,
+        change: {
+          _tag: "Range",
+          start: replacement.start,
+          end: replacement.end,
+        },
+      };
     }
 
     const mutations: Array<ClientStateMutation<Row>> = [];

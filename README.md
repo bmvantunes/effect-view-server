@@ -278,17 +278,21 @@ function Orders() {
 Virtualized grids use the row-payload-free viewport hook:
 
 ```tsx
-const result = react.useLiveQueryViewport("orders");
-const connectGrid = () =>
-  result.viewport.replace({
-    window: { firstRow: 0, lastRow: 99 },
-    query: {
-      select: ["id", "price"],
-      where: [{ field: "status", type: "equals", filter: "open" }],
-      orderBy: [{ field: "price", direction: "asc" }],
-    },
-    sink: gridRows,
-  });
+function OrdersGrid() {
+  const result = react.useLiveQueryViewport("orders");
+  const connectGrid = () =>
+    result.viewport.replace({
+      window: { firstRow: 0, lastRow: 99 },
+      query: {
+        select: ["id", "price"],
+        where: [{ field: "status", type: "equals", filter: "open" }],
+        orderBy: [{ field: "price", direction: "asc" }],
+      },
+      sink: gridRows,
+    });
+
+  return <VirtualizedGrid connect={connectGrid} />;
+}
 ```
 
 The sink receives sparse rows at absolute indexes. React receives only query

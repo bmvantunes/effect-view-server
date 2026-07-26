@@ -508,6 +508,7 @@ const makeGrpcConformanceDriver = Effect.suspend(() => {
             phase: "mapping",
             streamItemIndex: offset,
           }),
+          rowId: (_target, localId) => localId,
           updatedMetrics: {
             logicalClient: "rows",
             method: "stream",
@@ -542,6 +543,7 @@ const makeGrpcConformanceDriver = Effect.suspend(() => {
             phase: "mapping",
             streamItemIndex: offset,
           }),
+          rowId: (_target, localId) => localId,
           updatedMetrics: {
             logicalClient: "rows",
             method: "stream",

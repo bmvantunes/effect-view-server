@@ -4,9 +4,9 @@
 
 Accepted. Issue #384 implements the transport-neutral `source` property, Source
 Adapter contracts, canonical Topic Row ID, and Runtime Core support described by
-ADRs 0006–0010. Issue #386 implements first-party gRPC adoption. First-party
-Kafka adoption and removal of the remaining transport-specific Topic source
-properties stay staged in issues #385 and #387.
+ADRs 0006–0010. Issues #385 and #386 implement first-party Kafka and gRPC
+adoption. Removal of the remaining transport-specific Topic source properties
+stays staged in issue #387.
 
 ## Context
 

@@ -1,12 +1,10 @@
 import {
   SourceAdapter,
-  type SourceAdapterHandle,
   type SourceApplicationExit,
   type SourceDefinition,
   type SourceDefinitionOptionsFamily,
   type SourceExecutionFailure,
   type SourceLaneEvent,
-  type SourceLifecycleDeclaration,
   type SourceMutation,
   type SourceRetryPolicy,
   type SourceToolkit,
@@ -38,6 +36,13 @@ import {
   Stream,
   SubscriptionRef,
 } from "effect";
+
+declare const SourceFixtureDefinitionRowTypeId: unique symbol;
+
+type SourceFixtureDefinitionResult<Definition, Row> = Definition & {
+  readonly [SourceFixtureDefinitionRowTypeId]?: (_row: Row) => Row;
+};
+
 export {
   SourceAdapterConformance,
   SourceAdapterConformanceDriver,
@@ -126,22 +131,7 @@ interface SourceFixtureDefinitionOptionsFamily extends SourceDefinitionOptionsFa
   readonly type: SourceFixtureDefinitionOptions<this["Row"]>;
 }
 
-type SourceFixtureLifecycle = SourceLifecycleDeclaration<
-  SourceFixtureMetrics,
-  SourceFixtureRejectionLocation,
-  SourceFixtureDefinitionOptions,
-  SourceFixtureDefinitionOptionsFamily
->;
-
-type SourceFixtureAdapter = SourceAdapterHandle<
-  "controllable-fixture",
-  "1",
-  SourceFixtureFailure,
-  SourceFixtureLifecycle,
-  SourceFixtureLifecycle
->;
-
-const FixtureAdapter: SourceFixtureAdapter = SourceAdapter.make({
+const FixtureAdapter = SourceAdapter.make({
   identity: {
     name: "controllable-fixture",
     version: "1",
@@ -332,34 +322,43 @@ export type ControllableSourceFixture<Row extends object = object> = {
   readonly materializedSource: (
     options?: Omit<SourceFixtureDefinitionOptions<Row>, "row">,
     retryPolicy?: SourceRetryPolicy<SourceFixtureFailure>,
-  ) => SourceDefinition<
-    typeof FixtureAdapter,
-    "materialized",
-    SourceFixtureDefinitionOptions<Row>,
-    readonly [],
-    never,
+  ) => SourceFixtureDefinitionResult<
+    SourceDefinition<
+      typeof FixtureAdapter,
+      "materialized",
+      SourceFixtureDefinitionOptions<Row>,
+      readonly [],
+      never,
+      Row
+    >,
     Row
   >;
   readonly leasedSource: <const RouteFields extends readonly [string, ...ReadonlyArray<string>]>(
     routeBy: RouteFields,
     options?: Omit<SourceFixtureDefinitionOptions<Row>, "row">,
     retryPolicy?: SourceRetryPolicy<SourceFixtureFailure>,
-  ) => SourceDefinition<
-    typeof FixtureAdapter,
-    "leased",
-    SourceFixtureDefinitionOptions<Row>,
-    RouteFields,
-    never,
+  ) => SourceFixtureDefinitionResult<
+    SourceDefinition<
+      typeof FixtureAdapter,
+      "leased",
+      SourceFixtureDefinitionOptions<Row>,
+      RouteFields,
+      never,
+      Row
+    >,
     Row
   >;
   readonly callbackBridge: {
     readonly layer: Layer.Layer<Context.Service.Identifier<typeof FixtureAdapter.runtimeService>>;
-    readonly source: SourceDefinition<
-      typeof FixtureAdapter,
-      "materialized",
-      SourceFixtureDefinitionOptions<Row>,
-      readonly [],
-      never,
+    readonly source: SourceFixtureDefinitionResult<
+      SourceDefinition<
+        typeof FixtureAdapter,
+        "materialized",
+        SourceFixtureDefinitionOptions<Row>,
+        readonly [],
+        never,
+        Row
+      >,
       Row
     >;
     readonly capacity: number;
@@ -1011,24 +1010,31 @@ export const makeControllableSourceFixture = <Row extends object>(
   row: Schema.Codec<Row, unknown, never, never>,
 ): Effect.Effect<ControllableSourceFixture<Row>> => makeControllableSourceFixtureEffect(row);
 
-export type SourceFixtureMaterializedDefinition<Row extends object = object> = SourceDefinition<
-  typeof FixtureAdapter,
-  "materialized",
-  SourceFixtureDefinitionOptions<Row>,
-  readonly [],
-  never,
-  Row
->;
+export type SourceFixtureMaterializedDefinition<Row extends object = object> =
+  SourceFixtureDefinitionResult<
+    SourceDefinition<
+      typeof FixtureAdapter,
+      "materialized",
+      SourceFixtureDefinitionOptions<Row>,
+      readonly [],
+      never,
+      Row
+    >,
+    Row
+  >;
 
 export type SourceFixtureLeasedDefinition<
   RouteFields extends ReadonlyArray<string>,
   Row extends object = object,
-> = SourceDefinition<
-  typeof FixtureAdapter,
-  "leased",
-  SourceFixtureDefinitionOptions<Row>,
-  RouteFields,
-  never,
+> = SourceFixtureDefinitionResult<
+  SourceDefinition<
+    typeof FixtureAdapter,
+    "leased",
+    SourceFixtureDefinitionOptions<Row>,
+    RouteFields,
+    never,
+    Row
+  >,
   Row
 >;
 
@@ -1147,6 +1153,7 @@ export const SourceFixture = {
             lane: target.lane,
             offset,
           }),
+          rowId: (_target, localId) => localId,
           updatedMetrics: {
             observed: 42n,
           },
@@ -1161,6 +1168,7 @@ export const SourceFixture = {
             lane: target.lane,
             offset,
           }),
+          rowId: (_target, localId) => localId,
           updatedMetrics: {
             observed: 42n,
           },

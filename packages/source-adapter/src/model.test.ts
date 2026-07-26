@@ -18,6 +18,7 @@ import {
   makeSourceUpsert,
   markSourceToolkit,
 } from "./internal";
+import { resolveSourceAdapterHandle } from "./model";
 import { SourceAdapter, sourceExecutionFailureSchema } from "./index";
 
 const Failure = Schema.TaggedStruct("FixtureFailure", {
@@ -127,7 +128,67 @@ describe("Source Adapter portable model", () => {
     });
     const Row = Schema.Struct({ id: Schema.String });
     const definition = adapter.materializedSource<typeof Row.Type>({ row: Row });
+    const delegatedDefinition = SourceAdapter.materializedSource(adapter, {
+      row: Row,
+    });
     expect(definition.options.row).toBe(Row);
+    expect(delegatedDefinition.options.row).toBe(Row);
+  });
+
+  it("creates stable runtime descriptors without delegated lifecycle builders", () => {
+    const handle = makeMaterializedAdapter();
+    const descriptor = SourceAdapter.descriptor(handle);
+    const leasedOnly = SourceAdapter.make({
+      identity: { name: "leased-only-fixture" },
+      failure: Failure,
+      materialized: undefined,
+      leased: {
+        metrics: Metrics,
+        rejectionLocation: Location,
+        definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+      },
+    });
+    const directDefinition = handle.materializedSource({ label: "direct" });
+    const definition = SourceAdapter.materializedSource(handle, { label: "orders" });
+    const symbolValues = Reflect.ownKeys(descriptor)
+      .filter((key): key is symbol => typeof key === "symbol")
+      .map((key) => Reflect.get(descriptor, key));
+    const copiedHandle = Object.defineProperties({}, Object.getOwnPropertyDescriptors(handle));
+    const copiedDescriptor = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(descriptor),
+    );
+
+    expect(SourceAdapter.descriptor(handle)).toBe(descriptor);
+    expect(directDefinition.adapter).toBe(handle);
+    expect(definition.adapter).toBe(descriptor);
+    expect(isSourceDefinition(definition)).toBe(true);
+    expect(isSourceAdapterHandle(descriptor)).toBe(true);
+    expect(Object.keys(descriptor)).toStrictEqual([
+      "identity",
+      "failureSchema",
+      "materialized",
+      "leased",
+      "runtimeService",
+      "failure",
+    ]);
+    expect(Reflect.get(descriptor, "materializedSource")).toBeUndefined();
+    expect(Reflect.get(descriptor, "leasedSource")).toBeUndefined();
+    expect(symbolValues).toHaveLength(1);
+    expect(typeof symbolValues[0]).toBe("symbol");
+    expect(Object.isFrozen(descriptor)).toBe(true);
+    expect(() => Reflect.apply(SourceAdapter.descriptor, undefined, [copiedHandle])).toThrow(
+      "requires a nominal Source Adapter handle",
+    );
+    expect(() => Reflect.apply(resolveSourceAdapterHandle, undefined, [copiedDescriptor])).toThrow(
+      "is not linked to a nominal handle",
+    );
+    expect(() =>
+      Reflect.apply(SourceAdapter.materializedSource, undefined, [descriptor, { label: "orders" }]),
+    ).toThrow("delegated construction requires a nominal Source Adapter handle");
+    expect(() =>
+      Reflect.apply(SourceAdapter.materializedSource, undefined, [leasedOnly, { label: "orders" }]),
+    ).toThrow("This Source Adapter does not declare a Materialized lifecycle.");
   });
 
   it.effect("creates nominal adapters and validates safe adapter failures", () =>
@@ -335,6 +396,11 @@ describe("Source Adapter portable model", () => {
     const schedule = Schedule.recurs(1);
     const row = Schema.Struct({ id: Schema.String });
     const map = (value: string) => ({ id: value });
+    const executableMap = SourceAdapter.executable(map);
+    const codec = SourceAdapter.executable({
+      format: "fixture",
+      decode: executableMap,
+    });
     const adapter = SourceAdapter.make({
       identity: { name: "executable-options" },
       failure: Failure,
@@ -346,6 +412,7 @@ describe("Source Adapter portable model", () => {
           readonly schedule: typeof schedule;
           readonly row: typeof row;
           readonly map: typeof map;
+          readonly codec: typeof codec;
         }>(),
       },
       leased: undefined,
@@ -354,13 +421,26 @@ describe("Source Adapter portable model", () => {
       program,
       schedule,
       row,
-      map,
+      map: executableMap,
+      codec,
     });
 
     expect(definition.options.program).toBe(program);
     expect(definition.options.schedule).toBe(schedule);
     expect(definition.options.row).toBe(row);
-    expect(definition.options.map).toBe(map);
+    expect(definition.options.map).toBe(executableMap);
+    expect(definition.options.codec).toBe(codec);
+    expect(SourceAdapter.executable(codec)).toBe(codec);
+    expect(SourceAdapter.executable(executableMap)).toBe(executableMap);
+    expect(() =>
+      Reflect.apply(SourceAdapter.executable, undefined, [Object.freeze({ format: "frozen" })]),
+    ).toThrow("must be extensible objects");
+    expect(() => Reflect.apply(SourceAdapter.executable, undefined, [1])).toThrow(
+      "must be extensible objects",
+    );
+    expect(() => Reflect.apply(SourceAdapter.executable, undefined, [null])).toThrow(
+      "must be extensible objects",
+    );
   });
 
   it("rejects every hostile Source Definition envelope branch without throwing", () => {
@@ -598,7 +678,7 @@ describe("Source Adapter portable model", () => {
       expect(isSourceItemRejection(rejection)).toBe(true);
       expect(isSourceAttempt(attempt)).toBe(true);
       expect(isSourceToolkit(toolkit)).toBe(true);
-      expect(Object.hasOwn(toolkit, "decodeUpsert")).toBe(false);
+      expect(Object.hasOwn(toolkit, "decodeUpsert")).toBe(true);
       expect((yield* decodeSourceToolkitUpsert(toolkit, { decoded: true })).row).toStrictEqual({
         row: { decoded: true },
       });

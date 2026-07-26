@@ -12,6 +12,10 @@ import { createInMemoryViewServerReact } from "effect-view-server/react/testing"
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import { createViewServerWebSocketServer } from "effect-view-server/server";
 import { createInMemoryViewServer } from "effect-view-server/in-memory";
+import {
+  kafka as kafkaSourceAdapter,
+  type KafkaCodecValue as KafkaSourceCodecValue,
+} from "effect-view-server/kafka/contract";
 import { Schema } from "effect";
 import type * as EffectOption from "effect/Option";
 import type { ViewServerLiveClient } from "effect-view-server/client";
@@ -44,6 +48,34 @@ const viewServer = defineViewServerConfig({
 const react = createViewServerReact(viewServer);
 const kafkaOrderCodec = kafka.json(() => Schema.toCodecJson(Order));
 const kafkaOrderCodecFromConfig = kafkaFromConfig.json(() => Schema.toCodecJson(Order));
+const IncomingKafkaOrder = Schema.Struct({
+  customerId: Schema.String,
+  status: Schema.Literals(["open", "closed"]),
+  price: Schema.Number,
+  region: Schema.String,
+});
+const kafkaSourceValue = kafkaSourceAdapter.json(() => Schema.toCodecJson(IncomingKafkaOrder));
+const kafkaSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: kafkaSourceAdapter.source({
+        topic: "orders-source",
+        regions: ["eu"],
+        key: kafkaSourceAdapter.string(),
+        value: kafkaSourceValue,
+        localRowKey: ({ key }) => key,
+        map: ({ value }) => ({
+          customerId: value.customerId,
+          status: value.status,
+          price: value.price,
+          region: value.region,
+        }),
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
 
 class PublicProfile extends Schema.Class<PublicProfile>("PublicProfile")({
   id: Schema.String,
@@ -104,6 +136,11 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf<KafkaCodecType<typeof kafkaOrderCodecFromConfig>>().toEqualTypeOf<
       typeof Order.Type
     >();
+    expectTypeOf<KafkaSourceCodecValue<typeof kafkaSourceValue>>().toEqualTypeOf<
+      typeof IncomingKafkaOrder.Type
+    >();
+    expectTypeOf(kafkaSourceValue).not.toHaveProperty("schema");
+    expectTypeOf(kafkaSourceViewServer.topics.orders.source).not.toBeAny();
     expectTypeOf(kafkaOrderCodec).not.toHaveProperty("schema");
     expectTypeOf<ViewServerLiveClient<typeof viewServer.topics>>().not.toBeAny();
     expectTypeOf(SourceFixture).not.toBeAny();
@@ -210,6 +247,75 @@ describe("public effect-view-server subpath type contracts", () => {
     kafka.json(Order);
     // @ts-expect-error public config rejects direct canonical codecs
     kafkaFromConfig.json(Schema.toCodecJson(Order));
+
+    // @ts-expect-error migrated Kafka Mapping must return every Topic Row field except id.
+    defineViewServerConfig({
+      topics: {
+        missingKafkaMappingField: {
+          schema: Order,
+          source: kafkaSourceAdapter.source({
+            topic: "orders-source",
+            regions: ["eu"],
+            key: kafkaSourceAdapter.string(),
+            value: kafkaSourceValue,
+            localRowKey: ({ key }) => key,
+            map: ({ value }) => ({
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+            }),
+            startFrom: "earliest",
+          }),
+        },
+      },
+    });
+
+    // @ts-expect-error migrated Kafka Mapping cannot return fields outside the Topic Row.
+    defineViewServerConfig({
+      topics: {
+        extraKafkaMappingField: {
+          schema: Order,
+          source: kafkaSourceAdapter.source({
+            topic: "orders-source",
+            regions: ["eu"],
+            key: kafkaSourceAdapter.string(),
+            value: kafkaSourceValue,
+            localRowKey: ({ key }) => key,
+            map: ({ value }) => ({
+              customerId: value.customerId,
+              status: value.status,
+              price: value.price,
+              region: value.region,
+              venue: "XNAS",
+            }),
+            startFrom: "earliest",
+          }),
+        },
+      },
+    });
+
+    // @ts-expect-error migrated Kafka Mapping field types must match the Topic Row.
+    defineViewServerConfig({
+      topics: {
+        invalidKafkaMappingField: {
+          schema: Order,
+          source: kafkaSourceAdapter.source({
+            topic: "orders-source",
+            regions: ["eu"],
+            key: kafkaSourceAdapter.string(),
+            value: kafkaSourceValue,
+            localRowKey: ({ key }) => key,
+            map: ({ value }) => ({
+              customerId: value.customerId,
+              status: value.status,
+              price: String(value.price),
+              region: value.region,
+            }),
+            startFrom: "earliest",
+          }),
+        },
+      },
+    });
 
     const methodSelectQuery = {
       select: ["upperId"],

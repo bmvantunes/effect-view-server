@@ -98,6 +98,7 @@ catalogs:
       version: 2.2.0
 
 overrides:
+  '@effect-view-server/kafka>effect-view-server': workspace:0.0.6
   '@babel/core': 7.29.7
   undici: 8.5.0
   vite: npm:@voidzero-dev/vite-plus-core@0.2.1
@@ -130,6 +131,9 @@ importers:
       '@effect-view-server/in-memory':
         specifier: workspace:*
         version: link:packages/in-memory
+      '@effect-view-server/kafka':
+        specifier: workspace:*
+        version: link:packages/kafka
       '@effect-view-server/protocol':
         specifier: workspace:*
         version: link:packages/protocol
@@ -971,6 +975,9 @@ importers:
       '@effect-view-server/in-memory':
         specifier: workspace:*
         version: link:../in-memory
+      '@effect-view-server/kafka':
+        specifier: workspace:*
+        version: link:../kafka
       '@effect-view-server/react':
         specifier: workspace:*
         version: link:../react
@@ -1099,6 +1106,49 @@ importers:
       '@vitest/runner':
         specifier: 'catalog:'
         version: 4.1.9
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.9(@types/node@25.9.1)(@vitest/browser-playwright@4.1.9)(@vitest/browser-preview@4.1.9)(@vitest/coverage-istanbul@4.1.9)(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
+
+  packages/kafka:
+    dependencies:
+      '@bufbuild/protobuf':
+        specifier: 2.12.0
+        version: 2.12.0
+      '@platformatic/kafka':
+        specifier: 'catalog:'
+        version: 2.2.3
+    devDependencies:
+      '@effect-view-server/config':
+        specifier: workspace:*
+        version: link:../config
+      '@effect-view-server/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      '@effect-view-server/source-adapter-conformance-host':
+        specifier: workspace:*
+        version: link:../source-adapter-conformance-host
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.100(effect@4.0.0-beta.100)(vitest@4.1.9)
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.1
+      '@vitest/coverage-istanbul':
+        specifier: 'catalog:'
+        version: 4.1.9(vitest@4.1.9)
+      '@vitest/runner':
+        specifier: 'catalog:'
+        version: 4.1.9
+      effect:
+        specifier: 4.0.0-beta.100
+        version: 4.0.0-beta.100
+      effect-view-server:
+        specifier: workspace:0.0.6
+        version: link:../effect-view-server
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

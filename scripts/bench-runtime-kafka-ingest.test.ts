@@ -53,6 +53,8 @@ const createFakeSpawn = () => {
 const createRunner = (
   fakeSpawn: ReturnType<typeof createFakeSpawn>,
   options: {
+    benchmarkKind?: "runtime-ingest" | "source-adapter";
+    buildTasks?: ReadonlyArray<string>;
     env?: NodeJS.ProcessEnv;
     outputExists?: (path: string) => boolean;
     processId?: number;
@@ -67,6 +69,8 @@ const createRunner = (
   } = {},
 ) =>
   createKafkaIngestBenchmarkRunner({
+    benchmarkKind: options.benchmarkKind,
+    buildTasks: options.buildTasks,
     env: options.env ?? {},
     outputExists: options.outputExists ?? (() => true),
     processId: options.processId ?? 12345,
@@ -158,6 +162,114 @@ describe("Kafka ingest benchmark wrapper", () => {
     expect(removedOutputPaths).toStrictEqual([
       resolve(runtimeDirectory, ".artifacts/kafka-ingest-250rows.json"),
     ]);
+  });
+
+  it("runs the prebuilt production Source Adapter broker profile from the Kafka package", async () => {
+    const runtimeDirectory = mkdtempSync(join(tmpdir(), "view-server-kafka-source-wrapper-"));
+    const rootDirectory = mkdtempSync(join(tmpdir(), "view-server-kafka-source-root-"));
+    const fakeSpawn = createFakeSpawn();
+    const runner = createRunner(fakeSpawn, {
+      benchmarkKind: "source-adapter",
+      env: {
+        VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ROWS: "64",
+      },
+      rootDirectory,
+      runtimeDirectory,
+    });
+
+    const exitCodePromise = runner.runMain();
+
+    await settleSpawn(fakeSpawn.children, 0, 0);
+    await settleSpawn(fakeSpawn.children, 1, 0);
+    await settleSpawn(fakeSpawn.children, 2, 0);
+
+    await expect(exitCodePromise).resolves.toBe(0);
+    expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
+      ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
+      [
+        "vp",
+        "test",
+        "bench",
+        "src/source-broker.bench.ts",
+        "--run",
+        "--testTimeout",
+        "0",
+        "--outputJson",
+        ".artifacts/source-broker-64rows.json",
+      ],
+      ["docker", "compose", "-f", "compose.yaml", "down"],
+    ]);
+    expect(fakeSpawn.calls[0]?.options.env?.COMPOSE_PROJECT_NAME).toBe(
+      "view-server-kafka-source-12345",
+    );
+    expect(fakeSpawn.calls[1]?.options.env?.VIEW_SERVER_KAFKA_SOURCE_BROKER_OUTPUT_JSON).toBe(
+      ".artifacts/source-broker-64rows.json",
+    );
+  });
+
+  it("runs the prebuilt runtime profile without nesting Vite task graphs", async () => {
+    const runtimeDirectory = mkdtempSync(join(tmpdir(), "view-server-kafka-runtime-prebuilt-"));
+    const rootDirectory = mkdtempSync(join(tmpdir(), "view-server-kafka-runtime-root-"));
+    const fakeSpawn = createFakeSpawn();
+    const runner = createRunner(fakeSpawn, {
+      buildTasks: [],
+      rootDirectory,
+      runtimeDirectory,
+    });
+
+    const exitCodePromise = runner.runMain();
+
+    await settleSpawn(fakeSpawn.children, 0, 0);
+    await settleSpawn(fakeSpawn.children, 1, 0);
+    await settleSpawn(fakeSpawn.children, 2, 0);
+
+    await expect(exitCodePromise).resolves.toBe(0);
+    expect(fakeSpawn.calls.map(({ command, args }) => [command, ...args])).toStrictEqual([
+      ["docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait", "kafka"],
+      [
+        "vp",
+        "test",
+        "bench",
+        "src/kafka-ingest.bench.ts",
+        "--run",
+        "--testTimeout",
+        "0",
+        "--outputJson",
+        ".artifacts/kafka-ingest-1000rows.json",
+      ],
+      ["docker", "compose", "-f", "compose.yaml", "down"],
+    ]);
+  });
+
+  it("defaults the production Source Adapter broker profile to 64 rows", async () => {
+    const runtimeDirectory = mkdtempSync(join(tmpdir(), "view-server-kafka-source-default-"));
+    const fakeSpawn = createFakeSpawn();
+    const runner = createRunner(fakeSpawn, {
+      benchmarkKind: "source-adapter",
+      env: {},
+      runtimeDirectory,
+    });
+
+    const exitCodePromise = runner.runMain();
+
+    await settleSpawn(fakeSpawn.children, 0, 0);
+    await settleSpawn(fakeSpawn.children, 1, 0);
+    await settleSpawn(fakeSpawn.children, 2, 0);
+
+    await expect(exitCodePromise).resolves.toBe(0);
+    expect(fakeSpawn.calls[1]?.args).toStrictEqual([
+      "test",
+      "bench",
+      "src/source-broker.bench.ts",
+      "--run",
+      "--testTimeout",
+      "0",
+      "--outputJson",
+      ".artifacts/source-broker-64rows.json",
+    ]);
+    expect(fakeSpawn.calls[1]?.options.env?.VIEW_SERVER_KAFKA_SOURCE_BROKER_OUTPUT_JSON).toBe(
+      ".artifacts/source-broker-64rows.json",
+    );
   });
 
   it("skips Docker startup, benchmark, and cleanup when the first build fails", async () => {

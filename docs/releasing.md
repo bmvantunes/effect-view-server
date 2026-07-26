@@ -72,6 +72,14 @@ git push --set-upstream origin release/version-packages
 gh pr create --title "Version packages" --body "Version packages"
 ```
 
+`release:version` keeps the private Kafka Source Adapter at its internal
+`0.0.0` version. After Changesets versions the public package, the task
+synchronizes Kafka's exact public-package peer and development dependency, all
+tested peer-matrix entries, and the pnpm workspace override to that new public
+version. It then runs `vp install` to refresh the lockfile. Commit those
+synchronized files and the resulting `pnpm-lock.yaml` in the Version packages
+PR.
+
 After the version PR is reviewed and merged, manually run the `Release` workflow
 on `main` with `action=stage`. The workflow rebuilds, reruns `vp run -w ready`,
 and stages a sanitized npm artifact through trusted publishing. A maintainer

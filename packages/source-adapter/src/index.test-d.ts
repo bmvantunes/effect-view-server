@@ -1,10 +1,13 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
   SourceAdapter,
+  type SourceAdapterDescriptor,
   type SourceApplicationExit,
   type SourceAdapterFailure,
   type SourceAdapterHandle,
   type SourceAttempt,
+  type SourceDefinition,
+  type SourceDefinitionAdapter,
   type SourceDefinitionOptionsFamily,
   type SourceDefinitionRow,
   type SourceDelivery,
@@ -12,9 +15,11 @@ import {
   type SourceDefinitionLifecycle,
   type SourceDefinitionOptions,
   type SourceDefinitionRouteFields,
+  type SourceDefinitionRetryServices,
   type SourceExecutionFailure,
   type SourceHealthForDefinition,
   type SourceLifecycleDeclaration,
+  type SourceLifecycleMetricsInput,
   type SourceMutation,
   type SourceToolkit,
 } from "./index";
@@ -74,6 +79,20 @@ const mappedDefinition = mappedAdapter.materializedSource<{
     value: 1,
   },
 });
+const extraMappedDefinition = mappedAdapter.materializedSource<{
+  readonly id: string;
+  readonly value: number;
+  readonly extra: boolean;
+}>({
+  initial: {
+    id: "initial",
+    value: 1,
+    extra: true,
+  },
+});
+const conditionalMappedDefinition = Math.random() > 0.5 ? mappedDefinition : extraMappedDefinition;
+// @ts-expect-error concrete Source Adapter factory results preserve every conditional Row branch.
+const invalidConditionalMappedDefinition: typeof mappedDefinition = conditionalMappedDefinition;
 
 const adapter = SourceAdapter.make({
   identity: {
@@ -107,6 +126,14 @@ const leased = adapter.leasedSource(["region", "desk"], {
   label: "orders",
   batchSize: 100,
 });
+const adapterDescriptor = SourceAdapter.descriptor(adapter);
+const _adapterDescriptorContract: SourceAdapterDescriptor<
+  "type-fixture",
+  "1",
+  typeof Failure.Type,
+  typeof adapter.materialized,
+  typeof adapter.leased
+> = adapterDescriptor;
 
 type TypeFixtureRow = {
   readonly id: string;
@@ -118,12 +145,56 @@ type MaterializedHealthTarget = SourceHealthForDefinition<
   TypeFixtureRow
 >["target"];
 type LeasedHealthTarget = SourceHealthForDefinition<typeof leased, TypeFixtureRow>["target"];
+type RegionalDefinition = SourceDefinition<
+  typeof adapter,
+  "materialized",
+  typeof materialized.options,
+  readonly [],
+  never,
+  TypeFixtureRow,
+  {
+    readonly _tag: "RegionalFailure";
+    readonly region: "eu" | "us";
+  },
+  {
+    readonly regions: ReadonlyArray<{
+      readonly region: "eu" | "us";
+    }>;
+  },
+  {
+    readonly region: "eu" | "us";
+  },
+  "eu" | "us"
+>;
+type RegionalHealth = SourceHealthForDefinition<RegionalDefinition, TypeFixtureRow>;
 
 const _materializedHealthTarget: MaterializedHealthTarget = { _tag: "Materialized" };
 const _leasedHealthTarget: LeasedHealthTarget = {
   _tag: "Leased",
   route: { region: "eu", desk: "cash" },
 };
+type RegionalRetryFailure = Extract<
+  Extract<RegionalHealth["status"], { readonly _tag: "WaitingToRetry" }>["termination"],
+  { readonly _tag: "Failed" }
+>["failure"];
+expectTypeOf<
+  Extract<RegionalRetryFailure, { readonly _tag: "AdapterFailure" }>["failure"]
+>().toEqualTypeOf<{
+  readonly _tag: "RegionalFailure";
+  readonly region: "eu" | "us";
+}>();
+expectTypeOf<
+  Extract<
+    RegionalHealth["status"],
+    { readonly _tag: "Degraded" }
+  >["latestRejection"]["location"]["region"]
+>().toEqualTypeOf<"eu" | "us">();
+expectTypeOf<RegionalHealth["metrics"]["adapter"]["regions"][number]["region"]>().toEqualTypeOf<
+  "eu" | "us"
+>();
+expectTypeOf<RegionalHealth["metrics"]["runtime"]["lanes"][number]["id"]>().toEqualTypeOf<
+  "eu" | "us"
+>();
 // @ts-expect-error Materialized Source Health cannot expose a Leased target.
 const _invalidMaterializedHealthTarget: MaterializedHealthTarget = _leasedHealthTarget;
 // @ts-expect-error Leased Source Health cannot expose a Materialized target.
@@ -138,13 +209,35 @@ class RetryOnlyDependency extends Context.Service<
   { readonly enabled: boolean }
 >()("@effect-view-server/source-adapter/type-test/RetryOnlyDependency") {}
 
+const delegatedDefinition = SourceAdapter.materializedSource(
+  adapter,
+  {
+    label: "delegated",
+    batchSize: 64,
+  },
+  Schedule.recurs(0).pipe(Schedule.tap(() => RetryOnlyDependency.pipe(Effect.asVoid))),
+);
+
 const materializedLifecycle: SourceAdapterServerLifecycle<
   typeof Failure.Type,
   NonNullable<typeof adapter.materialized>,
   "materialized",
   AdapterDependency
 > = {
+  initialLaneIds: (input) => {
+    void input.topic;
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
+    expectTypeOf(input.definition).toEqualTypeOf<{
+      readonly label: string;
+      readonly batchSize: number;
+    }>();
+    expectTypeOf(input.target).toEqualTypeOf<{
+      readonly _tag: "Materialized";
+    }>();
+    return ["materialized", "sibling"];
+  },
   acquire: (input) => {
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.definition).toEqualTypeOf<{
       readonly label: string;
       readonly batchSize: number;
@@ -163,6 +256,7 @@ const materializedLifecycle: SourceAdapterServerLifecycle<
   },
   metrics: (input) => {
     void input.topic;
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.definition).toEqualTypeOf<{
       readonly label: string;
       readonly batchSize: number;
@@ -186,6 +280,7 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
   AdapterDependency
 > = {
   acquire: (input) => {
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.target._tag).toEqualTypeOf<"Leased">();
     void input.target.route;
     return Effect.succeed(
@@ -199,6 +294,7 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
   },
   metrics: (input) => {
     void input.topic;
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.target._tag).toEqualTypeOf<"Leased">();
     void input.target.route;
     return AdapterDependency.pipe(
@@ -208,6 +304,35 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
     );
   },
   retry: Schedule.recurs(0),
+};
+
+declare const lifecycleScope: Scope.Scope;
+type MaterializedMetricsInput = SourceLifecycleMetricsInput<
+  {
+    readonly label: string;
+    readonly batchSize: number;
+  },
+  "materialized",
+  Readonly<Record<string, unknown>>,
+  "orders"
+>;
+const _validMaterializedMetricsInput: MaterializedMetricsInput = {
+  topic: "orders",
+  definition: {
+    label: "orders",
+    batchSize: 1,
+  },
+  lifetimeScope: lifecycleScope,
+  target: { _tag: "Materialized" },
+};
+// @ts-expect-error server lifecycle metrics require the logical lifetime Scope.
+const _missingLifetimeMaterializedMetricsInput: MaterializedMetricsInput = {
+  topic: "orders",
+  definition: {
+    label: "orders",
+    batchSize: 1,
+  },
+  target: { _tag: "Materialized" },
 };
 
 const serverLayer = SourceAdapterServer.make(adapter, {
@@ -236,6 +361,18 @@ const _invalidMetricsLifecycle: SourceAdapterServerLifecycle<
   acquire: materializedLifecycle.acquire,
   // @ts-expect-error lifecycle metrics must return the declaration's exact metrics output.
   metrics: () => Effect.succeed({ connected: "yes" }),
+  retry: Schedule.recurs(0),
+};
+const _invalidInitialLaneIdsLifecycle: SourceAdapterServerLifecycle<
+  typeof Failure.Type,
+  NonNullable<typeof adapter.materialized>,
+  "materialized",
+  AdapterDependency
+> = {
+  // @ts-expect-error initial Lane declarations must return a non-empty string tuple.
+  initialLaneIds: () => [],
+  acquire: materializedLifecycle.acquire,
+  metrics: materializedLifecycle.metrics,
   retry: Schedule.recurs(0),
 };
 const _invalidMetricsFailureLifecycle: SourceAdapterServerLifecycle<
@@ -394,20 +531,45 @@ declare const erasedUnknownAdapter: SourceAdapterHandle<
   ErasedUnknownLifecycle,
   undefined
 >;
+const voidAdapter = SourceAdapter.make({
+  identity: { name: "void-options" },
+  failure: Failure,
+  materialized: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+const voidDefinition = voidAdapter.materializedSource(undefined);
 
 describe("Source Adapter public type contracts", () => {
   it("preserves exact declaration and definition inference without as const", () => {
     expectTypeOf(adapter.identity.name).toEqualTypeOf<"type-fixture">();
     expectTypeOf(adapter.identity.version).toEqualTypeOf<"1" | undefined>();
     expectTypeOf<SourceAdapterFailure<typeof adapter>>().toEqualTypeOf<typeof Failure.Type>();
+    expectTypeOf(adapterDescriptor).toEqualTypeOf<
+      Omit<typeof adapter, "materializedSource" | "leasedSource">
+    >();
+    expectTypeOf<SourceDefinitionAdapter<typeof delegatedDefinition>>().toEqualTypeOf<
+      typeof adapterDescriptor
+    >();
+    expectTypeOf<SourceDefinitionOptions<typeof delegatedDefinition>>().toEqualTypeOf<{
+      readonly label: "delegated";
+      readonly batchSize: 64;
+    }>();
+    expectTypeOf<SourceDefinitionRow<typeof delegatedDefinition>>().toEqualTypeOf<object>();
+    expectTypeOf<
+      SourceDefinitionRetryServices<typeof delegatedDefinition>
+    >().toEqualTypeOf<RetryOnlyDependency>();
     expectTypeOf<SourceDefinitionLifecycle<typeof materialized>>().toEqualTypeOf<"materialized">();
     expectTypeOf<SourceDefinitionLifecycle<typeof leased>>().toEqualTypeOf<"leased">();
     expectTypeOf<SourceDefinitionRouteFields<typeof leased>>().toEqualTypeOf<
       readonly ["region", "desk"]
     >();
     expectTypeOf<SourceDefinitionOptions<typeof leased>>().toEqualTypeOf<{
-      readonly label: string;
-      readonly batchSize: number;
+      readonly label: "orders";
+      readonly batchSize: 100;
     }>();
     expectTypeOf(serverLayer).toEqualTypeOf<
       Layer.Layer<
@@ -421,7 +583,9 @@ describe("Source Adapter public type contracts", () => {
       readonly id: string;
       readonly value: number;
     }>();
+    expectTypeOf(invalidConditionalMappedDefinition).not.toBeAny();
     expectTypeOf(mappedServerLayer).not.toBeAny();
+    expectTypeOf<SourceDefinitionOptions<typeof voidDefinition>>().toEqualTypeOf<undefined>();
   });
 
   it("rejects invalid portable declarations and definitions", () => {
@@ -450,12 +614,29 @@ describe("Source Adapter public type contracts", () => {
     adapter.materializedSource({
       label: "orders",
     });
-    // @ts-expect-error definition options reject extra fields.
     adapter.materializedSource({
       label: "orders",
       batchSize: 100,
+      // @ts-expect-error definition options reject extra fields.
       unexpected: true,
     });
+    // @ts-expect-error delegated Source Definition options must include every adapter field.
+    SourceAdapter.materializedSource(adapter, {
+      label: "orders",
+    });
+    SourceAdapter.materializedSource(adapter, {
+      label: "orders",
+      batchSize: 100,
+      // @ts-expect-error delegated Source Definition options reject extra fields.
+      unexpected: true,
+    });
+    // @ts-expect-error public descriptors cannot recover the delegated SDK builder.
+    SourceAdapter.materializedSource(adapterDescriptor, {
+      label: "orders",
+      batchSize: 100,
+    });
+    // @ts-expect-error public descriptors cannot be projected as SDK handles.
+    SourceAdapter.descriptor(adapterDescriptor);
     // @ts-expect-error Leased Source routes must be non-empty tuples.
     adapter.leasedSource([], {
       label: "orders",
@@ -740,6 +921,23 @@ describe("Source Adapter public type contracts", () => {
     });
     expectTypeOf(invalidBackpressurable).not.toBeAny();
     expectTypeOf(invalidNonPausable).not.toBeAny();
+  });
+
+  it("preserves executable value inference and rejects scalar values", () => {
+    const executable = SourceAdapter.executable({
+      decode: (input: string) => Effect.succeed(input.length),
+    });
+    expectTypeOf(executable).toEqualTypeOf<{
+      decode: (input: string) => Effect.Effect<number>;
+    }>();
+    expectTypeOf(executable.decode("value")).toEqualTypeOf<Effect.Effect<number>>();
+
+    // @ts-expect-error executable values must be objects or functions.
+    SourceAdapter.executable("value");
+    // @ts-expect-error executable values cannot be null.
+    SourceAdapter.executable(null);
+    // @ts-expect-error executable values cannot be numbers.
+    SourceAdapter.executable(1);
   });
 
   it("requires exactly the declared server implementations", () => {

@@ -27,6 +27,290 @@ const leasedTarget = (region: string): SourceFixtureTarget => ({
 });
 
 describe("Runtime Core Source boundary validation", () => {
+  it.effect("publishes sorted declared Lane IDs before and after attempt acquisition", () =>
+    Effect.gen(function* () {
+      const Adapter = SourceAdapter.make({
+        identity: { name: "declared-lanes" },
+        failure: Schema.String,
+        materialized: {
+          metrics: Schema.Struct({}),
+          rejectionLocation: Schema.Struct({}),
+          definitionOptions: SourceAdapter.definitionOptions<void>(),
+        },
+        leased: undefined,
+      });
+      const layer = SourceAdapterServer.make(Adapter, {
+        materialized: {
+          initialLaneIds: () => ["second", "first"],
+          acquire: () =>
+            Effect.succeed(
+              SourceAdapterServer.attempt([
+                SourceAdapterServer.lane({
+                  id: "second",
+                  events: Stream.never,
+                }),
+                SourceAdapterServer.lane({
+                  id: "first",
+                  events: Stream.never,
+                }),
+              ]),
+            ),
+          metrics: () => Effect.succeed({}),
+          retry: Schedule.recurs(0),
+        },
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: Adapter.materializedSource(undefined),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const health = Option.getOrThrow(
+        yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+      );
+
+      expect(health.metrics.runtime.lanes).toStrictEqual([
+        { id: "first", buffer: { _tag: "Unbuffered" } },
+        { id: "second", buffer: { _tag: "Unbuffered" } },
+      ]);
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect.each([
+    {
+      label: "a throwing declaration",
+      initialLaneIds: (): readonly [string] => {
+        throw new Error("initial Lane declaration failed");
+      },
+      message: "Source Adapter initial Lane IDs must be returned without throwing.",
+    },
+    {
+      label: "a hostile iterable declaration",
+      initialLaneIds: (): readonly [string] =>
+        new Proxy(["lane"], {
+          get: (target, property, receiver) => {
+            if (property === Symbol.iterator) {
+              throw new Error("initial Lane iterator failed");
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        }),
+      message: "Source Adapter initial Lane IDs must be non-empty, unique strings.",
+    },
+    {
+      label: "an empty declaration",
+      initialLaneIds: (): readonly [string] =>
+        new Proxy(["lane"], {
+          get: (target, property, receiver) =>
+            property === Symbol.iterator
+              ? function* () {}
+              : Reflect.get(target, property, receiver),
+        }),
+      message: "Source Adapter initial Lane IDs must be non-empty, unique strings.",
+    },
+    {
+      label: "a non-string declaration",
+      initialLaneIds: (): readonly [string] =>
+        new Proxy(["lane"], {
+          get: (target, property, receiver) =>
+            property === Symbol.iterator
+              ? function* () {
+                  yield 1;
+                }
+              : Reflect.get(target, property, receiver),
+        }),
+      message: "Source Adapter initial Lane IDs must be non-empty, unique strings.",
+    },
+    {
+      label: "an empty-string declaration",
+      initialLaneIds: (): readonly [string] => [""],
+      message: "Source Adapter initial Lane IDs must be non-empty, unique strings.",
+    },
+    {
+      label: "a duplicate declaration",
+      initialLaneIds: (): readonly [string, string] => ["lane", "lane"],
+      message: "Source Adapter initial Lane IDs must be non-empty, unique strings.",
+    },
+  ])("exhausts $label before acquisition", ({ initialLaneIds, message }) =>
+    Effect.gen(function* () {
+      const Adapter = SourceAdapter.make({
+        identity: { name: "invalid-declared-lanes" },
+        failure: Schema.String,
+        materialized: {
+          metrics: Schema.Struct({}),
+          rejectionLocation: Schema.Struct({}),
+          definitionOptions: SourceAdapter.definitionOptions<void>(),
+        },
+        leased: undefined,
+      });
+      const layer = SourceAdapterServer.make(Adapter, {
+        materialized: {
+          initialLaneIds,
+          acquire: () =>
+            Effect.succeed(
+              SourceAdapterServer.attempt([
+                SourceAdapterServer.lane({
+                  id: "lane",
+                  events: Stream.never,
+                }),
+              ]),
+            ),
+          metrics: () => Effect.succeed({}),
+          retry: Schedule.recurs(0),
+        },
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: Adapter.materializedSource(undefined),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const exhausted = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Exhausted"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+
+      expect(exhausted.status).toStrictEqual({
+        _tag: "Exhausted",
+        exhaustion: {
+          _tag: "RetryExhausted",
+          lastTermination: {
+            _tag: "Failed",
+            failure: {
+              _tag: "RuntimeFailure",
+              failure: {
+                _tag: "InvalidSourceDefinition",
+                message: `rows: ${message}`,
+              },
+            },
+          },
+        },
+        exhaustedAtNanos: 0n,
+      });
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect(
+    "keeps an invalid Lane declaration terminal across successful metrics samples and retries",
+    () =>
+      Effect.gen(function* () {
+        const Adapter = SourceAdapter.make({
+          identity: { name: "persistent-invalid-declared-lanes" },
+          failure: Schema.String,
+          materialized: {
+            metrics: Schema.Struct({ samples: Schema.BigInt }),
+            rejectionLocation: Schema.Struct({}),
+            definitionOptions: SourceAdapter.definitionOptions<void>(),
+          },
+          leased: undefined,
+        });
+        let acquisitions = 0;
+        let samples = 0n;
+        const layer = SourceAdapterServer.make(Adapter, {
+          materialized: {
+            initialLaneIds: (): readonly [string] => [""],
+            acquire: () => {
+              acquisitions += 1;
+              return Effect.succeed(
+                SourceAdapterServer.attempt([
+                  SourceAdapterServer.lane({
+                    id: "lane",
+                    events: Stream.never,
+                  }),
+                ]),
+              );
+            },
+            metrics: () => {
+              samples += 1n;
+              return Effect.succeed({ samples });
+            },
+            retry: Schedule.spaced("2 seconds").pipe(Schedule.upTo({ times: 1 })),
+          },
+        });
+        const config = defineViewServerConfig({
+          topics: {
+            rows: {
+              schema: Row,
+              source: Adapter.materializedSource(undefined),
+            },
+          },
+        });
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const waiting = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+
+        expect(waiting.status).toStrictEqual({
+          _tag: "WaitingToRetry",
+          nextAttempt: 2n,
+          termination: {
+            _tag: "Failed",
+            failure: {
+              _tag: "RuntimeFailure",
+              failure: {
+                _tag: "InvalidSourceDefinition",
+                message: "rows: Source Adapter initial Lane IDs must be non-empty, unique strings.",
+              },
+            },
+          },
+          retryAtNanos: 2_000_000_000n,
+        });
+        yield* TestClock.adjust("1 second");
+        expect(samples).toBe(2n);
+        expect(acquisitions).toBe(0);
+        yield* TestClock.adjust("1 second");
+        const exhausted = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+
+        expect(exhausted.status).toStrictEqual({
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: {
+              _tag: "Failed",
+              failure: {
+                _tag: "RuntimeFailure",
+                failure: {
+                  _tag: "InvalidSourceDefinition",
+                  message:
+                    "rows: Source Adapter initial Lane IDs must be non-empty, unique strings.",
+                },
+              },
+            },
+          },
+          exhaustedAtNanos: 2_000_000_000n,
+        });
+        expect(acquisitions).toBe(0);
+        yield* diagnostics.close();
+        yield* runtime.close;
+      }),
+  );
+
   it.live(
     "rejects invalid rows, ids, failure payloads, and rejection locations before application",
     () =>

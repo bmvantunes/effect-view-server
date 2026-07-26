@@ -1,13 +1,93 @@
 import { describe, expect, it } from "@effect/vitest";
+import config from "../vite.config";
 import { profiles } from "./benchmark-baseline-profiles.mjs";
 import {
   groupedWriteTask,
+  kafkaSourceAdapterBrokerTask,
+  kafkaSourceAdapterTask,
   rawLargeMembershipTask,
   runtimeGrpcMaterializedTask,
   runtimeGrpcSourceAdapterTask,
 } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
+  it("defines the Kafka Source Adapter multi-partition baseline", () => {
+    const sourceTask = kafkaSourceAdapterTask(64, 64);
+    const brokerTask = kafkaSourceAdapterBrokerTask(64);
+    const sourceProfile = profiles.get("kafka-source-adapter") ?? [];
+
+    expect({
+      benchmarkScope: sourceTask.expectedBenchmarkScope,
+      iterations: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS"],
+      minimumSampleCount: sourceTask.minimumSampleCount,
+      outputJsonPath: sourceTask.packageOutputJsonPath,
+      partitions: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS"],
+      rowCount: sourceTask.expectedRowCount,
+      rows: sourceTask.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS"],
+      task: sourceTask.args,
+    }).toStrictEqual({
+      benchmarkScope: "kafka-source-adapter",
+      iterations: undefined,
+      minimumSampleCount: 5,
+      outputJsonPath: ".artifacts/source-lanes-64rows-64partitions.json",
+      partitions: "64",
+      rowCount: 64,
+      rows: "64",
+      task: ["run", "--no-cache", "kafka#bench:source-lanes"],
+    });
+    expect(
+      sourceProfile.map((task) => ({
+        benchmarkScope: task.expectedBenchmarkScope,
+        iterations:
+          task.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS"] ??
+          task.env["VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ITERATIONS"],
+        minimumSampleCount: task.minimumSampleCount,
+        partitions: task.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS"],
+        rowCount: task.expectedRowCount,
+        rows:
+          task.env["VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS"] ??
+          task.env["VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ROWS"],
+        task: task.args,
+      })),
+    ).toStrictEqual([
+      {
+        benchmarkScope: "kafka-source-adapter",
+        iterations: "5",
+        minimumSampleCount: 5,
+        partitions: "64",
+        rowCount: 64,
+        rows: "64",
+        task: ["run", "--no-cache", "kafka#bench:source-lanes"],
+      },
+      {
+        benchmarkScope: "kafka-source-adapter-broker",
+        iterations: "5",
+        minimumSampleCount: 5,
+        partitions: undefined,
+        rowCount: 64,
+        rows: "64",
+        task: ["run", "--no-cache", "bench:kafka-source-broker"],
+      },
+    ]);
+    expect({
+      benchmarkScope: brokerTask.expectedBenchmarkScope,
+      outputJsonPath: brokerTask.packageOutputJsonPath,
+      rowCount: brokerTask.expectedRowCount,
+      rows: brokerTask.env["VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ROWS"],
+      task: brokerTask.args,
+    }).toStrictEqual({
+      benchmarkScope: "kafka-source-adapter-broker",
+      outputJsonPath: ".artifacts/source-broker-64rows.json",
+      rowCount: 64,
+      rows: "64",
+      task: ["run", "--no-cache", "bench:kafka-source-broker"],
+    });
+    expect(config.run?.tasks?.["bench:kafka-source-broker"]).toStrictEqual({
+      command: "node scripts/run-kafka-source-broker-bench.mjs",
+      dependsOn: ["build:effect-declarations:runtime-core"],
+    });
+  });
+
   it("guards large membership performance in the focused active-query-sharing profile", () => {
     const smokeMembershipTasks = (profiles.get("smoke") ?? []).filter(
       (task) => task.expectedBenchmarkScope === "engine-raw-large-membership",
@@ -185,7 +265,7 @@ describe("benchmark baseline runner", () => {
         broker: "localhost:9092",
         outputJsonPath: ".artifacts/kafka-ingest-250rows.json",
         rowCount: "250",
-        task: ["run", "--no-cache", "runtime#bench:kafka-ingest"],
+        task: ["run", "--no-cache", "bench:runtime-kafka-ingest"],
       },
     ]);
   });
@@ -213,7 +293,7 @@ describe("benchmark baseline runner", () => {
         outputJsonPath: ".artifacts/kafka-sustained-firehose-250rows-4batches.json",
         rowCount: "250",
         sustainedBatches: "4",
-        task: ["run", "--no-cache", "runtime#bench:kafka-ingest"],
+        task: ["run", "--no-cache", "bench:runtime-kafka-ingest"],
       },
     ]);
   });

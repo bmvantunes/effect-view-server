@@ -205,7 +205,7 @@ describe("TypeScript Module Inspection", () => {
           'import { libraryPack } from "../../vite.pack";',
           "export default defineConfig({",
           "  1: true,",
-          '  pack: libraryPack(["src/index.ts", `src/runtime.mts`, "src/internal.cts"]),',
+          '  pack: libraryPack(["src/index.ts", `src/runtime.mts`, "src/internal.cts"], { alias: { contract: target } }),',
           "});",
         ].join("\n"),
       }),
@@ -229,6 +229,7 @@ describe("TypeScript Module Inspection", () => {
         'export default { pack: libraryPack([, "src/index.ts"]) };',
         'export default { [packName]: libraryPack("src/index.ts") };',
         'export default { pack: libraryPack("src/index.ts", options) };',
+        'export default { pack: libraryPack("src/index.ts", {}, {}) };',
       ].map((source) =>
         inspectLibraryPack({ fileName: "vite.config.ts", source }).violations.map(
           (violation) => violation.kind,
@@ -241,6 +242,7 @@ describe("TypeScript Module Inspection", () => {
       ["non-literal-library-pack"],
       ["non-literal-library-pack"],
       ["ambiguous-library-pack-override", "missing-library-pack"],
+      ["non-literal-library-pack"],
       ["non-literal-library-pack"],
     ]);
     expect(

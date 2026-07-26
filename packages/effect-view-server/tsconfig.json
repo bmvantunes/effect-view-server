@@ -9,6 +9,12 @@
     "declarationMap": true,
     "noEmit": true,
     "strict": true,
+    "paths": {
+      "@effect-view-server/source-adapter": ["../source-adapter/dist/index.d.ts"],
+      "@effect-view-server/source-adapter/server": ["../source-adapter/dist/server.d.ts"],
+      "effect-view-server/source-adapter": ["../source-adapter/dist/index.d.ts"],
+      "effect-view-server/source-adapter/server": ["../source-adapter/dist/server.d.ts"]
+    },
     "skipLibCheck": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,

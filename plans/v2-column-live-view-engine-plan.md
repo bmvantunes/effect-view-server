@@ -1228,9 +1228,9 @@ The runtime is in-memory first, but production needs an explicit recovery story.
 Initial policy:
 
 - Kafka is the source of truth.
-- Current implementation status: the runtime exposes a configured Kafka consumer group and an explicit Kafka `startFrom` policy. The default preserves the current live-process behavior: consume committed offsets for the configured group with an earliest fallback for a new group. Runtime config can also request `startFrom: "earliest"`, `startFrom: "latest"`, or a committed consumer group with `earliest`, `latest`, or `fail` fallback. The runtime microbatches consumed messages, publishes mapped rows with `publishMany` grouped by internal View Server Topic, and commits original Kafka messages only after the relevant publish succeeds. Success health records the committed offset after commit.
-- Microbatch failure policy: publish failure leaves the affected Kafka messages uncommitted so they can replay. If a later message in a batch fails decode or mapping after earlier messages were already decoded, the decoded prefix is published and committed before the failing message surfaces. If the Kafka stream fails after yielding messages, the yielded batch is flushed before the stream failure marks health degraded.
-- Current restart contract: because Runtime Core rows are in memory and no durable WAL/checkpoint exists yet, committed consumer-group resume can skip rows that were committed before process death. It is a live-process ingestion mode, not a lossless full rebuild strategy.
+- Current implementation status: Kafka v1 supports Materialized sources only. Every Topic-owned Kafka Source Definition requires an explicit source-owned `startFrom` policy with no default: `earliest`, `latest`, `committed`, `timestamp`, or `durationAgo`. The latter three require an explicit `earliest`, `latest`, or `fail` fallback. The aggregate Kafka Node Layer accepts a Consumer Group Prefix and derives the active Consumer Group ID from that prefix plus the exact View Server Topic name.
+- Delivery policy: every configured Region is an independent Source Delivery Lane, sibling lanes run concurrently, and records within one lane pass sequentially through the ordinary Source Adapter settlement contract. A valid record becomes one Source Delivery; an item-local decode, Local Row Key, Mapping, or Topic Schema failure becomes one settled Source Item Rejection. A successful Delivery or Rejection settlement commits that record's offset before the lane continues. Application failure, defect, or commit failure preserves the record for replay and terminates the Source Attempt for ordinary supervision. Lifecycle interruption is cancellation: it preserves the record but does not produce Source Termination or trigger a supervision retry.
+- Current restart contract: because Runtime Core rows are in memory and no durable WAL/checkpoint exists yet, active consumer-group commits are delivery checkpoints rather than durable materialized-view state. A complete runtime restart creates a new Materialized Topic lifetime; `durationAgo` is evaluated once for that lifetime, and each Source Attempt retry uses successfully committed active-group offsets for the current lifetime before falling back to its frozen initial offsets.
 - Until WAL/checkpoints exist, production deployments that need rebuild-after-restart semantics must replay Kafka from an authoritative position, such as earliest offsets for the Source Topics or a dedicated rebuild group.
 - Production startup policy is explicit, not magic:
 
@@ -1239,21 +1239,32 @@ startFrom:
   | "earliest"
   | "latest"
   | {
-      committedConsumerGroup: string;
-      fallback?: "earliest" | "latest" | "fail";
+      mode: "committed";
+      consumerGroupId: string;
+      fallback: "earliest" | "latest" | "fail";
+    }
+  | {
+      mode: "timestamp";
+      atNanos: bigint;
+      fallback: "earliest" | "latest" | "fail";
+    }
+  | {
+      mode: "durationAgo";
+      duration: Duration.Input;
+      fallback: "earliest" | "latest" | "fail";
     };
 ```
 
 - If `startFrom: "latest"`, health should clearly show topics are not backfilled.
-- If `startFrom: { committedConsumerGroup }`, health and docs must clearly state that this assumes durable View Server state already exists or that skipped committed rows are acceptable.
+- If `startFrom: { mode: "committed", consumerGroupId, fallback }`, health and docs must distinguish that seed group from the derived active group and clearly state that skipped committed rows are acceptable only when the selected offset is an authoritative rebuild position.
 - WAL/checkpoints are allowed later, but should not be required for the first production milestone.
 - The engine must expose hooks that would allow future checkpoints without changing `useLiveQuery`.
-- Current consumer-group assumption: one runtime process owns the configured Region consumers for the group. Full rebalance/revoke handoff, multiple active consumers in one group, and checkpoint handoff are roadmap items, not current guarantees.
+- Current consumer-group assumption: one logical replica owns the configured Region consumers for each derived active group, and concurrent full-view replicas use distinct Consumer Group Prefixes. Full rebalance/revoke handoff, multiple full-view replicas sharing one active group, and checkpoint handoff are roadmap items, not current guarantees.
 
 Recovery tests:
 
 - Start runtime, ingest rows, stop runtime, restart from earliest, verify snapshot converges.
-- Start runtime in committed mode, ingest and commit rows, stop runtime, append new rows, restart with a distinct top-level `consumerGroupId` and `startFrom.committedConsumerGroup` pointing at the committed group, verify committed mode follows the committed group's offsets and only newly consumed rows are present unless durable state/checkpoints are added.
+- Start a Materialized source from earliest, ingest and commit rows under its derived active group, stop the runtime, append new rows, then create a new runtime whose Topic-owned `startFrom` is `{ mode: "committed", consumerGroupId: priorActiveGroupId, fallback: "earliest" }`; verify the seed group supplies the initial offsets and only newly consumed rows are present unless durable state/checkpoints are added.
 - Start from latest, verify old rows are intentionally absent, newly appended rows are consumed, and health reports the no-backfill policy.
 - Restart during active subscriptions, clients reconnect and receive fresh snapshots.
 

@@ -11,10 +11,11 @@ import {
   makeSourceItemRejection,
   makeRuntimeSourceFailure,
   markSourceToolkit,
+  resolveSourceAdapterHandle,
 } from "./model";
 import type {
   SourceAdapterFailure,
-  SourceAdapterHandle,
+  SourceAdapterDescriptor,
   SourceAdapterRuntimeService,
   SourceAttempt,
   SourceBufferMetrics,
@@ -108,6 +109,18 @@ export type SourceAdapterServerLifecycle<
   Lifecycle extends SourceLifecycle,
   Services,
 > = {
+  readonly initialLaneIds?: <
+    const Topic extends string,
+    Row extends object,
+    Route extends Readonly<Record<string, unknown>>,
+  >(
+    input: SourceLifecycleMetricsInput<
+      SourceLifecycleOptions<Declaration, Row>,
+      Lifecycle,
+      Route,
+      Topic
+    >,
+  ) => readonly [string, ...ReadonlyArray<string>];
   readonly acquire: <
     const Topic extends string,
     Row extends object,
@@ -274,6 +287,7 @@ const closeLifecycleEnvironment = <
       const attempt = yield* implementation
         .acquire({
           definition: input.definition,
+          lifetimeScope: input.lifetimeScope,
           target: input.target,
           toolkit: closeToolkitEnvironment(input.toolkit, context),
         })
@@ -289,6 +303,9 @@ const closeLifecycleEnvironment = <
   return {
     acquire,
     metrics,
+    ...(implementation.initialLaneIds === undefined
+      ? {}
+      : { initialLaneIds: implementation.initialLaneIds }),
     retryDefault: (effect, onRetry) =>
       Effect.retry(effect, implementation.retry.pipe(Schedule.tap(onRetry))).pipe(
         Effect.provide(context),
@@ -335,23 +352,24 @@ export const makeSourceAdapterServer = <
   const Leased extends SourceLifecycleDeclarationAny | undefined,
   Services = never,
 >(
-  adapter: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+  adapter: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
   implementations: SourceAdapterServerImplementations<
-    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+    SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
     Services
   >,
 ): Layer.Layer<
   Context.Service.Identifier<
-    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>["runtimeService"]
+    SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>["runtimeService"]
   >,
   never,
   Services
 > => {
   if (!isSourceAdapterHandle(adapter)) {
-    throw new TypeError("Source Adapter Server requires a nominal Source Adapter handle.");
+    throw new TypeError("Source Adapter Server requires a nominal Source Adapter descriptor.");
   }
+  const handle = resolveSourceAdapterHandle(adapter);
   validateImplementations(adapter, implementations);
-  return Layer.effect(adapter.runtimeService)(
+  return Layer.effect(handle.runtimeService)(
     Effect.context<Services>().pipe(
       Effect.map((context) => {
         const adapterContext = Context.makeUnsafe<Services>(
@@ -361,17 +379,23 @@ export const makeSourceAdapterServer = <
           "materialized" in implementations ? implementations.materialized : undefined;
         const leasedImplementation =
           "leased" in implementations ? implementations.leased : undefined;
-        const service = {
+        const service: SourceAdapterRuntimeService<
+          AdapterFailure,
+          Materialized,
+          Leased,
+          Name,
+          Version
+        > = {
           adapter,
           materialized:
-            adapter.materialized === undefined
+            handle.materialized === undefined
               ? undefined
               : closeLifecycleEnvironment(
                   requireLifecycleImplementation(materializedImplementation, "Materialized"),
                   adapterContext,
                 ),
           leased:
-            adapter.leased === undefined
+            handle.leased === undefined
               ? undefined
               : closeLifecycleEnvironment(
                   requireLifecycleImplementation(leasedImplementation, "Leased"),

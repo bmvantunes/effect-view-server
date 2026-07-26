@@ -48,6 +48,8 @@ describe("benchmark baseline runner", () => {
       grpcSourceAdapterUpdate: scripts["bench:baseline:grpc-source-adapter:update"],
       kafkaIngest: scripts["bench:baseline:kafka-ingest"],
       kafkaIngestUpdate: scripts["bench:baseline:kafka-ingest:update"],
+      kafkaSourceAdapter: scripts["bench:baseline:kafka-source-adapter"],
+      kafkaSourceAdapterUpdate: scripts["bench:baseline:kafka-source-adapter:update"],
       kafkaSustainedFirehose: scripts["bench:baseline:kafka-sustained-firehose"],
       kafkaSustainedFirehoseUpdate: scripts["bench:baseline:kafka-sustained-firehose:update"],
       preGrpcGate: scripts["pre-grpc:gate"],
@@ -87,12 +89,16 @@ describe("benchmark baseline runner", () => {
       kafkaIngest: "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest",
       kafkaIngestUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest --update-baseline",
+      kafkaSourceAdapter:
+        "node scripts/run-benchmark-baseline.mjs --profile=kafka-source-adapter",
+      kafkaSourceAdapterUpdate:
+        "node scripts/run-benchmark-baseline.mjs --profile=kafka-source-adapter --update-baseline",
       kafkaSustainedFirehose:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose",
       kafkaSustainedFirehoseUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-sustained-firehose --update-baseline",
       preGrpcGate:
-        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:smoke && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:raw-read-write && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:active-query-sharing && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
+        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:smoke && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:raw-read-write && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:active-query-sharing && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-source-adapter && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
       rawReadWrite: "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write",
       rawReadWriteUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=raw-read-write --update-baseline",
@@ -131,6 +137,7 @@ describe("benchmark baseline runner", () => {
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-admission",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grouped-order-neutral",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:websocket-firehose",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-source-adapter",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-ingest",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:kafka-sustained-firehose",
     ]);

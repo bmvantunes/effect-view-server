@@ -11,6 +11,11 @@ const declarationProjects = [
     directory: "packages/source-adapter-testing",
     dependsOn: ["source-adapter"],
   },
+  {
+    name: "kafka",
+    directory: "packages/kafka",
+    dependsOn: ["source-adapter"],
+  },
   { name: "config", directory: "packages/config", dependsOn: ["source-adapter"] },
   {
     name: "column-live-view-engine",
@@ -87,6 +92,11 @@ const diagnosticsProjects = [
     name: "source-adapter-testing",
     project: "packages/source-adapter-testing",
     declarationTask: declarationTaskName("source-adapter-testing"),
+  },
+  {
+    name: "kafka",
+    project: "packages/kafka",
+    declarationTask: declarationTaskName("kafka"),
   },
   { name: "config", project: "packages/config", declarationTask: undefined },
   { name: "effect-utils", project: "packages/effect-utils", declarationTask: undefined },
@@ -180,15 +190,26 @@ const diagnosticsProjects = [
 
 const diagnosticsTaskName = (name: string) => `check:effect:${name}`;
 
-const effectDiagnosticsTask = (project: string, declarationTask: string | undefined) => ({
+const diagnosticsAdditionalDependencies: Readonly<Record<string, ReadonlyArray<string>>> = {
+  kafka: [declarationTaskName("source-adapter-conformance-host")],
+};
+
+const effectDiagnosticsTask = (
+  project: string,
+  declarationTask: string | undefined,
+  additionalDependencies: ReadonlyArray<string>,
+) => ({
   command: `effect-language-service diagnostics --project ${project}/tsconfig.json --format text --strict`,
-  dependsOn: declarationTask === undefined ? [] : [declarationTask],
+  dependsOn: [
+    ...(declarationTask === undefined ? [] : [declarationTask]),
+    ...additionalDependencies,
+  ],
 });
 
 const diagnosticsTasks = Object.fromEntries(
   diagnosticsProjects.map(({ name, project, declarationTask }) => [
     diagnosticsTaskName(name),
-    effectDiagnosticsTask(project, declarationTask),
+    effectDiagnosticsTask(project, declarationTask, diagnosticsAdditionalDependencies[name] ?? []),
   ]),
 );
 
@@ -217,12 +238,14 @@ export default defineConfig({
         "scripts/benchmark-profile.mjs",
         "scripts/benchmark-sampling-policy.mjs",
         "scripts/bench-runtime-kafka-ingest.mjs",
+        "scripts/test-kafka-adapter-runner.mjs",
         "scripts/check-internal-seams.ts",
         "scripts/grpc-leased-benchmark-policy.mjs",
         "scripts/grpc-materialized-benchmark-policy.mjs",
         "scripts/package-surface-policy.ts",
         "scripts/release-publish-orchestration.mjs",
         "scripts/release-publish-policy.mjs",
+        "scripts/release-version-orchestration.mjs",
         "scripts/typescript-module-inspection.ts",
       ],
       reporter: ["text"],
@@ -255,6 +278,14 @@ export default defineConfig({
         command: "vp pack",
         cwd: "packages/effect-view-server",
         dependsOn: declarationProjects.map(({ name }) => declarationTaskName(name)),
+      },
+      "bench:kafka-source-broker": {
+        command: "node scripts/run-kafka-source-broker-bench.mjs",
+        dependsOn: [declarationTaskName("runtime-core")],
+      },
+      "bench:runtime-kafka-ingest": {
+        command: "node scripts/run-runtime-kafka-ingest-bench.mjs",
+        dependsOn: [declarationTaskName("runtime")],
       },
       "examples:check:effect": {
         command: 'node --eval ""',

@@ -21,6 +21,8 @@ const exitCodeForChildSignal = (signal) =>
     : 1;
 
 export const createKafkaIngestBenchmarkRunner = ({
+  benchmarkKind = "runtime-ingest",
+  buildTasks,
   env,
   rootDirectory = defaultRootDirectory,
   runtimeDirectory = defaultRuntimeDirectory,
@@ -30,18 +32,39 @@ export const createKafkaIngestBenchmarkRunner = ({
   spawnProcess,
   stdio,
 }) => {
+  const sourceAdapterBenchmark = benchmarkKind === "source-adapter";
   const kafkaBootstrapServers = env.VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS ?? "localhost:9092";
-  const batchSize = env.VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE ?? "1000";
+  const batchSize = sourceAdapterBenchmark
+    ? (env.VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ROWS ?? "64")
+    : (env.VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE ?? "1000");
   const benchmarkMode = env.VIEW_SERVER_RUNTIME_BENCH_KAFKA_MODE ?? "batch";
-  const defaultOutputName =
-    benchmarkMode === "sustained-firehose"
+  const defaultOutputName = sourceAdapterBenchmark
+    ? `.artifacts/source-broker-${batchSize}rows.json`
+    : benchmarkMode === "sustained-firehose"
       ? `.artifacts/kafka-sustained-firehose-${batchSize}rows-${env.VIEW_SERVER_RUNTIME_BENCH_KAFKA_SUSTAINED_BATCHES ?? "4"}batches.json`
       : `.artifacts/kafka-ingest-${batchSize}rows.json`;
-  const outputJsonPath = env.VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON ?? defaultOutputName;
+  const outputJsonPath =
+    (sourceAdapterBenchmark
+      ? env.VIEW_SERVER_KAFKA_SOURCE_BROKER_OUTPUT_JSON
+      : env.VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON) ?? defaultOutputName;
   const resolvedOutputJsonPath = isAbsolute(outputJsonPath)
     ? outputJsonPath
     : resolve(runtimeDirectory, outputJsonPath);
-  const composeProjectName = `view-server-kafka-ingest-${processId}`;
+  const composeProjectName = sourceAdapterBenchmark
+    ? `view-server-kafka-source-${processId}`
+    : `view-server-kafka-ingest-${processId}`;
+  const resolvedBuildTasks =
+    buildTasks ??
+    (sourceAdapterBenchmark
+      ? []
+      : [
+          "@effect-view-server/effect-utils#build",
+          "@effect-view-server/runtime-core#build",
+          "@effect-view-server/server#build",
+        ]);
+  const benchmarkFile = sourceAdapterBenchmark
+    ? "src/source-broker.bench.ts"
+    : "src/kafka-ingest.bench.ts";
 
   let activeChild = undefined;
   let activeRun = undefined;
@@ -124,20 +147,12 @@ export const createKafkaIngestBenchmarkRunner = ({
   };
 
   const runMain = async () => {
-    let exitCode = await run("vp", ["run", "-t", "@effect-view-server/effect-utils#build"]);
-    if (interruptedSignal !== undefined) {
-      return returnInterrupted();
-    }
-
-    if (exitCode === 0) {
-      exitCode = await run("vp", ["run", "-t", "@effect-view-server/runtime-core#build"]);
-      if (interruptedSignal !== undefined) {
-        return returnInterrupted();
+    let exitCode = 0;
+    for (const buildTask of resolvedBuildTasks) {
+      if (exitCode !== 0) {
+        break;
       }
-    }
-
-    if (exitCode === 0) {
-      exitCode = await run("vp", ["run", "-t", "@effect-view-server/server#build"]);
+      exitCode = await run("vp", ["run", "-t", buildTask]);
       if (interruptedSignal !== undefined) {
         return returnInterrupted();
       }
@@ -169,7 +184,7 @@ export const createKafkaIngestBenchmarkRunner = ({
             [
               "test",
               "bench",
-              "src/kafka-ingest.bench.ts",
+              benchmarkFile,
               "--run",
               "--testTimeout",
               "0",
@@ -180,7 +195,9 @@ export const createKafkaIngestBenchmarkRunner = ({
               env: {
                 ...env,
                 VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS: kafkaBootstrapServers,
-                VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
+                ...(sourceAdapterBenchmark
+                  ? { VIEW_SERVER_KAFKA_SOURCE_BROKER_OUTPUT_JSON: outputJsonPath }
+                  : { VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath }),
               },
             },
           );
@@ -209,6 +226,8 @@ export const createKafkaIngestBenchmarkRunner = ({
 };
 
 export const runKafkaIngestBenchmarkCli = async ({
+  benchmarkKind,
+  buildTasks,
   env,
   exit,
   processEvents,
@@ -221,6 +240,8 @@ export const runKafkaIngestBenchmarkCli = async ({
   stdio,
 }) => {
   const runner = createKafkaIngestBenchmarkRunner({
+    benchmarkKind,
+    buildTasks,
     env,
     outputExists,
     processId,

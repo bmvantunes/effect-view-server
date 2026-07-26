@@ -1469,8 +1469,10 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           yield* diagnostics.close();
           yield* runtime.close;
           const lifecycle = Option.getOrThrow(Option.fromUndefinedOr(adapterService.materialized));
+          const lifetimeScope = yield* Effect.scope;
           const metrics = yield* lifecycle.metrics({
             definition: source.options,
+            lifetimeScope,
             target: ready.target,
             topic: "orders",
           });

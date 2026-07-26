@@ -1,5 +1,6 @@
 const enginePackageDirectory = "packages/column-live-view-engine";
 const grpcPackageDirectory = "packages/grpc";
+const kafkaPackageDirectory = "packages/kafka";
 const reactPackageDirectory = "packages/react";
 const runtimePackageDirectory = "packages/runtime";
 
@@ -480,6 +481,51 @@ export const reactInMemoryTask = (browser, rowCount, env = {}) => {
   });
 };
 
+export const kafkaSourceAdapterTask = (rowCount, partitionCount, env = {}) => {
+  const outputJsonPath = `.artifacts/source-lanes-${rowCount}rows-${partitionCount}partitions.json`;
+  return task({
+    artifactKind: "runtime-benchmark-summary",
+    benchmarkScope: "kafka-source-adapter",
+    env: {
+      VIEW_SERVER_KAFKA_SOURCE_BENCH_OUTPUT_JSON: outputJsonPath,
+      VIEW_SERVER_KAFKA_SOURCE_BENCH_PARTITIONS: String(partitionCount),
+      VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS: String(rowCount),
+      ...env,
+    },
+    label: `Kafka Source Adapter ${rowCount} rows ${partitionCount} partitions`,
+    minimumSampleCount: minimumSampleCountFrom(
+      env,
+      "VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS",
+    ),
+    outputJsonPath,
+    packageDirectory: kafkaPackageDirectory,
+    rowCount,
+    vpTask: "kafka#bench:source-lanes",
+  });
+};
+
+export const kafkaSourceAdapterBrokerTask = (rowCount, env = {}) => {
+  const outputJsonPath = `.artifacts/source-broker-${rowCount}rows.json`;
+  return task({
+    artifactKind: "runtime-benchmark-summary",
+    benchmarkScope: "kafka-source-adapter-broker",
+    env: {
+      VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ROWS: String(rowCount),
+      VIEW_SERVER_KAFKA_SOURCE_BROKER_OUTPUT_JSON: outputJsonPath,
+      ...env,
+    },
+    label: `Kafka Source Adapter broker ${rowCount} rows`,
+    minimumSampleCount: minimumSampleCountFrom(
+      env,
+      "VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ITERATIONS",
+    ),
+    outputJsonPath,
+    packageDirectory: kafkaPackageDirectory,
+    rowCount,
+    vpTask: "bench:kafka-source-broker",
+  });
+};
+
 export const runtimeKafkaIngestTask = (rowCount, env) => {
   const outputJsonPath = `.artifacts/kafka-ingest-${rowCount}rows.json`;
   return task({
@@ -495,7 +541,7 @@ export const runtimeKafkaIngestTask = (rowCount, env) => {
     outputJsonPath,
     packageDirectory: runtimePackageDirectory,
     rowCount,
-    vpTask: "runtime#bench:kafka-ingest",
+    vpTask: "bench:runtime-kafka-ingest",
   });
 };
 
@@ -516,7 +562,7 @@ export const runtimeKafkaSustainedFirehoseTask = (rowCount, sustainedBatchCount,
     outputJsonPath,
     packageDirectory: runtimePackageDirectory,
     rowCount,
-    vpTask: "runtime#bench:kafka-ingest",
+    vpTask: "bench:runtime-kafka-ingest",
   });
 };
 

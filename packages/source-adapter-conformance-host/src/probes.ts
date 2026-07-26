@@ -1,4 +1,3 @@
-import type { SourceAdapterConformanceDriverValue } from "@effect-view-server/source-adapter-testing";
 import { Context, Effect, Option, Stream } from "effect";
 
 export type HostHealthSnapshot = {
@@ -241,27 +240,27 @@ export const openQuery = Effect.fn("SourceAdapterConformanceHost.query.open")(fu
   };
 });
 
-export const requireMaterialized = (
-  driver: SourceAdapterConformanceDriverValue,
-): NonNullable<SourceAdapterConformanceDriverValue["materialized"]> => {
+export const requireMaterialized = <Materialized extends object>(driver: {
+  readonly materialized: Materialized | undefined;
+}): NonNullable<Materialized> => {
   if (driver.materialized === undefined) {
     throw new Error("The Source Adapter conformance Driver omitted Materialized support.");
   }
   return driver.materialized;
 };
 
-export const requireLeased = (
-  driver: SourceAdapterConformanceDriverValue,
-): NonNullable<SourceAdapterConformanceDriverValue["leased"]> => {
+export const requireLeased = <Leased extends object>(driver: {
+  readonly leased: Leased | undefined;
+}): NonNullable<Leased> => {
   if (driver.leased === undefined) {
     throw new Error("The Source Adapter conformance Driver omitted Leased support.");
   }
   return driver.leased;
 };
 
-export const requireCallbackBridge = (
-  driver: SourceAdapterConformanceDriverValue,
-): NonNullable<SourceAdapterConformanceDriverValue["callbackBridge"]> => {
+export const requireCallbackBridge = <CallbackBridge extends object>(driver: {
+  readonly callbackBridge: CallbackBridge | undefined;
+}): NonNullable<CallbackBridge> => {
   if (driver.callbackBridge === undefined) {
     throw new Error("The Source Adapter conformance Driver omitted its callback bridge.");
   }

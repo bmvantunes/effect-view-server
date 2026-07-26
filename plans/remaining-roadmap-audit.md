@@ -16,9 +16,10 @@ truth, not plan text that predates later implementation work.
 
 `plans/grpc.md` records the implemented transport-specific scope but is
 superseded for future work by PRD #383. Issue #384 implements the
-transport-neutral Source Adapter foundation and issue #386 implements its
-first-party gRPC adapter. Kafka migration and final legacy removal remain staged
-in issues #385 and #387.
+transport-neutral Source Adapter foundation, and issues #385 and #386 implement
+its first-party Kafka and gRPC adapters. The separate final migration tracked by
+issue #387 remains explicitly out of scope and must not be started by this
+audit or the #385 slice.
 
 | Area                                            | Status                 | Evidence                                                                                                                                                     |
 | ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -58,7 +59,7 @@ because it includes explicit future scope.
 | Snapshot/delta convergence                                    | Implemented | Engine/runtime/client tests cover raw, grouped, retained deltas, cleanup, and convergence.                                                                                                                                                            |
 | Grouped queries and aggregates                                | Implemented | Grouped query tests, grouped aggregate/write benchmarks and gates.                                                                                                                                                                                    |
 | Backpressure at subscription/transport boundary               | Implemented | `BackpressureExceeded` typed status, queue-capacity tests, remote/client/protocol tests.                                                                                                                                                              |
-| Benchmark baseline automation                                 | Implemented | Smoke, raw read/write, active sharing, grouped, WebSocket, Kafka, and gRPC baseline scripts.                                                                                                                                                          |
+| Benchmark baseline automation                                 | Implemented | Smoke, raw read/write, active sharing, grouped, WebSocket, Kafka Source Adapter (transport-neutral and broker-backed), Kafka ingress, and gRPC baseline scripts.                                                                                      |
 | Pre-gRPC readiness gate                                       | Implemented | `vp run -w pre-grpc:gate`.                                                                                                                                                                                                                            |
 | TCP publish API/runtime ingress                               | Implemented | `packages/runtime/src/tcp-publish-ingress.ts`, runtime TCP tests for publish/patch/delete/publishMany, schema decode errors, bounded line/queue backpressure, source-owned topic rejection, startup failure, and shutdown cleanup.                    |
 | Runtime-core span/observability assertions                    | Implemented | Runtime-core tracing test captures client publish -> engine publish -> topic-store mutation/fanout -> live-subscription spans with real span-id parent links and topic/query attributes.                                                              |
@@ -68,10 +69,10 @@ because it includes explicit future scope.
 
 ### Production-Ready Next Items
 
-Complete the remaining dependency-ordered Source Adapter migration issues from
-PRD #383. The core SDK/runtime/conformance slice is issue #384 and first-party
-gRPC is implemented by issue #386; first-party Kafka and the final public hard cut remain
-issues #385 and #387.
+Complete the remaining dependency-ordered Source Adapter migration issue from
+PRD #383. The core SDK/runtime/conformance slice is issue #384, first-party
+Kafka and gRPC are implemented by issues #385 and #386, and the final public hard
+cut remains issue #387.
 
 ### Intentionally Deferred
 

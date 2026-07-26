@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import facadeConfig from "../packages/effect-view-server/vite.config";
+import kafkaConfig from "../packages/kafka/vite.config";
 import config from "../vite.config";
 
 const tasks = config.run?.tasks ?? {};
@@ -18,6 +19,30 @@ const taskDependencies = (task: (typeof tasks)[string]) =>
   typeof task === "object" && !Array.isArray(task) ? (task.dependsOn ?? []) : [];
 
 describe("strict Effect diagnostics task graph", () => {
+  it("builds Kafka through one Vite task graph without nested Vite runs", () => {
+    expect({
+      build: kafkaConfig.run?.tasks?.build,
+      test: kafkaConfig.run?.tasks?.test,
+      runtimeKafkaBenchmark: tasks["bench:runtime-kafka-ingest"],
+    }).toStrictEqual({
+      build: {
+        command: "vp pack",
+        dependsOn: ["@effect-view-server/source-adapter#build"],
+      },
+      test: {
+        command: "node ../../scripts/test-kafka-adapter.mjs",
+        dependsOn: [
+          "@effect-view-server/kafka#build",
+          "@effect-view-server/source-adapter-conformance-host#build",
+        ],
+      },
+      runtimeKafkaBenchmark: {
+        command: "node scripts/run-runtime-kafka-ingest-bench.mjs",
+        dependsOn: ["build:effect-declarations:runtime"],
+      },
+    });
+  });
+
   it("builds the facade after every workspace package that it re-exports", () => {
     const facadeBuild = facadeConfig.run?.tasks?.build;
 
@@ -29,6 +54,7 @@ describe("strict Effect diagnostics task graph", () => {
         "@effect-view-server/config#build",
         "@effect-view-server/grpc#build",
         "@effect-view-server/in-memory#build",
+        "@effect-view-server/kafka#build",
         "@effect-view-server/react#build",
         "@effect-view-server/runtime#build",
         "@effect-view-server/server#build",
@@ -65,12 +91,13 @@ describe("strict Effect diagnostics task graph", () => {
       serverDependency: facadePackage.devDependencies["@effect-view-server/server"],
       uniqueBuildDirectories: [...new Set(buildDirectories)],
     }).toStrictEqual({
-      buildCommands: Array.from({ length: 15 }, () => "vp pack"),
+      buildCommands: Array.from({ length: 16 }, () => "vp pack"),
       buildDirectories: [
         "packages/effect-utils",
         "packages/source-adapter",
         "packages/grpc",
         "packages/source-adapter-testing",
+        "packages/kafka",
         "packages/config",
         "packages/column-live-view-engine",
         "packages/protocol",
@@ -91,6 +118,7 @@ describe("strict Effect diagnostics task graph", () => {
           "build:effect-declarations:source-adapter",
           "build:effect-declarations:grpc",
           "build:effect-declarations:source-adapter-testing",
+          "build:effect-declarations:kafka",
           "build:effect-declarations:config",
           "build:effect-declarations:column-live-view-engine",
           "build:effect-declarations:protocol",
@@ -108,6 +136,7 @@ describe("strict Effect diagnostics task graph", () => {
         "build:effect-declarations:source-adapter",
         "build:effect-declarations:grpc",
         "build:effect-declarations:source-adapter-testing",
+        "build:effect-declarations:kafka",
         "build:effect-declarations:config",
         "build:effect-declarations:column-live-view-engine",
         "build:effect-declarations:protocol",
@@ -214,6 +243,10 @@ describe("strict Effect diagnostics task graph", () => {
         ],
         "check:effect:config": [],
         "check:effect:effect-utils": [],
+        "check:effect:kafka": [
+          "build:effect-declarations:kafka",
+          "build:effect-declarations:source-adapter-conformance-host",
+        ],
         "check:effect:protocol": ["build:effect-declarations:protocol"],
         "check:effect:client": ["build:effect-declarations:client"],
         "check:effect:column-live-view-engine": [

@@ -3,9 +3,12 @@ import { Chunk, Context, Effect, Exit, Result, Schedule, Schema, Scope, Stream }
 const SourceAdapterTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceAdapter",
 );
+const sourceAdapterHandles = new WeakMap<object, unknown>();
+const sourceAdapterDescriptors = new WeakMap<object, unknown>();
 const SourceDefinitionTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceDefinition",
 );
+declare const SourceDefinitionFactoryRowTypeId: unique symbol;
 const SourceDefinitionTypesTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceDefinitionTypes",
 );
@@ -26,6 +29,9 @@ const SourceToolkitDecodeTypeId: unique symbol = Symbol(
 );
 const SourceAttemptTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceAttempt",
+);
+const SourceExecutableTypeId: unique symbol = Symbol(
+  "@effect-view-server/source-adapter/SourceExecutable",
 );
 
 export type SourceLifecycle = "materialized" | "leased";
@@ -333,6 +339,9 @@ export type SourceToolkit<
   readonly upsert: <const Candidate extends Row>(
     row: Candidate & Record<Exclude<keyof Candidate, keyof Row>, never>,
   ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
+  readonly decodeUpsert: (
+    row: unknown,
+  ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
   readonly delete: (
     id: string,
   ) => Effect.Effect<SourceDelete, SourceExecutionFailure<AdapterFailure>>;
@@ -396,6 +405,7 @@ export type SourceLifecycleFactoryInput<
   Topic extends string = string,
 > = {
   readonly definition: Options;
+  readonly lifetimeScope: Scope.Scope;
   readonly target: SourceTargetForLifecycle<Lifecycle, Route>;
   readonly toolkit: SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic>;
 };
@@ -408,6 +418,7 @@ export type SourceLifecycleMetricsInput<
 > = {
   readonly topic: Topic;
   readonly definition: Options;
+  readonly lifetimeScope: Scope.Scope;
   readonly target: SourceTargetForLifecycle<Lifecycle, Route>;
 };
 
@@ -418,6 +429,18 @@ export type SourceRuntimeLifecycle<
   Metrics,
   RejectionLocation,
 > = {
+  readonly initialLaneIds?: <
+    const Topic extends string,
+    Row extends object,
+    Route extends Readonly<Record<string, unknown>>,
+  >(
+    input: SourceLifecycleMetricsInput<
+      SourceLifecycleOptions<Declaration, Row>,
+      Lifecycle,
+      Route,
+      Topic
+    >,
+  ) => readonly [string, ...ReadonlyArray<string>];
   readonly acquire: <
     const Topic extends string,
     Row extends object,
@@ -458,6 +481,27 @@ export type SourceRuntimeLifecycle<
   ) => Effect.Effect<A, SourceTermination<AdapterFailure>>;
 };
 
+export interface SourceAdapterDescriptor<
+  Name extends string,
+  Version extends string | undefined,
+  AdapterFailure,
+  Materialized extends SourceLifecycleDeclarationAny | undefined,
+  Leased extends SourceLifecycleDeclarationAny | undefined,
+> {
+  readonly identity: SourceAdapterIdentity<Name, Version>;
+  readonly failureSchema: Schema.Codec<AdapterFailure, unknown, never, never>;
+  readonly materialized: Materialized;
+  readonly leased: Leased;
+  readonly runtimeService: Context.Service<
+    SourceAdapterServiceIdentifier<Name, Version, AdapterFailure>,
+    SourceAdapterRuntimeService<AdapterFailure, Materialized, Leased, Name, Version>
+  >;
+  readonly failure: (
+    failure: AdapterFailure,
+  ) => Effect.Effect<SourceExecutionFailure<AdapterFailure>, SourceRuntimeFailure>;
+  readonly [SourceAdapterTypeId]: typeof SourceAdapterTypeId;
+}
+
 export type SourceAdapterRuntimeService<
   AdapterFailure,
   Materialized extends SourceLifecycleDeclarationAny | undefined,
@@ -465,7 +509,7 @@ export type SourceAdapterRuntimeService<
   Name extends string = string,
   Version extends string | undefined = string | undefined,
 > = {
-  readonly adapter: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>;
+  readonly adapter: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>;
   readonly materialized:
     | SourceRuntimeLifecycle<
         AdapterFailure,
@@ -486,24 +530,17 @@ export type SourceAdapterRuntimeService<
     | undefined;
 };
 
+type SourceDefinitionFactoryResult<Definition, Row> = Definition & {
+  readonly [SourceDefinitionFactoryRowTypeId]?: (_row: Row) => Row;
+};
+
 export interface SourceAdapterHandle<
   Name extends string,
   Version extends string | undefined,
   AdapterFailure,
   Materialized extends SourceLifecycleDeclarationAny | undefined,
   Leased extends SourceLifecycleDeclarationAny | undefined,
-> {
-  readonly identity: SourceAdapterIdentity<Name, Version>;
-  readonly failureSchema: Schema.Codec<AdapterFailure, unknown, never, never>;
-  readonly materialized: Materialized;
-  readonly leased: Leased;
-  readonly runtimeService: Context.Service<
-    SourceAdapterServiceIdentifier<Name, Version, AdapterFailure>,
-    SourceAdapterRuntimeService<AdapterFailure, Materialized, Leased, Name, Version>
-  >;
-  readonly failure: (
-    failure: AdapterFailure,
-  ) => Effect.Effect<SourceExecutionFailure<AdapterFailure>, SourceRuntimeFailure>;
+> extends SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased> {
   readonly materializedSource: <
     Row extends object = object,
     const Options extends SourceLifecycleOptions<Materialized, Row> = SourceLifecycleOptions<
@@ -515,12 +552,15 @@ export interface SourceAdapterHandle<
     options: ExactDefinitionOptions<Options, SourceLifecycleOptions<Materialized, Row>> &
       RejectAnyOrUnknown<SourceLifecycleOptions<Materialized, Row>>,
     retryPolicy?: SourceRetryPolicy<AdapterFailure, RetryServices>,
-  ) => SourceDefinition<
-    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
-    "materialized",
-    SourceLifecycleOptions<Materialized, Row>,
-    readonly [],
-    RetryServices,
+  ) => SourceDefinitionFactoryResult<
+    SourceDefinition<
+      SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+      "materialized",
+      Options,
+      readonly [],
+      RetryServices,
+      Row
+    >,
     Row
   >;
   readonly leasedSource: <
@@ -533,20 +573,16 @@ export interface SourceAdapterHandle<
     options: ExactDefinitionOptions<Options, SourceLifecycleOptions<Leased, Row>> &
       RejectAnyOrUnknown<SourceLifecycleOptions<Leased, Row>>,
     retryPolicy?: SourceRetryPolicy<AdapterFailure, RetryServices>,
-  ) => SourceDefinition<
-    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
-    "leased",
-    SourceLifecycleOptions<Leased, Row>,
-    RouteFields,
-    RetryServices,
+  ) => SourceDefinitionFactoryResult<
+    SourceDefinition<
+      SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+      "leased",
+      Options,
+      RouteFields,
+      RetryServices,
+      Row
+    >,
     Row
-  >;
-  readonly [SourceAdapterTypeId]: () => SourceAdapterHandle<
-    Name,
-    Version,
-    AdapterFailure,
-    Materialized,
-    Leased
   >;
 }
 
@@ -582,20 +618,30 @@ export interface SourceDefinition<
   RouteFields extends ReadonlyArray<string>,
   RetryServices = never,
   Row extends object = object,
+  AdapterFailure = SourceAdapterFailure<Adapter>,
+  AdapterMetrics = SourceLifecycleMetrics<SourceAdapterLifecycleDeclaration<Adapter, Lifecycle>>,
+  RejectionLocation = SourceLifecycleLocation<
+    SourceAdapterLifecycleDeclaration<Adapter, Lifecycle>
+  >,
+  LaneId extends string = string,
 > {
   readonly adapter: Adapter;
   readonly identity: Adapter extends { readonly identity: infer Identity } ? Identity : never;
   readonly lifecycle: Lifecycle;
   readonly options: Options;
   readonly routeBy: RouteFields;
-  readonly retry: SourceRetrySelection<SourceAdapterFailure<Adapter>, RetryServices>;
+  readonly retry: SourceRetrySelection<AdapterFailure, RetryServices>;
   readonly [SourceDefinitionTypeId]: () => SourceDefinition<
     Adapter,
     Lifecycle,
     Options,
     RouteFields,
     RetryServices,
-    Row
+    Row,
+    AdapterFailure,
+    AdapterMetrics,
+    RejectionLocation,
+    LaneId
   >;
   readonly [SourceDefinitionTypesTypeId]: {
     readonly adapter: Adapter;
@@ -604,6 +650,12 @@ export interface SourceDefinition<
     readonly retryServices?: RetryServices;
     readonly routeFields: RouteFields;
     readonly row?: Row;
+    readonly diagnostics?: {
+      readonly adapterFailure: AdapterFailure;
+      readonly adapterMetrics: AdapterMetrics;
+      readonly rejectionLocation: RejectionLocation;
+      readonly laneId: LaneId;
+    };
   };
 }
 
@@ -626,6 +678,63 @@ export type SourceAdapterFailure<Adapter> = Adapter extends {
 }
   ? AdapterFailure
   : never;
+
+type SourceAdapterLifecycleDeclaration<
+  Adapter,
+  Lifecycle extends SourceLifecycle,
+> = Lifecycle extends "materialized"
+  ? Adapter extends { readonly materialized: infer Declaration }
+    ? Exclude<Declaration, undefined>
+    : never
+  : Adapter extends { readonly leased: infer Declaration }
+    ? Exclude<Declaration, undefined>
+    : never;
+
+type SourceDefinitionDiagnostics<Definition> = Definition extends {
+  readonly [SourceDefinitionTypesTypeId]: {
+    readonly diagnostics?: infer Diagnostics;
+  };
+}
+  ? Exclude<Diagnostics, undefined>
+  : never;
+
+export type SourceDefinitionAdapterFailure<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly adapterFailure: infer AdapterFailure;
+  }
+    ? AdapterFailure
+    : SourceAdapterFailure<SourceDefinitionAdapter<Definition>>;
+
+export type SourceDefinitionAdapterMetrics<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly adapterMetrics: infer AdapterMetrics;
+  }
+    ? AdapterMetrics
+    : SourceLifecycleMetrics<
+        SourceAdapterLifecycleDeclaration<
+          SourceDefinitionAdapter<Definition>,
+          Extract<SourceDefinitionLifecycle<Definition>, SourceLifecycle>
+        >
+      >;
+
+export type SourceDefinitionRejectionLocation<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly rejectionLocation: infer RejectionLocation;
+  }
+    ? RejectionLocation
+    : SourceLifecycleLocation<
+        SourceAdapterLifecycleDeclaration<
+          SourceDefinitionAdapter<Definition>,
+          Extract<SourceDefinitionLifecycle<Definition>, SourceLifecycle>
+        >
+      >;
+
+export type SourceDefinitionLaneId<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly laneId: infer LaneId extends string;
+  }
+    ? LaneId
+    : string;
 
 export type SourceDefinitionAdapter<Definition> = Definition extends {
   readonly [SourceDefinitionTypesTypeId]: {
@@ -725,11 +834,13 @@ type ExactLifecycleDeclaration<Declaration> = [Declaration] extends [undefined]
       : unknown
     : unknown;
 
-type ExactDefinitionOptions<Candidate, Expected> = Candidate extends Expected
-  ? Exclude<keyof Candidate, keyof Expected> extends never
-    ? Candidate
-    : never
-  : never;
+type ExactDefinitionOptions<Candidate, Expected> = Candidate &
+  Expected &
+  (Candidate extends object
+    ? {
+        readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
+      }
+    : unknown);
 
 type IsAny<Value> = 0 extends 1 & Value ? true : false;
 
@@ -752,7 +863,7 @@ type RejectUnsafeLifecycleDeclaration<Declaration> = [Exclude<Declaration, undef
     : unknown;
 
 const hasSelfBrand = (value: unknown, key: symbol): boolean => {
-  if (typeof value !== "object" || value === null) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
     return false;
   }
   const inspected = Result.try(() => Reflect.get(value, key));
@@ -761,6 +872,24 @@ const hasSelfBrand = (value: unknown, key: symbol): boolean => {
   }
   const branded = Result.try(() => Reflect.apply(inspected.success, undefined, []));
   return Result.isSuccess(branded) && branded.success === value;
+};
+
+const sourceExecutable = <Value extends object>(value: Value): Value => {
+  if (hasSelfBrand(value, SourceExecutableTypeId)) {
+    return value;
+  }
+  if (
+    (typeof value !== "object" && typeof value !== "function") ||
+    value === null ||
+    !Object.isExtensible(value)
+  ) {
+    throw new TypeError("Source Adapter executable values must be extensible objects.");
+  }
+  Object.defineProperty(value, SourceExecutableTypeId, {
+    enumerable: false,
+    value: () => value,
+  });
+  return Object.freeze(value);
 };
 
 const hasExactEnumerableDataKeys = (
@@ -819,7 +948,12 @@ function snapshotValue(value: unknown, active = new WeakSet<object>()): unknown 
     return Object.freeze(snapshot);
   }
   if (typeof value === "object" && value !== null) {
-    if (Schema.isSchema(value) || Effect.isEffect(value) || Schedule.isSchedule(value)) {
+    if (
+      hasSelfBrand(value, SourceExecutableTypeId) ||
+      Schema.isSchema(value) ||
+      Effect.isEffect(value) ||
+      Schedule.isSchedule(value)
+    ) {
       return value;
     }
     const prototype = Object.getPrototypeOf(value);
@@ -883,12 +1017,15 @@ const makeDefinition = <
   options: Options,
   routeBy: RouteFields,
   retryPolicy: SourceRetryPolicy<AdapterFailure, RetryServices> | undefined,
-): SourceDefinition<
-  SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
-  Lifecycle,
-  Options,
-  RouteFields,
-  RetryServices,
+): SourceDefinitionFactoryResult<
+  SourceDefinition<
+    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+    Lifecycle,
+    Options,
+    RouteFields,
+    RetryServices,
+    Row
+  >,
   Row
 > => {
   const capturedOptions = snapshotValue(options);
@@ -916,6 +1053,182 @@ const makeDefinition = <
     }),
   });
   return definition;
+};
+
+const makeDescriptorDefinition = <
+  Name extends string,
+  Version extends string | undefined,
+  AdapterFailure,
+  Materialized extends SourceLifecycleDeclarationAny | undefined,
+  Leased extends SourceLifecycleDeclarationAny | undefined,
+  Lifecycle extends SourceLifecycle,
+  Options,
+  RouteFields extends ReadonlyArray<string>,
+  RetryServices,
+  Row extends object,
+>(
+  adapter: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
+  lifecycle: Lifecycle,
+  options: Options,
+  routeBy: RouteFields,
+  retryPolicy: SourceRetryPolicy<AdapterFailure, RetryServices> | undefined,
+): SourceDefinitionFactoryResult<
+  SourceDefinition<
+    SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
+    Lifecycle,
+    Options,
+    RouteFields,
+    RetryServices,
+    Row
+  >,
+  Row
+> => {
+  const capturedOptions = snapshotValue(options);
+  const capturedRouteBy = snapshotValue(routeBy);
+  const definition: SourceDefinition<
+    SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
+    Lifecycle,
+    Options,
+    RouteFields,
+    RetryServices,
+    Row
+  > = Object.freeze({
+    adapter,
+    identity: adapter.identity,
+    lifecycle,
+    options: capturedOptions,
+    routeBy: capturedRouteBy,
+    retry: retrySelection(retryPolicy),
+    [SourceDefinitionTypeId]: () => definition,
+    [SourceDefinitionTypesTypeId]: Object.freeze({
+      adapter,
+      lifecycle,
+      options: capturedOptions,
+      routeFields: capturedRouteBy,
+    }),
+  });
+  return definition;
+};
+
+export const makeMaterializedSourceDefinition = <
+  const Name extends string,
+  const Version extends string | undefined,
+  AdapterFailure,
+  const Materialized extends SourceLifecycleDeclarationAny,
+  const Leased extends SourceLifecycleDeclarationAny | undefined,
+  Row extends object = object,
+  const Options extends SourceLifecycleOptions<Materialized, Row> = SourceLifecycleOptions<
+    Materialized,
+    Row
+  >,
+  RetryServices = never,
+>(
+  adapter: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+  options: ExactDefinitionOptions<Options, SourceLifecycleOptions<Materialized, Row>> &
+    RejectAnyOrUnknown<SourceLifecycleOptions<Materialized, Row>>,
+  retryPolicy?: SourceRetryPolicy<AdapterFailure, RetryServices>,
+): SourceDefinitionFactoryResult<
+  SourceDefinition<
+    SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
+    "materialized",
+    Options,
+    readonly [],
+    RetryServices,
+    Row
+  >,
+  Row
+> => {
+  if (sourceAdapterHandles.get(adapter) !== adapter) {
+    throw new TypeError(
+      "Source Adapter delegated construction requires a nominal Source Adapter handle.",
+    );
+  }
+  if (adapter.materialized === undefined) {
+    throw new TypeError("This Source Adapter does not declare a Materialized lifecycle.");
+  }
+  return makeDescriptorDefinition(
+    makeSourceAdapterDescriptor(adapter),
+    "materialized",
+    options,
+    [],
+    retryPolicy,
+  );
+};
+
+const registeredHandleMatchesDescriptor = <
+  const Name extends string,
+  const Version extends string | undefined,
+  AdapterFailure,
+  const Materialized extends SourceLifecycleDeclarationAny | undefined,
+  const Leased extends SourceLifecycleDeclarationAny | undefined,
+>(
+  candidate: unknown,
+  descriptor: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
+): candidate is SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased> =>
+  typeof candidate === "object" &&
+  candidate !== null &&
+  sourceAdapterHandles.get(descriptor) === candidate &&
+  sourceAdapterHandles.get(candidate) === candidate;
+
+const registeredDescriptorMatchesHandle = <
+  const Name extends string,
+  const Version extends string | undefined,
+  AdapterFailure,
+  const Materialized extends SourceLifecycleDeclarationAny | undefined,
+  const Leased extends SourceLifecycleDeclarationAny | undefined,
+>(
+  candidate: unknown,
+  handle: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+): candidate is SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased> =>
+  typeof candidate === "object" &&
+  candidate !== null &&
+  sourceAdapterHandles.get(candidate) === handle;
+
+export const resolveSourceAdapterHandle = <
+  const Name extends string,
+  const Version extends string | undefined,
+  AdapterFailure,
+  const Materialized extends SourceLifecycleDeclarationAny | undefined,
+  const Leased extends SourceLifecycleDeclarationAny | undefined,
+>(
+  adapter: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>,
+): SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased> => {
+  const handle = sourceAdapterHandles.get(adapter);
+  if (!registeredHandleMatchesDescriptor(handle, adapter)) {
+    throw new TypeError("Source Adapter descriptor is not linked to a nominal handle.");
+  }
+  return handle;
+};
+
+export const makeSourceAdapterDescriptor = <
+  const Name extends string,
+  const Version extends string | undefined,
+  AdapterFailure,
+  const Materialized extends SourceLifecycleDeclarationAny | undefined,
+  const Leased extends SourceLifecycleDeclarationAny | undefined,
+>(
+  handle: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+): SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased> => {
+  const existing = sourceAdapterDescriptors.get(handle);
+  if (registeredDescriptorMatchesHandle(existing, handle)) {
+    return existing;
+  }
+  if (sourceAdapterHandles.get(handle) !== handle) {
+    throw new TypeError("Source Adapter descriptor requires a nominal Source Adapter handle.");
+  }
+  const descriptor: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased> = {
+    identity: handle.identity,
+    failureSchema: handle.failureSchema,
+    materialized: handle.materialized,
+    leased: handle.leased,
+    runtimeService: handle.runtimeService,
+    failure: handle.failure,
+    [SourceAdapterTypeId]: SourceAdapterTypeId,
+  };
+  Object.freeze(descriptor);
+  sourceAdapterHandles.set(descriptor, handle);
+  sourceAdapterDescriptors.set(handle, descriptor);
+  return descriptor;
 };
 
 export const makeSourceAdapter = <
@@ -1015,9 +1328,11 @@ export const makeSourceAdapter = <
       }
       return makeDefinition(handle, "leased", options, routeBy, retryPolicy);
     },
-    [SourceAdapterTypeId]: () => handle,
+    [SourceAdapterTypeId]: SourceAdapterTypeId,
   };
   Object.freeze(handle);
+  sourceAdapterHandles.set(handle, handle);
+  makeSourceAdapterDescriptor(handle);
   return handle;
 };
 
@@ -1064,10 +1379,10 @@ export function isSourceAdapterHandle<
   AdapterFailure,
   Materialized extends SourceLifecycleDeclarationAny | undefined,
   Leased extends SourceLifecycleDeclarationAny | undefined,
->(value: SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>): boolean;
+>(value: SourceAdapterDescriptor<Name, Version, AdapterFailure, Materialized, Leased>): boolean;
 export function isSourceAdapterHandle(
   value: unknown,
-): value is SourceAdapterHandle<
+): value is SourceAdapterDescriptor<
   string,
   string | undefined,
   unknown,
@@ -1075,7 +1390,12 @@ export function isSourceAdapterHandle(
   SourceLifecycleDeclarationAny | undefined
 >;
 export function isSourceAdapterHandle(value: unknown): boolean {
-  return hasSelfBrand(value, SourceAdapterTypeId);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    sourceAdapterHandles.has(value) &&
+    Reflect.get(value, SourceAdapterTypeId) === SourceAdapterTypeId
+  );
 }
 
 const hasExactDefinitionDataKeys = (
@@ -1130,7 +1450,7 @@ const validateSourceDefinitionEnvelope = (value: unknown): boolean => {
   if (
     typeof adapter !== "object" ||
     adapter === null ||
-    !hasSelfBrand(adapter, SourceAdapterTypeId) ||
+    !isSourceAdapterHandle(adapter) ||
     !Object.isFrozen(adapter) ||
     Reflect.get(adapter, "identity") !== identity ||
     (lifecycle !== "materialized" && lifecycle !== "leased") ||
@@ -1312,18 +1632,14 @@ export const markSourceToolkit = <
   toolkit: Omit<
     SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic>,
     typeof SourceToolkitTypeId
-  > & {
-    readonly decodeUpsert: (
-      row: unknown,
-    ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
-  },
+  >,
 ): SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic> => {
   const nominal: SourceToolkitInternal<Row, AdapterFailure, RejectionLocation, Services, Topic> = {
     ...toolkit,
+    decodeUpsert: toolkit.decodeUpsert,
     [SourceToolkitDecodeTypeId]: toolkit.decodeUpsert,
     [SourceToolkitTypeId]: () => nominal,
   };
-  Reflect.deleteProperty(nominal, "decodeUpsert");
   Object.freeze(nominal);
   return nominal;
 };
@@ -1379,8 +1695,11 @@ export const makeRuntimeSourceFailure = (
 });
 
 export const SourceAdapter = {
+  descriptor: makeSourceAdapterDescriptor,
   definitionOptions: sourceDefinitionOptions,
   definitionOptionsFamily: sourceDefinitionOptionsFamily,
+  executable: sourceExecutable,
+  materializedSource: makeMaterializedSourceDefinition,
   make: makeSourceAdapter,
 } as const;
 

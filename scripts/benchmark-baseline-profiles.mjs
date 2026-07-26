@@ -2,6 +2,8 @@ import {
   groupedAggregateTask,
   groupedKeyWidthTask,
   groupedWriteTask,
+  kafkaSourceAdapterBrokerTask,
+  kafkaSourceAdapterTask,
   queryDeltaOperationsTask,
   rawActiveRetainedDeltaTask,
   rawLargeMembershipTask,
@@ -209,6 +211,23 @@ export const profiles = new Map([
       reactInMemoryTask("chromium", 20, {
         VIEW_SERVER_REACT_BENCH_BATCH_SIZE: "10",
         ...commonReactSmokeEnv,
+      }),
+    ],
+  ],
+  [
+    "kafka-source-adapter",
+    [
+      kafkaSourceAdapterTask(64, 64, {
+        VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS: "5",
+        VIEW_SERVER_KAFKA_SOURCE_BENCH_TIME_MS: "0",
+        VIEW_SERVER_KAFKA_SOURCE_BENCH_WARMUP_ITERATIONS: "1",
+        VIEW_SERVER_KAFKA_SOURCE_BENCH_WARMUP_TIME_MS: "0",
+      }),
+      kafkaSourceAdapterBrokerTask(64, {
+        VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_ITERATIONS: "5",
+        VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_TIME_MS: "1",
+        VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_WARMUP_ITERATIONS: "1",
+        VIEW_SERVER_KAFKA_SOURCE_BROKER_BENCH_WARMUP_TIME_MS: "1",
       }),
     ],
   ],

@@ -640,7 +640,7 @@ describe("benchmark baseline runner", () => {
     }).toStrictEqual({
       exitCode: 1,
       message:
-        "Unknown benchmark baseline profile: missing\nAvailable profiles: smoke, kafka-ingest, kafka-sustained-firehose, grpc-source-adapter, grpc-materialized, grpc-leased, grpc-leased-retained, websocket-firehose, active-query-sharing, raw-read-write, grouped-admission, grouped-order-neutral, release",
+        "Unknown benchmark baseline profile: missing\nAvailable profiles: smoke, kafka-source-adapter, kafka-ingest, kafka-sustained-firehose, grpc-source-adapter, grpc-materialized, grpc-leased, grpc-leased-retained, websocket-firehose, active-query-sharing, raw-read-write, grouped-admission, grouped-order-neutral, release",
     });
   });
 

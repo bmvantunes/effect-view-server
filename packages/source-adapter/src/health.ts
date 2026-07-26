@@ -2,15 +2,15 @@ import { Schema } from "effect";
 import { sourceExecutionFailureSchema } from "./model";
 import type {
   SourceAdapterIdentity,
-  SourceAdapterFailure,
   SourceBufferMetrics,
-  SourceDefinitionAdapter,
+  SourceDefinitionAdapterFailure,
+  SourceDefinitionAdapterMetrics,
+  SourceDefinitionLaneId,
   SourceDefinitionLifecycle,
+  SourceDefinitionRejectionLocation,
   SourceDefinitionRouteFields,
   SourceItemRejectionDiagnostic,
   SourceLifecycle,
-  SourceLifecycleLocation,
-  SourceLifecycleMetrics,
   SourceTargetForLifecycle,
   SourceTermination,
 } from "./model";
@@ -22,28 +22,18 @@ export type SourceRouteForDefinition<Definition, Row extends object> = {
   >]: Row[Field];
 };
 
-type SourceDeclarationForDefinition<Definition> =
-  SourceDefinitionAdapter<Definition> extends infer Adapter
-    ? SourceDefinitionLifecycle<Definition> extends "materialized"
-      ? Adapter extends { readonly materialized: infer Declaration }
-        ? Declaration
-        : never
-      : Adapter extends { readonly leased: infer Declaration }
-        ? Declaration
-        : never
-    : never;
-
 type SourceLifecycleForDefinition<Definition> =
   SourceDefinitionLifecycle<Definition> extends SourceLifecycle
     ? SourceDefinitionLifecycle<Definition>
     : never;
 
 export type SourceHealthForDefinition<Definition, Row extends object> = SourceHealth<
-  SourceAdapterFailure<SourceDefinitionAdapter<Definition>>,
+  SourceDefinitionAdapterFailure<Definition>,
   SourceRouteForDefinition<Definition, Row>,
-  SourceLifecycleMetrics<SourceDeclarationForDefinition<Definition>>,
-  SourceLifecycleLocation<SourceDeclarationForDefinition<Definition>>,
-  SourceLifecycleForDefinition<Definition>
+  SourceDefinitionAdapterMetrics<Definition>,
+  SourceDefinitionRejectionLocation<Definition>,
+  SourceLifecycleForDefinition<Definition>,
+  SourceDefinitionLaneId<Definition>
 >;
 
 export type SourceHealthResultForDefinition<Definition, Row extends object> =
@@ -54,12 +44,12 @@ export type SourceHealthResultForDefinition<Definition, Row extends object> =
       >
     : MaterializedSourceHealthResult<SourceHealthForDefinition<Definition, Row>>;
 
-export type SourceLaneRuntimeMetrics = {
-  readonly id: string;
+export type SourceLaneRuntimeMetrics<LaneId extends string = string> = {
+  readonly id: LaneId;
   readonly buffer: SourceBufferMetrics;
 };
 
-export type SourceRuntimeMetrics = {
+export type SourceRuntimeMetrics<LaneId extends string = string> = {
   readonly startedAtNanos: bigint;
   readonly lastAttemptStartedAtNanos: bigint;
   readonly lastDeliveryAtNanos: bigint | null;
@@ -77,7 +67,10 @@ export type SourceRuntimeMetrics = {
   readonly completedSettlementCount: bigint;
   readonly failedSettlementCount: bigint;
   readonly retainedRowCount: number;
-  readonly lanes: readonly [SourceLaneRuntimeMetrics, ...ReadonlyArray<SourceLaneRuntimeMetrics>];
+  readonly lanes: readonly [
+    SourceLaneRuntimeMetrics<LaneId>,
+    ...ReadonlyArray<SourceLaneRuntimeMetrics<LaneId>>,
+  ];
 };
 
 export type SourceStoppingReason = "runtime-shutdown" | "lease-release";
@@ -133,12 +126,13 @@ export type SourceHealth<
   AdapterMetrics,
   RejectionLocation,
   Lifecycle extends SourceLifecycle = SourceLifecycle,
+  LaneId extends string = string,
 > = {
   readonly adapter: SourceAdapterIdentity;
   readonly target: SourceTargetForLifecycle<Lifecycle, Route>;
   readonly status: SourceStatus<AdapterFailure, RejectionLocation>;
   readonly metrics: {
-    readonly runtime: SourceRuntimeMetrics;
+    readonly runtime: SourceRuntimeMetrics<LaneId>;
     readonly adapter: AdapterMetrics;
   };
   readonly sampledAtNanos: bigint;

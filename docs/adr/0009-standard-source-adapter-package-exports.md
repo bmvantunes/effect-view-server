@@ -3,9 +3,9 @@
 ## Status
 
 Accepted. Issue #384 implements and verifies the View Server SDK exports and the
-reusable published-adapter package conformance contract. Issue #385 implements
-the first-party Kafka `/contract`, `/server`, and `/node` exports. The matching
-gRPC exports remain staged in issue #386.
+reusable published-adapter package conformance contract. Issues #385 and #386
+implement the first-party Kafka and gRPC `/contract`, `/server`, and `/node`
+exports.
 
 ## Context
 
@@ -29,7 +29,10 @@ The publishable View Server package will expose the SDK through exactly three ma
 
 Adapter packages do not import internal workspace packages, `src` paths, `dist` paths, or unapproved nested SDK modules. View Server package-export checks cover all three approved modules and reject those deep alternatives.
 
-Kafka and gRPC will prove the extension seam by becoming ordinary first-party SDK consumers. Because this repository publishes only the `effect-view-server` package, their planned standard adapter surfaces are these package subpaths:
+gRPC proves the extension seam as an ordinary first-party SDK consumer; Kafka
+will complete the pair in issue #385. Because this repository publishes only
+the `effect-view-server` package, the standard adapter surfaces are these
+package subpaths:
 
 - `effect-view-server/kafka/contract`
 - `effect-view-server/kafka/server`
@@ -117,9 +120,9 @@ The aggregate platform Layer owns reusable infrastructure only: transports, conn
 
 Materialized and Leased are the only SDK Source Lifecycle primitives, but the SDK does not force every adapter to publish methods literally named `.materialized(...)` and `.leased(...)`. An adapter may expose domain-appropriate browser-safe wrappers such as Kafka `source(...)`, gRPC `materialized(...)` and `leased(...)`, or another transport-specific constructor name. Each wrapper must create exactly one nominal SDK Materialized or Leased Source Definition, and conformance proves the recorded lifecycle independently of public method spelling. Adapter-specific naming cannot introduce a third lifecycle.
 
-The Source Adapter SDK provides a mandatory conformance kit, not only reusable shape assertions. For every supported Source Lifecycle, the adapter's own tests supply a controllable transport Layer that can acquire a Source Attempt, emit valid deliveries, fail acquisition or Stream execution with the exact adapter failure, complete unexpectedly, expose local metrics changes, and observe scoped finalization. A leased lifecycle's driver also makes exact-route acquisition, same-route sharing, distinct-route isolation, and final release observable. The kit uses `@effect/vitest` Layer-scoped suites, scoped Effects, and TestClock rather than hidden ManagedRuntimes or wall-clock sleeps.
+The Source Adapter SDK provides a mandatory conformance kit, not only reusable shape assertions. For every supported Source Lifecycle, the adapter's own tests supply a controllable transport Layer that can acquire a Source Attempt, emit its real transport event model, fail acquisition or Stream execution with the exact adapter failure, complete unexpectedly, expose local metrics changes, and observe scoped finalization. A leased lifecycle's driver also makes exact-route acquisition, same-route sharing, distinct-route isolation, and final release observable. Every event model runs the same mandatory readiness, retry, rejection, completion, metrics-cadence, finalization, and Leased sharing invariants. The kit uses `@effect/vitest` Layer-scoped suites, scoped Effects, and TestClock rather than hidden ManagedRuntimes or wall-clock sleeps.
 
-The behavioral suite verifies acquisition readiness, sequential delivery and mutation ordering within a lane, concurrent sibling lanes, whole-attempt termination when one lane fails or completes, settlement on every application Exit, item-local Source Item Rejection recording and continuation, sticky Degraded health, rejection-settlement failure, retry timing and exhaustion, recovery, interruption, awaited idempotent finalization, mandatory metrics and invalid-metrics termination, bounded-buffer behavior when the adapter uses a callback bridge, and leased route sharing and cleanup. It rejects empty lane collections, empty or duplicate lane IDs, IDs that change across retry, missing per-lane buffer metrics, raw payloads in rejection diagnostics, and Source Item Rejections that lack exact safe location. Package conformance separately verifies export presence, nominal Source Definition/runtime-service linkage and lookalike rejection, exact failure, metrics, and rejection-location Schemas, positive and negative public type inference, required peer dependencies, forbidden dependency resolution, duplicate bundled SDK or Effect code, and browser bundling. Platform conformance verifies aggregate Layers reject empty, missing, extra, or duplicate logical-client entries and satisfy their exact runtime services. A published adapter is not conformant merely because its TypeScript values structurally fit. First-party Kafka and gRPC modules pass the same complete kit required of third-party adapters and may not use a privileged internal Runtime Core path.
+After the mandatory lifecycle invariants, the behavioral suite selects only transport capabilities rather than adapter identities. Complete-delivery adapters verify multi-mutation ordering, concurrent sibling lanes, settlement on every application Exit, rejection-settlement failure, invalid metrics, and invalid or changing attempt/lane shapes. Continuous-upsert adapters such as gRPC verify ordered decoded-message Upserts, item rejection continuation, sticky Degraded health, and their infallible no-op settlement through the real response-stream path. SDK attempt-shape and fallible-settlement invariants are certified by the complete-delivery fixture instead of being fabricated inside transports that cannot produce them. Callback-bridge adapters additionally verify their real bounded-buffer behavior. Package conformance separately verifies export presence, nominal Source Definition/runtime-service linkage and lookalike rejection, exact failure, metrics, and rejection-location Schemas, positive and negative public type inference, required peer dependencies, forbidden dependency resolution, duplicate bundled SDK or Effect code, and browser bundling. Platform conformance verifies aggregate Layers reject empty, missing, extra, or duplicate logical-client entries and satisfy their exact runtime services. A published adapter is not conformant merely because its TypeScript values structurally fit. First-party Kafka and gRPC modules use the same public capability-selected kit required of third-party adapters and may not use a privileged internal Runtime Core path.
 
 Adapter authors declare the portable contract once:
 

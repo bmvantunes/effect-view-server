@@ -5,6 +5,7 @@ const declarationBuildTask = "build:effect-declarations";
 const declarationProjects = [
   { name: "effect-utils", directory: "packages/effect-utils", dependsOn: [] },
   { name: "source-adapter", directory: "packages/source-adapter", dependsOn: [] },
+  { name: "grpc", directory: "packages/grpc", dependsOn: ["source-adapter"] },
   {
     name: "source-adapter-testing",
     directory: "packages/source-adapter-testing",
@@ -81,6 +82,11 @@ const diagnosticsProjects = [
     name: "source-adapter",
     project: "packages/source-adapter",
     declarationTask: declarationTaskName("source-adapter"),
+  },
+  {
+    name: "grpc",
+    project: "packages/grpc",
+    declarationTask: declarationTaskName("grpc"),
   },
   {
     name: "source-adapter-testing",

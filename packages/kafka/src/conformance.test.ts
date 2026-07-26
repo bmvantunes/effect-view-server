@@ -544,6 +544,7 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
     expectations: {
       materialized: {
         acquisitionFailure,
+        partialAcquisitionFinalizationCount: 1n,
         streamFailure,
         settlementFailure,
         rejectionFailure,

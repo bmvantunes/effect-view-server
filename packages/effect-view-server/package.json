@@ -76,6 +76,18 @@
       "types": "./dist/in-memory-testing.d.ts",
       "import": "./dist/in-memory-testing.js"
     },
+    "./grpc/contract": {
+      "types": "./dist/grpc-contract.d.ts",
+      "import": "./dist/grpc-contract.js"
+    },
+    "./grpc/server": {
+      "types": "./dist/grpc-server.d.ts",
+      "import": "./dist/grpc-server.js"
+    },
+    "./grpc/node": {
+      "types": "./dist/grpc-node.d.ts",
+      "import": "./dist/grpc-node.js"
+    },
     "./kafka/contract": {
       "types": "./dist/kafka-contract.d.ts",
       "import": "./dist/kafka-contract.js"
@@ -135,6 +147,7 @@
     "@effect-view-server/client": "workspace:*",
     "@effect-view-server/column-live-view-engine": "workspace:*",
     "@effect-view-server/config": "workspace:*",
+    "@effect-view-server/grpc": "workspace:*",
     "@effect-view-server/in-memory": "workspace:*",
     "@effect-view-server/kafka": "workspace:*",
     "@effect-view-server/react": "workspace:*",

@@ -25,6 +25,20 @@ registerSourceAdapterConformance({
 });
 
 registerSourceAdapterConformance({
+  name: "Controllable Source Adapter materialized continuous-upserts conformance",
+  layer: driverLayer,
+  materialized: true,
+  eventModel: "continuous-upserts",
+});
+
+registerSourceAdapterConformance({
+  name: "Controllable Source Adapter leased continuous-upserts conformance",
+  layer: driverLayer,
+  leased: true,
+  eventModel: "continuous-upserts",
+});
+
+registerSourceAdapterConformance({
   name: "Controllable Source Adapter callback conformance",
   layer: driverLayer,
   materialized: true,
@@ -53,5 +67,18 @@ describe("Source Adapter conformance registration", () => {
         },
       ]),
     ).toThrow("callback conformance requires materialized lifecycle conformance");
+  });
+
+  it("rejects an unknown transport event model at runtime", () => {
+    expect(() =>
+      Reflect.apply(registerSourceAdapterConformance, undefined, [
+        {
+          name: "unknown-profile",
+          layer: driverLayer,
+          materialized: true,
+          eventModel: "unknown",
+        },
+      ]),
+    ).toThrow("supported transport event model");
   });
 });

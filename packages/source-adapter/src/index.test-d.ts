@@ -25,6 +25,7 @@ import {
   SourceBuffer,
   type BackpressurableSourceBuffer,
   type NonPausableSourceBuffer,
+  type SourceAdapterServerDefinitionEntry,
   type SourceAdapterServerLifecycle,
 } from "./server";
 import { Chunk, Context, Effect, Layer, Schedule, Schema, Scope, Stream } from "effect";
@@ -306,6 +307,18 @@ const serverLayer = SourceAdapterServer.make(adapter, {
   materialized: materializedLifecycle,
   leased: leasedLifecycle,
 });
+const serverDefinitions = SourceAdapterServer.definitions(
+  {
+    topics: {
+      materialized: { source: materialized },
+      leased: { source: leased },
+    },
+  },
+  adapter,
+);
+expectTypeOf(serverDefinitions).toEqualTypeOf<
+  ReadonlyArray<SourceAdapterServerDefinitionEntry<typeof adapter>>
+>();
 
 const _invalidMetricsLifecycle: SourceAdapterServerLifecycle<
   typeof Failure.Type,

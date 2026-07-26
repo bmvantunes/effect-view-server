@@ -109,6 +109,7 @@ const builtPackageDriver = makeSourceAdapterConformanceDriver({
   expectations: {
     materialized: {
       acquisitionFailure: undefined,
+      partialAcquisitionFinalizationCount: 1n,
       streamFailure: undefined,
       settlementFailure: undefined,
       rejectionFailure: () => undefined,
@@ -118,6 +119,7 @@ const builtPackageDriver = makeSourceAdapterConformanceDriver({
     },
     leased: {
       acquisitionFailure: undefined,
+      partialAcquisitionFinalizationCount: 1n,
       streamFailure: undefined,
       settlementFailure: undefined,
       rejectionFailure: () => undefined,

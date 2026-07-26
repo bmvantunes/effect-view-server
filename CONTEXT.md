@@ -4,7 +4,7 @@ This context defines the language for the View Server project: a type-safe live 
 
 ## Document Status
 
-Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, canonical `source` path, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, conformance foundation, and first-party Kafka Source Adapter described here are implemented. First-party gRPC conversion, the React Source Diagnostics hook, and final removal of transport-specific source shapes remain staged work.
+Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, canonical `source` path, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, conformance foundation, and first-party Kafka and gRPC Source Adapters described here are implemented. The React Source Diagnostics hook and final removal of transport-specific source shapes remain staged work.
 
 ## Language
 
@@ -275,12 +275,12 @@ _Avoid_: Guessed field value, implicit string field, server-side key reconstruct
 ### Ingestion Concepts
 
 The Source Adapter concepts in this section describe the implemented core SDK,
-Runtime Core path, and first-party Kafka contract, server, and Node platform
-Layers. First-party gRPC conversion and removal of the remaining
-transport-specific source shapes remain staged in issues #386 and #387.
+Runtime Core path, and first-party Kafka and gRPC contract, server, and Node
+platform Layers. Removal of the remaining transport-specific source shapes
+remains staged in issue #387.
 
 **Source Topic**:
-An external Kafka topic or future server-side source that provides messages to be mapped into a View Server Topic.
+An external Kafka topic, gRPC server stream, or other server-side source that provides messages to be mapped into a View Server Topic.
 _Avoid_: View Server Topic
 
 **Source Adapter**:
@@ -292,7 +292,7 @@ The required package-export boundary for a Source Adapter: `/contract` contains 
 _Avoid_: Adapter-specific run function, hidden Runtime, missing layerConfig, bundled Effect runtime, bundled View Server SDK, undeclared Effect platform peer, one adapter root that mixes browser contracts and broker clients, hidden platform dependency, untested conditional export
 
 **Source Adapter Conformance Kit**:
-The mandatory behavioral and package-boundary test suite exported from `effect-view-server/source-adapter/testing`. For every supported Source Lifecycle, a published adapter supplies a controllable test Layer that can acquire a Source Attempt, emit valid deliveries, fail acquisition or execution with its exact adapter failure, complete unexpectedly, expose metrics changes, and observe scoped finalization. Leased adapters additionally expose exact-route acquisition and final-release observation. The shared kit uses `@effect/vitest` scoped Layer suites and TestClock to verify readiness, sequential delivery and settlement, retry and exhaustion, interruption, finalizer completion, metrics validation, bounded-buffer behavior when used, leased sharing and cleanup, and recovery without hidden runtimes. It also verifies package exports, browser safety, peer dependencies, nominal linkage, Schemas, and positive and negative public type inference. First-party and third-party adapters meet the same contract.
+The mandatory behavioral and package-boundary test suite exported from `effect-view-server/source-adapter/testing`. For every supported Source Lifecycle, a published adapter supplies a controllable test Layer that can acquire a Source Attempt, emit its real transport event model, fail acquisition or execution with its exact adapter failure, complete unexpectedly, expose metrics changes, and observe scoped finalization. Leased adapters additionally expose exact-route acquisition and final-release observation. Every event model runs the same mandatory readiness, retry, rejection, completion, metrics-cadence, finalization, and Leased sharing invariants. The kit then verifies the semantics the real adapter can produce: complete-delivery adapters expose multi-mutation settlement and lane-shape controls, while continuous-upsert adapters such as gRPC exercise ordered decoded-message Upserts, item rejection continuation, and their infallible no-op settlement. SDK attempt-shape and fallible-settlement invariants are certified by the complete-delivery fixture rather than fabricated inside transports that cannot produce them. The shared kit uses `@effect/vitest` scoped Layer suites and TestClock and also verifies package exports, browser safety, peer dependencies, nominal linkage, Schemas, and positive and negative public type inference. First-party and third-party adapters select capabilities through the same public kit; transport names never create privileged branches.
 _Avoid_: Shape-only certification, bespoke adapter test semantics, real-time retry sleeps, optional conformance, first-party exception
 
 **Source Adapter Identity**:
@@ -671,7 +671,8 @@ _Avoid_: Browser write, send, emit
 - The Source Adapter SDK validates and snapshots its common Source Definition envelope, and adapter-specific option validation completes before the Source Adapter Runtime Service starts it.
 - Every **Source Adapter Package Surface** exposes a browser-safe `/contract`, a server-only `/server`, and optional platform-specific Layer exports such as `/node`.
 - View Server exposes the Source Adapter SDK only through `effect-view-server/source-adapter`, `effect-view-server/source-adapter/server`, and `effect-view-server/source-adapter/testing`; package export checks reject deep or internal SDK imports.
-- The first-party Kafka Source Adapter is an ordinary SDK consumer exposed through `effect-view-server/kafka/contract`, `effect-view-server/kafka/server`, and `effect-view-server/kafka/node`. The matching gRPC package surfaces remain staged in issue #386.
+- The first-party Kafka Source Adapter is an ordinary SDK consumer exposed through `effect-view-server/kafka/contract`, `effect-view-server/kafka/server`, and `effect-view-server/kafka/node`.
+- The first-party gRPC Source Adapter is an ordinary SDK consumer exposed through `effect-view-server/grpc/contract`, `effect-view-server/grpc/server`, and `effect-view-server/grpc/node`.
 - A published Source Adapter package declares `effect-view-server` and every Effect ecosystem package used by its public or runtime surfaces as peer dependencies and keeps them as development dependencies for its own build and tests; it never bundles private runtime copies of those packages.
 - While Effect remains beta or View Server remains pre-1.0, a published Source Adapter declares exact peer versions for View Server and every Effect ecosystem package it uses. After both are stable, an adapter may widen a peer range only across versions its conformance matrix executes successfully.
 - Source Adapter SDK conformance tests reject a `/contract` export that resolves Node APIs, Source Adapter Runtime Service implementations, concrete clients, platform Layers, or transport-driver packages.
@@ -683,7 +684,7 @@ _Avoid_: Browser write, send, emit
 - Any other Effect service requirements of a platform Layer remain visible in its environment and are composed by the application at the Effect boundary.
 - A published Source Adapter is conformant only when every declared Source Lifecycle runs the shared behavioral conformance kit with an adapter-supplied controllable test Layer; TypeScript shape compatibility alone is insufficient.
 - The conformance Layer must make acquisition, valid delivery, adapter failure, unexpected completion, metrics changes, and scoped finalization observable; a leased lifecycle must additionally make exact-route acquisition and final release observable.
-- The conformance kit uses Effect scoped Layer suites and TestClock to prove readiness, ordering, settlement, retry and exhaustion, interruption, finalization, metrics, bounded buffering when present, recovery, leased sharing and cleanup, and absence of hidden runtimes.
+- The conformance kit uses Effect scoped Layer suites and TestClock to prove the mandatory lifecycle invariants for every adapter, then ordering, settlement, lane-shape, and bounded-buffer semantics according to the adapter's declared transport event model.
 - Source Adapter conformance includes positive and negative public type tests, exact Schema tests, nominal-linkage rejection, package exports, required peer dependencies, duplicate-bundle rejection, and browser-safety checks.
 - Source Adapter package conformance rejects peer ranges broader than the versions covered by the adapter's conformance matrix.
 - First-party Kafka and gRPC Source Adapters pass the same conformance kit as published third-party adapters without exceptions.
@@ -735,7 +736,7 @@ _Avoid_: Browser write, send, emit
 - A shared transport outage may terminate several dependent Source Attempts, but each source remains independently supervised by its own Source Retry Policy and health state.
 - An adapter that permanently hides a source-specific subscription or consumer in its aggregate Layer is non-conformant.
 - Source Attempt finalizers are infallible and idempotent, matching Effect `acquireRelease`, Stream `onExit`, and Stream `ensuring`; View Server awaits them before reacquisition.
-- An external close rejection is recorded in mandatory Source Adapter Metrics and a structured log or span containing Source Adapter Identity, Feed Route when leased, and attempt number; it never becomes an untyped defect.
+- An external close rejection is recorded in mandatory Source Adapter Metrics and a structured log or span containing Source Adapter Identity, an opaque per-runtime Feed Route correlation reference when leased, and attempt number; View Server keeps that reference stable across retries without logging raw Route Field values, and cleanup failure never becomes an untyped defect.
 - Any expected failure that affects delivery correctness must occur during Source Attempt acquisition, Stream execution, or Source Settlement rather than being deferred to Scope cleanup.
 - Only Topic-bound SDK constructors create nominal **Source Mutations** and **Source Deliveries**; View Server rejects raw structurally compatible objects.
 - A Source Upsert constructor accepts only the exact complete Topic Row, while a Source Delete constructor accepts only the exact Topic key.

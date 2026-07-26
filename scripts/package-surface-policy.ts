@@ -63,6 +63,9 @@ export const packageSurfacePolicy = {
     "@effect-view-server/config/dist/source-query-contract.js",
     "@effect-view-server/config/dist/topic-contract.js",
     "@effect-view-server/config/src/topic-contract",
+    "@effect-view-server/grpc/src/model",
+    "@effect-view-server/grpc/model",
+    "@effect-view-server/grpc/internal",
     "@effect-view-server/config/query/raw-query-contract",
     "@effect-view-server/config/query/src/topic-contract",
     "@effect-view-server/protocol/src/protocol-json-field-codec",
@@ -347,6 +350,45 @@ export const packageSurfacePolicy = {
     {
       architecture: {
         allowedWorkspaceSpecifiers: [
+          "@effect-view-server/source-adapter",
+          "@effect-view-server/source-adapter/server",
+        ],
+        message:
+          "The gRPC Adapter may depend only on the portable/server Source Adapter SDK, never Runtime Core or View Server transports.",
+        relativeOverrides: [],
+      },
+      directory: "grpc",
+      packageName: "@effect-view-server/grpc",
+      entrypoints: [
+        {
+          exportKey: "./contract",
+          sourceEntrypoint: "src/contract.ts",
+          facade: {
+            exportKey: "./grpc/contract",
+            sourceEntrypoint: "src/grpc-contract.ts",
+          },
+        },
+        {
+          exportKey: "./server",
+          sourceEntrypoint: "src/server.ts",
+          facade: {
+            exportKey: "./grpc/server",
+            sourceEntrypoint: "src/grpc-server.ts",
+          },
+        },
+        {
+          exportKey: "./node",
+          sourceEntrypoint: "src/node.ts",
+          facade: {
+            exportKey: "./grpc/node",
+            sourceEntrypoint: "src/grpc-node.ts",
+          },
+        },
+      ],
+    },
+    {
+      architecture: {
+        allowedWorkspaceSpecifiers: [
           "@effect-view-server/client",
           "@effect-view-server/config",
           "@effect-view-server/runtime-core",
@@ -584,6 +626,21 @@ export const packageSurfacePolicy = {
       forbidden: ["defineGrpcFeed"],
       required: ["grpc"],
       workspaceSpecifier: "@effect-view-server/config/grpc",
+    },
+    {
+      forbidden: ["grpcNode", "grpcServer"],
+      required: ["grpc", "GrpcSourceAdapter", "GrpcAdapterFailure"],
+      workspaceSpecifier: "@effect-view-server/grpc/contract",
+    },
+    {
+      forbidden: ["grpcNode"],
+      required: ["grpcServer", "grpcServerLayer"],
+      workspaceSpecifier: "@effect-view-server/grpc/server",
+    },
+    {
+      forbidden: [],
+      required: ["grpcNode", "grpcNodeLayer", "grpcNodeLayerConfig"],
+      workspaceSpecifier: "@effect-view-server/grpc/node",
     },
     {
       forbidden: [],

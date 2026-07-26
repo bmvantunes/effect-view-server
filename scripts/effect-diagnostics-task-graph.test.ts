@@ -52,6 +52,7 @@ describe("strict Effect diagnostics task graph", () => {
         "@effect-view-server/client#build",
         "@effect-view-server/column-live-view-engine#build",
         "@effect-view-server/config#build",
+        "@effect-view-server/grpc#build",
         "@effect-view-server/in-memory#build",
         "@effect-view-server/kafka#build",
         "@effect-view-server/react#build",
@@ -90,10 +91,11 @@ describe("strict Effect diagnostics task graph", () => {
       serverDependency: facadePackage.devDependencies["@effect-view-server/server"],
       uniqueBuildDirectories: [...new Set(buildDirectories)],
     }).toStrictEqual({
-      buildCommands: Array.from({ length: 15 }, () => "vp pack"),
+      buildCommands: Array.from({ length: 16 }, () => "vp pack"),
       buildDirectories: [
         "packages/effect-utils",
         "packages/source-adapter",
+        "packages/grpc",
         "packages/source-adapter-testing",
         "packages/kafka",
         "packages/config",
@@ -114,6 +116,7 @@ describe("strict Effect diagnostics task graph", () => {
         dependsOn: [
           "build:effect-declarations:effect-utils",
           "build:effect-declarations:source-adapter",
+          "build:effect-declarations:grpc",
           "build:effect-declarations:source-adapter-testing",
           "build:effect-declarations:kafka",
           "build:effect-declarations:config",
@@ -131,6 +134,7 @@ describe("strict Effect diagnostics task graph", () => {
       declarationBuildTaskNames: [
         "build:effect-declarations:effect-utils",
         "build:effect-declarations:source-adapter",
+        "build:effect-declarations:grpc",
         "build:effect-declarations:source-adapter-testing",
         "build:effect-declarations:kafka",
         "build:effect-declarations:config",
@@ -230,6 +234,7 @@ describe("strict Effect diagnostics task graph", () => {
       },
       diagnosticDependencies: {
         "check:effect:source-adapter": ["build:effect-declarations:source-adapter"],
+        "check:effect:grpc": ["build:effect-declarations:grpc"],
         "check:effect:source-adapter-testing": [
           "build:effect-declarations:source-adapter-testing",
         ],
@@ -280,5 +285,13 @@ describe("strict Effect diagnostics task graph", () => {
       },
       serializedDiagnostics: [],
     });
+  });
+
+  it("serializes mandatory diagnostics and package tests that rebuild shared declarations", () => {
+    const rootPackage = JSON.parse(readFileSync("package.json", "utf8"));
+
+    expect(rootPackage.scripts.ready).toBe(
+      "vp run -r build && vp run -w check:package-exports && vp run -w check:internal-seams && vp run -w test:repository-scripts && vp check && vp run --concurrency-limit 1 -w check:effect && vp run --concurrency-limit 1 --filter '@effect-view-server/*' --filter '!@effect-view-server/runtime' test && vp run effect-view-server#test && vp run @effect-view-server/runtime#test",
+    );
   });
 });

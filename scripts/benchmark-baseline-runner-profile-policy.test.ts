@@ -44,6 +44,8 @@ describe("benchmark baseline runner", () => {
       grpcLeasedUpdate: scripts["bench:baseline:grpc-leased:update"],
       grpcMaterialized: scripts["bench:baseline:grpc-materialized"],
       grpcMaterializedUpdate: scripts["bench:baseline:grpc-materialized:update"],
+      grpcSourceAdapter: scripts["bench:baseline:grpc-source-adapter"],
+      grpcSourceAdapterUpdate: scripts["bench:baseline:grpc-source-adapter:update"],
       kafkaIngest: scripts["bench:baseline:kafka-ingest"],
       kafkaIngestUpdate: scripts["bench:baseline:kafka-ingest:update"],
       kafkaSustainedFirehose: scripts["bench:baseline:kafka-sustained-firehose"],
@@ -66,7 +68,7 @@ describe("benchmark baseline runner", () => {
       groupedOrderNeutralUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grouped-order-neutral --update-baseline",
       grpcGate:
-        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained",
+        "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w ready && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained && VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-source-adapter",
       grpcLeased: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased",
       grpcLeasedRetained: "node scripts/run-benchmark-baseline.mjs --profile=grpc-leased-retained",
       grpcLeasedRetainedRepeat:
@@ -78,6 +80,10 @@ describe("benchmark baseline runner", () => {
       grpcMaterialized: "node scripts/run-benchmark-baseline.mjs --profile=grpc-materialized",
       grpcMaterializedUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=grpc-materialized --update-baseline",
+      grpcSourceAdapter:
+        "node scripts/run-benchmark-baseline.mjs --profile=grpc-source-adapter",
+      grpcSourceAdapterUpdate:
+        "node scripts/run-benchmark-baseline.mjs --profile=grpc-source-adapter --update-baseline",
       kafkaIngest: "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest",
       kafkaIngestUpdate:
         "node scripts/run-benchmark-baseline.mjs --profile=kafka-ingest --update-baseline",
@@ -111,6 +117,7 @@ describe("benchmark baseline runner", () => {
         name !== "bench:baseline:grpc-materialized" &&
         name !== "bench:baseline:grpc-leased" &&
         name !== "bench:baseline:grpc-leased-retained" &&
+        name !== "bench:baseline:grpc-source-adapter" &&
         command === command.replace(" --no-compare", ""),
       )
       .map(([name]) => name)
@@ -132,6 +139,7 @@ describe("benchmark baseline runner", () => {
     expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:grpc-materialized");
     expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:grpc-leased");
     expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:grpc-leased-retained");
+    expect(preGrpcBenchmarkGates).not.toContain("bench:baseline:grpc-source-adapter");
   });
 
   it("keeps the gRPC gate bounded and scoped to gRPC runtime baselines", () => {
@@ -142,6 +150,7 @@ describe("benchmark baseline runner", () => {
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-materialized",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased",
       "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-leased-retained",
+      "VP_RUN_CONCURRENCY_LIMIT=1 vp run -w bench:baseline:grpc-source-adapter",
     ]);
   });
 

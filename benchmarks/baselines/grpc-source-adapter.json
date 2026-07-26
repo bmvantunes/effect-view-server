@@ -1,0 +1,72 @@
+{
+  "artifactKind": "view-server-benchmark-baseline",
+  "profile": "grpc-source-adapter",
+  "tasks": [
+    {
+      "artifactKind": "runtime-benchmark-summary",
+      "backpressureCount": 0,
+      "benchmarks": [
+        {
+          "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
+          "maxMs": 12.561290999999983,
+          "meanMs": 10.154349799999977,
+          "minMs": 9.231291000000056,
+          "name": "maps 32 decoded response messages into ordered Upserts",
+          "p99Ms": 12.561290999999983,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
+          "maxMs": 1.7816249999999627,
+          "meanMs": 1.1466251999999713,
+          "minMs": 0.9238749999999527,
+          "name": "records one Mapping rejection and continues with a valid response",
+          "p99Ms": 1.7816249999999627,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
+          "maxMs": 17.451584000000025,
+          "meanMs": 15.66450020000002,
+          "minMs": 13.331833000000074,
+          "name": "publishes one-second health samples for 32 active Leased Feeds",
+          "p99Ms": 17.451584000000025,
+          "sampleCount": 5
+        }
+      ],
+      "benchmarkCases": [
+        "maps 32 decoded response messages into ordered Upserts",
+        "records one Mapping rejection and continues with a valid response",
+        "publishes one-second health samples for 32 active Leased Feeds"
+      ],
+      "benchmarkName": "gRPC Source Adapter focused overhead benchmark",
+      "benchmarkScope": "runtime-grpc-source-adapter",
+      "cleanupLeakCount": 0,
+      "latencySource": "vitest-output-json",
+      "memoryRssTotalDeltaBytes": 77152256,
+      "minimumSampleCount": 5,
+      "mutationCount": 165,
+      "outputJsonPath": "packages/grpc/.artifacts/grpc-source-adapter-32batch-32routes.json",
+      "queuedEventCount": 0,
+      "rowCount": 32,
+      "subscriberCount": 33,
+      "summaryPath": "packages/grpc/.artifacts/grpc-source-adapter-32batch-32routes.summary.json",
+      "taskLabel": "gRPC Source Adapter 32 response batch 32 leased routes",
+      "topics": ["rows"]
+    }
+  ],
+  "thresholds": {
+    "latencyMean": {
+      "maxAbsoluteDeltaMs": 25,
+      "maxRatio": 12
+    },
+    "latencyP99": {
+      "maxAbsoluteDeltaMs": 100,
+      "maxRatio": 16
+    },
+    "memoryRssTotalDelta": {
+      "maxAbsoluteDeltaBytes": 134217728,
+      "maxRatio": 3
+    }
+  }
+}

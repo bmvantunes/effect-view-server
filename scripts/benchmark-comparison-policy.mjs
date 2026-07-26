@@ -156,6 +156,12 @@ export const grpcRuntimeBenchmarkThresholds = {
     defaultBenchmarkThresholds.throughputAggregateRowsPerSecond,
 };
 
+export const grpcSourceAdapterBenchmarkThresholds = {
+  latencyMean: grpcRuntimeBenchmarkThresholds.latencyMean,
+  latencyP99: grpcRuntimeBenchmarkThresholds.latencyP99,
+  memoryRssTotalDelta: grpcRuntimeBenchmarkThresholds.memoryRssTotalDelta,
+};
+
 export const grpcRetainedRuntimeBenchmarkThresholds = {
   ...grpcRuntimeBenchmarkThresholds,
   memoryRssTotalDelta: kafkaRssReportThresholds,
@@ -182,6 +188,8 @@ export const benchmarkThresholdsForProfile = (profile) =>
       ? websocketFirehoseBenchmarkThresholds
     : profile === "grpc-leased-retained"
       ? grpcRetainedRuntimeBenchmarkThresholds
+    : profile === "grpc-source-adapter"
+      ? grpcSourceAdapterBenchmarkThresholds
     : profile === "grpc-materialized" || profile === "grpc-leased"
       ? grpcRuntimeBenchmarkThresholds
     : defaultBenchmarkThresholds;
@@ -560,6 +568,7 @@ const benchmarkScopeRequiresExactMutationCount = (benchmarkScope) =>
   benchmarkScope === "engine-raw-large-membership" ||
   benchmarkScope === "runtime-grpc-leased" ||
   benchmarkScope === "runtime-grpc-materialized" ||
+  benchmarkScope === "runtime-grpc-source-adapter" ||
   benchmarkScope === "runtime-kafka-ingest" ||
   benchmarkScope === "runtime-websocket-firehose";
 
@@ -568,7 +577,9 @@ const benchmarkTaskRequiresExactMutationCount = (task) =>
   samplingPolicyRequiresExactMutationCount(task.samplingPolicy);
 
 const benchmarkScopeRequiresExactSampleCount = (benchmarkScope) =>
-  benchmarkScope === "engine-raw-write" || benchmarkScope === "engine-raw-large-membership";
+  benchmarkScope === "engine-raw-write" ||
+  benchmarkScope === "engine-raw-large-membership" ||
+  benchmarkScope === "runtime-grpc-source-adapter";
 
 export const compareBenchmarkArtifacts = ({
   actual: validatedActual,

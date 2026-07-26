@@ -1183,10 +1183,12 @@ const thresholdsValue = (value, path, expectedThresholds) => {
       `${path}.operationMean`,
     );
   }
-  validatedThresholds.throughputAggregateRowsPerSecond = throughputThresholdValue(
-    thresholds.throughputAggregateRowsPerSecond,
-    `${path}.throughputAggregateRowsPerSecond`,
-  );
+  if (expectedThresholds.throughputAggregateRowsPerSecond !== undefined) {
+    validatedThresholds.throughputAggregateRowsPerSecond = throughputThresholdValue(
+      thresholds.throughputAggregateRowsPerSecond,
+      `${path}.throughputAggregateRowsPerSecond`,
+    );
+  }
   if (expectedThresholds.throughputReadSnapshotMax !== undefined) {
     validatedThresholds.throughputReadSnapshotMax = deltaThresholdValue(
       thresholds.throughputReadSnapshotMax,

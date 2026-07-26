@@ -15,6 +15,7 @@ import {
   defaultBenchmarkThresholds,
   grpcRetainedRuntimeBenchmarkThresholds,
   grpcRuntimeBenchmarkThresholds,
+  grpcSourceAdapterBenchmarkThresholds,
   groupedOrderNeutralBenchmarkThresholds,
   kafkaIngestBenchmarkThresholds,
   kafkaSustainedFirehoseBenchmarkThresholds,
@@ -178,6 +179,7 @@ describe("benchmark baseline artifacts", () => {
       grpcLeased: benchmarkThresholdsForProfile("grpc-leased"),
       grpcLeasedRetained: benchmarkThresholdsForProfile("grpc-leased-retained"),
       grpcMaterialized: benchmarkThresholdsForProfile("grpc-materialized"),
+      grpcSourceAdapter: benchmarkThresholdsForProfile("grpc-source-adapter"),
       kafkaIngest: benchmarkThresholdsForProfile("kafka-ingest"),
       kafkaSustainedFirehose: benchmarkThresholdsForProfile("kafka-sustained-firehose"),
       rawReadWrite: benchmarkThresholdsForProfile("raw-read-write"),
@@ -198,11 +200,14 @@ describe("benchmark baseline artifacts", () => {
         .thresholds,
       grpcMaterializedBaseline: buildBenchmarkBaseline("grpc-materialized", [observation])
         .thresholds,
+      grpcSourceAdapterBaseline: buildBenchmarkBaseline("grpc-source-adapter", [observation])
+        .thresholds,
     }).toStrictEqual({
       groupedOrderNeutral: groupedOrderNeutralBenchmarkThresholds,
       grpcLeased: grpcRuntimeBenchmarkThresholds,
       grpcLeasedRetained: grpcRetainedRuntimeBenchmarkThresholds,
       grpcMaterialized: grpcRuntimeBenchmarkThresholds,
+      grpcSourceAdapter: grpcSourceAdapterBenchmarkThresholds,
       kafkaIngest: kafkaIngestBenchmarkThresholds,
       kafkaSustainedFirehose: kafkaSustainedFirehoseBenchmarkThresholds,
       rawReadWrite: rawReadWriteBenchmarkThresholds,
@@ -217,6 +222,7 @@ describe("benchmark baseline artifacts", () => {
       grpcLeasedBaseline: grpcRuntimeBenchmarkThresholds,
       grpcLeasedRetainedBaseline: grpcRetainedRuntimeBenchmarkThresholds,
       grpcMaterializedBaseline: grpcRuntimeBenchmarkThresholds,
+      grpcSourceAdapterBaseline: grpcSourceAdapterBenchmarkThresholds,
     });
   });
 

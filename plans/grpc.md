@@ -1,9 +1,9 @@
 # View Server gRPC Ingress Plan
 
-> Status: superseded for future architecture work by PRD #383 and ADRs
-> 0005–0010. The transport-specific implementation remains regression coverage
-> until issue #386 migrates it to the Source Adapter SDK; do not extend this
-> plan with new public/runtime seams.
+> Status: superseded by PRD #383, issue #386, ADRs 0005–0010, and the current
+> [gRPC Source Adapter guide](../docs/grpc-source-adapter.md). This file records
+> the earlier transport-specific plan and is not an implementation target; do
+> not extend it with new public or runtime seams.
 
 This plan defines the gRPC ingress model for View Server.
 

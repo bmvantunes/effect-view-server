@@ -8,6 +8,7 @@ import {
   validateSourceAdapterPackageConformance,
   type SourceAdapterConformanceAttemptFault,
   type SourceAdapterConformanceDriverValue,
+  type SourceAdapterConformanceEventModel,
   type SourceAdapterConformanceSuiteOptions,
   type SourceAdapterConformanceTarget,
   type SourceAdapterConformanceTransportObservation,
@@ -204,11 +205,28 @@ const lifecycleTarget = (
     ? materializedTarget(lane)
     : leasedTarget(requireLeased(driver).sameRoute, lane);
 
+const awaitRows = (
+  runtime: HostRuntime,
+  route: Readonly<Record<string, unknown>> | undefined,
+  expected: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyArray<string>, unknown> =>
+  Stream.fromEffectRepeat(Effect.yieldNow.pipe(Effect.andThen(rows(runtime, route)))).pipe(
+    Stream.filter(
+      (actual) =>
+        actual.length === expected.length &&
+        actual.every((value, index) => value === expected[index]),
+    ),
+    Stream.take(1),
+    Stream.runHead,
+    Effect.map(Option.getOrThrow),
+  );
+
 const lifecycleExpectations = (
   driver: SourceAdapterConformanceDriverValue,
   lifecycle: SourceAdapterConformanceLifecycle,
 ): {
   readonly acquisitionFailure: unknown;
+  readonly partialAcquisitionFinalizationCount: bigint;
   readonly streamFailure: unknown;
   readonly settlementFailure: unknown;
   readonly rejectionFailure: (phase: "acquire" | "stream" | "settlement") => unknown;
@@ -339,7 +357,7 @@ const registerLifecycleConformance = (
         expect(yield* driver.transport.observe(lifecycleTarget(driver, lifecycle))).toStrictEqual({
           acquisitions: baseline.acquisitions + 1n,
           finalizations: baseline.finalizations,
-          partialAcquisitionFinalizations: 0n,
+          partialAcquisitionFinalizations: baseline.partialAcquisitionFinalizations,
           registrations: 0n,
           callbackFinalizations: 0n,
           finalizerStarted: false,
@@ -853,7 +871,301 @@ const registerLifecycleConformance = (
   );
 };
 
-const registerLeasedConformance = (
+const registerMandatoryLifecycleConformance = (
+  it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
+  lifecycle: SourceAdapterConformanceLifecycle,
+): void => {
+  it.effect("shared invariant: acquisition failures retry without leaking resources", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const baseline = yield* driver.transport.observe(target);
+        yield* driver.transport.command({
+          _tag: "FailNextAcquisition",
+          target,
+          phase: "acquire",
+          afterFirstResource: true,
+        });
+        const opened = yield* openRuntime(driver, definitions.delayedRetrySource);
+        const waiting = yield* opened.awaitStatus("WaitingToRetry");
+        expect(waiting.lastExecutionFailure).toStrictEqual({
+          _tag: "AdapterFailure",
+          failure: lifecycleExpectations(driver, lifecycle).acquisitionFailure,
+        });
+        const failed = yield* driver.transport.observe(target);
+        expect({
+          acquisitions: failed.acquisitions,
+          finalizations: failed.finalizations,
+          partialAcquisitionFinalizations: failed.partialAcquisitionFinalizations,
+        }).toStrictEqual({
+          acquisitions: baseline.acquisitions,
+          finalizations: baseline.finalizations,
+          partialAcquisitionFinalizations:
+            baseline.partialAcquisitionFinalizations +
+            lifecycleExpectations(driver, lifecycle).partialAcquisitionFinalizationCount,
+        });
+        yield* TestClock.adjust("1 second");
+        yield* opened.awaitStatus("Ready");
+        expect((yield* driver.transport.observe(target)).acquisitions).toBe(
+          baseline.acquisitions + 1n,
+        );
+        yield* opened.close;
+        const closed = yield* awaitObservation(
+          driver,
+          target,
+          (candidate) => candidate.finalizations === baseline.finalizations + 1n,
+        );
+        expect(closed.acquisitions).toBe(closed.finalizations);
+      }),
+    ),
+  );
+
+  it.effect("shared invariant: Degraded rejection state remains sticky after retry", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const opened = yield* openRuntime(driver, definitions.delayedRetrySource);
+        yield* opened.awaitStatus("Ready");
+        yield* driver.transport.command({
+          _tag: "Reject",
+          target,
+          phase: "stream",
+          offset: 1n,
+        });
+        const degraded = yield* opened.awaitStatus("Degraded");
+        expect({
+          rejectedItemCount: degraded.rejectedItemCount,
+          latestRejectionFailure: degraded.latestRejectionFailure,
+          latestRejectionLocation: degraded.latestRejectionLocation,
+        }).toStrictEqual({
+          rejectedItemCount: 1n,
+          latestRejectionFailure: {
+            _tag: "AdapterFailure",
+            failure: lifecycleExpectations(driver, lifecycle).rejectionFailure("stream"),
+          },
+          latestRejectionLocation: expectedRejectionLocation(driver, lifecycle, "primary", 1n),
+        });
+        yield* driver.transport.command({
+          _tag: "FailLane",
+          target,
+          phase: "stream",
+        });
+        yield* opened.awaitStatus("WaitingToRetry");
+        yield* TestClock.adjust("1 second");
+        const recovered = yield* opened.awaitStatus("Degraded");
+        expect({
+          attempt: recovered.attempt,
+          rejectedItemCount: recovered.rejectedItemCount,
+          latestRejectionFailure: recovered.latestRejectionFailure,
+          latestRejectionLocation: recovered.latestRejectionLocation,
+        }).toStrictEqual({
+          attempt: 2n,
+          rejectedItemCount: 1n,
+          latestRejectionFailure: {
+            _tag: "AdapterFailure",
+            failure: lifecycleExpectations(driver, lifecycle).rejectionFailure("stream"),
+          },
+          latestRejectionLocation: expectedRejectionLocation(driver, lifecycle, "primary", 1n),
+        });
+        yield* opened.close;
+      }),
+    ),
+  );
+
+  it.effect("shared invariant: retry waits for finalization and finalizes exactly once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const baseline = yield* driver.transport.observe(target);
+        const opened = yield* openRuntime(driver, definitions.singleRetrySource);
+        yield* opened.awaitStatus("Ready");
+        yield* driver.transport.command({ _tag: "BlockNextFinalizer", target });
+        yield* driver.transport.command({ _tag: "FailLane", target, phase: "stream" });
+        yield* awaitObservation(driver, target, (candidate) => candidate.finalizerStarted);
+        expect((yield* driver.transport.observe(target)).acquisitions).toBe(
+          baseline.acquisitions + 1n,
+        );
+        yield* driver.transport.command({ _tag: "ReleaseFinalizer", target });
+        yield* awaitObservation(
+          driver,
+          target,
+          (candidate) => candidate.acquisitions === baseline.acquisitions + 2n,
+        );
+        yield* opened.close;
+        const closed = yield* awaitObservation(
+          driver,
+          target,
+          (candidate) => candidate.finalizations === baseline.finalizations + 2n,
+        );
+        expect(closed.finalizations).toBe(closed.acquisitions);
+        yield* opened.close;
+        expect((yield* driver.transport.observe(target)).finalizations).toBe(closed.finalizations);
+      }),
+    ),
+  );
+
+  it.effect("shared invariant: unexpected completion is supervised as attempt failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const baseline = yield* driver.transport.observe(target);
+        const opened = yield* openRuntime(driver, definitions.singleRetrySource);
+        yield* opened.awaitStatus("Ready");
+        yield* driver.transport.command({ _tag: "CompleteLane", target });
+        yield* awaitObservation(
+          driver,
+          target,
+          (candidate) => candidate.acquisitions === baseline.acquisitions + 2n,
+        );
+        expect((yield* opened.awaitStatus("Ready")).attempt).toBe(2n);
+        yield* driver.transport.command({ _tag: "CompleteLane", target });
+        expect((yield* opened.awaitStatus("Exhausted")).statusTag).toBe("Exhausted");
+        yield* opened.close;
+        const closed = yield* awaitObservation(
+          driver,
+          target,
+          (candidate) => candidate.finalizations === baseline.finalizations + 2n,
+        );
+        expect(closed.acquisitions).toBe(closed.finalizations);
+      }),
+    ),
+  );
+
+  it.effect("shared invariant: retry timing and retry health are exact", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const retryStartedAtNanos = yield* Clock.currentTimeNanos;
+        const opened = yield* openRuntime(driver, definitions.delayedRetrySource);
+        yield* opened.awaitStatus("Ready");
+        yield* driver.transport.command({ _tag: "FailLane", target, phase: "stream" });
+        const waiting = yield* opened.awaitStatus("WaitingToRetry");
+        expect(waiting.lastExecutionFailure).toStrictEqual({
+          _tag: "AdapterFailure",
+          failure: lifecycleExpectations(driver, lifecycle).streamFailure,
+        });
+        const before = yield* driver.transport.observe(target);
+        yield* TestClock.adjust("999 millis");
+        expect((yield* driver.transport.observe(target)).acquisitions).toBe(before.acquisitions);
+        yield* TestClock.adjust("1 millis");
+        const recovered = yield* opened.awaitStatus("Ready");
+        expect({
+          attempt: recovered.attempt,
+          retryAtNanos: waiting.retryAtNanos,
+        }).toStrictEqual({
+          attempt: 2n,
+          retryAtNanos: retryStartedAtNanos + 1_000_000_000n,
+        });
+        yield* opened.close;
+      }),
+    ),
+  );
+
+  it.effect("shared invariant: adapter metrics publish exactly on the core cadence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const opened = yield* openRuntime(driver, definitions.source);
+        const initial = yield* opened.awaitStatus("Ready");
+        yield* driver.transport.command({ _tag: "SetMetrics", sample: "updated" });
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("999 millis");
+        const before = yield* opened.awaitStatus("Ready");
+        expect(before.adapterMetrics).toStrictEqual(initial.adapterMetrics);
+        yield* TestClock.adjust("1 millis");
+        const sampled = yield* opened.awaitStatus("Ready");
+        expect(sampled.adapterMetrics).toStrictEqual(
+          lifecycleExpectations(driver, lifecycle).updatedMetrics,
+        );
+        yield* driver.transport.command({ _tag: "SetMetrics", sample: "reset" });
+        yield* opened.close;
+      }),
+    ),
+  );
+};
+
+const registerContinuousUpsertLifecycleConformance = (
+  it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
+  lifecycle: SourceAdapterConformanceLifecycle,
+): void => {
+  it.effect(`${lifecycle} applies upserts, records rejection, and continues`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const driver = yield* SourceAdapterConformanceDriver;
+        const definitions = requireLifecycle(driver, lifecycle);
+        const target = lifecycleTarget(driver, lifecycle);
+        const baseline = yield* driver.transport.observe(target);
+        const opened = yield* openRuntime(driver, definitions.source);
+        yield* opened.awaitStatus("Ready");
+        yield* driver.transport.command({
+          _tag: "Delivery",
+          target,
+          mutations: [
+            {
+              _tag: "Upsert",
+              row: { id: "before-rejection", region: "eu", value: "valid" },
+            },
+          ],
+        });
+        expect(yield* awaitRows(opened.runtime, opened.route, ["before-rejection"])).toStrictEqual([
+          "before-rejection",
+        ]);
+        yield* driver.transport.command({
+          _tag: "Reject",
+          target,
+          phase: "stream",
+          offset: 2n,
+        });
+        const degraded = yield* opened.awaitStatus("Degraded");
+        expect({
+          rejectedItemCount: degraded.rejectedItemCount,
+          failure: degraded.latestRejectionFailure,
+          location: degraded.latestRejectionLocation,
+        }).toStrictEqual({
+          rejectedItemCount: 1n,
+          failure: {
+            _tag: "AdapterFailure",
+            failure: lifecycleExpectations(driver, lifecycle).rejectionFailure("stream"),
+          },
+          location: expectedRejectionLocation(driver, lifecycle, "primary", 2n),
+        });
+        yield* driver.transport.command({
+          _tag: "Delivery",
+          target,
+          mutations: [
+            {
+              _tag: "Upsert",
+              row: { id: "after-rejection", region: "eu", value: "valid" },
+            },
+          ],
+        });
+        expect(
+          yield* awaitRows(opened.runtime, opened.route, ["after-rejection", "before-rejection"]),
+        ).toStrictEqual(["after-rejection", "before-rejection"]);
+        yield* opened.close;
+        const closed = yield* awaitObservation(
+          driver,
+          target,
+          (observation) => observation.finalizations === baseline.finalizations + 1n,
+        );
+        expect(closed.acquisitions).toBe(closed.finalizations);
+      }),
+    ),
+  );
+};
+
+const registerLeasedSharingConformance = (
   it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
 ): void => {
   it.effect("keeps diagnostics non-owning and shares only exact leased routes", () =>
@@ -929,7 +1241,11 @@ const registerLeasedConformance = (
       }),
     ),
   );
+};
 
+const registerLeasedCompleteDeliveryConformance = (
+  it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
+): void => {
   it.effect("settles route-incongruent leased deliveries with the application failure", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -977,9 +1293,35 @@ const registerLeasedConformance = (
   );
 };
 
+const registerSelectedLifecycleConformance = (
+  it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
+  lifecycle: SourceAdapterConformanceLifecycle,
+  eventModel: SourceAdapterConformanceEventModel,
+): void => {
+  registerMandatoryLifecycleConformance(it, lifecycle);
+  if (eventModel === "continuous-upserts") {
+    registerContinuousUpsertLifecycleConformance(it, lifecycle);
+  } else {
+    registerLifecycleConformance(it, lifecycle);
+    if (lifecycle === "leased") {
+      registerLeasedCompleteDeliveryConformance(it);
+    }
+  }
+  if (lifecycle === "leased") {
+    registerLeasedSharingConformance(it);
+  }
+};
+
 export const registerSourceAdapterConformance = (
   options: SourceAdapterConformanceOptions,
 ): void => {
+  if (
+    options.eventModel !== undefined &&
+    options.eventModel !== "complete-deliveries" &&
+    options.eventModel !== "continuous-upserts"
+  ) {
+    throw new TypeError("Source Adapter conformance requires a supported transport event model.");
+  }
   if (options.callbackBridge === true && options.materialized !== true) {
     throw new TypeError(
       "Source Adapter callback conformance requires materialized lifecycle conformance.",
@@ -991,12 +1333,12 @@ export const registerSourceAdapterConformance = (
     );
   }
   vitestLayer(options.layer)(options.name, (it) => {
+    const eventModel = options.eventModel ?? "complete-deliveries";
     if (options.materialized === true) {
-      registerLifecycleConformance(it, "materialized");
+      registerSelectedLifecycleConformance(it, "materialized", eventModel);
     }
     if (options.leased === true) {
-      registerLifecycleConformance(it, "leased");
-      registerLeasedConformance(it);
+      registerSelectedLifecycleConformance(it, "leased", eventModel);
     }
     if (options.callbackBridge === true) {
       it.effect("uses the adapter's actual callback bridge", () =>

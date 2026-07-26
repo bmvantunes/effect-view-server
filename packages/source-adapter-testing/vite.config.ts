@@ -5,6 +5,15 @@ import { libraryPack } from "../../vite.pack";
 export default defineConfig({
   resolve: {
     alias: {
+      "@effect-view-server/source-adapter/internal": fileURLToPath(
+        new URL("../source-adapter/src/internal.ts", import.meta.url),
+      ),
+      "@effect-view-server/source-adapter/server": fileURLToPath(
+        new URL("../source-adapter/src/server.ts", import.meta.url),
+      ),
+      "@effect-view-server/source-adapter": fileURLToPath(
+        new URL("../source-adapter/src/index.ts", import.meta.url),
+      ),
       "@effect-view-server/source-adapter-testing": fileURLToPath(
         new URL("./src/index.ts", import.meta.url),
       ),

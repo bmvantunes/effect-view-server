@@ -3,8 +3,9 @@
 ## Status
 
 Accepted. The transport-neutral `source` contract and Runtime Core support are
-implemented by issue #384. First-party Kafka and gRPC adoption and the final
-canonical-only configuration cut remain staged in issues #385–#387.
+implemented by issue #384, and first-party gRPC adoption is implemented by
+issue #386. First-party Kafka adoption and the final canonical-only
+configuration cut remain staged in issues #385 and #387.
 
 ## Context
 

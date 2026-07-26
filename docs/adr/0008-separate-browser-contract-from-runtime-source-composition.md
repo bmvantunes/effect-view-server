@@ -4,8 +4,9 @@
 
 Accepted. Issue #384 implements the shared-config Source Definition, nominal
 Layer-provided runtime, browser-safe SDK facade, server facade, testing facade,
-and package-boundary verification. First-party platform aggregate Layers remain
-staged in issues #385 and #386, followed by the final migration in issue #387.
+and package-boundary verification. Issue #386 implements the first-party gRPC
+aggregate Layer. The first-party Kafka Layer remains staged in issue #385,
+followed by the final migration in issue #387.
 
 ## Context
 

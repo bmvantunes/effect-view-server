@@ -124,6 +124,9 @@ importers:
       '@effect-view-server/effect-utils':
         specifier: workspace:*
         version: link:packages/effect-utils
+      '@effect-view-server/grpc':
+        specifier: workspace:*
+        version: link:packages/grpc
       '@effect-view-server/in-memory':
         specifier: workspace:*
         version: link:packages/in-memory
@@ -962,6 +965,9 @@ importers:
       '@effect-view-server/config':
         specifier: workspace:*
         version: link:../config
+      '@effect-view-server/grpc':
+        specifier: workspace:*
+        version: link:../grpc
       '@effect-view-server/in-memory':
         specifier: workspace:*
         version: link:../in-memory
@@ -1004,6 +1010,64 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.100
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.9(@types/node@25.9.1)(@vitest/browser-playwright@4.1.9)(@vitest/browser-preview@4.1.9)(@vitest/coverage-istanbul@4.1.9)(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.1)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(typescript@6.0.3)(yaml@2.9.0))
+
+  packages/grpc:
+    dependencies:
+      '@bufbuild/protobuf':
+        specifier: 2.12.0
+        version: 2.12.0
+      '@connectrpc/connect':
+        specifier: 'catalog:'
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)
+      '@connectrpc/connect-node':
+        specifier: 'catalog:'
+        version: 2.1.2(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.0))
+      '@effect-view-server/source-adapter':
+        specifier: workspace:*
+        version: link:../source-adapter
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.100
+    devDependencies:
+      '@effect-view-server/client':
+        specifier: workspace:*
+        version: link:../client
+      '@effect-view-server/config':
+        specifier: workspace:*
+        version: link:../config
+      '@effect-view-server/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@effect-view-server/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      '@effect-view-server/server':
+        specifier: workspace:*
+        version: link:../server
+      '@effect-view-server/source-adapter-conformance-host':
+        specifier: workspace:*
+        version: link:../source-adapter-conformance-host
+      '@effect-view-server/source-adapter-testing':
+        specifier: workspace:*
+        version: link:../source-adapter-testing
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.100(effect@4.0.0-beta.100)(vitest@4.1.9)
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.1
+      '@vitest/coverage-istanbul':
+        specifier: 'catalog:'
+        version: 4.1.9(vitest@4.1.9)
+      '@vitest/runner':
+        specifier: 'catalog:'
+        version: 4.1.9
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

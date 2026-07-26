@@ -22,6 +22,7 @@ import { Deferred, Effect, Option, Schedule, Schema, Stream } from "effect";
 import * as Http2 from "node:http2";
 import { grpc } from "./model";
 import { grpcNode } from "./node";
+import { awaitTestCondition } from "./test-support";
 
 type RequestMessage = Message<"grpc.connect.Request"> & {
   readonly region: string;
@@ -277,18 +278,10 @@ const awaitCount = (
   expected: number,
   remaining = 1_000,
 ): Effect.Effect<void> =>
-  Effect.suspend(() =>
-    read() === expected
-      ? Effect.void
-      : remaining === 0
-        ? Effect.die(
-            new TypeError(
-              `Timed out waiting for ${label} count ${expected}; last observed ${read()}.`,
-            ),
-          )
-        : Effect.sleep("5 millis").pipe(
-            Effect.andThen(awaitCount(label, read, expected, remaining - 1)),
-          ),
+  awaitTestCondition(
+    () => `${label} count ${expected}; last observed ${read()}`,
+    () => read() === expected,
+    remaining,
   );
 
 describe("gRPC Source Adapter real ConnectRPC integration", () => {

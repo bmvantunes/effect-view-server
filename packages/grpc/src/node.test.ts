@@ -24,6 +24,7 @@ import * as Http2 from "node:http2";
 import * as Net from "node:net";
 import { grpc, GrpcSourceAdapter } from "./model";
 import { grpcNode, grpcNodeLayer, GrpcNodeConfigurationError } from "./node";
+import { awaitTestCondition } from "./test-support";
 
 type RequestMessage = Message<"grpc.node.Request"> & {
   readonly region: string;
@@ -123,13 +124,12 @@ const invokeLayer = (options: unknown): unknown =>
 const isClosedLayer = (value: unknown): value is Layer.Layer<unknown, unknown, never> =>
   Layer.isLayer(value);
 
-const awaitNodeRequest = (read: () => number, remaining = 10_000): Effect.Effect<void> =>
-  Effect.suspend(() =>
-    read() === 1
-      ? Effect.void
-      : remaining === 0
-        ? Effect.die("Timed out waiting for the stateful HTTP/2 resource request.")
-        : Effect.yieldNow.pipe(Effect.andThen(awaitNodeRequest(read, remaining - 1))),
+const awaitNodeRequest = (read: () => number): Effect.Effect<void> =>
+  awaitTestCondition(
+    () => `the stateful HTTP/2 resource request; last observed ${read()}`,
+    () => read() === 1,
+    10_000,
+    Effect.yieldNow,
   );
 
 const makeUnavailableHttp2Server = Effect.fn("GrpcSourceAdapter.test.node.server")(function* () {

@@ -35,6 +35,7 @@ import {
   grpcServerLayerFromBindingPlan,
   makeOwnedGrpcIterable,
 } from "./server-internal";
+import { awaitTestCondition } from "./test-support";
 
 type RequestMessage = Message<"grpc.server.Request"> & {
   readonly metadata: JsonValue | undefined;
@@ -329,17 +330,10 @@ const makeControlledClient = (input?: {
 };
 
 const awaitCondition = (
-  describe: () => string,
+  label: () => string,
   predicate: () => boolean,
   remaining = 10_000,
-): Effect.Effect<void> =>
-  Effect.suspend(() =>
-    predicate()
-      ? Effect.void
-      : remaining === 0
-        ? Effect.die(new TypeError(`Timed out waiting for ${describe()}.`))
-        : Effect.yieldNow.pipe(Effect.andThen(awaitCondition(describe, predicate, remaining - 1))),
-  );
+): Effect.Effect<void> => awaitTestCondition(label, predicate, remaining, Effect.yieldNow);
 
 const awaitInvocationCount = (controlled: ReturnType<typeof makeControlledClient>, count: number) =>
   awaitCondition(

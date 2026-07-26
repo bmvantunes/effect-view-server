@@ -12,6 +12,7 @@ import { Clock, Effect, Fiber, Option, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { grpc } from "./model";
 import { grpcServerLayer, type GrpcRuntimeClient } from "./server";
+import { awaitTestCondition } from "./test-support";
 
 declare const process: {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -182,14 +183,7 @@ const awaitCondition = (
   label: string,
   predicate: () => boolean,
   remaining = 100_000,
-): Effect.Effect<void> =>
-  Effect.suspend(() =>
-    predicate()
-      ? Effect.void
-      : remaining === 0
-        ? Effect.die(new TypeError(`Timed out waiting for ${label}.`))
-        : Effect.yieldNow.pipe(Effect.andThen(awaitCondition(label, predicate, remaining - 1))),
-  );
+): Effect.Effect<void> => awaitTestCondition(() => label, predicate, remaining, Effect.yieldNow);
 
 const positiveIntegerFromEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];

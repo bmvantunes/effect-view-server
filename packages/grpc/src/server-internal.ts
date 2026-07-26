@@ -1,6 +1,5 @@
 import type { DescMessage, DescMethodServerStreaming, DescService } from "@bufbuild/protobuf";
-import { ConnectError } from "@connectrpc/connect";
-import { codeToString } from "@connectrpc/connect/protocol-connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import {
   SourceAdapterServer,
   type SourceAdapterServerLifecycle,
@@ -127,7 +126,9 @@ const requestFailure = (
 
 const connectCode = (cause: unknown): string => {
   try {
-    return codeToString(ConnectError.from(cause).code).toUpperCase();
+    return Code[ConnectError.from(cause).code]
+      .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+      .toUpperCase();
   } catch {
     return "UNKNOWN";
   }

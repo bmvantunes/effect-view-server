@@ -916,9 +916,7 @@ describe("generated gRPC request validation", () => {
     }
     expect({
       wire: wireBytes(NativeWktRequestSchema, materialized),
-      expectedWire: wireBytes(NativeWktRequestSchema, expectedRequest),
       structChoiceWire: wireBytes(NativeWktRequestSchema, materializedStructChoice),
-      expectedStructChoiceWire: wireBytes(NativeWktRequestSchema, structChoiceRequest),
       payload: Reflect.get(materialized, "payload"),
       valueTypeName: Reflect.get(nativeValue, "$typeName"),
       listValueTypeName: Reflect.get(nativeListValue, "$typeName"),
@@ -937,9 +935,7 @@ describe("generated gRPC request validation", () => {
       frozen: Object.isFrozen(materialized),
     }).toStrictEqual({
       wire: wireBytes(NativeWktRequestSchema, expectedRequest),
-      expectedWire: wireBytes(NativeWktRequestSchema, expectedRequest),
       structChoiceWire: wireBytes(NativeWktRequestSchema, structChoiceRequest),
-      expectedStructChoiceWire: wireBytes(NativeWktRequestSchema, structChoiceRequest),
       payload: request.payload,
       valueTypeName: "google.protobuf.Value",
       listValueTypeName: "google.protobuf.ListValue",

@@ -1,5 +1,6 @@
 import {
   create,
+  fromJson,
   toBinary,
   type DescField,
   type DescMessage,
@@ -11,10 +12,13 @@ import {
   FieldDescriptorProto_Type,
   FieldOptions_JSType,
   FileDescriptorProtoSchema,
+  ListValueSchema,
   StringValueSchema,
   StructSchema,
+  ValueSchema,
 } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
+import { Buffer } from "node:buffer";
 import { validateAndSnapshotGrpcRequest } from "./request";
 
 type RequestMessage = Message<"grpc.request.Request">;
@@ -153,6 +157,14 @@ const descriptorFile = fileDesc(
                   field: [
                     scalarField("key", 1, FieldDescriptorProto_Type.FIXED32),
                     scalarField("value", 2, FieldDescriptorProto_Type.STRING),
+                  ],
+                },
+                {
+                  name: "BytesMapEntry",
+                  options: { mapEntry: true },
+                  field: [
+                    scalarField("key", 1, FieldDescriptorProto_Type.STRING),
+                    scalarField("value", 2, FieldDescriptorProto_Type.BYTES),
                   ],
                 },
               ],
@@ -300,6 +312,22 @@ const descriptorFile = fileDesc(
                   number: 36,
                   type: FieldDescriptorProto_Type.ENUM,
                   typeName: ".grpc.request.Mode",
+                  oneofIndex: 0,
+                },
+                scalarField("bytes_values", 37, FieldDescriptorProto_Type.BYTES, {
+                  label: FieldDescriptorProto_Label.REPEATED,
+                }),
+                {
+                  name: "bytes_map",
+                  number: 38,
+                  label: FieldDescriptorProto_Label.REPEATED,
+                  type: FieldDescriptorProto_Type.MESSAGE,
+                  typeName: ".grpc.request.Request.BytesMapEntry",
+                },
+                {
+                  name: "bytes_choice",
+                  number: 39,
+                  type: FieldDescriptorProto_Type.BYTES,
                   oneofIndex: 0,
                 },
               ],
@@ -479,6 +507,18 @@ const nativeWktDescriptorFile = fileDesc(
                   typeName: ".google.protobuf.Struct",
                   oneofIndex: 0,
                 },
+                {
+                  name: "value",
+                  number: 6,
+                  type: FieldDescriptorProto_Type.MESSAGE,
+                  typeName: ".google.protobuf.Value",
+                },
+                {
+                  name: "list_value",
+                  number: 7,
+                  type: FieldDescriptorProto_Type.MESSAGE,
+                  typeName: ".google.protobuf.ListValue",
+                },
               ],
             },
           ],
@@ -536,12 +576,26 @@ describe("generated gRPC request validation", () => {
   it("recursively validates, snapshots, clones bytes, and freezes request-init values", () => {
     const request = validRequest();
     const snapshot = validateAndSnapshotGrpcRequest(RequestSchema, request);
+    const buffer = Buffer.from([3, 4]);
+    const bufferSnapshot = validateAndSnapshotGrpcRequest(RequestSchema, {
+      bytesValue: buffer,
+    });
+    buffer[0] = 9;
     if (typeof snapshot !== "object" || snapshot === null) {
       throw new TypeError("Expected a request snapshot.");
     }
     const snapshotBytes = Reflect.get(snapshot, "bytesValue");
+    if (!(snapshotBytes instanceof Uint8Array)) {
+      throw new TypeError("Expected snapshotted request bytes.");
+    }
+    snapshotBytes[0] = 9;
+    const bytesAfterMutation = Reflect.get(snapshot, "bytesValue");
     const snapshotNumbers = Reflect.get(snapshot, "numbers");
     const snapshotChild = Reflect.get(snapshot, "child");
+    const defaultSnapshot = validateAndSnapshotGrpcRequest(RequestSchema, {});
+    if (typeof defaultSnapshot !== "object" || defaultSnapshot === null) {
+      throw new TypeError("Expected a defaulted request snapshot.");
+    }
     const nullPrototype = Object.create(null);
     nullPrototype.stringValue = "valid";
     const nullPrototypeSnapshot = validateAndSnapshotGrpcRequest(RequestSchema, nullPrototype);
@@ -567,7 +621,9 @@ describe("generated gRPC request validation", () => {
       typeName: Reflect.get(snapshot, "$typeName"),
       rootFrozen: Object.isFrozen(snapshot),
       bytesCloned: snapshotBytes !== request.bytesValue,
-      bytes: snapshotBytes,
+      bytesAfterMutation,
+      defaultNumbersFrozen: Object.isFrozen(Reflect.get(defaultSnapshot, "numbers")),
+      defaultScalarMapFrozen: Object.isFrozen(Reflect.get(defaultSnapshot, "scalarMap")),
       listFrozen: Object.isFrozen(snapshotNumbers),
       childFrozen: Object.isFrozen(snapshotChild),
       snapshotWire: wireBytes(RequestSchema, snapshot),
@@ -584,11 +640,17 @@ describe("generated gRPC request validation", () => {
       }),
       messageChoiceFrozen: Object.isFrozen(messageChoice),
       messageChoiceValueFrozen: Object.isFrozen(messageChoiceValue),
+      bufferBytes:
+        typeof bufferSnapshot === "object" && bufferSnapshot !== null
+          ? Reflect.get(bufferSnapshot, "bytesValue")
+          : undefined,
     }).toStrictEqual({
       typeName: "grpc.request.Request",
       rootFrozen: true,
       bytesCloned: true,
-      bytes: new Uint8Array([1, 2]),
+      bytesAfterMutation: new Uint8Array([1, 2]),
+      defaultNumbersFrozen: true,
+      defaultScalarMapFrozen: true,
       listFrozen: true,
       childFrozen: true,
       snapshotWire: wireBytes(RequestSchema, request),
@@ -607,6 +669,7 @@ describe("generated gRPC request validation", () => {
       }),
       messageChoiceFrozen: true,
       messageChoiceValueFrozen: true,
+      bufferBytes: new Uint8Array([3, 4]),
     });
   });
 
@@ -677,6 +740,66 @@ describe("generated gRPC request validation", () => {
     });
   });
 
+  it("defensively freezes repeated, map, and oneof bytes without redefinition failures", () => {
+    const request = {
+      bytesValues: [new Uint8Array([1, 2])],
+      bytesMap: {
+        first: new Uint8Array([3, 4]),
+      },
+      selector: {
+        case: "bytesChoice",
+        value: new Uint8Array([5, 6]),
+      },
+    };
+    const materialized = validateAndSnapshotGrpcRequest(RequestSchema, request);
+    if (typeof materialized !== "object" || materialized === null) {
+      throw new TypeError("Expected a materialized composite-bytes request.");
+    }
+    const bytesValues = Reflect.get(materialized, "bytesValues");
+    const bytesMap = Reflect.get(materialized, "bytesMap");
+    const selector = Reflect.get(materialized, "selector");
+    if (
+      !Array.isArray(bytesValues) ||
+      typeof bytesMap !== "object" ||
+      bytesMap === null ||
+      typeof selector !== "object" ||
+      selector === null
+    ) {
+      throw new TypeError("Expected materialized composite bytes containers.");
+    }
+    const repeatedBytes = bytesValues[0];
+    const mappedBytes = Reflect.get(bytesMap, "first");
+    const selectedBytes = Reflect.get(selector, "value");
+    if (
+      !(repeatedBytes instanceof Uint8Array) ||
+      !(mappedBytes instanceof Uint8Array) ||
+      !(selectedBytes instanceof Uint8Array)
+    ) {
+      throw new TypeError("Expected materialized composite bytes.");
+    }
+    repeatedBytes[0] = 9;
+    mappedBytes[0] = 9;
+    selectedBytes[0] = 9;
+
+    expect({
+      bytesMapFrozen: Object.isFrozen(bytesMap),
+      bytesValuesFrozen: Object.isFrozen(bytesValues),
+      mappedBytes: Reflect.get(bytesMap, "first"),
+      oneofFrozen: Object.isFrozen(selector),
+      repeatedBytes: bytesValues[0],
+      selectedBytes: Reflect.get(selector, "value"),
+      wire: wireBytes(RequestSchema, materialized),
+    }).toStrictEqual({
+      bytesMapFrozen: true,
+      bytesValuesFrozen: true,
+      mappedBytes: new Uint8Array([3, 4]),
+      oneofFrozen: true,
+      repeatedBytes: new Uint8Array([1, 2]),
+      selectedBytes: new Uint8Array([5, 6]),
+      wire: wireBytes(RequestSchema, request),
+    });
+  });
+
   it("preserves every admitted message-map key through Connect normalization and the wire", () => {
     const messageMap: Record<string, unknown> = {};
     Object.defineProperty(messageMap, "__proto__", {
@@ -720,7 +843,7 @@ describe("generated gRPC request validation", () => {
     });
   });
 
-  it("accepts native Struct JSON and keeps wrapper messages wrapped inside oneofs", () => {
+  it("accepts native Struct, Value, and ListValue JSON and keeps oneof wrappers", () => {
     const sparseJsonArray = ["value"];
     Reflect.deleteProperty(sparseJsonArray, "0");
     const cyclicJsonArray: Array<unknown> = [];
@@ -741,6 +864,13 @@ describe("generated gRPC request validation", () => {
         case: "wrappedChoice",
         value: { value: "selected" },
       },
+      value: ["native", { nested: null }, true],
+      listValue: [null, "listed", { count: 1 }],
+    };
+    const expectedRequest = {
+      ...request,
+      value: fromJson(ValueSchema, request.value),
+      listValue: fromJson(ListValueSchema, request.listValue),
     };
 
     const materialized = validateAndSnapshotGrpcRequest(NativeWktRequestSchema, request);
@@ -768,25 +898,57 @@ describe("generated gRPC request validation", () => {
     if (typeof wrappedChoice !== "object" || wrappedChoice === null) {
       throw new TypeError("Expected a materialized wrapper message.");
     }
+    const nativeValue = Reflect.get(materialized, "value");
+    const nativeListValue = Reflect.get(materialized, "listValue");
+    if (typeof nativeValue !== "object" || nativeValue === null) {
+      throw new TypeError("Expected a materialized Value message.");
+    }
+    if (typeof nativeListValue !== "object" || nativeListValue === null) {
+      throw new TypeError("Expected a materialized ListValue message.");
+    }
+    const nativeValueKind = Reflect.get(nativeValue, "kind");
+    const nativeValueList = Reflect.get(Object(nativeValueKind), "value");
+    const nativeValueEntries = Reflect.get(Object(nativeValueList), "values");
+    const nativeListEntries = Reflect.get(nativeListValue, "values");
     const structSelection = Reflect.get(materializedStructChoice, "selection");
     if (typeof structSelection !== "object" || structSelection === null) {
       throw new TypeError("Expected a materialized Struct oneof.");
     }
     expect({
       wire: wireBytes(NativeWktRequestSchema, materialized),
-      expectedWire: wireBytes(NativeWktRequestSchema, request),
+      expectedWire: wireBytes(NativeWktRequestSchema, expectedRequest),
       structChoiceWire: wireBytes(NativeWktRequestSchema, materializedStructChoice),
       expectedStructChoiceWire: wireBytes(NativeWktRequestSchema, structChoiceRequest),
       payload: Reflect.get(materialized, "payload"),
+      valueTypeName: Reflect.get(nativeValue, "$typeName"),
+      listValueTypeName: Reflect.get(nativeListValue, "$typeName"),
+      nativeValueKindFrozen: Object.isFrozen(nativeValueKind),
+      nativeValueListFrozen: Object.isFrozen(nativeValueList),
+      nativeValueEntriesFrozen: Object.isFrozen(nativeValueEntries),
+      nativeValueEntryFrozen: Object.isFrozen(
+        Array.isArray(nativeValueEntries) ? nativeValueEntries[1] : undefined,
+      ),
+      nativeListEntriesFrozen: Object.isFrozen(nativeListEntries),
+      nativeListEntryFrozen: Object.isFrozen(
+        Array.isArray(nativeListEntries) ? nativeListEntries[2] : undefined,
+      ),
       structChoice: Reflect.get(structSelection, "value"),
       wrappedChoiceTypeName: Reflect.get(wrappedChoice, "$typeName"),
       frozen: Object.isFrozen(materialized),
     }).toStrictEqual({
-      wire: wireBytes(NativeWktRequestSchema, request),
-      expectedWire: wireBytes(NativeWktRequestSchema, request),
+      wire: wireBytes(NativeWktRequestSchema, expectedRequest),
+      expectedWire: wireBytes(NativeWktRequestSchema, expectedRequest),
       structChoiceWire: wireBytes(NativeWktRequestSchema, structChoiceRequest),
       expectedStructChoiceWire: wireBytes(NativeWktRequestSchema, structChoiceRequest),
       payload: request.payload,
+      valueTypeName: "google.protobuf.Value",
+      listValueTypeName: "google.protobuf.ListValue",
+      nativeValueKindFrozen: true,
+      nativeValueListFrozen: true,
+      nativeValueEntriesFrozen: true,
+      nativeValueEntryFrozen: true,
+      nativeListEntriesFrozen: true,
+      nativeListEntryFrozen: true,
       structChoice: { selected: "json" },
       wrappedChoiceTypeName: "google.protobuf.StringValue",
       frozen: true,
@@ -796,6 +958,41 @@ describe("generated gRPC request validation", () => {
         payload: { unsupported: 1n },
       }),
     ).toThrow("request-init value does not match");
+    expect(() =>
+      validateAndSnapshotGrpcRequest(NativeWktRequestSchema, {
+        value: 1n,
+      }),
+    ).toThrow("request-init value does not match");
+    expect(() =>
+      validateAndSnapshotGrpcRequest(NativeWktRequestSchema, {
+        listValue: { invalid: true },
+      }),
+    ).toThrow("request-init value does not match");
+    let changingJsonReads = 0;
+    const changingJson = new Proxy(
+      {},
+      {
+        getPrototypeOf: () => Object.prototype,
+        ownKeys: () => {
+          changingJsonReads += 1;
+          return changingJsonReads === 1 ? ["valid"] : [Symbol("invalid")];
+        },
+        getOwnPropertyDescriptor: (_target, key) =>
+          key === "valid"
+            ? {
+                configurable: true,
+                enumerable: true,
+                value: "value",
+              }
+            : undefined,
+      },
+    );
+    expect(() =>
+      validateAndSnapshotGrpcRequest(NativeWktRequestSchema, {
+        value: changingJson,
+      }),
+    ).toThrow("request-init value does not match");
+    expect(changingJsonReads).toBe(3);
     for (const invalidArray of [sparseJsonArray, cyclicJsonArray]) {
       expect(() =>
         validateAndSnapshotGrpcRequest(NativeWktRequestSchema, {

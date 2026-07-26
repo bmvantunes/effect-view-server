@@ -1,5 +1,6 @@
 import {
   create,
+  fromJson,
   protoInt64,
   ScalarType,
   toBinary,
@@ -7,9 +8,11 @@ import {
   type DescField,
   type DescMessage,
   type DescOneof,
+  type JsonValue,
   type Message,
 } from "@bufbuild/protobuf";
 import { FeatureSet_FieldPresence, isWrapperDesc } from "@bufbuild/protobuf/wkt";
+import { exactArrayValues, exactDataEntries, type DataEntry } from "./exact-shape";
 
 const int32Minimum = -2_147_483_648;
 const int32Maximum = 2_147_483_647;
@@ -24,56 +27,7 @@ const isPlainObject = (value: unknown): value is Readonly<Record<string, unknown
   return prototype === Object.prototype || prototype === null;
 };
 
-type DataEntry = readonly [key: string, value: unknown];
 type MapKeyScalar = Extract<DescField, { readonly fieldKind: "map" }>["mapKey"];
-
-const exactArrayValues = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
-  if (
-    lengthDescriptor === undefined ||
-    !("value" in lengthDescriptor) ||
-    typeof lengthDescriptor.value !== "number" ||
-    !Number.isSafeInteger(lengthDescriptor.value) ||
-    lengthDescriptor.value < 0
-  ) {
-    return undefined;
-  }
-  const length = lengthDescriptor.value;
-  const keys = Reflect.ownKeys(value);
-  if (keys.length !== length + 1 || !keys.includes("length")) {
-    return undefined;
-  }
-  const values: Array<unknown> = [];
-  for (let index = 0; index < length; index++) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    values.push(descriptor.value);
-  }
-  return values;
-};
-
-const exactDataEntries = (value: unknown): ReadonlyArray<DataEntry> | undefined => {
-  if (!isPlainObject(value)) {
-    return undefined;
-  }
-  const entries: Array<DataEntry> = [];
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") {
-      return undefined;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return entries;
-};
 
 const scalarValueIsValid = (scalar: ScalarType, longAsString: boolean, value: unknown): boolean => {
   switch (scalar) {
@@ -179,7 +133,7 @@ const mapKeyIsValid = (scalar: MapKeyScalar, value: string): boolean => {
   }
 };
 
-const jsonValueIsValid = (value: unknown, active: WeakSet<object>): boolean => {
+const jsonValueIsValid = (value: unknown, active: WeakSet<object>): value is JsonValue => {
   if (
     value === null ||
     typeof value === "string" ||
@@ -208,16 +162,22 @@ const jsonValueIsValid = (value: unknown, active: WeakSet<object>): boolean => {
   return valid;
 };
 
-const structFieldValueIsValid = (
-  field: DescField,
+const nativeJsonFieldValueIsValid = (
   message: DescMessage,
   value: unknown,
   active: WeakSet<object>,
-): boolean =>
-  message.typeName === "google.protobuf.Struct" &&
-  field.parent.typeName !== "google.protobuf.Value" &&
-  exactDataEntries(value) !== undefined &&
-  jsonValueIsValid(value, active);
+): boolean => {
+  if (message.typeName === "google.protobuf.Value") {
+    return jsonValueIsValid(value, active);
+  }
+  if (message.typeName === "google.protobuf.Struct") {
+    return exactDataEntries(value) !== undefined && jsonValueIsValid(value, active);
+  }
+  if (message.typeName === "google.protobuf.ListValue") {
+    return exactArrayValues(value) !== undefined && jsonValueIsValid(value, active);
+  }
+  return false;
+};
 
 const fieldValueIsValid = (field: DescField, value: unknown, active: WeakSet<object>): boolean => {
   if (value === undefined) {
@@ -229,7 +189,7 @@ const fieldValueIsValid = (field: DescField, value: unknown, active: WeakSet<obj
     case "enum":
       return enumValueIsValid(field.enum, value);
     case "message":
-      return structFieldValueIsValid(field, field.message, value, active)
+      return nativeJsonFieldValueIsValid(field.message, value, active)
         ? true
         : isWrapperDesc(field.message) && field.oneof === undefined
           ? scalarValueIsValid(
@@ -238,7 +198,7 @@ const fieldValueIsValid = (field: DescField, value: unknown, active: WeakSet<obj
               value,
             )
           : messageInitIsValid(field.message, value, active);
-    case "list":
+    case "list": {
       const values = exactArrayValues(value);
       if (values === undefined) {
         return false;
@@ -250,11 +210,12 @@ const fieldValueIsValid = (field: DescField, value: unknown, active: WeakSet<obj
         if (field.listKind === "enum") {
           return enumValueIsValid(field.enum, entry);
         }
-        return structFieldValueIsValid(field, field.message, entry, active)
+        return nativeJsonFieldValueIsValid(field.message, entry, active)
           ? true
           : messageInitIsValid(field.message, entry, active);
       });
-    case "map":
+    }
+    case "map": {
       const entries = exactDataEntries(value);
       if (entries === undefined) {
         return false;
@@ -269,10 +230,11 @@ const fieldValueIsValid = (field: DescField, value: unknown, active: WeakSet<obj
         if (field.mapKind === "enum") {
           return enumValueIsValid(field.enum, entry);
         }
-        return structFieldValueIsValid(field, field.message, entry, active)
+        return nativeJsonFieldValueIsValid(field.message, entry, active)
           ? true
           : messageInitIsValid(field.message, entry, active);
       });
+    }
   }
 };
 
@@ -342,7 +304,7 @@ function snapshotRequest(
 function snapshotRequest(value: unknown): unknown;
 function snapshotRequest(value: unknown): unknown {
   if (value instanceof Uint8Array) {
-    return value.slice();
+    return Uint8Array.from(value);
   }
   if (Array.isArray(value)) {
     const values = exactArrayValues(value);
@@ -379,9 +341,17 @@ type MessageBearingField =
   | Extract<DescField, { readonly fieldKind: "list"; readonly listKind: "message" }>
   | Extract<DescField, { readonly fieldKind: "map"; readonly mapKind: "message" }>;
 
-const usesNativeStructRepresentation = (field: MessageBearingField): boolean =>
-  field.message.typeName === "google.protobuf.Struct" &&
-  field.parent.typeName !== "google.protobuf.Value";
+const usesNativeJsonRepresentation = (field: MessageBearingField): boolean =>
+  field.message.typeName === "google.protobuf.Struct" ||
+  field.message.typeName === "google.protobuf.Value" ||
+  field.message.typeName === "google.protobuf.ListValue";
+
+const materializeNativeJsonMessage = (message: DescMessage, value: unknown): unknown => {
+  if (!jsonValueIsValid(value, new WeakSet<object>())) {
+    throw new TypeError("The validated native JSON request value is invalid.");
+  }
+  return message.typeName === "google.protobuf.Struct" ? value : fromJson(message, value);
+};
 
 const requireSnapshotDataEntries = (value: unknown): ReadonlyArray<DataEntry> => {
   const entries = exactDataEntries(value);
@@ -403,9 +373,31 @@ const dataObject = (entries: ReadonlyArray<DataEntry>): Readonly<Record<string, 
   const value: Record<string, unknown> = {};
   for (const [key, entry] of entries) {
     Object.defineProperty(value, key, {
+      configurable: true,
       enumerable: true,
       value: entry,
+      writable: true,
     });
+  }
+  return value;
+};
+
+const freezeGeneratedRequestGraph = <Value>(value: Value): Value => {
+  if (typeof value !== "object" || value === null || value instanceof Uint8Array) {
+    return value;
+  }
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    const entry = descriptor.value;
+    if (entry instanceof Uint8Array) {
+      const bytes = Uint8Array.from(entry);
+      Object.defineProperty(value, key, {
+        configurable: true,
+        enumerable: descriptor.enumerable === true,
+        get: () => Uint8Array.from(bytes),
+      });
+    } else {
+      freezeGeneratedRequestGraph(entry);
+    }
   }
   return Object.freeze(value);
 };
@@ -428,7 +420,13 @@ const materializeGeneratedMessage = (
     }
     switch (field.fieldKind) {
       case "message":
-        if (usesNativeStructRepresentation(field) || isWrapperDesc(field.message)) {
+        if (usesNativeJsonRepresentation(field)) {
+          defineMaterializedField(
+            materialized,
+            field.localName,
+            materializeNativeJsonMessage(field.message, value),
+          );
+        } else if (isWrapperDesc(field.message)) {
           defineMaterializedField(materialized, field.localName, value);
         } else {
           const nestedEntries = requireSnapshotDataEntries(value);
@@ -441,17 +439,17 @@ const materializeGeneratedMessage = (
         break;
       case "list": {
         const values = requireSnapshotArrayValues(value);
-        const list =
-          field.listKind === "message"
-            ? values.map((entry) => {
-                if (usesNativeStructRepresentation(field)) {
-                  return entry;
-                }
-                const nestedEntries = requireSnapshotDataEntries(entry);
-                return materializeGeneratedMessage(field.message, dataObject(nestedEntries));
-              })
-            : values;
-        defineMaterializedField(materialized, field.localName, Object.freeze(list));
+        const list = values.map((entry) => {
+          if (field.listKind !== "message") {
+            return entry;
+          }
+          if (usesNativeJsonRepresentation(field)) {
+            return materializeNativeJsonMessage(field.message, entry);
+          }
+          const nestedEntries = requireSnapshotDataEntries(entry);
+          return materializeGeneratedMessage(field.message, dataObject(nestedEntries));
+        });
+        defineMaterializedField(materialized, field.localName, list);
         break;
       }
       case "map": {
@@ -459,18 +457,22 @@ const materializeGeneratedMessage = (
         const map: Record<string, unknown> = {};
         for (const [key, entry] of mapEntries) {
           const materializedEntry =
-            field.mapKind === "message" && !usesNativeStructRepresentation(field)
-              ? (() => {
-                  const nestedEntries = requireSnapshotDataEntries(entry);
-                  return materializeGeneratedMessage(field.message, dataObject(nestedEntries));
-                })()
+            field.mapKind === "message"
+              ? usesNativeJsonRepresentation(field)
+                ? materializeNativeJsonMessage(field.message, entry)
+                : (() => {
+                    const nestedEntries = requireSnapshotDataEntries(entry);
+                    return materializeGeneratedMessage(field.message, dataObject(nestedEntries));
+                  })()
               : entry;
           Object.defineProperty(map, key, {
+            configurable: true,
             enumerable: true,
             value: materializedEntry,
+            writable: true,
           });
         }
-        defineMaterializedField(materialized, field.localName, Object.freeze(map));
+        defineMaterializedField(materialized, field.localName, map);
         break;
       }
       case "scalar":
@@ -492,20 +494,16 @@ const materializeGeneratedMessage = (
         : undefined;
     if (selectedField?.fieldKind === "message") {
       const selectedValue = oneofEntries.find(([key]) => key === "value")?.[1];
-      const materializedValue = usesNativeStructRepresentation(selectedField)
-        ? selectedValue
+      const materializedValue = usesNativeJsonRepresentation(selectedField)
+        ? materializeNativeJsonMessage(selectedField.message, selectedValue)
         : (() => {
             const nestedEntries = requireSnapshotDataEntries(selectedValue);
             return materializeGeneratedMessage(selectedField.message, dataObject(nestedEntries));
           })();
-      defineMaterializedField(
-        materialized,
-        oneof.localName,
-        Object.freeze({
-          case: selectedCase,
-          value: materializedValue,
-        }),
-      );
+      defineMaterializedField(materialized, oneof.localName, {
+        case: selectedCase,
+        value: materializedValue,
+      });
       continue;
     }
     const normalizedOneof = Reflect.get(materialized, oneof.localName);
@@ -516,7 +514,7 @@ const materializeGeneratedMessage = (
     );
   }
 
-  return Object.freeze(materialized);
+  return freezeGeneratedRequestGraph(materialized);
 };
 
 export const validateAndSnapshotGrpcRequest = (message: DescMessage, value: unknown): unknown => {
@@ -528,7 +526,9 @@ export const validateAndSnapshotGrpcRequest = (message: DescMessage, value: unkn
     const materialized = materializeGeneratedMessage(message, snapshot);
     toBinary(message, materialized);
     return materialized;
-  } catch {
-    throw new TypeError("The request-init value does not match its generated descriptor.");
+  } catch (cause) {
+    throw new TypeError("The request-init value does not match its generated descriptor.", {
+      cause,
+    });
   }
 };

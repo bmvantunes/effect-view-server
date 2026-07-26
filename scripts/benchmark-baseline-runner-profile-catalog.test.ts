@@ -4,6 +4,7 @@ import {
   groupedWriteTask,
   rawLargeMembershipTask,
   runtimeGrpcMaterializedTask,
+  runtimeGrpcSourceAdapterTask,
 } from "./benchmark-baseline-task-catalog.mjs";
 
 describe("benchmark baseline runner", () => {
@@ -360,6 +361,47 @@ describe("benchmark baseline runner", () => {
         },
       ],
     });
+  });
+
+  it("defines the gRPC Source Adapter benchmark task", () => {
+    const sourceAdapterTasks = profiles.get("grpc-source-adapter") ?? [];
+    const directTask = runtimeGrpcSourceAdapterTask(32, 32, {
+      VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+      VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
+      VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
+      VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
+    });
+
+    expect(sourceAdapterTasks).toStrictEqual([directTask]);
+    expect(
+      sourceAdapterTasks.map((task) => ({
+        artifactKind: task.expectedArtifactKind,
+        batchSize: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE"],
+        benchmarkScope: task.expectedBenchmarkScope,
+        expectedMutationCount: task.expectedMutationCount,
+        iterations: task.env["VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"],
+        minimumSampleCount: task.minimumSampleCount,
+        outputJsonPath: task.packageOutputJsonPath,
+        routeCount: task.env["VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT"],
+        rowCount: task.expectedRowCount,
+        task: task.args,
+        timeMs: task.env["VIEW_SERVER_RUNTIME_BENCH_TIME_MS"],
+      })),
+    ).toStrictEqual([
+      {
+        artifactKind: "runtime-benchmark-summary",
+        batchSize: "32",
+        benchmarkScope: "runtime-grpc-source-adapter",
+        expectedMutationCount: 165,
+        iterations: "5",
+        minimumSampleCount: 5,
+        outputJsonPath: ".artifacts/grpc-source-adapter-32batch-32routes.json",
+        routeCount: "32",
+        rowCount: 32,
+        task: ["run", "--no-cache", "@effect-view-server/grpc#bench:adapter"],
+        timeMs: "0",
+      },
+    ]);
   });
 
   it("defines isolated grouped order-neutral tasks without changing dual grouped-write artifacts", () => {

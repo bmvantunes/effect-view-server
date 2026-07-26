@@ -30,11 +30,15 @@ describe("gRPC Source Adapter browser contract", () => {
         ? output.output.filter((entry) => entry.type === "chunk")
         : [],
     );
-    const code = chunks[0]?.code;
-    if (code === undefined) {
+    if (chunks.length === 0) {
       throw new Error("The gRPC browser fixture emitted no JavaScript chunk.");
     }
+    const code = chunks.map((chunk) => chunk.code).join("\n");
     const moduleIds = chunks.flatMap((chunk) => Object.keys(chunk.modules));
+    const compressedBytes = chunks.reduce(
+      (total, chunk) => total + gzipSync(chunk.code).byteLength,
+      0,
+    );
 
     expect(code).toContain("GrpcConfigurationFailure");
     expect(
@@ -51,8 +55,6 @@ describe("gRPC Source Adapter browser contract", () => {
           id.startsWith("node:"),
       ),
     ).toStrictEqual([]);
-    expect(gzipSync(code).byteLength).toBeLessThanOrEqual(
-      grpcBrowserContractBudgetBytes,
-    );
+    expect(compressedBytes).toBeLessThanOrEqual(grpcBrowserContractBudgetBytes);
   });
 });

@@ -1,4 +1,5 @@
 const enginePackageDirectory = "packages/column-live-view-engine";
+const grpcPackageDirectory = "packages/grpc";
 const reactPackageDirectory = "packages/react";
 const runtimePackageDirectory = "packages/runtime";
 
@@ -559,6 +560,31 @@ export const runtimeGrpcLeasedTask = (rowsPerFeed, routeCount, retainedRows, env
     packageDirectory: runtimePackageDirectory,
     rowCount: rowsPerFeed,
     vpTask: "runtime#bench:grpc-leased",
+  });
+};
+
+export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, env) => {
+  const outputJsonPath = `.artifacts/grpc-source-adapter-${batchSize}batch-${routeCount}routes.json`;
+  const minimumSampleCount = minimumSampleCountFrom(
+    env,
+    "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS",
+  );
+  return task({
+    artifactKind: "runtime-benchmark-summary",
+    benchmarkScope: "runtime-grpc-source-adapter",
+    env: {
+      VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE: String(batchSize),
+      VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT: String(routeCount),
+      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
+      ...env,
+    },
+    expectedMutationCount: (batchSize + 1) * minimumSampleCount,
+    label: `gRPC Source Adapter ${batchSize} response batch ${routeCount} leased routes`,
+    minimumSampleCount,
+    outputJsonPath,
+    packageDirectory: grpcPackageDirectory,
+    rowCount: batchSize,
+    vpTask: "@effect-view-server/grpc#bench:adapter",
   });
 };
 

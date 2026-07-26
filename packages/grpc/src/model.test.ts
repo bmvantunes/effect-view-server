@@ -361,6 +361,62 @@ describe("gRPC Source Definition contract", () => {
     );
     expect(accessorCalls).toBe(0);
 
+    let lifecyclePropertyReads = 0;
+    const materializedInput = {
+      client: "orders",
+      method: "stream",
+      request: () => ({ region: "eu" }),
+      map: () => ({ id: "captured-materialized", region: "eu" }),
+    };
+    const materializedProxy = new Proxy(materializedInput, {
+      get: () => {
+        lifecyclePropertyReads += 1;
+        throw new Error("validated Materialized input must not be read through property access");
+      },
+    });
+    const capturedMaterialized = invoke(sources, "materialized", materializedProxy);
+    const leasedRouteBy = ["region"];
+    const leasedInput = {
+      client: "orders",
+      method: "stream",
+      routeBy: leasedRouteBy,
+      request: () => ({ region: "eu" }),
+      map: () => ({ id: "captured-leased", region: "eu" }),
+    };
+    const leasedProxy = new Proxy(leasedInput, {
+      get: () => {
+        lifecyclePropertyReads += 1;
+        throw new Error("validated Leased input must not be read through property access");
+      },
+    });
+    const capturedLeased = invoke(sources, "leased", leasedProxy);
+    leasedRouteBy[0] = "mutated";
+    const capturedMaterializedOptions = Reflect.get(Object(capturedMaterialized), "options");
+    const capturedLeasedOptions = Reflect.get(Object(capturedLeased), "options");
+    expect({
+      lifecyclePropertyReads,
+      materializedClient: Reflect.get(Object(capturedMaterializedOptions), "client"),
+      materializedMapped: Reflect.apply(
+        Reflect.get(Object(capturedMaterializedOptions), "mapValue"),
+        undefined,
+        [{}],
+      ),
+      leasedClient: Reflect.get(Object(capturedLeasedOptions), "client"),
+      leasedMapped: Reflect.apply(
+        Reflect.get(Object(capturedLeasedOptions), "mapValue"),
+        undefined,
+        [{}, { region: "eu" }],
+      ),
+      leasedRouteBy: Reflect.get(Object(capturedLeased), "routeBy"),
+    }).toStrictEqual({
+      lifecyclePropertyReads: 0,
+      materializedClient: "orders",
+      materializedMapped: { id: "captured-materialized", region: "eu" },
+      leasedClient: "orders",
+      leasedMapped: { id: "captured-leased", region: "eu" },
+      leasedRouteBy: ["region"],
+    });
+
     const protoDescriptors = {};
     Object.defineProperty(protoDescriptors, "__proto__", {
       enumerable: true,
@@ -376,7 +432,23 @@ describe("gRPC Source Definition contract", () => {
       request: () => ({ region: "eu" }),
       map: () => ({ id: "one", region: "eu" }),
     });
-    expect(typeof protoSource).toBe("object");
+    if (typeof protoSource !== "object" || protoSource === null) {
+      throw new TypeError("Expected __proto__ client Source Definition.");
+    }
+    const protoOptions = Reflect.get(protoSource, "options");
+    expect({
+      client:
+        typeof protoOptions === "object" && protoOptions !== null
+          ? Reflect.get(protoOptions, "client")
+          : undefined,
+      method:
+        typeof protoOptions === "object" && protoOptions !== null
+          ? Reflect.get(protoOptions, "method")
+          : undefined,
+    }).toStrictEqual({
+      client: "__proto__",
+      method: "stream",
+    });
   });
 
   it("recognizes only exact generated services, methods, and definition options", () => {
@@ -420,19 +492,15 @@ describe("gRPC Source Definition contract", () => {
           request: () => ({ region: "eu" }),
           map: ({ value }) => ({ id: value.id, region: value.region }),
         }).options,
-        "materialized",
       ),
-      invalidOptions: isGrpcSourceDefinitionOptions(
-        {
-          client: "orders",
-          method: "stream",
-          request: () => ({}),
-          mapValue: () => ({}),
-          service: () => OrdersService,
-          extra: true,
-        },
-        "leased",
-      ),
+      invalidOptions: isGrpcSourceDefinitionOptions({
+        client: "orders",
+        method: "stream",
+        request: () => ({}),
+        mapValue: () => ({}),
+        service: () => OrdersService,
+        extra: true,
+      }),
       invalidOptionFields: [
         {
           client: null,
@@ -469,7 +537,7 @@ describe("gRPC Source Definition contract", () => {
           request: () => ({}),
           service: null,
         },
-      ].map((options) => isGrpcSourceDefinitionOptions(options, "materialized")),
+      ].map(isGrpcSourceDefinitionOptions),
     }).toStrictEqual({
       service: true,
       nullService: false,

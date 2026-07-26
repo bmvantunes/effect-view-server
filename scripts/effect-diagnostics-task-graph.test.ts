@@ -253,4 +253,12 @@ describe("strict Effect diagnostics task graph", () => {
       serializedDiagnostics: [],
     });
   });
+
+  it("serializes mandatory diagnostics and package tests that rebuild shared declarations", () => {
+    const rootPackage = JSON.parse(readFileSync("package.json", "utf8"));
+
+    expect(rootPackage.scripts.ready).toBe(
+      "vp run -r build && vp run -w check:package-exports && vp run -w check:internal-seams && vp run -w test:repository-scripts && vp check && vp run --concurrency-limit 1 -w check:effect && vp run --concurrency-limit 1 --filter '@effect-view-server/*' --filter '!@effect-view-server/runtime' test && vp run effect-view-server#test && vp run @effect-view-server/runtime#test",
+    );
+  });
 });

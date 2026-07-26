@@ -12,6 +12,7 @@ import {
   reactInMemoryTask,
   runtimeGrpcLeasedTask,
   runtimeGrpcMaterializedTask,
+  runtimeGrpcSourceAdapterTask,
   runtimeKafkaIngestTask,
   runtimeKafkaSustainedFirehoseTask,
   runtimeWebSocketFirehoseTask,
@@ -225,6 +226,17 @@ export const profiles = new Map([
     [
       runtimeKafkaSustainedFirehoseTask(250, 4, {
         ...commonRuntimeKafkaSmokeEnv,
+      }),
+    ],
+  ],
+  [
+    "grpc-source-adapter",
+    [
+      runtimeGrpcSourceAdapterTask(32, 32, {
+        VIEW_SERVER_RUNTIME_BENCH_ITERATIONS: "5",
+        VIEW_SERVER_RUNTIME_BENCH_TIME_MS: "0",
+        VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS: "0",
+        VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS: "0",
       }),
     ],
   ],

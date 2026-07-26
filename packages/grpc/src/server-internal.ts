@@ -1,4 +1,6 @@
 import type { DescMessage, DescMethodServerStreaming, DescService } from "@bufbuild/protobuf";
+import { ConnectError } from "@connectrpc/connect";
+import { codeToString } from "@connectrpc/connect/protocol-connect";
 import {
   SourceAdapterServer,
   type SourceAdapterServerLifecycle,
@@ -123,23 +125,33 @@ const requestFailure = (
   message: "The gRPC request factory threw or returned an invalid generated request-init object.",
 });
 
+const connectCode = (cause: unknown): string => {
+  try {
+    return codeToString(ConnectError.from(cause).code).toUpperCase();
+  } catch {
+    return "UNKNOWN";
+  }
+};
+
 const invocationFailure = (
   definition: GrpcDefinitionOptions,
+  cause: unknown,
 ): Extract<GrpcAdapterFailure, { readonly _tag: "GrpcInvocationFailure" }> => ({
   _tag: "GrpcInvocationFailure",
   client: definition.client,
   method: definition.method,
-  code: "UNKNOWN",
+  code: connectCode(cause),
   message: "The selected gRPC server-streaming method could not be invoked.",
 });
 
 const streamFailure = (
   definition: GrpcDefinitionOptions,
+  cause: unknown,
 ): Extract<GrpcAdapterFailure, { readonly _tag: "GrpcStreamFailure" }> => ({
   _tag: "GrpcStreamFailure",
   client: definition.client,
   method: definition.method,
-  code: "UNKNOWN",
+  code: connectCode(cause),
   message: "The upstream gRPC response stream failed.",
 });
 
@@ -195,12 +207,6 @@ const logicalState = (
   runtime.logicalStates.set(target, created);
   return created;
 };
-
-const capturedDefinition = (
-  runtime: GrpcRuntimeRegistryValue,
-  definition: object,
-): GrpcDefinitionOptions =>
-  Option.getOrThrow(Option.fromUndefinedOr(runtime.definitions.get(definition)));
 
 const materializedMetrics = (metrics: MutableMetrics): GrpcMaterializedMetrics => ({
   logicalClient: metrics.logicalClient,
@@ -293,7 +299,7 @@ const iteratorDone = (): IteratorReturnResult<undefined> => ({
   value: undefined,
 });
 
-const makeOwnedIterable = (
+export const makeOwnedGrpcIterable = (
   iterator: AsyncIterator<unknown>,
   controller: AbortController,
 ): {
@@ -338,7 +344,7 @@ const makeOwnedIterable = (
     return finalization;
   };
   const owned: AsyncIterator<unknown> = {
-    next: () => iterator.next(),
+    next: () => (finalization === undefined ? iterator.next() : Promise.resolve(iteratorDone())),
     return: () => finalize().then(iteratorDone),
   };
   return {
@@ -466,11 +472,31 @@ const acquireAttempt = Effect.fn("GrpcSourceAdapter.attempt.acquire")(function* 
   >,
 ) {
   const runtime = yield* GrpcRuntimeRegistry;
-  const definition = capturedDefinition(runtime, input.definition);
+  const definition = yield* Effect.fromOption(
+    Option.fromUndefinedOr(runtime.definitions.get(input.definition)),
+    () =>
+      adapterFailure(
+        configurationFailure(
+          input.definition.client,
+          "The captured gRPC Source Definition is unavailable during client lookup.",
+          "client-lookup",
+        ),
+      ),
+  );
   const target = input.target;
   const state = logicalState(runtime, target, definition);
   const request = yield* ensureRequest(runtime, state, definition, target);
-  const client = Option.getOrThrow(Option.fromUndefinedOr(runtime.clients.get(definition.client)));
+  const client = yield* Effect.fromOption(
+    Option.fromUndefinedOr(runtime.clients.get(definition.client)),
+    () =>
+      adapterFailure(
+        configurationFailure(
+          definition.client,
+          "The configured gRPC runtime client is unavailable during client lookup.",
+          "client-lookup",
+        ),
+      ),
+  );
   const controller = yield* Effect.acquireRelease(
     Effect.sync(() => new AbortController()),
     (ownedController) =>
@@ -483,11 +509,18 @@ const acquireAttempt = Effect.fn("GrpcSourceAdapter.attempt.acquire")(function* 
       const candidate = client.invoke(definition.method, request, controller.signal);
       return isAsyncIterable(candidate) ? candidate : undefined;
     },
-    catch: () => adapterFailure(invocationFailure(definition)),
+    catch: (cause) => adapterFailure(invocationFailure(definition, cause)),
   }).pipe(
     Effect.flatMap((candidate) =>
       candidate === undefined
-        ? Effect.fail(adapterFailure(invocationFailure(definition)))
+        ? Effect.fail(
+            adapterFailure(
+              invocationFailure(
+                definition,
+                new TypeError("The selected gRPC method did not return an AsyncIterable."),
+              ),
+            ),
+          )
         : Effect.succeed(candidate),
     ),
   );
@@ -496,15 +529,22 @@ const acquireAttempt = Effect.fn("GrpcSourceAdapter.attempt.acquire")(function* 
       const candidate = iterable[Symbol.asyncIterator]();
       return isAsyncIterator(candidate) ? candidate : undefined;
     },
-    catch: () => adapterFailure(invocationFailure(definition)),
+    catch: (cause) => adapterFailure(invocationFailure(definition, cause)),
   }).pipe(
     Effect.flatMap((candidate) =>
       candidate === undefined
-        ? Effect.fail(adapterFailure(invocationFailure(definition)))
+        ? Effect.fail(
+            adapterFailure(
+              invocationFailure(
+                definition,
+                new TypeError("The gRPC response stream did not return an AsyncIterator."),
+              ),
+            ),
+          )
         : Effect.succeed(candidate),
     ),
   );
-  const owned = makeOwnedIterable(iterator, controller);
+  const owned = makeOwnedGrpcIterable(iterator, controller);
   state.metrics.acquisitionCount += 1n;
   state.metrics.reconnectCount = state.metrics.acquisitionCount - 1n;
   state.metrics.activeInvocations += 1n;
@@ -523,8 +563,9 @@ const acquireAttempt = Effect.fn("GrpcSourceAdapter.attempt.acquire")(function* 
                     adapter: GrpcSourceAdapter.identity,
                     client: definition.client,
                     failure: cancellationFailure(definition),
+                    lifecycle: input.target._tag,
                     method: definition.method,
-                    target,
+                    topic: input.toolkit.topic,
                   }),
                 ),
               ),
@@ -544,8 +585,8 @@ const acquireAttempt = Effect.fn("GrpcSourceAdapter.attempt.acquire")(function* 
   );
   yield* Scope.addFinalizer(yield* Effect.scope, finalize);
   const route = input.target._tag === "Leased" ? input.target.route : undefined;
-  const events = Stream.fromAsyncIterable(owned.iterable, () =>
-    adapterFailure(streamFailure(definition)),
+  const events = Stream.fromAsyncIterable(owned.iterable, (cause) =>
+    adapterFailure(streamFailure(definition, cause)),
   ).pipe(
     Stream.mapEffect((value) =>
       mappedEvent<Row, GrpcRuntimeRegistry, Topic>(input.toolkit, definition, route, state, value),
@@ -629,7 +670,7 @@ const materializedLifecycle: SourceAdapterServerLifecycle<
   metrics: (input) =>
     Effect.gen(function* () {
       const runtime = yield* GrpcRuntimeRegistry;
-      const definition = capturedDefinition(runtime, input.definition);
+      const definition = input.definition;
       return materializedMetrics(logicalState(runtime, input.target, definition).metrics);
     }),
   retry: Schedule.spaced("1 second"),
@@ -645,7 +686,7 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
   metrics: (input) =>
     Effect.gen(function* () {
       const runtime = yield* GrpcRuntimeRegistry;
-      const definition = capturedDefinition(runtime, input.definition);
+      const definition = input.definition;
       return leasedMetrics(logicalState(runtime, input.target, definition).metrics);
     }),
   retry: Schedule.spaced("1 second"),
@@ -681,7 +722,7 @@ export const grpcBindingPlan = Effect.fn("GrpcSourceAdapter.bindings.collect")(f
         ({ topic, definition: source }) => {
           const options = source.options;
           return {
-            captured: captureGrpcSourceDefinitionOptions(options, source.lifecycle),
+            captured: captureGrpcSourceDefinitionOptions(options),
             original: typeof options === "object" && options !== null ? options : undefined,
             topic,
           };

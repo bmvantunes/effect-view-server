@@ -1,6 +1,12 @@
-import { create, toBinary, type Message } from "@bufbuild/protobuf";
+import { create, toBinary, type JsonValue, type Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
+import {
+  FieldDescriptorProto_Label,
+  FieldDescriptorProto_Type,
+  FileDescriptorProtoSchema,
+  ValueSchema,
+} from "@bufbuild/protobuf/wkt";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import {
@@ -24,10 +30,16 @@ import {
 import { TestClock } from "effect/testing";
 import { grpc, GrpcSourceAdapter, type GrpcMaterializedDefinitionOptions } from "./model";
 import { grpcServerLayer, grpcServiceBindings, type GrpcRuntimeClient } from "./server";
-import { grpcBindingPlan, grpcServerLayerFromBindingPlan } from "./server-internal";
+import {
+  grpcBindingPlan,
+  grpcServerLayerFromBindingPlan,
+  makeOwnedGrpcIterable,
+} from "./server-internal";
 
 type RequestMessage = Message<"grpc.server.Request"> & {
+  readonly metadata: JsonValue | undefined;
   readonly region: string;
+  readonly tags: Array<string>;
 };
 
 type EventMessage = Message<"grpc.server.Event"> & {
@@ -45,6 +57,7 @@ const descriptorFile = fileDesc(
           name: "grpc/server.proto",
           package: "grpc.server",
           syntax: "proto3",
+          dependency: ["google/protobuf/struct.proto"],
           messageType: [
             {
               name: "Request",
@@ -52,6 +65,18 @@ const descriptorFile = fileDesc(
                 {
                   name: "region",
                   number: 1,
+                  type: FieldDescriptorProto_Type.STRING,
+                },
+                {
+                  name: "metadata",
+                  number: 2,
+                  type: FieldDescriptorProto_Type.MESSAGE,
+                  typeName: ".google.protobuf.Value",
+                },
+                {
+                  name: "tags",
+                  number: 3,
+                  label: FieldDescriptorProto_Label.REPEATED,
                   type: FieldDescriptorProto_Type.STRING,
                 },
               ],
@@ -106,6 +131,7 @@ const descriptorFile = fileDesc(
       (byte) => String.fromCharCode(byte),
     ).join(""),
   ),
+  [ValueSchema.file],
 );
 
 const RequestSchema = messageDesc<RequestMessage>(descriptorFile, 0);
@@ -138,6 +164,7 @@ type StreamCommand =
     }
   | {
       readonly _tag: "Fail";
+      readonly cause?: unknown;
     }
   | {
       readonly _tag: "Complete";
@@ -168,7 +195,7 @@ const applyCommand = (invocation: Invocation, command: StreamCommand): void => {
   } else if (command._tag === "Complete") {
     pending.resolve({ done: true, value: undefined });
   } else {
-    pending.reject(new Error("planned upstream stream failure"));
+    pending.reject(command.cause ?? new Error("planned upstream stream failure"));
   }
 };
 
@@ -181,7 +208,7 @@ const takeCommand = (invocation: Invocation): Promise<IteratorResult<unknown>> =
     if (command._tag === "Complete") {
       return Promise.resolve({ done: true, value: undefined });
     }
-    return Promise.reject(new Error("planned upstream stream failure"));
+    return Promise.reject(command.cause ?? new Error("planned upstream stream failure"));
   }
   return new Promise((resolve, reject) => {
     invocation.pending.push({ resolve, reject });
@@ -191,6 +218,7 @@ const takeCommand = (invocation: Invocation): Promise<IteratorResult<unknown>> =
 const makeControlledClient = (input?: {
   readonly rejectFinalization?: boolean;
   readonly invocationFailure?: boolean;
+  readonly invocationFailureCause?: unknown;
   readonly invalidIterable?: boolean;
   readonly throwingIterableAccessor?: boolean;
   readonly iteratorFailure?: boolean;
@@ -203,6 +231,9 @@ const makeControlledClient = (input?: {
   const client: GrpcRuntimeClient = {
     service: OrdersService,
     invoke: (method, request, signal) => {
+      if (input?.invocationFailureCause !== undefined) {
+        throw input.invocationFailureCause;
+      }
       if (input?.invocationFailure === true) {
         throw new Error("planned invocation failure");
       }
@@ -278,13 +309,13 @@ const makeControlledClient = (input?: {
         }
         applyCommand(invocation, { _tag: "Value", value });
       }),
-    fail: (index: number) =>
+    fail: (index: number, cause?: unknown) =>
       Effect.sync(() => {
         const invocation = invocations[index];
         if (invocation === undefined) {
           throw new TypeError(`Missing controlled invocation ${index}.`);
         }
-        applyCommand(invocation, { _tag: "Fail" });
+        applyCommand(invocation, { _tag: "Fail", ...(cause === undefined ? {} : { cause }) });
       }),
     complete: (index: number) =>
       Effect.sync(() => {
@@ -297,13 +328,24 @@ const makeControlledClient = (input?: {
   };
 };
 
-const awaitCondition = (predicate: () => boolean): Effect.Effect<void> =>
+const awaitCondition = (
+  describe: () => string,
+  predicate: () => boolean,
+  remaining = 10_000,
+): Effect.Effect<void> =>
   Effect.suspend(() =>
-    predicate() ? Effect.void : Effect.yieldNow.pipe(Effect.andThen(awaitCondition(predicate))),
+    predicate()
+      ? Effect.void
+      : remaining === 0
+        ? Effect.die(new TypeError(`Timed out waiting for ${describe()}.`))
+        : Effect.yieldNow.pipe(Effect.andThen(awaitCondition(describe, predicate, remaining - 1))),
   );
 
 const awaitInvocationCount = (controlled: ReturnType<typeof makeControlledClient>, count: number) =>
-  awaitCondition(() => controlled.invocations.length === count);
+  awaitCondition(
+    () => `controlled invocation count ${count}; last observed ${controlled.invocations.length}`,
+    () => controlled.invocations.length === count,
+  );
 
 const requestField = (request: unknown, field: string): unknown =>
   Reflect.get(Object(request), field);
@@ -325,6 +367,60 @@ const rawMaterializedSource = (options: unknown): unknown =>
   Reflect.apply(GrpcSourceAdapter.materializedSource, GrpcSourceAdapter, [options]);
 
 describe("gRPC Source Adapter Runtime Core vertical slice", () => {
+  it.effect("short-circuits owned iterator reads after finalization starts", () =>
+    Effect.gen(function* () {
+      let nextCalls = 0;
+      let returnCalls = 0;
+      const controller = new AbortController();
+      const owned = makeOwnedGrpcIterable(
+        {
+          next: () => {
+            nextCalls += 1;
+            return Promise.resolve({
+              done: false,
+              value: "unexpected",
+            });
+          },
+          return: () => {
+            returnCalls += 1;
+            return Promise.resolve({
+              done: true,
+              value: undefined,
+            });
+          },
+        },
+        controller,
+      );
+      const iterator = owned.iterable[Symbol.asyncIterator]();
+      const returnMethod = Reflect.get(iterator, "return");
+      if (typeof returnMethod !== "function") {
+        return yield* Effect.die("Expected owned iterator return method.");
+      }
+      const returned = yield* Effect.promise(() => Reflect.apply(returnMethod, iterator, []));
+      const afterFinalization = yield* Effect.promise(() => iterator.next());
+
+      expect({
+        returned,
+        afterFinalization,
+        nextCalls,
+        returnCalls,
+        aborted: controller.signal.aborted,
+      }).toStrictEqual({
+        returned: {
+          done: true,
+          value: undefined,
+        },
+        afterFinalization: {
+          done: true,
+          value: undefined,
+        },
+        nextCalls: 0,
+        returnCalls: 1,
+        aborted: true,
+      });
+    }),
+  );
+
   it.effect("starts Materialized sources, reuses frozen requests across retry, and cancels", () =>
     Effect.gen(function* () {
       const controlled = makeControlledClient();
@@ -335,7 +431,10 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
           method: "stream",
           request: () => {
             requestCalls += 1;
-            return { region: "all" };
+            return {
+              metadata: ["stable", { identity: "browser-identity-sentinel" }],
+              region: "all",
+            };
           },
           map: ({ value }) => ({
             id: value.id,
@@ -358,6 +457,16 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       );
       yield* awaitInvocationCount(controlled, 1);
       const firstRequest = controlled.invocations[0]?.request;
+      const metadata = requestField(firstRequest, "metadata");
+      const metadataKind = requestField(metadata, "kind");
+      const metadataList = requestField(metadataKind, "value");
+      const metadataValues = requestField(metadataList, "values");
+      const metadataMutationAccepted = Reflect.set(Object(metadataKind), "case", "nullValue");
+      const defaultTagsMutationAccepted = Reflect.set(
+        Object(requestField(firstRequest, "tags")),
+        0,
+        "mutated",
+      );
       yield* controlled.fail(0);
       yield* awaitInvocationCount(controlled, 2);
       const subscription = yield* runtime.liveClient.subscribe("orders", {
@@ -379,6 +488,27 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       expect({
         requestCalls,
         frozen: Object.isFrozen(firstRequest),
+        metadataFrozen: Object.isFrozen(metadata),
+        metadataKindFrozen: Object.isFrozen(metadataKind),
+        metadataListFrozen: Object.isFrozen(metadataList),
+        metadataValuesFrozen: Object.isFrozen(metadataValues),
+        metadataMutationAccepted,
+        defaultTagsFrozen: Object.isFrozen(requestField(firstRequest, "tags")),
+        defaultTagsMutationAccepted,
+        metadataCaseAfterRetry: requestField(metadataKind, "case"),
+        metadataFirstValueAfterRetry: requestField(
+          requestField(
+            requestField(
+              requestField(
+                requestField(Array.isArray(metadataValues) ? metadataValues[1] : undefined, "kind"),
+                "value",
+              ),
+              "fields",
+            ),
+            "identity",
+          ),
+          "kind",
+        ),
         sameRequest: firstRequest === controlled.invocations[1]?.request,
         method: controlled.invocations[1]?.method,
         eventTypes: events.map((event) => event.type),
@@ -386,6 +516,18 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       }).toStrictEqual({
         requestCalls: 1,
         frozen: true,
+        metadataFrozen: true,
+        metadataKindFrozen: true,
+        metadataListFrozen: true,
+        metadataValuesFrozen: true,
+        metadataMutationAccepted: false,
+        defaultTagsFrozen: true,
+        defaultTagsMutationAccepted: false,
+        metadataCaseAfterRetry: "listValue",
+        metadataFirstValueAfterRetry: {
+          case: "stringValue",
+          value: "browser-identity-sentinel",
+        },
         sameRequest: true,
         method: "stream",
         eventTypes: ["snapshot", "delta"],
@@ -413,7 +555,13 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       yield* subscription.close();
       yield* metricsDiagnostics.close();
       yield* runtime.close;
-      yield* awaitCondition(() => controlled.invocations[1]?.returns === 1);
+      yield* awaitCondition(
+        () =>
+          `second controlled invocation return count 1; last observed ${
+            controlled.invocations[1]?.returns ?? 0
+          }`,
+        () => controlled.invocations[1]?.returns === 1,
+      );
       expect({
         aborted: controlled.invocations[1]?.signal.aborted,
         returns: controlled.invocations[1]?.returns,
@@ -519,7 +667,13 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         yield* groupedEu.close();
         expect(controlled.invocations[0]?.returns).toBe(0);
         yield* paginatedEu.close();
-        yield* awaitCondition(() => controlled.invocations[0]?.returns === 1);
+        yield* awaitCondition(
+          () =>
+            `first controlled invocation return count 1; last observed ${
+              controlled.invocations[0]?.returns ?? 0
+            }`,
+          () => controlled.invocations[0]?.returns === 1,
+        );
         const reacquiredEu = yield* runtime.liveClient.subscribe("orders", {
           routeBy: { region: "eu" },
           select: ["id"],
@@ -539,6 +693,10 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
         yield* diagnostics.close();
         yield* runtime.close;
         yield* awaitCondition(
+          () =>
+            `remaining controlled invocation return counts 1 and 1; last observed ${
+              controlled.invocations[1]?.returns ?? 0
+            } and ${controlled.invocations[2]?.returns ?? 0}`,
           () =>
             controlled.invocations[1]?.returns === 1 && controlled.invocations[2]?.returns === 1,
         );
@@ -806,7 +964,10 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
   it.effect("contains invocation and finalization failures in exact safe diagnostics", () =>
     Effect.gen(function* () {
       const invocationFailureClient = makeControlledClient({
-        invocationFailure: true,
+        invocationFailureCause: new ConnectError(
+          "private planned invocation failure",
+          Code.Unavailable,
+        ),
       });
       const source = grpc.topicSources({ orders: OrdersService }).materialized(
         {
@@ -856,7 +1017,7 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
             failure: {
               _tag: "GrpcInvocationFailure",
               client: "orders",
-              code: "UNKNOWN",
+              code: "UNAVAILABLE",
               message: "The selected gRPC server-streaming method could not be invoked.",
               method: "stream",
             },
@@ -870,6 +1031,190 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       );
       yield* diagnostics.close();
       yield* runtime.close;
+    }),
+  );
+
+  it.effect("contains hostile invocation and stream causes in typed UNKNOWN failures", () =>
+    Effect.gen(function* () {
+      const hostileCause = Object.defineProperty({}, Symbol.toPrimitive, {
+        value: () => {
+          throw new Error("private hostile cause coercion");
+        },
+      });
+      for (const phase of ["invocation", "stream"] as const) {
+        const controlled = makeControlledClient(
+          phase === "invocation" ? { invocationFailureCause: hostileCause } : undefined,
+        );
+        const source = grpc.topicSources({ orders: OrdersService }).materialized(
+          {
+            client: "orders",
+            method: "stream",
+            request: () => ({ region: "all" }),
+            map: ({ value }) => ({
+              id: value.id,
+              price: value.price,
+              region: value.region,
+            }),
+          },
+          Schedule.recurs(0),
+        );
+        const config = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Order,
+              source,
+            },
+          },
+        });
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
+        );
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        if (phase === "stream") {
+          yield* awaitInvocationCount(controlled, 1);
+          yield* controlled.fail(0, hostileCause);
+        }
+        const exhausted = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+        if (exhausted.status._tag !== "Exhausted") {
+          return yield* Effect.die(`Expected hostile ${phase} failure exhaustion.`);
+        }
+        expect(exhausted.status.exhaustion.lastTermination).toStrictEqual({
+          _tag: "Failed",
+          failure: {
+            _tag: "AdapterFailure",
+            failure: {
+              _tag: phase === "invocation" ? "GrpcInvocationFailure" : "GrpcStreamFailure",
+              client: "orders",
+              code: "UNKNOWN",
+              message:
+                phase === "invocation"
+                  ? "The selected gRPC server-streaming method could not be invoked."
+                  : "The upstream gRPC response stream failed.",
+              method: "stream",
+            },
+          },
+        });
+        yield* diagnostics.close();
+        yield* runtime.close;
+      }
+    }),
+  );
+
+  it.effect("reports corrupted runtime definition and client lookups as typed failures", () =>
+    Effect.gen(function* () {
+      const source = grpc.topicSources({ orders: OrdersService }).materialized(
+        {
+          client: "orders",
+          method: "stream",
+          request: () => ({ region: "all" }),
+          map: ({ value }) => ({
+            id: value.id,
+            price: value.price,
+            region: value.region,
+          }),
+        },
+        Schedule.recurs(0),
+      );
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source,
+          },
+        },
+      });
+      const bindingPlan = yield* grpcBindingPlan(config);
+      const captured = Option.getOrThrow(
+        Option.fromUndefinedOr(bindingPlan.definitions.get(source.options)),
+      );
+      const method = Option.getOrThrow(Option.fromUndefinedOr(bindingPlan.methods.get(captured)));
+
+      const missingDefinitionRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          grpcServerLayerFromBindingPlan(
+            {
+              ...bindingPlan,
+              definitions: new WeakMap<object, typeof captured>(),
+            },
+            { orders: makeControlledClient().client },
+          ),
+        ),
+      );
+      const missingDefinitionDiagnostics =
+        yield* missingDefinitionRuntime.liveClient.subscribeSourceHealth("orders");
+      const missingDefinitionHealth = Option.getOrThrow(
+        yield* missingDefinitionDiagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Exhausted"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      if (missingDefinitionHealth.status._tag !== "Exhausted") {
+        return yield* Effect.die("Expected missing definition lookup exhaustion.");
+      }
+      expect(missingDefinitionHealth.status.exhaustion.lastTermination).toStrictEqual({
+        _tag: "Failed",
+        failure: {
+          _tag: "AdapterFailure",
+          failure: {
+            _tag: "GrpcConfigurationFailure",
+            client: "orders",
+            message: "The captured gRPC Source Definition is unavailable during client lookup.",
+            phase: "client-lookup",
+          },
+        },
+      });
+      yield* missingDefinitionDiagnostics.close();
+      yield* missingDefinitionRuntime.close;
+
+      const missingClientDefinition = Object.freeze({
+        ...captured,
+        client: "missing",
+      });
+      const missingClientRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          grpcServerLayerFromBindingPlan(
+            {
+              ...bindingPlan,
+              definitions: new WeakMap([[source.options, missingClientDefinition]]),
+              methods: new WeakMap([[missingClientDefinition, method]]),
+            },
+            { orders: makeControlledClient().client },
+          ),
+        ),
+      );
+      const missingClientDiagnostics =
+        yield* missingClientRuntime.liveClient.subscribeSourceHealth("orders");
+      const missingClientHealth = Option.getOrThrow(
+        yield* missingClientDiagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "Exhausted"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      if (missingClientHealth.status._tag !== "Exhausted") {
+        return yield* Effect.die("Expected missing client lookup exhaustion.");
+      }
+      expect(missingClientHealth.status.exhaustion.lastTermination).toStrictEqual({
+        _tag: "Failed",
+        failure: {
+          _tag: "AdapterFailure",
+          failure: {
+            _tag: "GrpcConfigurationFailure",
+            client: "missing",
+            message: "The configured gRPC runtime client is unavailable during client lookup.",
+            phase: "client-lookup",
+          },
+        },
+      });
+      yield* missingClientDiagnostics.close();
+      yield* missingClientRuntime.close;
     }),
   );
 
@@ -1260,10 +1605,9 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
                 message:
                   "The upstream gRPC invocation rejected cancellation or iterator finalization.",
               },
+              lifecycle: "Materialized",
               method: "stream",
-              target: {
-                _tag: "Materialized",
-              },
+              topic: "orders",
             },
             level: "Warn",
             message: ["gRPC Source Attempt finalization failed."],
@@ -1275,6 +1619,91 @@ describe("gRPC Source Adapter Runtime Core vertical slice", () => {
       yield* metricsDiagnostics.close();
       yield* runtime.close;
       expect(controlled.invocations[0]?.returns).toBe(1);
+    }).pipe(
+      Effect.provide(Logger.layer([logger])),
+      Effect.provideService(References.MinimumLogLevel, "Trace"),
+    );
+  });
+
+  it.effect("uses an opaque Leased Feed Route reference in finalization diagnostics", () => {
+    const logs: Array<{
+      readonly annotations: Readonly<Record<string, unknown>>;
+      readonly message: unknown;
+    }> = [];
+    const logger = Logger.make<unknown, void>((options) => {
+      logs.push({
+        annotations: options.fiber.getRef(References.CurrentLogAnnotations),
+        message: options.message,
+      });
+    });
+    return Effect.gen(function* () {
+      const controlled = makeControlledClient({ rejectFinalization: true });
+      const source = grpc.topicSources({ orders: OrdersService }).leased({
+        client: "orders",
+        method: "stream",
+        routeBy: ["region"],
+        request: (route) => ({ region: route.region }),
+        map: ({ value }) => ({
+          id: value.id,
+          price: value.price,
+          region: value.region,
+        }),
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source,
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(grpcServerLayer(config, { orders: controlled.client })),
+      );
+      const subscription = yield* runtime.liveClient.subscribe("orders", {
+        routeBy: { region: "browser-identity-sentinel" },
+        select: ["id"],
+      });
+      yield* awaitInvocationCount(controlled, 1);
+      yield* subscription.close();
+      yield* awaitCondition(
+        () => `one Leased finalization diagnostic; last observed ${logs.length}`,
+        () => logs.length === 1,
+      );
+
+      expect({
+        containsRouteSentinel: JSON.stringify(logs, (_key, value) =>
+          typeof value === "bigint" ? value.toString() : value,
+        ).includes("browser-identity-sentinel"),
+        logs,
+      }).toStrictEqual({
+        containsRouteSentinel: false,
+        logs: [
+          {
+            annotations: {
+              adapter: {
+                name: "grpc",
+                version: "1",
+              },
+              attempt: 1n,
+              client: "orders",
+              feedRoute: "leased-feed-1",
+              failure: {
+                _tag: "GrpcCancellationFailure",
+                client: "orders",
+                method: "stream",
+                message:
+                  "The upstream gRPC invocation rejected cancellation or iterator finalization.",
+              },
+              lifecycle: "Leased",
+              method: "stream",
+              topic: "orders",
+            },
+            message: ["gRPC Source Attempt finalization failed."],
+          },
+        ],
+      });
+      yield* runtime.close;
     }).pipe(
       Effect.provide(Logger.layer([logger])),
       Effect.provideService(References.MinimumLogLevel, "Trace"),

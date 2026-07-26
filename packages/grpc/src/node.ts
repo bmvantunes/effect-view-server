@@ -7,6 +7,8 @@ import {
   type Http2SessionOptions,
 } from "@connectrpc/connect-node";
 import { Config, Effect, Layer, Option } from "effect";
+import { Buffer } from "node:buffer";
+import { exactArrayValues, exactDataEntries, type DataEntry } from "./exact-shape";
 import {
   GrpcSourceAdapter,
   type GrpcAdapterFailure,
@@ -145,60 +147,6 @@ export class GrpcNodeConfigurationError extends TypeError {
   override readonly name = "GrpcNodeConfigurationError";
 }
 
-type DataEntry = readonly [key: string, value: unknown];
-
-const exactArrayValues = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
-  if (
-    lengthDescriptor === undefined ||
-    !("value" in lengthDescriptor) ||
-    typeof lengthDescriptor.value !== "number" ||
-    !Number.isSafeInteger(lengthDescriptor.value) ||
-    lengthDescriptor.value < 0
-  ) {
-    return undefined;
-  }
-  const length = lengthDescriptor.value;
-  const keys = Reflect.ownKeys(value);
-  if (keys.length !== length + 1 || !keys.includes("length")) {
-    return undefined;
-  }
-  const values: Array<unknown> = [];
-  for (let index = 0; index < length; index++) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    values.push(descriptor.value);
-  }
-  return values;
-};
-
-const exactDataEntries = (value: unknown): ReadonlyArray<DataEntry> | undefined => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    return undefined;
-  }
-  const entries: Array<DataEntry> = [];
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") {
-      return undefined;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return entries;
-};
-
 const configurationShapeError = (): GrpcNodeConfigurationError =>
   new GrpcNodeConfigurationError(
     "gRPC Node configuration must use exact enumerable string data fields and dense data arrays.",
@@ -220,7 +168,10 @@ const snapshotDataEntries = (
 function snapshotPlainConfiguration<Value>(value: Value): Value;
 function snapshotPlainConfiguration(value: unknown): unknown {
   if (value instanceof Uint8Array) {
-    return value.slice();
+    return Buffer.isBuffer(value) ? Buffer.from(value) : Uint8Array.from(value);
+  }
+  if (isCompressionResource(value) || isSessionManagerResource(value)) {
+    return value;
   }
   if (Array.isArray(value)) {
     const values = exactArrayValues(value);
@@ -250,37 +201,53 @@ const snapshotTransport = (
 const nonNegativeFiniteNumber = (value: unknown): boolean =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
-const resourcePropertyIs = (
+function resourcePropertyIs(
   value: object,
   key: string,
   predicate: (candidate: unknown) => boolean,
-): boolean => predicate(Reflect.get(value, key));
+): boolean {
+  return predicate(Reflect.get(value, key));
+}
 
-const isCompressionResource = (value: unknown): boolean =>
-  typeof value === "object" &&
-  value !== null &&
-  resourcePropertyIs(
-    value,
-    "name",
-    (candidate) => typeof candidate === "string" && candidate !== "",
-  ) &&
-  resourcePropertyIs(value, "compress", (candidate) => typeof candidate === "function") &&
-  resourcePropertyIs(value, "decompress", (candidate) => typeof candidate === "function");
+function isCompressionResource(value: unknown): boolean {
+  try {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      resourcePropertyIs(
+        value,
+        "name",
+        (candidate) => typeof candidate === "string" && candidate !== "",
+      ) &&
+      resourcePropertyIs(value, "compress", (candidate) => typeof candidate === "function") &&
+      resourcePropertyIs(value, "decompress", (candidate) => typeof candidate === "function")
+    );
+  } catch {
+    return false;
+  }
+}
 
-const isSessionManagerResource = (value: unknown): boolean =>
-  typeof value === "object" &&
-  value !== null &&
-  resourcePropertyIs(
-    value,
-    "authority",
-    (candidate) => typeof candidate === "string" && candidate !== "",
-  ) &&
-  resourcePropertyIs(value, "request", (candidate) => typeof candidate === "function") &&
-  resourcePropertyIs(
-    value,
-    "notifyResponseByteRead",
-    (candidate) => typeof candidate === "function",
-  );
+function isSessionManagerResource(value: unknown): boolean {
+  try {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      resourcePropertyIs(
+        value,
+        "authority",
+        (candidate) => typeof candidate === "string" && candidate !== "",
+      ) &&
+      resourcePropertyIs(value, "request", (candidate) => typeof candidate === "function") &&
+      resourcePropertyIs(
+        value,
+        "notifyResponseByteRead",
+        (candidate) => typeof candidate === "function",
+      )
+    );
+  } catch {
+    return false;
+  }
+}
 
 const transportOptionValueIsValid = (key: string, value: unknown): boolean => {
   switch (key) {
@@ -446,7 +413,7 @@ const runtimeClient = (
     service,
     invoke: (method: string, request: unknown, signal: AbortSignal): unknown => {
       const selected = Reflect.get(client, method);
-      return Function.prototype.call.call(selected, client, request, { signal });
+      return Reflect.apply(selected, client, [request, { signal }]);
     },
   });
 };
@@ -454,8 +421,8 @@ const runtimeClient = (
 const releaseOwnedSessionManager = Effect.fn("GrpcSourceAdapter.node.session.release")(
   (manager: Http2SessionManager) =>
     Effect.sync(() => manager.abort()).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("gRPC Node HTTP/2 session manager finalization failed.", cause),
+      Effect.catchCause(() =>
+        Effect.logWarning("gRPC Node HTTP/2 session manager finalization failed."),
       ),
     ),
 );
@@ -533,16 +500,7 @@ const buildRuntimeClients = Effect.fn("GrpcSourceAdapter.node.clients.build")(fu
   const clients: Record<string, GrpcRuntimeClient> = {};
   for (const [client, service] of services) {
     const optionsEntry = Option.getOrThrow(Option.fromUndefinedOr(options[client]));
-    const transportIsValid = yield* Effect.try({
-      try: () =>
-        optionsEntry.transport === undefined || isGrpcTransportOptions(optionsEntry.transport),
-      catch: () =>
-        nodeConfigurationFailure(
-          client,
-          `Logical gRPC client ${client} contains malformed transport resources.`,
-        ),
-    });
-    if (!transportIsValid) {
+    if (optionsEntry.transport !== undefined && !isGrpcTransportOptions(optionsEntry.transport)) {
       return yield* Effect.fail(
         nodeConfigurationFailure(
           client,

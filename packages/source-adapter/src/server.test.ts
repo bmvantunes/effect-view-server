@@ -146,17 +146,30 @@ describe("Source Adapter server SDK", () => {
         return definition;
       },
     });
+    let topicAccessorCalls = 0;
+    const topics = {
+      orders: { source: definition },
+      other: { source: otherDefinition },
+      absent: {},
+      sourceFree: { schema: "source-free" },
+      primitive: "source-free",
+      accessor: accessorTopic,
+      forged: { source: { adapter: Adapter } },
+    };
+    Object.defineProperty(topics, "topicAccessor", {
+      enumerable: true,
+      get: () => {
+        topicAccessorCalls += 1;
+        return { source: definition };
+      },
+    });
+    Object.defineProperty(topics, "hidden", {
+      enumerable: false,
+      value: { source: definition },
+    });
     const definitions = SourceAdapterServer.definitions(
       {
-        topics: {
-          orders: { source: definition },
-          other: { source: otherDefinition },
-          absent: {},
-          sourceFree: { schema: "source-free" },
-          primitive: "source-free",
-          accessor: accessorTopic,
-          forged: { source: { adapter: Adapter } },
-        },
+        topics,
       },
       Adapter,
     );
@@ -169,6 +182,7 @@ describe("Source Adapter server SDK", () => {
     ]);
     expect(Object.isFrozen(definitions)).toBe(true);
     expect(sourceAccessorCalls).toBe(0);
+    expect(topicAccessorCalls).toBe(0);
   });
 
   it.effect("keeps attempt resources in the caller attempt Scope", () =>

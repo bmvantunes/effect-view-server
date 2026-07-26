@@ -6,10 +6,31 @@ import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Clock, Effect, Fiber, Option, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { grpc } from "./model";
 import { grpcServerLayer, type GrpcRuntimeClient } from "./server";
+
+declare const process: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly memoryUsage: () => {
+    readonly arrayBuffers: number;
+    readonly external: number;
+    readonly heapTotal: number;
+    readonly heapUsed: number;
+    readonly rss: number;
+  };
+};
+
+type BenchmarkMemorySnapshot = {
+  readonly arrayBuffersBytes: number;
+  readonly externalBytes: number;
+  readonly heapTotalBytes: number;
+  readonly heapUsedBytes: number;
+  readonly rssBytes: number;
+};
 
 type RequestMessage = Message<"grpc.benchmark.Request"> & {
   readonly region: string;
@@ -103,6 +124,7 @@ type Pending = {
 };
 
 type Invocation = {
+  closed: boolean;
   readonly pending: Array<Pending>;
   readonly values: Array<unknown>;
 };
@@ -113,6 +135,7 @@ const makeControlledClient = () => {
     service: RowsService,
     invoke: () => {
       const invocation: Invocation = {
+        closed: false,
         pending: [],
         values: [],
       };
@@ -129,6 +152,7 @@ const makeControlledClient = () => {
             });
           },
           return: () => {
+            invocation.closed = true;
             const pending = invocation.pending.splice(0);
             for (const waiter of pending) {
               waiter.resolve({ done: true, value: undefined });
@@ -154,18 +178,74 @@ const makeControlledClient = () => {
   };
 };
 
-const awaitCondition = (predicate: () => boolean): Effect.Effect<void> =>
+const awaitCondition = (
+  label: string,
+  predicate: () => boolean,
+  remaining = 100_000,
+): Effect.Effect<void> =>
   Effect.suspend(() =>
-    predicate() ? Effect.void : Effect.yieldNow.pipe(Effect.andThen(awaitCondition(predicate))),
+    predicate()
+      ? Effect.void
+      : remaining === 0
+        ? Effect.die(new TypeError(`Timed out waiting for ${label}.`))
+        : Effect.yieldNow.pipe(Effect.andThen(awaitCondition(label, predicate, remaining - 1))),
   );
 
-const routeCount = 32;
-const benchmarkOptions = {
-  iterations: 5,
-  time: 0,
-  warmupIterations: 1,
-  warmupTime: 0,
+const positiveIntegerFromEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const normalized = raw.trim();
+  if (!/^[1-9]\d*$/u.test(normalized)) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${name} must be a safe positive integer.`);
+  }
+  return parsed;
 };
+
+const nonNegativeIntegerFromEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const normalized = raw.trim();
+  if (!/^(0|[1-9]\d*)$/u.test(normalized)) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${name} must be a safe non-negative integer.`);
+  }
+  return parsed;
+};
+
+const batchSize = positiveIntegerFromEnv(
+  "VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE",
+  32,
+);
+const routeCount = positiveIntegerFromEnv(
+  "VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT",
+  32,
+);
+const benchmarkOptions = {
+  iterations: positiveIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_ITERATIONS", 5),
+  time: nonNegativeIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_TIME_MS", 0),
+  warmupIterations: nonNegativeIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_WARMUP_ITERATIONS", 0),
+  warmupTime: nonNegativeIntegerFromEnv("VIEW_SERVER_RUNTIME_BENCH_WARMUP_TIME_MS", 0),
+};
+if (
+  benchmarkOptions.time > 0 ||
+  benchmarkOptions.warmupIterations > 0 ||
+  benchmarkOptions.warmupTime > 0
+) {
+  throw new Error(
+    "gRPC Source Adapter benchmark requires fixed independent samples; time and warmup must stay disabled.",
+  );
+}
 
 const makeBenchmarkState = Effect.gen(function* () {
   const clock = yield* TestClock.make();
@@ -238,7 +318,10 @@ const makeBenchmarkState = Effect.gen(function* () {
     Effect.forkDetach({ startImmediately: true }),
   );
   yield* Effect.yieldNow;
-  yield* awaitCondition(() => controlled.invocations.length === 1);
+  yield* awaitCondition(
+    "one materialized gRPC invocation",
+    () => controlled.invocations.length === 1,
+  );
 
   const leasedSource = sources.leased({
     client: "rows",
@@ -298,8 +381,13 @@ const makeBenchmarkState = Effect.gen(function* () {
       ),
     { concurrency: "unbounded" },
   );
-  yield* awaitCondition(() => controlled.invocations.length === routeCount + 1);
-  yield* awaitCondition(() => leasedHealthSampleCounts.every((count) => count >= 1));
+  yield* awaitCondition(
+    `${routeCount} leased gRPC invocations`,
+    () => controlled.invocations.length === routeCount + 1,
+  );
+  yield* awaitCondition("initial leased health samples", () =>
+    leasedHealthSampleCounts.every((count) => count >= 1),
+  );
   return {
     clock,
     controlled,
@@ -324,6 +412,56 @@ type BenchmarkState = Effect.Success<typeof makeBenchmarkState>;
 let state: BenchmarkState | undefined;
 let nextId = 0;
 let nextRejectedItemCount = 0n;
+let successfulMutationCount = 0;
+let memoryBefore: BenchmarkMemorySnapshot | undefined;
+
+const mappedBenchmarkName = `maps ${batchSize} decoded response messages into ordered Upserts`;
+const rejectionBenchmarkName = "records one Mapping rejection and continues with a valid response";
+const leasedHealthBenchmarkName = `publishes one-second health samples for ${routeCount} active Leased Feeds`;
+const benchmarkCases = [
+  mappedBenchmarkName,
+  rejectionBenchmarkName,
+  leasedHealthBenchmarkName,
+] as const;
+
+const benchmarkOutputJsonPath = (): string => {
+  const configured = process.env["VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON"];
+  return configured === undefined || configured.trim() === ""
+    ? join(".artifacts", `grpc-source-adapter-${batchSize}batch-${routeCount}routes.json`)
+    : configured.trim();
+};
+
+const benchmarkSummaryPath = (path: string): string =>
+  path.endsWith(".json")
+    ? `${path.slice(0, -".json".length)}.summary.json`
+    : `${path}.summary.json`;
+
+const memorySnapshot = (): BenchmarkMemorySnapshot => {
+  const memory = process.memoryUsage();
+  return {
+    arrayBuffersBytes: memory.arrayBuffers,
+    externalBytes: memory.external,
+    heapTotalBytes: memory.heapTotal,
+    heapUsedBytes: memory.heapUsed,
+    rssBytes: memory.rss,
+  };
+};
+
+const memoryDelta = (
+  before: BenchmarkMemorySnapshot,
+  after: BenchmarkMemorySnapshot,
+): BenchmarkMemorySnapshot => ({
+  arrayBuffersBytes: after.arrayBuffersBytes - before.arrayBuffersBytes,
+  externalBytes: after.externalBytes - before.externalBytes,
+  heapTotalBytes: after.heapTotalBytes - before.heapTotalBytes,
+  heapUsedBytes: after.heapUsedBytes - before.heapUsedBytes,
+  rssBytes: after.rssBytes - before.rssBytes,
+});
+
+const writeJsonFile = (path: string, value: unknown): void => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`);
+};
 
 const requireState = (): BenchmarkState => {
   if (state === undefined) {
@@ -333,6 +471,7 @@ const requireState = (): BenchmarkState => {
 };
 
 beforeAll(async () => {
+  memoryBefore = memorySnapshot();
   state = await Effect.runPromise(makeBenchmarkState.pipe(Effect.scoped));
 });
 
@@ -351,24 +490,84 @@ afterAll(async () => {
         ...current.leasedSubscriptions.map((subscription) => subscription.close()),
         ...current.leasedDiagnostics.map((subscription) => subscription.close()),
         ...current.leasedDiagnosticsFibers.map(Fiber.interrupt),
-        current.materializedRuntime.close,
-        current.leasedRuntime.close,
       ],
       { concurrency: "unbounded", discard: true },
     ),
   );
+  const [materializedHealth, leasedHealth] = await Effect.runPromise(
+    Effect.all([
+      current.materializedRuntime.client.health(),
+      current.leasedRuntime.client.health(),
+    ]),
+  );
+  await Effect.runPromise(
+    Effect.all([current.materializedRuntime.close, current.leasedRuntime.close], {
+      concurrency: "unbounded",
+      discard: true,
+    }),
+  );
+  await Effect.runPromise(
+    awaitCondition("all gRPC benchmark invocations to finalize", () =>
+      current.controlled.invocations.every((invocation) => invocation.closed),
+    ),
+  );
+  const healthSnapshots = [materializedHealth, leasedHealth];
+  const cleanupLeakCount =
+    current.controlled.invocations.filter((invocation) => !invocation.closed).length +
+    healthSnapshots.reduce((total, health) => {
+      const topic = health.engine.topics.rows;
+      return total + topic.activeSubscriptions + topic.activeViews + topic.queuedEvents;
+    }, 0);
+  const backpressureCount = healthSnapshots.reduce(
+    (total, health) => total + health.engine.topics.rows.backpressureEvents,
+    0,
+  );
+  const queuedEventCount = healthSnapshots.reduce(
+    (total, health) => total + health.engine.topics.rows.queuedEvents,
+    0,
+  );
+  const before = Option.getOrThrow(Option.fromUndefinedOr(memoryBefore));
+  const after = memorySnapshot();
+  const outputJsonPath = benchmarkOutputJsonPath();
+  writeJsonFile(benchmarkSummaryPath(outputJsonPath), {
+    artifactKind: "runtime-benchmark-summary",
+    backpressureCount,
+    benchmarkCases,
+    benchmarkName: "gRPC Source Adapter focused overhead benchmark",
+    benchmarkScope: "runtime-grpc-source-adapter",
+    cleanupLeakCount,
+    latency: {
+      outputJsonPath,
+      source: "vitest-output-json",
+    },
+    memory: {
+      afterBenchmark: after,
+      before,
+      totalDelta: memoryDelta(before, after),
+    },
+    mutationCount: successfulMutationCount,
+    notes: [
+      "Localhost CPU/GC stress benchmark over the in-process gRPC Source Adapter runtime seam; no network transport is involved.",
+      "Warmups and timed repetitions stay disabled because every measured case mutates shared benchmark state.",
+      "Cleanup, backpressure, queued-event, mutation, route, and subscriber evidence is recorded exactly.",
+    ],
+    queuedEventCount,
+    rowCount: batchSize,
+    subscriberCount: routeCount + 1,
+    topics: ["rows"],
+  });
 });
 
 describe("gRPC Source Adapter focused overhead", () => {
   bench(
-    "maps 32 decoded response messages into ordered Upserts",
+    mappedBenchmarkName,
     async () => {
       const current = requireState();
       const invocation = Option.getOrThrow(
         Option.fromUndefinedOr(current.controlled.invocations[0]),
       );
       let lastId = "";
-      for (let index = 0; index < 32; index += 1) {
+      for (let index = 0; index < batchSize; index += 1) {
         lastId = `mapped-${nextId}`;
         current.controlled.emit(invocation, {
           id: lastId,
@@ -377,13 +576,16 @@ describe("gRPC Source Adapter focused overhead", () => {
         });
         nextId += 1;
       }
-      await Effect.runPromise(awaitCondition(() => current.committedIds.has(lastId)));
+      await Effect.runPromise(
+        awaitCondition("mapped gRPC response convergence", () => current.committedIds.has(lastId)),
+      );
+      successfulMutationCount += batchSize;
     },
     benchmarkOptions,
   );
 
   bench(
-    "records one Mapping rejection and continues with a valid response",
+    rejectionBenchmarkName,
     async () => {
       const current = requireState();
       const invocation = Option.getOrThrow(
@@ -406,19 +608,25 @@ describe("gRPC Source Adapter focused overhead", () => {
       await Effect.runPromise(
         Effect.all(
           [
-            awaitCondition(() => current.committedIds.has(continuedId)),
-            awaitCondition(() => current.observedRejectedItemCount() >= expectedRejectedItemCount),
+            awaitCondition("post-rejection gRPC response convergence", () =>
+              current.committedIds.has(continuedId),
+            ),
+            awaitCondition(
+              "gRPC Mapping rejection observation",
+              () => current.observedRejectedItemCount() >= expectedRejectedItemCount,
+            ),
           ],
           { concurrency: "unbounded" },
         ),
       );
       nextRejectedItemCount = expectedRejectedItemCount;
+      successfulMutationCount += 1;
     },
     benchmarkOptions,
   );
 
   bench(
-    "publishes one-second health samples for 32 active Leased Feeds",
+    leasedHealthBenchmarkName,
     async () => {
       const current = requireState();
       const expectedSampleCounts = current.leasedHealthSampleCounts.map((count) => count + 1);
@@ -427,7 +635,7 @@ describe("gRPC Source Adapter focused overhead", () => {
           .adjust("1 second")
           .pipe(
             Effect.andThen(
-              awaitCondition(() =>
+              awaitCondition("leased gRPC health sampling", () =>
                 current.leasedHealthSampleCounts.every(
                   (count, index) =>
                     count >= (expectedSampleCounts[index] ?? Number.POSITIVE_INFINITY),

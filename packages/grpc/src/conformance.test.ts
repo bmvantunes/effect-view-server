@@ -438,6 +438,9 @@ const makeGrpcConformanceDriver = Effect.suspend(() => {
         return Effect.void;
       }
       if (input._tag === "SetMetrics") {
+        if (input.sample === "invalid") {
+          return unsupported(input);
+        }
         if (input.sample === "updated") {
           for (const state of states.values()) {
             const invocation = state.invocations.findLast((candidate) => !candidate.closed);
@@ -453,6 +456,7 @@ const makeGrpcConformanceDriver = Effect.suspend(() => {
             }
           }
         }
+        // A reset sample deliberately leaves this transport's immutable logical metrics unchanged.
         return Effect.void;
       }
       if (input._tag === "BlockNextFinalizer") {

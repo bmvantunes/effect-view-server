@@ -364,10 +364,11 @@ type ExpectedOrdersRequest = {
         readonly value?: undefined;
       };
 };
+
 expectTypeOf<
   GrpcMethodRequest<typeof OrdersService, "streamOrders">
->().toMatchTypeOf<ExpectedOrdersRequest>();
-expectTypeOf<ExpectedOrdersRequest>().toMatchTypeOf<
+>().toExtend<ExpectedOrdersRequest>();
+expectTypeOf<ExpectedOrdersRequest>().toExtend<
   GrpcMethodRequest<typeof OrdersService, "streamOrders">
 >();
 expectTypeOf<
@@ -481,6 +482,23 @@ sources.leased({
   }),
 });
 
+const materializedStrategies = sources.materialized({
+  client: "strategies",
+  method: "streamStrategies",
+  request: () => ({ strategyId: "all" }),
+  map: ({
+    value,
+  }): {
+    readonly id: string;
+    readonly price: number;
+    readonly region: string;
+  } => ({
+    id: value.strategyId,
+    price: 0,
+    region: "global",
+  }),
+});
+
 const Row = Schema.Struct({
   id: Schema.String,
   price: Schema.Number,
@@ -508,6 +526,18 @@ const mixedViewServer = defineViewServerConfig({
     sourceFreeOrders: {
       schema: Row,
       key: "id",
+    },
+  },
+});
+const multiClientViewServer = defineViewServerConfig({
+  topics: {
+    materializedOrders: {
+      schema: Row,
+      source: materialized,
+    },
+    materializedStrategies: {
+      schema: Row,
+      source: materializedStrategies,
     },
   },
 });
@@ -627,15 +657,23 @@ expectTypeOf<Effect.Services<typeof runtimeCoreEffect>>().toEqualTypeOf<
   Context.Service.Identifier<typeof GrpcSourceAdapter.runtimeService>
 >();
 expectTypeOf<GrpcNodeClientNames<typeof viewServer>>().toEqualTypeOf<"orders">();
+type ExpectedGrpcNodeClientOptions = {
+  readonly baseUrl: string;
+  readonly interceptors?: ReadonlyArray<import("@connectrpc/connect").Interceptor>;
+  readonly transport?: Omit<
+    import("@connectrpc/connect-node").GrpcTransportOptions,
+    "baseUrl" | "interceptors"
+  >;
+};
 expectTypeOf<GrpcNodeOptions<typeof viewServer>>().toEqualTypeOf<{
-  readonly orders: {
-    readonly baseUrl: string;
-    readonly interceptors?: ReadonlyArray<import("@connectrpc/connect").Interceptor>;
-    readonly transport?: Omit<
-      import("@connectrpc/connect-node").GrpcTransportOptions,
-      "baseUrl" | "interceptors"
-    >;
-  };
+  readonly orders: ExpectedGrpcNodeClientOptions;
+}>();
+expectTypeOf<GrpcNodeClientNames<typeof multiClientViewServer>>().toEqualTypeOf<
+  "orders" | "strategies"
+>();
+expectTypeOf<GrpcNodeOptions<typeof multiClientViewServer>>().toEqualTypeOf<{
+  readonly orders: ExpectedGrpcNodeClientOptions;
+  readonly strategies: ExpectedGrpcNodeClientOptions;
 }>();
 expectTypeOf<GrpcAdapterFailure>().not.toBeAny();
 expectTypeOf<GrpcMaterializedMetrics>().not.toBeAny();
@@ -651,6 +689,14 @@ grpcNode.layer(mixedViewServer, {
     baseUrl: "https://orders.example",
   },
 });
+grpcNode.layer(multiClientViewServer, {
+  orders: {
+    baseUrl: "https://orders.example",
+  },
+  strategies: {
+    baseUrl: "https://strategies.example",
+  },
+});
 grpcNode.layerConfig(viewServer, {
   orders: {
     baseUrl: Config.string("ORDERS_GRPC_URL"),
@@ -664,6 +710,55 @@ grpcNode.layerConfig(
     },
   }),
 );
+grpcNode.layerConfig(multiClientViewServer, {
+  orders: {
+    baseUrl: Config.string("ORDERS_GRPC_URL"),
+  },
+  strategies: {
+    baseUrl: Config.string("STRATEGIES_GRPC_URL"),
+  },
+});
+
+// @ts-expect-error resolved aggregate Node options require the orders client
+grpcNode.layer(multiClientViewServer, {
+  strategies: {
+    baseUrl: "https://strategies.example",
+  },
+});
+
+// @ts-expect-error resolved aggregate Node options require the strategies client
+grpcNode.layer(multiClientViewServer, {
+  orders: {
+    baseUrl: "https://orders.example",
+  },
+});
+
+// @ts-expect-error Config aggregate Node options require the orders client
+grpcNode.layerConfig(multiClientViewServer, {
+  strategies: {
+    baseUrl: Config.string("STRATEGIES_GRPC_URL"),
+  },
+});
+
+// @ts-expect-error Config aggregate Node options require the strategies client
+grpcNode.layerConfig(multiClientViewServer, {
+  orders: {
+    baseUrl: Config.string("ORDERS_GRPC_URL"),
+  },
+});
+
+// @ts-expect-error resolved aggregate Node options reject extra clients
+grpcNode.layer(multiClientViewServer, {
+  orders: {
+    baseUrl: "https://orders.example",
+  },
+  strategies: {
+    baseUrl: "https://strategies.example",
+  },
+  inventory: {
+    baseUrl: "https://inventory.example",
+  },
+});
 
 // @ts-expect-error whole-object Config values require every referenced logical client
 grpcNode.layerConfig(viewServer, Config.succeed({}));
@@ -1403,7 +1498,7 @@ sources.leased({
   client: "orders",
   method: "streamOrders",
   routeBy: ["region"],
-  request: (route) => ({ region: route.region }),
+  request: (route: { readonly region: string }) => ({ region: route.region }),
   map: ({ value }) => Effect.succeed({ id: value.orderId, region: value.region }),
 });
 
@@ -1412,7 +1507,7 @@ sources.leased({
   client: "orders",
   method: "streamOrders",
   routeBy: ["region"],
-  request: (route) => ({ region: route.region }),
+  request: (route: { readonly region: string }) => ({ region: route.region }),
   map: ({ value }) => Option.some({ id: value.orderId, region: value.region }),
 });
 
@@ -1447,8 +1542,7 @@ sources.leased({
   client: "orders",
   method: "streamOrders",
   routeBy: ["region"],
-  // @ts-expect-error leased Mapping cannot return undefined
-  request: (route) => ({ region: route.region }),
+  request: (route: { readonly region: string }) => ({ region: route.region }),
   // @ts-expect-error leased Mapping cannot return undefined
   map: () => undefined,
 });

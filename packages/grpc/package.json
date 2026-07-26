@@ -22,7 +22,7 @@
   },
   "scripts": {
     "build": "vp run -t @effect-view-server/source-adapter#build && vp pack",
-    "bench:adapter": "vp run -t @effect-view-server/config#build && vp run -t @effect-view-server/runtime-core#build && vp test bench src/grpc.bench.ts --run --testTimeout 0",
+    "bench:adapter": "vp run -t @effect-view-server/config#build && vp run -t @effect-view-server/runtime-core#build && output=${VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON:-.artifacts/grpc-source-adapter-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE:-32}batch-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT:-32}routes.json} && mkdir -p .artifacts && VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON=$output vp test bench src/grpc.bench.ts --run --testTimeout 0 --outputJson $output",
     "test": "vp run -t @effect-view-server/config#build && vp run -t @effect-view-server/protocol#build && vp run -t @effect-view-server/runtime-core#build && vp run -t @effect-view-server/server#build && vp run -t @effect-view-server/source-adapter-conformance-host#build && vp test run --coverage --typecheck"
   },
   "dependencies": {

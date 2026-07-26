@@ -1,11 +1,28 @@
 import { create, toBinary, type Message } from "@bufbuild/protobuf";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { Http2SessionManager } from "@connectrpc/connect-node";
+import { compressionGzip, Http2SessionManager } from "@connectrpc/connect-node";
 import { describe, expect, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
-import { Config, ConfigProvider, Context, Effect, Exit, Layer, Option, Schema } from "effect";
-import { grpc } from "./model";
+import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
+import {
+  Config,
+  ConfigProvider,
+  Context,
+  Effect,
+  Exit,
+  Layer,
+  Logger,
+  Option,
+  References,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
+import { Buffer } from "node:buffer";
+import * as Http2 from "node:http2";
+import * as Net from "node:net";
+import { grpc, GrpcSourceAdapter } from "./model";
 import { grpcNode, grpcNodeLayer, GrpcNodeConfigurationError } from "./node";
 
 type RequestMessage = Message<"grpc.node.Request"> & {
@@ -81,12 +98,15 @@ const Row = Schema.Struct({
   id: Schema.String,
 });
 
-const source = grpc.topicSources({ orders: OrdersService }).materialized({
-  client: "orders",
-  method: "stream",
-  request: () => ({ region: "all" }),
-  map: ({ value }) => ({ id: value.id }),
-});
+const source = grpc.topicSources({ orders: OrdersService }).materialized(
+  {
+    client: "orders",
+    method: "stream",
+    request: () => ({ region: "all" }),
+    map: ({ value }) => ({ id: value.id }),
+  },
+  Schedule.recurs(0),
+);
 
 const config = defineViewServerConfig({
   topics: {
@@ -102,6 +122,42 @@ const invokeLayer = (options: unknown): unknown =>
 
 const isClosedLayer = (value: unknown): value is Layer.Layer<unknown, unknown, never> =>
   Layer.isLayer(value);
+
+const awaitNodeRequest = (read: () => number, remaining = 10_000): Effect.Effect<void> =>
+  Effect.suspend(() =>
+    read() === 1
+      ? Effect.void
+      : remaining === 0
+        ? Effect.die("Timed out waiting for the stateful HTTP/2 resource request.")
+        : Effect.yieldNow.pipe(Effect.andThen(awaitNodeRequest(read, remaining - 1))),
+  );
+
+const makeUnavailableHttp2Server = Effect.fn("GrpcSourceAdapter.test.node.server")(function* () {
+  const server = yield* Effect.acquireRelease(
+    Effect.callback<Http2.Http2Server>((resume) => {
+      const created = Http2.createServer();
+      created.on("stream", (stream: Http2.ServerHttp2Stream) => {
+        const session = stream.session;
+        stream.respond({ ":status": 503 });
+        stream.end();
+        session?.close();
+      });
+      created.once("error", (cause) => resume(Effect.die(cause)));
+      created.listen(0, "127.0.0.1", () => resume(Effect.succeed(created)));
+    }),
+    (created) =>
+      Effect.callback<void>((resume) => {
+        created.close(() => resume(Effect.void));
+      }),
+  );
+  const address = server.address();
+  if (typeof address !== "object" || address === null || typeof address.port !== "number") {
+    return yield* Effect.die("The stateful-resource test server did not expose a TCP port.");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+  };
+});
 
 describe("gRPC aggregate Node Layer", () => {
   it("rejects malformed resolved options before Layer acquisition", () => {
@@ -396,6 +452,17 @@ describe("gRPC aggregate Node Layer", () => {
         readonly compress = transform;
         readonly decompress = transform;
       })();
+      const throwingAccessorSessionManager = new (class SessionManager {
+        get authority(): string {
+          throw new Error("planned session manager accessor failure");
+        }
+
+        request(): Promise<never> {
+          return new Promise<never>(() => undefined);
+        }
+
+        notifyResponseByteRead(): void {}
+      })();
       let prototypeReads = 0;
       const hostileCompression = new Proxy(new (class Compression {})(), {
         getPrototypeOf: (target) => {
@@ -448,6 +515,9 @@ describe("gRPC aggregate Node Layer", () => {
         },
         {
           sessionManager: {},
+        },
+        {
+          sessionManager: throwingAccessorSessionManager,
         },
       ];
       for (const transport of malformedTransports) {
@@ -627,35 +697,320 @@ describe("gRPC aggregate Node Layer", () => {
     }),
   );
 
-  it.effect("contains defects raised while finalizing an owned HTTP/2 session manager", () =>
-    Effect.gen(function* () {
+  it.effect("contains defects raised while finalizing an owned HTTP/2 session manager", () => {
+    const logs: Array<{
+      readonly cause: string;
+      readonly message: unknown;
+    }> = [];
+    const logger = Logger.make<unknown, void>((options) => {
+      logs.push({
+        cause: String(options.cause),
+        message: options.message,
+      });
+    });
+    return Effect.gen(function* () {
       const abortDescriptor = Option.getOrThrow(
         Option.fromUndefinedOr(
           Object.getOwnPropertyDescriptor(Http2SessionManager.prototype, "abort"),
         ),
       );
       let abortCalls = 0;
-      Object.defineProperty(Http2SessionManager.prototype, "abort", {
-        configurable: true,
-        value: () => {
-          abortCalls += 1;
-          throw new Error("planned HTTP/2 session manager finalization defect");
-        },
-      });
-
       yield* Effect.scoped(
-        Layer.build(
-          grpcNode.layer(config, {
-            orders: {
-              baseUrl: "http://127.0.0.1",
-            },
-          }),
-        ),
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              Object.defineProperty(Http2SessionManager.prototype, "abort", {
+                configurable: true,
+                value: () => {
+                  abortCalls += 1;
+                  throw new Error("private-session-finalization-sentinel");
+                },
+              });
+            }),
+            () =>
+              Effect.sync(() => {
+                Object.defineProperty(Http2SessionManager.prototype, "abort", abortDescriptor);
+              }),
+          );
+          yield* Layer.build(
+            grpcNode.layer(config, {
+              orders: {
+                baseUrl: "http://127.0.0.1",
+              },
+            }),
+          );
+        }),
       );
-      Object.defineProperty(Http2SessionManager.prototype, "abort", abortDescriptor);
 
-      expect(abortCalls).toBe(1);
-    }),
+      expect({
+        abortCalls,
+        causeContainsSentinel: logs.some((entry) =>
+          entry.cause.includes("private-session-finalization-sentinel"),
+        ),
+        messages: logs.map((entry) => entry.message),
+      }).toStrictEqual({
+        abortCalls: 1,
+        causeContainsSentinel: false,
+        messages: [["gRPC Node HTTP/2 session manager finalization failed."]],
+      });
+    }).pipe(
+      Effect.provide(Logger.layer([logger])),
+      Effect.provideService(References.MinimumLogLevel, "Trace"),
+    );
+  });
+
+  it.effect("preserves stateful caller-owned HTTP/2 resources for layer and layerConfig", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        for (const mode of ["resolved", "config"] as const) {
+          const testServer = yield* makeUnavailableHttp2Server();
+          const receivers: Array<unknown> = [];
+          let resourceReads = 0;
+          const delegate = new Http2SessionManager(testServer.baseUrl);
+          const managerTarget = {
+            authority: testServer.baseUrl,
+            calls: 0,
+            request(...arguments_: Parameters<Http2SessionManager["request"]>) {
+              receivers.push(this);
+              this.calls += 1;
+              return delegate.request(...arguments_);
+            },
+            notifyResponseByteRead(
+              ...arguments_: Parameters<Http2SessionManager["notifyResponseByteRead"]>
+            ) {
+              return delegate.notifyResponseByteRead(...arguments_);
+            },
+          };
+          const manager = new Proxy(managerTarget, {
+            get: (target, key, receiver) => {
+              resourceReads += 1;
+              return Reflect.get(target, key, receiver);
+            },
+          });
+          const options = {
+            orders: {
+              baseUrl: testServer.baseUrl,
+              transport: {
+                sessionManager: manager,
+              },
+            },
+          };
+          const layer =
+            mode === "resolved"
+              ? grpcNode.layer(config, options)
+              : grpcNode.layerConfig(config, Config.succeed(options));
+          const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
+          yield* awaitNodeRequest(() => managerTarget.calls);
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+          const exhausted = Option.getOrThrow(
+            yield* diagnostics.events.pipe(
+              Stream.filter((health) => health.status._tag === "Exhausted"),
+              Stream.take(1),
+              Stream.runHead,
+            ),
+          );
+          expect({
+            calls: managerTarget.calls,
+            receiverIsCallerResource: receivers[0] === manager,
+            status: exhausted.status._tag,
+          }).toStrictEqual({
+            calls: 1,
+            receiverIsCallerResource: true,
+            status: "Exhausted",
+          });
+          expect(resourceReads).toBeGreaterThan(3);
+          yield* diagnostics.close();
+          yield* runtime.close;
+          delegate.abort();
+        }
+      }),
+    ),
+  );
+
+  it.effect("preserves cloned Buffer TLS options through real layer connections", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const abortDescriptor = Option.getOrThrow(
+          Option.fromUndefinedOr(
+            Object.getOwnPropertyDescriptor(Http2SessionManager.prototype, "abort"),
+          ),
+        );
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            Object.defineProperty(Http2SessionManager.prototype, "abort", {
+              configurable: true,
+              value: () => undefined,
+            });
+          }),
+          () =>
+            Effect.sync(() => {
+              Object.defineProperty(Http2SessionManager.prototype, "abort", abortDescriptor);
+            }),
+        );
+        for (const mode of ["resolved", "config"] as const) {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const testServer = yield* makeUnavailableHttp2Server();
+              const ca = Buffer.from([1, 2]);
+              const pfx = Buffer.from([3, 4]);
+              const observations: Array<{
+                readonly caBytes: ReadonlyArray<number>;
+                readonly caIsBuffer: boolean;
+                readonly caIsClone: boolean;
+                readonly pfxBytes: ReadonlyArray<number>;
+                readonly pfxIsBuffer: boolean;
+                readonly pfxIsClone: boolean;
+              }> = [];
+              const options = {
+                orders: {
+                  baseUrl: testServer.baseUrl,
+                  transport: {
+                    nodeOptions: {
+                      ca,
+                      pfx: [pfx],
+                      createConnection: (
+                        _authority: URL,
+                        connectionOptions: Http2.SessionOptions,
+                      ) => {
+                        const capturedCa = Reflect.get(connectionOptions, "ca");
+                        const capturedPfx = Reflect.get(connectionOptions, "pfx");
+                        const capturedPfxEntry = Array.isArray(capturedPfx)
+                          ? capturedPfx[0]
+                          : undefined;
+                        observations.push({
+                          caBytes: Buffer.isBuffer(capturedCa) ? [...capturedCa] : [],
+                          caIsBuffer: Buffer.isBuffer(capturedCa),
+                          caIsClone: capturedCa !== ca,
+                          pfxBytes: Buffer.isBuffer(capturedPfxEntry) ? [...capturedPfxEntry] : [],
+                          pfxIsBuffer: Buffer.isBuffer(capturedPfxEntry),
+                          pfxIsClone: capturedPfxEntry !== pfx,
+                        });
+                        return Net.connect(Number(new URL(testServer.baseUrl).port), "127.0.0.1");
+                      },
+                    },
+                  },
+                },
+              };
+              const layer =
+                mode === "resolved"
+                  ? grpcNode.layer(config, options)
+                  : grpcNode.layerConfig(config, Config.succeed(options));
+              const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+                Effect.provide(layer),
+              );
+              yield* awaitNodeRequest(() => observations.length);
+              const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+              const exhausted = Option.getOrThrow(
+                yield* diagnostics.events.pipe(
+                  Stream.filter((health) => health.status._tag === "Exhausted"),
+                  Stream.take(1),
+                  Stream.runHead,
+                ),
+              );
+
+              expect({
+                observations,
+                status: exhausted.status._tag,
+              }).toStrictEqual({
+                observations: [
+                  {
+                    caBytes: [1, 2],
+                    caIsBuffer: true,
+                    caIsClone: true,
+                    pfxBytes: [3, 4],
+                    pfxIsBuffer: true,
+                    pfxIsClone: true,
+                  },
+                ],
+                status: "Exhausted",
+              });
+              yield* diagnostics.close();
+              yield* runtime.close;
+            }),
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("constructs and scopes every referenced logical client for layer and layerConfig", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const multiSources = grpc.topicSources({
+          orders: OrdersService,
+          strategies: OrdersService,
+        });
+        const multiConfig = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Row,
+              source: multiSources.materialized({
+                client: "orders",
+                method: "stream",
+                request: () => ({ region: "orders" }),
+                map: ({ value }) => ({ id: value.id }),
+              }),
+            },
+            strategies: {
+              schema: Row,
+              source: multiSources.materialized({
+                client: "strategies",
+                method: "stream",
+                request: () => ({ region: "strategies" }),
+                map: ({ value }) => ({ id: value.id }),
+              }),
+            },
+          },
+        });
+        const abortDescriptor = Option.getOrThrow(
+          Option.fromUndefinedOr(
+            Object.getOwnPropertyDescriptor(Http2SessionManager.prototype, "abort"),
+          ),
+        );
+        const closedAuthorities: Array<string> = [];
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            Object.defineProperty(Http2SessionManager.prototype, "abort", {
+              configurable: true,
+              value(this: Http2SessionManager) {
+                closedAuthorities.push(this.authority);
+              },
+            });
+          }),
+          () =>
+            Effect.sync(() => {
+              Object.defineProperty(Http2SessionManager.prototype, "abort", abortDescriptor);
+            }),
+        );
+        const options = {
+          orders: {
+            baseUrl: "http://orders.example",
+          },
+          strategies: {
+            baseUrl: "http://strategies.example",
+          },
+        };
+        const direct = yield* Effect.scoped(Layer.build(grpcNode.layer(multiConfig, options)));
+        const configured = yield* Effect.scoped(
+          Layer.build(grpcNode.layerConfig(multiConfig, Config.succeed(options))),
+        );
+
+        expect({
+          closedAuthorities: closedAuthorities.toSorted(),
+          configuredService: Context.getOption(configured, GrpcSourceAdapter.runtimeService)._tag,
+          directService: Context.getOption(direct, GrpcSourceAdapter.runtimeService)._tag,
+        }).toStrictEqual({
+          closedAuthorities: [
+            "http://orders.example",
+            "http://orders.example",
+            "http://strategies.example",
+            "http://strategies.example",
+          ],
+          configuredService: "Some",
+          directService: "Some",
+        });
+      }),
+    ),
   );
 
   it.effect("retains __proto__ logical clients through aggregate Layer assembly", () =>
@@ -786,8 +1141,8 @@ describe("gRPC aggregate Node Layer", () => {
         };
         const bytes = new Uint8Array([1, 2]);
         const priorities = [1, 2];
-        const opaque = new Date(0);
-        const acceptCompression: Array<never> = [];
+        const opaque = /opaque/;
+        const acceptCompression: Array<typeof compressionGzip> = [];
         const jsonOptions = {
           ignoreUnknownFields: true,
         };
@@ -827,7 +1182,7 @@ describe("gRPC aggregate Node Layer", () => {
         Reflect.set(binaryOptions, "readUnknownFields", false);
         bytes[0] = 9;
         priorities[0] = 9;
-        acceptCompression.push();
+        acceptCompression.push(compressionGzip);
 
         const context = yield* Layer.build(layer);
         expect(Context.getOption(context, source.adapter.runtimeService)._tag).toBe("Some");

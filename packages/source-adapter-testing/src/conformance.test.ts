@@ -378,6 +378,30 @@ describe("Source Adapter low-level conformance driver", () => {
         },
       ]),
     ).toThrow("positive materialized partial-acquisition finalization count");
+    const missingCount = { ...valid.expectations.materialized };
+    Reflect.deleteProperty(missingCount, "partialAcquisitionFinalizationCount");
+    for (const materializedExpectations of [
+      missingCount,
+      {
+        ...valid.expectations.materialized,
+        partialAcquisitionFinalizationCount: 1,
+      },
+    ]) {
+      expect(() =>
+        Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [
+          {
+            runtimeLayer: Layer.empty,
+            ...base,
+            expectations: {
+              materialized: materializedExpectations,
+              leased: valid.expectations.leased,
+            },
+            materialized: valid.materialized,
+            leased: valid.leased,
+          },
+        ]),
+      ).toThrow("positive materialized partial-acquisition finalization count");
+    }
     for (const materializedExpectations of [null, 1]) {
       expect(() =>
         Reflect.apply(makeSourceAdapterConformanceDriver, undefined, [

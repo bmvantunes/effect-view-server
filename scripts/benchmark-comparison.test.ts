@@ -1477,6 +1477,46 @@ describe("benchmark metadata compatibility", () => {
     });
   });
 
+  it("requires exact gRPC Source Adapter sample and mutation counts", () => {
+    const sourceAdapterObservation = {
+      ...observation,
+      artifactKind: "runtime-benchmark-summary",
+      benchmarks: [
+        {
+          ...observation.benchmarks[0],
+          sampleCount: 5,
+        },
+      ],
+      benchmarkScope: "runtime-grpc-source-adapter",
+      groupedWriteAdmission: undefined,
+      minimumSampleCount: 5,
+      mutationCount: 165,
+    };
+    const baseline = buildBenchmarkBaseline("grpc-source-adapter", [
+      sourceAdapterObservation,
+    ]);
+    const changedShape = buildBenchmarkBaseline("grpc-source-adapter", [
+      {
+        ...sourceAdapterObservation,
+        benchmarks: [
+          {
+            ...sourceAdapterObservation.benchmarks[0],
+            sampleCount: 6,
+          },
+        ],
+        mutationCount: 166,
+      },
+    ]);
+
+    expect(compareArtifacts(baseline, changedShape)).toStrictEqual({
+      ok: false,
+      regressions: [
+        "task a: mutationCount changed from 165 to 166.",
+        "task a / src/example.bench.ts > example benchmark group / case a: sampleCount changed from 5 to 6.",
+      ],
+    });
+  });
+
   it("requires exact large membership sample and mutation counts", () => {
     const rawLargeMembershipParameters = {
       candidateCount: 50_000,

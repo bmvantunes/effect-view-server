@@ -8,6 +8,7 @@ import {
   validateSourceAdapterPackageConformance,
   type SourceAdapterConformanceAttemptFault,
   type SourceAdapterConformanceDriverValue,
+  type SourceAdapterConformanceEventModel,
   type SourceAdapterConformanceSuiteOptions,
   type SourceAdapterConformanceTarget,
   type SourceAdapterConformanceTransportObservation,
@@ -209,7 +210,7 @@ const awaitRows = (
   route: Readonly<Record<string, unknown>> | undefined,
   expected: ReadonlyArray<string>,
 ): Effect.Effect<ReadonlyArray<string>, unknown> =>
-  Stream.fromEffectRepeat(rows(runtime, route)).pipe(
+  Stream.fromEffectRepeat(Effect.yieldNow.pipe(Effect.andThen(rows(runtime, route)))).pipe(
     Stream.filter(
       (actual) =>
         actual.length === expected.length &&
@@ -356,7 +357,7 @@ const registerLifecycleConformance = (
         expect(yield* driver.transport.observe(lifecycleTarget(driver, lifecycle))).toStrictEqual({
           acquisitions: baseline.acquisitions + 1n,
           finalizations: baseline.finalizations,
-          partialAcquisitionFinalizations: 0n,
+          partialAcquisitionFinalizations: baseline.partialAcquisitionFinalizations,
           registrations: 0n,
           callbackFinalizations: 0n,
           finalizerStarted: false,
@@ -870,7 +871,7 @@ const registerLifecycleConformance = (
   );
 };
 
-const registerLifecycleInvariants = (
+const registerMandatoryLifecycleConformance = (
   it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
   lifecycle: SourceAdapterConformanceLifecycle,
 ): void => {
@@ -1292,6 +1293,25 @@ const registerLeasedCompleteDeliveryConformance = (
   );
 };
 
+const registerSelectedLifecycleConformance = (
+  it: Vitest.MethodsNonLive<SourceAdapterConformanceDriver>,
+  lifecycle: SourceAdapterConformanceLifecycle,
+  eventModel: SourceAdapterConformanceEventModel,
+): void => {
+  registerMandatoryLifecycleConformance(it, lifecycle);
+  if (eventModel === "continuous-upserts") {
+    registerContinuousUpsertLifecycleConformance(it, lifecycle);
+  } else {
+    registerLifecycleConformance(it, lifecycle);
+    if (lifecycle === "leased") {
+      registerLeasedCompleteDeliveryConformance(it);
+    }
+  }
+  if (lifecycle === "leased") {
+    registerLeasedSharingConformance(it);
+  }
+};
+
 export const registerSourceAdapterConformance = (
   options: SourceAdapterConformanceOptions,
 ): void => {
@@ -1315,22 +1335,10 @@ export const registerSourceAdapterConformance = (
   vitestLayer(options.layer)(options.name, (it) => {
     const eventModel = options.eventModel ?? "complete-deliveries";
     if (options.materialized === true) {
-      if (eventModel === "continuous-upserts") {
-        registerLifecycleInvariants(it, "materialized");
-        registerContinuousUpsertLifecycleConformance(it, "materialized");
-      } else {
-        registerLifecycleConformance(it, "materialized");
-      }
+      registerSelectedLifecycleConformance(it, "materialized", eventModel);
     }
     if (options.leased === true) {
-      if (eventModel === "continuous-upserts") {
-        registerLifecycleInvariants(it, "leased");
-        registerContinuousUpsertLifecycleConformance(it, "leased");
-      } else {
-        registerLifecycleConformance(it, "leased");
-        registerLeasedCompleteDeliveryConformance(it);
-      }
-      registerLeasedSharingConformance(it);
+      registerSelectedLifecycleConformance(it, "leased", eventModel);
     }
     if (options.callbackBridge === true) {
       it.effect("uses the adapter's actual callback bridge", () =>

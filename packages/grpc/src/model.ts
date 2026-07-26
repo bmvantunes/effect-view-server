@@ -13,6 +13,7 @@ import {
 } from "@effect-view-server/source-adapter";
 import type { Effect, Option } from "effect";
 import { Schema } from "effect";
+import { exactArrayValues, exactDataEntries } from "./exact-shape";
 
 export const GrpcAdapterFailure = Schema.Union([
   Schema.TaggedStruct("GrpcConfigurationFailure", {
@@ -619,79 +620,25 @@ export class GrpcSourceConfigurationError extends TypeError {
   override readonly name = "GrpcSourceConfigurationError";
 }
 
-type DataEntry = readonly [key: string, value: unknown];
-
-const exactDataEntries = (value: unknown): ReadonlyArray<DataEntry> | undefined => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+const captureExactNonEmptyUniqueStringArray = (
+  value: unknown,
+): readonly [string, ...ReadonlyArray<string>] | undefined => {
+  const values = exactArrayValues(value);
+  if (values === undefined) {
     return undefined;
   }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    return undefined;
-  }
-  const entries: Array<DataEntry> = [];
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") {
-      return undefined;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    entries.push([key, descriptor.value]);
-  }
-  return entries;
-};
-
-const exactArrayValues = (value: unknown): ReadonlyArray<unknown> | undefined => {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  const [first, ...rest] = values;
+  const stringRest = rest.filter((entry): entry is string => typeof entry === "string");
   if (
-    lengthDescriptor === undefined ||
-    !("value" in lengthDescriptor) ||
-    typeof lengthDescriptor.value !== "number" ||
-    !Number.isSafeInteger(lengthDescriptor.value) ||
-    lengthDescriptor.value < 0
+    typeof first !== "string" ||
+    first.length === 0 ||
+    stringRest.length !== rest.length ||
+    stringRest.some((entry) => entry.length === 0) ||
+    new Set(values).size !== values.length
   ) {
     return undefined;
   }
-  const length = lengthDescriptor.value;
-  const keys = Reflect.ownKeys(value);
-  if (keys.length !== length + 1 || !keys.includes("length")) {
-    return undefined;
-  }
-  const values: Array<unknown> = [];
-  for (let index = 0; index < length; index++) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-      return undefined;
-    }
-    values.push(descriptor.value);
-  }
-  return values;
-};
-
-const isExactNonEmptyUniqueStringArray = (
-  value: unknown,
-): value is readonly [string, ...ReadonlyArray<string>] => {
-  const values = exactArrayValues(value);
-  return (
-    values !== undefined &&
-    values.length > 0 &&
-    values.every((entry) => typeof entry === "string" && entry.length > 0) &&
-    new Set(values).size === values.length
-  );
-};
-
-const exactDataKeys = (value: object, expected: ReadonlyArray<string>): boolean => {
-  const entries = exactDataEntries(value);
-  return (
-    entries !== undefined &&
-    entries.length === expected.length &&
-    entries.every(([key]) => expected.includes(key))
-  );
+  return Object.freeze([first, ...stringRest] as const);
 };
 
 const isGrpcMessageDescriptor = (value: unknown): boolean =>
@@ -801,31 +748,57 @@ export const selectedGrpcMethod = (
   return isServerStreamingMethod(selected) ? selected : undefined;
 };
 
-const requireCommonInput = (
-  descriptors: GrpcDescriptorRecord,
-  input: unknown,
-  lifecycle: "materialized" | "leased",
-): {
+type CheckedMaterializedInput = {
   readonly client: string;
   readonly map: (...arguments_: Array<never>) => unknown;
   readonly method: string;
   readonly request: (...arguments_: Array<never>) => unknown;
+  readonly routeBy: undefined;
   readonly service: DescService;
-} => {
+};
+
+type CheckedLeasedInput = Omit<CheckedMaterializedInput, "routeBy"> & {
+  readonly routeBy: readonly [string, ...ReadonlyArray<string>];
+};
+
+function requireCommonInput(
+  descriptors: GrpcDescriptorRecord,
+  input: unknown,
+  lifecycle: "materialized",
+): CheckedMaterializedInput;
+function requireCommonInput(
+  descriptors: GrpcDescriptorRecord,
+  input: unknown,
+  lifecycle: "leased",
+): CheckedLeasedInput;
+function requireCommonInput(
+  descriptors: GrpcDescriptorRecord,
+  input: unknown,
+  lifecycle: "materialized" | "leased",
+): CheckedMaterializedInput | CheckedLeasedInput {
   const keys =
     lifecycle === "materialized"
       ? ["client", "method", "request", "map"]
       : ["client", "method", "routeBy", "request", "map"];
-  if (typeof input !== "object" || input === null || !exactDataKeys(input, keys)) {
+  const entries = exactDataEntries(input);
+  if (
+    entries === undefined ||
+    entries.length !== keys.length ||
+    entries.some(([key]) => !keys.includes(key))
+  ) {
     throw new GrpcSourceConfigurationError(
       `gRPC ${lifecycle} Source Definition requires exactly: ${keys.join(", ")}.`,
     );
   }
-  const values = new Map(exactDataEntries(input));
+  const values = new Map(entries);
   const client = values.get("client");
   const method = values.get("method");
   const request = values.get("request");
   const map = values.get("map");
+  const routeBy =
+    lifecycle === "leased"
+      ? captureExactNonEmptyUniqueStringArray(values.get("routeBy"))
+      : undefined;
   const service =
     typeof client === "string" && Object.hasOwn(descriptors, client)
       ? descriptors[client]
@@ -842,14 +815,29 @@ const requireCommonInput = (
       `gRPC ${lifecycle} Source Definition requires a known client, server-streaming method, request factory, and Mapping.`,
     );
   }
-  return {
+  const checked = {
     client,
     method,
-    request: (...arguments_) => Reflect.apply(request, undefined, arguments_),
-    map: (...arguments_) => Reflect.apply(map, undefined, arguments_),
+    request: (...arguments_: Array<never>) => Reflect.apply(request, undefined, arguments_),
+    map: (...arguments_: Array<never>) => Reflect.apply(map, undefined, arguments_),
     service,
   };
-};
+  if (lifecycle === "leased") {
+    if (routeBy === undefined) {
+      throw new GrpcSourceConfigurationError(
+        "gRPC Leased Source Definition requires exact non-empty unique Route Fields.",
+      );
+    }
+    return {
+      ...checked,
+      routeBy,
+    };
+  }
+  return {
+    ...checked,
+    routeBy: undefined,
+  };
+}
 
 export type GrpcHelper = {
   readonly topicSources: <const Descriptors extends GrpcDescriptorRecord>(
@@ -862,9 +850,11 @@ const makeMaterializedDefinition = <
   Mapping extends (...arguments_: Array<never>) => object,
   RetryServices,
 >(
-  client: Client,
-  checked: ReturnType<typeof requireCommonInput>,
-  _mapping: Mapping,
+  _input: {
+    readonly client: Client;
+    readonly map: Mapping;
+  },
+  checked: CheckedMaterializedInput,
   retry: SourceRetryPolicy<GrpcAdapterFailure, RetryServices> | undefined,
 ): SourceDefinition<
   typeof GrpcSourceAdapter,
@@ -881,7 +871,7 @@ const makeMaterializedDefinition = <
     RetryServices
   >(
     {
-      client,
+      client: checked.client,
       method: checked.method,
       request: (): unknown => Reflect.apply(checked.request, undefined, []),
       mapValue: (value: unknown): MappingRow<Mapping> =>
@@ -891,16 +881,29 @@ const makeMaterializedDefinition = <
     retry,
   );
 
+function capturedRouteBy<const RouteBy extends readonly [string, ...ReadonlyArray<string>]>(
+  input: { readonly routeBy: RouteBy },
+  routeBy: readonly [string, ...ReadonlyArray<string>],
+): RouteBy;
+function capturedRouteBy(
+  _input: { readonly routeBy: readonly [string, ...ReadonlyArray<string>] },
+  routeBy: readonly [string, ...ReadonlyArray<string>],
+): readonly [string, ...ReadonlyArray<string>] {
+  return routeBy;
+}
+
 const makeLeasedDefinition = <
   const Client extends string,
   const RouteBy extends readonly [string, ...ReadonlyArray<string>],
   Mapping extends (...arguments_: Array<never>) => object,
   RetryServices,
 >(
-  client: Client,
-  routeBy: RouteBy,
-  checked: ReturnType<typeof requireCommonInput>,
-  _mapping: Mapping,
+  _input: {
+    readonly client: Client;
+    readonly map: Mapping;
+    readonly routeBy: RouteBy;
+  },
+  checked: CheckedLeasedInput,
   retry: SourceRetryPolicy<GrpcAdapterFailure, RetryServices> | undefined,
 ): SourceDefinition<
   typeof GrpcSourceAdapter,
@@ -917,9 +920,9 @@ const makeLeasedDefinition = <
     GrpcLeasedDefinitionOptions<string, MappingRow<Mapping>>,
     RetryServices
   >(
-    routeBy,
+    capturedRouteBy(_input, checked.routeBy),
     {
-      client,
+      client: checked.client,
       method: checked.method,
       request: (route: Readonly<Record<string, unknown>>): unknown =>
         Reflect.apply(checked.request, undefined, [route]),
@@ -940,7 +943,7 @@ export const grpc: GrpcHelper = {
     ) => {
       try {
         const checked = requireCommonInput(captured, input, "materialized");
-        return makeMaterializedDefinition(input.client, checked, input.map, retry);
+        return makeMaterializedDefinition(input, checked, retry);
       } catch (cause) {
         if (cause instanceof GrpcSourceConfigurationError) {
           throw cause;
@@ -953,12 +956,7 @@ export const grpc: GrpcHelper = {
     const leased: GrpcTopicSources<typeof descriptors>["leased"] = (input, retry, ..._invalid) => {
       try {
         const checked = requireCommonInput(captured, input, "leased");
-        if (!isExactNonEmptyUniqueStringArray(input.routeBy)) {
-          throw new GrpcSourceConfigurationError(
-            "gRPC Leased Source Definition requires exact non-empty unique Route Fields.",
-          );
-        }
-        return makeLeasedDefinition(input.client, input.routeBy, checked, input.map, retry);
+        return makeLeasedDefinition(input, checked, retry);
       } catch (cause) {
         if (cause instanceof GrpcSourceConfigurationError) {
           throw cause;
@@ -979,18 +977,13 @@ Object.freeze(grpc);
 
 export const isGrpcSourceDefinitionOptions = (
   value: unknown,
-  lifecycle: "materialized" | "leased",
 ): value is GrpcMaterializedDefinitionOptions | GrpcLeasedDefinitionOptions =>
-  captureGrpcSourceDefinitionOptions(value, lifecycle) !== undefined;
+  captureGrpcSourceDefinitionOptions(value) !== undefined;
 
 export const captureGrpcSourceDefinitionOptions = (
   value: unknown,
-  lifecycle: "materialized" | "leased",
 ): GrpcMaterializedDefinitionOptions | GrpcLeasedDefinitionOptions | undefined => {
-  const expected =
-    lifecycle === "materialized"
-      ? ["client", "mapValue", "method", "request", "service"]
-      : ["client", "mapValue", "method", "request", "service"];
+  const expected = ["client", "mapValue", "method", "request", "service"];
   const entries = exactDataEntries(value);
   if (
     entries === undefined ||

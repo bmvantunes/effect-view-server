@@ -553,6 +553,7 @@ type LogicalRuntimeInput<
   readonly context: Context.Context<ViewServerSourceRequirements<Topics>>;
   readonly partitionKey?: string;
   readonly feedKey?: string;
+  readonly feedRouteReference?: string;
   readonly ownedStorageKeys?: Set<string>;
   readonly ownerScope: Scope.Scope;
   readonly onStatus: (status: SourceStatus<unknown, unknown>) => Effect.Effect<void>;
@@ -1386,6 +1387,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     ).pipe(
       Effect.annotateLogs({
         attempt,
+        ...(input.feedRouteReference === undefined ? {} : { feedRoute: input.feedRouteReference }),
       }),
     );
   });
@@ -1954,6 +1956,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                 ownerScope: scope,
                                 partitionKey: partition.key,
                                 feedKey,
+                                feedRouteReference: `leased-feed-${leaseSequence}`,
                                 ownedStorageKeys,
                                 onStatus: (status) =>
                                   Effect.sync(() => {

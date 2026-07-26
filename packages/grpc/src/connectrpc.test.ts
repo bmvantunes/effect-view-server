@@ -271,11 +271,24 @@ const waitForLiveRows = Effect.fn("GrpcSourceAdapter.test.connect.live")(functio
   return yield* Deferred.await(ready);
 });
 
-const awaitCount = (read: () => number, expected: number): Effect.Effect<void> =>
+const awaitCount = (
+  label: string,
+  read: () => number,
+  expected: number,
+  remaining = 1_000,
+): Effect.Effect<void> =>
   Effect.suspend(() =>
     read() === expected
       ? Effect.void
-      : Effect.sleep("5 millis").pipe(Effect.andThen(awaitCount(read, expected))),
+      : remaining === 0
+        ? Effect.die(
+            new TypeError(
+              `Timed out waiting for ${label} count ${expected}; last observed ${read()}.`,
+            ),
+          )
+        : Effect.sleep("5 millis").pipe(
+            Effect.andThen(awaitCount(label, read, expected, remaining - 1)),
+          ),
   );
 
 describe("gRPC Source Adapter real ConnectRPC integration", () => {
@@ -400,14 +413,18 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
           yield* second.close();
           expect(connectServer.aborts.get("eu")).toBeUndefined();
           yield* first.close();
-          yield* awaitCount(() => connectServer.aborts.get("eu") ?? 0, 1);
+          yield* awaitCount("eu abort", () => connectServer.aborts.get("eu") ?? 0, 1);
           yield* cleanup.close();
-          yield* awaitCount(() => connectServer.aborts.get("cleanup") ?? 0, 1);
+          yield* awaitCount(
+            "first cleanup abort",
+            () => connectServer.aborts.get("cleanup") ?? 0,
+            1,
+          );
           const cleanupReacquired = yield* runtime.liveClient.subscribe("regionOrders", {
             routeBy: { region: "cleanup" },
             select: ["id", "price", "region"],
           });
-          yield* awaitCount(() => connectServer.requests.get("cleanup") ?? 0, 2);
+          yield* awaitCount("cleanup request", () => connectServer.requests.get("cleanup") ?? 0, 2);
           const cleanupSnapshot = Option.getOrThrow(
             yield* cleanupReacquired.events.pipe(
               Stream.filter((event) => event.type === "snapshot"),
@@ -425,9 +442,13 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
             totalRows: 0,
           });
           yield* cleanupReacquired.close();
-          yield* awaitCount(() => connectServer.aborts.get("cleanup") ?? 0, 2);
+          yield* awaitCount(
+            "second cleanup abort",
+            () => connectServer.aborts.get("cleanup") ?? 0,
+            2,
+          );
           yield* runtime.close;
-          yield* awaitCount(() => connectServer.aborts.get("all") ?? 0, 1);
+          yield* awaitCount("all abort", () => connectServer.aborts.get("all") ?? 0, 1);
         }).pipe(
           Effect.provide(
             grpcNode.layer(config, {
@@ -438,7 +459,7 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
             }),
           ),
         );
-        yield* awaitCount(connectServer.sessionCount, 0);
+        yield* awaitCount("active session", connectServer.sessionCount, 0);
       }),
     ),
   );
@@ -543,7 +564,7 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
                   failure: {
                     _tag: "GrpcStreamFailure",
                     client: "orders",
-                    code: "UNKNOWN",
+                    code: "INTERNAL",
                     message: "The upstream gRPC response stream failed.",
                     method: "stream",
                   },
@@ -563,7 +584,7 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
               }),
             ),
           );
-          yield* awaitCount(connectServer.sessionCount, 0);
+          yield* awaitCount("active session", connectServer.sessionCount, 0);
         }),
       ),
   );
@@ -658,7 +679,7 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
             }),
           ),
         );
-        yield* awaitCount(connectServer.sessionCount, 0);
+        yield* awaitCount("active session", connectServer.sessionCount, 0);
       }),
     ),
   );

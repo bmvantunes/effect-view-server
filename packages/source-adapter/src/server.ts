@@ -442,7 +442,13 @@ export const collectSourceAdapterDefinitions = <
   adapter: Adapter,
 ): ReadonlyArray<SourceAdapterServerDefinitionEntry<Adapter>> => {
   const definitions: Array<SourceAdapterServerDefinitionEntry<Adapter>> = [];
-  for (const [topic, configured] of Object.entries(viewServer.topics)) {
+  for (const [topic, descriptor] of Object.entries(
+    Object.getOwnPropertyDescriptors(viewServer.topics),
+  )) {
+    if (!descriptor.enumerable || !("value" in descriptor)) {
+      continue;
+    }
+    const configured = descriptor.value;
     const source =
       typeof configured === "object" && configured !== null
         ? Object.getOwnPropertyDescriptor(configured, "source")?.value

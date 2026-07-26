@@ -17,7 +17,7 @@ const benchmarkInteger = (name: string, fallback: number): number => {
   if (configured === undefined) {
     return fallback;
   }
-  const parsed = Number.parseInt(configured, 10);
+  const parsed = Number(configured);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be a positive safe integer.`);
   }

@@ -75,8 +75,10 @@ export type SourceAdapterPackageValueProbe = {
 
 export type SourceAdapterPackageLifecycleProbe = {
   readonly lifecycle: "materialized" | "leased";
-  readonly definitionExport: string;
-  readonly definitionArguments: ReadonlyArray<unknown>;
+  readonly definitionExport: string | readonly [string, ...ReadonlyArray<string>];
+  readonly definitionArguments:
+    | ReadonlyArray<unknown>
+    | ((contractModule: object) => ReadonlyArray<unknown>);
   readonly metrics: SourceAdapterPackageValueProbe;
   readonly rejectionLocation: SourceAdapterPackageValueProbe;
 };
@@ -204,6 +206,27 @@ const exportTarget = (manifestExports: unknown, exportName: string): string => {
   }
   return target;
 };
+
+const contractExport = (
+  module: object,
+  path: string | readonly [string, ...ReadonlyArray<string>],
+): unknown => {
+  const segments = typeof path === "string" ? [path] : path;
+  let current: unknown = module;
+  for (const segment of segments) {
+    if ((typeof current !== "object" || current === null) && typeof current !== "function") {
+      return undefined;
+    }
+    current = Reflect.get(current, segment);
+  }
+  return current;
+};
+
+const contractProbeValue = <Value>(
+  probe: Value | ((contractModule: object) => Value),
+  contractModule: object,
+): Value =>
+  typeof probe === "function" ? Reflect.apply(probe, undefined, [contractModule]) : probe;
 
 const moduleStem = (path: string): string =>
   path.replace(/(?:\.d)?\.(?:[cm]?ts|tsx|[cm]?js)$/u, "");
@@ -764,14 +787,19 @@ export const inspectSourceAdapterPackageConformance = (
       readonly ["materialized" | "leased", SourceAdapterPackageLifecycleEvidence]
     > = [];
     for (const lifecycleProbe of options.contract.lifecycles) {
-      const makeDefinition = Reflect.get(contractModule, lifecycleProbe.definitionExport);
+      const makeDefinition = contractExport(contractModule, lifecycleProbe.definitionExport);
       if (typeof makeDefinition !== "function") {
         return yield* inspectionError(
           `Contract ${lifecycleProbe.lifecycle} definition export is not callable.`,
         );
       }
       const definition = yield* Effect.try({
-        try: () => Reflect.apply(makeDefinition, undefined, lifecycleProbe.definitionArguments),
+        try: () =>
+          Reflect.apply(
+            makeDefinition,
+            undefined,
+            contractProbeValue(lifecycleProbe.definitionArguments, contractModule),
+          ),
         catch: (cause) =>
           inspectionError(
             `Contract ${lifecycleProbe.lifecycle} definition construction failed.`,
@@ -822,7 +850,17 @@ export const inspectSourceAdapterPackageConformance = (
           inspectionError(`Platform export ${platform.export} could not be imported.`, cause),
       });
       platformTargets.push(platformTarget);
-      platformEntries.push([platform.export, yield* inspectPlatform(module, platform, adapter)]);
+      platformEntries.push([
+        platform.export,
+        yield* inspectPlatform(
+          module,
+          {
+            ...platform,
+            viewServer: contractProbeValue(platform.viewServer, contractModule),
+          },
+          adapter,
+        ),
+      ]);
     }
     const forbiddenBrowserTargets = [serverTarget, ...platformTargets];
     const browserBundle = yield* inspectSourceAdapterContractBrowserBundle(

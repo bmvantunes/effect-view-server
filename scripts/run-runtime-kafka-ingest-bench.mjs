@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { runKafkaIngestBenchmarkCli } from "./bench-runtime-kafka-ingest.mjs";
 
 void runKafkaIngestBenchmarkCli({
+  buildTasks: [],
   env: process.env,
   exit: process.exit,
   outputExists: existsSync,

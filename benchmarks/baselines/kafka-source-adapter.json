@@ -1,0 +1,115 @@
+{
+  "artifactKind": "view-server-benchmark-baseline",
+  "profile": "kafka-source-adapter",
+  "tasks": [
+    {
+      "artifactKind": "runtime-benchmark-summary",
+      "backpressureCount": 0,
+      "benchmarks": [
+        {
+          "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
+          "maxMs": 13.913875000000075,
+          "meanMs": 12.170766600000025,
+          "minMs": 10.93445799999995,
+          "name": "single Region Lane (64 accepted records across 64 partitions)",
+          "p99Ms": 13.913875000000075,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
+          "maxMs": 12.414083000000005,
+          "meanMs": 11.690541600000007,
+          "minMs": 10.74529199999995,
+          "name": "poison Rejection plus valid continuation (64 records across 64 partitions)",
+          "p99Ms": 12.414083000000005,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
+          "maxMs": 10.627917000000025,
+          "meanMs": 9.968833199999995,
+          "minMs": 9.416624999999954,
+          "name": "four concurrent Region Lanes (64 accepted records across 64 partitions)",
+          "p99Ms": 10.627917000000025,
+          "sampleCount": 5
+        },
+        {
+          "groupName": "src/source-lanes.bench.ts > Kafka Source Adapter lanes",
+          "maxMs": 0.05104200000005221,
+          "meanMs": 0.044308599999999386,
+          "minMs": 0.03812500000003638,
+          "name": "64-partition assignment, commit, lag, and snapshot metrics",
+          "p99Ms": 0.05104200000005221,
+          "sampleCount": 5
+        }
+      ],
+      "benchmarkCases": [
+        "single Region Lane (64 accepted records across 64 partitions)",
+        "poison Rejection plus valid continuation (64 records across 64 partitions)",
+        "four concurrent Region Lanes (64 accepted records across 64 partitions)",
+        "64-partition assignment, commit, lag, and snapshot metrics"
+      ],
+      "benchmarkName": "Kafka Source Adapter lane and metrics benchmark",
+      "benchmarkScope": "kafka-source-adapter",
+      "cleanupLeakCount": 0,
+      "latencySource": "vitest-output-json",
+      "memoryRssTotalDeltaBytes": 19202048,
+      "minimumSampleCount": 5,
+      "mutationCount": 64,
+      "outputJsonPath": "packages/kafka/.artifacts/source-lanes-64rows-64partitions.json",
+      "queuedEventCount": 0,
+      "rowCount": 64,
+      "subscriberCount": 0,
+      "summaryPath": "packages/kafka/.artifacts/source-lanes-64rows-64partitions.summary.json",
+      "taskLabel": "Kafka Source Adapter 64 rows 64 partitions",
+      "topics": ["accepted", "poisoned", "multiRegion"]
+    },
+    {
+      "artifactKind": "runtime-benchmark-summary",
+      "backpressureCount": 0,
+      "benchmarks": [
+        {
+          "groupName": "src/source-broker.bench.ts > Kafka Source Adapter production broker",
+          "maxMs": 737.1713749999999,
+          "meanMs": 654.5709413999999,
+          "minMs": 606.1379159999997,
+          "name": "production Node Adapter broker ingest and commit (64 rows)",
+          "p99Ms": 737.1713749999999,
+          "sampleCount": 5
+        }
+      ],
+      "benchmarkCases": ["production Node Adapter broker ingest and commit (64 rows)"],
+      "benchmarkName": "Kafka Source Adapter production broker benchmark",
+      "benchmarkScope": "kafka-source-adapter-broker",
+      "cleanupLeakCount": 0,
+      "latencySource": "vitest-output-json",
+      "memoryRssTotalDeltaBytes": 39059456,
+      "minimumSampleCount": 5,
+      "mutationCount": 64,
+      "outputJsonPath": "packages/kafka/.artifacts/source-broker-64rows.json",
+      "queuedEventCount": 0,
+      "rowCount": 64,
+      "subscriberCount": 0,
+      "summaryPath": "packages/kafka/.artifacts/source-broker-64rows.summary.json",
+      "taskLabel": "Kafka Source Adapter broker 64 rows",
+      "topics": ["rows"]
+    }
+  ],
+  "thresholds": {
+    "latencyMean": {
+      "maxAbsoluteDeltaMs": 5,
+      "maxRatio": 8
+    },
+    "latencyP99": {
+      "maxAbsoluteDeltaMs": 10,
+      "maxRatio": 8
+    },
+    "memoryRssTotalDelta": {
+      "maxAbsoluteDeltaBytes": 134217728,
+      "maxRatio": 3
+    },
+    "throughputAggregateRowsPerSecond": {
+      "minRatio": 0.5
+    }
+  }
+}

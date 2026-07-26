@@ -99,7 +99,7 @@ const options = {
       {
         lifecycle: "materialized",
         definitionExport: "source",
-        definitionArguments: [{ stream: "orders" }],
+        definitionArguments: () => [{ stream: "orders" }],
         metrics: {
           valid: {
             observed: 1n,
@@ -147,7 +147,7 @@ const options = {
   platforms: [
     {
       export: "./node",
-      viewServer: { topics: {} },
+      viewServer: () => ({ topics: {} }),
       exactResources: {
         resources: ["client"],
       },
@@ -194,6 +194,27 @@ it.effect(options.name, () =>
   Effect.gen(function* () {
     const snapshot = yield* inspectSourceAdapterPackageConformance(options);
     expect(validateSourceAdapterPackageConformance(snapshot, options)).toStrictEqual([]);
+  }),
+);
+
+it.effect("resolves nested contract constructors", () =>
+  Effect.gen(function* () {
+    const nestedOptions: SourceAdapterPackageInspectionOptions = {
+      ...options,
+      name: "Nested Source Adapter constructor",
+      contract: {
+        ...options.contract,
+        lifecycles: [
+          {
+            ...options.contract.lifecycles[0],
+            definitionExport: ["nested", "source"],
+          },
+          options.contract.lifecycles[1],
+        ],
+      },
+    };
+    const snapshot = yield* inspectSourceAdapterPackageConformance(nestedOptions);
+    expect(validateSourceAdapterPackageConformance(snapshot, nestedOptions)).toStrictEqual([]);
   }),
 );
 
@@ -304,7 +325,7 @@ describe("Source Adapter package conformance validation", () => {
               lifecycles: [
                 {
                   ...options.contract.lifecycles[0],
-                  definitionExport: "missingDefinition",
+                  definitionExport: ["adapter", "identity", "name", "missingDefinition"],
                 },
                 options.contract.lifecycles[1],
               ],

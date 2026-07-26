@@ -776,8 +776,17 @@ export const inspectLibraryPack = ({
   const initializer = unwrapExpression(packDeclaration.initializer);
   if (
     !ts.isCallExpression(initializer) ||
-    !isIdentifierNamed(initializer.expression, "libraryPack") ||
-    initializer.arguments.length !== 1
+    !isIdentifierNamed(initializer.expression, "libraryPack")
+  ) {
+    addViolation(packDeclaration, "non-literal-library-pack");
+    return { entrypoints, violations };
+  }
+  const options = initializer.arguments[1];
+  if (
+    initializer.arguments.length < 1 ||
+    initializer.arguments.length > 2 ||
+    (options !== undefined &&
+      !ts.isObjectLiteralExpression(unwrapExpression(options)))
   ) {
     addViolation(packDeclaration, "non-literal-library-pack");
     return { entrypoints, violations };

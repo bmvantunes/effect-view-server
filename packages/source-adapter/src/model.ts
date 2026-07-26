@@ -27,6 +27,9 @@ const SourceToolkitDecodeTypeId: unique symbol = Symbol(
 const SourceAttemptTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceAttempt",
 );
+const SourceExecutableTypeId: unique symbol = Symbol(
+  "@effect-view-server/source-adapter/SourceExecutable",
+);
 
 export type SourceLifecycle = "materialized" | "leased";
 
@@ -333,6 +336,9 @@ export type SourceToolkit<
   readonly upsert: <const Candidate extends Row>(
     row: Candidate & Record<Exclude<keyof Candidate, keyof Row>, never>,
   ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
+  readonly decodeUpsert: (
+    row: unknown,
+  ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
   readonly delete: (
     id: string,
   ) => Effect.Effect<SourceDelete, SourceExecutionFailure<AdapterFailure>>;
@@ -518,7 +524,7 @@ export interface SourceAdapterHandle<
   ) => SourceDefinition<
     SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
     "materialized",
-    SourceLifecycleOptions<Materialized, Row>,
+    Options,
     readonly [],
     RetryServices,
     Row
@@ -536,7 +542,7 @@ export interface SourceAdapterHandle<
   ) => SourceDefinition<
     SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
     "leased",
-    SourceLifecycleOptions<Leased, Row>,
+    Options,
     RouteFields,
     RetryServices,
     Row
@@ -725,11 +731,13 @@ type ExactLifecycleDeclaration<Declaration> = [Declaration] extends [undefined]
       : unknown
     : unknown;
 
-type ExactDefinitionOptions<Candidate, Expected> = Candidate extends Expected
-  ? Exclude<keyof Candidate, keyof Expected> extends never
-    ? Candidate
-    : never
-  : never;
+type ExactDefinitionOptions<Candidate, Expected> = Candidate &
+  Expected &
+  (Candidate extends object
+    ? {
+        readonly [Key in Exclude<keyof Candidate, keyof Expected>]: never;
+      }
+    : unknown);
 
 type IsAny<Value> = 0 extends 1 & Value ? true : false;
 
@@ -752,7 +760,7 @@ type RejectUnsafeLifecycleDeclaration<Declaration> = [Exclude<Declaration, undef
     : unknown;
 
 const hasSelfBrand = (value: unknown, key: symbol): boolean => {
-  if (typeof value !== "object" || value === null) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
     return false;
   }
   const inspected = Result.try(() => Reflect.get(value, key));
@@ -761,6 +769,24 @@ const hasSelfBrand = (value: unknown, key: symbol): boolean => {
   }
   const branded = Result.try(() => Reflect.apply(inspected.success, undefined, []));
   return Result.isSuccess(branded) && branded.success === value;
+};
+
+const sourceExecutable = <Value extends object>(value: Value): Value => {
+  if (hasSelfBrand(value, SourceExecutableTypeId)) {
+    return value;
+  }
+  if (
+    (typeof value !== "object" && typeof value !== "function") ||
+    value === null ||
+    !Object.isExtensible(value)
+  ) {
+    throw new TypeError("Source Adapter executable values must be extensible objects.");
+  }
+  Object.defineProperty(value, SourceExecutableTypeId, {
+    enumerable: false,
+    value: () => value,
+  });
+  return Object.freeze(value);
 };
 
 const hasExactEnumerableDataKeys = (
@@ -819,7 +845,12 @@ function snapshotValue(value: unknown, active = new WeakSet<object>()): unknown 
     return Object.freeze(snapshot);
   }
   if (typeof value === "object" && value !== null) {
-    if (Schema.isSchema(value) || Effect.isEffect(value) || Schedule.isSchedule(value)) {
+    if (
+      hasSelfBrand(value, SourceExecutableTypeId) ||
+      Schema.isSchema(value) ||
+      Effect.isEffect(value) ||
+      Schedule.isSchedule(value)
+    ) {
       return value;
     }
     const prototype = Object.getPrototypeOf(value);
@@ -1312,18 +1343,14 @@ export const markSourceToolkit = <
   toolkit: Omit<
     SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic>,
     typeof SourceToolkitTypeId
-  > & {
-    readonly decodeUpsert: (
-      row: unknown,
-    ) => Effect.Effect<SourceUpsert<Row>, SourceExecutionFailure<AdapterFailure>>;
-  },
+  >,
 ): SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic> => {
   const nominal: SourceToolkitInternal<Row, AdapterFailure, RejectionLocation, Services, Topic> = {
     ...toolkit,
+    decodeUpsert: toolkit.decodeUpsert,
     [SourceToolkitDecodeTypeId]: toolkit.decodeUpsert,
     [SourceToolkitTypeId]: () => nominal,
   };
-  Reflect.deleteProperty(nominal, "decodeUpsert");
   Object.freeze(nominal);
   return nominal;
 };
@@ -1381,6 +1408,7 @@ export const makeRuntimeSourceFailure = (
 export const SourceAdapter = {
   definitionOptions: sourceDefinitionOptions,
   definitionOptionsFamily: sourceDefinitionOptionsFamily,
+  executable: sourceExecutable,
   make: makeSourceAdapter,
 } as const;
 

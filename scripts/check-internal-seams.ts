@@ -298,9 +298,11 @@ export const packageImportViolationsForSource = ({
       ];
     }
     if (isFacadeSpecifier(specifier)) {
-      return [
-        `${displayPath} imports ${specifier}: public effect-view-server facade is for consumers; internal packages must import @effect-view-server/* workspace packages.`,
-      ];
+      return allowed.has(specifier)
+        ? []
+        : [
+            `${displayPath} imports ${specifier}: public effect-view-server facade is for consumers; internal packages must import @effect-view-server/* workspace packages.`,
+          ];
     }
     if (isScopeSpecifier(specifier, currentScope)) {
       if (!workspaceSpecifierSet.has(specifier)) {

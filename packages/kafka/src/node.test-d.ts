@@ -1,0 +1,302 @@
+import { describe, expectTypeOf, it } from "@effect/vitest";
+import { defineViewServerConfig } from "@effect-view-server/config";
+import { Config, Layer, Schema } from "effect";
+import { KafkaSourceAdapter, kafka } from "./contract";
+import { layer, layerConfig, type KafkaRequiredRegion } from "./node";
+
+const Row = Schema.Struct({
+  id: Schema.String,
+  price: Schema.Number,
+  region: Schema.String,
+});
+
+const config = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Row,
+      source: kafka.source({
+        topic: "source-orders",
+        regions: ["eu", "us"],
+        key: kafka.string(),
+        value: kafka.json(() =>
+          Schema.toCodecJson(
+            Schema.Struct({
+              price: Schema.Number,
+            }),
+          ),
+        ),
+        localRowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          price: value.price,
+          region: String(region),
+        }),
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
+
+const sourceFreeConfig = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Row,
+      key: "id",
+    },
+  },
+});
+
+declare const unsafeAny: any;
+
+describe("Kafka Node type contract", () => {
+  it("requires all and only source Regions", () => {
+    expectTypeOf<KafkaRequiredRegion<typeof config>>().toEqualTypeOf<"eu" | "us">();
+    const runtimeLayer = layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+        us: { bootstrapServers: ["us:9092"] },
+      },
+    });
+    expectTypeOf(runtimeLayer).toEqualTypeOf<
+      Layer.Layer<
+        import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>
+      >
+    >();
+
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      // @ts-expect-error every referenced Region is required.
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+      },
+    });
+    // @ts-expect-error unreferenced Regions are rejected.
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+        us: { bootstrapServers: "us:9092" },
+        apac: { bootstrapServers: "apac:9092" },
+      },
+    });
+    // @ts-expect-error Region options are exact.
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          extra: true,
+        },
+        us: { bootstrapServers: "us:9092" },
+      },
+    });
+
+    // @ts-expect-error aggregate Layer options cannot be any.
+    layer(config, unsafeAny);
+    const variableWithExtraRegionOption = {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: { bootstrapServers: "eu:9092", extra: true },
+        us: { bootstrapServers: "us:9092" },
+      },
+    };
+    // @ts-expect-error Region options remain exact through variables.
+    layer(config, variableWithExtraRegionOption);
+    const variableWithExtraSaslOption = {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          sasl: {
+            mechanism: "PLAIN" as const,
+            username: "user",
+            password: "secret",
+            extra: true,
+          },
+        },
+        us: { bootstrapServers: "us:9092" },
+      },
+    };
+    // @ts-expect-error nested SASL options remain exact through variables.
+    layer(config, variableWithExtraSaslOption);
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          // @ts-expect-error unsupported GSSAPI cannot be configured.
+          sasl: { mechanism: "GSSAPI" },
+        },
+        us: { bootstrapServers: "us:9092" },
+      },
+    });
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          // @ts-expect-error username/password mechanisms require both credentials.
+          sasl: { mechanism: "SCRAM-SHA-256", username: "user" },
+        },
+        us: { bootstrapServers: "us:9092" },
+      },
+    });
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          // @ts-expect-error OAUTHBEARER requires a token.
+          sasl: { mechanism: "OAUTHBEARER" },
+        },
+        us: { bootstrapServers: "us:9092" },
+      },
+    });
+    // @ts-expect-error nested Region values cannot be any.
+    layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: { bootstrapServers: unsafeAny },
+        us: { bootstrapServers: "us:9092" },
+      },
+    });
+  });
+
+  it("preserves Config errors for aggregate Layer config", () => {
+    const configured = layerConfig(config, {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+        },
+        us: {
+          bootstrapServers: Config.succeed("us:9092"),
+        },
+      },
+    });
+    expectTypeOf(configured).toEqualTypeOf<
+      Layer.Layer<
+        import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>,
+        Config.ConfigError
+      >
+    >();
+    // @ts-expect-error aggregate Config Layer options cannot be any.
+    layerConfig(config, unsafeAny);
+
+    const configWithTopLevelExtra = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: { bootstrapServers: Config.succeed("eu:9092") },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+      extra: Config.succeed(true),
+    };
+    // @ts-expect-error Config-wrapped aggregate options remain exact.
+    layerConfig(config, configWithTopLevelExtra);
+
+    const configWithExtraRegion = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: { bootstrapServers: Config.succeed("eu:9092") },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+        apac: { bootstrapServers: Config.succeed("apac:9092") },
+      },
+    };
+    // @ts-expect-error Config-wrapped Regions remain exact.
+    layerConfig(config, configWithExtraRegion);
+
+    const configWithExtraRegionField = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          extra: Config.succeed(true),
+        },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    };
+    // @ts-expect-error Config-wrapped Region options remain exact.
+    layerConfig(config, configWithExtraRegionField);
+
+    const configWithExtraSaslField = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          sasl: Config.succeed({
+            mechanism: "PLAIN" as const,
+            username: "user",
+            password: "secret",
+            extra: true,
+          }),
+        },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    };
+    // @ts-expect-error Config-wrapped nested SASL options remain exact.
+    layerConfig(config, configWithExtraSaslField);
+
+    const configWithAnyBroker = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: Config.succeed({
+        eu: { bootstrapServers: unsafeAny },
+        us: { bootstrapServers: "us:9092" },
+      }),
+    };
+    // @ts-expect-error nested any cannot cross a Config wrapper.
+    layerConfig(config, configWithAnyBroker);
+
+    const configWithAnySasl = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          sasl: Config.succeed(unsafeAny),
+        },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    };
+    // @ts-expect-error Config-wrapped SASL cannot be any.
+    layerConfig(config, configWithAnySasl);
+
+    const configWithAnyToken = {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {
+        eu: {
+          bootstrapServers: Config.succeed("eu:9092"),
+          sasl: Config.succeed({
+            mechanism: "OAUTHBEARER" as const,
+            token: unsafeAny,
+          }),
+        },
+        us: { bootstrapServers: Config.succeed("us:9092") },
+      },
+    };
+    // @ts-expect-error Config-wrapped SASL fields cannot be any.
+    layerConfig(config, configWithAnyToken);
+
+    const wholeConfigWithExtra = Config.succeed({
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: { bootstrapServers: "eu:9092" },
+        us: { bootstrapServers: "us:9092" },
+      },
+      extra: true,
+    });
+    // @ts-expect-error a whole Config wrapper cannot hide extra fields.
+    layerConfig(config, wholeConfigWithExtra);
+  });
+
+  it("rejects View Server Configs without a Kafka Source Definition", () => {
+    // @ts-expect-error a Kafka aggregate Layer requires at least one Kafka Source Definition.
+    layer(sourceFreeConfig, {
+      consumerGroupPrefix: "replica",
+      regions: {},
+    });
+    // @ts-expect-error a Kafka Config Layer requires at least one Kafka Source Definition.
+    layerConfig(sourceFreeConfig, {
+      consumerGroupPrefix: Config.succeed("replica"),
+      regions: {},
+    });
+  });
+});

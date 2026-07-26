@@ -1145,6 +1145,7 @@ export const SourceFixture = {
             lane: target.lane,
             offset,
           }),
+          rowId: (_target, localId) => localId,
           updatedMetrics: {
             observed: 42n,
           },
@@ -1158,6 +1159,7 @@ export const SourceFixture = {
             lane: target.lane,
             offset,
           }),
+          rowId: (_target, localId) => localId,
           updatedMetrics: {
             observed: 42n,
           },

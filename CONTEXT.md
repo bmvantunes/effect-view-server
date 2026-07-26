@@ -4,7 +4,7 @@ This context defines the language for the View Server project: a type-safe live 
 
 ## Document Status
 
-Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, canonical `source` path, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, and conformance foundation described here are implemented. First-party Kafka/gRPC conversion, the React Source Diagnostics hook, and final removal of transport-specific source shapes remain staged work.
+Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, canonical `source` path, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, conformance foundation, and first-party Kafka Source Adapter described here are implemented. First-party gRPC conversion, the React Source Diagnostics hook, and final removal of transport-specific source shapes remain staged work.
 
 ## Language
 
@@ -274,7 +274,10 @@ _Avoid_: Guessed field value, implicit string field, server-side key reconstruct
 
 ### Ingestion Concepts
 
-The Source Adapter concepts in this section describe the implemented core SDK and Runtime Core path. Adapter-specific platform Layer constructors and first-party Kafka/gRPC migration remain owned by their staged adapter work.
+The Source Adapter concepts in this section describe the implemented core SDK,
+Runtime Core path, and first-party Kafka contract, server, and Node platform
+Layers. First-party gRPC conversion and removal of the remaining
+transport-specific source shapes remain staged in issues #386 and #387.
 
 **Source Topic**:
 An external Kafka topic or future server-side source that provides messages to be mapped into a View Server Topic.
@@ -666,9 +669,9 @@ _Avoid_: Browser write, send, emit
 - Every source health payload contains exact Source Adapter Metrics validated by the declared metrics Schema; Remote Browser Client and React types infer that value without casts or `as const`.
 - Serializable adapter option subtrees may use Effect Schema or Effect Config, while executable codecs, Mapping, Row Key functions, Schedules, Effects, and service references use exact TypeScript contracts plus adapter-owned construction validation.
 - The Source Adapter SDK validates and snapshots its common Source Definition envelope, and adapter-specific option validation completes before the Source Adapter Runtime Service starts it.
-- Every planned **Source Adapter Package Surface** will expose a browser-safe `/contract`, a server-only `/server`, and optional platform-specific Layer exports such as `/node`.
-- View Server will expose the planned Source Adapter SDK only through `effect-view-server/source-adapter`, `effect-view-server/source-adapter/server`, and `effect-view-server/source-adapter/testing`; package export checks will reject deep or internal SDK imports when those surfaces are implemented.
-- First-party Kafka and gRPC Source Adapters will become ordinary SDK consumers exposed through the planned `effect-view-server/kafka/contract`, `effect-view-server/kafka/server`, `effect-view-server/kafka/node`, `effect-view-server/grpc/contract`, `effect-view-server/grpc/server`, and `effect-view-server/grpc/node` package surfaces.
+- Every **Source Adapter Package Surface** exposes a browser-safe `/contract`, a server-only `/server`, and optional platform-specific Layer exports such as `/node`.
+- View Server exposes the Source Adapter SDK only through `effect-view-server/source-adapter`, `effect-view-server/source-adapter/server`, and `effect-view-server/source-adapter/testing`; package export checks reject deep or internal SDK imports.
+- The first-party Kafka Source Adapter is an ordinary SDK consumer exposed through `effect-view-server/kafka/contract`, `effect-view-server/kafka/server`, and `effect-view-server/kafka/node`. The matching gRPC package surfaces remain staged in issue #386.
 - A published Source Adapter package declares `effect-view-server` and every Effect ecosystem package used by its public or runtime surfaces as peer dependencies and keeps them as development dependencies for its own build and tests; it never bundles private runtime copies of those packages.
 - While Effect remains beta or View Server remains pre-1.0, a published Source Adapter declares exact peer versions for View Server and every Effect ecosystem package it uses. After both are stable, an adapter may widen a peer range only across versions its conformance matrix executes successfully.
 - Source Adapter SDK conformance tests reject a `/contract` export that resolves Node APIs, Source Adapter Runtime Service implementations, concrete clients, platform Layers, or transport-driver packages.
@@ -754,6 +757,8 @@ _Avoid_: Browser write, send, emit
 - The Kafka adapter converts the requested nanosecond boundary to Kafka's millisecond timestamp resolution and asks each selected cluster for the earliest partition offset at or after that boundary.
 - `durationAgo` is evaluated once per materialized runtime lifetime or acquired Leased Feed lifetime, and the resulting initial partition offsets are frozen for that lifetime.
 - A Kafka Source Attempt retry or connection recovery uses the active consumer group's latest committed offset per partition; only a partition without a commit reuses its frozen initial position and fallback.
+- The Kafka Node Adapter commits a record only when Source Settlement receives a successful application Exit; typed application failure, defect, and interruption preserve the record for replay instead of advancing the active consumer group.
+- The accepted Kafka Source Adapter performance gate serially exercises both the transport-neutral multi-region/partition server path and the production Platformatic Kafka Node Adapter against Apache Kafka, and the broker-backed case observes the active consumer group's committed offset after Runtime Core convergence.
 - A complete runtime restart reevaluates a materialized source's `DurationAgo`; final Leased Feed release discards its frozen positions, so a later fresh subscription reevaluates them as well.
 - For a Leased Feed, View Server alone derives internal partitioned storage identity from the exact Feed Route and Topic Row ID.
 - Every **Source Delivery** contains a `Chunk.NonEmptyChunk` of Source Mutations; one mutation uses `Chunk.of(...)`, several use `Chunk.make(...)`, and an empty source poll emits no Stream element.

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Schema } from "effect";
 import type { ViewServerLiveClient } from "@effect-view-server/client";
 import type { ColumnLiveViewEngine } from "@effect-view-server/column-live-view-engine";
 import type { ViewServerHealth } from "@effect-view-server/config/health";
@@ -16,6 +17,8 @@ import type {
   KafkaTopicSourceMapInput as PublicKafkaTopicSourceMapInput,
   ValidateKafkaTopicSource as PublicValidateKafkaTopicSource,
 } from "effect-view-server/config/kafka";
+import { defineViewServerConfig } from "effect-view-server/config";
+import { kafka as publicKafkaSource } from "effect-view-server/kafka/contract";
 // @ts-expect-error standalone gRPC topic selectors are not workspace config exports.
 import type { GrpcLeasedTopic as RemovedWorkspaceGrpcLeasedTopic } from "@effect-view-server/config";
 // @ts-expect-error standalone gRPC topic selectors are not workspace config exports.
@@ -111,6 +114,39 @@ type PublicKafkaTypeExports = readonly [
 const removedGrpcTypeExports: RemovedGrpcTypeExports | undefined = undefined;
 const removedKafkaRootExports: RemovedKafkaRootExports | undefined = undefined;
 const publicKafkaTypeExports: PublicKafkaTypeExports | undefined = undefined;
+const PublicKafkaSourceValue = Schema.Struct({
+  price: Schema.Number,
+});
+const PublicKafkaSourceRow = Schema.Struct({
+  id: Schema.String,
+  price: Schema.Number,
+});
+const publicKafkaSourceValue = publicKafkaSource.json(() =>
+  Schema.toCodecJson(PublicKafkaSourceValue),
+);
+const publicKafkaSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: PublicKafkaSourceRow,
+      source: publicKafkaSource.source({
+        topic: "orders-source",
+        regions: ["eu"],
+        key: publicKafkaSource.string(),
+        value: publicKafkaSourceValue,
+        localRowKey: ({ key }) => key,
+        map: ({ value }) => ({ price: value.price }),
+        startFrom: "earliest",
+      }),
+    },
+  },
+});
+type PublicKafkaFacadeTopicsAreExact =
+  keyof typeof publicKafkaSourceViewServer.topics extends "orders"
+    ? "orders" extends keyof typeof publicKafkaSourceViewServer.topics
+      ? true
+      : false
+    : false;
+const publicKafkaFacadeTopicsAreExact: PublicKafkaFacadeTopicsAreExact = true;
 const clientType: ViewServerLiveClient<Record<string, never>> | undefined = undefined;
 const engineType: ColumnLiveViewEngine<Record<string, never>> | undefined = undefined;
 const runtimeConfigType: RuntimeEnvironmentConfig | undefined = undefined;
@@ -126,6 +162,7 @@ const wireEventType: ViewServerWireEvent | undefined = undefined;
 void removedGrpcTypeExports;
 void removedKafkaRootExports;
 void publicKafkaTypeExports;
+void publicKafkaFacadeTopicsAreExact;
 void clientType;
 void engineType;
 void runtimeConfigType;

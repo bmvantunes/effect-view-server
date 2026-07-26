@@ -130,6 +130,7 @@ export type SourceAdapterLifecycleConformanceExpectations<
   readonly settlementFailure: unknown;
   readonly rejectionFailure: (phase: "acquire" | "stream" | "settlement") => unknown;
   readonly rejectionLocation: (target: Target, offset: bigint) => unknown;
+  readonly rowId: (target: Target, localId: string) => string;
   readonly updatedMetrics: unknown;
 };
 

@@ -4,8 +4,8 @@
 
 Accepted. The generic Source Attempt, lane, delivery, rejection, settlement,
 supervision, diagnostics, and conformance contracts are implemented by issue
-#384. First-party Kafka and gRPC implementations remain staged in issues #385
-and #386.
+#384, and the first-party Kafka implementation is implemented by issue #385.
+The first-party gRPC implementation remains staged in issue #386.
 
 ## Context
 

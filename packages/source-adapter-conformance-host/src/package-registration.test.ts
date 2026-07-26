@@ -113,6 +113,7 @@ const builtPackageDriver = makeSourceAdapterConformanceDriver({
       settlementFailure: undefined,
       rejectionFailure: () => undefined,
       rejectionLocation: (_target, offset) => ({ offset }),
+      rowId: (_target, localId) => localId,
       updatedMetrics: { observed: 1n },
     },
     leased: {
@@ -121,6 +122,7 @@ const builtPackageDriver = makeSourceAdapterConformanceDriver({
       settlementFailure: undefined,
       rejectionFailure: () => undefined,
       rejectionLocation: (_target, offset) => ({ offset }),
+      rowId: (_target, localId) => localId,
       updatedMetrics: { observed: 1n },
     },
   },

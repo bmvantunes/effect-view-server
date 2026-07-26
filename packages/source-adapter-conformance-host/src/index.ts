@@ -217,6 +217,19 @@ const lifecycleExpectations = (
   return Option.getOrThrow(Option.fromUndefinedOr(driver.expectations[lifecycle]));
 };
 
+const expectedRowId = (
+  driver: SourceAdapterConformanceDriverValue,
+  lifecycle: SourceAdapterConformanceLifecycle,
+  lane: "primary" | "sibling",
+  localId: string,
+): string =>
+  lifecycle === "materialized"
+    ? requireMaterializedExpectations(driver).rowId(materializedTarget(lane), localId)
+    : requireLeasedExpectations(driver).rowId(
+        leasedTarget(requireLeased(driver).sameRoute, lane),
+        localId,
+      );
+
 const expectedRejectionLocation = (
   driver: SourceAdapterConformanceDriverValue,
   lifecycle: SourceAdapterConformanceLifecycle,
@@ -322,14 +335,17 @@ const registerLifecycleConformance = (
         });
         yield* Deferred.await(siblingSettled);
         expect(yield* Deferred.isDone(secondPrimarySettled)).toBe(false);
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(["primary", "sibling"]);
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
+          expectedRowId(driver, lifecycle, "primary", "primary"),
+          expectedRowId(driver, lifecycle, "sibling", "sibling"),
+        ]);
         yield* Deferred.succeed(releaseFirstPrimarySettlement, undefined);
         yield* Deferred.await(firstPrimarySettled);
         yield* Deferred.await(secondPrimarySettled);
         expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-          "primary",
-          "primary-second",
-          "sibling",
+          expectedRowId(driver, lifecycle, "primary", "primary"),
+          expectedRowId(driver, lifecycle, "primary", "primary-second"),
+          expectedRowId(driver, lifecycle, "sibling", "sibling"),
         ]);
         expect(settlements).toStrictEqual([
           ["sibling", Exit.void],
@@ -640,7 +656,9 @@ const registerLifecycleConformance = (
           settle: () => Deferred.succeed(deliverySettled, undefined).pipe(Effect.asVoid),
         });
         yield* Deferred.await(deliverySettled);
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(["after-rejection"]);
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
+          expectedRowId(driver, lifecycle, "primary", "after-rejection"),
+        ]);
 
         const degraded = yield* opened.awaitStatus("Degraded");
         expect({
@@ -691,7 +709,9 @@ const registerLifecycleConformance = (
           lifecycleTarget(driver, lifecycle),
           (candidate) => candidate.acquisitions === baseline.acquisitions + 2n,
         );
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(["retained"]);
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
+          expectedRowId(driver, lifecycle, "primary", "retained"),
+        ]);
         const health = yield* opened.awaitStatus("Ready");
         expect(health.failedSettlementCount).toBe(1n);
         yield* opened.close;
@@ -1017,8 +1037,8 @@ export const registerSourceAdapterConformance = (
               value: "callback",
             });
             expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-              "backpressurable",
-              "non-pausable",
+              expectedRowId(driver, "materialized", "primary", "backpressurable"),
+              expectedRowId(driver, "materialized", "primary", "non-pausable"),
             ]);
             yield* opened.close;
             const observation = yield* driver.transport.observe(materializedTarget());

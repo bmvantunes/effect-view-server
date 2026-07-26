@@ -6,6 +6,7 @@ design sketches.
 
 - [Public API](./public-api.md)
 - [Source Adapter SDK](./source-adapter-sdk.md)
+- [Kafka Source Adapter](./kafka-source-adapter.md)
 - [Runtime Config](./runtime-config.md)
 - [Kafka Mapping](./kafka-mapping.md)
 - [In-Memory Browser Testing](./in-memory-browser-testing.md)

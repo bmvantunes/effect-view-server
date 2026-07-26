@@ -104,6 +104,7 @@ describe("Source Adapter low-level conformance driver", () => {
         expect({
           materializedFailure: materializedExpectations.rejectionFailure("stream"),
           materializedLocation: materializedExpectations.rejectionLocation(target, 1n),
+          materializedRowId: materializedExpectations.rowId(target, "row"),
           leasedFailure: leasedExpectations.rejectionFailure("settlement"),
           leasedLocation: leasedExpectations.rejectionLocation(
             {
@@ -113,11 +114,21 @@ describe("Source Adapter low-level conformance driver", () => {
             },
             2n,
           ),
+          leasedRowId: leasedExpectations.rowId(
+            {
+              _tag: "Leased",
+              route: { region: "eu" },
+              lane: "sibling",
+            },
+            "row",
+          ),
         }).toStrictEqual({
           materializedFailure: SourceFixture.failure("conformance rejection", "stream"),
           materializedLocation: { lane: "primary", offset: 1n },
+          materializedRowId: "row",
           leasedFailure: SourceFixture.failure("conformance rejection", "settlement"),
           leasedLocation: { lane: "sibling", offset: 2n },
+          leasedRowId: "row",
         });
         expect(yield* driver.transport.observe(target)).toStrictEqual({
           acquisitions: 0n,

@@ -76,6 +76,18 @@
       "types": "./dist/in-memory-testing.d.ts",
       "import": "./dist/in-memory-testing.js"
     },
+    "./kafka/contract": {
+      "types": "./dist/kafka-contract.d.ts",
+      "import": "./dist/kafka-contract.js"
+    },
+    "./kafka/server": {
+      "types": "./dist/kafka-server.d.ts",
+      "import": "./dist/kafka-server.js"
+    },
+    "./kafka/node": {
+      "types": "./dist/kafka-node.d.ts",
+      "import": "./dist/kafka-node.js"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
@@ -124,6 +136,7 @@
     "@effect-view-server/column-live-view-engine": "workspace:*",
     "@effect-view-server/config": "workspace:*",
     "@effect-view-server/in-memory": "workspace:*",
+    "@effect-view-server/kafka": "workspace:*",
     "@effect-view-server/react": "workspace:*",
     "@effect-view-server/runtime": "workspace:*",
     "@effect-view-server/server": "workspace:*",

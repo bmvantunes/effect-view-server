@@ -3,8 +3,9 @@
 ## Status
 
 Accepted. Issue #384 implements and verifies the View Server SDK exports and the
-reusable published-adapter package conformance contract. First-party adapter
-`/contract`, `/server`, and platform exports remain staged in issues #385 and #386.
+reusable published-adapter package conformance contract. Issue #385 implements
+the first-party Kafka `/contract`, `/server`, and `/node` exports. The matching
+gRPC exports remain staged in issue #386.
 
 ## Context
 

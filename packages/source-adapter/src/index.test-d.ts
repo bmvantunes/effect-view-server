@@ -381,6 +381,17 @@ declare const erasedUnknownAdapter: SourceAdapterHandle<
   ErasedUnknownLifecycle,
   undefined
 >;
+const voidAdapter = SourceAdapter.make({
+  identity: { name: "void-options" },
+  failure: Failure,
+  materialized: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+const voidDefinition = voidAdapter.materializedSource(undefined);
 
 describe("Source Adapter public type contracts", () => {
   it("preserves exact declaration and definition inference without as const", () => {
@@ -393,8 +404,8 @@ describe("Source Adapter public type contracts", () => {
       readonly ["region", "desk"]
     >();
     expectTypeOf<SourceDefinitionOptions<typeof leased>>().toEqualTypeOf<{
-      readonly label: string;
-      readonly batchSize: number;
+      readonly label: "orders";
+      readonly batchSize: 100;
     }>();
     expectTypeOf(serverLayer).toEqualTypeOf<
       Layer.Layer<
@@ -409,6 +420,7 @@ describe("Source Adapter public type contracts", () => {
       readonly value: number;
     }>();
     expectTypeOf(mappedServerLayer).not.toBeAny();
+    expectTypeOf<SourceDefinitionOptions<typeof voidDefinition>>().toEqualTypeOf<undefined>();
   });
 
   it("rejects invalid portable declarations and definitions", () => {
@@ -437,10 +449,10 @@ describe("Source Adapter public type contracts", () => {
     adapter.materializedSource({
       label: "orders",
     });
-    // @ts-expect-error definition options reject extra fields.
     adapter.materializedSource({
       label: "orders",
       batchSize: 100,
+      // @ts-expect-error definition options reject extra fields.
       unexpected: true,
     });
     // @ts-expect-error Leased Source routes must be non-empty tuples.

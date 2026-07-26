@@ -21,6 +21,7 @@
     "@effect-view-server/example-ssr-react",
     "@effect-view-server/example-tcp-publisher-react",
     "@effect-view-server/in-memory",
+    "@effect-view-server/kafka",
     "@effect-view-server/protocol",
     "@effect-view-server/react",
     "@effect-view-server/runtime",

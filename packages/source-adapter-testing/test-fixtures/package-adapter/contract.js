@@ -33,6 +33,7 @@ export const adapter = SourceAdapter.make({
 
 export const source = (options) => adapter.materializedSource(options);
 export const leasedSource = (routeBy, options) => adapter.leasedSource(routeBy, options);
+export const nested = Object.freeze({ source });
 
 export const throwingSource = () => {
   throw new Error("definition construction failed");

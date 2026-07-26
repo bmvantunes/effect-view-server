@@ -130,6 +130,72 @@ export const packageSurfacePolicy = {
     {
       architecture: {
         allowedWorkspaceSpecifiers: [
+          "effect-view-server/source-adapter",
+          "effect-view-server/source-adapter/server",
+        ],
+        message:
+          "The first-party Kafka Adapter must consume only the public Source Adapter SDK seams.",
+        relativeOverrides: [
+          {
+            relativePath: "src/server.test.ts",
+            allowedWorkspaceSpecifiers: [
+              "@effect-view-server/config",
+              "@effect-view-server/runtime-core",
+              "effect-view-server/source-adapter",
+              "effect-view-server/source-adapter/server",
+            ],
+          },
+          {
+            relativePath: "src/node.test.ts",
+            allowedWorkspaceSpecifiers: [
+              "@effect-view-server/config",
+              "@effect-view-server/runtime-core",
+              "effect-view-server/source-adapter",
+              "effect-view-server/source-adapter/server",
+            ],
+          },
+          {
+            relativePath: "src/node.test-d.ts",
+            allowedWorkspaceSpecifiers: [
+              "@effect-view-server/config",
+              "effect-view-server/source-adapter",
+              "effect-view-server/source-adapter/server",
+            ],
+          },
+        ],
+      },
+      directory: "kafka",
+      packageName: "@effect-view-server/kafka",
+      entrypoints: [
+        {
+          exportKey: "./contract",
+          sourceEntrypoint: "src/contract.ts",
+          facade: {
+            exportKey: "./kafka/contract",
+            sourceEntrypoint: "src/kafka-contract.ts",
+          },
+        },
+        {
+          exportKey: "./server",
+          sourceEntrypoint: "src/server.ts",
+          facade: {
+            exportKey: "./kafka/server",
+            sourceEntrypoint: "src/kafka-server.ts",
+          },
+        },
+        {
+          exportKey: "./node",
+          sourceEntrypoint: "src/node.ts",
+          facade: {
+            exportKey: "./kafka/node",
+            sourceEntrypoint: "src/kafka-node.ts",
+          },
+        },
+      ],
+    },
+    {
+      architecture: {
+        allowedWorkspaceSpecifiers: [
           "@effect-view-server/config",
           "@effect-view-server/runtime-core",
           "@effect-view-server/source-adapter",
@@ -645,6 +711,38 @@ export const packageSurfacePolicy = {
       forbidden: [],
       required: ["SourceFixture"],
       workspaceSpecifier: "@effect-view-server/source-adapter-testing",
+    },
+    {
+      forbidden: [
+        "KafkaSourceAdapterServer",
+        "kafkaNode",
+        "kafkaServer",
+        "layer",
+        "layerConfig",
+        "makeKafkaServerLayer",
+      ],
+      required: ["KafkaSourceAdapter", "kafka"],
+      workspaceSpecifier: "@effect-view-server/kafka/contract",
+    },
+    {
+      forbidden: ["kafka", "kafkaNode", "layer", "layerConfig"],
+      required: [
+        "KafkaSourceAdapterServer",
+        "kafkaServer",
+        "makeKafkaServerLayer",
+      ],
+      workspaceSpecifier: "@effect-view-server/kafka/server",
+    },
+    {
+      forbidden: [
+        "KafkaSourceAdapter",
+        "KafkaSourceAdapterServer",
+        "kafka",
+        "kafkaServer",
+        "makeKafkaServerLayer",
+      ],
+      required: ["kafkaNode", "layer", "layerConfig"],
+      workspaceSpecifier: "@effect-view-server/kafka/node",
     },
     {
       forbidden: [],

@@ -10,6 +10,11 @@ const declarationProjects = [
     directory: "packages/source-adapter-testing",
     dependsOn: ["source-adapter"],
   },
+  {
+    name: "kafka",
+    directory: "packages/kafka",
+    dependsOn: ["source-adapter"],
+  },
   { name: "config", directory: "packages/config", dependsOn: ["source-adapter"] },
   {
     name: "column-live-view-engine",
@@ -81,6 +86,11 @@ const diagnosticsProjects = [
     name: "source-adapter-testing",
     project: "packages/source-adapter-testing",
     declarationTask: declarationTaskName("source-adapter-testing"),
+  },
+  {
+    name: "kafka",
+    project: "packages/kafka",
+    declarationTask: declarationTaskName("kafka"),
   },
   { name: "config", project: "packages/config", declarationTask: undefined },
   { name: "effect-utils", project: "packages/effect-utils", declarationTask: undefined },
@@ -217,6 +227,7 @@ export default defineConfig({
         "scripts/package-surface-policy.ts",
         "scripts/release-publish-orchestration.mjs",
         "scripts/release-publish-policy.mjs",
+        "scripts/release-version-orchestration.mjs",
         "scripts/typescript-module-inspection.ts",
       ],
       reporter: ["text"],
@@ -249,6 +260,14 @@ export default defineConfig({
         command: "vp pack",
         cwd: "packages/effect-view-server",
         dependsOn: declarationProjects.map(({ name }) => declarationTaskName(name)),
+      },
+      "bench:kafka-source-broker": {
+        command: "node scripts/run-kafka-source-broker-bench.mjs",
+        dependsOn: [declarationTaskName("runtime-core")],
+      },
+      "bench:runtime-kafka-ingest": {
+        command: "node scripts/run-runtime-kafka-ingest-bench.mjs",
+        dependsOn: [declarationTaskName("runtime")],
       },
       "examples:check:effect": {
         command: 'node --eval ""',

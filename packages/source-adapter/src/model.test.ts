@@ -335,6 +335,11 @@ describe("Source Adapter portable model", () => {
     const schedule = Schedule.recurs(1);
     const row = Schema.Struct({ id: Schema.String });
     const map = (value: string) => ({ id: value });
+    const executableMap = SourceAdapter.executable(map);
+    const codec = SourceAdapter.executable({
+      format: "fixture",
+      decode: executableMap,
+    });
     const adapter = SourceAdapter.make({
       identity: { name: "executable-options" },
       failure: Failure,
@@ -346,6 +351,7 @@ describe("Source Adapter portable model", () => {
           readonly schedule: typeof schedule;
           readonly row: typeof row;
           readonly map: typeof map;
+          readonly codec: typeof codec;
         }>(),
       },
       leased: undefined,
@@ -354,13 +360,26 @@ describe("Source Adapter portable model", () => {
       program,
       schedule,
       row,
-      map,
+      map: executableMap,
+      codec,
     });
 
     expect(definition.options.program).toBe(program);
     expect(definition.options.schedule).toBe(schedule);
     expect(definition.options.row).toBe(row);
-    expect(definition.options.map).toBe(map);
+    expect(definition.options.map).toBe(executableMap);
+    expect(definition.options.codec).toBe(codec);
+    expect(SourceAdapter.executable(codec)).toBe(codec);
+    expect(SourceAdapter.executable(executableMap)).toBe(executableMap);
+    expect(() =>
+      Reflect.apply(SourceAdapter.executable, undefined, [Object.freeze({ format: "frozen" })]),
+    ).toThrow("must be extensible objects");
+    expect(() => Reflect.apply(SourceAdapter.executable, undefined, [1])).toThrow(
+      "must be extensible objects",
+    );
+    expect(() => Reflect.apply(SourceAdapter.executable, undefined, [null])).toThrow(
+      "must be extensible objects",
+    );
   });
 
   it("rejects every hostile Source Definition envelope branch without throwing", () => {
@@ -598,7 +617,7 @@ describe("Source Adapter portable model", () => {
       expect(isSourceItemRejection(rejection)).toBe(true);
       expect(isSourceAttempt(attempt)).toBe(true);
       expect(isSourceToolkit(toolkit)).toBe(true);
-      expect(Object.hasOwn(toolkit, "decodeUpsert")).toBe(false);
+      expect(Object.hasOwn(toolkit, "decodeUpsert")).toBe(true);
       expect((yield* decodeSourceToolkitUpsert(toolkit, { decoded: true })).row).toStrictEqual({
         row: { decoded: true },
       });

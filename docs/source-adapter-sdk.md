@@ -65,7 +65,8 @@ export const exampleSource = <Row extends object>(stream: string, initial: Row) 
 ```
 
 `materializedSource(...)` snapshots and freezes plain-data option subtrees.
-Schema, Effect, Schedule, and function leaves retain their exact executable
+Schema, Effect, Schedule, function leaves, and adapter-owned opaque values
+marked with `SourceAdapter.executable(...)` retain their exact executable
 identity; other object instances are rejected so mutable clients, sockets,
 Dates, Maps, and similar platform values cannot masquerade as portable options.
 A leased declaration uses `leasedSource(routeBy, options)` with a non-empty

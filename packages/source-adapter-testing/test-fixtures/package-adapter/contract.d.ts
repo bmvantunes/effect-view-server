@@ -48,6 +48,10 @@ export declare const source: (options: PackageFixtureDefinitionOptions) => Sourc
   }
 >;
 
+export declare const nested: {
+  readonly source: typeof source;
+};
+
 export declare const leasedSource: (
   routeBy: readonly ["region"],
   options: PackageFixtureDefinitionOptions,

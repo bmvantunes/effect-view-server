@@ -16,8 +16,10 @@ truth, not plan text that predates later implementation work.
 
 `plans/grpc.md` records the currently implemented transport-specific scope but
 is superseded for future work by PRD #383. Issue #384 implements the
-transport-neutral Source Adapter foundation; Kafka and gRPC migration remain
-separate staged issues.
+transport-neutral Source Adapter foundation, and issue #385 implements the
+first-party Kafka Source Adapter. First-party gRPC conversion and removal of the
+remaining transport-specific source shapes remain staged in issues #386 and
+#387.
 
 | Area                                            | Status                 | Evidence                                                                                                                                                     |
 | ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -57,7 +59,7 @@ because it includes explicit future scope.
 | Snapshot/delta convergence                                    | Implemented | Engine/runtime/client tests cover raw, grouped, retained deltas, cleanup, and convergence.                                                                                                                                                            |
 | Grouped queries and aggregates                                | Implemented | Grouped query tests, grouped aggregate/write benchmarks and gates.                                                                                                                                                                                    |
 | Backpressure at subscription/transport boundary               | Implemented | `BackpressureExceeded` typed status, queue-capacity tests, remote/client/protocol tests.                                                                                                                                                              |
-| Benchmark baseline automation                                 | Implemented | Smoke, raw read/write, active sharing, grouped, WebSocket, Kafka, and gRPC baseline scripts.                                                                                                                                                          |
+| Benchmark baseline automation                                 | Implemented | Smoke, raw read/write, active sharing, grouped, WebSocket, Kafka Source Adapter (transport-neutral and broker-backed), Kafka ingress, and gRPC baseline scripts.                                                                                      |
 | Pre-gRPC readiness gate                                       | Implemented | `vp run -w pre-grpc:gate`.                                                                                                                                                                                                                            |
 | TCP publish API/runtime ingress                               | Implemented | `packages/runtime/src/tcp-publish-ingress.ts`, runtime TCP tests for publish/patch/delete/publishMany, schema decode errors, bounded line/queue backpressure, source-owned topic rejection, startup failure, and shutdown cleanup.                    |
 | Runtime-core span/observability assertions                    | Implemented | Runtime-core tracing test captures client publish -> engine publish -> topic-store mutation/fanout -> live-subscription spans with real span-id parent links and topic/query attributes.                                                              |

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 import { libraryPack } from "../../vite.pack";
 
@@ -11,6 +12,7 @@ export default defineConfig({
           "@effect-view-server/column-live-view-engine#build",
           "@effect-view-server/config#build",
           "@effect-view-server/in-memory#build",
+          "@effect-view-server/kafka#build",
           "@effect-view-server/react#build",
           "@effect-view-server/runtime#build",
           "@effect-view-server/server#build",
@@ -29,27 +31,43 @@ export default defineConfig({
       tsconfig: "./tsconfig.json",
     },
   },
-  pack: libraryPack([
-    "src/client.ts",
-    "src/client-remote.ts",
-    "src/column-live-view-engine.ts",
-    "src/config.ts",
-    "src/config-grpc.ts",
-    "src/config-health.ts",
-    "src/config-kafka.ts",
-    "src/config-live-protocol.ts",
-    "src/config-query.ts",
-    "src/config-runtime.ts",
-    "src/in-memory.ts",
-    "src/in-memory-testing.ts",
-    "src/react.ts",
-    "src/react-testing.ts",
-    "src/runtime.ts",
-    "src/server.ts",
-    "src/source-adapter.ts",
-    "src/source-adapter-server.ts",
-    "src/source-adapter-testing.ts",
-  ]),
+  pack: libraryPack(
+    [
+      "src/client.ts",
+      "src/client-remote.ts",
+      "src/column-live-view-engine.ts",
+      "src/config.ts",
+      "src/config-grpc.ts",
+      "src/config-health.ts",
+      "src/config-kafka.ts",
+      "src/config-live-protocol.ts",
+      "src/config-query.ts",
+      "src/config-runtime.ts",
+      "src/in-memory.ts",
+      "src/in-memory-testing.ts",
+      "src/kafka-contract.ts",
+      "src/kafka-server.ts",
+      "src/kafka-node.ts",
+      "src/react.ts",
+      "src/react-testing.ts",
+      "src/runtime.ts",
+      "src/server.ts",
+      "src/source-adapter.ts",
+      "src/source-adapter-server.ts",
+      "src/source-adapter-testing.ts",
+    ],
+    {
+      alias: {
+        "effect-view-server/source-adapter/server": fileURLToPath(
+          new URL("../source-adapter/dist/server.js", import.meta.url),
+        ),
+        "effect-view-server/source-adapter": fileURLToPath(
+          new URL("../source-adapter/dist/index.js", import.meta.url),
+        ),
+      },
+      tsconfig: "./tsconfig.build.json",
+    },
+  ),
   lint: {
     options: {
       typeAware: true,

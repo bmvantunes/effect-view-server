@@ -1,8 +1,20 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
-import { Config, Layer, Schema } from "effect";
-import { KafkaSourceAdapter, kafka } from "./contract";
+import { Config, Effect, Layer, Schema, Scope } from "effect";
+import {
+  KafkaSourceAdapter,
+  kafka,
+  type KafkaAdapterFailure,
+  type KafkaRegionMetrics,
+} from "./contract";
 import { layer, layerConfig, type KafkaRequiredRegion } from "./node";
+import type {
+  KafkaServerRecord,
+  KafkaServerRegion,
+  KafkaServerRegionAcquireInput,
+  KafkaServerRegionConsumer,
+  KafkaServerRegionMetricsInput,
+} from "./server";
 
 const Row = Schema.Struct({
   id: Schema.String,
@@ -46,8 +58,31 @@ const sourceFreeConfig = defineViewServerConfig({
 });
 
 declare const unsafeAny: any;
+declare const euRegion: KafkaServerRegion<"eu">;
+declare const euAcquireInput: KafkaServerRegionAcquireInput<"eu">;
+declare const euMetricsInput: KafkaServerRegionMetricsInput<"eu">;
+declare const apacRecord: KafkaServerRecord<"apac">;
 
 describe("Kafka Node type contract", () => {
+  it("binds every server seam result and failure to its exact Region", () => {
+    const acquisition = euRegion.acquire(euAcquireInput);
+    const metrics = euRegion.metrics(euMetricsInput);
+    expectTypeOf(acquisition).toEqualTypeOf<
+      Effect.Effect<KafkaServerRegionConsumer<"eu">, KafkaAdapterFailure<"eu">, Scope.Scope>
+    >();
+    expectTypeOf(metrics).toEqualTypeOf<Effect.Effect<KafkaRegionMetrics<"eu">>>();
+    expectTypeOf<KafkaServerRecord<"eu">["metadata"]["sourceRegion"]>().toEqualTypeOf<"eu">();
+    expectTypeOf<Effect.Error<ReturnType<KafkaServerRecord<"eu">["settlement"]>>>().toEqualTypeOf<
+      KafkaAdapterFailure<"eu">
+    >();
+    expectTypeOf<
+      Extract<Effect.Error<typeof acquisition>, { readonly region: string }>["region"]
+    >().toEqualTypeOf<"eu">();
+    // @ts-expect-error records from another Region cannot cross the server seam.
+    const wrongRecord: KafkaServerRecord<"eu"> = apacRecord;
+    expectTypeOf(wrongRecord).toEqualTypeOf<KafkaServerRecord<"eu">>();
+  });
+
   it("requires all and only source Regions", () => {
     expectTypeOf<KafkaRequiredRegion<typeof config>>().toEqualTypeOf<"eu" | "us">();
     const runtimeLayer = layer(config, {
@@ -62,6 +97,56 @@ describe("Kafka Node type contract", () => {
         import("effect").Context.Service.Identifier<typeof KafkaSourceAdapter.runtimeService>
       >
     >();
+    const securedLayer = layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          sasl: {
+            mechanism: "PLAIN",
+            username: "plain-user",
+            password: "plain-password",
+          },
+          tls: {
+            ca: ["root-ca", Uint8Array.from([1, 2, 3])],
+            cert: "client-cert",
+            key: Uint8Array.from([4, 5, 6]),
+            rejectUnauthorized: true,
+            serverName: "eu.kafka.internal",
+          },
+        },
+        us: {
+          bootstrapServers: "us:9092",
+          sasl: {
+            mechanism: "SCRAM-SHA-256",
+            username: "scram-user",
+            password: "scram-password",
+          },
+        },
+      },
+    });
+    const alternateSecuredLayer = layer(config, {
+      consumerGroupPrefix: "replica",
+      regions: {
+        eu: {
+          bootstrapServers: "eu:9092",
+          sasl: {
+            mechanism: "SCRAM-SHA-512",
+            username: "scram-user",
+            password: "scram-password",
+          },
+        },
+        us: {
+          bootstrapServers: "us:9092",
+          sasl: {
+            mechanism: "OAUTHBEARER",
+            token: "oauth-token",
+          },
+        },
+      },
+    });
+    expectTypeOf(securedLayer).toEqualTypeOf<typeof runtimeLayer>();
+    expectTypeOf(alternateSecuredLayer).toEqualTypeOf<typeof runtimeLayer>();
 
     layer(config, {
       consumerGroupPrefix: "replica",

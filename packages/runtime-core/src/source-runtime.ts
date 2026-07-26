@@ -838,6 +838,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
         .metrics({
           topic: input.entry.topic,
           definition: input.entry.definition.options,
+          lifetimeScope: scope,
           target: input.target,
         })
         .pipe(Effect.flatMap(validateAdapterMetrics), Effect.result);
@@ -1253,6 +1254,7 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     const attempt = yield* input.entry.lifecycle
       .acquire({
         definition: input.entry.definition.options,
+        lifetimeScope: scope,
         target: input.target,
         toolkit: makeToolkit(),
       })

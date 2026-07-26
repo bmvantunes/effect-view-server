@@ -89,8 +89,8 @@ Every source supplies explicit key and value codecs:
 
 - `kafka.bytes()` preserves the record bytes.
 - `kafka.string()` decodes UTF-8.
-- `kafka.json(() => Schema.toCodecJson(WireSchema))` uses an Effect Schema JSON
-  codec and preserves its decoded type.
+- `kafka.json(() => Schema.toCodecJson(WireSchema))` requires well-formed UTF-8,
+  uses an Effect Schema JSON codec, and preserves its decoded type.
 - `kafka.protobuf(MessageDescriptor)` uses a Buf generated message descriptor.
 - `kafka.codec({ name, decode })` owns a custom Effect decoder and its typed
   error channel.
@@ -102,6 +102,11 @@ metadata, and region. It returns every Topic field except `id`; returning a
 missing, extra, or incorrectly typed field is rejected by the public type.
 Runtime Core also decodes the mapped row through the Topic Schema before
 applying it.
+
+Every executable codec and Mapping callback receives a detached, frozen
+metadata envelope and header collection. Header byte arrays are copied once
+into that snapshot. Custom codec names are quoted in safe rejection diagnostics;
+decoder failures and payload bytes are never included.
 
 The canonical row ID is the exact text `region:localRowKey`. Region names cannot
 contain a colon, so `kafka.decodeRowId(...)` splits only at the first colon and
@@ -128,7 +133,9 @@ Resolved offsets are frozen for retries within the same Topic lifetime. The
 active adapter group still resumes from its own committed offsets after a
 consumer restart. Its ID is derived from `consumerGroupPrefix` plus the View
 Server Topic name—not the Kafka topic—so two Topic bindings cannot accidentally
-share progress.
+share progress. The percent-encoded active group ID must fit Kafka's 32,767-byte
+protocol-string ceiling and is rejected during pure Layer construction if it
+does not.
 
 This runtime materializes rows in memory. A committed consumer offset is an
 at-least-once delivery checkpoint, not a durable View Server snapshot. Choose an
@@ -140,6 +147,10 @@ The adapter acquires every configured region before publishing Ready health.
 Regions are independent concurrent lanes, while records inside one region are
 decoded, mapped, applied, and committed sequentially. This preserves partition
 progress and prevents a slow region from blocking its siblings.
+
+The per-region `decoded` metric counts each fully decoded Kafka record once:
+after key decoding for a tombstone, or after both key and value decoding for an
+upsert. A key or value decode rejection does not increment it.
 
 A non-null record produces an Upsert. A null value is a tombstone and produces
 a Delete for the canonical row ID. Decode, key, mapping, and Topic-Schema

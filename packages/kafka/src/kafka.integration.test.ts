@@ -230,22 +230,25 @@ const customInteger = kafka.codec({
   decode: ({ bytes }) => Effect.sync(() => Number.parseInt(textDecoder.decode(bytes), 10)),
 });
 
-const jsonSource = (topic: string, startFrom: KafkaStartPosition, retry?: KafkaSourceRetryPolicy) =>
-  kafka.source(
-    {
-      topic,
-      regions: ["local"],
-      key: kafka.string(),
-      value: kafka.json(() => Schema.toCodecJson(JsonInput)),
-      localRowKey: ({ key }) => key,
-      map: ({ value }) => ({
-        customerId: value.customerId,
-        price: value.price,
-      }),
-      startFrom,
-    },
-    retry,
-  );
+const jsonSource = (
+  topic: string,
+  startFrom: KafkaStartPosition,
+  retry?: KafkaSourceRetryPolicy<"local">,
+) => {
+  const options = {
+    topic,
+    regions: ["local"] satisfies readonly ["local"],
+    key: kafka.string(),
+    value: kafka.json(() => Schema.toCodecJson(JsonInput)),
+    localRowKey: ({ key }: { readonly key: string }) => key,
+    map: ({ value }: { readonly value: typeof JsonInput.Type }) => ({
+      customerId: value.customerId,
+      price: value.price,
+    }),
+    startFrom,
+  };
+  return retry === undefined ? kafka.source(options) : kafka.source(options, retry);
+};
 
 const outageCodecError = {
   _tag: "KafkaOutageCodecError",
@@ -1206,47 +1209,37 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             },
           },
         });
-        const makeRuntime = Effect.fn("KafkaSourceAdapter.integration.duration.runtime")(
-          function* () {
-            const context = yield* Layer.build(
-              kafkaNode.layer(viewServer, {
-                consumerGroupPrefix,
-                regions: {
-                  local: {
-                    bootstrapServers: kafkaBootstrapServers,
-                  },
-                },
-              }),
-            );
-            return yield* makeViewServerRuntimeCore(viewServer, {}).pipe(
-              Effect.provideContext(context),
-            );
-          },
+        const kafkaContext = yield* Layer.build(
+          kafkaNode.layer(viewServer, {
+            consumerGroupPrefix,
+            regions: {
+              local: {
+                bootstrapServers: kafkaBootstrapServers,
+              },
+            },
+          }),
         );
-        const firstRuntime = yield* makeRuntime();
-        const firstHealth = yield* firstRuntime.liveClient.subscribeSourceHealth("orders");
-        const firstReady = Option.getOrThrow(
-          yield* firstHealth.events.pipe(
-            Stream.filter((health) => health.metrics.adapter.start._tag === "Resolved"),
-            Stream.take(1),
-            Stream.runHead,
-            Effect.timeout("20 seconds"),
-          ),
-        );
-        yield* firstHealth.close();
-        yield* firstRuntime.close;
+        const readStart = Effect.fn("KafkaSourceAdapter.integration.duration.start")(function* () {
+          const runtime = yield* Effect.acquireRelease(
+            makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+            (current) => current.close,
+          );
+          const health = yield* Effect.acquireRelease(
+            runtime.liveClient.subscribeSourceHealth("orders"),
+            (current) => current.close().pipe(Effect.orDie),
+          );
+          return Option.getOrThrow(
+            yield* health.events.pipe(
+              Stream.filter((snapshot) => snapshot.metrics.adapter.start._tag === "Resolved"),
+              Stream.take(1),
+              Stream.runHead,
+              Effect.timeout("20 seconds"),
+            ),
+          );
+        });
+        const firstReady = yield* Effect.scoped(readStart());
         yield* Effect.sleep("10 millis");
-
-        const secondRuntime = yield* makeRuntime();
-        const secondHealth = yield* secondRuntime.liveClient.subscribeSourceHealth("orders");
-        const secondReady = Option.getOrThrow(
-          yield* secondHealth.events.pipe(
-            Stream.filter((health) => health.metrics.adapter.start._tag === "Resolved"),
-            Stream.take(1),
-            Stream.runHead,
-            Effect.timeout("20 seconds"),
-          ),
-        );
+        const secondReady = yield* Effect.scoped(readStart());
         const firstStart = firstReady.metrics.adapter.start;
         const secondStart = secondReady.metrics.adapter.start;
         const firstPosition = Option.getOrThrow(
@@ -1262,8 +1255,6 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           Option.liftPredicate(secondPosition, (position) => position.mode === "durationAgo"),
         );
         expect(secondDuration.resolvedAtNanos > firstDuration.resolvedAtNanos).toBe(true);
-        yield* secondHealth.close();
-        yield* secondRuntime.close;
       }),
     ),
   );
@@ -1323,8 +1314,9 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               },
             }),
           );
-          const runtime = yield* makeViewServerRuntimeCore(viewServer, {}).pipe(
-            Effect.provideContext(kafkaContext),
+          const runtime = yield* Effect.acquireRelease(
+            makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+            (current) => current.close,
           );
           const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
           yield* diagnostics.events.pipe(
@@ -1414,7 +1406,6 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           expect(recovered.metrics.adapter.regions[0]?.commitFailures).toBe(1n);
           expect(recovered.metrics.adapter.regions[0]?.reconnects).toBe(1n);
           yield* recoveredDiagnostics.close();
-          yield* runtime.close;
         }),
       ),
   );
@@ -1477,8 +1468,9 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             },
           }),
         );
-        const runtime = yield* makeViewServerRuntimeCore(viewServer, {}).pipe(
-          Effect.provideContext(kafkaContext),
+        const runtime = yield* Effect.acquireRelease(
+          makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+          (current) => current.close,
         );
         const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
         yield* diagnostics.events.pipe(
@@ -1555,12 +1547,11 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             partition: 0,
             offset: 0n,
             phase: "valueDecode",
-            message: "Kafka value codec rejected the record.",
+            message: 'Kafka value codec "gated-json-rejection" rejected the record.',
           },
           rows: [{ id: "local:after", customerId: "after", price: 2 }],
         });
         yield* replayDiagnostics.close();
-        yield* runtime.close;
       }),
     ),
   );
@@ -1593,8 +1584,9 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             },
           }),
         );
-        const runtime = yield* makeViewServerRuntimeCore(viewServer, {}).pipe(
-          Effect.provideContext(kafkaContext),
+        const runtime = yield* Effect.acquireRelease(
+          makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+          (current) => current.close,
         );
         const initialDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
         yield* initialDiagnostics.events.pipe(
@@ -1605,7 +1597,19 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         );
         yield* initialDiagnostics.close();
 
-        yield* withKafkaOutage(Effect.sleep("10 seconds"));
+        const outageDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        yield* withKafkaOutage(
+          outageDiagnostics.events.pipe(
+            Stream.filter(
+              (health) =>
+                health.status._tag === "WaitingToRetry" || health.status._tag === "Reacquiring",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.timeout("20 seconds"),
+          ),
+        );
+        yield* outageDiagnostics.close();
         yield* send(kafkaBootstrapServers, [
           {
             topic,
@@ -1642,12 +1646,11 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
         ]);
         expect(recoveredHealth.metrics.adapter.regions[0]?.reconnects).toBeGreaterThanOrEqual(1n);
         yield* recoveredDiagnostics.close();
-        yield* runtime.close;
       }),
     ),
   );
 
-  integrationIt("resumes a restarted replica from its active-group commit", () =>
+  integrationIt("reapplies explicit start for a restarted replica", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const topic = uniqueName("restart");
@@ -1672,59 +1675,63 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
             },
           },
         });
-        const makeContext = () =>
-          Layer.build(
-            kafkaNode.layer(viewServer, {
-              consumerGroupPrefix,
-              regions: {
-                local: {
-                  bootstrapServers: kafkaBootstrapServers,
-                },
+        const kafkaContext = yield* Layer.build(
+          kafkaNode.layer(viewServer, {
+            consumerGroupPrefix,
+            regions: {
+              local: {
+                bootstrapServers: kafkaBootstrapServers,
               },
-            }),
-          );
-        const firstContext = yield* makeContext();
-        const firstRuntime = yield* makeViewServerRuntimeCore(viewServer, {}).pipe(
-          Effect.provideContext(firstContext),
+            },
+          }),
         );
-        const firstHealth = yield* firstRuntime.liveClient.subscribeSourceHealth("orders");
-        yield* firstHealth.events.pipe(
-          Stream.filter((health) => health.status._tag === "Ready"),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.timeout("10 seconds"),
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* Effect.acquireRelease(
+              makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+              (current) => current.close,
+            );
+            const health = yield* Effect.acquireRelease(
+              runtime.liveClient.subscribeSourceHealth("orders"),
+              (current) => current.close().pipe(Effect.orDie),
+            );
+            yield* health.events.pipe(
+              Stream.filter((snapshot) => snapshot.status._tag === "Ready"),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.timeout("10 seconds"),
+            );
+            yield* send(kafkaBootstrapServers, [
+              {
+                topic,
+                key: bytes("first"),
+                value: bytes(
+                  JSON.stringify({
+                    customerId: "first",
+                    price: 1,
+                  }),
+                ),
+              },
+            ]);
+            yield* runtime.client
+              .snapshot("orders", {
+                select: ["id"],
+                limit: 10,
+              })
+              .pipe(
+                Effect.repeat({
+                  schedule: poll,
+                  until: (snapshot) => snapshot.totalRows === 1,
+                }),
+              );
+            yield* health.events.pipe(
+              Stream.filter((snapshot) => snapshot.metrics.adapter.regions[0]?.commits === 1n),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.timeout("10 seconds"),
+            );
+          }),
         );
-        yield* send(kafkaBootstrapServers, [
-          {
-            topic,
-            key: bytes("first"),
-            value: bytes(
-              JSON.stringify({
-                customerId: "first",
-                price: 1,
-              }),
-            ),
-          },
-        ]);
-        yield* firstRuntime.client
-          .snapshot("orders", {
-            select: ["id"],
-            limit: 10,
-          })
-          .pipe(
-            Effect.repeat({
-              schedule: poll,
-              until: (snapshot) => snapshot.totalRows === 1,
-            }),
-          );
-        yield* firstHealth.events.pipe(
-          Stream.filter((health) => health.metrics.adapter.regions[0]?.commits === 1n),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.timeout("10 seconds"),
-        );
-        yield* firstHealth.close();
-        yield* firstRuntime.close;
         expect(
           yield* groupMemberCount(
             kafkaBootstrapServers,
@@ -1737,49 +1744,60 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           ),
         ).toBe(0);
 
-        const secondContext = yield* makeContext();
-        const secondRuntime = yield* makeViewServerRuntimeCore(viewServer, {}).pipe(
-          Effect.provideContext(secondContext),
-        );
-        const secondHealth = yield* secondRuntime.liveClient.subscribeSourceHealth("orders");
-        yield* secondHealth.events.pipe(
-          Stream.filter((health) => health.status._tag === "Ready"),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.timeout("10 seconds"),
-        );
-        yield* send(kafkaBootstrapServers, [
-          {
-            topic,
-            key: bytes("second"),
-            value: bytes(
-              JSON.stringify({
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* Effect.acquireRelease(
+              makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
+              (current) => current.close,
+            );
+            const health = yield* Effect.acquireRelease(
+              runtime.liveClient.subscribeSourceHealth("orders"),
+              (current) => current.close().pipe(Effect.orDie),
+            );
+            yield* health.events.pipe(
+              Stream.filter((snapshot) => snapshot.status._tag === "Ready"),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.timeout("10 seconds"),
+            );
+            yield* send(kafkaBootstrapServers, [
+              {
+                topic,
+                key: bytes("second"),
+                value: bytes(
+                  JSON.stringify({
+                    customerId: "second",
+                    price: 2,
+                  }),
+                ),
+              },
+            ]);
+            const restartedSnapshot = yield* runtime.client
+              .snapshot("orders", {
+                select: ["id", "customerId", "price"],
+                orderBy: [{ field: "id", direction: "asc" }],
+                limit: 10,
+              })
+              .pipe(
+                Effect.repeat({
+                  schedule: poll,
+                  until: (snapshot) => snapshot.totalRows === 2,
+                }),
+              );
+            expect(restartedSnapshot.rows).toStrictEqual([
+              {
+                id: "local:first",
+                customerId: "first",
+                price: 1,
+              },
+              {
+                id: "local:second",
                 customerId: "second",
                 price: 2,
-              }),
-            ),
-          },
-        ]);
-        const restartedSnapshot = yield* secondRuntime.client
-          .snapshot("orders", {
-            select: ["id", "customerId", "price"],
-            limit: 10,
-          })
-          .pipe(
-            Effect.repeat({
-              schedule: poll,
-              until: (snapshot) => snapshot.totalRows === 1,
-            }),
-          );
-        expect(restartedSnapshot.rows).toStrictEqual([
-          {
-            id: "local:second",
-            customerId: "second",
-            price: 2,
-          },
-        ]);
-        yield* secondHealth.close();
-        yield* secondRuntime.close;
+              },
+            ]);
+          }),
+        );
         expect(
           yield* groupMemberCount(
             kafkaBootstrapServers,

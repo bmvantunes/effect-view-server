@@ -6,6 +6,7 @@ const SourceAdapterTypeId: unique symbol = Symbol(
 const SourceDefinitionTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceDefinition",
 );
+declare const SourceDefinitionFactoryRowTypeId: unique symbol;
 const SourceDefinitionTypesTypeId: unique symbol = Symbol(
   "@effect-view-server/source-adapter/SourceDefinitionTypes",
 );
@@ -402,6 +403,7 @@ export type SourceLifecycleFactoryInput<
   Topic extends string = string,
 > = {
   readonly definition: Options;
+  readonly lifetimeScope: Scope.Scope;
   readonly target: SourceTargetForLifecycle<Lifecycle, Route>;
   readonly toolkit: SourceToolkit<Row, AdapterFailure, RejectionLocation, Services, Topic>;
 };
@@ -414,6 +416,7 @@ export type SourceLifecycleMetricsInput<
 > = {
   readonly topic: Topic;
   readonly definition: Options;
+  readonly lifetimeScope: Scope.Scope;
   readonly target: SourceTargetForLifecycle<Lifecycle, Route>;
 };
 
@@ -492,6 +495,10 @@ export type SourceAdapterRuntimeService<
     | undefined;
 };
 
+type SourceDefinitionFactoryResult<Definition, Row> = Definition & {
+  readonly [SourceDefinitionFactoryRowTypeId]?: (_row: Row) => Row;
+};
+
 export interface SourceAdapterHandle<
   Name extends string,
   Version extends string | undefined,
@@ -521,12 +528,15 @@ export interface SourceAdapterHandle<
     options: ExactDefinitionOptions<Options, SourceLifecycleOptions<Materialized, Row>> &
       RejectAnyOrUnknown<SourceLifecycleOptions<Materialized, Row>>,
     retryPolicy?: SourceRetryPolicy<AdapterFailure, RetryServices>,
-  ) => SourceDefinition<
-    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
-    "materialized",
-    Options,
-    readonly [],
-    RetryServices,
+  ) => SourceDefinitionFactoryResult<
+    SourceDefinition<
+      SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+      "materialized",
+      Options,
+      readonly [],
+      RetryServices,
+      Row
+    >,
     Row
   >;
   readonly leasedSource: <
@@ -539,12 +549,15 @@ export interface SourceAdapterHandle<
     options: ExactDefinitionOptions<Options, SourceLifecycleOptions<Leased, Row>> &
       RejectAnyOrUnknown<SourceLifecycleOptions<Leased, Row>>,
     retryPolicy?: SourceRetryPolicy<AdapterFailure, RetryServices>,
-  ) => SourceDefinition<
-    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
-    "leased",
-    Options,
-    RouteFields,
-    RetryServices,
+  ) => SourceDefinitionFactoryResult<
+    SourceDefinition<
+      SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+      "leased",
+      Options,
+      RouteFields,
+      RetryServices,
+      Row
+    >,
     Row
   >;
   readonly [SourceAdapterTypeId]: () => SourceAdapterHandle<
@@ -588,20 +601,30 @@ export interface SourceDefinition<
   RouteFields extends ReadonlyArray<string>,
   RetryServices = never,
   Row extends object = object,
+  AdapterFailure = SourceAdapterFailure<Adapter>,
+  AdapterMetrics = SourceLifecycleMetrics<SourceAdapterLifecycleDeclaration<Adapter, Lifecycle>>,
+  RejectionLocation = SourceLifecycleLocation<
+    SourceAdapterLifecycleDeclaration<Adapter, Lifecycle>
+  >,
+  LaneId extends string = string,
 > {
   readonly adapter: Adapter;
   readonly identity: Adapter extends { readonly identity: infer Identity } ? Identity : never;
   readonly lifecycle: Lifecycle;
   readonly options: Options;
   readonly routeBy: RouteFields;
-  readonly retry: SourceRetrySelection<SourceAdapterFailure<Adapter>, RetryServices>;
+  readonly retry: SourceRetrySelection<AdapterFailure, RetryServices>;
   readonly [SourceDefinitionTypeId]: () => SourceDefinition<
     Adapter,
     Lifecycle,
     Options,
     RouteFields,
     RetryServices,
-    Row
+    Row,
+    AdapterFailure,
+    AdapterMetrics,
+    RejectionLocation,
+    LaneId
   >;
   readonly [SourceDefinitionTypesTypeId]: {
     readonly adapter: Adapter;
@@ -610,6 +633,12 @@ export interface SourceDefinition<
     readonly retryServices?: RetryServices;
     readonly routeFields: RouteFields;
     readonly row?: Row;
+    readonly diagnostics?: {
+      readonly adapterFailure: AdapterFailure;
+      readonly adapterMetrics: AdapterMetrics;
+      readonly rejectionLocation: RejectionLocation;
+      readonly laneId: LaneId;
+    };
   };
 }
 
@@ -632,6 +661,63 @@ export type SourceAdapterFailure<Adapter> = Adapter extends {
 }
   ? AdapterFailure
   : never;
+
+type SourceAdapterLifecycleDeclaration<
+  Adapter,
+  Lifecycle extends SourceLifecycle,
+> = Lifecycle extends "materialized"
+  ? Adapter extends { readonly materialized: infer Declaration }
+    ? Exclude<Declaration, undefined>
+    : never
+  : Adapter extends { readonly leased: infer Declaration }
+    ? Exclude<Declaration, undefined>
+    : never;
+
+type SourceDefinitionDiagnostics<Definition> = Definition extends {
+  readonly [SourceDefinitionTypesTypeId]: {
+    readonly diagnostics?: infer Diagnostics;
+  };
+}
+  ? Exclude<Diagnostics, undefined>
+  : never;
+
+export type SourceDefinitionAdapterFailure<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly adapterFailure: infer AdapterFailure;
+  }
+    ? AdapterFailure
+    : SourceAdapterFailure<SourceDefinitionAdapter<Definition>>;
+
+export type SourceDefinitionAdapterMetrics<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly adapterMetrics: infer AdapterMetrics;
+  }
+    ? AdapterMetrics
+    : SourceLifecycleMetrics<
+        SourceAdapterLifecycleDeclaration<
+          SourceDefinitionAdapter<Definition>,
+          Extract<SourceDefinitionLifecycle<Definition>, SourceLifecycle>
+        >
+      >;
+
+export type SourceDefinitionRejectionLocation<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly rejectionLocation: infer RejectionLocation;
+  }
+    ? RejectionLocation
+    : SourceLifecycleLocation<
+        SourceAdapterLifecycleDeclaration<
+          SourceDefinitionAdapter<Definition>,
+          Extract<SourceDefinitionLifecycle<Definition>, SourceLifecycle>
+        >
+      >;
+
+export type SourceDefinitionLaneId<Definition> =
+  SourceDefinitionDiagnostics<Definition> extends {
+    readonly laneId: infer LaneId extends string;
+  }
+    ? LaneId
+    : string;
 
 export type SourceDefinitionAdapter<Definition> = Definition extends {
   readonly [SourceDefinitionTypesTypeId]: {
@@ -914,12 +1000,15 @@ const makeDefinition = <
   options: Options,
   routeBy: RouteFields,
   retryPolicy: SourceRetryPolicy<AdapterFailure, RetryServices> | undefined,
-): SourceDefinition<
-  SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
-  Lifecycle,
-  Options,
-  RouteFields,
-  RetryServices,
+): SourceDefinitionFactoryResult<
+  SourceDefinition<
+    SourceAdapterHandle<Name, Version, AdapterFailure, Materialized, Leased>,
+    Lifecycle,
+    Options,
+    RouteFields,
+    RetryServices,
+    Row
+  >,
   Row
 > => {
   const capturedOptions = snapshotValue(options);

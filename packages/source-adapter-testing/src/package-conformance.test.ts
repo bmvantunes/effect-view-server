@@ -188,6 +188,14 @@ const materializedOnlyOptions = {
     },
     lifecycles: [options.contract.lifecycles[0]],
   },
+  platforms: [
+    {
+      ...options.platforms[0],
+      viewServer: {
+        topics: {},
+      },
+    },
+  ],
 } satisfies SourceAdapterPackageInspectionOptions;
 
 it.effect(options.name, () =>
@@ -341,6 +349,22 @@ describe("Source Adapter package conformance validation", () => {
               lifecycles: [
                 {
                   ...options.contract.lifecycles[0],
+                  definitionExport: ["throwingNested", "source"],
+                },
+                options.contract.lifecycles[1],
+              ],
+            },
+          },
+          message: "Contract materialized definition export could not be inspected.",
+        },
+        {
+          options: {
+            ...options,
+            contract: {
+              ...options.contract,
+              lifecycles: [
+                {
+                  ...options.contract.lifecycles[0],
                   definitionExport: "throwingSource",
                 },
                 options.contract.lifecycles[1],
@@ -408,6 +432,20 @@ describe("Source Adapter package conformance validation", () => {
             ],
           },
           message: "Platform export ./import-failure-node could not be imported.",
+        },
+        {
+          options: {
+            ...options,
+            platforms: [
+              {
+                ...options.platforms[0],
+                viewServer: () => {
+                  throw new Error("View Server probe failed");
+                },
+              },
+            ],
+          },
+          message: "Platform export ./node View Server probe failed.",
         },
         {
           options: {

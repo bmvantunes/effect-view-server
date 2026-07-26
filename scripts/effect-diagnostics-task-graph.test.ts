@@ -238,7 +238,10 @@ describe("strict Effect diagnostics task graph", () => {
         ],
         "check:effect:config": [],
         "check:effect:effect-utils": [],
-        "check:effect:kafka": ["build:effect-declarations:kafka"],
+        "check:effect:kafka": [
+          "build:effect-declarations:kafka",
+          "build:effect-declarations:source-adapter-conformance-host",
+        ],
         "check:effect:protocol": ["build:effect-declarations:protocol"],
         "check:effect:client": ["build:effect-declarations:client"],
         "check:effect:column-live-view-engine": [

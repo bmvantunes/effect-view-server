@@ -3,7 +3,7 @@ import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 import { FieldDescriptorProto_Type, FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import { Duration, Effect, Option, Schema } from "effect";
 import {
   KafkaSourceConfigurationError,
   decodeKafkaCodec,
@@ -35,31 +35,29 @@ type ContractMessage = Message<"kafka.contract.Value"> & {
 const base64FromBytes = (bytes: Uint8Array): string =>
   globalThis.btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
 
-const protoFile = fileDesc(
-  base64FromBytes(
-    toBinary(
-      FileDescriptorProtoSchema,
-      create(FileDescriptorProtoSchema, {
-        name: "kafka/contract.proto",
-        package: "kafka.contract",
-        syntax: "proto3",
-        messageType: [
+const contractFileBytes = toBinary(
+  FileDescriptorProtoSchema,
+  create(FileDescriptorProtoSchema, {
+    name: "kafka/contract.proto",
+    package: "kafka.contract",
+    syntax: "proto3",
+    messageType: [
+      {
+        name: "Value",
+        field: [
           {
-            name: "Value",
-            field: [
-              {
-                name: "label",
-                number: 1,
-                type: FieldDescriptorProto_Type.STRING,
-              },
-            ],
+            name: "label",
+            number: 1,
+            type: FieldDescriptorProto_Type.STRING,
           },
         ],
-      }),
-    ),
-  ),
+      },
+    ],
+  }),
 );
-const contractMessage = messageDesc<ContractMessage>(protoFile, 0);
+const makeContractMessage = () =>
+  messageDesc<ContractMessage>(fileDesc(base64FromBytes(contractFileBytes)), 0);
+const contractMessage = makeContractMessage();
 
 const validSourceInput = () => ({
   topic: "orders-source",
@@ -125,6 +123,18 @@ describe("Kafka Source Adapter contract", () => {
           metadata,
         },
       );
+      const synchronousCustomFailure = yield* decodeKafkaCodec(
+        kafka.codec({
+          name: "throwing",
+          decode: () => {
+            throw new Error("private decoder failure");
+          },
+        }),
+        {
+          bytes,
+          metadata,
+        },
+      ).pipe(Effect.flip);
 
       expect(bytesResult).toBe(bytes);
       expect(stringResult).toBe("hello");
@@ -133,8 +143,88 @@ describe("Kafka Source Adapter contract", () => {
       expect(jsonFactoryCalls).toBe(1);
       expect(protobufResult.label).toBe("decoded");
       expect(customResult).toStrictEqual({ length: 3 });
+      expect(synchronousCustomFailure).toStrictEqual({
+        _tag: "KafkaCodecError",
+        message: "Kafka custom codec threw synchronously.",
+      });
     }),
   );
+
+  it.effect("snapshots custom decoders before caller-owned definitions can mutate", () =>
+    Effect.gen(function* () {
+      const definition = {
+        name: "snapshot",
+        decode: () => Effect.succeed("before"),
+      };
+      const codec = kafka.codec(definition);
+      definition.decode = () => Effect.succeed("after");
+
+      const decoded = yield* decodeKafkaCodec(codec, {
+        bytes: encoder.encode("ignored"),
+        metadata,
+      });
+
+      expect(decoded).toBe("before");
+    }),
+  );
+
+  it.effect("captures an immutable protobuf descriptor before decoding", () =>
+    Effect.gen(function* () {
+      const callerDescriptor = makeContractMessage();
+      callerDescriptor.file.dependencies.push(callerDescriptor.file);
+      const codec = kafka.protobuf(callerDescriptor);
+      const payload = toBinary(contractMessage, create(contractMessage, { label: "captured" }));
+      callerDescriptor.fields.splice(0);
+      const decoded = yield* decodeKafkaCodec(codec, {
+        bytes: payload,
+        metadata,
+      });
+
+      expect({
+        callerFields: callerDescriptor.fields,
+        capturedIsIndependent: codec.descriptor === callerDescriptor,
+        descriptorFrozen: Object.isFrozen(codec.descriptor),
+        fieldsFrozen: Object.isFrozen(codec.descriptor.fields),
+        mutationAccepted: Reflect.deleteProperty(codec.descriptor.fields, "0"),
+        decoded,
+      }).toStrictEqual({
+        callerFields: [],
+        capturedIsIndependent: false,
+        descriptorFrozen: true,
+        fieldsFrozen: true,
+        mutationAccepted: false,
+        decoded: {
+          $typeName: "kafka.contract.Value",
+          label: "captured",
+        },
+      });
+    }),
+  );
+
+  it("rejects malformed and hostile protobuf descriptors during construction", () => {
+    expect(() => Reflect.apply(kafka.protobuf, undefined, [{}])).toThrowError(
+      "Kafka protobuf codec requires a valid message descriptor.",
+    );
+    const hostileDescriptor = new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error("hostile descriptor");
+        },
+      },
+    );
+    expect(() => Reflect.apply(kafka.protobuf, undefined, [hostileDescriptor])).toThrowError(
+      "Kafka protobuf codec requires a valid message descriptor.",
+    );
+    const missingDescriptor = Object.create(contractMessage);
+    Object.defineProperty(missingDescriptor, "typeName", {
+      enumerable: true,
+      value: "kafka.contract.Missing",
+    });
+    expect(() => Reflect.apply(kafka.protobuf, undefined, [missingDescriptor])).toThrowError(
+      "Kafka protobuf codec requires a valid message descriptor.",
+    );
+  });
 
   it("accepts nominal protobuf codecs in Source Definitions", () => {
     const source = kafka.source({
@@ -166,6 +256,19 @@ describe("Kafka Source Adapter contract", () => {
           metadata,
         },
       ).pipe(Effect.flip);
+      const invalidUtf8 = yield* decodeKafkaCodec(
+        kafka.json(() =>
+          Schema.toCodecJson(
+            Schema.Struct({
+              price: Schema.String,
+            }),
+          ),
+        ),
+        {
+          bytes: Uint8Array.from([...encoder.encode('{"price":"'), 0xff, ...encoder.encode('"}')]),
+          metadata,
+        },
+      ).pipe(Effect.flip);
       const invalidShape = yield* decodeKafkaCodec(
         kafka.json(() =>
           Schema.toCodecJson(
@@ -185,6 +288,10 @@ describe("Kafka Source Adapter contract", () => {
       }).pipe(Effect.flip);
 
       expect(invalidJson).toStrictEqual({
+        _tag: "KafkaCodecError",
+        message: "Kafka JSON payload is not valid JSON.",
+      });
+      expect(invalidUtf8).toStrictEqual({
         _tag: "KafkaCodecError",
         message: "Kafka JSON payload is not valid JSON.",
       });
@@ -265,6 +372,32 @@ describe("Kafka Source Adapter contract", () => {
         throw new Error("hostile");
       },
     });
+    const hostileCustomDefinition = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("hostile custom codec");
+        },
+      },
+    );
+    let accessorReads = 0;
+    const accessorDefinition = Object.create(null);
+    Object.defineProperties(accessorDefinition, {
+      name: {
+        enumerable: true,
+        get() {
+          accessorReads += 1;
+          return "accessor";
+        },
+      },
+      decode: {
+        enumerable: true,
+        get() {
+          accessorReads += 1;
+          return () => Effect.succeed("decoded");
+        },
+      },
+    });
 
     expect(isKafkaCodec(codec)).toBe(true);
     expect(isKafkaCodec(custom)).toBe(true);
@@ -272,6 +405,15 @@ describe("Kafka Source Adapter contract", () => {
     expect(isKafkaCodec({ format: "string" })).toBe(false);
     expect(isKafkaCodec(hostileBrand)).toBe(false);
     expect(isKafkaCodec(throwingBrand)).toBe(false);
+    expect(() => Reflect.apply(kafka.codec, undefined, [null])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(() => Reflect.apply(kafka.codec, undefined, [42])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(() => Reflect.apply(kafka.codec, undefined, [hostileCustomDefinition])).toThrow(
+      KafkaSourceConfigurationError,
+    );
     expect(() =>
       Reflect.apply(kafka.codec, undefined, [
         {
@@ -280,6 +422,10 @@ describe("Kafka Source Adapter contract", () => {
         },
       ]),
     ).toThrow(KafkaSourceConfigurationError);
+    expect(() => Reflect.apply(kafka.codec, undefined, [accessorDefinition])).toThrow(
+      KafkaSourceConfigurationError,
+    );
+    expect(accessorReads).toBe(0);
     expect(() => Reflect.apply(kafka.json, undefined, [() => ({})])).toThrowError(
       "Kafka JSON codec requires a factory returning a JSON-compatible Schema.",
     );
@@ -408,6 +554,13 @@ describe("Kafka Source Adapter contract", () => {
     expect(() => kafkaConsumerGroupId("replica", "\udc00")).toThrow(KafkaSourceConfigurationError);
     expect(() => kafkaConsumerGroupId("", "orders")).toThrow(KafkaSourceConfigurationError);
     expect(() => kafkaConsumerGroupId("replica", "")).toThrow(KafkaSourceConfigurationError);
+    expect(kafkaConsumerGroupId("a".repeat(32_765), "b")).toHaveLength(32_767);
+    expect(() => kafkaConsumerGroupId("a".repeat(32_766), "b")).toThrow(
+      "Kafka derived consumer group ID exceeds the 32767-byte Kafka protocol limit.",
+    );
+    expect(() => kafkaConsumerGroupId("😀".repeat(2_731), "b")).toThrow(
+      KafkaSourceConfigurationError,
+    );
   });
 
   it("captures exact start policies and freezes source definitions", () => {
@@ -440,6 +593,57 @@ describe("Kafka Source Adapter contract", () => {
         fallback: "fail",
       },
     });
+    const durationTuple = kafka.source({
+      ...validSourceInput(),
+      startFrom: {
+        mode: "durationAgo",
+        duration: [1, 2],
+        fallback: "latest",
+      },
+    });
+    const durationObject = kafka.source({
+      ...validSourceInput(),
+      startFrom: {
+        mode: "durationAgo",
+        duration: {
+          weeks: 1,
+          days: 1,
+          hours: 1,
+          minutes: 1,
+          seconds: 1,
+          milliseconds: 1,
+          microseconds: 1,
+          nanoseconds: 1,
+        },
+        fallback: "earliest",
+      },
+    });
+    const partialDurationObject = kafka.source({
+      ...validSourceInput(),
+      startFrom: {
+        mode: "durationAgo",
+        duration: {
+          minutes: 1,
+        },
+        fallback: "earliest",
+      },
+    });
+    const nominalDuration = kafka.source({
+      ...validSourceInput(),
+      startFrom: {
+        mode: "durationAgo",
+        duration: Duration.seconds(1),
+        fallback: "latest",
+      },
+    });
+    const bigintDuration = kafka.source({
+      ...validSourceInput(),
+      startFrom: {
+        mode: "durationAgo",
+        duration: 1_000_000_000n,
+        fallback: "latest",
+      },
+    });
 
     expect(earliest.options.startFrom).toBe("earliest");
     expect(latest.options.startFrom).toBe("latest");
@@ -458,17 +662,246 @@ describe("Kafka Source Adapter contract", () => {
       durationNanos: 300_000_000_000n,
       fallback: "fail",
     });
+    expect([
+      durationTuple.options.startFrom,
+      durationObject.options.startFrom,
+      partialDurationObject.options.startFrom,
+      nominalDuration.options.startFrom,
+      bigintDuration.options.startFrom,
+    ]).toStrictEqual([
+      {
+        mode: "durationAgo",
+        durationNanos: 1_000_000_002n,
+        fallback: "latest",
+      },
+      {
+        mode: "durationAgo",
+        durationNanos: 694_861_001_001_001n,
+        fallback: "earliest",
+      },
+      {
+        mode: "durationAgo",
+        durationNanos: 60_000_000_000n,
+        fallback: "earliest",
+      },
+      {
+        mode: "durationAgo",
+        durationNanos: 1_000_000_000n,
+        fallback: "latest",
+      },
+      {
+        mode: "durationAgo",
+        durationNanos: 1_000_000_000n,
+        fallback: "latest",
+      },
+    ]);
     expect(Object.isFrozen(durationAgo)).toBe(true);
     expect(Object.isFrozen(durationAgo.options.startFrom)).toBe(true);
   });
 
+  it("captures hostile source, start, Region, and row-ID descriptors exactly once", () => {
+    let lateReads = 0;
+    const startFrom = new Proxy(
+      {
+        mode: "timestamp",
+        atNanos: 1_234_567n,
+        fallback: "latest",
+      } as const,
+      {
+        get: () => {
+          lateReads += 1;
+          return "invalid";
+        },
+      },
+    );
+    const regions = new Proxy(["eu", "us"] as const, {
+      get: () => {
+        lateReads += 1;
+        return "invalid";
+      },
+    });
+    const sourceInput = new Proxy(
+      {
+        ...validSourceInput(),
+        regions,
+        startFrom,
+      },
+      {
+        get: () => {
+          lateReads += 1;
+          return "invalid";
+        },
+      },
+    );
+    const source = kafka.source(sourceInput);
+    const rowId = kafkaRowId(
+      new Proxy(
+        {
+          region: "eu",
+          localRowKey: "order:1",
+        },
+        {
+          get: () => {
+            lateReads += 1;
+            return "invalid";
+          },
+        },
+      ),
+    );
+
+    expect({
+      lateReads,
+      regions: source.options.regions,
+      rowId,
+      startFrom: source.options.startFrom,
+    }).toStrictEqual({
+      lateReads: 0,
+      regions: ["eu", "us"],
+      rowId: "eu:order:1",
+      startFrom: {
+        mode: "timestamp",
+        atNanos: 1_234_567n,
+        fallback: "latest",
+      },
+    });
+  });
+
+  it("normalizes hostile source and start descriptors without invoking accessors", () => {
+    let accessorReads = 0;
+    const accessorInput = {
+      ...validSourceInput(),
+    };
+    Object.defineProperty(accessorInput, "topic", {
+      enumerable: true,
+      get: () => {
+        accessorReads += 1;
+        throw new Error("source getter escaped");
+      },
+    });
+    const hostileSource = new Proxy(validSourceInput(), {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("source descriptor escaped");
+      },
+    });
+    const hostileStart = new Proxy(
+      {
+        mode: "timestamp",
+        atNanos: 1n,
+        fallback: "latest",
+      } as const,
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("start descriptor escaped");
+        },
+      },
+    );
+    const hostileRowId = new Proxy(
+      {
+        region: "eu",
+        localRowKey: "order:1",
+      },
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("row ID descriptor escaped");
+        },
+      },
+    );
+
+    expect(() => kafka.source(accessorInput)).toThrowError(
+      "Kafka source requires exactly topic, regions, key, value, localRowKey, map, and startFrom.",
+    );
+    expect(accessorReads).toBe(0);
+    expect(() => kafka.source(hostileSource)).toThrowError(
+      "Kafka source requires exactly topic, regions, key, value, localRowKey, map, and startFrom.",
+    );
+    expect(() =>
+      kafka.source({
+        ...validSourceInput(),
+        startFrom: hostileStart,
+      }),
+    ).toThrowError(
+      "Kafka startFrom must be earliest, latest, committed, timestamp, or durationAgo.",
+    );
+    expect(() => kafkaRowId(hostileRowId)).toThrowError(
+      "Kafka rowId requires exactly region and localRowKey.",
+    );
+  });
+
   it("rejects malformed source declarations and start policies", () => {
+    const durationInput = (duration: unknown) => ({
+      ...validSourceInput(),
+      startFrom: {
+        mode: "durationAgo",
+        duration,
+        fallback: "latest",
+      },
+    });
+    const sparseDurationSeconds: Array<number> = [];
+    sparseDurationSeconds.length = 2;
+    sparseDurationSeconds[1] = 1;
+    const sparseDurationNanos = [1];
+    sparseDurationNanos.length = 2;
+    const accessorDurationSeconds = [1, 2];
+    Object.defineProperty(accessorDurationSeconds, "0", {
+      enumerable: true,
+      get: () => 1,
+    });
+    const accessorDurationNanos = [1, 2];
+    Object.defineProperty(accessorDurationNanos, "1", {
+      enumerable: true,
+      get: () => 2,
+    });
+    const hiddenDurationSeconds = [1, 2];
+    Object.defineProperty(hiddenDurationSeconds, "0", {
+      enumerable: false,
+      value: 1,
+    });
+    const hiddenDurationNanos = [1, 2];
+    Object.defineProperty(hiddenDurationNanos, "1", {
+      enumerable: false,
+      value: 2,
+    });
+    const hostileDurationTuple = new Proxy([1, 2], {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("duration descriptor escaped");
+      },
+    });
+    const accessorDurationObject = Object.create(null);
+    Object.defineProperty(accessorDurationObject, "minutes", {
+      enumerable: true,
+      get: () => 1,
+    });
+    const symbolicDurationObject = {
+      [Symbol("minutes")]: 1,
+    };
+    const sparseRegions: Array<string> = [];
+    sparseRegions.length = 1;
+    const accessorRegions = ["eu"];
+    Object.defineProperty(accessorRegions, "0", {
+      enumerable: true,
+      get: () => "eu",
+    });
+    const hiddenRegions = ["eu"];
+    Object.defineProperty(hiddenRegions, "0", {
+      enumerable: false,
+      value: "eu",
+    });
+    const hostileRegions = new Proxy(["eu"], {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("Region descriptor escaped");
+      },
+    });
     const invalidInputs: ReadonlyArray<object> = [
       {},
       { ...validSourceInput(), topic: "" },
+      { ...validSourceInput(), regions: {} },
       { ...validSourceInput(), regions: [] },
       { ...validSourceInput(), regions: ["eu", "eu"] },
       { ...validSourceInput(), regions: ["bad:region"] },
+      { ...validSourceInput(), regions: sparseRegions },
+      { ...validSourceInput(), regions: accessorRegions },
+      { ...validSourceInput(), regions: hiddenRegions },
+      { ...validSourceInput(), regions: hostileRegions },
       { ...validSourceInput(), key: {} },
       { ...validSourceInput(), value: {} },
       { ...validSourceInput(), localRowKey: true },
@@ -488,6 +921,14 @@ describe("Kafka Source Adapter contract", () => {
         startFrom: {
           mode: "committed",
           consumerGroupId: "invalid group",
+          fallback: "earliest",
+        },
+      },
+      {
+        ...validSourceInput(),
+        startFrom: {
+          mode: "committed",
+          consumerGroupId: "a".repeat(32_768),
           fallback: "earliest",
         },
       },
@@ -524,6 +965,22 @@ describe("Kafka Source Adapter contract", () => {
           extra: true,
         },
       },
+      durationInput([]),
+      durationInput(sparseDurationSeconds),
+      durationInput(sparseDurationNanos),
+      durationInput(accessorDurationSeconds),
+      durationInput(accessorDurationNanos),
+      durationInput(hiddenDurationSeconds),
+      durationInput(hiddenDurationNanos),
+      durationInput(["seconds", 1]),
+      durationInput([1, "nanos"]),
+      durationInput(hostileDurationTuple),
+      durationInput(accessorDurationObject),
+      durationInput(symbolicDurationObject),
+      durationInput({ unexpected: 1 }),
+      durationInput({ minutes: "one" }),
+      durationInput("Infinity"),
+      durationInput("-Infinity"),
       {
         ...validSourceInput(),
         startFrom: {
@@ -537,5 +994,19 @@ describe("Kafka Source Adapter contract", () => {
         KafkaSourceConfigurationError,
       );
     }
+    expect(() => Reflect.apply(kafka.source, undefined, [validSourceInput(), 123])).toThrowError(
+      "Kafka source retry override must be an Effect Schedule.",
+    );
+    const hostileRetry = new Proxy(
+      {},
+      {
+        has: () => {
+          throw new Error("hostile retry");
+        },
+      },
+    );
+    expect(() =>
+      Reflect.apply(kafka.source, undefined, [validSourceInput(), hostileRetry]),
+    ).toThrowError("Kafka source retry override must be an Effect Schedule.");
   });
 });

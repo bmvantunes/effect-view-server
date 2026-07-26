@@ -2,7 +2,18 @@ import { Consumer } from "@platformatic/kafka";
 import type { ConsumerGroupJoinPayload, Message, Offsets } from "@platformatic/kafka";
 import { Buffer } from "node:buffer";
 import type { ConnectionOptions as NodeTlsConnectionOptions } from "node:tls";
-import { Config, Effect, Exit, Layer, Option, Schema, SchemaIssue, Stream } from "effect";
+import {
+  Config,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Result,
+  Schema,
+  SchemaIssue,
+  Scope,
+  Stream,
+} from "effect";
 import type {
   SourceApplicationExit,
   SourceDefinitionAdapter,
@@ -247,6 +258,7 @@ type KafkaMutableRegionMetrics = {
 };
 
 type KafkaBindingState = {
+  readonly committedPartitions: Set<number>;
   initial: KafkaInitialPosition | undefined;
   readonly metrics: KafkaMutableRegionMetrics;
   attempts: bigint;
@@ -266,127 +278,194 @@ const allowedRegionOptionKeys = [
 
 const allowedRegionOptions = new Set<string>(allowedRegionOptionKeys);
 
-const ownDataKeys = (value: object): ReadonlyArray<string> => {
-  const keys = Reflect.ownKeys(value);
-  if (
-    keys.some((key) => typeof key !== "string") ||
-    keys.some((key) => {
+const captureDataFields = (value: object, message: string): ReadonlyMap<string, unknown> => {
+  const captured = Result.try(() => {
+    const fields = new Map<string, unknown>();
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") {
+        throw new Error("symbol field");
+      }
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor);
-    })
-  ) {
-    throw new KafkaSourceConfigurationError(
+      if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
+        throw new Error("non-data field");
+      }
+      fields.set(key, descriptor.value);
+    }
+    return fields;
+  });
+  if (Result.isFailure(captured)) {
+    throw new KafkaSourceConfigurationError(message);
+  }
+  return captured.success;
+};
+
+const ownDataKeys = (value: object): ReadonlyArray<string> =>
+  Array.from(
+    captureDataFields(
+      value,
       "Kafka Node options must contain enumerable string data fields.",
+    ).keys(),
+  );
+
+const captureDenseDataArray = (value: unknown, message: string): ReadonlyArray<unknown> => {
+  const captured = Result.try(() => {
+    if (!Array.isArray(value)) {
+      throw new Error("not an array");
+    }
+    const keys = Reflect.ownKeys(value);
+    const length = Option.getOrThrow(
+      Option.liftPredicate(
+        Reflect.get(
+          Option.getOrThrow(
+            Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(value, "length")),
+          ),
+          "value",
+        ),
+        (candidate): candidate is number => typeof candidate === "number",
+      ),
     );
+    if (keys.length !== length + 1) {
+      throw new Error("invalid length");
+    }
+    const entries: Array<unknown> = [];
+    for (let index = 0; index < length; index += 1) {
+      const key = String(index);
+      const descriptor = Option.getOrThrow(
+        Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(value, key)),
+      );
+      if (descriptor.enumerable !== true || !("value" in descriptor)) {
+        throw new Error("sparse or accessor entry");
+      }
+      entries.push(descriptor.value);
+    }
+    return Object.freeze(entries);
+  });
+  if (Result.isFailure(captured)) {
+    throw new KafkaSourceConfigurationError(message);
   }
-  return Object.keys(value);
+  return captured.success;
 };
 
-const exactKeys = (value: object, expected: ReadonlyArray<string>): boolean => {
-  const keys = ownDataKeys(value);
-  return keys.length === expected.length && keys.every((key) => expected.includes(key));
-};
-
-const bootstrapServers = (
-  value: KafkaNodeRegionOptions["bootstrapServers"],
-): readonly [string, ...ReadonlyArray<string>] => {
-  const entries = typeof value === "string" ? value.split(",") : value;
-  if (!Array.isArray(entries)) {
-    throw new KafkaSourceConfigurationError(
-      "Kafka Region bootstrapServers must contain only non-empty brokers.",
-    );
-  }
+const bootstrapServers = (value: unknown): readonly [string, ...ReadonlyArray<string>] => {
+  const message = "Kafka Region bootstrapServers must contain only non-empty brokers.";
+  const entries = captureDenseDataArray(
+    typeof value === "string" ? value.split(",") : value,
+    message,
+  );
   const [first, ...rest] = entries;
-  if (
-    typeof first !== "string" ||
-    first.trim().length === 0 ||
-    !rest.every((entry) => typeof entry === "string" && entry.trim().length > 0)
-  ) {
-    throw new KafkaSourceConfigurationError(
-      "Kafka Region bootstrapServers must contain only non-empty brokers.",
-    );
+  if (typeof first !== "string" || first.trim().length === 0) {
+    throw new KafkaSourceConfigurationError(message);
   }
-  return Object.freeze([first.trim(), ...rest.map((entry) => entry.trim())]);
+  const snapshot: [string, ...Array<string>] = [first.trim()];
+  for (const entry of rest) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new KafkaSourceConfigurationError(message);
+    }
+    snapshot.push(entry.trim());
+  }
+  return Object.freeze(snapshot);
 };
 
 const copyBytes = (value: Uint8Array): Uint8Array => Uint8Array.from(value);
 
-const copyTlsValue = (
-  value: string | Uint8Array | ReadonlyArray<string | Uint8Array>,
+const snapshotTlsValue = (
+  value: unknown,
 ): string | Uint8Array | ReadonlyArray<string | Uint8Array> => {
-  if (typeof value === "string") {
-    return value;
+  const message = "Kafka Region tls options are invalid.";
+  const captured = Result.try(() => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value instanceof Uint8Array) {
+      return copyBytes(value);
+    }
+    const entries = captureDenseDataArray(value, message);
+    const snapshot: Array<string | Uint8Array> = [];
+    for (const entry of entries) {
+      if (typeof entry === "string") {
+        snapshot.push(entry);
+      } else if (entry instanceof Uint8Array) {
+        snapshot.push(copyBytes(entry));
+      } else {
+        throw new Error("invalid TLS entry");
+      }
+    }
+    return Object.freeze(snapshot);
+  });
+  if (Result.isFailure(captured)) {
+    throw new KafkaSourceConfigurationError(message);
   }
-  if (value instanceof Uint8Array) {
-    return copyBytes(value);
-  }
-  return Object.freeze(
-    value.map((entry) => (typeof entry === "string" ? entry : copyBytes(entry))),
-  );
+  return captured.success;
 };
 
-const snapshotSasl = (sasl: KafkaNodeSaslOptions): KafkaNodeSaslOptions => {
+const copyTlsValue = (
+  value: string | Uint8Array | ReadonlyArray<string | Uint8Array>,
+): string | Uint8Array | ReadonlyArray<string | Uint8Array> => snapshotTlsValue(value);
+
+const snapshotSasl = (sasl: unknown): KafkaNodeSaslOptions => {
   if (typeof sasl !== "object" || sasl === null || Array.isArray(sasl)) {
     throw new KafkaSourceConfigurationError("Kafka Region sasl options are invalid.");
   }
-  const keys = ownDataKeys(sasl);
-  if (sasl.mechanism === "OAUTHBEARER") {
-    if (keys.length !== 2 || !keys.includes("token") || typeof sasl.token !== "string") {
+  const fields = captureDataFields(sasl, "Kafka Region sasl options are invalid.");
+  const mechanism = fields.get("mechanism");
+  const token = fields.get("token");
+  if (mechanism === "OAUTHBEARER") {
+    if (fields.size !== 2 || !fields.has("token") || typeof token !== "string") {
       throw new KafkaSourceConfigurationError("Kafka Region sasl options are invalid.");
     }
     return Object.freeze({
-      mechanism: sasl.mechanism,
-      token: sasl.token,
+      mechanism,
+      token,
     });
   }
+  const username = fields.get("username");
+  const password = fields.get("password");
   if (
-    !["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"].includes(sasl.mechanism) ||
-    keys.length !== 3 ||
-    !keys.includes("username") ||
-    !keys.includes("password") ||
-    typeof sasl.username !== "string" ||
-    typeof sasl.password !== "string"
+    (mechanism !== "PLAIN" && mechanism !== "SCRAM-SHA-256" && mechanism !== "SCRAM-SHA-512") ||
+    fields.size !== 3 ||
+    !fields.has("username") ||
+    !fields.has("password") ||
+    typeof username !== "string" ||
+    typeof password !== "string"
   ) {
     throw new KafkaSourceConfigurationError("Kafka Region sasl options are invalid.");
   }
   return Object.freeze({
-    mechanism: sasl.mechanism,
-    username: sasl.username,
-    password: sasl.password,
+    mechanism,
+    username,
+    password,
   });
 };
 
-const snapshotTls = (tls: KafkaNodeTlsOptions): KafkaNodeTlsOptions => {
+const snapshotTls = (tls: unknown): KafkaNodeTlsOptions => {
   const allowed = ["ca", "cert", "key", "rejectUnauthorized", "serverName"];
+  if (typeof tls !== "object" || tls === null || Array.isArray(tls)) {
+    throw new KafkaSourceConfigurationError("Kafka Region tls options are invalid.");
+  }
+  const fields = captureDataFields(tls, "Kafka Region tls options are invalid.");
+  const ca = fields.get("ca");
+  const cert = fields.get("cert");
+  const key = fields.get("key");
+  const rejectUnauthorized = fields.get("rejectUnauthorized");
+  const serverName = fields.get("serverName");
   if (
-    typeof tls !== "object" ||
-    tls === null ||
-    Array.isArray(tls) ||
-    ownDataKeys(tls).some((key) => !allowed.includes(key)) ||
-    (tls.ca !== undefined && !isTlsValue(tls.ca)) ||
-    (tls.cert !== undefined && !isTlsValue(tls.cert)) ||
-    (tls.key !== undefined && !isTlsValue(tls.key)) ||
-    (tls.rejectUnauthorized !== undefined && typeof tls.rejectUnauthorized !== "boolean") ||
-    (tls.serverName !== undefined && typeof tls.serverName !== "string")
+    Array.from(fields.keys()).some((name) => !allowed.includes(name)) ||
+    (rejectUnauthorized !== undefined && typeof rejectUnauthorized !== "boolean") ||
+    (serverName !== undefined && typeof serverName !== "string")
   ) {
     throw new KafkaSourceConfigurationError("Kafka Region tls options are invalid.");
   }
+  const caSnapshot = ca === undefined ? undefined : snapshotTlsValue(ca);
+  const certSnapshot = cert === undefined ? undefined : snapshotTlsValue(cert);
+  const keySnapshot = key === undefined ? undefined : snapshotTlsValue(key);
   return Object.freeze({
-    ...(tls.ca === undefined ? {} : { ca: copyTlsValue(tls.ca) }),
-    ...(tls.cert === undefined ? {} : { cert: copyTlsValue(tls.cert) }),
-    ...(tls.key === undefined ? {} : { key: copyTlsValue(tls.key) }),
-    ...(tls.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: tls.rejectUnauthorized }),
-    ...(tls.serverName === undefined ? {} : { serverName: tls.serverName }),
+    ...(caSnapshot === undefined ? {} : { ca: caSnapshot }),
+    ...(certSnapshot === undefined ? {} : { cert: certSnapshot }),
+    ...(keySnapshot === undefined ? {} : { key: keySnapshot }),
+    ...(rejectUnauthorized === undefined ? {} : { rejectUnauthorized }),
+    ...(serverName === undefined ? {} : { serverName }),
   });
 };
-
-const isTlsValue = (
-  value: unknown,
-): value is string | Uint8Array | ReadonlyArray<string | Uint8Array> =>
-  typeof value === "string" ||
-  value instanceof Uint8Array ||
-  (Array.isArray(value) &&
-    value.every((entry) => typeof entry === "string" || entry instanceof Uint8Array));
 
 const nodeTlsValue = (
   value: string | Uint8Array | ReadonlyArray<string | Uint8Array>,
@@ -411,34 +490,49 @@ const nodeTlsOptions = (tls: KafkaNodeTlsOptions): NodeTlsConnectionOptions => (
 const finiteNonNegative = (value: number | undefined): boolean =>
   value === undefined || (Number.isFinite(value) && value >= 0);
 
-const snapshotRegionOptions = (options: KafkaNodeRegionOptions): KafkaNodeRegionOptions => {
+const snapshotRegionOptions = (options: unknown): KafkaNodeRegionOptions => {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new KafkaSourceConfigurationError("Kafka Region options are invalid.");
+  }
+  const fields = captureDataFields(options, "Kafka Region options are invalid.");
+  const bootstrapServerList = fields.get("bootstrapServers");
+  const clientId = fields.get("clientId");
+  const connectTimeout = fields.get("connectTimeout");
+  const requestTimeout = fields.get("requestTimeout");
+  const timeout = fields.get("timeout");
+  const retries = fields.get("retries");
+  const metadataMaxAge = fields.get("metadataMaxAge");
+  const sasl = fields.get("sasl");
+  const tls = fields.get("tls");
   if (
-    typeof options !== "object" ||
-    options === null ||
-    !ownDataKeys(options).includes("bootstrapServers") ||
-    ownDataKeys(options).some((key) => !allowedRegionOptions.has(key)) ||
-    !finiteNonNegative(options.connectTimeout) ||
-    !finiteNonNegative(options.requestTimeout) ||
-    !finiteNonNegative(options.timeout) ||
-    !finiteNonNegative(options.metadataMaxAge) ||
-    (options.retries !== undefined &&
-      typeof options.retries !== "boolean" &&
-      (!Number.isSafeInteger(options.retries) || options.retries < 0)) ||
-    (options.clientId !== undefined &&
-      (typeof options.clientId !== "string" || options.clientId.length === 0))
+    !fields.has("bootstrapServers") ||
+    Array.from(fields.keys()).some((key) => !allowedRegionOptions.has(key)) ||
+    (connectTimeout !== undefined &&
+      (typeof connectTimeout !== "number" || !finiteNonNegative(connectTimeout))) ||
+    (requestTimeout !== undefined &&
+      (typeof requestTimeout !== "number" || !finiteNonNegative(requestTimeout))) ||
+    (timeout !== undefined && (typeof timeout !== "number" || !finiteNonNegative(timeout))) ||
+    (metadataMaxAge !== undefined &&
+      (typeof metadataMaxAge !== "number" || !finiteNonNegative(metadataMaxAge))) ||
+    (retries !== undefined &&
+      typeof retries !== "boolean" &&
+      (typeof retries !== "number" || !Number.isSafeInteger(retries) || retries < 0)) ||
+    (clientId !== undefined && (typeof clientId !== "string" || clientId.length === 0)) ||
+    (sasl !== undefined && (typeof sasl !== "object" || sasl === null)) ||
+    (tls !== undefined && (typeof tls !== "object" || tls === null))
   ) {
     throw new KafkaSourceConfigurationError("Kafka Region options are invalid.");
   }
   return Object.freeze({
-    bootstrapServers: bootstrapServers(options.bootstrapServers),
-    ...(options.clientId === undefined ? {} : { clientId: options.clientId }),
-    ...(options.connectTimeout === undefined ? {} : { connectTimeout: options.connectTimeout }),
-    ...(options.requestTimeout === undefined ? {} : { requestTimeout: options.requestTimeout }),
-    ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
-    ...(options.retries === undefined ? {} : { retries: options.retries }),
-    ...(options.metadataMaxAge === undefined ? {} : { metadataMaxAge: options.metadataMaxAge }),
-    ...(options.sasl === undefined ? {} : { sasl: snapshotSasl(options.sasl) }),
-    ...(options.tls === undefined ? {} : { tls: snapshotTls(options.tls) }),
+    bootstrapServers: bootstrapServers(bootstrapServerList),
+    ...(clientId === undefined ? {} : { clientId }),
+    ...(connectTimeout === undefined ? {} : { connectTimeout }),
+    ...(requestTimeout === undefined ? {} : { requestTimeout }),
+    ...(timeout === undefined ? {} : { timeout }),
+    ...(retries === undefined ? {} : { retries }),
+    ...(metadataMaxAge === undefined ? {} : { metadataMaxAge }),
+    ...(sasl === undefined ? {} : { sasl: snapshotSasl(sasl) }),
+    ...(tls === undefined ? {} : { tls: snapshotTls(tls) }),
   });
 };
 
@@ -521,38 +615,54 @@ const snapshotLayerOptions = <ViewServer extends KafkaNodeViewServer>(
   readonly consumerGroupPrefix: string;
   readonly regions: ReadonlyMap<string, KafkaNodeRegionOptions>;
 } => {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
+    );
+  }
+  const fields = captureDataFields(
+    options,
+    "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
+  );
+  const consumerGroupPrefix = fields.get("consumerGroupPrefix");
+  const regionOptions = fields.get("regions");
   if (
-    typeof options !== "object" ||
-    options === null ||
-    !exactKeys(options, ["consumerGroupPrefix", "regions"]) ||
-    typeof options.consumerGroupPrefix !== "string" ||
-    options.consumerGroupPrefix.length === 0 ||
-    typeof options.regions !== "object" ||
-    options.regions === null ||
-    Array.isArray(options.regions)
+    fields.size !== 2 ||
+    !fields.has("consumerGroupPrefix") ||
+    !fields.has("regions") ||
+    typeof consumerGroupPrefix !== "string" ||
+    consumerGroupPrefix.length === 0 ||
+    typeof regionOptions !== "object" ||
+    regionOptions === null ||
+    Array.isArray(regionOptions)
   ) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
     );
   }
   const required = kafkaSourceRegions(viewServer);
-  validateConsumerGroupIds(viewServer, options.consumerGroupPrefix);
-  const provided = ownDataKeys(options.regions);
-  if (provided.length !== required.size || provided.some((region) => !required.has(region))) {
+  validateConsumerGroupIds(viewServer, consumerGroupPrefix);
+  const provided = captureDataFields(
+    regionOptions,
+    "Kafka Node Layer regions must contain all and only referenced Regions.",
+  );
+  if (
+    provided.size !== required.size ||
+    Array.from(provided.keys()).some((region) => !required.has(region))
+  ) {
     throw new KafkaSourceConfigurationError(
       "Kafka Node Layer regions must contain all and only referenced Regions.",
     );
   }
   const regions = new Map<string, KafkaNodeRegionOptions>();
-  for (const region of provided) {
-    const value = Reflect.get(options.regions, region);
+  for (const [region, value] of provided) {
     if (typeof value !== "object" || value === null) {
       throw new KafkaSourceConfigurationError(`Kafka Node Region ${region} options are invalid.`);
     }
     regions.set(region, snapshotRegionOptions(value));
   }
   return Object.freeze({
-    consumerGroupPrefix: options.consumerGroupPrefix,
+    consumerGroupPrefix,
     regions,
   });
 };
@@ -592,11 +702,11 @@ const releaseFailure = (input: KafkaServerRegionAcquireInput): KafkaAdapterFailu
   message: "Kafka Region consumer release failed.",
 });
 
-const configValidationFailure = (): Config.ConfigError =>
+const configValidationFailure = (cause: unknown): Config.ConfigError =>
   new Config.ConfigError(
     new Schema.SchemaError(
       new SchemaIssue.InvalidValue(Option.none(), {
-        message: "Kafka Node Layer resolved options are invalid.",
+        message: globalThis.String(cause),
       }),
     ),
   );
@@ -687,6 +797,48 @@ const recordReleaseFailure = Effect.fn("KafkaNode.release.failure")(function* (
       sourceRegion: input.region,
       sourceAttempt: attempt.toString(),
     }),
+  );
+});
+
+const removeConsumerListeners = Effect.fn("KafkaNode.consumer.listeners.remove")(function* (
+  consumer: KafkaConsumer,
+  groupJoin: (payload: ConsumerGroupJoinPayload) => void,
+  rebalance: () => void,
+  lag: (current: Offsets) => void,
+  input: KafkaServerRegionAcquireInput,
+  metrics: KafkaMutableRegionMetrics,
+  attempt: bigint,
+) {
+  const remove = (operation: () => void) =>
+    Effect.try({
+      try: operation,
+      catch: () => releaseFailure(input),
+    }).pipe(Effect.catch((failure) => recordReleaseFailure(failure, input, metrics, attempt)));
+  yield* remove(() => consumer.off("consumer:group:join", groupJoin));
+  yield* remove(() => consumer.off("consumer:group:rebalance", rebalance));
+  yield* remove(() => consumer.off("consumer:lag", lag));
+});
+
+const installConsumerListeners = Effect.fn("KafkaNode.consumer.listeners.install")(function* (
+  consumer: KafkaConsumer,
+  groupJoin: (payload: ConsumerGroupJoinPayload) => void,
+  rebalance: () => void,
+  lag: (current: Offsets) => void,
+  input: KafkaServerRegionAcquireInput,
+  metrics: KafkaMutableRegionMetrics,
+  attempt: bigint,
+) {
+  return yield* Effect.try({
+    try: () => {
+      consumer.on("consumer:group:join", groupJoin);
+      consumer.on("consumer:group:rebalance", rebalance);
+      consumer.on("consumer:lag", lag);
+    },
+    catch: () => acquisitionFailure(input),
+  }).pipe(
+    Effect.tapError(() =>
+      removeConsumerListeners(consumer, groupJoin, rebalance, lag, input, metrics, attempt),
+    ),
   );
 });
 
@@ -842,13 +994,22 @@ const activeOffsets = Effect.fn("KafkaNode.offsets.active")(function* (
   consumer: KafkaConsumer,
   input: KafkaServerRegionAcquireInput,
   initial: KafkaInitialPosition,
+  committedPartitions: ReadonlySet<number>,
 ) {
-  const partitions = initial.offsets.map((offset) => offset.partition);
+  const partitions = initial.offsets
+    .filter((offset) => committedPartitions.has(offset.partition))
+    .map((offset) => offset.partition);
+  if (partitions.length === 0) {
+    return initial.offsets;
+  }
   const committed = offsetsForTopic(
     yield* listCommitted(consumer, input, partitions),
     input.sourceTopic,
   );
   return initial.offsets.map((initialOffset) => {
+    if (!committedPartitions.has(initialOffset.partition)) {
+      return initialOffset;
+    }
     const active = committed[initialOffset.partition];
     return active !== undefined && active >= 0n
       ? {
@@ -870,28 +1031,32 @@ const headersFromMessage = (
     const name = textDecoder.decode(key);
     const existing = decoded[name];
     if (existing === undefined) {
-      decoded[name] = Uint8Array.from(value);
+      decoded[name] = value;
     } else if (existing instanceof Uint8Array) {
-      decoded[name] = [existing, Uint8Array.from(value)];
+      decoded[name] = [existing, value];
     } else {
-      existing.push(Uint8Array.from(value));
+      existing.push(value);
     }
   }
-  return decoded;
+  for (const value of Object.values(decoded)) {
+    if (!(value instanceof Uint8Array)) {
+      Object.freeze(value);
+    }
+  }
+  return Object.freeze(decoded);
 };
 
-const scopedKafkaIterable = (stream: KafkaStream): AsyncIterable<KafkaBufferMessage> => ({
-  [Symbol.asyncIterator]: () => {
-    const iterator = stream[Symbol.asyncIterator]();
-    return {
-      next: () => iterator.next(),
-      return: () =>
-        Promise.resolve({
-          done: true,
-          value: undefined,
-        }),
-    };
-  },
+const scopedKafkaIterable = (
+  iterator: AsyncIterator<KafkaBufferMessage>,
+): AsyncIterable<KafkaBufferMessage> => ({
+  [Symbol.asyncIterator]: () => ({
+    next: () => iterator.next(),
+    return: () =>
+      Promise.resolve({
+        done: true,
+        value: undefined,
+      }),
+  }),
 });
 
 const snapshotMetrics = (
@@ -1011,27 +1176,52 @@ const updateCommit = (
 };
 
 const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegion => {
-  const states = new Map<string, KafkaBindingState>();
-  const metricsFor = (input: KafkaServerRegionMetricsInput): KafkaMutableRegionMetrics => {
-    const existing = states.get(bindingKey(input));
-    if (existing !== undefined) {
-      return existing.metrics;
-    }
-    return emptyMutableMetrics();
-  };
-  const acquire = Effect.fn("KafkaNode.region.acquire")(function* (
-    input: KafkaServerRegionAcquireInput,
+  const lifetimes = new Map<Scope.Scope, Map<string, KafkaBindingState>>();
+  const lifetimeStates = Effect.fn("KafkaNode.region.lifetime.state")(function* (
+    lifetimeScope: Scope.Scope,
   ) {
+    return yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        const existing = lifetimes.get(lifetimeScope);
+        if (existing !== undefined) {
+          return existing;
+        }
+        const states = new Map<string, KafkaBindingState>();
+        lifetimes.set(lifetimeScope, states);
+        yield* Scope.addFinalizer(
+          lifetimeScope,
+          Effect.sync(() => {
+            lifetimes.delete(lifetimeScope);
+          }),
+        );
+        return states;
+      }),
+    );
+  });
+  const bindingState = Effect.fn("KafkaNode.region.binding.state")(function* (
+    input: KafkaServerRegionMetricsInput,
+  ) {
+    const states = yield* lifetimeStates(input.lifetimeScope);
     const key = bindingKey(input);
     const existing = states.get(key);
-    const state: KafkaBindingState = existing ?? {
+    if (existing !== undefined) {
+      return existing;
+    }
+    const state: KafkaBindingState = {
       attempts: 0n,
+      committedPartitions: new Set(),
       initial: undefined,
       metrics: emptyMutableMetrics(),
     };
-    if (existing === undefined) {
-      states.set(key, state);
-    } else {
+    states.set(key, state);
+    return state;
+  });
+  const acquire = Effect.fn("KafkaNode.region.acquire")(function* (
+    input: KafkaServerRegionAcquireInput,
+  ) {
+    const state = yield* bindingState(input);
+    const isRetry = state.attempts > 0n;
+    if (isRetry) {
       state.metrics.reconnects += 1n;
     }
     state.attempts += 1n;
@@ -1046,7 +1236,9 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
     if (state.initial === undefined) {
       state.initial = initial;
     }
-    const offsets = yield* activeOffsets(consumer, input, initial);
+    const offsets = isRetry
+      ? yield* activeOffsets(consumer, input, initial, state.committedPartitions)
+      : initial.offsets;
     resetAttemptAssignments(metrics, offsets, initial.latestOffsets);
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
@@ -1065,17 +1257,8 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
       updateLag(metrics, input.sourceTopic, current);
     };
     yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        consumer.on("consumer:group:join", groupJoin);
-        consumer.on("consumer:group:rebalance", rebalance);
-        consumer.on("consumer:lag", lag);
-      }),
-      () =>
-        Effect.sync(() => {
-          consumer.off("consumer:group:join", groupJoin);
-          consumer.off("consumer:group:rebalance", rebalance);
-          consumer.off("consumer:lag", lag);
-        }),
+      installConsumerListeners(consumer, groupJoin, rebalance, lag, input, metrics, attempt),
+      () => removeConsumerListeners(consumer, groupJoin, rebalance, lag, input, metrics, attempt),
     );
     const stream = yield* Effect.acquireRelease(
       Effect.tryPromise({
@@ -1103,7 +1286,11 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
       }),
       () => stopLagMonitoring(consumer, input, metrics, attempt),
     );
-    const records = Stream.fromAsyncIterable(scopedKafkaIterable(stream), () =>
+    const iterator = yield* Effect.try({
+      try: () => stream[Symbol.asyncIterator](),
+      catch: () => consumeFailure(input),
+    });
+    const records = Stream.fromAsyncIterable(scopedKafkaIterable(iterator), () =>
       consumeFailure(input),
     ).pipe(
       Stream.map(
@@ -1131,6 +1318,7 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
                 Effect.sync(() => {
                   metrics.commits += 1n;
                   updateCommit(metrics, initial, message.partition, message.offset + 1n);
+                  state.committedPartitions.add(message.partition);
                 }),
               ),
               Effect.tapError(() =>
@@ -1164,7 +1352,8 @@ const makeNodeRegion = (regionOptions: KafkaNodeRegionOptions): KafkaServerRegio
   });
   return {
     acquire,
-    metrics: (input) => Effect.sync(() => snapshotMetrics(input.region, metricsFor(input))),
+    metrics: (input) =>
+      bindingState(input).pipe(Effect.map((state) => snapshotMetrics(input.region, state.metrics))),
   };
 };
 

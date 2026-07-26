@@ -42,6 +42,10 @@ const validateManifest = (manifest, expectedName, path) => {
 const validateKafkaManifest = (manifest, path) => {
   validateManifest(manifest, kafkaPackageName, path);
 
+  if (manifest.private !== true) {
+    throw new Error(`${path} must remain private.`);
+  }
+
   for (const dependencyField of ["devDependencies", "peerDependencies"]) {
     const dependencies = manifest[dependencyField];
     if (

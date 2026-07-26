@@ -30,6 +30,7 @@ The first-party Kafka API illustrates the complete composition. The one shared c
 
 ```ts
 import { defineViewServerConfig } from "effect-view-server/config";
+import { kafka } from "effect-view-server/kafka/contract";
 
 export const viewServer = defineViewServerConfig({
   topics: {
@@ -97,6 +98,7 @@ The Node entrypoint provides one aggregate Kafka Layer and preserves the current
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
+import { kafkaNode } from "effect-view-server/kafka/node";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 
 const KafkaLive = kafkaNode.layer(viewServer, {

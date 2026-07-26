@@ -17,9 +17,9 @@ truth, not plan text that predates later implementation work.
 `plans/grpc.md` records the currently implemented transport-specific scope but
 is superseded for future work by PRD #383. Issue #384 implements the
 transport-neutral Source Adapter foundation, and issue #385 implements the
-first-party Kafka Source Adapter. First-party gRPC conversion and removal of the
-remaining transport-specific source shapes remain staged in issues #386 and
-#387.
+first-party Kafka Source Adapter. First-party gRPC conversion remains staged in
+issue #386. The separate final migration tracked by issue #387 remains
+explicitly out of scope and must not be started by this audit or the #385 slice.
 
 | Area                                            | Status                 | Evidence                                                                                                                                                     |
 | ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |

@@ -8,7 +8,7 @@ import { Buffer } from "node:buffer";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, Exit, Schema, Scope } from "effect";
 import { kafka } from "./contract";
 import { kafkaNode } from "./node";
 
@@ -81,11 +81,11 @@ const memoryBefore = memorySnapshot();
 let memoryAfterSetup = memoryBefore;
 
 type BenchmarkState = {
-  readonly close: Effect.Effect<void, unknown>;
   readonly ingest: (batch: number) => Effect.Effect<void, unknown>;
 };
 
 let state: BenchmarkState | undefined;
+let benchmarkScope: Scope.Closeable | undefined;
 let nextBatch = 0;
 
 const requireState = (): BenchmarkState => {
@@ -112,159 +112,178 @@ class KafkaSourceBrokerBenchmarkError extends Schema.TaggedErrorClass<KafkaSourc
 ) {}
 
 beforeAll(async () => {
-  const suffix = randomUUID().replaceAll("-", "");
-  const sourceTopic = `view-server-source-bench-${suffix}`;
-  const groupPrefix = `view-server-source-bench-${suffix}`;
-  const groupId = `${groupPrefix}:rows`;
-  const admin = new Admin({
-    bootstrapBrokers: [bootstrapServers],
-    clientId: `source-bench-admin-${suffix}`,
-  });
-  const producer = new Producer<Buffer | null, Buffer | null, Buffer, Buffer>({
-    bootstrapBrokers: [bootstrapServers],
-    clientId: `source-bench-producer-${suffix}`,
-  });
-  await admin.createTopics({
-    partitions: 1,
-    replicas: 1,
-    topics: [sourceTopic],
-  });
-
-  const config = defineViewServerConfig({
-    topics: {
-      rows: {
-        schema: Row,
-        source: kafka.source({
-          topic: sourceTopic,
-          regions: ["local"],
-          key: kafka.string(),
-          value: kafka.json(() => Schema.toCodecJson(WireRow)),
-          localRowKey: ({ key }) => key,
-          map: ({ value }) => ({
-            value: value.value,
-          }),
-          startFrom: "earliest",
-        }),
-      },
-    },
-  });
-  const runtime = await Effect.runPromise(
-    makeViewServerRuntimeCore(config, {}).pipe(
-      Effect.provide(
-        kafkaNode.layer(config, {
-          consumerGroupPrefix: groupPrefix,
-          regions: {
-            local: {
-              bootstrapServers,
-            },
-          },
-        }),
-      ),
-    ),
-  );
-
+  const scope = Effect.runSync(Scope.make("sequential"));
+  benchmarkScope = scope;
   await Effect.runPromise(
     Effect.gen(function* () {
+      const suffix = randomUUID().replaceAll("-", "");
+      const sourceTopic = `view-server-source-bench-${suffix}`;
+      const groupPrefix = `view-server-source-bench-${suffix}`;
+      const groupId = `${groupPrefix}:rows`;
+      const admin = yield* Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new Admin({
+              bootstrapBrokers: [bootstrapServers],
+              clientId: `source-bench-admin-${suffix}`,
+            }),
+        ),
+        (current) =>
+          Effect.tryPromise({
+            try: () => current.close(),
+            catch: (cause) =>
+              new KafkaSourceBrokerBenchmarkError({
+                message: "Kafka Source benchmark Admin close failed.",
+                cause,
+              }),
+          }).pipe(Effect.orDie),
+      );
+      const producer = yield* Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new Producer<Buffer | null, Buffer | null, Buffer, Buffer>({
+              bootstrapBrokers: [bootstrapServers],
+              clientId: `source-bench-producer-${suffix}`,
+            }),
+        ),
+        (current) =>
+          Effect.tryPromise({
+            try: () => current.close(),
+            catch: (cause) =>
+              new KafkaSourceBrokerBenchmarkError({
+                message: "Kafka Source benchmark Producer close failed.",
+                cause,
+              }),
+          }).pipe(Effect.orDie),
+      );
+      yield* Effect.tryPromise({
+        try: () =>
+          admin.createTopics({
+            partitions: 1,
+            replicas: 1,
+            topics: [sourceTopic],
+          }),
+        catch: (cause) =>
+          new KafkaSourceBrokerBenchmarkError({
+            message: "Kafka Source benchmark Topic creation failed.",
+            cause,
+          }),
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: kafka.source({
+              topic: sourceTopic,
+              regions: ["local"],
+              key: kafka.string(),
+              value: kafka.json(() => Schema.toCodecJson(WireRow)),
+              localRowKey: ({ key }) => key,
+              map: ({ value }) => ({
+                value: value.value,
+              }),
+              startFrom: "earliest",
+            }),
+          },
+        },
+      });
+      const runtime = yield* Effect.acquireRelease(
+        makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            kafkaNode.layer(config, {
+              consumerGroupPrefix: groupPrefix,
+              regions: {
+                local: {
+                  bootstrapServers,
+                },
+              },
+            }),
+          ),
+        ),
+        (current) => current.close,
+      );
       for (let poll = 0; poll < 2_000; poll += 1) {
         const snapshot = yield* runtime.client.snapshot("rows", {
           select: ["id"],
         });
         if (snapshot.status === "ready") {
-          return;
+          break;
+        }
+        if (poll === 1_999) {
+          return yield* new KafkaSourceBrokerBenchmarkError({
+            message: "Kafka Source broker benchmark did not become Ready.",
+          });
         }
         yield* Effect.sleep("5 millis");
       }
-      return yield* new KafkaSourceBrokerBenchmarkError({
-        message: "Kafka Source broker benchmark did not become Ready.",
-      });
-    }),
-  );
-
-  let expectedRows = 0;
-  state = {
-    close: Effect.all(
-      [
-        runtime.close,
-        Effect.tryPromise({
-          try: () => producer.close(),
-          catch: (cause) =>
-            new KafkaSourceBrokerBenchmarkError({
-              message: "Kafka Source benchmark Producer close failed.",
-              cause,
-            }),
-        }),
-        Effect.tryPromise({
-          try: () => admin.close(),
-          catch: (cause) =>
-            new KafkaSourceBrokerBenchmarkError({
-              message: "Kafka Source benchmark Admin close failed.",
-              cause,
-            }),
-        }),
-      ],
-      { discard: true },
-    ),
-    ingest: (batch) =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () =>
-            producer.send({
-              messages: Array.from({ length: rowCount }, (_, index) => ({
-                topic: sourceTopic,
-                key: Buffer.from(encoder.encode(`row-${batch}-${index}`)),
-                value: Buffer.from(encoder.encode(JSON.stringify({ value: index }))),
-              })),
-            }),
-          catch: (cause) =>
-            new KafkaSourceBrokerBenchmarkError({
-              message: "Kafka Source benchmark Producer send failed.",
-              cause,
-            }),
-        });
-        expectedRows += rowCount;
-        for (let poll = 0; poll < 4_000; poll += 1) {
-          const snapshot = yield* runtime.client.snapshot("rows", {
-            select: ["id"],
-          });
-          const groups = yield* Effect.tryPromise({
-            try: () =>
-              admin.listConsumerGroupOffsets({
-                groups: [
-                  {
-                    groupId,
-                    topics: [
+      let expectedRows = 0;
+      state = {
+        ingest: (batch) =>
+          Effect.gen(function* () {
+            yield* Effect.tryPromise({
+              try: () =>
+                producer.send({
+                  messages: Array.from({ length: rowCount }, (_, index) => ({
+                    topic: sourceTopic,
+                    key: Buffer.from(encoder.encode(`row-${batch}-${index}`)),
+                    value: Buffer.from(encoder.encode(JSON.stringify({ value: index }))),
+                  })),
+                }),
+              catch: (cause) =>
+                new KafkaSourceBrokerBenchmarkError({
+                  message: "Kafka Source benchmark Producer send failed.",
+                  cause,
+                }),
+            });
+            expectedRows += rowCount;
+            for (let poll = 0; poll < 4_000; poll += 1) {
+              const snapshot = yield* runtime.client.snapshot("rows", {
+                select: ["id"],
+              });
+              const groups = yield* Effect.tryPromise({
+                try: () =>
+                  admin.listConsumerGroupOffsets({
+                    groups: [
                       {
-                        name: sourceTopic,
-                        partitionIndexes: [0],
+                        groupId,
+                        topics: [
+                          {
+                            name: sourceTopic,
+                            partitionIndexes: [0],
+                          },
+                        ],
                       },
                     ],
-                  },
-                ],
-                requireStable: false,
-              }),
-            catch: (cause) =>
-              new KafkaSourceBrokerBenchmarkError({
-                message: "Kafka Source benchmark committed-offset read failed.",
-                cause,
-              }),
-          });
-          const committedOffset = groups[0]?.topics[0]?.partitions[0]?.committedOffset ?? -1n;
-          if (snapshot.totalRows === expectedRows && committedOffset >= BigInt(expectedRows)) {
-            return;
-          }
-          yield* Effect.sleep("5 millis");
-        }
-        return yield* new KafkaSourceBrokerBenchmarkError({
-          message: "Kafka Source benchmark did not converge and commit its broker batch.",
-        });
-      }),
-  };
-  memoryAfterSetup = memorySnapshot();
+                    requireStable: false,
+                  }),
+                catch: (cause) =>
+                  new KafkaSourceBrokerBenchmarkError({
+                    message: "Kafka Source benchmark committed-offset read failed.",
+                    cause,
+                  }),
+              });
+              const committedOffset = groups[0]?.topics[0]?.partitions[0]?.committedOffset ?? -1n;
+              if (snapshot.totalRows === expectedRows && committedOffset >= BigInt(expectedRows)) {
+                return;
+              }
+              yield* Effect.sleep("5 millis");
+            }
+            return yield* new KafkaSourceBrokerBenchmarkError({
+              message: "Kafka Source benchmark did not converge and commit its broker batch.",
+            });
+          }),
+      };
+      memoryAfterSetup = memorySnapshot();
+    }).pipe(
+      Effect.provideService(Scope.Scope, scope),
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+    ),
+  );
 });
 
 afterAll(async () => {
-  if (state !== undefined) {
-    await Effect.runPromise(state.close);
+  if (benchmarkScope !== undefined) {
+    await Effect.runPromise(Scope.close(benchmarkScope, Exit.void));
   }
   const memoryAfterBenchmark = memorySnapshot();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {

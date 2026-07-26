@@ -272,6 +272,7 @@ const closeLifecycleEnvironment = <
       const attempt = yield* implementation
         .acquire({
           definition: input.definition,
+          lifetimeScope: input.lifetimeScope,
           target: input.target,
           toolkit: closeToolkitEnvironment(input.toolkit, context),
         })

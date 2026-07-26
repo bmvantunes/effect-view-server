@@ -335,18 +335,22 @@ const registerLifecycleConformance = (
         });
         yield* Deferred.await(siblingSettled);
         expect(yield* Deferred.isDone(secondPrimarySettled)).toBe(false);
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-          expectedRowId(driver, lifecycle, "primary", "primary"),
-          expectedRowId(driver, lifecycle, "sibling", "sibling"),
-        ]);
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(
+          [
+            expectedRowId(driver, lifecycle, "primary", "primary"),
+            expectedRowId(driver, lifecycle, "sibling", "sibling"),
+          ].toSorted(),
+        );
         yield* Deferred.succeed(releaseFirstPrimarySettlement, undefined);
         yield* Deferred.await(firstPrimarySettled);
         yield* Deferred.await(secondPrimarySettled);
-        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-          expectedRowId(driver, lifecycle, "primary", "primary"),
-          expectedRowId(driver, lifecycle, "primary", "primary-second"),
-          expectedRowId(driver, lifecycle, "sibling", "sibling"),
-        ]);
+        expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(
+          [
+            expectedRowId(driver, lifecycle, "primary", "primary"),
+            expectedRowId(driver, lifecycle, "primary", "primary-second"),
+            expectedRowId(driver, lifecycle, "sibling", "sibling"),
+          ].toSorted(),
+        );
         expect(settlements).toStrictEqual([
           ["sibling", Exit.void],
           ["primary-first", Exit.void],
@@ -1036,10 +1040,12 @@ export const registerSourceAdapterConformance = (
               region: "eu",
               value: "callback",
             });
-            expect(yield* rows(opened.runtime, opened.route)).toStrictEqual([
-              expectedRowId(driver, "materialized", "primary", "backpressurable"),
-              expectedRowId(driver, "materialized", "primary", "non-pausable"),
-            ]);
+            expect(yield* rows(opened.runtime, opened.route)).toStrictEqual(
+              [
+                expectedRowId(driver, "materialized", "primary", "backpressurable"),
+                expectedRowId(driver, "materialized", "primary", "non-pausable"),
+              ].toSorted(),
+            );
             yield* opened.close;
             const observation = yield* driver.transport.observe(materializedTarget());
             expect(observation.registrations).toBe(2n);

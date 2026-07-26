@@ -168,10 +168,12 @@ describe("Source Adapter server SDK", () => {
       const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
       const runtimeService = Context.getUnsafe(runtimeContext, Adapter.runtimeService);
       const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
+      const lifetimeScope = yield* Scope.make();
       const attemptScope = yield* Scope.make();
       const attempt = yield* materialized
         .acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -196,6 +198,7 @@ describe("Source Adapter server SDK", () => {
         _tag: "UnexpectedCompletion",
       });
       yield* Scope.close(attemptScope, Exit.void);
+      yield* Scope.close(lifetimeScope, Exit.void);
       expect(finalized).toBe(1);
     }),
   );
@@ -253,9 +256,11 @@ describe("Source Adapter server SDK", () => {
       const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
       const runtimeService = Context.getUnsafe(runtimeContext, Adapter.runtimeService);
       const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
+      const lifetimeScope = yield* Scope.make();
       const attempt = yield* Effect.scoped(
         materialized.acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         }),
@@ -271,11 +276,13 @@ describe("Source Adapter server SDK", () => {
         yield* materialized.metrics({
           topic: "orders",
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
         }),
       ).toStrictEqual({
         active: true,
       });
+      yield* Scope.close(lifetimeScope, Exit.void);
     }),
   );
 
@@ -360,11 +367,13 @@ describe("Source Adapter server SDK", () => {
       const runtimeContext = yield* Effect.scoped(Layer.build(adapterLayer));
       const runtimeService = Context.getUnsafe(runtimeContext, Adapter.runtimeService);
       const materialized = Option.getOrThrow(Option.fromNullishOr(runtimeService.materialized));
+      const lifetimeScope = yield* Scope.make();
 
       const forgedAttemptFailure = yield* Effect.flip(
         Effect.scoped(
           materialized.acquire({
             definition: { label: "orders" },
+            lifetimeScope,
             target: { _tag: "Materialized" },
             toolkit,
           }),
@@ -383,6 +392,7 @@ describe("Source Adapter server SDK", () => {
         Effect.scoped(
           materialized.acquire({
             definition: { label: "orders" },
+            lifetimeScope,
             target: { _tag: "Materialized" },
             toolkit,
           }),
@@ -401,6 +411,7 @@ describe("Source Adapter server SDK", () => {
         Effect.scoped(
           materialized.acquire({
             definition: { label: "orders" },
+            lifetimeScope,
             target: { _tag: "Materialized" },
             toolkit,
           }),
@@ -412,6 +423,7 @@ describe("Source Adapter server SDK", () => {
       const closedAttempt = yield* Effect.scoped(
         materialized.acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         }),
@@ -431,6 +443,7 @@ describe("Source Adapter server SDK", () => {
       const forgedRejectionAttempt = yield* Effect.scoped(
         materialized.acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         }),
@@ -444,6 +457,7 @@ describe("Source Adapter server SDK", () => {
       const invalidInnerMutationAttempt = yield* Effect.scoped(
         materialized.acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         }),
@@ -458,6 +472,7 @@ describe("Source Adapter server SDK", () => {
       const invalidRejectionDiagnosticAttempt = yield* Effect.scoped(
         materialized.acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         }),
@@ -472,6 +487,7 @@ describe("Source Adapter server SDK", () => {
       const hostileEventAttempt = yield* Effect.scoped(
         materialized.acquire({
           definition: { label: "orders" },
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         }),
@@ -480,6 +496,7 @@ describe("Source Adapter server SDK", () => {
         hostileEventAttempt.lanes[0].events.pipe(Stream.take(1), Stream.runDrain),
       );
       expect(hostileEventFailure).toStrictEqual(forgedEventFailure);
+      yield* Scope.close(lifetimeScope, Exit.void);
     }),
   );
 

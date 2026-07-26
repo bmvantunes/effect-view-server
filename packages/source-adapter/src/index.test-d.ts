@@ -5,6 +5,7 @@ import {
   type SourceAdapterFailure,
   type SourceAdapterHandle,
   type SourceAttempt,
+  type SourceDefinition,
   type SourceDefinitionOptionsFamily,
   type SourceDefinitionRow,
   type SourceDelivery,
@@ -15,6 +16,7 @@ import {
   type SourceExecutionFailure,
   type SourceHealthForDefinition,
   type SourceLifecycleDeclaration,
+  type SourceLifecycleMetricsInput,
   type SourceMutation,
   type SourceToolkit,
 } from "./index";
@@ -73,6 +75,20 @@ const mappedDefinition = mappedAdapter.materializedSource<{
     value: 1,
   },
 });
+const extraMappedDefinition = mappedAdapter.materializedSource<{
+  readonly id: string;
+  readonly value: number;
+  readonly extra: boolean;
+}>({
+  initial: {
+    id: "initial",
+    value: 1,
+    extra: true,
+  },
+});
+const conditionalMappedDefinition = Math.random() > 0.5 ? mappedDefinition : extraMappedDefinition;
+// @ts-expect-error concrete Source Adapter factory results preserve every conditional Row branch.
+const invalidConditionalMappedDefinition: typeof mappedDefinition = conditionalMappedDefinition;
 
 const adapter = SourceAdapter.make({
   identity: {
@@ -117,12 +133,56 @@ type MaterializedHealthTarget = SourceHealthForDefinition<
   TypeFixtureRow
 >["target"];
 type LeasedHealthTarget = SourceHealthForDefinition<typeof leased, TypeFixtureRow>["target"];
+type RegionalDefinition = SourceDefinition<
+  typeof adapter,
+  "materialized",
+  typeof materialized.options,
+  readonly [],
+  never,
+  TypeFixtureRow,
+  {
+    readonly _tag: "RegionalFailure";
+    readonly region: "eu" | "us";
+  },
+  {
+    readonly regions: ReadonlyArray<{
+      readonly region: "eu" | "us";
+    }>;
+  },
+  {
+    readonly region: "eu" | "us";
+  },
+  "eu" | "us"
+>;
+type RegionalHealth = SourceHealthForDefinition<RegionalDefinition, TypeFixtureRow>;
 
 const _materializedHealthTarget: MaterializedHealthTarget = { _tag: "Materialized" };
 const _leasedHealthTarget: LeasedHealthTarget = {
   _tag: "Leased",
   route: { region: "eu", desk: "cash" },
 };
+type RegionalRetryFailure = Extract<
+  Extract<RegionalHealth["status"], { readonly _tag: "WaitingToRetry" }>["termination"],
+  { readonly _tag: "Failed" }
+>["failure"];
+expectTypeOf<
+  Extract<RegionalRetryFailure, { readonly _tag: "AdapterFailure" }>["failure"]
+>().toEqualTypeOf<{
+  readonly _tag: "RegionalFailure";
+  readonly region: "eu" | "us";
+}>();
+expectTypeOf<
+  Extract<
+    RegionalHealth["status"],
+    { readonly _tag: "Degraded" }
+  >["latestRejection"]["location"]["region"]
+>().toEqualTypeOf<"eu" | "us">();
+expectTypeOf<RegionalHealth["metrics"]["adapter"]["regions"][number]["region"]>().toEqualTypeOf<
+  "eu" | "us"
+>();
+expectTypeOf<RegionalHealth["metrics"]["runtime"]["lanes"][number]["id"]>().toEqualTypeOf<
+  "eu" | "us"
+>();
 // @ts-expect-error Materialized Source Health cannot expose a Leased target.
 const _invalidMaterializedHealthTarget: MaterializedHealthTarget = _leasedHealthTarget;
 // @ts-expect-error Leased Source Health cannot expose a Materialized target.
@@ -144,6 +204,7 @@ const materializedLifecycle: SourceAdapterServerLifecycle<
   AdapterDependency
 > = {
   acquire: (input) => {
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.definition).toEqualTypeOf<{
       readonly label: string;
       readonly batchSize: number;
@@ -162,6 +223,7 @@ const materializedLifecycle: SourceAdapterServerLifecycle<
   },
   metrics: (input) => {
     void input.topic;
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.definition).toEqualTypeOf<{
       readonly label: string;
       readonly batchSize: number;
@@ -185,6 +247,7 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
   AdapterDependency
 > = {
   acquire: (input) => {
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.target._tag).toEqualTypeOf<"Leased">();
     void input.target.route;
     return Effect.succeed(
@@ -198,6 +261,7 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
   },
   metrics: (input) => {
     void input.topic;
+    expectTypeOf(input.lifetimeScope).toEqualTypeOf<Scope.Scope>();
     expectTypeOf(input.target._tag).toEqualTypeOf<"Leased">();
     void input.target.route;
     return AdapterDependency.pipe(
@@ -207,6 +271,35 @@ const leasedLifecycle: SourceAdapterServerLifecycle<
     );
   },
   retry: Schedule.recurs(0),
+};
+
+declare const lifecycleScope: Scope.Scope;
+type MaterializedMetricsInput = SourceLifecycleMetricsInput<
+  {
+    readonly label: string;
+    readonly batchSize: number;
+  },
+  "materialized",
+  Readonly<Record<string, unknown>>,
+  "orders"
+>;
+const _validMaterializedMetricsInput: MaterializedMetricsInput = {
+  topic: "orders",
+  definition: {
+    label: "orders",
+    batchSize: 1,
+  },
+  lifetimeScope: lifecycleScope,
+  target: { _tag: "Materialized" },
+};
+// @ts-expect-error server lifecycle metrics require the logical lifetime Scope.
+const _missingLifetimeMaterializedMetricsInput: MaterializedMetricsInput = {
+  topic: "orders",
+  definition: {
+    label: "orders",
+    batchSize: 1,
+  },
+  target: { _tag: "Materialized" },
 };
 
 const serverLayer = SourceAdapterServer.make(adapter, {
@@ -419,6 +512,7 @@ describe("Source Adapter public type contracts", () => {
       readonly id: string;
       readonly value: number;
     }>();
+    expectTypeOf(invalidConditionalMappedDefinition).not.toBeAny();
     expectTypeOf(mappedServerLayer).not.toBeAny();
     expectTypeOf<SourceDefinitionOptions<typeof voidDefinition>>().toEqualTypeOf<undefined>();
   });
@@ -739,6 +833,23 @@ describe("Source Adapter public type contracts", () => {
     });
     expectTypeOf(invalidBackpressurable).not.toBeAny();
     expectTypeOf(invalidNonPausable).not.toBeAny();
+  });
+
+  it("preserves executable value inference and rejects scalar values", () => {
+    const executable = SourceAdapter.executable({
+      decode: (input: string) => Effect.succeed(input.length),
+    });
+    expectTypeOf(executable).toEqualTypeOf<{
+      decode: (input: string) => Effect.Effect<number>;
+    }>();
+    expectTypeOf(executable.decode("value")).toEqualTypeOf<Effect.Effect<number>>();
+
+    // @ts-expect-error executable values must be objects or functions.
+    SourceAdapter.executable("value");
+    // @ts-expect-error executable values cannot be null.
+    SourceAdapter.executable(null);
+    // @ts-expect-error executable values cannot be numbers.
+    SourceAdapter.executable(1);
   });
 
   it("requires exactly the declared server implementations", () => {

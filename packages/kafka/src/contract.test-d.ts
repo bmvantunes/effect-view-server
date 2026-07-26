@@ -1,13 +1,21 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { DescMessage } from "@bufbuild/protobuf";
-import type { SourceDefinitionRetryServices } from "effect-view-server/source-adapter";
+import type {
+  SourceDefinitionRetryServices,
+  SourceHealthForDefinition,
+  SourceTermination,
+} from "effect-view-server/source-adapter";
 import { Context, Effect, Option, Schedule, Schema } from "effect";
 import {
   KafkaSourceAdapter,
   kafka,
+  type KafkaAdapterFailure,
+  type KafkaCapturedStartPosition,
+  type KafkaCodecDecodeInput,
   type KafkaCodecFailure,
   type KafkaCodecValue,
   type KafkaSourceDefinition,
+  type KafkaSourceRetryPolicy,
 } from "@effect-view-server/kafka/contract";
 
 const JsonValueRow = Schema.Struct({
@@ -40,6 +48,22 @@ const source = kafka.source({
   },
   startFrom: "earliest",
 });
+const extraRowSource = kafka.source({
+  topic: "orders-source",
+  regions: ["eu", "us"],
+  key,
+  value,
+  localRowKey: ({ key }) => key,
+  map: ({ value, region }) => ({
+    price: value.price,
+    region,
+    extra: true,
+  }),
+  startFrom: "earliest",
+});
+const conditionalRowSource = Math.random() > 0.5 ? source : extraRowSource;
+// @ts-expect-error captured Kafka definitions preserve every conditional mapped Row branch.
+const invalidConditionalRowSource: typeof source = conditionalRowSource;
 const retrySource = kafka.source(
   {
     topic: "orders-source",
@@ -50,7 +74,7 @@ const retrySource = kafka.source(
     map: ({ value }) => ({ price: value.price }),
     startFrom: "earliest",
   },
-  Schedule.recurs(1),
+  Schedule.identity<SourceTermination<KafkaAdapterFailure<"eu">>>(),
 );
 const committedSource = kafka.source({
   topic: "orders-source",
@@ -91,10 +115,27 @@ const durationSource = kafka.source({
     fallback: "fail",
   },
 });
+const custom = kafka.codec({
+  name: "custom",
+  decode: (
+    input,
+  ): Effect.Effect<{ readonly decodedBytes: number }, { readonly _tag: "CustomCodecFailure" }> => {
+    expectTypeOf(input).toEqualTypeOf<KafkaCodecDecodeInput>();
+    return input.bytes.length > 0
+      ? Effect.succeed({ decodedBytes: input.bytes.length })
+      : Effect.fail({
+          _tag: "CustomCodecFailure" as const,
+        });
+  },
+});
 
 declare const unsafeAny: any;
 declare const unsafeUnknown: unknown;
 declare const unsafeNever: never;
+declare const unsafeAnySuccessEffect: Effect.Effect<any, { readonly _tag: "TypedFailure" }>;
+declare const unsafeUnknownSuccessEffect: Effect.Effect<unknown, { readonly _tag: "TypedFailure" }>;
+declare const unsafeAnyFailureEffect: Effect.Effect<string, any>;
+declare const unsafeUnknownFailureEffect: Effect.Effect<string, unknown>;
 declare const protobufDescriptor: DescMessage;
 
 class DecodeService extends Context.Service<DecodeService, true>()("KafkaDecodeService") {}
@@ -126,25 +167,84 @@ describe("Kafka Source Adapter type contract", () => {
     expectTypeOf<KafkaCodecValue<typeof value>>().toEqualTypeOf<{
       readonly price: number;
     }>();
+    expectTypeOf<KafkaCodecValue<typeof custom>>().toEqualTypeOf<{
+      readonly decodedBytes: number;
+    }>();
     expectTypeOf(value).not.toHaveProperty("schema");
     expectTypeOf<KafkaCodecFailure<typeof value>>().toEqualTypeOf<{
       readonly _tag: "KafkaCodecError";
       readonly message: string;
     }>();
+    type CustomCodecFailure = KafkaCodecFailure<typeof custom>;
+    expectTypeOf<
+      Extract<CustomCodecFailure, { readonly _tag: "KafkaCodecError" }>
+    >().toEqualTypeOf<{
+      readonly _tag: "KafkaCodecError";
+      readonly message: string;
+    }>();
+    expectTypeOf<
+      Extract<CustomCodecFailure, { readonly _tag: "CustomCodecFailure" }>
+    >().toEqualTypeOf<{
+      readonly _tag: "CustomCodecFailure";
+    }>();
+    expectTypeOf<
+      Exclude<CustomCodecFailure, { readonly _tag: "KafkaCodecError" | "CustomCodecFailure" }>
+    >().toEqualTypeOf<never>();
     expectTypeOf(source.adapter).toEqualTypeOf<typeof KafkaSourceAdapter>();
     expectTypeOf(source.lifecycle).toEqualTypeOf<"materialized">();
     expectTypeOf(source.options.regions).toEqualTypeOf<readonly ["eu", "us"]>();
+    expectTypeOf(invalidConditionalRowSource).not.toBeAny();
     expectTypeOf(source).toExtend<
       KafkaSourceDefinition<readonly ["eu", "us"], typeof key, typeof value>
     >();
     expectTypeOf<SourceDefinitionRetryServices<typeof source>>().toEqualTypeOf<never>();
     expectTypeOf<SourceDefinitionRetryServices<typeof retrySource>>().toEqualTypeOf<never>();
-    expectTypeOf(committedSource).not.toBeAny();
-    expectTypeOf(timestampSource).not.toBeAny();
-    expectTypeOf(durationSource).not.toBeAny();
+    type RetryPolicy = Extract<typeof retrySource.retry, { readonly _tag: "Override" }>["policy"];
+    expectTypeOf<Schedule.Input<RetryPolicy>>().toEqualTypeOf<
+      SourceTermination<KafkaAdapterFailure<"eu">>
+    >();
+    expectTypeOf(committedSource.options.startFrom).toEqualTypeOf<KafkaCapturedStartPosition>();
+    expectTypeOf(timestampSource.options.startFrom).toEqualTypeOf<KafkaCapturedStartPosition>();
+    expectTypeOf(durationSource.options.startFrom).toEqualTypeOf<KafkaCapturedStartPosition>();
+
+    type Health = SourceHealthForDefinition<
+      typeof source,
+      {
+        readonly id: string;
+        readonly price: number;
+        readonly region: "eu" | "us";
+      }
+    >;
+    type RetryFailure = Extract<
+      Extract<Health["status"], { readonly _tag: "WaitingToRetry" }>["termination"],
+      { readonly _tag: "Failed" }
+    >["failure"];
+    type AdapterFailure = Extract<RetryFailure, { readonly _tag: "AdapterFailure" }>["failure"];
+    expectTypeOf<Extract<AdapterFailure, { readonly region: string }>["region"]>().toEqualTypeOf<
+      "eu" | "us"
+    >();
+    expectTypeOf<
+      Extract<
+        Health["status"],
+        { readonly _tag: "Degraded" }
+      >["latestRejection"]["location"]["region"]
+    >().toEqualTypeOf<"eu" | "us">();
+    expectTypeOf<Health["metrics"]["adapter"]["regions"][number]["region"]>().toEqualTypeOf<
+      "eu" | "us"
+    >();
+    expectTypeOf<Health["metrics"]["runtime"]["lanes"][number]["id"]>().toEqualTypeOf<
+      "eu" | "us"
+    >();
   });
 
   it("rejects invalid source shapes and async or unsafe mappings", () => {
+    // @ts-expect-error retry policy aliases remain nominal Effect Schedules.
+    const invalidRetryPolicy: KafkaSourceRetryPolicy = 123;
+    expectTypeOf(invalidRetryPolicy).toEqualTypeOf<KafkaSourceRetryPolicy>();
+    // @ts-expect-error retry policies with service environments remain nominal Schedules.
+    const invalidServiceRetryPolicy: KafkaSourceRetryPolicy<"eu", unknown> = 123;
+    expectTypeOf(invalidServiceRetryPolicy).toEqualTypeOf<KafkaSourceRetryPolicy<"eu", unknown>>();
+
     // @ts-expect-error raw Row Schemas are not canonical JSON codec factories.
     kafka.json(JsonValueRow);
     // @ts-expect-error direct canonical codecs are not lazy factories.
@@ -176,6 +276,31 @@ describe("Kafka Source Adapter type contract", () => {
     kafka.protobuf(unsafeAny);
     // @ts-expect-error custom codec definitions cannot be any.
     kafka.codec(unsafeAny);
+    kafka.codec({
+      name: "non-effect",
+      // @ts-expect-error custom decoders must return an Effect.
+      decode: (input) => input.bytes,
+    });
+    // @ts-expect-error custom decoder success values cannot be any.
+    kafka.codec({
+      name: "any-success",
+      decode: () => unsafeAnySuccessEffect,
+    });
+    // @ts-expect-error custom decoder success values cannot be unknown.
+    kafka.codec({
+      name: "unknown-success",
+      decode: () => unsafeUnknownSuccessEffect,
+    });
+    // @ts-expect-error custom decoder failures cannot be any.
+    kafka.codec({
+      name: "any-failure",
+      decode: () => unsafeAnyFailureEffect,
+    });
+    // @ts-expect-error custom decoder failures cannot be unknown.
+    kafka.codec({
+      name: "unknown-failure",
+      decode: () => unsafeUnknownFailureEffect,
+    });
     const decoratedCodec = {
       name: "decorated",
       decode: () => Effect.succeed("value"),
@@ -466,6 +591,7 @@ describe("Kafka Source Adapter type contract", () => {
     // @ts-expect-error Source options are exact through variables.
     kafka.source(sourceWithExtra);
 
+    // @ts-expect-error retry policies cannot be any.
     kafka.source(
       {
         topic: "orders-source",
@@ -476,8 +602,37 @@ describe("Kafka Source Adapter type contract", () => {
         map: ({ value }) => ({ price: value.price }),
         startFrom: "earliest",
       },
-      // @ts-expect-error retry policies cannot be any.
       unsafeAny,
+    );
+
+    kafka.source(
+      {
+        topic: "orders-source",
+        regions: ["eu"],
+        key,
+        value,
+        localRowKey: ({ key }) => key,
+        map: ({ value }) => ({ price: value.price }),
+        startFrom: "earliest",
+      },
+      // @ts-expect-error retry overrides must be Source Retry Policy schedules.
+      123,
+    );
+
+    kafka.source(
+      {
+        topic: "orders-source",
+        regions: ["eu"],
+        key,
+        value,
+        localRowKey: ({ key }) => key,
+        map: ({ value }) => ({ price: value.price }),
+        startFrom: "earliest",
+      },
+      // @ts-expect-error retry inputs must use this definition's exact Region failure.
+      Schedule.identity<
+        import("effect-view-server/source-adapter").SourceTermination<KafkaAdapterFailure<"apac">>
+      >(),
     );
   });
 });

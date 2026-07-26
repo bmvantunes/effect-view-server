@@ -210,23 +210,33 @@ const exportTarget = (manifestExports: unknown, exportName: string): string => {
 const contractExport = (
   module: object,
   path: string | readonly [string, ...ReadonlyArray<string>],
-): unknown => {
-  const segments = typeof path === "string" ? [path] : path;
-  let current: unknown = module;
-  for (const segment of segments) {
-    if ((typeof current !== "object" || current === null) && typeof current !== "function") {
-      return undefined;
-    }
-    current = Reflect.get(current, segment);
-  }
-  return current;
-};
+  label: string,
+): Effect.Effect<unknown, SourceAdapterPackageInspectionError> =>
+  Effect.try({
+    try: () => {
+      const segments = typeof path === "string" ? [path] : path;
+      let current: unknown = module;
+      for (const segment of segments) {
+        if ((typeof current !== "object" || current === null) && typeof current !== "function") {
+          return undefined;
+        }
+        current = Reflect.get(current, segment);
+      }
+      return current;
+    },
+    catch: (cause) => inspectionError(`${label} could not be inspected.`, cause),
+  });
 
 const contractProbeValue = <Value>(
   probe: Value | ((contractModule: object) => Value),
   contractModule: object,
-): Value =>
-  typeof probe === "function" ? Reflect.apply(probe, undefined, [contractModule]) : probe;
+  label: string,
+): Effect.Effect<Value, SourceAdapterPackageInspectionError> =>
+  Effect.try({
+    try: () =>
+      typeof probe === "function" ? Reflect.apply(probe, undefined, [contractModule]) : probe,
+    catch: (cause) => inspectionError(`${label} failed.`, cause),
+  });
 
 const moduleStem = (path: string): string =>
   path.replace(/(?:\.d)?\.(?:[cm]?ts|tsx|[cm]?js)$/u, "");
@@ -787,7 +797,11 @@ export const inspectSourceAdapterPackageConformance = (
       readonly ["materialized" | "leased", SourceAdapterPackageLifecycleEvidence]
     > = [];
     for (const lifecycleProbe of options.contract.lifecycles) {
-      const makeDefinition = contractExport(contractModule, lifecycleProbe.definitionExport);
+      const makeDefinition = yield* contractExport(
+        contractModule,
+        lifecycleProbe.definitionExport,
+        `Contract ${lifecycleProbe.lifecycle} definition export`,
+      );
       if (typeof makeDefinition !== "function") {
         return yield* inspectionError(
           `Contract ${lifecycleProbe.lifecycle} definition export is not callable.`,
@@ -798,7 +812,9 @@ export const inspectSourceAdapterPackageConformance = (
           Reflect.apply(
             makeDefinition,
             undefined,
-            contractProbeValue(lifecycleProbe.definitionArguments, contractModule),
+            typeof lifecycleProbe.definitionArguments === "function"
+              ? Reflect.apply(lifecycleProbe.definitionArguments, undefined, [contractModule])
+              : lifecycleProbe.definitionArguments,
           ),
         catch: (cause) =>
           inspectionError(
@@ -850,13 +866,18 @@ export const inspectSourceAdapterPackageConformance = (
           inspectionError(`Platform export ${platform.export} could not be imported.`, cause),
       });
       platformTargets.push(platformTarget);
+      const viewServer = yield* contractProbeValue(
+        platform.viewServer,
+        contractModule,
+        `Platform export ${platform.export} View Server probe`,
+      );
       platformEntries.push([
         platform.export,
         yield* inspectPlatform(
           module,
           {
             ...platform,
-            viewServer: contractProbeValue(platform.viewServer, contractModule),
+            viewServer,
           },
           adapter,
         ),

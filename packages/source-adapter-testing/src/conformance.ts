@@ -1,7 +1,7 @@
 import type {
   SourceApplicationExit,
-  SourceDefinition,
   SourceDefinitionAny,
+  SourceDefinitionRow,
 } from "@effect-view-server/source-adapter";
 import {
   isSourceAdapterHandle,
@@ -155,8 +155,11 @@ type SourceAdapterConformanceDefinition<
   Adapter extends ConformanceAdapter,
   Lifecycle extends "materialized" | "leased",
   Route extends ReadonlyArray<string>,
-  Row extends object = object,
-> = SourceDefinition<Adapter, Lifecycle, unknown, Route, unknown, Row>;
+> = SourceDefinitionAny & {
+  readonly adapter: Adapter;
+  readonly lifecycle: Lifecycle;
+  readonly routeBy: Route;
+};
 
 export type SourceAdapterConformanceCallbackBridge<
   Adapter extends ConformanceAdapter = ConformanceAdapter,
@@ -179,25 +182,20 @@ type SourceAdapterConformanceLifecycleDefinitions<
   Adapter extends ConformanceAdapter,
   Lifecycle extends "materialized" | "leased",
   Route extends ReadonlyArray<string>,
-  Row extends object = object,
 > = {
-  readonly source: SourceAdapterConformanceDefinition<Adapter, Lifecycle, Route, Row>;
-  readonly delayedRetrySource: SourceAdapterConformanceDefinition<Adapter, Lifecycle, Route, Row>;
-  readonly singleRetrySource: SourceAdapterConformanceDefinition<Adapter, Lifecycle, Route, Row>;
+  readonly source: SourceAdapterConformanceDefinition<Adapter, Lifecycle, Route>;
+  readonly delayedRetrySource: SourceAdapterConformanceDefinition<Adapter, Lifecycle, Route>;
+  readonly singleRetrySource: SourceAdapterConformanceDefinition<Adapter, Lifecycle, Route>;
 };
 
-type SourceAdapterConformanceMaterializedDefinitions<
-  Adapter extends ConformanceAdapter,
-  Row extends object = object,
-> = SourceAdapterConformanceLifecycleDefinitions<Adapter, "materialized", readonly [], Row>;
+type SourceAdapterConformanceMaterializedDefinitions<Adapter extends ConformanceAdapter> =
+  SourceAdapterConformanceLifecycleDefinitions<Adapter, "materialized", readonly []>;
 
-type SourceAdapterConformanceLeasedDefinitions<
-  Adapter extends ConformanceAdapter,
-  Row extends object = object,
-> = SourceAdapterConformanceLifecycleDefinitions<Adapter, "leased", readonly ["region"], Row> & {
-  readonly sameRoute: Readonly<Record<string, unknown>>;
-  readonly distinctRoute: Readonly<Record<string, unknown>>;
-};
+type SourceAdapterConformanceLeasedDefinitions<Adapter extends ConformanceAdapter> =
+  SourceAdapterConformanceLifecycleDefinitions<Adapter, "leased", readonly ["region"]> & {
+    readonly sameRoute: Readonly<Record<string, unknown>>;
+    readonly distinctRoute: Readonly<Record<string, unknown>>;
+  };
 
 const SourceAdapterConformanceDriverValueTypeId: unique symbol = Symbol.for(
   "@effect-view-server/source-adapter-testing/ConformanceDriverValue",
@@ -251,16 +249,99 @@ export type SourceAdapterConformanceDriverInput<
   readonly expectations: SourceAdapterConformanceExpectations;
   readonly transport: SourceAdapterConformanceTransport;
   readonly runtimeLayer: Layer.Layer<RuntimeServices, RuntimeError, never>;
-  readonly materialized?: SourceAdapterConformanceMaterializedDefinitions<
-    NoInfer<Adapter>,
-    SourceAdapterConformanceRow
-  >;
-  readonly leased?: SourceAdapterConformanceLeasedDefinitions<
-    NoInfer<Adapter>,
-    SourceAdapterConformanceRow
-  >;
+  readonly materialized?: SourceAdapterConformanceMaterializedDefinitions<NoInfer<Adapter>>;
+  readonly leased?: SourceAdapterConformanceLeasedDefinitions<NoInfer<Adapter>>;
   readonly callbackBridge?: SourceAdapterConformanceCallbackBridge<NoInfer<Adapter>>;
 };
+
+type IsNever<Value> = [Value] extends [never] ? true : false;
+
+type IsAny<Value> = 0 extends 1 & Value ? true : false;
+
+type ConformanceRowMemberIsExact<Row> =
+  IsNever<Row> extends true
+    ? false
+    : IsAny<Row> extends true
+      ? false
+      : [Row] extends [SourceAdapterConformanceRow]
+        ? [SourceAdapterConformanceRow] extends [Row]
+          ? Exclude<keyof Row, keyof SourceAdapterConformanceRow> extends never
+            ? Exclude<keyof SourceAdapterConformanceRow, keyof Row> extends never
+              ? true
+              : false
+            : false
+          : false
+        : false;
+
+type ConformanceRowsAreExact<Row> =
+  IsNever<Row> extends true
+    ? false
+    : IsAny<Row> extends true
+      ? false
+      : Row extends unknown
+        ? ConformanceRowMemberIsExact<Row>
+        : false;
+
+type ConformanceDefinitionRowIsExact<Definition> =
+  IsNever<Definition> extends true
+    ? false
+    : Definition extends unknown
+      ? false extends ConformanceRowsAreExact<SourceDefinitionRow<Definition>>
+        ? false
+        : true
+      : false;
+
+type ConformanceLifecycleDefinitionRowsAreExact<Definitions> = Definitions extends {
+  readonly source: infer Source;
+  readonly delayedRetrySource: infer DelayedRetrySource;
+  readonly singleRetrySource: infer SingleRetrySource;
+}
+  ? false extends
+      | ConformanceDefinitionRowIsExact<Source>
+      | ConformanceDefinitionRowIsExact<DelayedRetrySource>
+      | ConformanceDefinitionRowIsExact<SingleRetrySource>
+    ? false
+    : true
+  : false;
+
+type ValidateConformanceLifecycleDefinitionRows<Definitions> = [
+  Exclude<Definitions, undefined>,
+] extends [never]
+  ? unknown
+  : false extends ConformanceLifecycleDefinitionRowsAreExact<Exclude<Definitions, undefined>>
+    ? never
+    : unknown;
+
+type ConformanceCallbackBridgeRowIsExact<Bridge> = Bridge extends {
+  readonly source: infer Source;
+}
+  ? false extends ConformanceDefinitionRowIsExact<Source>
+    ? false
+    : true
+  : false;
+
+type ValidateConformanceCallbackBridgeRow<Bridge> = [Exclude<Bridge, undefined>] extends [never]
+  ? unknown
+  : false extends ConformanceCallbackBridgeRowIsExact<Exclude<Bridge, undefined>>
+    ? never
+    : unknown;
+
+type InputProperty<Input, Key extends PropertyKey> = Key extends keyof Input
+  ? Input[Key]
+  : undefined;
+
+type ConformanceDriverInputRowsAreExact<Input> = Input extends unknown
+  ? [
+      ValidateConformanceLifecycleDefinitionRows<InputProperty<Input, "materialized">> &
+        ValidateConformanceLifecycleDefinitionRows<InputProperty<Input, "leased">> &
+        ValidateConformanceCallbackBridgeRow<InputProperty<Input, "callbackBridge">>,
+    ] extends [never]
+    ? false
+    : true
+  : false;
+
+type SourceAdapterConformanceDriverInputRowValidation<Input> =
+  false extends ConformanceDriverInputRowsAreExact<Input> ? never : unknown;
 
 const validateDefinition = (
   definition: SourceDefinitionAny | undefined,
@@ -288,7 +369,7 @@ export const sourceAdapterConformanceDefinitionIsLinked = (
 
 const validateLifecycleExpectations = (
   lifecycle: "materialized" | "leased",
-  definitions: SourceAdapterConformanceDriverValue["materialized" | "leased"],
+  definitions: unknown,
   expectations: unknown,
 ): void => {
   if ((definitions === undefined) !== (expectations === undefined)) {
@@ -314,8 +395,17 @@ export const makeSourceAdapterConformanceDriver = <
   const Adapter extends ConformanceAdapter,
   RuntimeServices,
   RuntimeError,
+  const Input extends {
+    readonly adapter: Adapter;
+    readonly runtimeLayer: Layer.Layer<RuntimeServices, RuntimeError, never>;
+  },
 >(
-  input: SourceAdapterConformanceDriverInput<RuntimeServices, RuntimeError, Adapter>,
+  input: Input & SourceAdapterConformanceDriverInput<RuntimeServices, RuntimeError, Adapter>,
+  ..._invalidDefinitionRows: [
+    SourceAdapterConformanceDriverInputRowValidation<NoInfer<Input>>,
+  ] extends [never]
+    ? readonly [never]
+    : readonly []
 ): SourceAdapterConformanceDriverValue<Adapter> => {
   if (!Layer.isLayer(input.runtimeLayer)) {
     throw new TypeError("Source Adapter conformance requires a nominal aggregate runtime Layer.");

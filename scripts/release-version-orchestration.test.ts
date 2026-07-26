@@ -327,12 +327,21 @@ describe("release version orchestration", () => {
         }),
     },
     {
+      message: "packages/kafka/package.json must remain private.",
+      mutate: (rootDirectory: string) =>
+        writeJson(join(rootDirectory, kafkaPackagePath), {
+          ...initialKafkaPackage,
+          private: false,
+        }),
+    },
+    {
       message:
         "packages/kafka/package.json must contain an exact devDependencies.effect-view-server dependency.",
       mutate: (rootDirectory: string) =>
         writeJson(join(rootDirectory, kafkaPackagePath), {
           name: "@effect-view-server/kafka",
           version: "0.0.0",
+          private: true,
           devDependencies: {},
           peerDependencies: {
             "effect-view-server": "0.0.6",
@@ -346,6 +355,7 @@ describe("release version orchestration", () => {
         writeJson(join(rootDirectory, kafkaPackagePath), {
           name: "@effect-view-server/kafka",
           version: "0.0.0",
+          private: true,
           devDependencies: {
             "effect-view-server": "0.0.6",
           },

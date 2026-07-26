@@ -97,10 +97,6 @@ const WireRow = Schema.Struct({
   value: Schema.Number,
 });
 
-type BenchmarkRuntime = {
-  readonly close: Effect.Effect<void>;
-};
-
 type BenchmarkRecord = {
   readonly key: string;
   readonly value: string;
@@ -117,11 +113,11 @@ type BenchmarkRegion = {
 };
 
 type BenchmarkState = {
-  readonly runtime: BenchmarkRuntime;
   readonly regions: ReadonlyMap<string, BenchmarkRegion>;
 };
 
 let state: BenchmarkState | undefined;
+let benchmarkScope: Scope.Closeable | undefined;
 let nextBatch = 0;
 
 const requireState = (): BenchmarkState => {
@@ -261,63 +257,75 @@ const makeSource = (sourceTopic: string, regions: readonly [string, ...ReadonlyA
   });
 
 beforeAll(async () => {
-  const single = makeBenchmarkRegion("single");
-  const region1 = makeBenchmarkRegion("region-1");
-  const region2 = makeBenchmarkRegion("region-2");
-  const region3 = makeBenchmarkRegion("region-3");
-  const region4 = makeBenchmarkRegion("region-4");
-  const regions = new Map([
-    ["single", single],
-    ["region-1", region1],
-    ["region-2", region2],
-    ["region-3", region3],
-    ["region-4", region4],
-  ]);
-  const config = defineViewServerConfig({
-    topics: {
-      accepted: {
-        schema: Row,
-        source: makeSource("accepted-source", ["single"]),
-      },
-      poisoned: {
-        schema: Row,
-        source: makeSource("poisoned-source", ["single"]),
-      },
-      multiRegion: {
-        schema: Row,
-        source: makeSource("multi-region-source", ["region-1", "region-2", "region-3", "region-4"]),
-      },
-    },
-  });
-  const layer = makeKafkaServerLayer({
-    consumerGroupPrefix: "kafka-source-benchmark",
-    regions: new Map(Array.from(regions, ([name, value]) => [name, value.runtime])),
-  });
-  const runtime = await Effect.runPromise(
-    makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer)),
-  );
+  const scope = Effect.runSync(Scope.make("sequential"));
+  benchmarkScope = scope;
   await Effect.runPromise(
-    Effect.all(
-      [
-        single.awaitBindings(["accepted", "poisoned"]),
-        region1.awaitBindings(["multiRegion"]),
-        region2.awaitBindings(["multiRegion"]),
-        region3.awaitBindings(["multiRegion"]),
-        region4.awaitBindings(["multiRegion"]),
-      ],
-      { concurrency: "unbounded", discard: true },
+    Effect.gen(function* () {
+      const single = makeBenchmarkRegion("single");
+      const region1 = makeBenchmarkRegion("region-1");
+      const region2 = makeBenchmarkRegion("region-2");
+      const region3 = makeBenchmarkRegion("region-3");
+      const region4 = makeBenchmarkRegion("region-4");
+      const regions = new Map([
+        ["single", single],
+        ["region-1", region1],
+        ["region-2", region2],
+        ["region-3", region3],
+        ["region-4", region4],
+      ]);
+      const config = defineViewServerConfig({
+        topics: {
+          accepted: {
+            schema: Row,
+            source: makeSource("accepted-source", ["single"]),
+          },
+          poisoned: {
+            schema: Row,
+            source: makeSource("poisoned-source", ["single"]),
+          },
+          multiRegion: {
+            schema: Row,
+            source: makeSource("multi-region-source", [
+              "region-1",
+              "region-2",
+              "region-3",
+              "region-4",
+            ]),
+          },
+        },
+      });
+      const layer = makeKafkaServerLayer({
+        consumerGroupPrefix: "kafka-source-benchmark",
+        regions: new Map(Array.from(regions, ([name, value]) => [name, value.runtime])),
+      });
+      yield* Effect.acquireRelease(
+        makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer)),
+        (runtime) => runtime.close,
+      );
+      yield* Effect.all(
+        [
+          single.awaitBindings(["accepted", "poisoned"]),
+          region1.awaitBindings(["multiRegion"]),
+          region2.awaitBindings(["multiRegion"]),
+          region3.awaitBindings(["multiRegion"]),
+          region4.awaitBindings(["multiRegion"]),
+        ],
+        { concurrency: "unbounded", discard: true },
+      );
+      state = {
+        regions,
+      };
+      memoryAfterSetup = memorySnapshot();
+    }).pipe(
+      Effect.provideService(Scope.Scope, scope),
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
     ),
   );
-  state = {
-    runtime,
-    regions,
-  };
-  memoryAfterSetup = memorySnapshot();
 });
 
 afterAll(async () => {
-  if (state !== undefined) {
-    await Effect.runPromise(state.runtime.close);
+  if (benchmarkScope !== undefined) {
+    await Effect.runPromise(Scope.close(benchmarkScope, Exit.void));
   }
   const memoryAfterBenchmark = memorySnapshot();
   writeJsonFile(benchmarkSummaryPath(outputJsonPath), {

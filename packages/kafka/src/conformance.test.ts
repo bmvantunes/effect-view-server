@@ -57,9 +57,7 @@ class KafkaConformanceProduction extends Context.Service<
 >()("@effect-view-server/kafka/ConformanceProduction") {}
 
 const acquisitionFailure: KafkaAdapterFailure = {
-  _tag: "KafkaAcquisitionFailure",
-  region: "primary",
-  topic: "conformance",
+  _tag: "KafkaConfigurationFailure",
   message: "conformance acquisition failure",
 };
 
@@ -289,7 +287,8 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
                   lane,
                   "events",
                   lane.events.pipe(
-                    Stream.map((event) => {
+                    Stream.mapEffect((event) => {
+                      let corruptionApplied = true;
                       if (event._tag === "SourceDelivery") {
                         for (const mutation of event.mutations) {
                           if (mutation._tag !== "Upsert") {
@@ -302,11 +301,21 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
                           const corruption = corruptions.get(id);
                           if (corruption !== undefined) {
                             corruptions.delete(id);
-                            Reflect.set(mutation.row, corruption.field, corruption.value);
+                            corruptionApplied = Reflect.set(
+                              mutation.row,
+                              corruption.field,
+                              corruption.value,
+                            );
                           }
                         }
                       }
-                      return event;
+                      return corruptionApplied
+                        ? Effect.succeed(event)
+                        : Effect.die(
+                            new Error(
+                              "Kafka conformance mutation corruption could not be applied.",
+                            ),
+                          );
                     }),
                   ),
                 );
@@ -499,18 +508,22 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
         finalizerBlock = yield* Deferred.make<void>();
       });
     }
-    return Effect.suspend(() =>
-      finalizerBlock === undefined
-        ? Effect.void
-        : Deferred.succeed(finalizerBlock, undefined).pipe(Effect.asVoid),
-    );
+    if (input._tag === "ReleaseFinalizer") {
+      return Effect.suspend(() =>
+        finalizerBlock === undefined
+          ? Effect.void
+          : Deferred.succeed(finalizerBlock, undefined).pipe(Effect.asVoid),
+      );
+    }
+    input satisfies never;
+    return Effect.die(new Error("Unsupported Kafka conformance command."));
   };
 
   const ConformanceWireRow = Schema.Struct({
     region: Schema.String,
     value: Schema.String,
   });
-  const makeDefinition = (retry?: KafkaSourceRetryPolicy) =>
+  const makeDefinition = (retry?: KafkaSourceRetryPolicy<"primary" | "sibling">) =>
     kafka.source(
       {
         topic: "conformance",
@@ -526,8 +539,7 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
       },
       retry ?? Schedule.recurs(3),
     );
-
-  return makeSourceAdapterConformanceDriver({
+  const conformanceDriverInput = {
     adapter: KafkaSourceAdapter,
     expectations: {
       materialized: {
@@ -535,8 +547,14 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
         streamFailure,
         settlementFailure,
         rejectionFailure,
-        rejectionLocation: (target, offset) => rejectionLocation(target, offset),
-        rowId: (target, localId) => `${target.lane}:${localId}`,
+        rejectionLocation: (
+          target: Extract<SourceAdapterConformanceTarget, { readonly _tag: "Materialized" }>,
+          offset: bigint,
+        ) => rejectionLocation(target, offset),
+        rowId: (
+          target: Extract<SourceAdapterConformanceTarget, { readonly _tag: "Materialized" }>,
+          localId: string,
+        ) => `${target.lane}:${localId}`,
         updatedMetrics: {
           activeGroupId: "conformance-updated:rows",
           start: {
@@ -563,7 +581,8 @@ const makeKafkaConformanceDriver = Effect.fn("KafkaSourceAdapter.conformance.dri
       observe: () => Effect.succeed(observe()),
       changes: () => SubscriptionRef.changes(activity).pipe(Stream.map(observe)),
     },
-  });
+  };
+  return makeSourceAdapterConformanceDriver(conformanceDriverInput);
 });
 
 const callable = (value: unknown, label: string) => {

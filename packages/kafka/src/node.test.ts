@@ -17,6 +17,7 @@ import {
   Option,
   Schedule,
   Schema,
+  Scope,
   Stream,
 } from "effect";
 import { TestClock } from "effect/testing";
@@ -136,6 +137,10 @@ const platformatic = vi.hoisted(() => {
     }
 
     [Symbol.asyncIterator](): AsyncIterator<FakeMessage, undefined> {
+      if (state.failNextIterator) {
+        state.failNextIterator = false;
+        throw new Error("iterator acquisition failed");
+      }
       return {
         next: () => {
           const message = this.queued.shift();
@@ -191,6 +196,9 @@ const platformatic = vi.hoisted(() => {
     failNextListCommitted: boolean;
     failNextConsume: boolean;
     failNextConsumerClose: boolean;
+    failNextIterator: boolean;
+    failNextListenerRegistration: boolean;
+    failNextListenerRemoval: boolean;
     failNextStreamClose: boolean;
     failNextStartLagMonitoring: boolean;
     failNextStopLagMonitoring: boolean;
@@ -208,6 +216,9 @@ const platformatic = vi.hoisted(() => {
     failNextListCommitted: false,
     failNextConsume: false,
     failNextConsumerClose: false,
+    failNextIterator: false,
+    failNextListenerRegistration: false,
+    failNextListenerRemoval: false,
     failNextStreamClose: false,
     failNextStartLagMonitoring: false,
     failNextStopLagMonitoring: false,
@@ -287,10 +298,18 @@ const platformatic = vi.hoisted(() => {
       const handlers = this.handlers.get(event) ?? new Set<EventHandler>();
       handlers.add(handler);
       this.handlers.set(event, handlers);
+      if (state.failNextListenerRegistration) {
+        state.failNextListenerRegistration = false;
+        throw new Error("listener registration failed");
+      }
     }
 
     off(event: string, handler: EventHandler): void {
       this.handlers.get(event)?.delete(handler);
+      if (state.failNextListenerRemoval) {
+        state.failNextListenerRemoval = false;
+        throw new Error("listener removal failed");
+      }
     }
 
     emit(event: string, payload?: EventPayload): void {
@@ -344,6 +363,9 @@ const platformatic = vi.hoisted(() => {
     state.failNextListCommitted = false;
     state.failNextConsume = false;
     state.failNextConsumerClose = false;
+    state.failNextIterator = false;
+    state.failNextListenerRegistration = false;
+    state.failNextListenerRemoval = false;
     state.failNextStreamClose = false;
     state.failNextStartLagMonitoring = false;
     state.failNextStopLagMonitoring = false;
@@ -366,40 +388,49 @@ const Order = Schema.Struct({
   region: Schema.String,
 });
 
-const makeConfig = (startFrom: KafkaStartPosition, retry?: KafkaSourceRetryPolicy) =>
-  defineViewServerConfig({
+const makeConfig = (startFrom: KafkaStartPosition, retry?: KafkaSourceRetryPolicy<"eu">) => {
+  const sourceOptions = {
+    topic: "source-orders",
+    regions: ["eu"] satisfies readonly ["eu"],
+    key: kafka.string(),
+    value: kafka.json(() =>
+      Schema.toCodecJson(
+        Schema.Struct({
+          price: Schema.Number,
+        }),
+      ),
+    ),
+    localRowKey: ({ key }: { readonly key: string }) => key,
+    map: ({
+      key,
+      value,
+      region,
+    }: {
+      readonly key: string;
+      readonly value: { readonly price: number };
+      readonly region: "eu";
+    }) => {
+      if (key === "mapping-failure") {
+        throw new Error("mapping failed");
+      }
+      return {
+        price: value.price,
+        region: String(region),
+      };
+    },
+    startFrom,
+  };
+  const source =
+    retry === undefined ? kafka.source(sourceOptions) : kafka.source(sourceOptions, retry);
+  return defineViewServerConfig({
     topics: {
       orders: {
         schema: Order,
-        source: kafka.source(
-          {
-            topic: "source-orders",
-            regions: ["eu"],
-            key: kafka.string(),
-            value: kafka.json(() =>
-              Schema.toCodecJson(
-                Schema.Struct({
-                  price: Schema.Number,
-                }),
-              ),
-            ),
-            localRowKey: ({ key }) => key,
-            map: ({ key, value, region }) => {
-              if (key === "mapping-failure") {
-                throw new Error("mapping failed");
-              }
-              return {
-                price: value.price,
-                region: String(region),
-              };
-            },
-            startFrom,
-          },
-          retry,
-        ),
+        source,
       },
     },
   });
+};
 
 const makeConfigWithMalformedTopic = () => {
   const config = makeConfig("earliest");
@@ -444,9 +475,13 @@ const makeConfigWithNonKafkaDefinitions = () => {
 
 const awaitCondition = (predicate: () => boolean): Effect.Effect<void> =>
   Effect.gen(function* () {
-    while (!predicate()) {
+    for (let attempt = 0; attempt < 100_000; attempt += 1) {
+      if (predicate()) {
+        return;
+      }
       yield* Effect.yieldNow;
     }
+    return yield* Effect.die(new Error("Kafka Node test condition was not satisfied."));
   });
 
 const message = (input: {
@@ -533,9 +568,9 @@ describe("Kafka Node Adapter", () => {
     "freezes the initial timestamp offsets and resumes retries from active-group commits",
     () =>
       Effect.gen(function* () {
-        platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
-        platformatic.state.offsetsByTimestamp.set(5n, [10n]);
-        platformatic.state.committedByGroup.set("replica:orders", [-1n]);
+        platformatic.state.offsetsByTimestamp.set(-1n, [100n, 200n]);
+        platformatic.state.offsetsByTimestamp.set(5n, [10n, 20n]);
+        platformatic.state.committedByGroup.set("replica:orders", [77n]);
         const config = makeConfig({
           mode: "timestamp",
           atNanos: 5_000_000n,
@@ -569,6 +604,11 @@ describe("Kafka Node Adapter", () => {
               topic: "source-orders",
               partition: 0,
               offset: 10n,
+            },
+            {
+              topic: "source-orders",
+              partition: 1,
+              offset: 20n,
             },
           ],
         });
@@ -610,12 +650,22 @@ describe("Kafka Node Adapter", () => {
                 partition: 0,
                 offset: 10n,
               },
+              {
+                topic: "source-orders",
+                partition: 1,
+                offset: 20n,
+              },
             ],
             [
               {
                 topic: "source-orders",
                 partition: 0,
                 offset: 11n,
+              },
+              {
+                topic: "source-orders",
+                partition: 1,
+                offset: 20n,
               },
             ],
           ],
@@ -664,7 +714,7 @@ describe("Kafka Node Adapter", () => {
           assignments: [{ partition: 0, offset: 12n, lag: 88n }],
           commits: 2n,
           commitFailures: 1n,
-          decoded: 6n,
+          decoded: 3n,
           decodeFailures: 0n,
           mapped: 3n,
           mappingFailures: 0n,
@@ -684,6 +734,133 @@ describe("Kafka Node Adapter", () => {
           streams: [true, true],
           consumers: [true, true],
         });
+      }),
+  );
+
+  it.effect(
+    "reuses explicit offsets when the first acquisition fails before current-lifetime progress",
+    () =>
+      Effect.gen(function* () {
+        platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+        platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
+        platformatic.state.committedByGroup.set("replica:orders", [50n]);
+        platformatic.state.failNextConsume = true;
+        const config = makeConfig("earliest", Schedule.recurs(1));
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            layer(config, {
+              consumerGroupPrefix: "replica",
+              regions: {
+                eu: { bootstrapServers: "one:9092" },
+              },
+            }),
+          ),
+        );
+        yield* awaitCondition(() => platformatic.state.streams.length === 1);
+
+        expect({
+          consumers: platformatic.state.consumers.length,
+          committedCalls: platformatic.state.committedCalls,
+          offsets: platformatic.state.consumeCalls[0]?.input.offsets,
+        }).toStrictEqual({
+          consumers: 2,
+          committedCalls: [],
+          offsets: [
+            {
+              topic: "source-orders",
+              partition: 0,
+              offset: 0n,
+            },
+          ],
+        });
+
+        platformatic.state.streams[0]?.push(
+          message({
+            groupId: "replica:orders",
+            key: "rebuilt",
+            price: 1,
+            offset: 0n,
+          }),
+        );
+        yield* awaitCondition(
+          () => platformatic.state.committedByGroup.get("replica:orders")?.[0] === 1n,
+        );
+        expect(
+          yield* runtime.client.snapshot("orders", {
+            select: ["id", "price", "region"],
+          }),
+        ).toStrictEqual({
+          rows: [{ id: "eu:rebuilt", price: 1, region: "eu" }],
+          totalRows: 1,
+          version: 1,
+          status: "ready",
+          statusCode: "Ready",
+        });
+        yield* runtime.close;
+      }),
+  );
+
+  it.effect(
+    "falls back to frozen explicit offsets when a current-lifetime commit disappears before retry",
+    () =>
+      Effect.gen(function* () {
+        platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+        platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
+        platformatic.state.committedByGroup.set("replica:orders", [50n]);
+        const config = makeConfig("earliest", Schedule.recurs(1));
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            layer(config, {
+              consumerGroupPrefix: "replica",
+              regions: {
+                eu: { bootstrapServers: "one:9092" },
+              },
+            }),
+          ),
+        );
+        yield* awaitCondition(() => platformatic.state.streams.length === 1);
+        platformatic.state.streams[0]?.push(
+          message({
+            groupId: "replica:orders",
+            key: "committed",
+            price: 1,
+            offset: 0n,
+          }),
+        );
+        yield* awaitCondition(
+          () => platformatic.state.committedByGroup.get("replica:orders")?.[0] === 1n,
+        );
+        platformatic.state.streams[0]?.push(
+          message({
+            groupId: "replica:orders",
+            key: "retry",
+            price: 2,
+            offset: 1n,
+            failCommit: true,
+          }),
+        );
+        yield* awaitCondition(() => platformatic.state.streams[0]?.closed === true);
+        platformatic.state.committedByGroup.set("replica:orders", []);
+        yield* TestClock.adjust("1 second");
+        yield* awaitCondition(() => platformatic.state.streams.length === 2);
+
+        expect(platformatic.state.consumeCalls.map(({ input }) => input.offsets)).toStrictEqual([
+          [
+            {
+              topic: "source-orders",
+              partition: 0,
+              offset: 0n,
+            },
+          ],
+          [
+            {
+              topic: "source-orders",
+              partition: 0,
+              offset: 0n,
+            },
+          ],
+        ]);
+        yield* runtime.close;
       }),
   );
 
@@ -797,6 +974,86 @@ describe("Kafka Node Adapter", () => {
         yield* runtime.close;
         expect(active?.lagMonitoring).toBe(false);
       }),
+  );
+
+  it.effect("reapplies explicit starts and resets metrics for a new lifetime on one Layer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        platformatic.state.offsetsByTimestamp.set(-1n, [100n]);
+        platformatic.state.offsetsByTimestamp.set(-2n, [0n]);
+        platformatic.state.committedByGroup.set("replica:orders", [50n]);
+        const config = makeConfig("earliest");
+        const context = yield* EffectLayer.build(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        );
+
+        const firstRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provideContext(context),
+        );
+        yield* awaitCondition(() => platformatic.state.streams.length === 1);
+        expect(platformatic.state.consumeCalls[0]?.input.offsets).toStrictEqual([
+          {
+            topic: "source-orders",
+            partition: 0,
+            offset: 0n,
+          },
+        ]);
+        platformatic.state.streams[0]?.push(
+          message({
+            groupId: "replica:orders",
+            key: "first",
+            price: 1,
+            offset: 0n,
+          }),
+        );
+        yield* awaitCondition(
+          () => platformatic.state.committedByGroup.get("replica:orders")?.[0] === 1n,
+        );
+        yield* firstRuntime.close;
+
+        const secondRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provideContext(context),
+        );
+        yield* awaitCondition(() => platformatic.state.streams.length === 2);
+        expect(platformatic.state.consumeCalls.map(({ input }) => input.offsets)).toStrictEqual([
+          [
+            {
+              topic: "source-orders",
+              partition: 0,
+              offset: 0n,
+            },
+          ],
+          [
+            {
+              topic: "source-orders",
+              partition: 0,
+              offset: 0n,
+            },
+          ],
+        ]);
+        const diagnostics = yield* secondRuntime.liveClient.subscribeSourceHealth("orders");
+        yield* TestClock.adjust("1 second");
+        const health = Option.getOrThrow(
+          yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+        );
+        expect({
+          commits: health.metrics.adapter.regions[0]?.commits,
+          reconnects: health.metrics.adapter.regions[0]?.reconnects,
+          closes: health.metrics.adapter.regions[0]?.closes,
+        }).toStrictEqual({
+          commits: 0n,
+          reconnects: 0n,
+          closes: 0n,
+        });
+        yield* diagnostics.close();
+        yield* secondRuntime.close;
+      }),
+    ),
   );
 
   it.effect("honors earliest and latest starts and translates nullish Kafka fields", () =>
@@ -1075,6 +1332,67 @@ describe("Kafka Node Adapter", () => {
       }),
   );
 
+  it.effect("maps iterator acquisition defects and cleans the failed attempt before retry", () =>
+    Effect.gen(function* () {
+      platformatic.state.offsetsByTimestamp.set(-1n, [10n]);
+      platformatic.state.committedByGroup.set("replica:orders", []);
+      platformatic.state.failNextIterator = true;
+      const config = makeConfig("latest", Schedule.spaced("10 seconds"));
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(
+          layer(config, {
+            consumerGroupPrefix: "replica",
+            regions: {
+              eu: { bootstrapServers: "one:9092" },
+            },
+          }),
+        ),
+      );
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const waiting = Option.getOrThrow(
+        yield* diagnostics.events.pipe(
+          Stream.filter((health) => health.status._tag === "WaitingToRetry"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      expect(waiting.status).toStrictEqual({
+        _tag: "WaitingToRetry",
+        nextAttempt: 2n,
+        termination: {
+          _tag: "Failed",
+          failure: {
+            _tag: "AdapterFailure",
+            failure: {
+              _tag: "KafkaConsumeFailure",
+              region: "eu",
+              topic: "source-orders",
+              message: "Kafka Region consumer stream failed.",
+            },
+          },
+        },
+        retryAtNanos: 10_000_000_000n,
+      });
+      expect({
+        consumerClosed: platformatic.state.consumers[0]?.closed,
+        handlersRemoved: [...(platformatic.state.consumers[0]?.handlers.values() ?? [])].every(
+          (handlers) => handlers.size === 0,
+        ),
+        iteratorFailureConsumed: platformatic.state.failNextIterator,
+        streamClosed: platformatic.state.streams[0]?.closed,
+      }).toStrictEqual({
+        consumerClosed: true,
+        handlersRemoved: true,
+        iteratorFailureConsumed: false,
+        streamClosed: true,
+      });
+      yield* TestClock.adjust("10 seconds");
+      yield* awaitCondition(() => platformatic.state.streams.length === 2);
+      yield* diagnostics.close();
+      yield* runtime.close;
+    }),
+  );
+
   it.effect(
     "closes consumers on every driver acquisition failure and surfaces stream failures",
     () =>
@@ -1084,12 +1402,16 @@ describe("Kafka Node Adapter", () => {
           | "failNextListOffsets"
           | "failNextListCommitted"
           | "failNextConsume"
+          | "failNextIterator"
+          | "failNextListenerRegistration"
           | "failNextStartLagMonitoring"
         > = [
           "failNextConstruction",
           "failNextListOffsets",
           "failNextListCommitted",
           "failNextConsume",
+          "failNextIterator",
+          "failNextListenerRegistration",
           "failNextStartLagMonitoring",
         ];
         for (const flag of flags) {
@@ -1097,7 +1419,16 @@ describe("Kafka Node Adapter", () => {
           platformatic.state.offsetsByTimestamp.set(-1n, [10n]);
           platformatic.state.committedByGroup.set("replica:orders", []);
           platformatic.state[flag] = true;
-          const config = makeConfig("latest", Schedule.recurs(0));
+          const config = makeConfig(
+            flag === "failNextListCommitted"
+              ? {
+                  mode: "committed",
+                  consumerGroupId: "seed",
+                  fallback: "latest",
+                }
+              : "latest",
+            Schedule.recurs(0),
+          );
           const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
             Effect.provide(
               layer(config, {
@@ -1141,6 +1472,7 @@ describe("Kafka Node Adapter", () => {
         platformatic.state.committedByGroup.set("replica:orders", []);
         platformatic.state.failNextStreamClose = true;
         platformatic.state.failNextConsumerClose = true;
+        platformatic.state.failNextListenerRemoval = true;
         platformatic.state.failNextStopLagMonitoring = true;
         const closeConfig = makeConfig("latest");
         const closeRuntime = yield* makeViewServerRuntimeCore(closeConfig, {}).pipe(
@@ -1158,10 +1490,12 @@ describe("Kafka Node Adapter", () => {
         expect({
           streamFailureConsumed: platformatic.state.failNextStreamClose,
           consumerFailureConsumed: platformatic.state.failNextConsumerClose,
+          listenerFailureConsumed: platformatic.state.failNextListenerRemoval,
           lagMonitoringFailureConsumed: platformatic.state.failNextStopLagMonitoring,
         }).toStrictEqual({
           streamFailureConsumed: false,
           consumerFailureConsumed: false,
+          listenerFailureConsumed: false,
           lagMonitoringFailureConsumed: false,
         });
       }),
@@ -1204,6 +1538,9 @@ describe("Kafka Node Adapter", () => {
         ),
       );
       expect(failure).toBeInstanceOf(Config.ConfigError);
+      expect(failure.message).toContain(
+        "Kafka Node Layer requires exactly consumerGroupPrefix and regions.",
+      );
     }),
   );
 
@@ -1227,6 +1564,16 @@ describe("Kafka Node Adapter", () => {
         },
       }),
     ).toThrowError(KafkaSourceConfigurationError);
+
+    expect(() =>
+      layer(config, {
+        consumerGroupPrefix: "a".repeat(32_761),
+        regions: {
+          eu: { bootstrapServers: "one:9092" },
+        },
+      }),
+    ).toThrowError("Kafka derived consumer group ID exceeds the 32767-byte Kafka protocol limit.");
+    expect(platformatic.state.consumers).toStrictEqual([]);
   });
 
   it("ignores non-Kafka definitions while validating consumer groups", () => {
@@ -1393,7 +1740,7 @@ describe("Kafka Node Adapter", () => {
       },
     });
     expect(copiedBytes === bytesInput).toBe(false);
-    expect(copiedList === bytesInput).toBe(false);
+    expect(copiedList[1] === bytesInput).toBe(false);
 
     const tls = kafkaNodeInternals.snapshotTls({
       ca: "ca",
@@ -1476,6 +1823,11 @@ describe("Kafka Node Adapter", () => {
         Reflect.apply(kafkaNodeInternals.snapshotRegionOptions, undefined, [malformed]),
       ).toThrowError("Kafka Region options are invalid.");
     }
+    for (const malformed of [null, []]) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.snapshotRegionOptions, undefined, [malformed]),
+      ).toThrowError("Kafka Region options are invalid.");
+    }
     expect(() =>
       Reflect.apply(kafkaNodeInternals.snapshotSasl, undefined, [{ mechanism: "invalid" }]),
     ).toThrowError("Kafka Region sasl options are invalid.");
@@ -1516,6 +1868,55 @@ describe("Kafka Node Adapter", () => {
         Reflect.apply(kafkaNodeInternals.bootstrapServers, undefined, [malformed]),
       ).toThrowError("Kafka Region bootstrapServers must contain only non-empty brokers.");
     }
+    const sparseBootstrap = Array<string>(3);
+    sparseBootstrap[0] = "one:9092";
+    sparseBootstrap[2] = "three:9092";
+    let bootstrapAccessorReads = 0;
+    const accessorBootstrap: Array<string> = [];
+    Object.defineProperty(accessorBootstrap, "0", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        bootstrapAccessorReads += 1;
+        return "one:9092";
+      },
+    });
+    const hostileBootstrap = new Proxy(["one:9092"], {
+      ownKeys: () => {
+        throw new Error("bootstrap keys failed");
+      },
+    });
+    for (const malformed of [sparseBootstrap, accessorBootstrap, hostileBootstrap]) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.bootstrapServers, undefined, [malformed]),
+      ).toThrowError("Kafka Region bootstrapServers must contain only non-empty brokers.");
+    }
+    expect(bootstrapAccessorReads).toBe(0);
+
+    const sparseTls = Array<string | Uint8Array>(1);
+    let tlsAccessorReads = 0;
+    const accessorTls: Array<string | Uint8Array> = [];
+    Object.defineProperty(accessorTls, "0", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        tlsAccessorReads += 1;
+        return "certificate";
+      },
+    });
+    const hostileTls = new Proxy(["certificate"], {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("TLS descriptor failed");
+      },
+    });
+    for (const malformed of [sparseTls, accessorTls, hostileTls]) {
+      expect(() =>
+        kafkaNodeInternals.snapshotTls({
+          ca: malformed,
+        }),
+      ).toThrowError("Kafka Region tls options are invalid.");
+    }
+    expect(tlsAccessorReads).toBe(0);
 
     const symbolOptions = {
       bootstrapServers: "one:9092",
@@ -1535,6 +1936,78 @@ describe("Kafka Node Adapter", () => {
 
   it("validates discovered Kafka bindings and snapshots pure diagnostics", () => {
     const validConfig = makeConfig("earliest");
+    let propertyReads = 0;
+    const regionOptions = new Proxy(
+      { bootstrapServers: "one:9092" },
+      {
+        get: () => {
+          propertyReads += 1;
+          throw new Error("region option property was read");
+        },
+      },
+    );
+    const regions = new Proxy(
+      { eu: regionOptions },
+      {
+        get: () => {
+          propertyReads += 1;
+          throw new Error("regions property was read");
+        },
+      },
+    );
+    const options = new Proxy(
+      {
+        consumerGroupPrefix: "replica",
+        regions,
+      },
+      {
+        get: () => {
+          propertyReads += 1;
+          throw new Error("top-level option property was read");
+        },
+      },
+    );
+    expect(
+      Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [validConfig, options]),
+    ).toStrictEqual({
+      consumerGroupPrefix: "replica",
+      regions: new Map([["eu", { bootstrapServers: ["one:9092"] }]]),
+    });
+    expect(propertyReads).toBe(0);
+    const hostileOptions = new Proxy(
+      {
+        consumerGroupPrefix: "replica",
+        regions: { eu: { bootstrapServers: "one:9092" } },
+      },
+      {
+        ownKeys: () => {
+          throw new Error("hostile ownKeys");
+        },
+      },
+    );
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [
+        validConfig,
+        hostileOptions,
+      ]),
+    ).toThrowError("Kafka Node Layer requires exactly consumerGroupPrefix and regions.");
+    const hostileRegion = new Proxy(
+      { bootstrapServers: "one:9092" },
+      {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("hostile descriptor");
+        },
+      },
+    );
+    expect(() =>
+      Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [
+        validConfig,
+        {
+          consumerGroupPrefix: "replica",
+          regions: { eu: hostileRegion },
+        },
+      ]),
+    ).toThrowError("Kafka Region options are invalid.");
     expect(kafkaNodeInternals.kafkaSourceRegions(validConfig)).toStrictEqual(new Set(["eu"]));
     expect(() =>
       Reflect.apply(kafkaNodeInternals.kafkaSourceRegions, undefined, [null]),
@@ -1585,6 +2058,11 @@ describe("Kafka Node Adapter", () => {
         { consumerGroupPrefix: "replica" },
       ]),
     ).toThrowError("Kafka Node Layer requires exactly consumerGroupPrefix and regions.");
+    for (const malformed of [null, []]) {
+      expect(() =>
+        Reflect.apply(kafkaNodeInternals.snapshotLayerOptions, undefined, [validConfig, malformed]),
+      ).toThrowError("Kafka Node Layer requires exactly consumerGroupPrefix and regions.");
+    }
 
     const metrics = kafkaNodeInternals.emptyMutableMetrics();
     metrics.assignments.set(0, {
@@ -1717,11 +2195,16 @@ describe("Kafka Node Adapter", () => {
       { partition: 1, offset: 25n, lag: 5n },
     ]);
 
+    const traceOne = Buffer.from("one");
+    const traceTwo = Buffer.from("two");
+    const traceThree = Buffer.from("three");
+    const single = Buffer.from("value");
     const headers = kafkaNodeInternals.headersFromMessage(
       new Map([
-        [Buffer.from("trace"), Buffer.from("one")],
-        [Buffer.from("trace"), Buffer.from("two")],
-        [Buffer.from("trace"), Buffer.from("three")],
+        [Buffer.from("trace"), traceOne],
+        [Buffer.from("trace"), traceTwo],
+        [Buffer.from("trace"), traceThree],
+        [Buffer.from("single"), single],
       ]),
     );
     expect({
@@ -1730,19 +2213,18 @@ describe("Kafka Node Adapter", () => {
     }).toStrictEqual({
       prototype: null,
       entries: [
-        [
-          "trace",
-          [
-            Uint8Array.from(Buffer.from("one")),
-            Uint8Array.from(Buffer.from("two")),
-            Uint8Array.from(Buffer.from("three")),
-          ],
-        ],
+        ["trace", [Buffer.from("one"), Buffer.from("two"), Buffer.from("three")]],
+        ["single", Buffer.from("value")],
       ],
     });
+    expect(headers["trace"]?.[0]).toBe(traceOne);
+    expect(headers["trace"]?.[1]).toBe(traceTwo);
+    expect(headers["trace"]?.[2]).toBe(traceThree);
+    expect(headers["single"]).toBe(single);
 
     const regionInput = {
       activeGroupId: "replica:orders",
+      lifetimeScope: Scope.makeUnsafe(),
       region: "eu",
       sourceTopic: "source-orders",
       start: { mode: "earliest" as const },

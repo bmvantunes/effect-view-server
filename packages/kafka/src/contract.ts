@@ -1,17 +1,19 @@
-import { fromBinary } from "@bufbuild/protobuf";
-import type { DescMessage, MessageShape } from "@bufbuild/protobuf";
-import { Duration, Effect, Option, Result, Schema } from "effect";
-import type { Schedule } from "effect";
+import { create, createFileRegistry, fromBinary, toBinary } from "@bufbuild/protobuf";
+import type { DescFile, DescMessage, MessageShape } from "@bufbuild/protobuf";
+import { FileDescriptorSetSchema } from "@bufbuild/protobuf/wkt";
+import { Duration, Effect, Option, Result, Schedule, Schema } from "effect";
 import {
   SourceAdapter,
   type SourceAdapterHandle,
   type SourceDefinition,
   type SourceLifecycleDeclaration,
   type SourceRetryPolicy,
+  type SourceTermination,
 } from "effect-view-server/source-adapter";
 
 const KafkaCodecTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodec");
 const KafkaCodecDecodeTypeId: unique symbol = Symbol("@effect-view-server/kafka/KafkaCodecDecode");
+declare const KafkaCapturedDefinitionRowTypeId: unique symbol;
 
 type IsAny<Value> = 0 extends 1 & Value ? true : false;
 
@@ -117,10 +119,19 @@ export type KafkaCustomCodec<Value, Error> = KafkaCodec<Value, Error> & {
   readonly name: string;
 };
 
-export type KafkaCodecValue<Codec> = Codec extends KafkaCodec<infer Value, unknown> ? Value : never;
+type KafkaCodecLike = {
+  readonly [KafkaCodecDecodeTypeId]: (
+    input: KafkaCodecDecodeInput,
+  ) => Effect.Effect<unknown, unknown>;
+};
 
-export type KafkaCodecFailure<Codec> =
-  Codec extends KafkaCodec<unknown, infer Error> ? Error : never;
+export type KafkaCodecValue<Codec extends KafkaCodecLike> = Effect.Success<
+  ReturnType<Codec[typeof KafkaCodecDecodeTypeId]>
+>;
+
+export type KafkaCodecFailure<Codec extends KafkaCodecLike> = Effect.Error<
+  ReturnType<Codec[typeof KafkaCodecDecodeTypeId]>
+>;
 
 export const KafkaCodecError = Schema.TaggedStruct("KafkaCodecError", {
   message: Schema.String,
@@ -170,6 +181,9 @@ export const decodeKafkaCodec = <Value, Error>(
 ): Effect.Effect<Value, Error> => codec[KafkaCodecDecodeTypeId](input);
 
 const textDecoder = new TextDecoder();
+const jsonTextDecoder = new TextDecoder("utf-8", { fatal: true });
+const textEncoder = new TextEncoder();
+const kafkaConsumerGroupIdMaxBytes = 32_767;
 
 const bytesCodec = (): KafkaBytesCodec =>
   makeCodec("bytes", (input) => Effect.succeed(input.bytes));
@@ -249,7 +263,7 @@ function jsonCodec<const SourceSchema extends KafkaRowSchema>(
       return Effect.fail(decoder.error);
     }
     return Effect.try({
-      try: (): unknown => JSON.parse(textDecoder.decode(input.bytes)),
+      try: (): unknown => JSON.parse(jsonTextDecoder.decode(input.bytes)),
       catch: () => codecError("Kafka JSON payload is not valid JSON."),
     }).pipe(
       Effect.flatMap((value) =>
@@ -274,16 +288,72 @@ type KafkaProtobufAdditionalArguments<Descriptor> =
           ? readonly []
           : readonly [never];
 
+const freezeDescriptorGraph = (value: unknown, visited = new WeakSet<object>()): void => {
+  if (
+    (typeof value !== "object" && typeof value !== "function") ||
+    value === null ||
+    ArrayBuffer.isView(value) ||
+    visited.has(value)
+  ) {
+    return;
+  }
+  visited.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    freezeDescriptorGraph(Reflect.get(value, key), visited);
+  }
+  Object.freeze(value);
+};
+
+const captureProtobufDescriptor = (descriptor: DescMessage): DescMessage => {
+  const captured = Result.try(() => {
+    const typeName = descriptor.typeName;
+    const rootFile = descriptor.file;
+    const files: Array<DescFile> = [];
+    const visited = new Set<DescFile>();
+    const visit = (file: DescFile): void => {
+      if (visited.has(file)) {
+        return;
+      }
+      visited.add(file);
+      for (const dependency of file.dependencies) {
+        visit(dependency);
+      }
+      files.push(file);
+    };
+    visit(rootFile);
+    const descriptorSet = create(FileDescriptorSetSchema, {
+      file: files.map((file) => file.proto),
+    });
+    const clonedDescriptorSet = fromBinary(
+      FileDescriptorSetSchema,
+      toBinary(FileDescriptorSetSchema, descriptorSet),
+    );
+    const clone = createFileRegistry(clonedDescriptorSet).getMessage(typeName);
+    if (clone === undefined) {
+      throw new Error("message descriptor is missing from its file");
+    }
+    freezeDescriptorGraph(clone);
+    return clone;
+  });
+  if (Result.isFailure(captured)) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka protobuf codec requires a valid message descriptor.",
+    );
+  }
+  return captured.success;
+};
+
 function protobufCodec<const Descriptor>(
   descriptor: Descriptor,
   ..._unsupported: KafkaProtobufAdditionalArguments<NoInfer<Descriptor>>
 ): KafkaProtobufCodec<Extract<Descriptor, DescMessage>>;
 function protobufCodec(descriptor: DescMessage): KafkaProtobufCodec<DescMessage> {
+  const capturedDescriptor = captureProtobufDescriptor(descriptor);
   const codec = makeCodec<MessageShape<DescMessage>, KafkaCodecError, "protobuf">(
     "protobuf",
     (input) =>
       Effect.try({
-        try: () => fromBinary(descriptor, input.bytes),
+        try: () => fromBinary(capturedDescriptor, input.bytes),
         catch: () => codecError("Kafka protobuf payload could not be decoded."),
       }),
   );
@@ -291,7 +361,7 @@ function protobufCodec(descriptor: DescMessage): KafkaProtobufCodec<DescMessage>
     [KafkaCodecTypeId]: () => protobuf,
     [KafkaCodecDecodeTypeId]: (input) => decodeKafkaCodec(codec, input),
     format: "protobuf",
-    descriptor,
+    descriptor: capturedDescriptor,
   };
   return SourceAdapter.executable(protobuf);
 }
@@ -309,8 +379,45 @@ type KafkaCustomCodecShape = {
   readonly decode: (input: KafkaCodecDecodeInput) => KafkaCustomDecodeResult;
 };
 
+const isKafkaCustomDecode = (value: unknown): value is KafkaCustomCodecShape["decode"] =>
+  typeof value === "function";
+
 type KafkaCustomCodecAdditionalArguments<Definition> =
   IsAny<Definition> extends true ? readonly [never] : readonly [];
+
+const captureCustomCodecDefinition = (definition: unknown): KafkaCustomCodecShape | undefined => {
+  if (typeof definition !== "object" || definition === null) {
+    return undefined;
+  }
+  const captured = Result.try(() => {
+    const keys = Reflect.ownKeys(definition);
+    if (keys.length !== 2 || keys.some((key) => key !== "name" && key !== "decode")) {
+      return undefined;
+    }
+    const nameDescriptor = Object.getOwnPropertyDescriptor(definition, "name");
+    const decodeDescriptor = Object.getOwnPropertyDescriptor(definition, "decode");
+    if (
+      nameDescriptor === undefined ||
+      decodeDescriptor === undefined ||
+      nameDescriptor.enumerable !== true ||
+      decodeDescriptor.enumerable !== true ||
+      !("value" in nameDescriptor) ||
+      !("value" in decodeDescriptor)
+    ) {
+      return undefined;
+    }
+    const name: unknown = nameDescriptor.value;
+    const decode: unknown = decodeDescriptor.value;
+    if (typeof name !== "string" || name.length === 0 || !isKafkaCustomDecode(decode)) {
+      return undefined;
+    }
+    return Object.freeze({
+      name,
+      decode,
+    });
+  });
+  return Result.isSuccess(captured) ? captured.success : undefined;
+};
 
 function customCodec<
   const Definition extends {
@@ -327,29 +434,26 @@ function customCodec<
     RejectExtraKeys<Definition, KafkaCustomCodecShape>,
   ..._unsupported: KafkaCustomCodecAdditionalArguments<NoInfer<Definition>>
 ): KafkaCustomCodec<
-  KafkaCustomDecodeValue<ReturnType<Definition["decode"]>>,
-  KafkaCustomDecodeFailure<ReturnType<Definition["decode"]>>
+  KafkaCustomDecodeValue<NoInfer<ReturnType<Definition["decode"]>>>,
+  KafkaCodecError | KafkaCustomDecodeFailure<NoInfer<ReturnType<Definition["decode"]>>>
 >;
 function customCodec(definition: KafkaCustomCodecShape): KafkaCustomCodec<unknown, unknown> {
-  if (
-    typeof definition !== "object" ||
-    definition === null ||
-    Object.keys(definition).length !== 2 ||
-    !Object.hasOwn(definition, "name") ||
-    !Object.hasOwn(definition, "decode") ||
-    typeof definition.name !== "string" ||
-    definition.name.length === 0 ||
-    typeof definition.decode !== "function"
-  ) {
+  const captured = captureCustomCodecDefinition(definition);
+  if (captured === undefined) {
     throw new KafkaSourceConfigurationError(
       "Kafka custom codec requires exactly a non-empty name and decode function.",
     );
   }
+  const decode = captured.decode;
   const codec: KafkaCustomCodec<unknown, unknown> = {
     [KafkaCodecTypeId]: () => codec,
-    [KafkaCodecDecodeTypeId]: definition.decode,
+    [KafkaCodecDecodeTypeId]: (input) =>
+      Effect.try({
+        try: () => decode(input),
+        catch: () => codecError("Kafka custom codec threw synchronously."),
+      }).pipe(Effect.flatten),
     format: "custom",
-    name: definition.name,
+    name: captured.name,
   };
   return SourceAdapter.executable(codec);
 }
@@ -493,7 +597,12 @@ export const KafkaSourceRejectionLocation = Schema.Struct({
   phase: KafkaRejectionPhaseSchema,
   message: Schema.String,
 });
-export type KafkaSourceRejectionLocation = typeof KafkaSourceRejectionLocation.Type;
+export type KafkaSourceRejectionLocation<Region extends string = string> = Omit<
+  typeof KafkaSourceRejectionLocation.Type,
+  "region"
+> & {
+  readonly region: Region;
+};
 
 export const KafkaAdapterFailure = Schema.Union([
   Schema.TaggedStruct("KafkaConfigurationFailure", {
@@ -530,7 +639,18 @@ export const KafkaAdapterFailure = Schema.Union([
     message: Schema.String,
   }),
 ]);
-export type KafkaAdapterFailure = typeof KafkaAdapterFailure.Type;
+type KafkaAdapterFailureWithRegion<Value, Region extends string> = Value extends {
+  readonly region: string;
+}
+  ? Omit<Value, "region"> & {
+      readonly region: Region;
+    }
+  : Value;
+
+export type KafkaAdapterFailure<Region extends string = string> = KafkaAdapterFailureWithRegion<
+  typeof KafkaAdapterFailure.Type,
+  Region
+>;
 
 export const KafkaPartitionMetrics = Schema.Struct({
   partition: Schema.Int,
@@ -554,14 +674,24 @@ export const KafkaRegionMetrics = Schema.Struct({
   closes: Schema.BigInt,
   closeFailures: Schema.BigInt,
 });
-export type KafkaRegionMetrics = typeof KafkaRegionMetrics.Type;
+export type KafkaRegionMetrics<Region extends string = string> = Omit<
+  typeof KafkaRegionMetrics.Type,
+  "region"
+> & {
+  readonly region: Region;
+};
 
 export const KafkaMaterializedMetrics = Schema.Struct({
   activeGroupId: Schema.NonEmptyString,
   start: KafkaStartResolutionSchema,
   regions: Schema.Array(KafkaRegionMetrics),
 });
-export type KafkaMaterializedMetrics = typeof KafkaMaterializedMetrics.Type;
+export type KafkaMaterializedMetrics<Region extends string = string> = Omit<
+  typeof KafkaMaterializedMetrics.Type,
+  "regions"
+> & {
+  readonly regions: ReadonlyArray<KafkaRegionMetrics<Region>>;
+};
 
 export type KafkaLocalRowKeyInput<
   Region extends string,
@@ -823,7 +953,7 @@ type KafkaSourceInputGuards<Input, Shape> = KafkaNotAny<Input> &
 type KafkaSourceRetryAdditionalArguments<Retry> =
   IsAny<Retry> extends true ? readonly [never] : readonly [];
 
-type KafkaSourceRetryServices<Retry> = Schedule.Env<Exclude<Retry, undefined>>;
+type KafkaSourceRetryServices<Retry> = Schedule.Env<Retry>;
 
 type CapturedRegions<Input> = Extract<
   KafkaSourceField<Input, "regions">,
@@ -851,7 +981,11 @@ type CapturedDefinition<Input, Services> = KafkaSourceDefinition<
   CapturedLocalRowKey<Input>,
   CapturedMapping<Input>,
   Services
->;
+> & {
+  readonly [KafkaCapturedDefinitionRowTypeId]?: (
+    _row: KafkaTopicRow<CapturedMapping<Input>>,
+  ) => KafkaTopicRow<CapturedMapping<Input>>;
+};
 
 type KafkaSourceDefinitionOptions<
   Regions extends KafkaNonEmptyReadonlyArray<string>,
@@ -886,97 +1020,209 @@ export type KafkaSourceDefinition<
   KafkaSourceDefinitionOptions<Regions, KeyCodec, ValueCodec, LocalRowKey, Mapping>,
   readonly [],
   RetryServices,
-  KafkaTopicRow<Mapping>
+  KafkaTopicRow<Mapping>,
+  KafkaAdapterFailure<Regions[number]>,
+  KafkaMaterializedMetrics<Regions[number]>,
+  KafkaSourceRejectionLocation<Regions[number]>,
+  Regions[number]
 >;
 
 export class KafkaSourceConfigurationError extends Error {
   override readonly name = "KafkaSourceConfigurationError";
 }
 
-const exactOwnDataKeys = (value: object, expected: ReadonlyArray<string>): boolean => {
-  const keys = Result.try(() => Reflect.ownKeys(value));
-  return (
-    Result.isSuccess(keys) &&
-    keys.success.length === expected.length &&
-    keys.success.every((key) => typeof key === "string" && expected.includes(key)) &&
-    expected.every((key) => {
-      const descriptor = Result.try(() => Object.getOwnPropertyDescriptor(value, key));
-      return (
-        Result.isSuccess(descriptor) &&
-        descriptor.success !== undefined &&
-        descriptor.success.enumerable === true &&
-        "value" in descriptor.success
-      );
-    })
+const captureOwnDataValues = (value: unknown): ReadonlyMap<PropertyKey, unknown> | undefined =>
+  Result.try(() => {
+    if (typeof value !== "object" || value === null) {
+      return undefined;
+    }
+    const captured = new Map<PropertyKey, unknown>();
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
+        return undefined;
+      }
+      captured.set(key, descriptor.value);
+    }
+    return captured;
+  }).pipe(
+    Result.match({
+      onFailure: () => undefined,
+      onSuccess: (captured) => captured,
+    }),
   );
+
+const captureExactOwnDataValues = (
+  value: unknown,
+  expected: ReadonlyArray<string>,
+): ReadonlyMap<PropertyKey, unknown> | undefined => {
+  const captured = captureOwnDataValues(value);
+  return captured !== undefined &&
+    captured.size === expected.length &&
+    expected.every((key) => captured.has(key))
+    ? captured
+    : undefined;
 };
 
 const validateFallback = (fallback: unknown): fallback is KafkaStartFallback =>
   fallback === "earliest" || fallback === "latest" || fallback === "fail";
 
 const validateConsumerGroupId = (groupId: unknown): groupId is string =>
-  typeof groupId === "string" && groupId.length > 0 && /^\S+$/u.test(groupId);
+  typeof groupId === "string" &&
+  groupId.length > 0 &&
+  /^\S+$/u.test(groupId) &&
+  textEncoder.encode(groupId).byteLength <= kafkaConsumerGroupIdMaxBytes;
 
-const captureStartPosition = (start: KafkaStartPosition): KafkaCapturedStartPosition => {
+type KafkaDurationString = Extract<Duration.Input, string>;
+
+const isDurationString = (value: unknown): value is KafkaDurationString =>
+  typeof value === "string" &&
+  (value === "Infinity" ||
+    value === "-Infinity" ||
+    /^-?\d+(?:\.\d+)?\s+(?:nanos?|micros?|millis?|seconds?|minutes?|hours?|days?|weeks?)$/u.test(
+      value,
+    ));
+
+const durationFromUnknown = (input: unknown): Option.Option<Duration.Duration> =>
+  Result.try(() => {
+    if (
+      typeof input === "number" ||
+      typeof input === "bigint" ||
+      isDurationString(input) ||
+      Duration.isDuration(input)
+    ) {
+      return Duration.fromInput(input);
+    }
+    if (Array.isArray(input)) {
+      const length = Option.getOrThrow(
+        Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(input, "length")),
+      ).value;
+      const seconds = Object.getOwnPropertyDescriptor(input, "0");
+      const nanos = Object.getOwnPropertyDescriptor(input, "1");
+      if (
+        length !== 2 ||
+        seconds === undefined ||
+        nanos === undefined ||
+        seconds.enumerable !== true ||
+        nanos.enumerable !== true ||
+        !("value" in seconds) ||
+        !("value" in nanos) ||
+        typeof seconds.value !== "number" ||
+        typeof nanos.value !== "number"
+      ) {
+        return Option.none();
+      }
+      return Duration.fromInput([seconds.value, nanos.value]);
+    }
+    const captured = captureOwnDataValues(input);
+    if (captured === undefined) {
+      return Option.none();
+    }
+    const allowed = [
+      "weeks",
+      "days",
+      "hours",
+      "minutes",
+      "seconds",
+      "milliseconds",
+      "microseconds",
+      "nanoseconds",
+    ] as const;
+    if (
+      !Array.from(captured.keys()).every(
+        (key) =>
+          typeof key === "string" &&
+          allowed.some((allowedKey) => allowedKey === key) &&
+          (captured.get(key) === undefined || typeof captured.get(key) === "number"),
+      )
+    ) {
+      return Option.none();
+    }
+    const component = (name: (typeof allowed)[number]): number | undefined => {
+      const value = captured.get(name);
+      return typeof value === "number" ? value : undefined;
+    };
+    return Duration.fromInput({
+      weeks: component("weeks"),
+      days: component("days"),
+      hours: component("hours"),
+      minutes: component("minutes"),
+      seconds: component("seconds"),
+      milliseconds: component("milliseconds"),
+      microseconds: component("microseconds"),
+      nanoseconds: component("nanoseconds"),
+    });
+  }).pipe(
+    Result.match({
+      onFailure: () => Option.none(),
+      onSuccess: (duration) => duration,
+    }),
+  );
+
+const captureStartPosition = (start: unknown): KafkaCapturedStartPosition => {
   if (start === "earliest" || start === "latest") {
     return start;
   }
-  if (typeof start !== "object" || start === null) {
+  const captured = captureOwnDataValues(start);
+  if (captured === undefined) {
     throw new KafkaSourceConfigurationError(
       "Kafka startFrom must be earliest, latest, committed, timestamp, or durationAgo.",
     );
   }
-  if (start.mode === "committed") {
+  const mode = captured.get("mode");
+  if (mode === "committed") {
+    const consumerGroupId = captured.get("consumerGroupId");
+    const fallback = captured.get("fallback");
     if (
-      !exactOwnDataKeys(start, ["mode", "consumerGroupId", "fallback"]) ||
-      !validateConsumerGroupId(start.consumerGroupId) ||
-      !validateFallback(start.fallback)
+      captured.size !== 3 ||
+      !validateConsumerGroupId(consumerGroupId) ||
+      !validateFallback(fallback)
     ) {
       throw new KafkaSourceConfigurationError(
-        "Kafka committed startFrom requires exactly a non-empty whitespace-free consumerGroupId and fallback.",
+        "Kafka committed startFrom requires exactly a non-empty whitespace-free consumerGroupId no longer than 32767 UTF-8 bytes and fallback.",
       );
     }
     return Object.freeze({
-      mode: start.mode,
-      consumerGroupId: start.consumerGroupId,
-      fallback: start.fallback,
+      mode,
+      consumerGroupId,
+      fallback,
     });
   }
-  if (start.mode === "timestamp") {
+  if (mode === "timestamp") {
+    const atNanos = captured.get("atNanos");
+    const fallback = captured.get("fallback");
     if (
-      !exactOwnDataKeys(start, ["mode", "atNanos", "fallback"]) ||
-      typeof start.atNanos !== "bigint" ||
-      start.atNanos < 0n ||
-      !validateFallback(start.fallback)
+      captured.size !== 3 ||
+      typeof atNanos !== "bigint" ||
+      atNanos < 0n ||
+      !validateFallback(fallback)
     ) {
       throw new KafkaSourceConfigurationError(
         "Kafka timestamp startFrom requires exactly non-negative atNanos and fallback.",
       );
     }
     return Object.freeze({
-      mode: start.mode,
-      atNanos: start.atNanos,
-      fallback: start.fallback,
+      mode,
+      atNanos,
+      fallback,
     });
   }
-  if (start.mode === "durationAgo") {
-    if (
-      !exactOwnDataKeys(start, ["mode", "duration", "fallback"]) ||
-      !validateFallback(start.fallback)
-    ) {
+  if (mode === "durationAgo") {
+    const fallback = captured.get("fallback");
+    if (captured.size !== 3 || !captured.has("duration") || !validateFallback(fallback)) {
       throw new KafkaSourceConfigurationError(
         "Kafka durationAgo startFrom requires exactly duration and fallback.",
       );
     }
-    const duration = Duration.fromInput(start.duration);
+    const duration = durationFromUnknown(captured.get("duration"));
     const nanos = Option.flatMap(duration, Duration.toNanos);
     if (Option.isNone(nanos) || nanos.value < 0n) {
       throw new KafkaSourceConfigurationError("Kafka durationAgo must be finite and non-negative.");
     }
     return Object.freeze({
-      mode: start.mode,
+      mode,
       durationNanos: nanos.value,
-      fallback: start.fallback,
+      fallback,
     });
   }
   throw new KafkaSourceConfigurationError("Kafka startFrom contains an unsupported mode.");
@@ -984,6 +1230,9 @@ const captureStartPosition = (start: KafkaStartPosition): KafkaCapturedStartPosi
 
 const validateRegion = (region: unknown): region is string =>
   typeof region === "string" && region.length > 0 && !region.includes(":");
+
+const isKafkaRuntimeCallback = (value: unknown): value is (input: never) => unknown =>
+  typeof value === "function";
 
 type KafkaCodecCandidate<Codec> = Extract<Codec, KafkaCodec<unknown, unknown>>;
 
@@ -1024,6 +1273,82 @@ type KafkaSourceCandidate<
   readonly startFrom: StartFrom;
 };
 
+const isKafkaSourceRetryPolicy = (
+  value: unknown,
+): value is SourceRetryPolicy<KafkaAdapterFailure, unknown> =>
+  Result.try(() => Schedule.isSchedule(value)).pipe(
+    Result.match({
+      onFailure: () => false,
+      onSuccess: (isSchedule) => isSchedule,
+    }),
+  );
+
+type KafkaSourceApi = {
+  <
+    const Topic extends string,
+    const Regions extends KafkaNonEmptyReadonlyArray<string>,
+    const KeyCodec,
+    const ValueCodec,
+    const LocalRowKey extends KafkaSourceLocalRowKey<Regions, NoInfer<KeyCodec>, string>,
+    const Mapping extends KafkaSourceMapping<
+      Regions,
+      NoInfer<KeyCodec>,
+      NoInfer<ValueCodec>,
+      object
+    >,
+    const StartFrom extends KafkaStartPosition,
+    const Input,
+  >(
+    input: KafkaSourceCandidate<
+      Topic,
+      Regions,
+      KeyCodec,
+      ValueCodec,
+      LocalRowKey,
+      Mapping,
+      StartFrom
+    > &
+      Input &
+      KafkaSourceInputGuards<
+        NoInfer<Input>,
+        KafkaSourceCandidate<Topic, Regions, KeyCodec, ValueCodec, LocalRowKey, Mapping, StartFrom>
+      >,
+  ): CapturedDefinition<Input, never>;
+  <
+    const Topic extends string,
+    const Regions extends KafkaNonEmptyReadonlyArray<string>,
+    const KeyCodec,
+    const ValueCodec,
+    const LocalRowKey extends KafkaSourceLocalRowKey<Regions, NoInfer<KeyCodec>, string>,
+    const Mapping extends KafkaSourceMapping<
+      Regions,
+      NoInfer<KeyCodec>,
+      NoInfer<ValueCodec>,
+      object
+    >,
+    const StartFrom extends KafkaStartPosition,
+    const Input,
+    const Retry extends SourceRetryPolicy<KafkaAdapterFailure<Regions[number]>, unknown>,
+  >(
+    input: KafkaSourceCandidate<
+      Topic,
+      Regions,
+      KeyCodec,
+      ValueCodec,
+      LocalRowKey,
+      Mapping,
+      StartFrom
+    > &
+      Input &
+      KafkaSourceInputGuards<
+        NoInfer<Input>,
+        KafkaSourceCandidate<Topic, Regions, KeyCodec, ValueCodec, LocalRowKey, Mapping, StartFrom>
+      >,
+    retry: Retry,
+    ..._unsupported: KafkaSourceRetryAdditionalArguments<NoInfer<Retry>>
+  ): CapturedDefinition<Input, KafkaSourceRetryServices<Retry>>;
+};
+
 function makeKafkaSource<
   const Topic extends string,
   const Regions extends KafkaNonEmptyReadonlyArray<string>,
@@ -1058,7 +1383,7 @@ function makeKafkaSource<
   const Mapping extends KafkaSourceMapping<Regions, NoInfer<KeyCodec>, NoInfer<ValueCodec>, object>,
   const StartFrom extends KafkaStartPosition,
   const Input,
-  const Retry,
+  const Retry extends SourceRetryPolicy<KafkaAdapterFailure<Regions[number]>, unknown>,
 >(
   input: KafkaSourceCandidate<
     Topic,
@@ -1074,86 +1399,123 @@ function makeKafkaSource<
       NoInfer<Input>,
       KafkaSourceCandidate<Topic, Regions, KeyCodec, ValueCodec, LocalRowKey, Mapping, StartFrom>
     >,
-  retry: Retry & (KafkaSourceRetryAdditionalArguments<Retry> extends readonly [] ? unknown : never),
+  retry: Retry,
+  ..._unsupported: KafkaSourceRetryAdditionalArguments<NoInfer<Retry>>
 ): CapturedDefinition<Input, KafkaSourceRetryServices<Retry>>;
 function makeKafkaSource(
-  input: {
-    readonly topic: string;
-    readonly regions: KafkaNonEmptyReadonlyArray<string>;
-    readonly key: unknown;
-    readonly value: unknown;
-    readonly localRowKey: (input: never) => unknown;
-    readonly map: (input: never) => unknown;
-    readonly startFrom: KafkaStartPosition;
-  },
-  retry?: SourceRetryPolicy<KafkaAdapterFailure, never>,
+  input: unknown,
+  retry?: unknown,
+  ..._unsupported: ReadonlyArray<unknown>
 ): unknown {
-  if (
-    typeof input !== "object" ||
-    input === null ||
-    !exactOwnDataKeys(input, [
-      "topic",
-      "regions",
-      "key",
-      "value",
-      "localRowKey",
-      "map",
-      "startFrom",
-    ])
-  ) {
+  const captured = captureExactOwnDataValues(input, [
+    "topic",
+    "regions",
+    "key",
+    "value",
+    "localRowKey",
+    "map",
+    "startFrom",
+  ]);
+  if (captured === undefined) {
     throw new KafkaSourceConfigurationError(
       "Kafka source requires exactly topic, regions, key, value, localRowKey, map, and startFrom.",
     );
   }
-  if (typeof input.topic !== "string" || input.topic.length === 0) {
+  const topic = captured.get("topic");
+  const regionInput = captured.get("regions");
+  const key = captured.get("key");
+  const value = captured.get("value");
+  const localRowKey = captured.get("localRowKey");
+  const map = captured.get("map");
+  const startFrom = captured.get("startFrom");
+  if (typeof topic !== "string" || topic.length === 0) {
     throw new KafkaSourceConfigurationError("Kafka source topic must be non-empty.");
   }
-  if (
-    !Array.isArray(input.regions) ||
-    input.regions.length === 0 ||
-    !input.regions.every(validateRegion) ||
-    new Set(input.regions).size !== input.regions.length
-  ) {
+  const regions = Result.try(() => {
+    if (!Array.isArray(regionInput)) {
+      return undefined;
+    }
+    const length = Option.getOrThrow(
+      Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(regionInput, "length")),
+    ).value;
+    if (length <= 0) {
+      return undefined;
+    }
+    const values: Array<string> = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(regionInput, String(index));
+      if (
+        descriptor === undefined ||
+        descriptor.enumerable !== true ||
+        !("value" in descriptor) ||
+        !validateRegion(descriptor.value)
+      ) {
+        return undefined;
+      }
+      values.push(descriptor.value);
+    }
+    const [first, ...rest] = values;
+    return Object.freeze([
+      Option.getOrThrow(Option.fromUndefinedOr(first)),
+      ...rest,
+    ]) satisfies KafkaNonEmptyReadonlyArray<string>;
+  }).pipe(
+    Result.match({
+      onFailure: () => undefined,
+      onSuccess: (value) => value,
+    }),
+  );
+  if (regions === undefined || new Set(regions).size !== regions.length) {
     throw new KafkaSourceConfigurationError(
       "Kafka source regions must be non-empty, unique, and cannot contain ':'.",
     );
   }
-  if (!isKafkaCodec(input.key) || !isKafkaCodec(input.value)) {
+  if (!isKafkaCodec(key) || !isKafkaCodec(value)) {
     throw new KafkaSourceConfigurationError("Kafka source key and value must be Kafka codecs.");
   }
-  if (typeof input.localRowKey !== "function" || typeof input.map !== "function") {
+  if (!isKafkaRuntimeCallback(localRowKey) || !isKafkaRuntimeCallback(map)) {
     throw new KafkaSourceConfigurationError(
       "Kafka source localRowKey and map must be synchronous functions.",
     );
   }
+  if (retry !== undefined && !isKafkaSourceRetryPolicy(retry)) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka source retry override must be an Effect Schedule.",
+    );
+  }
   const options = {
-    topic: input.topic,
-    regions: input.regions,
-    key: input.key,
-    value: input.value,
-    localRowKey: input.localRowKey,
-    map: input.map,
-    startFrom: captureStartPosition(input.startFrom),
+    topic,
+    regions,
+    key,
+    value,
+    localRowKey,
+    map,
+    startFrom: captureStartPosition(startFrom),
   };
-  return KafkaSourceAdapter.materializedSource(options, retry);
+  return retry === undefined
+    ? KafkaSourceAdapter.materializedSource(options)
+    : KafkaSourceAdapter.materializedSource(options, retry);
 }
 
 export const kafkaRowId = (input: {
   readonly region: string;
   readonly localRowKey: string;
 }): string => {
-  if (!exactOwnDataKeys(input, ["region", "localRowKey"])) {
+  const captured = captureExactOwnDataValues(input, ["region", "localRowKey"]);
+  if (captured === undefined) {
     throw new KafkaSourceConfigurationError("Kafka rowId requires exactly region and localRowKey.");
   }
-  if (!validateRegion(input.region)) {
+  const region = captured.get("region");
+  const localRowKey = captured.get("localRowKey");
+  if (!validateRegion(region)) {
     throw new KafkaSourceConfigurationError(
       "Kafka rowId region must be non-empty and cannot contain ':'.",
     );
   }
-  if (typeof input.localRowKey !== "string" || input.localRowKey.length === 0) {
+  if (typeof localRowKey !== "string" || localRowKey.length === 0) {
     throw new KafkaSourceConfigurationError("Kafka rowId localRowKey must be a non-empty string.");
   }
-  return `${input.region}:${input.localRowKey}`;
+  return `${region}:${localRowKey}`;
 };
 
 export type KafkaDecodedRowId = {
@@ -1215,10 +1577,28 @@ export const kafkaConsumerGroupId = (consumerGroupPrefix: string, topic: string)
       "Kafka consumer group prefix and View Server Topic must be non-empty.",
     );
   }
-  return `${encodeGroupComponent(consumerGroupPrefix)}:${encodeGroupComponent(topic)}`;
+  const groupId = `${encodeGroupComponent(consumerGroupPrefix)}:${encodeGroupComponent(topic)}`;
+  if (groupId.length > kafkaConsumerGroupIdMaxBytes) {
+    throw new KafkaSourceConfigurationError(
+      "Kafka derived consumer group ID exceeds the 32767-byte Kafka protocol limit.",
+    );
+  }
+  return groupId;
 };
 
-export const kafka = Object.freeze({
+type KafkaContractApi = {
+  readonly bytes: typeof bytesCodec;
+  readonly codec: typeof customCodec;
+  readonly consumerGroupId: typeof kafkaConsumerGroupId;
+  readonly decodeRowId: typeof decodeKafkaRowId;
+  readonly json: typeof jsonCodec;
+  readonly protobuf: typeof protobufCodec;
+  readonly rowId: typeof kafkaRowId;
+  readonly source: KafkaSourceApi;
+  readonly string: typeof stringCodec;
+};
+
+export const kafka: KafkaContractApi = Object.freeze({
   bytes: bytesCodec,
   string: stringCodec,
   json: jsonCodec,
@@ -1232,9 +1612,7 @@ export const kafka = Object.freeze({
 
 export type KafkaMaterializedLifecycleDeclaration = KafkaMaterializedLifecycle;
 
-export type KafkaSourceRetryPolicy<Services = never> = Schedule.Schedule<
-  unknown,
-  import("effect-view-server/source-adapter").SourceTermination<KafkaAdapterFailure>,
-  never,
-  Services
->;
+export type KafkaSourceRetryPolicy<
+  Region extends string = string,
+  Services = never,
+> = Schedule.Schedule<unknown, SourceTermination<KafkaAdapterFailure<Region>>, never, Services>;

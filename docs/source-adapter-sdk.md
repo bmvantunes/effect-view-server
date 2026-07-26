@@ -123,9 +123,10 @@ export const ExampleAdapterLive = SourceAdapterServer.make(ExampleAdapter, {
           }),
         ]);
       }),
-    metrics: ({ topic, definition, target }) => {
+    metrics: ({ topic, definition, lifetimeScope, target }) => {
       void topic;
       void definition;
+      void lifetimeScope;
       void target;
       return Effect.succeed({
         connected: true,
@@ -140,7 +141,13 @@ export const ExampleAdapterLive = SourceAdapterServer.make(ExampleAdapter, {
 Real adapters acquire consumers, subscriptions, iterators, callbacks, and
 leases inside `acquire`. Attempt finalizers run before retry, lease release, or
 runtime shutdown. Shared pools and concrete transport resources belong in the
-outer adapter Layer.
+outer adapter Layer. Both `acquire` and `metrics` also receive the same
+`lifetimeScope` for one logical materialized runtime or leased-feed lifetime.
+It stays stable across supervised attempt retries and closes when that logical
+lifetime ends, so adapters may own frozen initial-position caches and similar
+lifetime-local state without retaining it across runtime restarts. Transport
+consumers and stream resources still belong to the ambient attempt Scope, not
+`lifetimeScope`.
 
 The metrics reader receives the exact View Server Topic, portable Source
 Definition options, and Materialized or Leased target for the bound source.

@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 import { defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
-import { Deferred, Effect, Exit, Option, Queue, Schedule, Schema, Scope, Stream } from "effect";
+import {
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Queue,
+  Schedule,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { TestClock } from "effect/testing";
 import {
   kafka,
@@ -26,13 +37,17 @@ const Order = Schema.Struct({
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
 
-const metadata = (region: string, offset: bigint): KafkaMessageMetadata => ({
+const metadata = (
+  region: string,
+  offset: bigint,
+  headers: KafkaMessageMetadata["headers"] = {},
+): KafkaMessageMetadata => ({
   sourceTopic: "source-orders",
   sourceRegion: region,
   partition: 0,
   offset,
   timestampNanos: offset * 1_000_000n,
-  headers: {},
+  headers,
 });
 
 const commitFailure = (region: string): KafkaAdapterFailure => ({
@@ -59,6 +74,7 @@ type FakeRegion = {
     readonly value: string | null;
     readonly offset: bigint;
     readonly commitFailure?: KafkaAdapterFailure;
+    readonly headers?: KafkaMessageMetadata["headers"];
   }) => Effect.Effect<void>;
   readonly failStream: (failure: KafkaAdapterFailure) => Effect.Effect<void>;
   readonly counts: () => {
@@ -70,9 +86,13 @@ type FakeRegion = {
 
 const awaitCondition = (predicate: () => boolean): Effect.Effect<void> =>
   Effect.gen(function* () {
-    while (!predicate()) {
+    for (let attempt = 0; attempt < 100_000; attempt += 1) {
+      if (predicate()) {
+        return;
+      }
       yield* Effect.yieldNow;
     }
+    return yield* Effect.die(new Error("Kafka server test condition was not satisfied."));
   });
 
 const makeFakeRegion = (
@@ -165,7 +185,7 @@ const makeFakeRegion = (
           yield* Queue.offer(queue, {
             key: input.key === null ? null : bytes(input.key),
             value: input.value === null ? null : bytes(input.value),
-            metadata: metadata(region, input.offset),
+            metadata: metadata(region, input.offset, input.headers),
             settlement: (applicationExit) =>
               Exit.isSuccess(applicationExit) ? commit : Effect.void,
           });
@@ -436,7 +456,7 @@ describe("Kafka Source Adapter Server", () => {
               assignments: [],
               commits: 3n,
               commitFailures: 0n,
-              decoded: 5n,
+              decoded: 2n,
               decodeFailures: 1n,
               mapped: 2n,
               mappingFailures: 0n,
@@ -451,7 +471,7 @@ describe("Kafka Source Adapter Server", () => {
               assignments: [],
               commits: 2n,
               commitFailures: 0n,
-              decoded: 3n,
+              decoded: 2n,
               decodeFailures: 0n,
               mapped: 1n,
               mappingFailures: 0n,
@@ -535,6 +555,13 @@ describe("Kafka Source Adapter Server", () => {
         us.acquisitions[1]?.start,
       ];
       expect(starts.every((start) => start === starts[0])).toBe(true);
+      const lifetimeScopes = [
+        eu.acquisitions[0]?.lifetimeScope,
+        us.acquisitions[0]?.lifetimeScope,
+        eu.acquisitions[1]?.lifetimeScope,
+        us.acquisitions[1]?.lifetimeScope,
+      ];
+      expect(lifetimeScopes.every((scope) => scope === lifetimeScopes[0])).toBe(true);
       expect([
         eu.acquisitions[0]?.activeGroupId,
         us.acquisitions[0]?.activeGroupId,
@@ -571,74 +598,306 @@ describe("Kafka Source Adapter Server", () => {
     }),
   );
 
-  it.effect("ceil-rounds timestamp boundaries and resolves duration afresh after restart", () =>
+  it.effect("freezes callback metadata and names custom codecs in safe rejections", () =>
     Effect.gen(function* () {
       const acquisitionOrder: Array<string> = [];
       const eu = yield* makeFakeRegion("eu", acquisitionOrder);
-      const us = yield* makeFakeRegion("us", acquisitionOrder);
-      const timestampConfig = defineViewServerConfig({
+      const decoder = new TextDecoder();
+      const namedCodecFailure = {
+        _tag: "NamedCodecFailure",
+        message: "private decoder detail",
+      } as const;
+      let goodMetadata: KafkaMessageMetadata | undefined;
+      const NamedValue = Schema.Struct({
+        price: Schema.Number,
+      });
+      const source = kafka.source({
+        topic: "source-orders",
+        regions: ["eu"],
+        key: kafka.codec({
+          name: "key\ncodec",
+          decode: ({ bytes: input, metadata: inputMetadata }) => {
+            const key = decoder.decode(input);
+            if (key === "key-fail") {
+              return Reflect.set(inputMetadata, "sourceRegion", "")
+                ? Effect.die(new Error("Kafka callback metadata was mutable."))
+                : Effect.fail(namedCodecFailure);
+            }
+            if (key === "key-throw") {
+              throw new Error("private synchronous decoder failure");
+            }
+            if (key === "good") {
+              goodMetadata = inputMetadata;
+            }
+            return Effect.succeed(key);
+          },
+        }),
+        value: kafka.codec({
+          name: "value-codec",
+          decode: ({ bytes: input }) => {
+            const value = decoder.decode(input);
+            if (value === "value-fail") {
+              return Effect.fail(namedCodecFailure);
+            }
+            return Effect.try({
+              try: (): unknown => JSON.parse(value),
+              catch: () => namedCodecFailure,
+            }).pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(NamedValue)),
+              Effect.mapError(() => namedCodecFailure),
+            );
+          },
+        }),
+        localRowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          price: value.price,
+          region: String(region),
+        }),
+        startFrom: "earliest",
+      });
+      const config = defineViewServerConfig({
         topics: {
           orders: {
             schema: Order,
-            source: makeSource({
-              mode: "timestamp",
-              atNanos: 1_000_001n,
-              fallback: "latest",
-            }),
+            source,
           },
         },
       });
-      const timestampRuntime = yield* makeViewServerRuntimeCore(timestampConfig, {}).pipe(
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(
           makeKafkaServerLayer({
             consumerGroupPrefix: "replica",
-            regions: new Map([
-              ["eu", eu.runtime],
-              ["us", us.runtime],
-            ]),
+            regions: new Map([["eu", eu.runtime]]),
           }),
         ),
       );
       yield* eu.awaitAcquisitions(1);
-      expect(eu.acquisitions[0]?.start).toStrictEqual({
-        mode: "timestamp",
-        atNanos: 1_000_001n,
-        atMillis: 2n,
-        fallback: "latest",
+      const latestRejection = Effect.fn("KafkaSourceAdapter.test.namedRejection")(function* () {
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const health = Option.getOrThrow(
+          yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+        );
+        yield* diagnostics.close();
+        return Option.getOrThrow(
+          Option.liftPredicate(health.status, (status) => status._tag === "Degraded"),
+        ).latestRejection;
       });
-      yield* timestampRuntime.close;
 
-      const durationConfig = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: Order,
-            source: makeSource({
-              mode: "durationAgo",
-              duration: "1 second",
-              fallback: "earliest",
-            }),
+      yield* eu.offer({
+        key: "key-fail",
+        value: JSON.stringify({ price: 1 }),
+        offset: 1n,
+      });
+      yield* awaitCondition(() => eu.commits.length === 1);
+      expect(yield* latestRejection()).toStrictEqual({
+        failure: {
+          _tag: "AdapterFailure",
+          failure: {
+            _tag: "KafkaDecodeFailure",
+            region: "eu",
+            topic: "source-orders",
+            message: 'Kafka key codec "key\\ncodec" rejected the record.',
           },
         },
+        location: {
+          region: "eu",
+          topic: "source-orders",
+          partition: 0,
+          offset: 1n,
+          phase: "keyDecode",
+          message: 'Kafka key codec "key\\ncodec" rejected the record.',
+        },
+        rejectedAtNanos: 0n,
       });
-      yield* TestClock.adjust("10 seconds");
-      const firstRuntime = yield* makeViewServerRuntimeCore(durationConfig, {}).pipe(
-        Effect.provide(
-          makeKafkaServerLayer({
-            consumerGroupPrefix: "replica",
-            regions: new Map([
-              ["eu", eu.runtime],
-              ["us", us.runtime],
-            ]),
-          }),
-        ),
-      );
-      yield* eu.awaitAcquisitions(2);
-      const firstDuration = eu.acquisitions[1]?.start;
-      yield* firstRuntime.close;
 
-      yield* TestClock.adjust("1 second");
-      const secondRuntime = yield* makeViewServerRuntimeCore(durationConfig, {}).pipe(
-        Effect.provide(
+      yield* eu.offer({
+        key: "key-throw",
+        value: JSON.stringify({ price: 2 }),
+        offset: 2n,
+      });
+      yield* awaitCondition(() => eu.commits.length === 2);
+      expect(yield* latestRejection()).toStrictEqual({
+        failure: {
+          _tag: "AdapterFailure",
+          failure: {
+            _tag: "KafkaDecodeFailure",
+            region: "eu",
+            topic: "source-orders",
+            message: 'Kafka key codec "key\\ncodec" rejected the record.',
+          },
+        },
+        location: {
+          region: "eu",
+          topic: "source-orders",
+          partition: 0,
+          offset: 2n,
+          phase: "keyDecode",
+          message: 'Kafka key codec "key\\ncodec" rejected the record.',
+        },
+        rejectedAtNanos: 0n,
+      });
+
+      yield* eu.offer({
+        key: "value-fail",
+        value: "value-fail",
+        offset: 3n,
+      });
+      yield* awaitCondition(() => eu.commits.length === 3);
+      expect(yield* latestRejection()).toStrictEqual({
+        failure: {
+          _tag: "AdapterFailure",
+          failure: {
+            _tag: "KafkaDecodeFailure",
+            region: "eu",
+            topic: "source-orders",
+            message: 'Kafka value codec "value-codec" rejected the record.',
+          },
+        },
+        location: {
+          region: "eu",
+          topic: "source-orders",
+          partition: 0,
+          offset: 3n,
+          phase: "valueDecode",
+          message: 'Kafka value codec "value-codec" rejected the record.',
+        },
+        rejectedAtNanos: 0n,
+      });
+
+      const singleHeader = bytes("single");
+      const repeatedHeaders = [bytes("first"), bytes("second")];
+      const goodHeaders: Record<string, Uint8Array | ReadonlyArray<Uint8Array>> = {
+        single: singleHeader,
+        repeated: repeatedHeaders,
+      };
+      Reflect.set(goodHeaders, "absent", undefined);
+      let headerReads = 0;
+      const observedHeaders = new Proxy(goodHeaders, {
+        get: (target, property, receiver) => {
+          headerReads += 1;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      yield* eu.offer({
+        key: "good",
+        value: JSON.stringify({ price: 3 }),
+        offset: 4n,
+        headers: observedHeaders,
+      });
+      yield* awaitCondition(() => eu.commits.length === 4);
+      const capturedMetadata = Option.getOrThrow(Option.fromUndefinedOr(goodMetadata));
+      expect({
+        metadataFrozen: Object.isFrozen(capturedMetadata),
+        headersFrozen: Object.isFrozen(capturedMetadata.headers),
+        repeatedFrozen: Object.isFrozen(capturedMetadata.headers["repeated"]),
+        entries: Object.entries(capturedMetadata.headers),
+        singleDetached: capturedMetadata.headers["single"] !== singleHeader,
+        repeatedDetached:
+          capturedMetadata.headers["repeated"]?.[0] !== repeatedHeaders[0] &&
+          capturedMetadata.headers["repeated"]?.[1] !== repeatedHeaders[1],
+        headerReads,
+      }).toStrictEqual({
+        metadataFrozen: true,
+        headersFrozen: true,
+        repeatedFrozen: true,
+        entries: [
+          ["single", bytes("single")],
+          ["repeated", [bytes("first"), bytes("second")]],
+        ],
+        singleDetached: true,
+        repeatedDetached: true,
+        headerReads: 3,
+      });
+      expect(
+        yield* runtime.client.snapshot("orders", {
+          select: ["id", "price", "region"],
+        }),
+      ).toStrictEqual({
+        rows: [{ id: "eu:good", price: 3, region: "eu" }],
+        totalRows: 1,
+        version: 1,
+        status: "ready",
+        statusCode: "Ready",
+      });
+      const metrics = yield* eu.runtime.metrics({
+        activeGroupId: "replica:orders",
+        lifetimeScope: Option.getOrThrow(Option.fromUndefinedOr(eu.acquisitions[0])).lifetimeScope,
+        region: "eu",
+        sourceTopic: "source-orders",
+        viewServerTopic: "orders",
+      });
+      expect({
+        commits: eu.commits,
+        decoded: metrics.decoded,
+        decodeFailures: metrics.decodeFailures,
+        rejections: metrics.rejections,
+      }).toStrictEqual({
+        commits: [1n, 2n, 3n, 4n],
+        decoded: 1n,
+        decodeFailures: 3n,
+        rejections: 3n,
+      });
+      yield* runtime.close;
+    }),
+  );
+
+  it.effect("ceil-rounds timestamp boundaries and resolves duration afresh after restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const acquisitionOrder: Array<string> = [];
+        const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+        const us = yield* makeFakeRegion("us", acquisitionOrder);
+        const timestampConfig = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Order,
+              source: makeSource({
+                mode: "timestamp",
+                atNanos: 1_000_001n,
+                fallback: "latest",
+              }),
+            },
+          },
+        });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.acquireRelease(
+              makeViewServerRuntimeCore(timestampConfig, {}).pipe(
+                Effect.provide(
+                  makeKafkaServerLayer({
+                    consumerGroupPrefix: "replica",
+                    regions: new Map([
+                      ["eu", eu.runtime],
+                      ["us", us.runtime],
+                    ]),
+                  }),
+                ),
+              ),
+              (runtime) => runtime.close,
+            );
+            yield* eu.awaitAcquisitions(1);
+            expect(eu.acquisitions[0]?.start).toStrictEqual({
+              mode: "timestamp",
+              atNanos: 1_000_001n,
+              atMillis: 2n,
+              fallback: "latest",
+            });
+          }),
+        );
+
+        const durationConfig = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Order,
+              source: makeSource({
+                mode: "durationAgo",
+                duration: "1 second",
+                fallback: "earliest",
+              }),
+            },
+          },
+        });
+        const durationContext = yield* Layer.build(
           makeKafkaServerLayer({
             consumerGroupPrefix: "replica",
             regions: new Map([
@@ -646,32 +905,57 @@ describe("Kafka Source Adapter Server", () => {
               ["us", us.runtime],
             ]),
           }),
-        ),
-      );
-      yield* eu.awaitAcquisitions(3);
-      expect({
-        first: firstDuration,
-        second: eu.acquisitions[2]?.start,
-      }).toStrictEqual({
-        first: {
-          mode: "durationAgo",
-          durationNanos: 1_000_000_000n,
-          resolvedAtNanos: 10_000_000_000n,
-          atNanos: 9_000_000_000n,
-          atMillis: 9_000n,
-          fallback: "earliest",
-        },
-        second: {
-          mode: "durationAgo",
-          durationNanos: 1_000_000_000n,
-          resolvedAtNanos: 11_000_000_000n,
-          atNanos: 10_000_000_000n,
-          atMillis: 10_000n,
-          fallback: "earliest",
-        },
-      });
-      yield* secondRuntime.close;
-    }),
+        );
+        yield* TestClock.adjust("10 seconds");
+        const firstDuration = yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.acquireRelease(
+              makeViewServerRuntimeCore(durationConfig, {}).pipe(
+                Effect.provideContext(durationContext),
+              ),
+              (runtime) => runtime.close,
+            );
+            yield* eu.awaitAcquisitions(2);
+            return eu.acquisitions[1]?.start;
+          }),
+        );
+
+        yield* TestClock.adjust("1 second");
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.acquireRelease(
+              makeViewServerRuntimeCore(durationConfig, {}).pipe(
+                Effect.provideContext(durationContext),
+              ),
+              (runtime) => runtime.close,
+            );
+            yield* eu.awaitAcquisitions(3);
+            expect({
+              first: firstDuration,
+              second: eu.acquisitions[2]?.start,
+            }).toStrictEqual({
+              first: {
+                mode: "durationAgo",
+                durationNanos: 1_000_000_000n,
+                resolvedAtNanos: 10_000_000_000n,
+                atNanos: 9_000_000_000n,
+                atMillis: 9_000n,
+                fallback: "earliest",
+              },
+              second: {
+                mode: "durationAgo",
+                durationNanos: 1_000_000_000n,
+                resolvedAtNanos: 11_000_000_000n,
+                atNanos: 10_000_000_000n,
+                atMillis: 10_000n,
+                fallback: "earliest",
+              },
+            });
+            expect(eu.acquisitions[1]?.lifetimeScope).not.toBe(eu.acquisitions[2]?.lifetimeScope);
+          }),
+        );
+      }),
+    ),
   );
 
   it.effect("replays a rejected record when its settlement commit fails", () =>
@@ -788,406 +1072,419 @@ describe("Kafka Source Adapter Server", () => {
   );
 
   it.effect("settles item-local callback and shape faults, then continues the lane", () =>
-    Effect.gen(function* () {
-      const acquisitionOrder: Array<string> = [];
-      const eu = yield* makeFakeRegion("eu", acquisitionOrder);
-      const keyDecodeStarted = yield* Deferred.make<void>();
-      const originalKafkaRowId = kafkaContract.kafkaRowId;
-      const rowId = vi.spyOn(kafkaContract, "kafkaRowId").mockImplementation((input) => {
-        if (input.localRowKey === "canonical-fail") {
-          throw new Error("canonical row ID failed");
-        }
-        return originalKafkaRowId(input);
-      });
-      const config = defineViewServerConfig({
-        topics: {
-          orders: {
-            schema: Order,
-            source: makeFaultSource(keyDecodeStarted),
-          },
-        },
-      });
-      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
-        Effect.provide(
-          makeKafkaServerLayer({
-            consumerGroupPrefix: "replica",
-            regions: new Map([["eu", eu.runtime]]),
-          }),
-        ),
-      );
-      yield* eu.awaitAcquisitions(1);
-      const currentRejection = Effect.fn("KafkaSourceAdapter.test.rejection.current")(function* () {
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
-        const health = Option.getOrThrow(
-          yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+    Effect.scoped(
+      Effect.gen(function* () {
+        const acquisitionOrder: Array<string> = [];
+        const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+        const keyDecodeStarted = yield* Deferred.make<void>();
+        const originalKafkaRowId = kafkaContract.kafkaRowId;
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(kafkaContract, "kafkaRowId").mockImplementation((input) => {
+              if (input.localRowKey === "canonical-fail") {
+                throw new Error("canonical row ID failed");
+              }
+              return originalKafkaRowId(input);
+            }),
+          ),
+          (spy) =>
+            Effect.sync(() => {
+              spy.mockRestore();
+            }),
         );
-        yield* diagnostics.close();
-        return Option.getOrThrow(
-          Option.liftPredicate(health.status, (status) => status._tag === "Degraded"),
-        ).latestRejection;
-      });
-      const poisonCases = [
-        {
-          key: null,
-          value: JSON.stringify({ price: 1 }),
-          phase: "keyDecode",
-          message: "Kafka record key is required.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaDecodeFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka record key is required.",
+        const config = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Order,
+              source: makeFaultSource(keyDecodeStarted),
             },
           },
-          decoded: 0n,
-          decodeFailures: 1n,
-          mappingFailures: 0n,
-        },
-        {
-          key: "key-fail",
-          value: JSON.stringify({ price: 2 }),
-          phase: "keyDecode",
-          message: "Kafka key codec rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaDecodeFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka key codec rejected the record.",
-            },
+        });
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            makeKafkaServerLayer({
+              consumerGroupPrefix: "replica",
+              regions: new Map([["eu", eu.runtime]]),
+            }),
+          ),
+        );
+        yield* eu.awaitAcquisitions(1);
+        const currentRejection = Effect.fn("KafkaSourceAdapter.test.rejection.current")(
+          function* () {
+            const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+            const health = Option.getOrThrow(
+              yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+            );
+            yield* diagnostics.close();
+            return Option.getOrThrow(
+              Option.liftPredicate(health.status, (status) => status._tag === "Degraded"),
+            ).latestRejection;
           },
-          decoded: 0n,
-          decodeFailures: 2n,
-          mappingFailures: 0n,
-        },
-        {
-          key: "value-fail",
-          value: "{",
-          phase: "valueDecode",
-          message: "Kafka value codec rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
+        );
+        const poisonCases = [
+          {
+            key: null,
+            value: JSON.stringify({ price: 1 }),
+            phase: "keyDecode",
+            message: "Kafka record key is required.",
             failure: {
-              _tag: "KafkaDecodeFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka value codec rejected the record.",
-            },
-          },
-          decoded: 1n,
-          decodeFailures: 3n,
-          mappingFailures: 0n,
-        },
-        {
-          key: "local-throw",
-          value: JSON.stringify({ price: 4 }),
-          phase: "localRowKey",
-          message: "Kafka Local Row Key could not be constructed.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Local Row Key could not be constructed.",
-            },
-          },
-          decoded: 2n,
-          decodeFailures: 3n,
-          mappingFailures: 1n,
-        },
-        {
-          key: "local-empty",
-          value: JSON.stringify({ price: 5 }),
-          phase: "localRowKey",
-          message: "Kafka Local Row Key could not be constructed.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Local Row Key could not be constructed.",
-            },
-          },
-          decoded: 3n,
-          decodeFailures: 3n,
-          mappingFailures: 2n,
-        },
-        {
-          key: "canonical-fail",
-          value: JSON.stringify({ price: 6 }),
-          phase: "canonicalId",
-          message: "Kafka canonical row ID could not be constructed.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka canonical row ID could not be constructed.",
-            },
-          },
-          decoded: 4n,
-          decodeFailures: 3n,
-          mappingFailures: 3n,
-        },
-        {
-          key: "map-throw",
-          value: JSON.stringify({ price: 7 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 6n,
-          decodeFailures: 3n,
-          mappingFailures: 4n,
-        },
-        {
-          key: "map-array",
-          value: JSON.stringify({ price: 8 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 8n,
-          decodeFailures: 3n,
-          mappingFailures: 5n,
-        },
-        {
-          key: "map-id",
-          value: JSON.stringify({ price: 9 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 10n,
-          decodeFailures: 3n,
-          mappingFailures: 6n,
-        },
-        {
-          key: "map-proto",
-          value: JSON.stringify({ price: 10 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 12n,
-          decodeFailures: 3n,
-          mappingFailures: 7n,
-        },
-        {
-          key: "map-prototype-throw",
-          value: JSON.stringify({ price: 11 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 14n,
-          decodeFailures: 3n,
-          mappingFailures: 8n,
-        },
-        {
-          key: "map-symbol",
-          value: JSON.stringify({ price: 12 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 16n,
-          decodeFailures: 3n,
-          mappingFailures: 9n,
-        },
-        {
-          key: "map-accessor",
-          value: JSON.stringify({ price: 13 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 18n,
-          decodeFailures: 3n,
-          mappingFailures: 10n,
-        },
-        {
-          key: "map-descriptor-throw",
-          value: JSON.stringify({ price: 14 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 20n,
-          decodeFailures: 3n,
-          mappingFailures: 11n,
-        },
-        {
-          key: "map-materialize-throw",
-          value: JSON.stringify({ price: 15 }),
-          phase: "mapping",
-          message: "Kafka Mapping rejected the record.",
-          failure: {
-            _tag: "AdapterFailure",
-            failure: {
-              _tag: "KafkaMappingFailure",
-              region: "eu",
-              topic: "source-orders",
-              message: "Kafka Mapping rejected the record.",
-            },
-          },
-          decoded: 22n,
-          decodeFailures: 3n,
-          mappingFailures: 12n,
-        },
-        {
-          key: "schema",
-          value: JSON.stringify({ price: 16 }),
-          phase: "topicSchema",
-          message: "Kafka mapped row does not satisfy the Topic Schema.",
-          failure: {
-            _tag: "RuntimeFailure",
-            failure: {
-              _tag: "InvalidTopicRow",
-              topic: "orders",
-              message: "Source Upsert does not satisfy Topic orders Schema.",
-            },
-          },
-          decoded: 24n,
-          decodeFailures: 3n,
-          mappingFailures: 13n,
-        },
-      ] as const;
-      yield* Effect.forEach(
-        poisonCases,
-        (poison, index) =>
-          Effect.gen(function* () {
-            const offset = BigInt(index + 1);
-            yield* eu.offer({
-              key: poison.key,
-              value: poison.value,
-              offset,
-            });
-            yield* awaitCondition(() => eu.commits.length === index + 1);
-            expect(yield* currentRejection()).toStrictEqual({
-              failure: poison.failure,
-              location: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaDecodeFailure",
                 region: "eu",
                 topic: "source-orders",
-                partition: 0,
-                offset,
-                phase: poison.phase,
-                message: poison.message,
+                message: "Kafka record key is required.",
               },
-              rejectedAtNanos: 0n,
-            });
-            const metrics = yield* eu.runtime.metrics({
-              activeGroupId: "replica:orders",
-              region: "eu",
-              sourceTopic: "source-orders",
-              viewServerTopic: "orders",
-            });
-            expect(metrics.decoded).toBe(poison.decoded);
-            expect(metrics.decodeFailures).toBe(poison.decodeFailures);
-            expect(metrics.mapped).toBe(0n);
-            expect(metrics.mappingFailures).toBe(poison.mappingFailures);
-            expect(metrics.rejections).toBe(offset);
-          }),
-        { discard: true },
-      );
-      yield* eu.offer({
-        key: "good",
-        value: JSON.stringify({ price: 17 }),
-        offset: 17n,
-      });
-      yield* awaitCondition(() => eu.commits.length === 17);
-      expect({
-        commits: eu.commits,
-        counts: eu.counts(),
-      }).toStrictEqual({
-        commits: [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n, 17n],
-        counts: {
-          acquisitions: 1,
-          finalizations: 0,
-        },
-      });
-      const snapshot = yield* runtime.client.snapshot("orders", {
-        select: ["id", "price", "region"],
-      });
-      expect(snapshot).toStrictEqual({
-        rows: [{ id: "eu:good", price: 17, region: "eu" }],
-        totalRows: 1,
-        version: 1,
-        status: "ready",
-        statusCode: "Ready",
-      });
-      yield* eu.offer({
-        key: "key-never",
-        value: JSON.stringify({ price: 18 }),
-        offset: 18n,
-      });
-      yield* Deferred.await(keyDecodeStarted);
-      yield* runtime.close;
-      rowId.mockRestore();
-      expect(eu.counts().finalizations).toBe(1);
-    }),
+            },
+            decoded: 0n,
+            decodeFailures: 1n,
+            mappingFailures: 0n,
+          },
+          {
+            key: "key-fail",
+            value: JSON.stringify({ price: 2 }),
+            phase: "keyDecode",
+            message: 'Kafka key codec "fault-key" rejected the record.',
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaDecodeFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: 'Kafka key codec "fault-key" rejected the record.',
+              },
+            },
+            decoded: 0n,
+            decodeFailures: 2n,
+            mappingFailures: 0n,
+          },
+          {
+            key: "value-fail",
+            value: "{",
+            phase: "valueDecode",
+            message: "Kafka value codec rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaDecodeFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka value codec rejected the record.",
+              },
+            },
+            decoded: 0n,
+            decodeFailures: 3n,
+            mappingFailures: 0n,
+          },
+          {
+            key: "local-throw",
+            value: JSON.stringify({ price: 4 }),
+            phase: "localRowKey",
+            message: "Kafka Local Row Key could not be constructed.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Local Row Key could not be constructed.",
+              },
+            },
+            decoded: 0n,
+            decodeFailures: 3n,
+            mappingFailures: 1n,
+          },
+          {
+            key: "local-empty",
+            value: JSON.stringify({ price: 5 }),
+            phase: "localRowKey",
+            message: "Kafka Local Row Key could not be constructed.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Local Row Key could not be constructed.",
+              },
+            },
+            decoded: 0n,
+            decodeFailures: 3n,
+            mappingFailures: 2n,
+          },
+          {
+            key: "canonical-fail",
+            value: JSON.stringify({ price: 6 }),
+            phase: "canonicalId",
+            message: "Kafka canonical row ID could not be constructed.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka canonical row ID could not be constructed.",
+              },
+            },
+            decoded: 0n,
+            decodeFailures: 3n,
+            mappingFailures: 3n,
+          },
+          {
+            key: "map-throw",
+            value: JSON.stringify({ price: 7 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 1n,
+            decodeFailures: 3n,
+            mappingFailures: 4n,
+          },
+          {
+            key: "map-array",
+            value: JSON.stringify({ price: 8 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 2n,
+            decodeFailures: 3n,
+            mappingFailures: 5n,
+          },
+          {
+            key: "map-id",
+            value: JSON.stringify({ price: 9 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 3n,
+            decodeFailures: 3n,
+            mappingFailures: 6n,
+          },
+          {
+            key: "map-proto",
+            value: JSON.stringify({ price: 10 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 4n,
+            decodeFailures: 3n,
+            mappingFailures: 7n,
+          },
+          {
+            key: "map-prototype-throw",
+            value: JSON.stringify({ price: 11 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 5n,
+            decodeFailures: 3n,
+            mappingFailures: 8n,
+          },
+          {
+            key: "map-symbol",
+            value: JSON.stringify({ price: 12 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 6n,
+            decodeFailures: 3n,
+            mappingFailures: 9n,
+          },
+          {
+            key: "map-accessor",
+            value: JSON.stringify({ price: 13 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 7n,
+            decodeFailures: 3n,
+            mappingFailures: 10n,
+          },
+          {
+            key: "map-descriptor-throw",
+            value: JSON.stringify({ price: 14 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 8n,
+            decodeFailures: 3n,
+            mappingFailures: 11n,
+          },
+          {
+            key: "map-materialize-throw",
+            value: JSON.stringify({ price: 15 }),
+            phase: "mapping",
+            message: "Kafka Mapping rejected the record.",
+            failure: {
+              _tag: "AdapterFailure",
+              failure: {
+                _tag: "KafkaMappingFailure",
+                region: "eu",
+                topic: "source-orders",
+                message: "Kafka Mapping rejected the record.",
+              },
+            },
+            decoded: 9n,
+            decodeFailures: 3n,
+            mappingFailures: 12n,
+          },
+          {
+            key: "schema",
+            value: JSON.stringify({ price: 16 }),
+            phase: "topicSchema",
+            message: "Kafka mapped row does not satisfy the Topic Schema.",
+            failure: {
+              _tag: "RuntimeFailure",
+              failure: {
+                _tag: "InvalidTopicRow",
+                topic: "orders",
+                message: "Source Upsert does not satisfy Topic orders Schema.",
+              },
+            },
+            decoded: 10n,
+            decodeFailures: 3n,
+            mappingFailures: 13n,
+          },
+        ] as const;
+        yield* Effect.forEach(
+          poisonCases,
+          (poison, index) =>
+            Effect.gen(function* () {
+              const offset = BigInt(index + 1);
+              yield* eu.offer({
+                key: poison.key,
+                value: poison.value,
+                offset,
+              });
+              yield* awaitCondition(() => eu.commits.length === index + 1);
+              expect(yield* currentRejection()).toStrictEqual({
+                failure: poison.failure,
+                location: {
+                  region: "eu",
+                  topic: "source-orders",
+                  partition: 0,
+                  offset,
+                  phase: poison.phase,
+                  message: poison.message,
+                },
+                rejectedAtNanos: 0n,
+              });
+              const metrics = yield* eu.runtime.metrics({
+                activeGroupId: "replica:orders",
+                lifetimeScope: Option.getOrThrow(Option.fromUndefinedOr(eu.acquisitions[0]))
+                  .lifetimeScope,
+                region: "eu",
+                sourceTopic: "source-orders",
+                viewServerTopic: "orders",
+              });
+              expect(metrics.decoded).toBe(poison.decoded);
+              expect(metrics.decodeFailures).toBe(poison.decodeFailures);
+              expect(metrics.mapped).toBe(0n);
+              expect(metrics.mappingFailures).toBe(poison.mappingFailures);
+              expect(metrics.rejections).toBe(offset);
+            }),
+          { discard: true },
+        );
+        yield* eu.offer({
+          key: "good",
+          value: JSON.stringify({ price: 17 }),
+          offset: 17n,
+        });
+        yield* awaitCondition(() => eu.commits.length === 17);
+        expect({
+          commits: eu.commits,
+          counts: eu.counts(),
+        }).toStrictEqual({
+          commits: [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n, 17n],
+          counts: {
+            acquisitions: 1,
+            finalizations: 0,
+          },
+        });
+        const snapshot = yield* runtime.client.snapshot("orders", {
+          select: ["id", "price", "region"],
+        });
+        expect(snapshot).toStrictEqual({
+          rows: [{ id: "eu:good", price: 17, region: "eu" }],
+          totalRows: 1,
+          version: 1,
+          status: "ready",
+          statusCode: "Ready",
+        });
+        yield* eu.offer({
+          key: "key-never",
+          value: JSON.stringify({ price: 18 }),
+          offset: 18n,
+        });
+        yield* Deferred.await(keyDecodeStarted);
+        yield* runtime.close;
+        expect(eu.counts().finalizations).toBe(1);
+      }),
+    ),
   );
 
   it.effect("propagates decoder defects without committing or recording a rejection", () =>
@@ -1237,9 +1534,139 @@ describe("Kafka Source Adapter Server", () => {
   );
 
   it.effect("reports invalid group input as a typed exhaustion while metrics remain total", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const acquisitionOrder: Array<string> = [];
+        const eu = yield* makeFakeRegion("eu", acquisitionOrder);
+        const source = kafka.source(
+          {
+            topic: "source-orders",
+            regions: ["eu"],
+            key: kafka.string(),
+            value: kafka.json(() => Schema.toCodecJson(Schema.Struct({ price: Schema.Number }))),
+            localRowKey: ({ key }) => key,
+            map: ({ value, region }) => ({
+              price: value.price,
+              region: String(region),
+            }),
+            startFrom: "earliest",
+          },
+          Schedule.recurs(0),
+        );
+        const config = defineViewServerConfig({
+          topics: {
+            orders: {
+              schema: Order,
+              source,
+            },
+          },
+        });
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            makeKafkaServerLayer({
+              consumerGroupPrefix: "\ud800",
+              regions: new Map([["eu", eu.runtime]]),
+            }),
+          ),
+        );
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const exhausted = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+
+        expect(exhausted.status).toStrictEqual({
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: {
+              _tag: "Failed",
+              failure: {
+                _tag: "AdapterFailure",
+                failure: {
+                  _tag: "KafkaConfigurationFailure",
+                  message:
+                    "Kafka consumer group prefix and View Server Topic must contain well-formed Unicode.",
+                },
+              },
+            },
+          },
+          exhaustedAtNanos: 0n,
+        });
+        yield* TestClock.adjust("1 second");
+        const refreshed = Option.getOrThrow(
+          yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
+        );
+        expect({
+          acquisitions: acquisitionOrder,
+          activeGroupId: refreshed.metrics.adapter.activeGroupId,
+        }).toStrictEqual({
+          acquisitions: [],
+          activeGroupId: "invalid-kafka-consumer-group",
+        });
+
+        yield* diagnostics.close();
+        yield* runtime.close;
+
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(kafkaContract, "kafkaConsumerGroupId").mockImplementation(() => {
+              throw new Error("unexpected group construction failure");
+            }),
+          ),
+          (spy) =>
+            Effect.sync(() => {
+              spy.mockRestore();
+            }),
+        );
+        const fallbackAcquisitionOrder: Array<string> = [];
+        const fallbackRegion = yield* makeFakeRegion("eu", fallbackAcquisitionOrder);
+        const fallbackRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            makeKafkaServerLayer({
+              consumerGroupPrefix: "replica",
+              regions: new Map([["eu", fallbackRegion.runtime]]),
+            }),
+          ),
+        );
+        const fallbackDiagnostics =
+          yield* fallbackRuntime.liveClient.subscribeSourceHealth("orders");
+        const fallbackExhausted = Option.getOrThrow(
+          yield* fallbackDiagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+        expect(fallbackExhausted.status).toStrictEqual({
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: {
+              _tag: "Failed",
+              failure: {
+                _tag: "AdapterFailure",
+                failure: {
+                  _tag: "KafkaConfigurationFailure",
+                  message: "Kafka consumer group ID could not be constructed.",
+                },
+              },
+            },
+          },
+          exhaustedAtNanos: 1_000_000_000n,
+        });
+        expect(fallbackAcquisitionOrder).toStrictEqual([]);
+        yield* fallbackDiagnostics.close();
+        yield* fallbackRuntime.close;
+      }),
+    ),
+  );
+
+  it.effect("binds hostile Region failures and record metadata to the requested Region", () =>
     Effect.gen(function* () {
-      const acquisitionOrder: Array<string> = [];
-      const eu = yield* makeFakeRegion("eu", acquisitionOrder);
       const source = kafka.source(
         {
           topic: "source-orders",
@@ -1263,98 +1690,312 @@ describe("Kafka Source Adapter Server", () => {
           },
         },
       });
+      const metrics: KafkaRegionMetrics<"apac"> = {
+        region: "apac",
+        assignments: [],
+        commits: 0n,
+        commitFailures: 0n,
+        decoded: 0n,
+        decodeFailures: 0n,
+        mapped: 0n,
+        mappingFailures: 0n,
+        rejections: 0n,
+        reconnects: 0n,
+        rebalances: 0n,
+        closes: 0n,
+        closeFailures: 0n,
+      };
+      const consumer = (
+        records: Stream.Stream<KafkaServerRecord, KafkaAdapterFailure>,
+      ): import("./server").KafkaServerRegionConsumer => ({
+        records,
+        recordDecoded: Effect.void,
+        recordDecodeFailure: Effect.void,
+        recordMapped: Effect.void,
+        recordMappingFailure: Effect.void,
+        recordRejection: Effect.void,
+      });
+      const expectConfigurationExhaustion = Effect.fn(
+        "KafkaSourceAdapter.test.configurationExhaustion",
+      )(function* (regionRuntime: KafkaServerRegion, message: string) {
+        const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+          Effect.provide(
+            makeKafkaServerLayer({
+              consumerGroupPrefix: "replica",
+              regions: new Map([["eu", regionRuntime]]),
+            }),
+          ),
+        );
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const exhausted = Option.getOrThrow(
+          yield* diagnostics.events.pipe(
+            Stream.filter((health) => health.status._tag === "Exhausted"),
+            Stream.take(1),
+            Stream.runHead,
+          ),
+        );
+        expect(exhausted.status).toStrictEqual({
+          _tag: "Exhausted",
+          exhaustion: {
+            _tag: "RetryExhausted",
+            lastTermination: {
+              _tag: "Failed",
+              failure: {
+                _tag: "AdapterFailure",
+                failure: {
+                  _tag: "KafkaConfigurationFailure",
+                  message,
+                },
+              },
+            },
+          },
+          exhaustedAtNanos: 0n,
+        });
+        yield* diagnostics.close();
+        yield* runtime.close;
+      });
+      const wrongRegionFailure = acquisitionFailure("apac");
+      const hostileFailure = () =>
+        new Proxy(acquisitionFailure("eu"), {
+          get: () => {
+            throw new Error("failure read failed");
+          },
+        });
+      const configurationFailureRegion: KafkaServerRegion = {
+        acquire: () =>
+          Effect.fail({
+            _tag: "KafkaConfigurationFailure",
+            message: "driver configuration failed",
+          }),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const acquireFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(wrongRegionFailure),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const streamFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.succeed(consumer(Stream.fail(wrongRegionFailure))),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const hostileAcquireFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.fail(hostileFailure()),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const hostileStreamFailureRegion: KafkaServerRegion = {
+        acquire: () => Effect.succeed(consumer(Stream.fail(hostileFailure()))),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const metadataFailureRegion: KafkaServerRegion = {
+        acquire: () =>
+          Effect.succeed(
+            consumer(
+              Stream.make({
+                key: bytes("metadata"),
+                value: bytes(JSON.stringify({ price: 1 })),
+                metadata: metadata("apac", 1n),
+                settlement: () => Effect.void,
+              }),
+            ),
+          ),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const hostileRecord = new Proxy(
+        {
+          key: bytes("hostile"),
+          value: bytes(JSON.stringify({ price: 1 })),
+          metadata: metadata("eu", 1n),
+          settlement: () => Effect.void,
+        },
+        {
+          get: () => {
+            throw new Error("record read failed");
+          },
+        },
+      );
+      const hostileRecordRegion: KafkaServerRegion = {
+        acquire: () => Effect.succeed(consumer(Stream.make(hostileRecord))),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const settlementFailureRegion: KafkaServerRegion = {
+        acquire: () =>
+          Effect.succeed(
+            consumer(
+              Stream.make({
+                key: bytes("settlement"),
+                value: bytes(JSON.stringify({ price: 1 })),
+                metadata: metadata("eu", 1n),
+                settlement: () => Effect.fail(commitFailure("apac")),
+              }),
+            ),
+          ),
+        metrics: () => Effect.succeed(metrics),
+      };
+      const hostileSettlementFailureRegion: KafkaServerRegion = {
+        acquire: () =>
+          Effect.succeed(
+            consumer(
+              Stream.make({
+                key: bytes("hostile-settlement"),
+                value: bytes(JSON.stringify({ price: 1 })),
+                metadata: metadata("eu", 1n),
+                settlement: () => Effect.fail(hostileFailure()),
+              }),
+            ),
+          ),
+        metrics: () => Effect.succeed(metrics),
+      };
+
+      yield* expectConfigurationExhaustion(
+        configurationFailureRegion,
+        "driver configuration failed",
+      );
+      yield* expectConfigurationExhaustion(
+        acquireFailureRegion,
+        'Kafka Region "eu" returned a failure for "apac".',
+      );
+      yield* expectConfigurationExhaustion(
+        streamFailureRegion,
+        'Kafka Region "eu" returned a failure for "apac".',
+      );
+      yield* expectConfigurationExhaustion(
+        hostileAcquireFailureRegion,
+        'Kafka Region "eu" returned an invalid failure.',
+      );
+      yield* expectConfigurationExhaustion(
+        hostileStreamFailureRegion,
+        'Kafka Region "eu" returned an invalid failure.',
+      );
+      yield* expectConfigurationExhaustion(
+        metadataFailureRegion,
+        'Kafka Region "eu" returned record metadata for "apac".',
+      );
+      yield* expectConfigurationExhaustion(
+        hostileRecordRegion,
+        'Kafka Region "eu" returned an invalid record.',
+      );
+      yield* expectConfigurationExhaustion(
+        settlementFailureRegion,
+        'Kafka Region "eu" returned a failure for "apac".',
+      );
+      yield* expectConfigurationExhaustion(
+        hostileSettlementFailureRegion,
+        'Kafka Region "eu" returned an invalid failure.',
+      );
+    }),
+  );
+
+  it.effect("binds hostile Region metrics to the requested Region", () =>
+    Effect.gen(function* () {
+      const source = kafka.source({
+        topic: "source-orders",
+        regions: ["eu"],
+        key: kafka.string(),
+        value: kafka.json(() => Schema.toCodecJson(Schema.Struct({ price: Schema.Number }))),
+        localRowKey: ({ key }) => key,
+        map: ({ value, region }) => ({
+          price: value.price,
+          region: String(region),
+        }),
+        startFrom: "earliest",
+      });
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source,
+          },
+        },
+      });
+      const hostileMetrics: KafkaRegionMetrics = {
+        region: "apac",
+        assignments: [],
+        commits: 1n,
+        commitFailures: 2n,
+        decoded: 3n,
+        decodeFailures: 4n,
+        mapped: 5n,
+        mappingFailures: 6n,
+        rejections: 7n,
+        reconnects: 8n,
+        rebalances: 9n,
+        closes: 10n,
+        closeFailures: 11n,
+      };
+      const regionRuntime: KafkaServerRegion = {
+        acquire: () =>
+          Effect.succeed({
+            records: Stream.never,
+            recordDecoded: Effect.void,
+            recordDecodeFailure: Effect.void,
+            recordMapped: Effect.void,
+            recordMappingFailure: Effect.void,
+            recordRejection: Effect.void,
+          }),
+        metrics: () => Effect.succeed(hostileMetrics),
+      };
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(
           makeKafkaServerLayer({
-            consumerGroupPrefix: "\ud800",
-            regions: new Map([["eu", eu.runtime]]),
+            consumerGroupPrefix: "replica",
+            regions: new Map([["eu", regionRuntime]]),
           }),
         ),
       );
       const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
-      const exhausted = Option.getOrThrow(
-        yield* diagnostics.events.pipe(
-          Stream.filter((health) => health.status._tag === "Exhausted"),
-          Stream.take(1),
-          Stream.runHead,
-        ),
-      );
-
-      expect(exhausted.status).toStrictEqual({
-        _tag: "Exhausted",
-        exhaustion: {
-          _tag: "RetryExhausted",
-          lastTermination: {
-            _tag: "Failed",
-            failure: {
-              _tag: "AdapterFailure",
-              failure: {
-                _tag: "KafkaConfigurationFailure",
-                message:
-                  "Kafka consumer group prefix and View Server Topic must contain well-formed Unicode.",
-              },
-            },
-          },
-        },
-        exhaustedAtNanos: 0n,
-      });
       yield* TestClock.adjust("1 second");
-      const refreshed = Option.getOrThrow(
+      const health = Option.getOrThrow(
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
-      expect({
-        acquisitions: acquisitionOrder,
-        activeGroupId: refreshed.metrics.adapter.activeGroupId,
-      }).toStrictEqual({
-        acquisitions: [],
-        activeGroupId: "invalid-kafka-consumer-group",
-      });
-
+      expect(health.metrics.adapter.regions).toStrictEqual([
+        {
+          ...hostileMetrics,
+          region: "eu",
+        },
+      ]);
       yield* diagnostics.close();
       yield* runtime.close;
 
-      const groupId = vi.spyOn(kafkaContract, "kafkaConsumerGroupId").mockImplementation(() => {
-        throw new Error("unexpected group construction failure");
+      const throwingMetrics = new Proxy(hostileMetrics, {
+        ownKeys: () => {
+          throw new Error("metrics materialization failed");
+        },
       });
-      const fallbackAcquisitionOrder: Array<string> = [];
-      const fallbackRegion = yield* makeFakeRegion("eu", fallbackAcquisitionOrder);
+      const fallbackRegionRuntime: KafkaServerRegion = {
+        ...regionRuntime,
+        metrics: () => Effect.succeed(throwingMetrics),
+      };
       const fallbackRuntime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(
           makeKafkaServerLayer({
             consumerGroupPrefix: "replica",
-            regions: new Map([["eu", fallbackRegion.runtime]]),
+            regions: new Map([["eu", fallbackRegionRuntime]]),
           }),
         ),
       );
       const fallbackDiagnostics = yield* fallbackRuntime.liveClient.subscribeSourceHealth("orders");
-      const fallbackExhausted = Option.getOrThrow(
-        yield* fallbackDiagnostics.events.pipe(
-          Stream.filter((health) => health.status._tag === "Exhausted"),
-          Stream.take(1),
-          Stream.runHead,
-        ),
+      yield* TestClock.adjust("1 second");
+      const fallbackHealth = Option.getOrThrow(
+        yield* fallbackDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
-      expect(fallbackExhausted.status).toStrictEqual({
-        _tag: "Exhausted",
-        exhaustion: {
-          _tag: "RetryExhausted",
-          lastTermination: {
-            _tag: "Failed",
-            failure: {
-              _tag: "AdapterFailure",
-              failure: {
-                _tag: "KafkaConfigurationFailure",
-                message: "Kafka consumer group ID could not be constructed.",
-              },
-            },
-          },
+      expect(fallbackHealth.metrics.adapter.regions).toStrictEqual([
+        {
+          region: "eu",
+          assignments: [],
+          commits: 0n,
+          commitFailures: 0n,
+          decoded: 0n,
+          decodeFailures: 0n,
+          mapped: 0n,
+          mappingFailures: 0n,
+          rejections: 0n,
+          reconnects: 0n,
+          rebalances: 0n,
+          closes: 0n,
+          closeFailures: 0n,
         },
-        exhaustedAtNanos: 1_000_000_000n,
-      });
-      expect(fallbackAcquisitionOrder).toStrictEqual([]);
+      ]);
       yield* fallbackDiagnostics.close();
       yield* fallbackRuntime.close;
-      groupId.mockRestore();
     }),
   );
 

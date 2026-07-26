@@ -184,15 +184,26 @@ const diagnosticsProjects = [
 
 const diagnosticsTaskName = (name: string) => `check:effect:${name}`;
 
-const effectDiagnosticsTask = (project: string, declarationTask: string | undefined) => ({
+const diagnosticsAdditionalDependencies: Readonly<Record<string, ReadonlyArray<string>>> = {
+  kafka: [declarationTaskName("source-adapter-conformance-host")],
+};
+
+const effectDiagnosticsTask = (
+  project: string,
+  declarationTask: string | undefined,
+  additionalDependencies: ReadonlyArray<string>,
+) => ({
   command: `effect-language-service diagnostics --project ${project}/tsconfig.json --format text --strict`,
-  dependsOn: declarationTask === undefined ? [] : [declarationTask],
+  dependsOn: [
+    ...(declarationTask === undefined ? [] : [declarationTask]),
+    ...additionalDependencies,
+  ],
 });
 
 const diagnosticsTasks = Object.fromEntries(
   diagnosticsProjects.map(({ name, project, declarationTask }) => [
     diagnosticsTaskName(name),
-    effectDiagnosticsTask(project, declarationTask),
+    effectDiagnosticsTask(project, declarationTask, diagnosticsAdditionalDependencies[name] ?? []),
   ]),
 );
 
@@ -221,6 +232,7 @@ export default defineConfig({
         "scripts/benchmark-profile.mjs",
         "scripts/benchmark-sampling-policy.mjs",
         "scripts/bench-runtime-kafka-ingest.mjs",
+        "scripts/test-kafka-adapter-runner.mjs",
         "scripts/check-internal-seams.ts",
         "scripts/grpc-leased-benchmark-policy.mjs",
         "scripts/grpc-materialized-benchmark-policy.mjs",

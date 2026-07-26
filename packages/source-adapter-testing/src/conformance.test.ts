@@ -55,10 +55,12 @@ describe("Source Adapter low-level conformance driver", () => {
           Context.getOption(context, fixture.adapter.runtimeService),
         );
         const callbackLifecycle = Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
+        const lifetimeScope = yield* Effect.scope;
         expect(
           yield* callbackLifecycle.metrics({
             topic: "rows",
             definition: fixture.callbackBridge.source.options,
+            lifetimeScope,
             target: { _tag: "Materialized" },
           }),
         ).toStrictEqual({ observed: 0n });
@@ -73,6 +75,7 @@ describe("Source Adapter low-level conformance driver", () => {
           yield* callbackLifecycle.metrics({
             topic: "rows",
             definition: fixture.callbackBridge.source.options,
+            lifetimeScope,
             target: { _tag: "Materialized" },
           }),
         ).toStrictEqual({
@@ -431,10 +434,12 @@ describe("Source Adapter low-level conformance driver", () => {
         label: "local-canary",
         lanes: ["primary", "sibling"],
       });
+      const lifetimeScope = yield* Scope.make();
       const attemptScope = yield* Scope.make();
       const attempt = yield* lifecycle
         .acquire({
           definition: definition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -532,6 +537,7 @@ describe("Source Adapter low-level conformance driver", () => {
         yield* lifecycle.metrics({
           topic: "rows",
           definition: definition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
         }),
       ).toStrictEqual({ observed: 0n });
@@ -546,6 +552,7 @@ describe("Source Adapter low-level conformance driver", () => {
         yield* lifecycle.metrics({
           topic: "rows",
           definition: fixture.callbackBridge.source.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
         }),
       ).toStrictEqual({
@@ -566,6 +573,7 @@ describe("Source Adapter low-level conformance driver", () => {
         yield* lifecycle.metrics({
           topic: "rows",
           definition: definition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
         }),
       ).toStrictEqual({
@@ -601,6 +609,7 @@ describe("Source Adapter low-level conformance driver", () => {
           yield* Effect.scoped(
             lifecycle.acquire({
               definition: definition.options,
+              lifetimeScope,
               target: { _tag: "Materialized" },
               toolkit,
             }),
@@ -616,6 +625,7 @@ describe("Source Adapter low-level conformance driver", () => {
           yield* Effect.scoped(
             lifecycle.acquire({
               definition: definition.options,
+              lifetimeScope,
               target: { _tag: "Materialized" },
               toolkit,
             }),
@@ -628,6 +638,7 @@ describe("Source Adapter low-level conformance driver", () => {
       const failingAttempt = yield* lifecycle
         .acquire({
           definition: definition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -645,6 +656,7 @@ describe("Source Adapter low-level conformance driver", () => {
       const invalidAttempt = yield* lifecycle
         .acquire({
           definition: definition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -667,6 +679,7 @@ describe("Source Adapter low-level conformance driver", () => {
       const completeAttempt = yield* lifecycle
         .acquire({
           definition: definition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -684,6 +697,7 @@ describe("Source Adapter low-level conformance driver", () => {
         const faulted = yield* Effect.scoped(
           lifecycle.acquire({
             definition: definition.options,
+            lifetimeScope,
             target: { _tag: "Materialized" },
             toolkit,
           }),
@@ -696,6 +710,7 @@ describe("Source Adapter low-level conformance driver", () => {
         const faulted = yield* Effect.scoped(
           lifecycle.acquire({
             definition: definition.options,
+            lifetimeScope,
             target: { _tag: "Materialized" },
             toolkit,
           }),
@@ -713,6 +728,7 @@ describe("Source Adapter low-level conformance driver", () => {
           yield* Effect.scoped(
             lifecycle.acquire({
               definition: singleLaneDefinition.options,
+              lifetimeScope,
               target: { _tag: "Materialized" },
               toolkit,
             }),
@@ -725,6 +741,7 @@ describe("Source Adapter low-level conformance driver", () => {
       const defaultAttempt = yield* lifecycle
         .acquire({
           definition: defaultDefinition.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -747,6 +764,7 @@ describe("Source Adapter low-level conformance driver", () => {
       const leasedAttempt = yield* leased
         .acquire({
           definition: leasedDefinition.options,
+          lifetimeScope,
           target: { _tag: "Leased", route: { region: "eu" } },
           toolkit,
         })
@@ -772,6 +790,7 @@ describe("Source Adapter low-level conformance driver", () => {
       yield* Option.getOrThrow(yield* Fiber.join(leasedEvent)).settle(Exit.void);
       yield* Scope.close(leasedScope, Exit.void);
       expect(fixture.materializedSource().lifecycle).toBe("materialized");
+      yield* Scope.close(lifetimeScope, Exit.void);
     }),
   );
 
@@ -781,10 +800,12 @@ describe("Source Adapter low-level conformance driver", () => {
       const context = yield* Effect.scoped(Layer.build(fixture.callbackBridge.layer));
       const service = Context.get(context, fixture.callbackBridge.source.adapter.runtimeService);
       const lifecycle = Option.getOrThrow(Option.fromUndefinedOr(service.materialized));
+      const lifetimeScope = yield* Scope.make();
       const scope = yield* Scope.make();
       const attempt = yield* lifecycle
         .acquire({
           definition: fixture.callbackBridge.source.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -825,6 +846,7 @@ describe("Source Adapter low-level conformance driver", () => {
         yield* lifecycle.metrics({
           topic: "rows",
           definition: fixture.callbackBridge.source.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
         }),
       ).toStrictEqual({ observed: 0n });
@@ -839,6 +861,7 @@ describe("Source Adapter low-level conformance driver", () => {
         yield* lifecycle.metrics({
           topic: "rows",
           definition: fixture.callbackBridge.source.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
         }),
       ).toStrictEqual({
@@ -858,6 +881,7 @@ describe("Source Adapter low-level conformance driver", () => {
       const pausedAttempt = yield* lifecycle
         .acquire({
           definition: fixture.callbackBridge.source.options,
+          lifetimeScope,
           target: { _tag: "Materialized" },
           toolkit,
         })
@@ -900,6 +924,7 @@ describe("Source Adapter low-level conformance driver", () => {
       });
       expect(Exit.isFailure(yield* Fiber.join(overflow))).toBe(true);
       yield* Scope.close(pausedScope, Exit.void);
+      yield* Scope.close(lifetimeScope, Exit.void);
       expect(fixture.callbackBridge.finalizations()).toBe(4n);
     }),
   );

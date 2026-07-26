@@ -702,11 +702,27 @@ const releaseFailure = (input: KafkaServerRegionAcquireInput): KafkaAdapterFailu
   message: "Kafka Region consumer release failed.",
 });
 
+const configValidationFallbackMessage = "Kafka Node Layer configuration validation failed.";
+
+const configValidationMessage = (cause: unknown): string =>
+  Result.try(() => {
+    if (!(cause instanceof KafkaSourceConfigurationError)) {
+      return configValidationFallbackMessage;
+    }
+    const message = cause.message;
+    return typeof message === "string" ? message : configValidationFallbackMessage;
+  }).pipe(
+    Result.match({
+      onFailure: () => configValidationFallbackMessage,
+      onSuccess: (message) => message,
+    }),
+  );
+
 const configValidationFailure = (cause: unknown): Config.ConfigError =>
   new Config.ConfigError(
     new Schema.SchemaError(
       new SchemaIssue.InvalidValue(Option.none(), {
-        message: globalThis.String(cause),
+        message: configValidationMessage(cause),
       }),
     ),
   );

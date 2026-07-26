@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { setTimeout as wait } from "node:timers/promises";
 
-const exitCodeForSignal = (signal) => (signal === "SIGINT" ? 130 : 143);
+const exitCodeForSignal = (signal) =>
+  signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
 
 const exitCodeForChildSignal = (signal) =>
   signal === "SIGINT"

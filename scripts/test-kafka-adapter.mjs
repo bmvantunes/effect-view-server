@@ -13,9 +13,16 @@ const runner = createKafkaAdapterTestRunner({
 });
 
 const exitForSignal = (signal) => {
-  void runner.handleSignal(signal).then((exitCode) => {
-    process.exit(exitCode);
-  });
+  void runner.handleSignal(signal).then(exitWithCode, exitWithFailure);
+};
+
+const exitWithCode = (exitCode) => {
+  process.exit(exitCode);
+};
+
+const exitWithFailure = (error) => {
+  console.error("Kafka adapter test runner failed.", error);
+  process.exit(1);
 };
 
 process.once("SIGINT", () => {
@@ -24,5 +31,8 @@ process.once("SIGINT", () => {
 process.once("SIGTERM", () => {
   exitForSignal("SIGTERM");
 });
+process.once("SIGHUP", () => {
+  exitForSignal("SIGHUP");
+});
 
-process.exit(await runner.runMain());
+void runner.runMain().then(exitWithCode, exitWithFailure);

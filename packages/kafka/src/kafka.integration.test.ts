@@ -1588,28 +1588,40 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           makeViewServerRuntimeCore(viewServer, {}).pipe(Effect.provideContext(kafkaContext)),
           (current) => current.close,
         );
-        const initialDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
-        yield* initialDiagnostics.events.pipe(
-          Stream.filter((health) => health.status._tag === "Ready"),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.timeout("20 seconds"),
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const initialDiagnostics = yield* Effect.acquireRelease(
+              runtime.liveClient.subscribeSourceHealth("orders"),
+              (subscription) => subscription.close().pipe(Effect.orDie),
+            );
+            yield* initialDiagnostics.events.pipe(
+              Stream.filter((health) => health.status._tag === "Ready"),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.timeout("20 seconds"),
+            );
+          }),
         );
-        yield* initialDiagnostics.close();
 
-        const outageDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
-        yield* withKafkaOutage(
-          outageDiagnostics.events.pipe(
-            Stream.filter(
-              (health) =>
-                health.status._tag === "WaitingToRetry" || health.status._tag === "Reacquiring",
-            ),
-            Stream.take(1),
-            Stream.runDrain,
-            Effect.timeout("20 seconds"),
-          ),
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const outageDiagnostics = yield* Effect.acquireRelease(
+              runtime.liveClient.subscribeSourceHealth("orders"),
+              (subscription) => subscription.close().pipe(Effect.orDie),
+            );
+            yield* withKafkaOutage(
+              outageDiagnostics.events.pipe(
+                Stream.filter(
+                  (health) =>
+                    health.status._tag === "WaitingToRetry" || health.status._tag === "Reacquiring",
+                ),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.timeout("20 seconds"),
+              ),
+            );
+          }),
         );
-        yield* outageDiagnostics.close();
         yield* send(kafkaBootstrapServers, [
           {
             topic,
@@ -1628,7 +1640,10 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
               until: (snapshot) => snapshot.totalRows === 1,
             }),
           );
-        const recoveredDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const recoveredDiagnostics = yield* Effect.acquireRelease(
+          runtime.liveClient.subscribeSourceHealth("orders"),
+          (subscription) => subscription.close().pipe(Effect.orDie),
+        );
         const recoveredHealth = Option.getOrThrow(
           yield* recoveredDiagnostics.events.pipe(
             Stream.filter(
@@ -1645,7 +1660,6 @@ describe("Kafka Source Adapter with real Apache Kafka", () => {
           { id: "local:recovered", customerId: "recovered", price: 1 },
         ]);
         expect(recoveredHealth.metrics.adapter.regions[0]?.reconnects).toBeGreaterThanOrEqual(1n);
-        yield* recoveredDiagnostics.close();
       }),
     ),
   );

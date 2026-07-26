@@ -4,7 +4,7 @@ This context defines the language for the View Server project: a type-safe live 
 
 ## Document Status
 
-Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, canonical `source` path, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, conformance foundation, and first-party Kafka and gRPC Source Adapters described here are implemented. The React Source Diagnostics hook and final removal of transport-specific source shapes remain staged work.
+Runtime code and published package exports are authoritative for currently available behavior. The transport-neutral Source Adapter SDK, Runtime Core supervision, Source Health protocol, framework-neutral diagnostics, conformance foundation, and first-party Kafka and gRPC Source Adapters described here are implemented. The canonical-only `source` cutover, React Source Diagnostics hook, and final removal of transport-specific source shapes remain staged work.
 
 ## Language
 

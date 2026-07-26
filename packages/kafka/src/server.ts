@@ -1,4 +1,4 @@
-import { Chunk, Clock, Effect, Layer, Result, Schedule, Scope, Stream } from "effect";
+import { Chunk, Clock, Effect, Layer, Option, Result, Schedule, Scope, Stream } from "effect";
 import type {
   SourceApplicationExit,
   SourceExecutionFailure,
@@ -302,28 +302,38 @@ const codecRejectionMessage = (
     : `Kafka ${role} codec rejected the record.`;
 };
 
-const isPlainMappedRow = (value: unknown): value is object => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const inspected = Result.try(() => {
-    if (Object.hasOwn(value, "id")) {
-      return false;
+const captureCompleteMappedRow = (id: string, value: unknown): Option.Option<object> =>
+  Result.try(() => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return Option.none<object>();
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
-      return false;
+      return Option.none<object>();
     }
-    return Reflect.ownKeys(value).every((key) => {
-      if (typeof key !== "string") {
-        return false;
+    const row = { id };
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string" || key === "id") {
+        return Option.none<object>();
       }
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return descriptor !== undefined && descriptor.enumerable === true && "value" in descriptor;
-    });
-  });
-  return Result.isSuccess(inspected) && inspected.success;
-};
+      if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) {
+        return Option.none<object>();
+      }
+      Object.defineProperty(row, key, {
+        configurable: true,
+        enumerable: true,
+        value: descriptor.value,
+        writable: true,
+      });
+    }
+    return Option.some<object>(row);
+  }).pipe(
+    Result.match({
+      onFailure: () => Option.none<object>(),
+      onSuccess: (row) => row,
+    }),
+  );
 
 const fromCallback = (
   callback: (input: never) => unknown,
@@ -333,13 +343,6 @@ const fromCallback = (
   Effect.try({
     try: () => Reflect.apply(callback, undefined, [input]),
     catch: () => failure,
-  });
-
-const makeCompleteRow = (id: string, fields: object): Effect.Effect<object, KafkaAdapterFailure> =>
-  Effect.try({
-    try: () => Object.assign({ id }, fields),
-    catch: () =>
-      mappingFailure("unknown", "unknown", "Kafka Mapping result could not be materialized."),
   });
 
 const rejection = Effect.fn("KafkaSourceAdapter.record.reject")(function* <Row extends object>(
@@ -533,15 +536,19 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <Row 
     mappingFailure(region, sourceTopic, "Kafka Mapping threw."),
   ).pipe(
     Effect.flatMap((candidate) =>
-      isPlainMappedRow(candidate)
-        ? Effect.succeed(candidate)
-        : Effect.fail(
-            mappingFailure(
-              region,
-              sourceTopic,
-              "Kafka Mapping must return a plain exact non-ID row.",
+      captureCompleteMappedRow(id, candidate).pipe(
+        Option.match({
+          onNone: () =>
+            Effect.fail(
+              mappingFailure(
+                region,
+                sourceTopic,
+                "Kafka Mapping must return a plain exact non-ID row.",
+              ),
             ),
-          ),
+          onSome: Effect.succeed,
+        }),
+      ),
     ),
     Effect.matchEffect({
       onFailure: () =>
@@ -554,23 +561,7 @@ const recordEvent = Effect.fn("KafkaSourceAdapter.record.event")(function* <Row 
   if (processedMapped._tag === "Rejected") {
     return processedMapped.event;
   }
-  const mapped = processedMapped.value;
-  const processedComplete = yield* makeCompleteRow(id, mapped).pipe(
-    Effect.mapError(() =>
-      mappingFailure(region, sourceTopic, "Kafka Mapping result could not be materialized."),
-    ),
-    Effect.matchEffect({
-      onFailure: () =>
-        rejectMapping("mapping", "Kafka Mapping rejected the record.").pipe(
-          Effect.map(processedRejection),
-        ),
-      onSuccess: (candidate) => Effect.succeed(processedValue(candidate)),
-    }),
-  );
-  if (processedComplete._tag === "Rejected") {
-    return processedComplete.event;
-  }
-  const processedMutation = yield* toolkit.decodeUpsert(processedComplete.value).pipe(
+  const processedMutation = yield* toolkit.decodeUpsert(processedMapped.value).pipe(
     Effect.matchEffect({
       onFailure: (failure) =>
         rejectMapping(

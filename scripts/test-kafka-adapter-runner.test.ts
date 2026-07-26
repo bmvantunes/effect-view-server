@@ -1,6 +1,6 @@
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rmdir } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,15 @@ import {
   createKafkaAdapterTestRunner,
   kafkaAdapterTestPlan,
 } from "./test-kafka-adapter-runner.mjs";
+
+const temporaryDirectories = new Set<string>();
+
+afterEach(async () => {
+  await Promise.all(
+    Array.from(temporaryDirectories, (directory) => rm(directory, { force: true, recursive: true })),
+  );
+  temporaryDirectories.clear();
+});
 
 type SpawnCall = {
   readonly args: ReadonlyArray<string>;
@@ -243,7 +252,7 @@ describe("Kafka adapter test runner", () => {
     await expect(testResult).resolves.toBe(8);
   });
 
-  it("uses cleanup failures after success and maps child signals", async () => {
+  it("uses cleanup failures after successful tests", async () => {
     const cleanupFake = makeSpawn();
     const cleanupRunner = makeRunner(cleanupFake);
     const cleanupResult = cleanupRunner.runMain();
@@ -251,21 +260,20 @@ describe("Kafka adapter test runner", () => {
     await settle(cleanupFake.children, 1, 0);
     await settle(cleanupFake.children, 2, 6);
     await expect(cleanupResult).resolves.toBe(6);
+  });
 
-    const signalCases = [
-      ["SIGINT", 130],
-      ["SIGTERM", 143],
-      ["SIGHUP", 129],
-      ["SIGKILL", 137],
-      ["SIGUSR1", 1],
-    ] as const;
-    for (const [signal, expected] of signalCases) {
+  it.each([
+    { expected: 130, signal: "SIGINT" },
+    { expected: 143, signal: "SIGTERM" },
+    { expected: 129, signal: "SIGHUP" },
+    { expected: 137, signal: "SIGKILL" },
+    { expected: 1, signal: "SIGUSR1" },
+  ] as const)("maps a child $signal to exit code $expected", async ({ expected, signal }) => {
       const fake = makeSpawn();
       const runner = makeRunner(fake, ["src/node.test.ts"]);
       const result = runner.runMain();
       await settle(fake.children, 0, null, signal);
       await expect(result).resolves.toBe(expected);
-    }
   });
 
   it("cleans once on handled signals and preserves cleanup failure", async () => {
@@ -291,6 +299,18 @@ describe("Kafka adapter test runner", () => {
     await expect(cleanupSignal).resolves.toBe(5);
     await expect(cleanupRunning).resolves.toBe(5);
     expect(cleanupFake.children[2]?.signals).toStrictEqual([]);
+  });
+
+  it("cleans on a handled SIGHUP and returns its conventional exit code", async () => {
+    const fake = makeSpawn();
+    const runner = makeRunner(fake);
+    const running = runner.runMain();
+    await Promise.resolve();
+    const interrupted = runner.handleSignal("SIGHUP");
+    await settle(fake.children, 1, 0);
+    await expect(interrupted).resolves.toBe(129);
+    await expect(running).resolves.toBe(129);
+    expect(fake.children[0]?.signals).toStrictEqual(["SIGTERM"]);
   });
 
   it("maps spawn failures to command failures and still attempts cleanup", async () => {
@@ -359,6 +379,7 @@ describe("Kafka adapter test runner", () => {
     const parentDirectory = await mkdtemp(
       join(tmpdir(), "effect-view-server-kafka-adapter-lock-test-"),
     );
+    temporaryDirectories.add(parentDirectory);
     const lockDirectory = join(parentDirectory, "ports.lock");
     let allowRetry = () => {};
     let reportRetryStarted = () => {};
@@ -414,7 +435,6 @@ describe("Kafka adapter test runner", () => {
         "view-server-kafka-adapter-202",
       ],
     });
-    await rmdir(parentDirectory);
   });
 
   it("cancels lock acquisition and preserves unexpected filesystem failures", async () => {

@@ -289,16 +289,26 @@ function faultMap(input: FaultMapInput) {
       },
     });
   }
-  if (input.key === "map-materialize-throw") {
+  if (input.key === "good") {
     let ownKeyReads = 0;
     return new Proxy(row, {
       ownKeys: (target) => {
         ownKeyReads += 1;
-        if (ownKeyReads > 1) {
-          throw new Error("materialization failed");
-        }
-        return Reflect.ownKeys(target);
+        return ownKeyReads > 1 ? [...Reflect.ownKeys(target), "id"] : Reflect.ownKeys(target);
       },
+      getOwnPropertyDescriptor: (target, property) =>
+        property === "id" && ownKeyReads > 1
+          ? {
+              configurable: true,
+              enumerable: true,
+              value: "adapter-owned",
+              writable: true,
+            }
+          : Reflect.getOwnPropertyDescriptor(target, property),
+      get: (target, property, receiver) =>
+        property === "id" && ownKeyReads > 1
+          ? "adapter-owned"
+          : Reflect.get(target, property, receiver),
     });
   }
   if (input.key === "schema") {
@@ -527,7 +537,8 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* eu.awaitAcquisitions(1);
       yield* us.awaitAcquisitions(1);
-      const initialStart = eu.acquisitions[0]?.start;
+      const initialAcquisition = Option.getOrThrow(Option.fromUndefinedOr(eu.acquisitions[0]));
+      const initialStart = initialAcquisition.start;
       expect(initialStart).toStrictEqual({
         mode: "durationAgo",
         durationNanos: 60_000_000_000n,
@@ -548,20 +559,19 @@ describe("Kafka Source Adapter Server", () => {
       yield* eu.awaitAcquisitions(2);
       yield* us.awaitAcquisitions(2);
 
-      const starts = [
+      expect([
         eu.acquisitions[0]?.start,
         us.acquisitions[0]?.start,
         eu.acquisitions[1]?.start,
         us.acquisitions[1]?.start,
-      ];
-      expect(starts.every((start) => start === starts[0])).toBe(true);
-      const lifetimeScopes = [
+      ]).toStrictEqual([initialStart, initialStart, initialStart, initialStart]);
+      const lifetimeScope = initialAcquisition.lifetimeScope;
+      expect([
         eu.acquisitions[0]?.lifetimeScope,
         us.acquisitions[0]?.lifetimeScope,
         eu.acquisitions[1]?.lifetimeScope,
         us.acquisitions[1]?.lifetimeScope,
-      ];
-      expect(lifetimeScopes.every((scope) => scope === lifetimeScopes[0])).toBe(true);
+      ]).toStrictEqual([lifetimeScope, lifetimeScope, lifetimeScope, lifetimeScope]);
       expect([
         eu.acquisitions[0]?.activeGroupId,
         us.acquisitions[0]?.activeGroupId,
@@ -1375,24 +1385,6 @@ describe("Kafka Source Adapter Server", () => {
             mappingFailures: 11n,
           },
           {
-            key: "map-materialize-throw",
-            value: JSON.stringify({ price: 15 }),
-            phase: "mapping",
-            message: "Kafka Mapping rejected the record.",
-            failure: {
-              _tag: "AdapterFailure",
-              failure: {
-                _tag: "KafkaMappingFailure",
-                region: "eu",
-                topic: "source-orders",
-                message: "Kafka Mapping rejected the record.",
-              },
-            },
-            decoded: 9n,
-            decodeFailures: 3n,
-            mappingFailures: 12n,
-          },
-          {
             key: "schema",
             value: JSON.stringify({ price: 16 }),
             phase: "topicSchema",
@@ -1405,9 +1397,9 @@ describe("Kafka Source Adapter Server", () => {
                 message: "Source Upsert does not satisfy Topic orders Schema.",
               },
             },
-            decoded: 10n,
+            decoded: 9n,
             decodeFailures: 3n,
-            mappingFailures: 13n,
+            mappingFailures: 12n,
           },
         ] as const;
         yield* Effect.forEach(
@@ -1452,14 +1444,14 @@ describe("Kafka Source Adapter Server", () => {
         yield* eu.offer({
           key: "good",
           value: JSON.stringify({ price: 17 }),
-          offset: 17n,
+          offset: 16n,
         });
-        yield* awaitCondition(() => eu.commits.length === 17);
+        yield* awaitCondition(() => eu.commits.length === 16);
         expect({
           commits: eu.commits,
           counts: eu.counts(),
         }).toStrictEqual({
-          commits: [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n, 17n],
+          commits: [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n],
           counts: {
             acquisitions: 1,
             finalizations: 0,
@@ -1478,7 +1470,7 @@ describe("Kafka Source Adapter Server", () => {
         yield* eu.offer({
           key: "key-never",
           value: JSON.stringify({ price: 18 }),
-          offset: 18n,
+          offset: 17n,
         });
         yield* Deferred.await(keyDecodeStarted);
         yield* runtime.close;

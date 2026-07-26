@@ -36,8 +36,27 @@ import type {
 import { Effect, Result, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useInsertionEffect, useMemo, type ReactNode } from "react";
 import { ViewServerReactClientProvider, ViewServerReactConfig } from "./internal";
+import {
+  makeLiveQueryViewport,
+  makeLiveQueryViewportAtom,
+  makeLiveQueryViewportBinding,
+  type UseLiveQueryViewportHook,
+  type UseLiveQueryViewportResult,
+} from "./live-query-viewport";
+
+export type {
+  LiveQueryViewport,
+  LiveQueryViewportGeneration,
+  LiveQueryViewportGroupedQuery,
+  LiveQueryViewportQuery,
+  LiveQueryViewportRawQuery,
+  LiveQueryViewportSink,
+  LiveQueryViewportWindow,
+  UseLiveQueryViewportHook,
+  UseLiveQueryViewportResult,
+} from "./live-query-viewport";
 
 export type ViewServerReactBindings<
   Topics extends TopicDefinitions,
@@ -49,6 +68,7 @@ export type ViewServerReactBindings<
     props: ViewServerClientProviderProps<Topics>,
   ) => ReactNode;
   readonly useLiveQuery: UseLiveQueryHook<Topics>;
+  readonly useLiveQueryViewport: UseLiveQueryViewportHook<Topics>;
   readonly useViewServerHealth: () => ViewServerHealthDetails<Extract<keyof Topics, string>>;
   readonly useViewServerHealthSummary: () => ViewServerHealthSummary<Topics>;
   readonly ViewServerProvider: (props: ViewServerProviderProps) => ReactNode;
@@ -144,6 +164,7 @@ export const createViewServerReact = <
 
   const useSubscription = <Row,>(
     subscriptionKey: string,
+    subscriptionOwner: object,
     subscribe: () => Effect.Effect<ViewServerLiveSubscription<Row>, unknown>,
   ): LiveQueryResult<Row> => {
     const liveAtom = useMemo(
@@ -161,7 +182,7 @@ export const createViewServerReact = <
             ),
           ),
         ),
-      [subscriptionKey],
+      [subscriptionKey, subscriptionOwner],
     );
     const result = AtomReact.useAtomValue(liveAtom);
     return liveQueryResultFromAsyncResult<Row>(result);
@@ -190,8 +211,46 @@ export const createViewServerReact = <
     }, [query, topicDefinition]);
     return useSubscription<LiveQueryRow<TopicRow<Topics, Topic>, Query>>(
       `${client.health.key}:query:${topic}:${queryIdentity.key}`,
+      client,
       () => client.subscribe<Topic, Query>(topic, queryIdentity.query),
     );
+  }
+
+  function useLiveQueryViewport<Topic extends Extract<keyof Topics, string>>(
+    topic: Topic,
+  ): UseLiveQueryViewportResult<Topics, Topic> {
+    const client = useClient();
+    // Topic identity owns the public facade. Client changes replace the installed
+    // controller below without invalidating viewport references held by the grid.
+    const binding = useMemo(() => makeLiveQueryViewportBinding<Topics, Topic>(), [topic]);
+    const viewportState = useMemo(() => makeLiveQueryViewportAtom(), [client, topic]);
+    const [result, publish] = AtomReact.useAtom(viewportState.atom);
+    const entry = useMemo(() => {
+      const viewport = makeLiveQueryViewport({
+        client,
+        config,
+        topic,
+        publish: (command) => {
+          publish(viewportState.prepare(command));
+        },
+      });
+      return { viewport, deactivate: viewport.deactivate };
+    }, [client, publish, topic, viewportState]);
+    useInsertionEffect(() => {
+      binding.install(entry);
+      return () => {
+        binding.uninstall(entry);
+      };
+    }, [binding, entry]);
+    const chrome = viewportState.read(result);
+    return {
+      viewport: binding.viewport,
+      totalRows: chrome.totalRows,
+      version: chrome.version,
+      status: chrome.status,
+      statusCode: chrome.statusCode,
+      message: chrome.message,
+    };
   }
 
   const connectionStatusFromLiveQueryStatus = (
@@ -233,6 +292,7 @@ export const createViewServerReact = <
     const client = useClient();
     const result = useSubscription<ViewServerHealthSummaryRow<Topics>>(
       `${client.health.key}:health-summary`,
+      client,
       client.subscribeHealthSummary,
     );
     const connectionStatus = connectionStatusFromLiveQueryStatus(result.status);
@@ -247,6 +307,7 @@ export const createViewServerReact = <
     const summary = useViewServerHealthSummary();
     const result = useSubscription<ViewServerHealthTopicRow<Extract<keyof Topics, string>>>(
       `${client.health.key}:health`,
+      client,
       client.subscribeHealth,
     );
     const detailConnectionStatus = connectionStatusFromLiveQueryStatus(result.status);
@@ -268,6 +329,7 @@ export const createViewServerReact = <
     [ViewServerReactConfig]: config,
     [ViewServerReactClientProvider]: ViewServerClientProvider,
     useLiveQuery,
+    useLiveQueryViewport,
     useViewServerHealth,
     useViewServerHealthSummary,
     ViewServerProvider,

@@ -15,6 +15,10 @@ export {
   applyEvent,
   initialClientState,
   liveQueryResult,
+  makeIncrementalClientState,
+  type ClientStateChange,
   type ClientState,
+  type IncrementalClientState,
+  type IncrementalClientStateResult,
 } from "./live-query-state";
 export { stableQueryKey, stableQueryKeyForRowSchema } from "./query-key";

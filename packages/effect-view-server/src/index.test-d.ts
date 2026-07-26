@@ -165,6 +165,26 @@ describe("public effect-view-server subpath type contracts", () => {
         readonly price: number;
       }>
     >();
+    const viewport = react.useLiveQueryViewport("orders");
+    viewport.viewport.replace({
+      window: { firstRow: 0, lastRow: 19 },
+      query: {
+        select: ["id", "price"],
+        where: [],
+        orderBy: [{ field: "price", direction: "desc" }],
+      },
+      sink: {
+        setRowCount: (count) => {
+          expectTypeOf(count).toBeNumber();
+        },
+        setRowData: (rows) => {
+          expectTypeOf(rows[0]).toEqualTypeOf<
+            { readonly id: string; readonly price: number } | undefined
+          >();
+        },
+      },
+    });
+    expectTypeOf(viewport).not.toHaveProperty("rows");
 
     const profileResult = publicProfileReact.useLiveQuery("profiles", {
       select: ["id", "score"],
@@ -180,6 +200,9 @@ describe("public effect-view-server subpath type contracts", () => {
   });
 
   it("rejects invalid query and config contracts through public subpaths", () => {
+    // @ts-expect-error viewport topics must exist in the configured topic map.
+    react.useLiveQueryViewport("missing");
+
     // @ts-expect-error raw queries must explicitly select columns.
     react.useLiveQuery("orders", { where: [{ field: "status", type: "equals", filter: "open" }] });
 

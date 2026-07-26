@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import type { DeltaEvent } from "@effect-view-server/config";
 import { Cause } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -8,8 +9,10 @@ import {
   liveQueryFailureResult,
   liveQueryResult,
   liveQueryResultFromAsyncResult,
+  makeIncrementalClientState,
   stableQueryKey,
   type ClientState,
+  type IncrementalClientState,
 } from "./index";
 
 describe("@effect-view-server/client", () => {
@@ -263,6 +266,505 @@ describe("@effect-view-server/client", () => {
     expect(next.keys).toStrictEqual(["c", "a", "d"]);
     expect(next.totalRows).toBe(3);
     expect(next.version).toBe(2);
+  });
+
+  it("reports changed ranges and rolls every mutation kind back transactionally", () => {
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    const snapshot = {
+      type: "snapshot" as const,
+      topic: "orders",
+      queryId: "query-incremental",
+      version: 1,
+      keys: ["a", "b", "c"],
+      rows: [{ id: "a" }, { id: "b" }, { id: "c" }],
+      totalRows: 3,
+    };
+    expect(projection.apply(snapshot).change).toStrictEqual({ _tag: "All" });
+    expect(
+      projection.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-incremental",
+        fromVersion: 1,
+        toVersion: 2,
+        totalRows: 3,
+        operations: [{ type: "update", key: "b", row: { id: "b-updated" }, index: 1 }],
+      }).change,
+    ).toStrictEqual({ _tag: "Range", start: 1, end: 1 });
+    expect(
+      projection.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-incremental",
+        fromVersion: 2,
+        toVersion: 3,
+        totalRows: 3,
+        operations: [],
+      }).change,
+    ).toStrictEqual({ _tag: "None" });
+
+    const rollbackCases = [
+      [
+        { type: "insert" as const, key: "d", row: { id: "d" }, index: 1 },
+        { type: "insert" as const, key: "a", row: { id: "duplicate" }, index: 0 },
+      ],
+      [
+        { type: "update" as const, key: "b", row: { id: "changed" }, index: 1 },
+        { type: "update" as const, key: "missing", row: { id: "missing" }, index: 1 },
+      ],
+      [
+        { type: "move" as const, key: "c", fromIndex: 2, toIndex: 0 },
+        { type: "move" as const, key: "missing", fromIndex: 2, toIndex: 0 },
+      ],
+      [
+        { type: "remove" as const, key: "b" },
+        { type: "remove" as const, key: "missing" },
+      ],
+    ];
+    for (const operations of rollbackCases) {
+      const transactional = makeIncrementalClientState<{ readonly id: string }>();
+      transactional.apply(snapshot);
+      const result = transactional.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-incremental",
+        fromVersion: 1,
+        toVersion: 2,
+        totalRows: 3,
+        operations,
+      });
+      expect(result.change).toStrictEqual({ _tag: "None" });
+      expect(result.current.rows).toStrictEqual([{ id: "a" }, { id: "b" }, { id: "c" }]);
+      expect(result.current.keys).toStrictEqual(["a", "b", "c"]);
+      expect(result.current.status).toBe("stale");
+    }
+  });
+
+  it("updates incremental status chrome and clears closed subscriptions in place", () => {
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    const ready = projection.apply({
+      type: "snapshot",
+      topic: "orders",
+      queryId: "query-status",
+      version: 1,
+      keys: ["a"],
+      rows: [{ id: "a" }],
+      totalRows: 1,
+    }).current;
+    const stale = projection.apply({
+      type: "status",
+      topic: "orders",
+      queryId: "query-status",
+      status: "stale",
+      code: "SnapshotStale",
+      message: "refreshing",
+    });
+    expect(stale).toStrictEqual({
+      current: {
+        rows: [{ id: "a" }],
+        keys: ["a"],
+        totalRows: 1,
+        version: 1,
+        status: "stale",
+        statusCode: "SnapshotStale",
+        message: "refreshing",
+      },
+      change: { _tag: "None" },
+    });
+    expect(stale.current.rows).toBe(ready.rows);
+    expect(stale.current.keys).toBe(ready.keys);
+
+    const closed = projection.apply({
+      type: "status",
+      topic: "orders",
+      queryId: "query-status",
+      status: "closed",
+      code: "SubscriptionClosed",
+    });
+    expect(closed).toStrictEqual({
+      current: {
+        rows: [],
+        keys: [],
+        totalRows: 0,
+        version: 0,
+        status: "closed",
+        statusCode: "SubscriptionClosed",
+        message: undefined,
+      },
+      change: { _tag: "None" },
+    });
+    expect(ready.rows).toStrictEqual([]);
+    expect(ready.keys).toStrictEqual([]);
+    expect(closed.current.rows).toBe(ready.rows);
+    expect(closed.current.keys).toBe(ready.keys);
+  });
+
+  it("applies replacement-shaped structural batches transactionally in one commit", () => {
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    const ready = projection.apply({
+      type: "snapshot",
+      topic: "orders",
+      queryId: "query-replacement",
+      version: 1,
+      keys: ["a", "b", "c", "d"],
+      rows: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }],
+      totalRows: 4,
+    }).current;
+    const rows = ready.rows;
+    const keys = ready.keys;
+
+    const partial = projection.apply({
+      type: "delta",
+      topic: "orders",
+      queryId: "query-replacement",
+      fromVersion: 1,
+      toVersion: 2,
+      totalRows: 4,
+      operations: [
+        { type: "remove", key: "a" },
+        { type: "remove", key: "c" },
+        { type: "insert", key: "x", row: { id: "x" }, index: 0 },
+        { type: "insert", key: "y", row: { id: "y" }, index: 2 },
+      ],
+    });
+    expect(partial).toStrictEqual({
+      current: {
+        rows: [{ id: "x" }, { id: "b" }, { id: "y" }, { id: "d" }],
+        keys: ["x", "b", "y", "d"],
+        totalRows: 4,
+        version: 2,
+        status: "ready",
+        statusCode: "Ready",
+      },
+      change: { _tag: "Range", start: 0, end: 3 },
+    });
+    expect(partial.current.rows).toBe(rows);
+    expect(partial.current.keys).toBe(keys);
+
+    const disjoint = projection.apply({
+      type: "delta",
+      topic: "orders",
+      queryId: "query-replacement",
+      fromVersion: 2,
+      toVersion: 3,
+      totalRows: 4,
+      operations: [
+        { type: "remove", key: "x" },
+        { type: "remove", key: "b" },
+        { type: "remove", key: "y" },
+        { type: "remove", key: "d" },
+        { type: "insert", key: "p", row: { id: "p" }, index: 0 },
+        { type: "insert", key: "q", row: { id: "q" }, index: 1 },
+        { type: "insert", key: "r", row: { id: "r" }, index: 2 },
+        { type: "insert", key: "s", row: { id: "s" }, index: 3 },
+      ],
+    });
+    expect(disjoint.current.rows).toStrictEqual([
+      { id: "p" },
+      { id: "q" },
+      { id: "r" },
+      { id: "s" },
+    ]);
+    expect(disjoint.current.keys).toStrictEqual(["p", "q", "r", "s"]);
+    expect(disjoint.current.rows).toBe(rows);
+    expect(disjoint.current.keys).toBe(keys);
+  });
+
+  it("stages dense move and mixed structural batches with one stable-array commit", () => {
+    const keys = Array.from({ length: 128 }, (_, index) => `key-${index}`);
+    const rows = keys.map((id) => ({ id }));
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    const ready = projection.apply({
+      type: "snapshot",
+      topic: "orders",
+      queryId: "query-dense-structural",
+      version: 1,
+      keys,
+      rows,
+      totalRows: rows.length,
+    }).current;
+
+    const expectedKeys = keys.slice();
+    const expectedRows = rows.slice();
+    const moves: Array<DeltaEvent<{ readonly id: string }>["operations"][number]> = [];
+    for (let index = 0; index < 64; index += 1) {
+      const fromIndex = expectedKeys.length - 1;
+      const key = expectedKeys[fromIndex]!;
+      moves.push({ type: "move", key, fromIndex, toIndex: 0 });
+      expectedKeys.unshift(expectedKeys.pop()!);
+      expectedRows.unshift(expectedRows.pop()!);
+    }
+    const moved = projection.apply({
+      type: "delta",
+      topic: "orders",
+      queryId: "query-dense-structural",
+      fromVersion: 1,
+      toVersion: 2,
+      totalRows: rows.length,
+      operations: moves,
+    });
+    expect(moved).toStrictEqual({
+      current: {
+        rows: expectedRows,
+        keys: expectedKeys,
+        totalRows: 128,
+        version: 2,
+        status: "ready",
+        statusCode: "Ready",
+      },
+      change: { _tag: "Range", start: 0, end: 127 },
+    });
+    expect(moved.current.rows).toBe(ready.rows);
+    expect(moved.current.keys).toBe(ready.keys);
+
+    const structural: Array<DeltaEvent<{ readonly id: string }>["operations"][number]> = [];
+    for (let index = 0; index < 64; index += 1) {
+      const fromIndex = expectedKeys.length - 1;
+      const key = expectedKeys[fromIndex]!;
+      structural.push({ type: "move", key, fromIndex, toIndex: 0 });
+      expectedKeys.unshift(expectedKeys.pop()!);
+      expectedRows.unshift(expectedRows.pop()!);
+    }
+    structural.push({
+      type: "update",
+      key: expectedKeys[10]!,
+      row: { id: "updated" },
+      index: 10,
+    });
+    expectedRows[10] = { id: "updated" };
+    const removedKey = expectedKeys[20]!;
+    structural.push({ type: "remove", key: removedKey });
+    expectedKeys.splice(20, 1);
+    expectedRows.splice(20, 1);
+    structural.push({ type: "insert", key: "inserted", row: { id: "inserted" }, index: 30 });
+    expectedKeys.splice(30, 0, "inserted");
+    expectedRows.splice(30, 0, { id: "inserted" });
+
+    const mixed = projection.apply({
+      type: "delta",
+      topic: "orders",
+      queryId: "query-dense-structural",
+      fromVersion: 2,
+      toVersion: 3,
+      totalRows: expectedRows.length,
+      operations: structural,
+    });
+    expect(mixed.current.rows).toStrictEqual(expectedRows);
+    expect(mixed.current.keys).toStrictEqual(expectedKeys);
+    expect(mixed.current.rows).toBe(ready.rows);
+    expect(mixed.current.keys).toBe(ready.keys);
+    expect(mixed.change).toStrictEqual({ _tag: "Range", start: 0, end: 127 });
+  });
+
+  it("keeps a sparse tail replacement on the narrow in-place path", () => {
+    const keys = Array.from({ length: 10_000 }, (_, index) => `key-${index}`);
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    projection.apply({
+      type: "snapshot",
+      topic: "orders",
+      queryId: "query-tail-replacement",
+      version: 1,
+      keys,
+      rows: keys.map((id) => ({ id })),
+      totalRows: keys.length,
+    });
+    const changed = projection.apply({
+      type: "delta",
+      topic: "orders",
+      queryId: "query-tail-replacement",
+      fromVersion: 1,
+      toVersion: 2,
+      totalRows: keys.length,
+      operations: [
+        { type: "remove", key: "key-9999" },
+        { type: "insert", key: "replacement", row: { id: "replacement" }, index: 9_999 },
+      ],
+    });
+    expect(changed.change).toStrictEqual({ _tag: "Range", start: 9_999, end: 9_999 });
+    expect(changed.current.rows[9_999]).toStrictEqual({ id: "replacement" });
+  });
+
+  it("stages dense structural batches for a single-row viewport", () => {
+    const projection = makeIncrementalClientState<{ readonly id: string }>();
+    projection.apply({
+      type: "snapshot",
+      topic: "orders",
+      queryId: "query-single-row-structural",
+      version: 1,
+      keys: ["only"],
+      rows: [{ id: "only" }],
+      totalRows: 1,
+    });
+    const changed = projection.apply({
+      type: "delta",
+      topic: "orders",
+      queryId: "query-single-row-structural",
+      fromVersion: 1,
+      toVersion: 2,
+      totalRows: 1,
+      operations: Array.from(
+        { length: 64 },
+        () =>
+          ({ type: "move", key: "only", fromIndex: 0, toIndex: 0 }) satisfies DeltaEvent<{
+            readonly id: string;
+          }>["operations"][number],
+      ),
+    });
+    expect(changed.current.rows).toStrictEqual([{ id: "only" }]);
+    expect(changed.change).toStrictEqual({ _tag: "Range", start: 0, end: 0 });
+  });
+
+  it("rejects invalid dense structural batches transactionally", () => {
+    const keys = Array.from({ length: 128 }, (_, index) => `key-${index}`);
+    const prefix = Array.from(
+      { length: 64 },
+      () =>
+        ({ type: "move", key: "key-0", fromIndex: 0, toIndex: 0 }) satisfies DeltaEvent<{
+          readonly id: string;
+        }>["operations"][number],
+    );
+    const apply = (
+      operation: DeltaEvent<{ readonly id: string }>["operations"][number],
+      totalRows = 128,
+    ) => {
+      const projection = makeIncrementalClientState<{ readonly id: string }>();
+      const ready = projection.apply({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-invalid-dense",
+        version: 1,
+        keys,
+        rows: keys.map((id) => ({ id })),
+        totalRows: keys.length,
+      }).current;
+      const result = projection.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-invalid-dense",
+        fromVersion: 1,
+        toVersion: 2,
+        totalRows,
+        operations: [...prefix, operation],
+      });
+      expect(result.current.status).toBe("stale");
+      expect(ready.keys).toStrictEqual(keys);
+    };
+
+    apply({ type: "insert", key: "key-1", row: { id: "duplicate" }, index: 1 });
+    apply({ type: "insert", key: "new", row: { id: "new" }, index: 129 });
+    apply({ type: "update", key: "wrong", row: { id: "wrong" }, index: 1 });
+    apply({ type: "update", key: "missing", row: { id: "missing" }, index: 129 });
+    apply({ type: "move", key: "wrong", fromIndex: 1, toIndex: 2 });
+    apply({ type: "move", key: "key-1", fromIndex: 1, toIndex: 128 });
+    apply({ type: "remove", key: "missing" });
+    apply({ type: "remove", key: "key-1" }, 126);
+  });
+
+  it("rejects malformed replacement batches without mutating stable arrays", () => {
+    const makeProjection = () => {
+      const projection = makeIncrementalClientState<{ readonly id: string }>();
+      const ready = projection.apply({
+        type: "snapshot",
+        topic: "orders",
+        queryId: "query-invalid-replacement",
+        version: 1,
+        keys: ["a", "b"],
+        rows: [{ id: "a" }, { id: "b" }],
+        totalRows: 2,
+      }).current;
+      return { projection, ready };
+    };
+    const apply = (
+      projection: IncrementalClientState<{ readonly id: string }>,
+      operations: DeltaEvent<{ readonly id: string }>["operations"],
+      totalRows = 2,
+    ) =>
+      projection.apply({
+        type: "delta",
+        topic: "orders",
+        queryId: "query-invalid-replacement",
+        fromVersion: 1,
+        toVersion: 2,
+        totalRows,
+        operations,
+      }).current;
+
+    const missingRemoval = makeProjection();
+    expect(
+      apply(missingRemoval.projection, [
+        { type: "remove", key: "missing" },
+        { type: "insert", key: "x", row: { id: "x" }, index: 1 },
+      ]).status,
+    ).toBe("stale");
+    expect(missingRemoval.ready.rows).toStrictEqual([{ id: "a" }, { id: "b" }]);
+
+    const duplicateRemoval = makeProjection();
+    expect(
+      apply(duplicateRemoval.projection, [
+        { type: "remove", key: "a" },
+        { type: "remove", key: "a" },
+        { type: "insert", key: "x", row: { id: "x" }, index: 0 },
+      ]).status,
+    ).toBe("stale");
+    expect(duplicateRemoval.ready.keys).toStrictEqual(["a", "b"]);
+
+    const invalidInsertIndex = makeProjection();
+    expect(
+      apply(invalidInsertIndex.projection, [
+        { type: "remove", key: "a" },
+        { type: "insert", key: "x", row: { id: "x" }, index: 2 },
+      ]).status,
+    ).toBe("stale");
+
+    const duplicateInsert = makeProjection();
+    expect(
+      apply(duplicateInsert.projection, [
+        { type: "remove", key: "a" },
+        { type: "insert", key: "x", row: { id: "x" }, index: 0 },
+        { type: "insert", key: "x", row: { id: "x-again" }, index: 1 },
+      ]).status,
+    ).toBe("stale");
+
+    const retainedKeyInsert = makeProjection();
+    expect(
+      apply(retainedKeyInsert.projection, [
+        { type: "remove", key: "a" },
+        { type: "insert", key: "b", row: { id: "b" }, index: 0 },
+      ]).status,
+    ).toBe("stale");
+
+    const excessiveShrink = makeProjection();
+    expect(
+      apply(
+        excessiveShrink.projection,
+        [
+          { type: "remove", key: "a" },
+          { type: "insert", key: "x", row: { id: "x" }, index: 0 },
+        ],
+        1,
+      ).status,
+    ).toBe("stale");
+
+    const reinsertRemovedKey = makeProjection();
+    expect(
+      apply(reinsertRemovedKey.projection, [
+        { type: "remove", key: "a" },
+        { type: "insert", key: "a", row: { id: "a-new" }, index: 0 },
+      ]).rows,
+    ).toStrictEqual([{ id: "a-new" }, { id: "b" }]);
+
+    const nonIncreasingInserts = makeProjection();
+    expect(
+      apply(
+        nonIncreasingInserts.projection,
+        [
+          { type: "remove", key: "a" },
+          { type: "insert", key: "x", row: { id: "x" }, index: 0 },
+          { type: "insert", key: "y", row: { id: "y" }, index: 0 },
+        ],
+        3,
+      ).rows,
+    ).toStrictEqual([{ id: "y" }, { id: "x" }, { id: "b" }]);
   });
 
   it("moves rows by key even when the row value is undefined", () => {

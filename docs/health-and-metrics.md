@@ -36,6 +36,15 @@ Materialized diagnostics are active. Leased diagnostics return exact
 Matching consumers share one scoped subscription and unmount/client close
 releases it. There is no one-shot diagnostics interface.
 
+A Materialized Source enters supervision even when its first adapter-metrics
+sample is schema-invalid. Until the adapter publishes its first valid cached
+sample, that Topic has no active Source Health value: aggregate `sources` omits
+the Materialized Topic and its diagnostics stream waits for a valid health
+snapshot. This keeps unrelated Topics and transports available without
+inventing adapter metrics that do not satisfy the declared Schema. Leased
+aggregate entries remain present as arrays and use an empty array when no feed
+has active health.
+
 ## Degradation
 
 A settled item Rejection increments exact `bigint` counters and marks the

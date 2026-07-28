@@ -387,21 +387,19 @@ describe("Real View Server metrics route", () => {
       expect(lines.some((line) => line.includes("opaqueSequence"))).toBe(false);
       expect(lines.some((line) => line.includes('id="first"'))).toBe(false);
 
-      const missingMaterializedSources = new Proxy(health.sources, {
-        getOwnPropertyDescriptor: (target, property) =>
-          property === "materialized"
-            ? undefined
-            : Reflect.getOwnPropertyDescriptor(target, property),
-      });
       const missingMaterializedLines = viewServerHealthMetrics(sourceMetricsConfig, {
         ...health,
-        sources: missingMaterializedSources,
+        sources: {
+          leased: health.sources.leased,
+        },
       })
         .trimEnd()
         .split("\n");
-      expect(missingMaterializedLines).not.toContain(
-        'view_server_source_active_instances{topic="materialized",adapter="source\\"adapter\\\\name",lifecycle="materialized"} 1',
-      );
+      expect(
+        missingMaterializedLines.some(
+          (line) => line.startsWith("view_server_source_") && line.includes('topic="materialized"'),
+        ),
+      ).toBe(false);
       expect(missingMaterializedLines).toContain(
         'view_server_source_active_instances{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
       );

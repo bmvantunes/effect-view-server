@@ -96,13 +96,23 @@ const sourceRecordKeys = Effect.fn("ViewServerProtocol.health.sources.keys")(fun
   };
 });
 
-const configuredSourceTopicNames = <Topics extends TopicDefinitions>(
+const configuredSourceTopics = <Topics extends TopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
-): ReadonlyArray<string> => {
-  const topics: Array<string> = [];
+): ReadonlyArray<{
+  readonly lifecycle: "materialized" | "leased";
+  readonly topic: string;
+}> => {
+  const topics: Array<{
+    readonly lifecycle: "materialized" | "leased";
+    readonly topic: string;
+  }> = [];
   for (const [topic, definition] of Object.entries(config.topics)) {
-    if (isSourceDefinition(Reflect.get(definition, "source"))) {
-      topics.push(topic);
+    const source = Reflect.get(definition, "source");
+    if (isSourceDefinition(source)) {
+      topics.push({
+        lifecycle: source.lifecycle,
+        topic,
+      });
     }
   }
   return topics;
@@ -134,13 +144,13 @@ const validateSourceTopicKeys = Effect.fn("ViewServerProtocol.health.sourceTopic
     config: ViewServerTopicConfig<Topics>,
     keys: ReadonlyArray<string>,
   ) {
-    const configuredSources = configuredSourceTopicNames(config);
-    const configuredSourceSet = new Set(configuredSources);
+    const configuredSources = configuredSourceTopics(config);
+    const configuredSourceSet = new Set(configuredSources.map(({ topic }) => topic));
     const keySet = new Set(keys);
-    for (const topic of configuredSources) {
-      if (!keySet.has(topic)) {
+    for (const source of configuredSources) {
+      if (source.lifecycle === "leased" && !keySet.has(source.topic)) {
         return yield* Effect.fail(
-          invalidHealthRow(topic, `Health payload is missing source topic: ${topic}`),
+          invalidHealthRow(source.topic, `Health payload is missing source topic: ${source.topic}`),
         );
       }
     }
@@ -154,7 +164,7 @@ const validateSourceTopicKeys = Effect.fn("ViewServerProtocol.health.sourceTopic
         );
       }
     }
-    return configuredSources;
+    return configuredSources.map(({ topic }) => topic).filter((topic) => keySet.has(topic));
   },
 );
 

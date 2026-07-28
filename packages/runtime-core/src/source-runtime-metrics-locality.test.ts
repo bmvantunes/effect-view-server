@@ -118,7 +118,10 @@ describe("Runtime Core Source metrics locality", () => {
         Effect.provide(primitiveMetricsLayer),
       );
 
-      expect((yield* runtime.client.health()).sources.rows.metrics.adapter).toBe(7n);
+      const sourceHealth = Option.getOrThrow(
+        Option.fromUndefinedOr((yield* runtime.client.health()).sources.rows),
+      );
+      expect(sourceHealth.metrics.adapter).toBe(7n);
 
       yield* runtime.close;
     }),

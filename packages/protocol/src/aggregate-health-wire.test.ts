@@ -317,14 +317,20 @@ describe("Aggregate Source Health wire contract", () => {
     }),
   );
 
-  it.effect("rejects missing, unknown, and source-free aggregate source keys", () =>
+  it.effect("permits pending materialized health and rejects missing leased or unknown keys", () =>
     Effect.gen(function* () {
       const encoded = yield* viewServerEncodeHealth(config, aggregateHealth);
-      const missing = yield* Effect.flip(
+      const pendingMaterialized = yield* viewServerDecodeHealth(config, {
+        ...encoded,
+        sources: {
+          leased: encoded.sources["leased"] ?? null,
+        },
+      });
+      const missingLeased = yield* Effect.flip(
         viewServerDecodeHealth(config, {
           ...encoded,
           sources: {
-            leased: encoded.sources["leased"] ?? null,
+            materialized: encoded.sources["materialized"] ?? null,
           },
         }),
       );
@@ -347,8 +353,14 @@ describe("Aggregate Source Health wire contract", () => {
         }),
       );
 
-      expect([missing.message, unknown.message, sourceFree.message]).toStrictEqual([
-        "Health payload is missing source topic: materialized",
+      expect(yield* viewServerEncodeHealth(config, pendingMaterialized)).toStrictEqual({
+        ...encoded,
+        sources: {
+          leased: encoded.sources["leased"] ?? null,
+        },
+      });
+      expect([missingLeased.message, unknown.message, sourceFree.message]).toStrictEqual([
+        "Health payload is missing source topic: leased",
         "Health payload references unknown or source-free source topic: unknown",
         "Health payload references unknown or source-free source topic: manual",
       ]);

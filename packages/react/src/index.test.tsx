@@ -37,7 +37,7 @@ declare module "vitest" {
   }
 }
 
-describe("deleteMapEntryIfCurrent", () => {
+describe("Source Health cache entry helpers", () => {
   it("keeps a newer cache entry when an older finalizer runs late", () => {
     const original = {};
     const replacement = {};
@@ -940,7 +940,7 @@ describe("createViewServerReact", () => {
     await view.unmount();
   });
 
-  it("shares keyed leased Source Health observation without acquiring the feed", async () => {
+  it("adopts the committed winner for competing same-key Source Health consumers", async () => {
     const leaseState = { active: 0 };
     const sourceAdapterLayer = makeSourceHealthAdapterLayer(leaseState);
     const runtime = await Effect.runPromise(

@@ -942,13 +942,35 @@ describe("Runtime Core lifecycle", () => {
           hub,
           requestHealthRefresh,
         );
-        const unsupportedSourceDiagnostics: Effect.Effect<unknown, unknown> = Reflect.apply(
-          liveClient.subscribeSourceHealth,
-          liveClient,
-          ["orders"],
+        const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+          Reflect.apply(liveClient.subscribeSourceHealth, liveClient, [input]);
+        const hostile = new Proxy(
+          {},
+          {
+            ownKeys: () => {
+              throw new Error("hostile ownKeys");
+            },
+          },
         );
-        const sourceDiagnostics = yield* Effect.exit(unsupportedSourceDiagnostics);
-        expect(Exit.isFailure(sourceDiagnostics)).toBe(true);
+        const sourceDiagnosticsErrors = yield* Effect.all([
+          Effect.flip(subscribeHostile(null)),
+          Effect.flip(subscribeHostile(undefined)),
+          Effect.flip(subscribeHostile(hostile)),
+        ]);
+        expect(sourceDiagnosticsErrors).toStrictEqual(
+          Array.from({ length: 3 }, () => ({
+            _tag: "ViewServerRuntimeError",
+            code: "InvalidQuery",
+            topic: "<invalid>",
+            message: "Source Health input must be one exact { topic, routeBy? } object.",
+          })),
+        );
+        expect(yield* Effect.flip(subscribeHostile({ topic: "orders" }))).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "orders",
+          message: "Topic orders has no Source.",
+        });
         const subscriptionFiber = yield* liveClient
           .subscribeInternal("orders", { select: ["id"] })
           .pipe(Effect.forkChild({ startImmediately: true }));

@@ -88,6 +88,7 @@ const sourceFreeConfig = defineViewServerConfig({
   },
 });
 declare const useLeasedSource: boolean;
+declare const useRegionRoute: boolean;
 const mixedLifecycleConfig = defineViewServerConfig({
   topics: {
     mixed: {
@@ -95,6 +96,16 @@ const mixedLifecycleConfig = defineViewServerConfig({
       source: useLeasedSource
         ? adapter.leasedSource(["region", "shard"], { stream: "mixed-leased" })
         : adapter.materializedSource({ stream: "mixed-materialized" }),
+    },
+  },
+});
+const mixedLeasedRoutesConfig = defineViewServerConfig({
+  topics: {
+    mixedRoutes: {
+      schema: Row,
+      source: useRegionRoute
+        ? adapter.leasedSource(["region"], { stream: "mixed-region" })
+        : adapter.leasedSource(["shard"], { stream: "mixed-shard" }),
     },
   },
 });
@@ -207,18 +218,18 @@ describe("Source Adapter config type contracts", () => {
       SourceDefinitionRouteFields<typeof nestedMappedConfig.topics.nested.source>
     >().toEqualTypeOf<readonly []>();
     expectTypeOf(config.topics.routed.source.routeBy).toEqualTypeOf<readonly ["region", "shard"]>();
-    expectTypeOf<
-      ViewServerHealth<typeof config.topics>["sources"]["all"]
-    >().toEqualTypeOf<MaterializedHealth>();
+    expectTypeOf<ViewServerHealth<typeof config.topics>["sources"]["all"]>().toEqualTypeOf<
+      MaterializedHealth | undefined
+    >();
     expectTypeOf<ViewServerHealth<typeof config.topics>["sources"]["routed"]>().toEqualTypeOf<
       ReadonlyArray<LeasedHealth>
     >();
     expectTypeOf<
-      ViewServerHealth<typeof config.topics>["sources"]["all"]["metrics"]["adapter"]
+      NonNullable<ViewServerHealth<typeof config.topics>["sources"]["all"]>["metrics"]["adapter"]
     >().toEqualTypeOf<{ readonly connected: boolean }>();
     expectTypeOf<
       ViewServerHealth<typeof mixedLifecycleConfig.topics>["sources"]["mixed"]
-    >().toEqualTypeOf<MixedMaterializedHealth | ReadonlyArray<MixedLeasedHealth>>();
+    >().toEqualTypeOf<MixedMaterializedHealth | ReadonlyArray<MixedLeasedHealth> | undefined>();
     expectTypeOf<
       keyof ViewServerHealth<typeof sourceFreeConfig.topics>["sources"]
     >().toEqualTypeOf<never>();
@@ -229,18 +240,18 @@ describe("Source Adapter config type contracts", () => {
     };
     expectTypeOf(validSourceHealth.routed).toEqualTypeOf<ReadonlyArray<LeasedHealth>>();
 
-    // @ts-expect-error Materialized Source Health is mandatory and singular.
-    const missingMaterializedHealth: ViewServerSourceHealth<typeof config.topics> = {
+    const pendingMaterializedHealth: ViewServerSourceHealth<typeof config.topics> = {
       routed: [leasedHealth],
     };
-    expectTypeOf(missingMaterializedHealth.routed).toEqualTypeOf<ReadonlyArray<LeasedHealth>>();
+    expectTypeOf(pendingMaterializedHealth.all).toEqualTypeOf<MaterializedHealth | undefined>();
+    expectTypeOf(pendingMaterializedHealth.routed).toEqualTypeOf<ReadonlyArray<LeasedHealth>>();
 
     const invalidLeasedHealth: ViewServerSourceHealth<typeof config.topics> = {
       all: materializedHealth,
       // @ts-expect-error Leased aggregate health is the exact active-health array.
       routed: leasedHealth,
     };
-    expectTypeOf(invalidLeasedHealth.all).toEqualTypeOf<MaterializedHealth>();
+    expectTypeOf(invalidLeasedHealth.all).toEqualTypeOf<MaterializedHealth | undefined>();
 
     // @ts-expect-error Source-free Topics have no canonical aggregate Source Health key.
     void sourceFreeHealth.sources.manual;
@@ -263,6 +274,116 @@ describe("Source Adapter config type contracts", () => {
       },
     };
     expectTypeOf(valid.routeBy.shard).toEqualTypeOf<bigint>();
+
+    const mixedLeasedQuery: ExactLiveQueryInputForTopic<
+      typeof mixedLifecycleConfig.topics,
+      "mixed",
+      {
+        readonly select: readonly ["id"];
+        readonly routeBy: {
+          readonly region: string;
+          readonly shard: bigint;
+        };
+      }
+    > = {
+      select: ["id"],
+      routeBy: {
+        region: "eu",
+        shard: 7n,
+      },
+    };
+    expectTypeOf(mixedLeasedQuery.routeBy.shard).toEqualTypeOf<bigint>();
+
+    const mixedMaterializedQuery: ExactLiveQueryInputForTopic<
+      typeof mixedLifecycleConfig.topics,
+      "mixed",
+      { readonly select: readonly ["id"] }
+    > = {
+      select: ["id"],
+    };
+    expectTypeOf(mixedMaterializedQuery).not.toBeAny();
+
+    // @ts-expect-error A conditional Source still rejects routes outside its leased contract.
+    const mixedInvalidRoute: ExactLiveQueryInputForTopic<
+      typeof mixedLifecycleConfig.topics,
+      "mixed",
+      {
+        readonly select: readonly ["id"];
+        readonly routeBy: {
+          readonly region: string;
+        };
+      }
+    > = {
+      select: ["id"],
+      routeBy: {
+        region: "eu",
+      },
+    };
+    expectTypeOf(mixedInvalidRoute).not.toBeAny();
+
+    const mixedRegionRoute: ExactLiveQueryInputForTopic<
+      typeof mixedLeasedRoutesConfig.topics,
+      "mixedRoutes",
+      {
+        readonly select: readonly ["id"];
+        readonly routeBy: {
+          readonly region: string;
+        };
+      }
+    > = {
+      select: ["id"],
+      routeBy: {
+        region: "eu",
+      },
+    };
+    expectTypeOf(mixedRegionRoute.routeBy.region).toEqualTypeOf<string>();
+
+    const mixedShardRoute: ExactLiveQueryInputForTopic<
+      typeof mixedLeasedRoutesConfig.topics,
+      "mixedRoutes",
+      {
+        readonly select: readonly ["id"];
+        readonly routeBy: {
+          readonly shard: bigint;
+        };
+      }
+    > = {
+      select: ["id"],
+      routeBy: {
+        shard: 7n,
+      },
+    };
+    expectTypeOf(mixedShardRoute.routeBy.shard).toEqualTypeOf<bigint>();
+
+    // @ts-expect-error Conditional leased routes accept one exact branch, never their union.
+    const mixedCombinedRoute: ExactLiveQueryInputForTopic<
+      typeof mixedLeasedRoutesConfig.topics,
+      "mixedRoutes",
+      {
+        readonly select: readonly ["id"];
+        readonly routeBy: {
+          readonly region: string;
+          readonly shard: bigint;
+        };
+      }
+    > = {
+      select: ["id"],
+      routeBy: {
+        region: "eu",
+        shard: 7n,
+      },
+    };
+    expectTypeOf(mixedCombinedRoute).not.toBeAny();
+
+    // @ts-expect-error Every branch of a conditional leased Source requires its route.
+    const mixedLeasedMissingRoute: ExactLiveQueryInputForTopic<
+      typeof mixedLeasedRoutesConfig.topics,
+      "mixedRoutes",
+      { readonly select: readonly ["id"] }
+    > = {
+      select: ["id"],
+    };
+    expectTypeOf(mixedLeasedMissingRoute).not.toBeAny();
   });
 
   it("rejects keys, invalid routes, and source-owner conflicts", () => {

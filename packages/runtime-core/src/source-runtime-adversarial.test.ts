@@ -152,7 +152,7 @@ const withChangingLaneId = <Row extends object, AdapterFailure, RejectionLocatio
 };
 
 describe("Runtime Core adversarial Source runtime", () => {
-  it.effect("rejects a Leased Source without valid initial canonical health", () =>
+  it.effect("keeps invalid initial Source metrics inside Leased supervision", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Row);
       const config = defineViewServerConfig({
@@ -181,21 +181,12 @@ describe("Runtime Core adversarial Source runtime", () => {
         }),
       );
 
-      const failure = yield* runtime.liveClient
-        .subscribe("rows", {
-          routeBy: { region: "eu" },
-          select: ["id", "region"],
-        })
-        .pipe(Effect.flip);
-
-      expect(failure).toStrictEqual({
-        _tag: "ViewServerRuntimeError",
-        code: "RuntimeUnavailable",
-        topic: "rows",
-        message:
-          "Source Adapter for Leased Topic rows did not publish valid initial Source Health.",
+      const subscription = yield* runtime.liveClient.subscribe("rows", {
+        routeBy: { region: "eu" },
+        select: ["id", "region"],
       });
       expect((yield* runtime.client.health()).sources).toStrictEqual({ rows: [] });
+      yield* subscription.close();
       yield* runtime.close;
     }),
   );

@@ -19,7 +19,6 @@ import type {
 import type { Effect, Stream } from "effect";
 import type { AtomRef } from "effect/unstable/reactivity";
 import type {
-  SourceDefinitionLifecycle,
   SourceHealthForDefinition,
   SourceHealthResultForDefinition,
   SourceRouteForDefinition,
@@ -132,11 +131,6 @@ export type ViewServerSourceOwnedTopic<Topics extends TopicDefinitions> = Extrac
   string
 >;
 
-type SourceRoute<
-  Topics extends TopicDefinitions,
-  Topic extends ViewServerSourceOwnedTopic<Topics>,
-> = SourceRouteForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
-
 type RejectExtraKeys<Candidate, Shape> = {
   readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
 };
@@ -145,22 +139,56 @@ type ExactSourceRoute<Route, Candidate> = Candidate extends Route
   ? Candidate & RejectExtraKeys<Candidate, Route>
   : never;
 
+type SourceHealthInputShapeForDefinition<
+  Definition,
+  Row extends object,
+  Topic extends string,
+  Candidate,
+> = Definition extends unknown
+  ? SourceHealthInputShapeForLifecycle<
+      Definition,
+      Row,
+      Topic,
+      Candidate,
+      Extract<
+        Definition extends {
+          readonly lifecycle: infer DefinitionLifecycle;
+        }
+          ? DefinitionLifecycle
+          : never,
+        "materialized" | "leased"
+      >
+    >
+  : never;
+
+type SourceHealthInputShapeForLifecycle<
+  Definition,
+  Row extends object,
+  Topic extends string,
+  Candidate,
+  Lifecycle extends "materialized" | "leased",
+> = Lifecycle extends "leased"
+  ? {
+      readonly topic: Topic;
+      readonly routeBy: Candidate extends { readonly routeBy: infer Route }
+        ? ExactSourceRoute<SourceRouteForDefinition<Definition, Row>, Route>
+        : SourceRouteForDefinition<Definition, Row>;
+    }
+  : {
+      readonly topic: Topic;
+      readonly routeBy?: never;
+    };
+
 type SourceHealthInputShape<
   Topics extends TopicDefinitions,
   Topic extends ViewServerSourceOwnedTopic<Topics>,
   Candidate,
-> =
-  SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>> extends "leased"
-    ? {
-        readonly topic: Topic;
-        readonly routeBy: Candidate extends { readonly routeBy: infer Route }
-          ? ExactSourceRoute<SourceRoute<Topics, Topic>, Route>
-          : SourceRoute<Topics, Topic>;
-      }
-    : {
-        readonly topic: Topic;
-        readonly routeBy?: never;
-      };
+> = SourceHealthInputShapeForDefinition<
+  TopicSourceDefinition<Topics, Topic>,
+  TopicRow<Topics, Topic>,
+  Topic,
+  Candidate
+>;
 
 export type ViewServerSourceHealthForTopic<
   Topics extends TopicDefinitions,
@@ -183,6 +211,10 @@ type IsUnion<Value, Whole = Value> = Value extends Whole
     : true
   : never;
 
+type ExactSourceHealthInput<Shape, Candidate> = Shape extends unknown
+  ? Candidate & NoInfer<Shape & RejectExtraKeys<Candidate, Shape>>
+  : never;
+
 export type ViewServerSourceHealthInputForTopic<
   Topics extends TopicDefinitions,
   Topic extends ViewServerSourceOwnedTopic<Topics>,
@@ -190,11 +222,7 @@ export type ViewServerSourceHealthInputForTopic<
 > =
   IsUnion<Topic> extends true
     ? never
-    : Candidate &
-        NoInfer<
-          SourceHealthInputShape<Topics, Topic, Candidate> &
-            RejectExtraKeys<Candidate, SourceHealthInputShape<Topics, Topic, Candidate>>
-        >;
+    : ExactSourceHealthInput<SourceHealthInputShape<Topics, Topic, Candidate>, Candidate>;
 
 export type ViewServerSourceHealthSubscriber<
   Topics extends TopicDefinitions,

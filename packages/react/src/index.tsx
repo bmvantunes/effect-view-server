@@ -164,9 +164,12 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
   };
   const sourceHealthEntries = new WeakMap<
     object,
-    WeakMap<ViewServerLiveClient<Topics>, Map<string, SourceHealthAtomEntry>>
+    WeakMap<ViewServerLiveClient<Topics>, Map<string, SourceHealthAtomEntry<SourceHealthResult>>>
   >();
 
+  // This overload is the single typed adapter at the cache boundary. The key is
+  // derived from the snapshotted topic and exact route, so one key cannot name
+  // producers with different Source Health result types.
   function sourceHealthEntry<Health extends SourceHealthResult>(
     registry: object,
     client: ViewServerLiveClient<Topics>,
@@ -200,6 +203,9 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
       return existing;
     }
     let currentSubscribe = subscribe;
+    // Equal keys imply equivalent producers. A late commit can update the
+    // producer only until `source` is constructed; after that, reusing the
+    // already-committed entry is the required behavior.
     const source = Atom.make(() =>
       Stream.scoped(
         Stream.unwrap(
@@ -223,6 +229,8 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
       commit: (committedSubscribe) => {
         const committed = entries.get(key);
         if (committed !== undefined && committed !== entry) {
+          // A competing render may have committed first. Callers must consume
+          // this returned entry rather than assuming the local entry won.
           return committed.commit(committedSubscribe);
         }
         currentSubscribe = committedSubscribe;
@@ -362,7 +370,12 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
           : client.subscribeSourceHealth(inputIdentity.input),
       [client, inputIdentity],
     );
-    const entry = sourceHealthEntry<Health>(registry, client, inputIdentity.key, subscribe);
+    // Keep each render-created candidate stable until its exact cache key changes.
+    // Competing same-key candidates can then adopt the winner returned by commit.
+    const entry = useMemo(
+      () => sourceHealthEntry<Health>(registry, client, inputIdentity.key, subscribe),
+      [client, inputIdentity.key, registry],
+    );
     const pendingAtom = useMemo(
       () =>
         Atom.make(
@@ -374,12 +387,27 @@ export const createViewServerReact = <const Topics extends TopicDefinitions>(
       [],
     );
     const [committedEntry, setCommittedEntry] = useState<
-      SourceHealthAtomEntry<Health> | undefined
+      | {
+          readonly requested: SourceHealthAtomEntry<Health>;
+          readonly winner: SourceHealthAtomEntry<Health>;
+        }
+      | undefined
     >();
     useLayoutEffect(() => {
-      setCommittedEntry(entry.commit(subscribe));
+      const winner = entry.commit(subscribe);
+      setCommittedEntry((current) => {
+        if (current?.requested === entry && current.winner === winner) {
+          return current;
+        }
+        return {
+          requested: entry,
+          winner,
+        };
+      });
     }, [entry, subscribe]);
-    return AtomReact.useAtomValue(committedEntry === entry ? entry.atom : pendingAtom);
+    return AtomReact.useAtomValue(
+      committedEntry?.requested === entry ? committedEntry.winner.atom : pendingAtom,
+    );
   }
 
   function useLiveQueryViewport<Topic extends Extract<keyof Topics, string>>(

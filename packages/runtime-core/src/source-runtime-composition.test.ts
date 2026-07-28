@@ -1,8 +1,24 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
+import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
+import {
+  decodeSourceToolkitUpsert,
+  makeSourceDelivery,
+} from "@effect-view-server/source-adapter/internal";
 import { SourceFixture } from "@effect-view-server/source-adapter-testing";
-import { Context, Effect, Exit, Layer, Schema } from "effect";
+import {
+  Chunk,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { makeViewServerRuntimeCore } from "./index";
 
 const Row = Schema.Struct({
@@ -157,9 +173,53 @@ describe("Runtime Core Source composition validation", () => {
     }),
   );
 
-  it.effect("rejects composition without valid initial canonical Source Health", () =>
+  it.effect("keeps invalid initial Source metrics inside Materialized supervision", () =>
     Effect.gen(function* () {
-      const fixture = yield* SourceFixture.make(Row);
+      const invalidFixture = yield* SourceFixture.make(Row);
+      const healthyAdapter = SourceAdapter.make({
+        identity: { name: "healthy-sibling-source" },
+        failure: Schema.Never,
+        materialized: {
+          metrics: Schema.Struct({ observed: Schema.BigInt }),
+          rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+          definitionOptions: SourceAdapter.definitionOptions<void>(),
+        },
+        leased: undefined,
+      });
+      const healthyApplied = yield* Deferred.make<void>();
+      let healthyAcquisitions = 0n;
+      let healthyFinalizations = 0n;
+      const healthyLayer = SourceAdapterServer.make(healthyAdapter, {
+        materialized: {
+          acquire: (input) =>
+            Effect.gen(function* () {
+              healthyAcquisitions += 1n;
+              const mutation = yield* decodeSourceToolkitUpsert(input.toolkit, {
+                id: "healthy-row",
+                value: "delivered",
+              });
+              return SourceAdapterServer.attempt([
+                SourceAdapterServer.lane({
+                  id: "healthy",
+                  events: Stream.make(
+                    makeSourceDelivery(Chunk.of(mutation), () =>
+                      Deferred.succeed(healthyApplied, undefined).pipe(Effect.asVoid),
+                    ),
+                  ).pipe(
+                    Stream.concat(Stream.never),
+                    Stream.ensuring(
+                      Effect.sync(() => {
+                        healthyFinalizations += 1n;
+                      }),
+                    ),
+                  ),
+                }),
+              ]);
+            }),
+          metrics: () => Effect.succeed({ observed: 7n }),
+          retry: Schedule.recurs(0),
+        },
+      });
       const invalidMetrics = new Proxy(
         { observed: 0n },
         {
@@ -167,34 +227,50 @@ describe("Runtime Core Source composition validation", () => {
             property === "observed" ? "invalid" : Reflect.get(target, property, receiver),
         },
       );
-      yield* fixture.controls.setMetrics(invalidMetrics);
+      yield* invalidFixture.controls.setMetrics(invalidMetrics);
       const config = defineViewServerConfig({
         topics: {
-          rows: {
+          invalid: {
             schema: Row,
-            source: fixture.materializedSource({
+            source: invalidFixture.materializedSource({
               label: "invalid-initial-metrics",
             }),
           },
+          healthy: {
+            schema: Row,
+            source: healthyAdapter.materializedSource(undefined),
+          },
         },
       });
-      const failure = yield* makeViewServerRuntimeCore(config, {}).pipe(
-        Effect.provide(fixture.layer),
-        Effect.flip,
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(Layer.merge(invalidFixture.layer, healthyLayer)),
       );
-
-      expect(failure).toStrictEqual({
-        _tag: "ViewServerRuntimeError",
-        code: "RuntimeUnavailable",
-        topic: "rows",
-        message:
-          "Source Adapter for Materialized Topic rows did not publish valid initial Source Health.",
+      yield* Deferred.await(healthyApplied);
+      const subscription = yield* runtime.liveClient.subscribe("healthy", {
+        select: ["id", "value"],
       });
-      expect(fixture.controls.metricReads()).toBe(1n);
-      expect(fixture.controls.counts({ _tag: "Materialized" })).toStrictEqual({
+      const snapshot = Option.getOrThrow(
+        yield* subscription.events.pipe(
+          Stream.filter((event) => event.type === "snapshot"),
+          Stream.take(1),
+          Stream.runHead,
+        ),
+      );
+      const health = yield* runtime.client.health();
+
+      expect(snapshot.rows).toStrictEqual([{ id: "healthy-row", value: "delivered" }]);
+      expect(health.sources.invalid).toBeUndefined();
+      expect(health.sources.healthy?.metrics.adapter.observed).toBe(7n);
+      expect(invalidFixture.controls.metricReads()).toBe(1n);
+      expect(invalidFixture.controls.counts({ _tag: "Materialized" })).toStrictEqual({
         acquisitions: 0n,
         finalizations: 0n,
       });
+      expect(healthyAcquisitions).toBe(1n);
+      expect(healthyFinalizations).toBe(0n);
+      yield* subscription.close();
+      yield* runtime.close;
+      expect(healthyFinalizations).toBe(1n);
     }),
   );
 });

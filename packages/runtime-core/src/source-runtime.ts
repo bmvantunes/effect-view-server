@@ -1773,12 +1773,10 @@ const aggregateSourceHealth = <Topics extends TopicDefinitions>(
   const sources: Record<string, RuntimeSourceHealth | ReadonlyArray<RuntimeSourceHealth>> = {};
   for (const definition of definitions) {
     if (definition.lifecycle === "materialized") {
-      // Source Manager admission rejects composition before any public health
-      // can be read unless every Materialized Source has an initial snapshot.
-      const snapshot = Option.getOrThrow(
-        Option.fromUndefinedOr(materialized.get(definition.topic)),
-      );
-      Reflect.set(sources, definition.topic, snapshot);
+      const snapshot = materialized.get(definition.topic);
+      if (snapshot !== undefined) {
+        Reflect.set(sources, definition.topic, snapshot);
+      }
       continue;
     }
     const active = leased.get(definition.topic) ?? [];
@@ -1786,7 +1784,9 @@ const aggregateSourceHealth = <Topics extends TopicDefinitions>(
     Reflect.set(sources, definition.topic, Object.freeze(active.map(({ health }) => health)));
   }
   // Runtime admission validates every Source Definition and every cached health
-  // value before this single nominal restoration seam.
+  // value before this single nominal restoration seam. A Materialized Source
+  // remains absent until its adapter publishes its first schema-valid metrics
+  // snapshot; invalid metrics stay inside that Source's supervision.
   return restoreAggregateSourceHealth<Topics>(Object.freeze(sources));
 };
 
@@ -1993,20 +1993,6 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
             });
             materialized.set(entry.topic, runtime);
           }
-          for (const definition of aggregateSourceDefinitions) {
-            if (
-              definition.lifecycle === "materialized" &&
-              !sourceHealthSnapshots.has(`materialized:${definition.topic}`)
-            ) {
-              return yield* Effect.fail(
-                runtimeError(
-                  definition.topic,
-                  `Source Adapter for Materialized Topic ${definition.topic} did not publish valid initial Source Health.`,
-                ),
-              );
-            }
-          }
-
           const cleanupLease = Effect.fn("ViewServerRuntimeCore.source.lease.cleanup")(
             (lease: ManagedLeasedSource) =>
               Effect.gen(function* () {
@@ -2144,14 +2130,6 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                   }).pipe(Effect.andThen(onHealthChange)),
                               });
                               acquiredLease.runtime = runtime;
-                              if (!sourceHealthSnapshots.has(feedKey)) {
-                                return yield* Effect.fail(
-                                  runtimeError(
-                                    entry.topic,
-                                    `Source Adapter for Leased Topic ${entry.topic} did not publish valid initial Source Health.`,
-                                  ),
-                                );
-                              }
                               yield* constructionOptions.leaseHandoff?.beforeReturn ?? Effect.void;
                               const diagnostics = leasedDiagnostics.get(feedKey);
                               if (diagnostics !== undefined) {

@@ -78,14 +78,15 @@ describe("@effect-view-server/protocol type contract", () => {
       Effect.Effect<Protocol.ViewServerWireHealth, ViewServerRuntimeError>
     >();
 
-    const missingMaterialized = viewServerEncodeHealth(typeSourceViewServer, {
+    const pendingMaterialized = viewServerEncodeHealth(typeSourceViewServer, {
       ...aggregateHealth,
-      // @ts-expect-error every configured source-owned topic is mandatory.
       sources: {
         leased: aggregateHealth.sources.leased,
       },
     });
-    expectTypeOf(missingMaterialized).not.toBeAny();
+    expectTypeOf(pendingMaterialized).toEqualTypeOf<
+      Effect.Effect<Protocol.ViewServerWireHealth, ViewServerRuntimeError>
+    >();
 
     const sourceFreeTopic = viewServerEncodeHealth(typeSourceViewServer, {
       ...aggregateHealth,

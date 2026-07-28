@@ -55,56 +55,78 @@ export type ViewServerDecodedSourceHealth<
   Topic extends Extract<keyof Topics, string>,
 > = SourceHealthResultForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
 
+const compileSourceHealthContractUncached = Effect.fn(
+  "ViewServerProtocol.sourceHealth.compileUncached",
+)(function* <Topics extends ViewServerConfigTopicShape>(
+  config: ViewServerTopicConfig<Topics>,
+  topic: string,
+): Effect.fn.Return<CompiledSourceHealthContract, ViewServerRuntimeError> {
+  const definition = config.topics[topic];
+  if (definition === undefined) {
+    return yield* Effect.fail(invalidSourceHealth(topic, `Topic ${topic} is not configured.`));
+  }
+  const source = Reflect.get(definition, "source");
+  if (!isSourceDefinition(source)) {
+    return yield* Effect.fail(
+      invalidSourceHealth(topic, `Topic ${topic} has no canonical Source Definition.`),
+    );
+  }
+  const lifecycle = source.lifecycle;
+  const adapter = source.adapter;
+  const adapterFailure = adapter.failureSchema;
+  const declaration = Option.getOrThrow(
+    Option.fromUndefinedOr(lifecycle === "materialized" ? adapter.materialized : adapter.leased),
+  );
+  const adapterMetrics = Reflect.get(declaration, "metrics");
+  const rejectionLocation = Reflect.get(declaration, "rejectionLocation");
+  const routeBy = source.routeBy;
+  const routeFields: Record<string, Schema.Codec<unknown, unknown, never, never>> = {};
+  for (const field of routeBy) {
+    const fieldSchema = definition.schema.fields[field];
+    if (fieldSchema === undefined) {
+      return yield* Effect.fail(
+        invalidSourceHealth(topic, `Topic ${topic} Source route field ${field} is missing.`),
+      );
+    }
+    routeFields[field] = fieldSchema;
+  }
+  const route = Schema.Struct(routeFields);
+  const healthContract = sourceHealthContractSchemas({
+    adapterFailure,
+    route,
+    adapterMetrics,
+    rejectionLocation,
+    lifecycle,
+  });
+  return {
+    adapterIdentity: source.identity,
+    health: healthContract.health,
+    lifecycle,
+    result: healthContract.result,
+    route,
+    routeFields,
+  };
+});
+
+const sourceHealthContracts = new WeakMap<object, Map<string, CompiledSourceHealthContract>>();
+
 export const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.compile")(
   function* <Topics extends ViewServerConfigTopicShape>(
     config: ViewServerTopicConfig<Topics>,
     topic: string,
   ): Effect.fn.Return<CompiledSourceHealthContract, ViewServerRuntimeError> {
-    const definition = config.topics[topic];
-    if (definition === undefined) {
-      return yield* Effect.fail(invalidSourceHealth(topic, `Topic ${topic} is not configured.`));
+    let contracts = sourceHealthContracts.get(config);
+    if (contracts === undefined) {
+      contracts = new Map();
+      sourceHealthContracts.set(config, contracts);
     }
-    const source = Reflect.get(definition, "source");
-    if (!isSourceDefinition(source)) {
-      return yield* Effect.fail(
-        invalidSourceHealth(topic, `Topic ${topic} has no canonical Source Definition.`),
-      );
+    const cached = contracts.get(topic);
+    if (cached !== undefined) {
+      return cached;
     }
-    const lifecycle = source.lifecycle;
-    const adapter = source.adapter;
-    const adapterFailure = adapter.failureSchema;
-    const declaration = Option.getOrThrow(
-      Option.fromUndefinedOr(lifecycle === "materialized" ? adapter.materialized : adapter.leased),
-    );
-    const adapterMetrics = Reflect.get(declaration, "metrics");
-    const rejectionLocation = Reflect.get(declaration, "rejectionLocation");
-    const routeBy = source.routeBy;
-    const routeFields: Record<string, Schema.Codec<unknown, unknown, never, never>> = {};
-    for (const field of routeBy) {
-      const fieldSchema = definition.schema.fields[field];
-      if (fieldSchema === undefined) {
-        return yield* Effect.fail(
-          invalidSourceHealth(topic, `Topic ${topic} Source route field ${field} is missing.`),
-        );
-      }
-      routeFields[field] = fieldSchema;
-    }
-    const route = Schema.Struct(routeFields);
-    const healthContract = sourceHealthContractSchemas({
-      adapterFailure,
-      route,
-      adapterMetrics,
-      rejectionLocation,
-      lifecycle,
-    });
-    return {
-      adapterIdentity: source.identity,
-      health: healthContract.health,
-      lifecycle,
-      result: healthContract.result,
-      route,
-      routeFields,
-    };
+    const compiled = yield* compileSourceHealthContractUncached(config, topic);
+    contracts.set(topic, compiled);
+    return compiled;
   },
 );
 

@@ -22,7 +22,11 @@ import type { Effect } from "effect";
 import type { Stream } from "effect";
 import { Schema } from "effect";
 import { stableQueryKeyForRowSchema } from "./index";
-import type { ViewServerLiveClient, ViewServerLiveSubscription } from "./index";
+import type {
+  ViewServerLiveClient,
+  ViewServerLiveSubscription,
+  ViewServerSourceHealthResultForTopic,
+} from "./index";
 
 const Order = Schema.Struct({
   id: ViewServerId,
@@ -114,6 +118,33 @@ const sourceViewServer = defineViewServerConfig({
   },
 });
 
+declare const useLeasedSource: boolean;
+declare const useRegionRoute: boolean;
+const conditionalSourceViewServer = defineViewServerConfig({
+  topics: {
+    conditional: {
+      schema: SourceRow,
+      source: useLeasedSource
+        ? sourceAdapter.leasedSource(["region", "shard"], {
+            stream: "conditional-leased",
+          })
+        : sourceAdapter.materializedSource({
+            stream: "conditional-materialized",
+          }),
+    },
+  },
+});
+const conditionalLeasedRoutesViewServer = defineViewServerConfig({
+  topics: {
+    mixedRoutes: {
+      schema: SourceRow,
+      source: useRegionRoute
+        ? sourceAdapter.leasedSource(["region"], { stream: "conditional-region" })
+        : sourceAdapter.leasedSource(["shard"], { stream: "conditional-shard" }),
+    },
+  },
+});
+
 const heterogeneousViewServer = defineViewServerConfig({
   topics: {
     orders: {
@@ -174,6 +205,12 @@ const identicalLeasedViewServer = defineViewServerConfig({
 
 declare const client: ViewServerLiveClient<typeof viewServer.topics>;
 declare const sourceClient: ViewServerLiveClient<typeof sourceViewServer.topics>;
+declare const conditionalSourceClient: ViewServerLiveClient<
+  typeof conditionalSourceViewServer.topics
+>;
+declare const conditionalLeasedRoutesClient: ViewServerLiveClient<
+  typeof conditionalLeasedRoutesViewServer.topics
+>;
 declare const heterogeneousClient: ViewServerLiveClient<typeof heterogeneousViewServer.topics>;
 declare const heterogeneousTopic: "orders" | "positions";
 declare const leasedClient: ViewServerLiveClient<typeof leasedViewServer.topics>;
@@ -188,9 +225,22 @@ declare const identicalLeasedTopic: "orders" | "positions";
 
 describe("client type contracts", () => {
   it("types exact Materialized and Leased Source Health diagnostics", () => {
+    expectTypeOf<
+      typeof conditionalSourceViewServer.topics.conditional.source.lifecycle
+    >().toEqualTypeOf<"materialized" | "leased">();
     const materialized = sourceClient.subscribeSourceHealth({ topic: "all" });
     const leased = sourceClient.subscribeSourceHealth({
       topic: "routed",
+      routeBy: {
+        region: "eu",
+        shard: 7n,
+      },
+    });
+    const conditionalMaterialized = conditionalSourceClient.subscribeSourceHealth({
+      topic: "conditional",
+    });
+    const conditionalLeased = conditionalSourceClient.subscribeSourceHealth({
+      topic: "conditional",
       routeBy: {
         region: "eu",
         shard: 7n,
@@ -225,6 +275,23 @@ describe("client type contracts", () => {
       readonly region: string;
       readonly shard: bigint;
     }>();
+    expectTypeOf<
+      Stream.Success<Effect.Success<typeof conditionalMaterialized>["events"]>
+    >().toEqualTypeOf<Stream.Success<Effect.Success<typeof conditionalLeased>["events"]>>();
+    type ConditionalResult = Stream.Success<
+      Effect.Success<typeof conditionalMaterialized>["events"]
+    >;
+    type DirectConditionalResult = ViewServerSourceHealthResultForTopic<
+      typeof conditionalSourceViewServer.topics,
+      "conditional"
+    >;
+    expectTypeOf<ConditionalResult>().toEqualTypeOf<DirectConditionalResult>();
+    expectTypeOf<
+      Extract<ConditionalResult, { readonly adapter: unknown }>["target"]["_tag"]
+    >().toEqualTypeOf<"Materialized">();
+    expectTypeOf<
+      Extract<ConditionalResult, { readonly _tag: "Active" }>["health"]["target"]["_tag"]
+    >().toEqualTypeOf<"Leased">();
     expectTypeOf<
       LeasedAdapterFailure["failure"]["_tag"]
     >().toEqualTypeOf<"ClientTypeSourceFailure">();
@@ -268,6 +335,20 @@ describe("client type contracts", () => {
       // @ts-expect-error Source Health input rejects extra top-level fields.
       extra: true,
     });
+    const invalidConditionalPartialRoute = conditionalSourceClient.subscribeSourceHealth({
+      topic: "conditional",
+      // @ts-expect-error Conditional Leased diagnostics still require every route field.
+      routeBy: { region: "eu" },
+    });
+    const invalidConditionalExtraRoute = conditionalSourceClient.subscribeSourceHealth({
+      topic: "conditional",
+      routeBy: {
+        region: "eu",
+        shard: 7n,
+        // @ts-expect-error Conditional Leased diagnostics reject extra route fields.
+        extra: true,
+      },
+    });
     const mixedLifecycleCalls = (mixedLifecycleTopic: "all" | "routed") => {
       // @ts-expect-error a mixed-lifecycle Topic union must be narrowed before diagnostics.
       const invalidMixedMissingRoute = sourceClient.subscribeSourceHealth({
@@ -291,6 +372,8 @@ describe("client type contracts", () => {
     void invalidExtraRoute;
     void invalidRouteType;
     void invalidExtraInput;
+    void invalidConditionalPartialRoute;
+    void invalidConditionalExtraRoute;
     void mixedLifecycleCalls;
   });
 
@@ -456,6 +539,36 @@ describe("client type contracts", () => {
     >();
     expectTypeOf(missingRouteSubscription).not.toBeAny();
     expectTypeOf(wrongRouteValueSubscription).not.toBeAny();
+  });
+
+  it("infers each exact route of a conditional leased Source", () => {
+    const regionSubscription = conditionalLeasedRoutesClient.subscribe("mixedRoutes", {
+      routeBy: { region: "eu" },
+      select: ["id"],
+    });
+    const shardSubscription = conditionalLeasedRoutesClient.subscribe("mixedRoutes", {
+      routeBy: { shard: 7n },
+      select: ["id"],
+    });
+
+    // @ts-expect-error conditional leased routes accept one exact branch, never both.
+    const combinedSubscription = conditionalLeasedRoutesClient.subscribe("mixedRoutes", {
+      routeBy: { region: "eu", shard: 7n },
+      select: ["id"],
+    });
+    // @ts-expect-error every conditional leased branch requires its exact route.
+    const missingRouteSubscription = conditionalLeasedRoutesClient.subscribe("mixedRoutes", {
+      select: ["id"],
+    });
+
+    expectTypeOf<Effect.Success<typeof regionSubscription>>().toEqualTypeOf<
+      ViewServerLiveSubscription<{ readonly id: string }>
+    >();
+    expectTypeOf<Effect.Success<typeof shardSubscription>>().toEqualTypeOf<
+      ViewServerLiveSubscription<{ readonly id: string }>
+    >();
+    expectTypeOf(combinedSubscription).not.toBeAny();
+    expectTypeOf(missingRouteSubscription).not.toBeAny();
   });
 
   it("rejects ambiguous route ownership until a topic union is narrowed", () => {

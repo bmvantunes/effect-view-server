@@ -18,6 +18,7 @@ import type {
 } from "@effect-view-server/config";
 import { validateLiveQuerySourceRoute } from "@effect-view-server/config";
 import {
+  captureSourceHealthInput,
   snapshotViewServerQuery,
   runAllFinalizers,
   viewServerQuerySnapshotErrorMessage,
@@ -84,9 +85,17 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
         Topics,
         ViewServerRuntimeError
       > = (input) => {
-        return Effect.fail(
-          invalidRuntimeQueryError(input.topic, `Topic ${input.topic} has no Source.`),
-        );
+        const captured = captureSourceHealthInput(input);
+        if (Result.isFailure(captured)) {
+          return Effect.fail(
+            invalidRuntimeQueryError(
+              "<invalid>",
+              "Source Health input must be one exact { topic, routeBy? } object.",
+            ),
+          );
+        }
+        const { topic } = captured.success;
+        return Effect.fail(invalidRuntimeQueryError(topic, `Topic ${topic} has no Source.`));
       };
       const sources: Pick<
         RuntimeCoreSourceManager<Topics>,

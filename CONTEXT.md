@@ -434,7 +434,7 @@ The best-effort local expiration of Kafka-owned Topic Rows according to their Ka
 4. For a due entry, acquire the same lease with `acquireRelease`, recheck its indexed generation, and ask the Source Maintenance Interface to apply the ordinary Delete with a closed matching-generation removal transition.
 5. Successful row deletion and removal of the matching indexed generation complete in the same serialized uninterruptible critical section while the lease is held. A stale generation changes nothing. A failed Delete leaves both the row and generation available for retry and failed-backlog accounting.
 
-An already-expired record is settled as a Source No-Op Item and never materializes. Failed expiration activates the transport-neutral Adapter Maintenance Failure reason, exposes the exact safe failure in Kafka Source Adapter Metrics, degrades Topic and aggregate View Server health, and never pauses or terminates Kafka ingestion. The reason clears only after the failed-expiration backlog reaches zero through successful retry or cancellation.
+An already-expired non-null record is settled as a Source No-Op Item and never materializes; a tombstone always takes the keyed Delete path regardless of its timestamp. Failed expiration activates the transport-neutral Adapter Maintenance Failure reason, exposes the exact safe failure in Kafka Source Adapter Metrics, degrades Topic and aggregate View Server health, and never pauses or terminates Kafka ingestion. The reason clears only after the failed-expiration backlog reaches zero through successful retry or cancellation.
 _Avoid_: Exact TTL timer, fiber per row, full Topic Store scan, ingestion-fatal expiration, stale deadline Delete
 
 **Kafka Retention Sweep Interval**:

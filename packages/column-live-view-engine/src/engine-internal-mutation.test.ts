@@ -1,8 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type StatusEvent } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, type StatusEvent } from "@effect-view-server/config";
 import { Effect, Schema, Stream } from "effect";
 import { createColumnLiveViewEngine, InvalidRowError } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
+import { TopicRowStorage } from "./topic-row-storage";
 import { expectSnapshotEvent, firstEvent, makeEventReader } from "../test-harness/events";
 import { order, viewServer } from "../test-harness/public-engine";
 
@@ -156,14 +157,13 @@ describe("ColumnLiveViewEngine internal mutation", () => {
   it.effect("validates decoded runtime patches against the merged topic row schema", () =>
     Effect.gen(function* () {
       const PublicOrder = Schema.Struct({
-        id: Schema.String.pipe(Schema.check(Schema.isPattern(/^public-/))),
-        price: Schema.Number,
+        id: ViewServerId,
+        price: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
       });
       const publicViewServer = defineViewServerConfig({
         topics: {
           orders: {
             schema: PublicOrder,
-            key: "id",
           },
         },
       });
@@ -179,7 +179,7 @@ describe("ColumnLiveViewEngine internal mutation", () => {
       ]);
       const error = yield* Effect.flip(
         engine.patchDecodedFields("orders", "public-1", {
-          id: "private-1",
+          price: -1,
         }),
       );
       const snapshot = yield* engine.snapshot("orders", {
@@ -209,16 +209,15 @@ describe("ColumnLiveViewEngine internal mutation", () => {
 
   it.effect("does not decode internal decoded runtime rows twice", () =>
     Effect.gen(function* () {
-      const TransformId = Schema.StringFromUriComponent;
       const TransformOrder = Schema.Struct({
-        id: TransformId,
+        id: ViewServerId,
+        code: Schema.StringFromUriComponent,
         price: Schema.Number,
       });
       const transformViewServer = defineViewServerConfig({
         topics: {
           orders: {
             schema: TransformOrder,
-            key: "id",
           },
         },
       });
@@ -228,19 +227,21 @@ describe("ColumnLiveViewEngine internal mutation", () => {
 
       yield* engine.publishManyDecodedRows("orders", [
         {
-          id: "decoded%2D1",
+          id: "order-1",
+          code: "decoded%2D1",
           price: 42,
         },
       ]);
       const snapshot = yield* engine.snapshot("orders", {
-        select: ["id", "price"],
+        select: ["id", "code", "price"],
         limit: 10,
       });
 
       expect(snapshot).toStrictEqual({
         rows: [
           {
-            id: "decoded%2D1",
+            id: "order-1",
+            code: "decoded%2D1",
             price: 42,
           },
         ],
@@ -255,14 +256,13 @@ describe("ColumnLiveViewEngine internal mutation", () => {
   it.effect("rejects encoded values at every decoded runtime mutation boundary", () =>
     Effect.gen(function* () {
       const DecodedOrder = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         amount: Schema.BigIntFromString,
       });
       const decodedViewServer = defineViewServerConfig({
         topics: {
           orders: {
             schema: DecodedOrder,
-            key: "id",
           },
         },
       });
@@ -298,6 +298,9 @@ describe("ColumnLiveViewEngine internal mutation", () => {
           amount: "44",
         }),
       );
+      const keyError = yield* Effect.flip(
+        engine.publishManyDecodedRows("orders", [{ id: 1, amount: 45n }]),
+      );
       const snapshot = yield* engine.snapshot("orders", {
         select: ["id", "amount"],
         limit: 10,
@@ -306,10 +309,12 @@ describe("ColumnLiveViewEngine internal mutation", () => {
       expect(publishError).toBeInstanceOf(InvalidRowError);
       expect(storageKeyError).toBeInstanceOf(InvalidRowError);
       expect(patchError).toBeInstanceOf(InvalidRowError);
+      expect(keyError).toBeInstanceOf(InvalidRowError);
       expect({
         publishError,
         storageKeyError,
         patchError,
+        keyError,
         snapshot,
       }).toStrictEqual({
         publishError: InvalidRowError.make({
@@ -324,6 +329,10 @@ describe("ColumnLiveViewEngine internal mutation", () => {
           topic: "orders",
           message: 'SchemaError(Expected bigint, got "44"\n  at ["amount"])',
         }),
+        keyError: InvalidRowError.make({
+          topic: "orders",
+          message: "Key field id must decode to a string.",
+        }),
         snapshot: {
           rows: [{ id: "stable", amount: 1n }],
           status: "ready",
@@ -332,6 +341,29 @@ describe("ColumnLiveViewEngine internal mutation", () => {
           version: 1,
         },
       });
+    }),
+  );
+
+  it.effect("rejects a non-string canonical id at the decoded topic-store seam", () =>
+    Effect.gen(function* () {
+      const DecodedOrder = Schema.Struct({
+        id: ViewServerId,
+        amount: Schema.BigIntFromString,
+      });
+      const storage = new TopicRowStorage("orders", DecodedOrder, "id");
+      const error = yield* Effect.flip(
+        storage.prepareDecodedRow({ id: 1, amount: 45n }, (topic, message) =>
+          InvalidRowError.make({ topic, message }),
+        ),
+      );
+
+      expect(error).toBeInstanceOf(InvalidRowError);
+      expect(error).toStrictEqual(
+        InvalidRowError.make({
+          topic: "orders",
+          message: "Key field id must decode to a string.",
+        }),
+      );
     }),
   );
 
@@ -375,14 +407,13 @@ describe("ColumnLiveViewEngine internal mutation", () => {
   it.effect("publishes decoded runtime rows with internal storage keys", () =>
     Effect.gen(function* () {
       const PublicOrder = Schema.Struct({
-        id: Schema.String.pipe(Schema.check(Schema.isPattern(/^public-/))),
+        id: ViewServerId,
         price: Schema.Number,
       });
       const publicViewServer = defineViewServerConfig({
         topics: {
           orders: {
             schema: PublicOrder,
-            key: "id",
           },
         },
       });
@@ -423,14 +454,13 @@ describe("ColumnLiveViewEngine internal mutation", () => {
     () =>
       Effect.gen(function* () {
         const PublicOrder = Schema.Struct({
-          id: Schema.String.pipe(Schema.check(Schema.isPattern(/^public-/))),
+          id: ViewServerId,
           price: Schema.Number,
         });
         const publicViewServer = defineViewServerConfig({
           topics: {
             orders: {
               schema: PublicOrder,
-              key: "id",
             },
           },
         });

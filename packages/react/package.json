@@ -34,6 +34,7 @@
     "@effect-view-server/in-memory": "workspace:*",
     "@effect-view-server/runtime-core": "workspace:*",
     "@effect-view-server/server": "workspace:*",
+    "@effect-view-server/source-adapter": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",

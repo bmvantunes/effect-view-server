@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { InvalidRowError } from "./index";
@@ -219,7 +220,7 @@ describe("Topic Storage projection proof", () => {
   it.effect("rejects an authentic storage projection capability from an incompatible schema", () =>
     Effect.gen(function* () {
       const StringPriceOrder = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         price: Schema.String,
       });
       const incompatibleStorage = new TopicRowStorage(
@@ -257,7 +258,7 @@ describe("Topic Storage projection proof", () => {
   it.effect("keeps grouped aggregate aliases outside the raw storage projection capability", () =>
     Effect.gen(function* () {
       const AliasCollision = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         price: Schema.Number,
       });
       const storage = new TopicRowStorage("alias-collision", AliasCollision, "id");
@@ -457,7 +458,7 @@ describe("Topic Storage projection proof", () => {
   it.effect("keeps stored optional-field presence immutable after preparation", () =>
     Effect.gen(function* () {
       const OptionalOrder = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         note: Schema.optionalKey(Schema.String),
       });
       const storage = new TopicRowStorage("optional-orders", OptionalOrder, "id");
@@ -489,7 +490,7 @@ describe("Topic Storage projection proof", () => {
   it.effect("projects a __proto__ field as owned row data", () =>
     Effect.gen(function* () {
       const PrototypeFieldOrder = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         ["__proto__"]: Schema.String,
       });
       const storage = new TopicRowStorage("prototype-field-orders", PrototypeFieldOrder, "id");
@@ -515,10 +516,10 @@ describe("Topic Storage projection proof", () => {
     Effect.gen(function* () {
       const SharedOrder = Schema.Struct({
         alternateId: Schema.String,
-        id: Schema.String,
+        id: ViewServerId,
         price: Schema.Finite,
       });
-      const StringPrice = Schema.Struct({ id: Schema.String, price: Schema.String });
+      const StringPrice = Schema.Struct({ id: ViewServerId, price: Schema.String });
       const source = new TopicRowStorage("source-orders", SharedOrder, "id");
       const target = new TopicRowStorage("target-orders", SharedOrder, "alternateId");
       const invalidRow = (topic: string, message: string) =>
@@ -555,7 +556,7 @@ describe("Topic Storage projection proof", () => {
   it.effect("rejects structured column values corrupted after storage", () =>
     Effect.gen(function* () {
       const StructuredOrder = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         payload: Schema.Struct({ count: Schema.Number }),
       });
       const storage = new TopicRowStorage("structured-orders", StructuredOrder, "id");

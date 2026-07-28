@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   compileViewServerRuntimeLiveEventEncoder,
@@ -139,12 +139,11 @@ describe("Invalid raw row wire inputs", () => {
         'Invalid field price: Expected "Infinity" | "-Infinity" | "NaN", got "nope"',
       );
 
-      const hostileRowSchema = Schema.Struct({ id: Schema.String });
+      const hostileRowSchema = Schema.Struct({ id: ViewServerId });
       const hostileRowViewServer = defineViewServerConfig({
         topics: {
           badjson: {
             schema: hostileRowSchema,
-            key: "id",
           },
         },
       });
@@ -180,7 +179,7 @@ describe("Invalid raw row wire inputs", () => {
       );
 
       const BadJsonAggregateRow = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.Number,
       });
 
@@ -188,7 +187,6 @@ describe("Invalid raw row wire inputs", () => {
         topics: {
           badAggregate: {
             schema: BadJsonAggregateRow,
-            key: "id",
           },
         },
       });

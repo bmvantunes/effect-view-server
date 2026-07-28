@@ -1,9 +1,9 @@
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 
 export const NestedTcpOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   meta: Schema.Struct({
     desk: Schema.String,
   }),
@@ -13,13 +13,12 @@ export const nestedTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: NestedTcpOrder,
-      key: "id",
     },
   },
 });
 
 export const TransformTcpOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.BigIntFromString,
 });
 
@@ -27,44 +26,12 @@ export const transformTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: TransformTcpOrder,
-      key: "id",
-    },
-  },
-});
-
-export const KeyTransformTcpId = Schema.StringFromUriComponent;
-
-export const KeyTransformTcpOrder = Schema.Struct({
-  id: KeyTransformTcpId,
-  price: Schema.Number,
-});
-
-export const keyTransformTcpViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: KeyTransformTcpOrder,
-      key: "id",
-    },
-  },
-});
-
-export const NonStringKeyTcpOrder = Schema.Struct({
-  id: Schema.BigIntFromString,
-  price: Schema.Number,
-});
-
-// @ts-expect-error non-string row keys are rejected by the public config contract.
-export const nonStringKeyTcpViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: NonStringKeyTcpOrder,
-      key: "id",
     },
   },
 });
 
 export const UnionCodecTcpOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.NullOr(Schema.BigInt),
 });
 
@@ -72,13 +39,12 @@ export const unionCodecTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: UnionCodecTcpOrder,
-      key: "id",
     },
   },
 });
 
 export const DefaultedTcpOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   status: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed("open"))),
 });
@@ -87,7 +53,6 @@ export const defaultedTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: DefaultedTcpOrder,
-      key: "id",
     },
   },
 });
@@ -101,7 +66,7 @@ export const JsonCodecTcpNested = Schema.Struct({
 export const JsonCodecTcpOrder = Schema.Struct({
   allocations: Schema.Record(Schema.String, JsonCodecTcpNested).check(Schema.isMinProperties(1)),
   fills: Schema.Array(JsonCodecTcpNested).check(Schema.isMinLength(1)),
-  id: Schema.String,
+  id: ViewServerId,
   amount: Schema.BigDecimal,
   checkedOptionalMeta: Schema.optionalKey(JsonCodecTcpNested).check(Schema.isMaxProperties(0)),
   checkedSuspendedEmptyMeta: Schema.optionalKey(
@@ -129,7 +94,6 @@ export const jsonCodecTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: JsonCodecTcpOrder,
-      key: "id",
     },
   },
 });
@@ -157,7 +121,7 @@ export const JsonCodecTcpRecursiveNode: Schema.Codec<
 );
 
 export const JsonCodecTcpRecursiveOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   node: JsonCodecTcpRecursiveNode,
 });
 
@@ -165,13 +129,12 @@ export const jsonCodecTcpRecursiveViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: JsonCodecTcpRecursiveOrder,
-      key: "id",
     },
   },
 });
 
 export const PositivePriceTcpOrder = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 }).check(Schema.makeFilter((row) => row.price >= 0, { expected: "price >= 0" }));
 
@@ -179,7 +142,6 @@ export const positivePriceTcpViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: PositivePriceTcpOrder,
-      key: "id",
     },
   },
 });

@@ -28,18 +28,10 @@ const engineArtifactName = (name) => `.artifacts/${name}`;
 
 const reactArtifactName = (name) => `.artifacts/${name}`;
 
-const explicitGcMeasurementProtocol = {
-  memoryCheckpoint: "settled-explicit-gc-after-cleanup",
-};
 const groupedWritePostGcEventLoopTurns = 8;
 const groupedWriteExplicitGcMeasurementProtocol = {
   memoryCheckpoint: "settled-explicit-gc-plus-post-gc-turns-after-cleanup",
 };
-
-const runtimeMeasurementProtocolFromEnv = (env) =>
-  env.VIEW_SERVER_RUNTIME_BENCH_EXPLICIT_GC === "1"
-    ? explicitGcMeasurementProtocol
-    : undefined;
 
 const groupedWriteMeasurementProtocolFromEnv = (env) => {
   const explicitGc = env.VIEW_SERVER_ENGINE_BENCH_EXPLICIT_GC === "1";
@@ -483,6 +475,14 @@ export const reactInMemoryTask = (browser, rowCount, env = {}) => {
 
 export const kafkaSourceAdapterTask = (rowCount, partitionCount, env = {}) => {
   const outputJsonPath = `.artifacts/source-lanes-${rowCount}rows-${partitionCount}partitions.json`;
+  const measuredIterations = minimumSampleCountFrom(
+    env,
+    "VIEW_SERVER_KAFKA_SOURCE_BENCH_ITERATIONS",
+  );
+  const warmupIterations = Number.parseInt(
+    env["VIEW_SERVER_KAFKA_SOURCE_BENCH_WARMUP_ITERATIONS"] ?? "1",
+    10,
+  );
   return task({
     artifactKind: "runtime-benchmark-summary",
     benchmarkScope: "kafka-source-adapter",
@@ -492,6 +492,8 @@ export const kafkaSourceAdapterTask = (rowCount, partitionCount, env = {}) => {
       VIEW_SERVER_KAFKA_SOURCE_BENCH_ROWS: String(rowCount),
       ...env,
     },
+    expectedMutationCount:
+      (rowCount * 13 - 1) * (measuredIterations + warmupIterations),
     label: `Kafka Source Adapter ${rowCount} rows ${partitionCount} partitions`,
     minimumSampleCount: minimumSampleCountFrom(
       env,
@@ -526,91 +528,8 @@ export const kafkaSourceAdapterBrokerTask = (rowCount, env = {}) => {
   });
 };
 
-export const runtimeKafkaIngestTask = (rowCount, env) => {
-  const outputJsonPath = `.artifacts/kafka-ingest-${rowCount}rows.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-kafka-ingest",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE: String(rowCount),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    label: `Kafka ingest ${rowCount} rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount,
-    vpTask: "bench:runtime-kafka-ingest",
-  });
-};
-
-export const runtimeKafkaSustainedFirehoseTask = (rowCount, sustainedBatchCount, env) => {
-  const outputJsonPath = `.artifacts/kafka-sustained-firehose-${rowCount}rows-${sustainedBatchCount}batches.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-kafka-sustained-firehose",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_BATCH_SIZE: String(rowCount),
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_MODE: "sustained-firehose",
-      VIEW_SERVER_RUNTIME_BENCH_KAFKA_SUSTAINED_BATCHES: String(sustainedBatchCount),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    label: `Kafka sustained firehose ${rowCount} rows x ${sustainedBatchCount} batches`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount,
-    vpTask: "bench:runtime-kafka-ingest",
-  });
-};
-
-export const runtimeGrpcMaterializedTask = (seedRows, batchSize, env) => {
-  const outputJsonPath = `.artifacts/grpc-materialized-${seedRows}seed-${batchSize}batch.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-grpc-materialized",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_BATCH_SIZE: String(batchSize),
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_SEED_ROWS: String(seedRows),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    expectedMeasurementProtocol: runtimeMeasurementProtocolFromEnv(env),
-    label: `gRPC materialized ${seedRows} seed rows ${batchSize} batch`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount: seedRows,
-    vpTask: "runtime#bench:grpc-materialized",
-  });
-};
-
-export const runtimeGrpcLeasedTask = (rowsPerFeed, routeCount, retainedRows, env) => {
-  const outputJsonPath = `.artifacts/grpc-leased-${rowsPerFeed}rows-${routeCount}routes-${retainedRows}retained.json`;
-  return task({
-    artifactKind: "runtime-benchmark-summary",
-    benchmarkScope: "runtime-grpc-leased",
-    env: {
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROUTE_COUNT: String(routeCount),
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_ROWS_PER_FEED: String(rowsPerFeed),
-      VIEW_SERVER_RUNTIME_BENCH_GRPC_LEASED_RETAINED_ROWS: String(retainedRows),
-      VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
-      ...env,
-    },
-    expectedMeasurementProtocol: runtimeMeasurementProtocolFromEnv(env),
-    label: `gRPC leased ${rowsPerFeed} rows per feed ${routeCount} routes ${retainedRows} retained rows`,
-    minimumSampleCount: minimumSampleCountFrom(env, "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS"),
-    outputJsonPath,
-    packageDirectory: runtimePackageDirectory,
-    rowCount: rowsPerFeed,
-    vpTask: "runtime#bench:grpc-leased",
-  });
-};
-
-export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, env) => {
-  const outputJsonPath = `.artifacts/grpc-source-adapter-${batchSize}batch-${routeCount}routes.json`;
+export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, retainedRowCount, env) => {
+  const outputJsonPath = `.artifacts/grpc-source-adapter-${batchSize}batch-${routeCount}routes-${retainedRowCount}retained.json`;
   const minimumSampleCount = minimumSampleCountFrom(
     env,
     "VIEW_SERVER_RUNTIME_BENCH_ITERATIONS",
@@ -621,16 +540,17 @@ export const runtimeGrpcSourceAdapterTask = (batchSize, routeCount, env) => {
     env: {
       VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE: String(batchSize),
       VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT: String(routeCount),
+      VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_RETAINED_ROWS: String(retainedRowCount),
       VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON: outputJsonPath,
       ...env,
     },
-    expectedMutationCount: (batchSize + 1) * minimumSampleCount,
-    label: `gRPC Source Adapter ${batchSize} response batch ${routeCount} leased routes`,
+    expectedMutationCount: retainedRowCount + (batchSize * 2 + 1) * minimumSampleCount,
+    label: `gRPC Source Adapter ${batchSize} response batch ${routeCount} leased routes ${retainedRowCount} retained rows`,
     minimumSampleCount,
     outputJsonPath,
     packageDirectory: grpcPackageDirectory,
     rowCount: batchSize,
-    vpTask: "@effect-view-server/grpc#bench:adapter",
+    vpTask: "bench:grpc-source-adapter",
   });
 };
 

@@ -1,6 +1,4 @@
 import type {
-  GrpcRuntimeClients,
-  RuntimeRegions,
   ViewServerConfig,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
@@ -17,12 +15,9 @@ import {
 import { Effect } from "effect";
 import type { ViewServerInMemoryOptions, ViewServerInMemoryTopicDefinitions } from "./index";
 
-type SynchronousInMemoryTestingConfig<
-  Topics extends ViewServerInMemoryTopicDefinitions,
-  Regions extends RuntimeRegions,
-  GrpcClients extends GrpcRuntimeClients,
-> = ViewServerConfig<Topics, Regions, GrpcClients> &
-  ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
+type SynchronousInMemoryTestingConfig<Topics extends ViewServerInMemoryTopicDefinitions> =
+  ViewServerConfig<Topics> &
+    ([ViewServerSourceRequirements<NoInfer<Topics>>] extends [never] ? unknown : never);
 
 export type ViewServerInMemoryTestingInstance<Topics extends ViewServerInMemoryTopicDefinitions> = {
   readonly client: ViewServerRuntimeClient<Topics>;
@@ -60,10 +55,8 @@ const makeInMemoryTestingLiveClient = <Topics extends ViewServerInMemoryTopicDef
 
 export const makeInMemoryViewServerTesting: <
   const Topics extends ViewServerInMemoryTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+  config: ViewServerConfig<Topics>,
   input: ViewServerInMemoryOptions<Topics>,
 ) => Effect.Effect<
   ViewServerInMemoryTestingInstance<Topics>,
@@ -71,12 +64,7 @@ export const makeInMemoryViewServerTesting: <
   ViewServerSourceRequirements<Topics>
 > = Effect.fn("ViewServerInMemory.testing.make")(function* <
   const Topics extends ViewServerInMemoryTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  input: ViewServerInMemoryOptions<Topics>,
-) {
+>(config: ViewServerConfig<Topics>, input: ViewServerInMemoryOptions<Topics>) {
   const runtimeCore = yield* makeViewServerRuntimeCoreInternal(
     config,
     toRuntimeCoreInternalOptions(input),
@@ -95,10 +83,8 @@ export const makeInMemoryViewServerTesting: <
 
 export const createInMemoryViewServerTesting = <
   const Topics extends ViewServerInMemoryTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
 >(
-  config: SynchronousInMemoryTestingConfig<Topics, Regions, GrpcClients>,
+  config: SynchronousInMemoryTestingConfig<Topics>,
   options: ViewServerInMemoryOptions<Topics> = {},
 ): ViewServerInMemoryTestingInstance<Topics> =>
   Effect.runSync(makeInMemoryViewServerTesting(config, options));

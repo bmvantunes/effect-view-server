@@ -4,7 +4,7 @@ import type {
   LiveQueryResult,
   TopicRow,
 } from "@effect-view-server/config";
-import { viewServerUnsupportedRuntimeFieldDomain } from "@effect-view-server/config";
+import { ViewServerId, viewServerUnsupportedRuntimeFieldDomain } from "@effect-view-server/config";
 import {
   snapshotViewServerQuery,
   viewServerQuerySnapshotErrorMessage,
@@ -83,6 +83,18 @@ const inspectEngineTopics = <Topics extends DecodableTopicDefinitions>(
 ): EngineTopicsInspection<Topics> => {
   const snapshot = snapshotViewServerTopics(topics);
   for (const [topic, definition] of Object.entries(snapshot)) {
+    const unsupportedProperty = Reflect.ownKeys(definition).find(
+      (property) => property !== "schema" && property !== "source",
+    );
+    if (unsupportedProperty !== undefined) {
+      return {
+        _tag: "Invalid",
+        error: invalidRow(
+          topic,
+          `Topic definition contains unsupported property: ${String(unsupportedProperty)}.`,
+        ),
+      };
+    }
     const schema = definition.schema;
     if (!Schema.isSchema(schema) || !("fields" in schema)) {
       return {
@@ -122,6 +134,12 @@ const inspectEngineTopics = <Topics extends DecodableTopicDefinitions>(
       return {
         _tag: "Invalid",
         error: invalidRow(topic, "Topic exposed row fields do not match the row schema AST."),
+      };
+    }
+    if (schema.fields["id"]?.ast !== ViewServerId.ast) {
+      return {
+        _tag: "Invalid",
+        error: invalidRow(topic, "Topic row schema must define canonical id as ViewServerId."),
       };
     }
   }
@@ -246,7 +264,7 @@ class InMemoryColumnLiveViewEngine<
         new TopicStore(
           topic,
           definition.schema,
-          definition.key,
+          "id",
           () => {
             this.engineVersion += 1;
           },

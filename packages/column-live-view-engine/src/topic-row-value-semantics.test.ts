@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { BigDecimal, Schema } from "effect";
 import { makeTopicRowValueSemantics } from "./topic-row-value-semantics";
@@ -6,7 +7,7 @@ describe("Topic Row value semantics", () => {
   it("rejects an unknown field requested outside validated query preparation", () => {
     const semantics = makeTopicRowValueSemantics(
       Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
       }),
     );
 
@@ -24,7 +25,7 @@ describe("Topic Row value semantics", () => {
   it("reads an accessor field descriptor once before rejecting it", () => {
     const semantics = makeTopicRowValueSemantics(
       Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
       }),
     );
     let descriptorReads = 0;
@@ -53,7 +54,7 @@ describe("Topic Row value semantics", () => {
   it("compares absent optional objects before nested BigDecimal canonicalization", () => {
     const semantics = makeTopicRowValueSemantics(
       Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         meta: Schema.optionalKey(Schema.Struct({ amount: Schema.BigDecimal })),
       }),
     );

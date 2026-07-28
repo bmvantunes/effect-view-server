@@ -1,11 +1,12 @@
+import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import type {
-  ColumnLiveViewEngineHealth,
-  DecodableTopicDefinitions,
-} from "@effect-view-server/column-live-view-engine";
-import type { TransportHealth, ViewServerHealth } from "@effect-view-server/config";
+  TopicDefinitions,
+  TransportHealth,
+  ViewServerHealth,
+} from "@effect-view-server/config";
 import { Clock, Deferred, Effect, Exit, Fiber, Scope, Semaphore, type Duration } from "effect";
 
-type EngineHealthReader<Topics extends DecodableTopicDefinitions> = {
+type EngineHealthReader<Topics extends TopicDefinitions> = {
   readonly health: () => Effect.Effect<ColumnLiveViewEngineHealth<Topics>, never>;
 };
 
@@ -15,13 +16,18 @@ type RuntimeCoreHealthTiming = {
   readonly runtimeStartedAtNanos: bigint;
 };
 
-type RuntimeCoreHealthInput<Topics extends DecodableTopicDefinitions> = {
+type RuntimeCoreHealthInput<Topics extends TopicDefinitions> = {
   readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
   readonly healthOverlay?: RuntimeCoreHealthOverlay<Topics>;
   readonly timing?: RuntimeCoreHealthTiming;
 };
 
-type ReadHealthInput<Topics extends DecodableTopicDefinitions> = {
+export type RuntimeCoreBaseHealth<Topics extends TopicDefinitions> = Omit<
+  ViewServerHealth<Topics>,
+  "sources"
+>;
+
+type ReadHealthInput<Topics extends TopicDefinitions> = {
   readonly runtimeStartedAtNanos: bigint;
   readonly transportHealth: RuntimeCoreTransportHealth<Topics>;
   readonly healthOverlay: RuntimeCoreHealthOverlay<Topics> | undefined;
@@ -38,10 +44,10 @@ const uptimeMillis = (timing: RuntimeCoreHealthTiming): number => {
   return elapsedNanos <= 0n ? 0 : Number(elapsedNanos / 1_000_000n);
 };
 
-export const healthFromEngine = <Topics extends DecodableTopicDefinitions>(
+export const healthFromEngine = <Topics extends TopicDefinitions>(
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
   input: RuntimeCoreHealthInput<Topics> = {},
-): ViewServerHealth<Topics> => {
+): RuntimeCoreBaseHealth<Topics> => {
   const transportHealth = input.transportHealth ?? defaultRuntimeCoreTransportHealth;
   const healthOverlay = input.healthOverlay ?? defaultRuntimeCoreHealthOverlay;
   const timing = input.timing ?? zeroRuntimeCoreHealthTiming;
@@ -57,21 +63,21 @@ export const healthFromEngine = <Topics extends DecodableTopicDefinitions>(
   );
 };
 
-export type RuntimeCoreTransportHealth<Topics extends DecodableTopicDefinitions> = (
+export type RuntimeCoreTransportHealth<Topics extends TopicDefinitions> = (
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
 ) => TransportHealth;
 
-export type RuntimeCoreHealthOverlay<Topics extends DecodableTopicDefinitions> = (
-  health: ViewServerHealth<Topics>,
+export type RuntimeCoreHealthOverlay<Topics extends TopicDefinitions> = (
+  health: RuntimeCoreBaseHealth<Topics>,
   nowMillis: number,
-) => ViewServerHealth<Topics>;
+) => RuntimeCoreBaseHealth<Topics>;
 
-export const defaultRuntimeCoreHealthOverlay = <Topics extends DecodableTopicDefinitions>(
-  health: ViewServerHealth<Topics>,
+export const defaultRuntimeCoreHealthOverlay = <Topics extends TopicDefinitions>(
+  health: RuntimeCoreBaseHealth<Topics>,
   _nowMillis: number,
-): ViewServerHealth<Topics> => health;
+): RuntimeCoreBaseHealth<Topics> => health;
 
-export const defaultRuntimeCoreTransportHealth = <Topics extends DecodableTopicDefinitions>(
+export const defaultRuntimeCoreTransportHealth = <Topics extends TopicDefinitions>(
   engineHealth: ColumnLiveViewEngineHealth<Topics>,
 ): TransportHealth => ({
   activeClients: 0,
@@ -88,7 +94,7 @@ export const defaultRuntimeCoreTransportHealth = <Topics extends DecodableTopicD
 });
 
 export const readHealthSnapshot = Effect.fn("ViewServerRuntimeCore.health.readSnapshot")(function* <
-  const Topics extends DecodableTopicDefinitions,
+  const Topics extends TopicDefinitions,
 >(engine: EngineHealthReader<Topics>, input: ReadHealthInput<Topics>) {
   const nowMillis = yield* Clock.currentTimeMillis;
   const nowNanos = yield* Clock.currentTimeNanos;
@@ -103,12 +109,12 @@ export const readHealthSnapshot = Effect.fn("ViewServerRuntimeCore.health.readSn
   });
 });
 
-export const makeCoalescedHealthReader = <const Topics extends DecodableTopicDefinitions, E>(
-  read: (epoch: number) => Effect.Effect<ViewServerHealth<Topics>, E>,
+export const makeCoalescedHealthReader = <Health, E>(
+  read: (epoch: number) => Effect.Effect<Health, E>,
   currentEpoch: () => number = () => 0,
 ) => {
   type ActiveRead = {
-    readonly deferred: Deferred.Deferred<ViewServerHealth<Topics>, E>;
+    readonly deferred: Deferred.Deferred<Health, E>;
     readonly epoch: number;
   };
   let activeRead: ActiveRead | undefined = undefined;
@@ -120,10 +126,10 @@ export const makeCoalescedHealthReader = <const Topics extends DecodableTopicDef
       }
     | {
         readonly _tag: "follower";
-        readonly deferred: Deferred.Deferred<ViewServerHealth<Topics>, E>;
+        readonly deferred: Deferred.Deferred<Health, E>;
       };
 
-  const completeActiveRead = (active: ActiveRead, exit: Exit.Exit<ViewServerHealth<Topics>, E>) =>
+  const completeActiveRead = (active: ActiveRead, exit: Exit.Exit<Health, E>) =>
     Effect.uninterruptible(
       stateLock.withPermit(
         Effect.gen(function* () {
@@ -149,7 +155,7 @@ export const makeCoalescedHealthReader = <const Topics extends DecodableTopicDef
                 deferred: activeRead.deferred,
               } satisfies ReadDecision;
             }
-            const nextRead = yield* Deferred.make<ViewServerHealth<Topics>, E>();
+            const nextRead = yield* Deferred.make<Health, E>();
             const active = {
               deferred: nextRead,
               epoch,

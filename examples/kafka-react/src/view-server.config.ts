@@ -1,9 +1,10 @@
-import { defineViewServerConfig, kafka } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
+import { kafka } from "effect-view-server/kafka/contract";
 import { createViewServerReact } from "effect-view-server/react";
 import { Schema } from "effect";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -19,7 +20,7 @@ export const KafkaOrder = Schema.Struct({
 });
 
 export const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
   side: Schema.Literals(["buy", "sell"]),
   quantity: Schema.Number,
@@ -34,53 +35,52 @@ export const KafkaTrade = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
-export const kafkaRegions = {
-  usa: "127.0.0.1:9092",
-  london: "127.0.0.1:9094",
-};
-
 export const viewServer = defineViewServerConfig({
-  kafka: kafkaRegions,
   topics: {
     orders: {
       schema: Order,
-      key: "id",
-      kafkaSource: kafka.source({
+      source: kafka.source({
         topic: "view-server-example-orders-usa",
         regions: ["usa"],
         value: kafka.json(() => Schema.toCodecJson(KafkaOrder)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
+        key: kafka.string(),
+        localRowKey: ({ key }) => key,
         map: ({ value, region }) => ({
           customerId: value.customerId,
           status: value.status,
           price: value.price,
-          region,
+          region: String(region),
           updatedAt: value.updatedAt,
         }),
+        startFrom: "latest",
       }),
     },
     trades: {
       schema: Trade,
-      key: "id",
-      kafkaSource: kafka.source({
+      source: kafka.source({
         topic: "view-server-example-trades-london",
         regions: ["london"],
         value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
+        key: kafka.string(),
+        localRowKey: ({ key }) => key,
         map: ({ value, region }) => ({
           symbol: value.symbol,
           side: value.side,
           quantity: value.quantity,
-          region,
+          region: String(region),
           updatedAt: value.updatedAt,
         }),
+        startFrom: "latest",
       }),
     },
   },
 });
 
 export const viewServerReact = createViewServerReact(viewServer);
-export const { ViewServerProvider, useLiveQuery, useViewServerHealth, useViewServerHealthSummary } =
-  viewServerReact;
+export const {
+  ViewServerProvider,
+  useLiveQuery,
+  useSourceHealth,
+  useViewServerHealth,
+  useViewServerHealthSummary,
+} = viewServerReact;

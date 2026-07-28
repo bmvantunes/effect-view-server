@@ -1,14 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Clock, Deferred, Effect, Exit, Fiber, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { healthFromEngine, makeCoalescedHealthReader, makeHealthRefreshScheduler } from "./health";
 import { makeViewServerRuntimeCore } from "./index";
 import { makeRuntimeCorePushedHealthHub } from "./pushed-health";
-import { engineHealth } from "./test-support/runtime-test-fixtures";
+import { engineHealth, sourceFreeViewServerHealth } from "./test-support/runtime-test-fixtures";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -20,7 +20,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
@@ -39,10 +38,10 @@ describe("Runtime Core health", () => {
     Effect.gen(function* () {
       let readCount = 0;
       const hub = yield* makeRuntimeCorePushedHealthHub(
-        healthFromEngine(engineHealth("ready", 0)),
+        sourceFreeViewServerHealth(engineHealth("ready", 0)),
         Effect.sync(() => {
           readCount += 1;
-          return healthFromEngine(engineHealth("ready", readCount));
+          return sourceFreeViewServerHealth(engineHealth("ready", readCount));
         }),
         "1 minute",
       );
@@ -93,7 +92,9 @@ describe("Runtime Core health", () => {
         const freshHealth = yield* runtimeCore.client.health();
 
         expect(freshHealth.engine.topics.orders.rowCount).toBe(1);
+        expect(freshHealth.sources).toStrictEqual({});
         expect(runtimeCore.liveClient.health.value.engine.topics.orders.rowCount).toBe(0);
+        expect(runtimeCore.liveClient.health.value.sources).toStrictEqual({});
 
         yield* TestClock.adjust("1 second");
         const pushedEvents = Array.from(yield* Fiber.join(pushedEventsFiber));
@@ -391,7 +392,6 @@ describe("Runtime Core health", () => {
               connectionStatus: "connected",
               unhealthyTopics: [],
               updatedAtNanos: expect.anything(),
-              maxKafkaLag: null,
             },
           ],
           totalRows: 1,
@@ -410,7 +410,6 @@ describe("Runtime Core health", () => {
               connectionStatus: "connected",
               unhealthyTopics: [],
               updatedAtNanos: expect.anything(),
-              maxKafkaLag: null,
             },
           ],
           totalRows: 1,
@@ -447,7 +446,6 @@ describe("Runtime Core health", () => {
               memoryBytes: 0,
               tombstoneCount: 0,
               compactionPending: false,
-              kafkaLag: null,
               updatedAtNanos: expect.anything(),
             },
           ],
@@ -483,7 +481,6 @@ describe("Runtime Core health", () => {
               memoryBytes: 0,
               tombstoneCount: 0,
               compactionPending: false,
-              kafkaLag: null,
               updatedAtNanos: expect.anything(),
             },
           ],
@@ -505,45 +502,11 @@ describe("Runtime Core health", () => {
         healthOverlay: (health) => ({
           ...health,
           status: "degraded",
-          kafka: {
-            startFrom: {
-              consumerGroupId: "view-server-test",
-              fallbackMode: "earliest",
-              mode: "committed",
-            },
-            regions: {
-              local: {
-                status: "connected",
-                brokers: "localhost:9092",
-                lastConnectedAt: 1_000,
-                lastError: null,
-              },
-            },
+          engine: {
             topics: {
-              sourceOrders: {
-                status: "stalled",
-                sourceTopic: "orders-source",
-                viewServerTopic: "orders",
-                regions: {
-                  local: {
-                    connected: true,
-                    assignedPartitions: 1,
-                    messagesPerSecond: 0,
-                    bytesPerSecond: 0,
-                    decodedMessagesPerSecond: 0,
-                    decodeFailuresPerSecond: 0,
-                    mappingFailuresPerSecond: 0,
-                    publishFailuresPerSecond: 0,
-                    commitFailuresPerSecond: 0,
-                    processingFailuresPerSecond: 0,
-                    lastMessageAt: null,
-                    lastCommitAt: null,
-                    consumerLagMessages: 7n,
-                    lagSampledAt: null,
-                    committedOffset: "3",
-                    lastError: "lagging",
-                  },
-                },
+              orders: {
+                ...health.engine.topics.orders,
+                status: "degraded",
               },
             },
           },
@@ -570,7 +533,6 @@ describe("Runtime Core health", () => {
               connectionStatus: "connected",
               unhealthyTopics: ["orders"],
               updatedAtNanos: expect.anything(),
-              maxKafkaLag: 7n,
             },
           ],
           totalRows: 1,
@@ -607,7 +569,6 @@ describe("Runtime Core health", () => {
               memoryBytes: 0,
               tombstoneCount: 0,
               compactionPending: false,
-              kafkaLag: 7n,
               updatedAtNanos: expect.anything(),
             },
           ],

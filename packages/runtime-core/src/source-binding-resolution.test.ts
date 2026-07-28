@@ -1,381 +1,99 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, kafka } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
-import {
-  makeTopicSourceBindings,
-  topicGrpcSourceMetadataFromUnknown,
-} from "./source-binding-resolution";
+import { makeTopicSourceBindings } from "./source-binding-resolution";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
 
-const viewServer = defineViewServerConfig({
-  kafka: {
-    usa: "localhost:9092",
+const Failure = Schema.TaggedStruct("BindingFailure", {
+  message: Schema.String,
+});
+const Metrics = Schema.Struct({
+  observed: Schema.BigInt,
+});
+const Location = Schema.Struct({
+  offset: Schema.BigInt,
+});
+const adapter = SourceAdapter.make({
+  identity: { name: "binding-source" },
+  failure: Failure,
+  materialized: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
   },
+  leased: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+});
+
+const viewServer = defineViewServerConfig({
   topics: {
     externalOrders: {
       schema: Row,
-      key: "id",
-    },
-    kafkaOrders: {
-      schema: Row,
-      key: "id",
-      kafkaSource: kafka.source({
-        topic: "orders-source",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Row)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
-        map: ({ value }) => ({
-          price: value.price,
-          region: value.region,
-        }),
-      }),
     },
     leasedOrders: {
       schema: Row,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region"],
-      }),
+      source: adapter.leasedSource(["region"], undefined),
     },
     materializedOrders: {
       schema: Row,
-      key: "id",
-      grpcSource: grpcSourceMarkers.materialized(),
+      source: adapter.materializedSource(undefined),
     },
   },
 });
 
 describe("source binding resolution", () => {
-  it("derives canonical source bindings from topic-owned config", () => {
+  it("derives canonical bindings from the one topic-owned source property", () => {
     const bindings = makeTopicSourceBindings(viewServer);
 
     expect(
       [...bindings].map(([topic, binding]) => ({
-        grpcLeased: binding.grpcLeased,
-        grpcMetadata: binding.grpcMetadata,
         owners: binding.owners,
+        sourceLeased: binding.sourceLeased,
+        sourceLifecycle: binding.sourceLifecycle,
         sourceOwned: binding.sourceOwned,
         topic,
       })),
     ).toStrictEqual([
       {
-        grpcLeased: false,
-        grpcMetadata: { _tag: "absent" },
         owners: [],
+        sourceLeased: false,
+        sourceLifecycle: "unknown",
         sourceOwned: false,
         topic: "externalOrders",
       },
       {
-        grpcLeased: false,
-        grpcMetadata: { _tag: "absent" },
-        owners: [{ _tag: "kafka" }],
-        sourceOwned: true,
-        topic: "kafkaOrders",
-      },
-      {
-        grpcLeased: true,
-        grpcMetadata: { _tag: "valid", lifecycle: "leased", routeBy: ["region"] },
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
+        owners: [{ _tag: "source", lifecycle: "leased" }],
+        sourceLeased: true,
+        sourceLifecycle: "leased",
         sourceOwned: true,
         topic: "leasedOrders",
       },
       {
-        grpcLeased: false,
-        grpcMetadata: { _tag: "valid", lifecycle: "materialized" },
-        owners: [{ _tag: "grpc", lifecycle: "materialized" }],
+        owners: [{ _tag: "source", lifecycle: "materialized" }],
+        sourceLeased: false,
+        sourceLifecycle: "materialized",
         sourceOwned: true,
         topic: "materializedOrders",
       },
     ]);
+    expect(bindings.get("materializedOrders")?.schema).toBe(
+      viewServer.topics.materializedOrders.schema,
+    );
+    expect(bindings.get("materializedOrders")?.source).toBe(
+      viewServer.topics.materializedOrders.source,
+    );
   });
 
-  it("keeps malformed gRPC source metadata local to the binding", () => {
-    const malformedOrders: {
-      schema: typeof Row;
-      key: "id";
-    } = {
-      schema: Row,
-      key: "id",
-    };
-    const malformedSource = { kind: "grpc", lifecycle: "wat" };
-    Object.defineProperty(malformedOrders, "grpcSource", {
-      value: malformedSource,
-    });
-    const malformedViewServer = defineViewServerConfig({
-      topics: {
-        malformedOrders,
-      },
-    });
-
-    expect(
-      [...makeTopicSourceBindings(malformedViewServer)].map(([topic, binding]) => ({
-        grpcMetadata: binding.grpcMetadata,
-        owners: binding.owners,
-        sourceOwned: binding.sourceOwned,
-        topic,
-      })),
-    ).toStrictEqual([
-      {
-        grpcMetadata: { _tag: "invalid", cause: malformedSource },
-        owners: [{ _tag: "grpc", lifecycle: "unknown" }],
-        sourceOwned: true,
-        topic: "malformedOrders",
-      },
-    ]);
-  });
-
-  it("classifies hostile gRPC source shapes without caller reflection", () => {
-    const topicDefinition = (): {
-      schema: typeof Row;
-      key: "id";
-    } => ({
-      schema: Row,
-      key: "id",
-    });
-    const topicDefinitions = () => ({
-      incompleteConcreteLeased: topicDefinition(),
-      incompleteConcreteMaterialized: topicDefinition(),
-      invalidKind: topicDefinition(),
-      invalidLeasedRouteBy: topicDefinition(),
-      invalidLifecycle: topicDefinition(),
-      materializedExtraKey: topicDefinition(),
-      materializedWrongTag: topicDefinition(),
-      nonStringLeasedRouteBy: topicDefinition(),
-      primitiveSource: topicDefinition(),
-      validConcreteLeased: topicDefinition(),
-      validConcreteMaterialized: topicDefinition(),
-      leasedExtraKey: topicDefinition(),
-      leasedWrongTag: topicDefinition(),
-      releaseIsNotCallable: topicDefinition(),
-    });
-    const hostileTopics = topicDefinitions();
-    const request = () => undefined;
-    const acquire = () => undefined;
-    const release = () => undefined;
-    const map = () => undefined;
-    Object.defineProperty(hostileTopics.incompleteConcreteLeased, "grpcSource", {
-      value: {
-        _tag: "GrpcLeasedTopicSource",
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: ["region"],
-        client: "orders",
-      },
-    });
-    Object.defineProperty(hostileTopics.incompleteConcreteMaterialized, "grpcSource", {
-      value: {
-        _tag: "GrpcMaterializedTopicSource",
-        kind: "grpc",
-        lifecycle: "materialized",
-        client: "orders",
-      },
-    });
-    Object.defineProperty(hostileTopics.invalidKind, "grpcSource", {
-      value: { kind: "not-grpc", lifecycle: "leased" },
-    });
-    Object.defineProperty(hostileTopics.invalidLeasedRouteBy, "grpcSource", {
-      value: {
-        _tag: "GrpcLeasedTopicSource",
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: [],
-      },
-    });
-    Object.defineProperty(hostileTopics.invalidLifecycle, "grpcSource", {
-      value: { kind: "grpc", lifecycle: "wat" },
-    });
-    Object.defineProperty(hostileTopics.materializedExtraKey, "grpcSource", {
-      value: {
-        _tag: "GrpcMaterializedTopicSource",
-        extra: true,
-        kind: "grpc",
-        lifecycle: "materialized",
-      },
-    });
-    Object.defineProperty(hostileTopics.materializedWrongTag, "grpcSource", {
-      value: { _tag: "Wrong", kind: "grpc", lifecycle: "materialized" },
-    });
-    Object.defineProperty(hostileTopics.nonStringLeasedRouteBy, "grpcSource", {
-      value: {
-        _tag: "GrpcLeasedTopicSource",
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: ["region", 1],
-      },
-    });
-    Object.defineProperty(hostileTopics.primitiveSource, "grpcSource", {
-      value: "not-an-object",
-    });
-    Object.defineProperty(hostileTopics.validConcreteLeased, "grpcSource", {
-      value: {
-        _tag: "GrpcLeasedTopicSource",
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: ["region"],
-        client: "orders",
-        method: "stream",
-        request,
-        acquire,
-        release,
-        map,
-      },
-    });
-    Object.defineProperty(hostileTopics.validConcreteMaterialized, "grpcSource", {
-      value: {
-        _tag: "GrpcMaterializedTopicSource",
-        kind: "grpc",
-        lifecycle: "materialized",
-        client: "orders",
-        method: "stream",
-        request,
-        acquire,
-        map,
-      },
-    });
-    Object.defineProperty(hostileTopics.leasedExtraKey, "grpcSource", {
-      value: {
-        _tag: "GrpcLeasedTopicSource",
-        extra: true,
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: ["region"],
-      },
-    });
-    Object.defineProperty(hostileTopics.leasedWrongTag, "grpcSource", {
-      value: {
-        _tag: "Wrong",
-        kind: "grpc",
-        lifecycle: "leased",
-        routeBy: ["region"],
-      },
-    });
-    Object.defineProperty(hostileTopics.releaseIsNotCallable, "grpcSource", {
-      value: {
-        _tag: "GrpcMaterializedTopicSource",
-        kind: "grpc",
-        lifecycle: "materialized",
-        client: "orders",
-        method: "stream",
-        request,
-        acquire,
-        release: "nope",
-        map,
-      },
-    });
-    const hostileViewServer = defineViewServerConfig({
-      topics: topicDefinitions(),
-    });
-    const hostileTopicsWithPrimitive = {
-      ...hostileTopics,
-    };
-    Object.defineProperty(hostileTopicsWithPrimitive, "primitiveTopic", {
-      enumerable: true,
-      value: null,
-    });
-
-    expect(
-      [
-        ...makeTopicSourceBindings({
-          ...hostileViewServer,
-          topics: hostileTopicsWithPrimitive,
-        }),
-      ].map(([topic, binding]) => ({
-        grpcMetadataTag: binding.grpcMetadata._tag,
-        owners: binding.owners,
-        topic,
-      })),
-    ).toStrictEqual([
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
-        topic: "incompleteConcreteLeased",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "materialized" }],
-        topic: "incompleteConcreteMaterialized",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "unknown" }],
-        topic: "invalidKind",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
-        topic: "invalidLeasedRouteBy",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "unknown" }],
-        topic: "invalidLifecycle",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
-        topic: "leasedExtraKey",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
-        topic: "leasedWrongTag",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "materialized" }],
-        topic: "materializedExtraKey",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "materialized" }],
-        topic: "materializedWrongTag",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
-        topic: "nonStringLeasedRouteBy",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "unknown" }],
-        topic: "primitiveSource",
-      },
-      {
-        grpcMetadataTag: "absent",
-        owners: [],
-        topic: "primitiveTopic",
-      },
-      {
-        grpcMetadataTag: "invalid",
-        owners: [{ _tag: "grpc", lifecycle: "materialized" }],
-        topic: "releaseIsNotCallable",
-      },
-      {
-        grpcMetadataTag: "valid",
-        owners: [{ _tag: "grpc", lifecycle: "leased" }],
-        topic: "validConcreteLeased",
-      },
-      {
-        grpcMetadataTag: "valid",
-        owners: [{ _tag: "grpc", lifecycle: "materialized" }],
-        topic: "validConcreteMaterialized",
-      },
-    ]);
-  });
-
-  it("treats primitive topic definitions as absent gRPC source metadata", () => {
-    expect(topicGrpcSourceMetadataFromUnknown(undefined)).toStrictEqual({ _tag: "absent" });
-    expect(topicGrpcSourceMetadataFromUnknown(null)).toStrictEqual({ _tag: "absent" });
-  });
-
-  it("does not accept structural values as canonical Source Definitions", () => {
+  it("marks a hostile structural source as owned without accepting it as a Source Definition", () => {
     const topics = new Proxy(
       { ...viewServer.topics },
       {
@@ -390,12 +108,38 @@ describe("source binding resolution", () => {
             : Reflect.get(target, property, receiver),
       },
     );
+    const binding = makeTopicSourceBindings({
+      topics,
+    }).get("externalOrders");
 
-    expect(
-      makeTopicSourceBindings({
-        ...viewServer,
-        topics,
-      }).get("externalOrders")?.source,
-    ).toBeUndefined();
+    expect(binding).toStrictEqual({
+      schema: Row,
+      source: undefined,
+      sourceLifecycle: "unknown",
+      sourceLeased: false,
+      owners: [{ _tag: "source", lifecycle: "unknown" }],
+      sourceOwned: true,
+      topic: "externalOrders",
+    });
+  });
+
+  it("treats a hostile non-object topic definition as source-free and schema-free", () => {
+    const topics = new Proxy(
+      { ...viewServer.topics },
+      {
+        get: (target, property, receiver) =>
+          property === "externalOrders" ? null : Reflect.get(target, property, receiver),
+      },
+    );
+
+    expect(makeTopicSourceBindings({ topics }).get("externalOrders")).toStrictEqual({
+      schema: undefined,
+      source: undefined,
+      sourceLifecycle: "unknown",
+      sourceLeased: false,
+      owners: [],
+      sourceOwned: false,
+      topic: "externalOrders",
+    });
   });
 });

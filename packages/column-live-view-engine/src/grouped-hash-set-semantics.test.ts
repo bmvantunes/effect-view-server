@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type GroupedQuery, viewSchema } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type GroupedQuery,
+  viewSchema,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import * as HashSet from "effect/HashSet";
 import { createColumnLiveViewEngine } from "./index";
@@ -15,7 +20,7 @@ import {
 const Labels = viewSchema.HashSet(Schema.String);
 
 const HashSetRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   desk: Schema.String,
   labels: Labels,
 });
@@ -28,7 +33,6 @@ const hashSetViewServer = defineViewServerConfig({
   topics: {
     hashSetRows: {
       schema: HashSetRow,
-      key: "id",
     },
   },
 });

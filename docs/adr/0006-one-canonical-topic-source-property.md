@@ -2,10 +2,9 @@
 
 ## Status
 
-Accepted. The transport-neutral `source` contract and Runtime Core support are
-implemented by issue #384, and first-party Kafka and gRPC adoption are
-implemented by issues #385 and #386. The final canonical-only configuration cut
-remains staged in issue #387.
+Accepted and implemented. Issues #384–#387 deliver the transport-neutral
+`source` contract, Runtime Core support, first-party Kafka and gRPC Adapters,
+and the final canonical-only configuration cut.
 
 ## Context
 
@@ -27,4 +26,4 @@ Materialized and leased Source Definitions are distinct. A Source Adapter may su
 
 ## Consequences
 
-Applications author every Topic, Topic Schema with canonical `id: Schema.String`, and Source Definition once. React and the server consume the same frozen View Server Config, so no second topic tree can drift. Adapter contract modules and every option accepted by their shared source constructors must remain browser-safe; credentials, sockets, concrete clients, Node libraries, and platform resources move to `/server` or `/node` Layers. Kafka and gRPC become ordinary first-party Source Adapters instead of privileged Runtime Core cases. Topics without `source` retain direct Runtime Client and TCP publish ingestion.
+Applications author every Topic, Topic Schema with canonical `id: ViewServerId`, and Source Definition once. React and the server consume the same frozen View Server Config, so no second topic tree can drift. Adapter contract modules and every option accepted by their shared source constructors must remain browser-safe; credentials, sockets, concrete clients, Node libraries, and platform resources move to `/server` or `/node` Layers. Kafka and gRPC become ordinary first-party Source Adapters instead of privileged Runtime Core cases. Topics without `source` retain direct Runtime Client and TCP publish ingestion.

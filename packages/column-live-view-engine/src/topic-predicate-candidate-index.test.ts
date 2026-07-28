@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe, make as makeBigDecimal } from "effect/BigDecimal";
@@ -32,7 +33,7 @@ import { makeColumns } from "../test-harness/columns";
 import { order, Order, position, Position } from "../test-harness/public-engine";
 
 const TextRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   status: Schema.String,
   price: Schema.Number,
   updatedAt: Schema.Number,
@@ -1769,7 +1770,7 @@ describe("Topic predicate candidate index", () => {
     Effect.gen(function* () {
       const OptionalPrice = Schema.Struct({
         group: Schema.String,
-        id: Schema.String,
+        id: ViewServerId,
         price: Schema.optionalKey(Schema.Finite),
       });
       const store = new TopicStore("optional-prices", OptionalPrice, "id", () => {});
@@ -1839,7 +1840,7 @@ describe("Topic predicate candidate index", () => {
     () =>
       Effect.gen(function* () {
         const SkewedRow = Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           status: Schema.String,
         });
         const rowCount = 20_000;
@@ -2254,7 +2255,7 @@ describe("Topic predicate candidate index", () => {
     expect(nonExactBigIntLowerRange.totalRows).toBe(2);
 
     const GenericName = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       label: Schema.Unknown,
     });
     const genericMetadata = rawQueryCompilerMetadata(GenericName);
@@ -3057,7 +3058,7 @@ describe("Topic predicate candidate index", () => {
 
   it("keeps generic numeric range predicate fallbacks conservative", () => {
     const GenericMetric = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       price: Schema.Unknown,
     });
     const rows = [
@@ -3197,7 +3198,7 @@ describe("Topic predicate candidate index", () => {
 
   it("keeps number-column non-finite range predicates aligned with query semantics", () => {
     const NumericMetric = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       price: Schema.Number,
     });
     const rows = [
@@ -3254,7 +3255,7 @@ describe("Topic predicate candidate index", () => {
 
   it("falls back to query-value ordering for invalid number-column slots", () => {
     const NumericMetric = Schema.Struct({
-      id: Schema.String,
+      id: ViewServerId,
       price: Schema.Number,
     });
     const rows = [
@@ -3361,7 +3362,7 @@ describe("Topic predicate candidate index", () => {
       expect(exactNumberNotEqual.totalRows).toBe(2);
 
       const MixedScalar = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.optionalKey(Schema.Union([Schema.Number, Schema.BigInt])),
       });
       const mixedStore = new TopicStore("mixed-scalars", MixedScalar, "id", () => {});
@@ -3521,7 +3522,7 @@ describe("Topic predicate candidate index", () => {
       expect(exactMixedNotEqual.totalRows).toBe(1);
 
       const LooseNumber = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.Number,
       });
       const looseNumberStore = new TopicStore("loose-numbers", LooseNumber, "id", () => {});

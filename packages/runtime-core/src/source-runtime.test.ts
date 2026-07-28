@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { trustDecodedRuntimeQuery } from "@effect-view-server/config/internal";
 import {
   SourceFixture,
@@ -12,7 +12,7 @@ import { makeViewServerRuntimeCoreInternal } from "./internal";
 import { sourceLeaseTerminalObserver } from "./source-runtime";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -27,6 +27,51 @@ const leasedTarget = (region: string): SourceFixtureTarget => ({
 });
 
 describe("Runtime Core Source Adapter vertical slice", () => {
+  it.effect("rejects hostile Source Health envelopes through the typed error channel", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Order);
+      const config = defineViewServerConfig({
+        topics: {
+          orders: {
+            schema: Order,
+            source: fixture.materializedSource({
+              label: "hostile-source-health",
+            }),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(fixture.layer),
+      );
+      const subscribeHostile = (input: unknown): Effect.Effect<unknown, unknown> =>
+        Reflect.apply(runtime.liveClient.subscribeSourceHealth, undefined, [input]);
+      const hostile = new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw new Error("hostile ownKeys");
+          },
+        },
+      );
+      const errors = yield* Effect.all([
+        Effect.flip(subscribeHostile(null)),
+        Effect.flip(subscribeHostile({ topic: "orders", extra: true })),
+        Effect.flip(subscribeHostile({ topic: "orders", routeBy: undefined })),
+        Effect.flip(subscribeHostile(hostile)),
+      ]);
+
+      expect(errors).toStrictEqual(
+        Array.from({ length: 4 }, () => ({
+          _tag: "ViewServerRuntimeError",
+          code: "InvalidQuery",
+          topic: "<invalid>",
+          message: "Source Health input must be one exact { topic, routeBy? } object.",
+        })),
+      );
+      yield* runtime.close;
+    }),
+  );
+
   it.effect("publishes deeply frozen decoded adapter metrics", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Order);
@@ -56,7 +101,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(fixture.layer),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const health = Option.getOrThrow(
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -227,7 +272,9 @@ describe("Runtime Core Source Adapter vertical slice", () => {
           Effect.provide(fixture.layer),
         );
         yield* Effect.yieldNow;
-        const startupDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const startupDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         const startupHealth = yield* startupDiagnostics.events.pipe(Stream.take(1), Stream.runHead);
         expect(Option.getOrThrow(startupHealth).status._tag).toBe("Ready");
         yield* startupDiagnostics.close();
@@ -244,7 +291,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
           Stream.runCollect,
           Effect.forkChild,
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         const degradedFiber = yield* diagnostics.events.pipe(
           Stream.filter((result) => result.status._tag === "Degraded"),
           Stream.take(1),
@@ -396,6 +443,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         const availability = yield* Fiber.join(availabilityFiber).pipe(Effect.timeout("1 second"));
         expect(availability.map((event) => `${event.status}:${event.code}`)).toStrictEqual([
           "ready:Ready",
+          "ready:Ready",
           "stale:SnapshotStale",
           "ready:Ready",
           "stale:SnapshotStale",
@@ -454,7 +502,7 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         acquisitions: 1n,
         finalizations: 0n,
       });
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const sampled = yield* diagnostics.events.pipe(
         Stream.filter((result) => result.metrics.adapter.observed === 1n),
         Stream.take(1),
@@ -466,7 +514,9 @@ describe("Runtime Core Source Adapter vertical slice", () => {
       yield* fixture.controls.setMetrics({ observed: 2n });
       yield* fixture.controls.delete(materializedTarget, "missing");
       expect(fixture.controls.metricReads()).toBe(1n);
-      const resampledDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const resampledDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       const resampledFiber = yield* resampledDiagnostics.events.pipe(
         Stream.filter((result) => result.metrics.adapter.observed === 2n),
         Stream.take(1),
@@ -512,8 +562,9 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         );
         const euTarget = leasedTarget("eu");
         const usTarget = leasedTarget("us");
-        const euDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders", {
-          region: "eu",
+        const euDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+          routeBy: { region: "eu" },
         });
         const initialDiagnostic = yield* euDiagnostics.events.pipe(Stream.take(1), Stream.runHead);
         expect(Option.getOrThrow(initialDiagnostic)).toStrictEqual({
@@ -579,12 +630,10 @@ describe("Runtime Core Source Adapter vertical slice", () => {
         yield* euSecond.close();
         expect(fixture.controls.counts(euTarget).finalizations).toBe(1n);
         yield* euSnapshotSubscription.close();
-        const euDiagnosticsAfterRelease = yield* runtime.liveClient.subscribeSourceHealth(
-          "orders",
-          {
-            region: "eu",
-          },
-        );
+        const euDiagnosticsAfterRelease = yield* runtime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+          routeBy: { region: "eu" },
+        });
         const inactiveAgain = yield* euDiagnosticsAfterRelease.events.pipe(
           Stream.filter((result) => result._tag === "Inactive"),
           Stream.take(1),

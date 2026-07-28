@@ -1,4 +1,4 @@
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import {
@@ -8,7 +8,7 @@ import {
 } from "../src/index";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Finite,
@@ -18,7 +18,7 @@ export const Order = Schema.Struct({
 });
 
 export const Position = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   accountId: Schema.String,
   symbol: Schema.String,
   active: Schema.Boolean,
@@ -27,7 +27,7 @@ export const Position = Schema.Struct({
 });
 
 export const Instrument = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   metadata: Schema.Struct({
     venue: Schema.String,
     risk: Schema.Struct({
@@ -48,15 +48,12 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     positions: {
       schema: Position,
-      key: "id",
     },
     instruments: {
       schema: Instrument,
-      key: "id",
     },
   },
 });

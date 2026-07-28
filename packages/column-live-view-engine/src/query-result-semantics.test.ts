@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import {
@@ -8,7 +9,7 @@ import {
 import { makeTopicRowValueSemantics } from "./topic-row-value-semantics";
 
 const OptionalNumberRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.optionalKey(Schema.Number),
 });
 

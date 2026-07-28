@@ -16,10 +16,15 @@ import type {
   TopicDefinitions,
   ViewServerHealth,
   ViewServerRuntimeError,
+  ViewServerSourceHealth,
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import { validateDecodedRow } from "@effect-view-server/config/internal";
-import { makeSchemaJsonIdentity, runAllFinalizers } from "@effect-view-server/effect-utils";
+import {
+  captureSourceHealthInput,
+  makeSchemaJsonIdentity,
+  runAllFinalizers,
+} from "@effect-view-server/effect-utils";
 import type {
   SourceDefinition,
   SourceDefinitionAdapter,
@@ -37,7 +42,7 @@ import type {
 import {
   SourceBufferMetricsSchema,
   sourceExecutionFailureSchema,
-  sourceHealthSchema,
+  sourceHealthContractSchemas,
 } from "@effect-view-server/source-adapter";
 import {
   isSourceAttempt,
@@ -61,6 +66,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Equal,
   Exit,
   Fiber,
   Option,
@@ -73,6 +79,7 @@ import {
   SubscriptionRef,
 } from "effect";
 import type { ViewServerRuntimeCoreInternalMutations } from "./source-mutation-pipeline";
+import type { RuntimeCoreBaseHealth } from "./health";
 import { makeTopicSourceBindings } from "./source-binding-resolution";
 import {
   acquireRuntimeCoreResourceHandoff,
@@ -112,6 +119,13 @@ type RuntimeSourceDefinition = SourceDefinition<
   ReadonlyArray<string>,
   never
 >;
+
+// `SourceDefinitionAny` intentionally erases adapter generics at the config boundary.
+// Topic Source bindings only expose values accepted by the nominal definition validator.
+function restoreRuntimeSourceDefinition(definition: SourceDefinitionAny): RuntimeSourceDefinition;
+function restoreRuntimeSourceDefinition(definition: SourceDefinitionAny): SourceDefinitionAny {
+  return definition;
+}
 
 type RuntimeLifecycle = SourceRuntimeLifecycle<
   unknown,
@@ -261,7 +275,7 @@ export type RuntimeCoreSourceManager<Topics extends TopicDefinitions> = {
     subscription: ViewServerLiveSubscription<Row>,
     queryId: string,
   ) => ViewServerLiveSubscription<Row>;
-  readonly overlayHealth: (health: ViewServerHealth<Topics>) => ViewServerHealth<Topics>;
+  readonly overlayHealth: (health: RuntimeCoreBaseHealth<Topics>) => ViewServerHealth<Topics>;
   readonly close: Effect.Effect<void>;
 };
 
@@ -376,7 +390,7 @@ const lifecycleFor = (
   definition.lifecycle === "materialized" ? service.materialized : service.leased;
 
 const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")(function* <
-  Topics extends import("@effect-view-server/column-live-view-engine").DecodableTopicDefinitions,
+  Topics extends TopicDefinitions,
 >(
   config: ViewServerTopicConfig<Topics>,
   context: Context.Context<ViewServerSourceRequirements<Topics>>,
@@ -402,43 +416,44 @@ const resolveEntries = Effect.fn("ViewServerRuntimeCore.source.entries.resolve")
     if (definition === undefined) {
       continue;
     }
+    const runtimeDefinition = restoreRuntimeSourceDefinition(definition);
     if (binding.schema === undefined) {
       return yield* Effect.fail(
         runtimeError(topic, `Source-owned Topic ${topic} has no valid row Schema.`),
       );
     }
-    const serviceOption = Context.getOption(context, definition.adapter.runtimeService);
+    const serviceOption = Context.getOption(context, runtimeDefinition.adapter.runtimeService);
     if (Option.isNone(serviceOption)) {
       return yield* Effect.fail(
         runtimeError(
           topic,
-          `Source Adapter runtime service ${definition.identity.name} is missing.`,
+          `Source Adapter runtime service ${runtimeDefinition.identity.name} is missing.`,
         ),
       );
     }
     const service = serviceOption.value;
-    if (service.adapter !== definition.adapter) {
+    if (service.adapter !== runtimeDefinition.adapter) {
       return yield* Effect.fail(
         runtimeError(
           topic,
-          `Source Adapter runtime service for ${definition.identity.name} does not match its nominal definition descriptor.`,
+          `Source Adapter runtime service for ${runtimeDefinition.identity.name} does not match its nominal definition descriptor.`,
         ),
       );
     }
-    const lifecycle = lifecycleFor(definition, service);
-    const declaration = declarationFor(definition);
+    const lifecycle = lifecycleFor(runtimeDefinition, service);
+    const declaration = declarationFor(runtimeDefinition);
     if (lifecycle === undefined || declaration === undefined) {
       return yield* Effect.fail(
         runtimeError(
           topic,
-          `Source Adapter runtime service does not implement declared ${definition.lifecycle} lifecycle.`,
+          `Source Adapter runtime service does not implement declared ${runtimeDefinition.lifecycle} lifecycle.`,
         ),
       );
     }
     entries.set(topic, {
       topic,
       schema: binding.schema,
-      definition,
+      definition: runtimeDefinition,
       service,
       lifecycle,
       declaration,
@@ -544,9 +559,7 @@ const publicId = (row: object): string | undefined => {
   return Result.isSuccess(id) && typeof id.success === "string" ? id.success : undefined;
 };
 
-type LogicalRuntimeInput<
-  Topics extends import("@effect-view-server/column-live-view-engine").DecodableTopicDefinitions,
-> = {
+type LogicalRuntimeInput<Topics extends TopicDefinitions> = {
   readonly entry: SourceRuntimeEntry;
   readonly target: SourceTarget<Readonly<Record<string, unknown>>>;
   readonly mutations: SourceMutationOperations;
@@ -556,6 +569,7 @@ type LogicalRuntimeInput<
   readonly feedRouteReference?: string;
   readonly ownedStorageKeys?: Set<string>;
   readonly ownerScope: Scope.Scope;
+  readonly onHealth: (health: RuntimeSourceHealth) => Effect.Effect<void>;
   readonly onStatus: (status: SourceStatus<unknown, unknown>) => Effect.Effect<void>;
 };
 
@@ -639,7 +653,7 @@ function freezeDecodedMetrics(value: unknown, active = new WeakSet<object>()): u
 }
 
 const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")(function* <
-  Topics extends import("@effect-view-server/column-live-view-engine").DecodableTopicDefinitions,
+  Topics extends TopicDefinitions,
 >(input: LogicalRuntimeInput<Topics>) {
   const startedAtNanos = yield* Clock.currentTimeNanos;
   let currentAttempt = 1n;
@@ -792,21 +806,20 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
     if (Result.isFailure(runtimeMetricsResult)) {
       yield* metricFailureObservation.record(Result.fail(runtimeMetricsResult.failure));
     }
-    yield* SubscriptionRef.set(
-      health,
-      Option.some({
-        adapter: input.entry.definition.identity,
-        target: input.target,
-        status,
-        metrics: {
-          runtime: Result.isSuccess(runtimeMetricsResult)
-            ? runtimeMetricsResult.success
-            : runtimeMetricsFromLanes(lastValidLaneMetrics),
-          adapter: adapterMetrics,
-        },
-        sampledAtNanos,
-      }),
-    );
+    const nextHealth: RuntimeSourceHealth = {
+      adapter: input.entry.definition.identity,
+      target: input.target,
+      status,
+      metrics: {
+        runtime: Result.isSuccess(runtimeMetricsResult)
+          ? runtimeMetricsResult.success
+          : runtimeMetricsFromLanes(lastValidLaneMetrics),
+        adapter: adapterMetrics,
+      },
+      sampledAtNanos,
+    };
+    yield* SubscriptionRef.set(health, Option.some(nextHealth));
+    yield* input.onHealth(nextHealth);
   });
 
   const publish = Effect.fn("ViewServerRuntimeCore.source.health.publishStatus")(function* (
@@ -869,10 +882,17 @@ const makeLogicalRuntime = Effect.fn("ViewServerRuntimeCore.source.makeLogical")
       });
       yield* healthLock.withPermit(
         Effect.gen(function* () {
-          cachedAdapterMetrics = frozen;
+          // Adapter metrics are an opaque, Schema-validated snapshot. Keep
+          // reactivity equality at that Adapter seam so Effect does not
+          // structurally hash custom decoded values such as frozen BigDecimal.
+          const reactiveSnapshot =
+            typeof frozen === "object" && frozen !== null
+              ? Equal.byReferenceUnsafe(frozen)
+              : frozen;
+          cachedAdapterMetrics = reactiveSnapshot;
           hasCachedAdapterMetrics = true;
           const currentStatus = SubscriptionRef.getUnsafe(status);
-          yield* publishHealth(currentStatus, frozen);
+          yield* publishHealth(currentStatus, reactiveSnapshot);
           yield* input.onStatus(currentStatus);
         }),
       );
@@ -1706,6 +1726,70 @@ const sourceAvailabilityEvent = (
 
 type AggregateSourceStatus = "ready" | "degraded" | "starting";
 
+type AggregateSourceDefinition = {
+  readonly lifecycle: "materialized" | "leased";
+  readonly topic: string;
+};
+
+type AggregateSourceHealthSnapshot = AggregateSourceDefinition & {
+  readonly key: string;
+  readonly health: RuntimeSourceHealth;
+};
+
+function restoreAggregateSourceHealth<Topics extends TopicDefinitions>(
+  sources: Readonly<Record<string, RuntimeSourceHealth | ReadonlyArray<RuntimeSourceHealth>>>,
+): ViewServerSourceHealth<Topics>;
+function restoreAggregateSourceHealth(
+  sources: Readonly<Record<string, RuntimeSourceHealth | ReadonlyArray<RuntimeSourceHealth>>>,
+): Readonly<Record<string, RuntimeSourceHealth | ReadonlyArray<RuntimeSourceHealth>>> {
+  return sources;
+}
+
+const aggregateSourceHealth = <Topics extends TopicDefinitions>(
+  definitions: Iterable<AggregateSourceDefinition>,
+  snapshots: Iterable<AggregateSourceHealthSnapshot>,
+): ViewServerSourceHealth<Topics> => {
+  const materialized = new Map<string, RuntimeSourceHealth>();
+  const leased = new Map<
+    string,
+    Array<{
+      readonly key: string;
+      readonly health: RuntimeSourceHealth;
+    }>
+  >();
+  for (const snapshot of snapshots) {
+    if (snapshot.lifecycle === "materialized") {
+      materialized.set(snapshot.topic, snapshot.health);
+      continue;
+    }
+    const topicSnapshots = leased.get(snapshot.topic);
+    const value = { key: snapshot.key, health: snapshot.health };
+    if (topicSnapshots === undefined) {
+      leased.set(snapshot.topic, [value]);
+    } else {
+      topicSnapshots.push(value);
+    }
+  }
+  const sources: Record<string, RuntimeSourceHealth | ReadonlyArray<RuntimeSourceHealth>> = {};
+  for (const definition of definitions) {
+    if (definition.lifecycle === "materialized") {
+      // Source Manager admission rejects composition before any public health
+      // can be read unless every Materialized Source has an initial snapshot.
+      const snapshot = Option.getOrThrow(
+        Option.fromUndefinedOr(materialized.get(definition.topic)),
+      );
+      Reflect.set(sources, definition.topic, snapshot);
+      continue;
+    }
+    const active = leased.get(definition.topic) ?? [];
+    active.sort((left, right) => left.key.localeCompare(right.key));
+    Reflect.set(sources, definition.topic, Object.freeze(active.map(({ health }) => health)));
+  }
+  // Runtime admission validates every Source Definition and every cached health
+  // value before this single nominal restoration seam.
+  return restoreAggregateSourceHealth<Topics>(Object.freeze(sources));
+};
+
 const combineAggregateSourceStatus = (
   left: AggregateSourceStatus,
   right: AggregateSourceStatus,
@@ -1716,14 +1800,14 @@ const combineAggregateSourceStatus = (
       ? "degraded"
       : "ready";
 
-const overlaySourceHealth = <
-  Topics extends import("@effect-view-server/column-live-view-engine").DecodableTopicDefinitions,
->(
-  health: ViewServerHealth<Topics>,
+const overlaySourceHealth = <Topics extends TopicDefinitions>(
+  health: RuntimeCoreBaseHealth<Topics>,
   statuses: Iterable<{
     readonly topic: string;
     readonly status: SourceStatus<unknown, unknown>;
   }>,
+  definitions: Iterable<AggregateSourceDefinition>,
+  snapshots: Iterable<AggregateSourceHealthSnapshot>,
 ): ViewServerHealth<Topics> => {
   const statusByTopic = new Map<string, AggregateSourceStatus>();
   for (const { topic, status } of statuses) {
@@ -1768,6 +1852,7 @@ const overlaySourceHealth = <
   return {
     ...health,
     status,
+    sources: aggregateSourceHealth<Topics>(definitions, snapshots),
     engine: {
       topics,
     },
@@ -1793,10 +1878,7 @@ const attachSourceAvailability = <Row extends object>(
 };
 
 export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.source.manager.make")(
-  function* <
-    const Topics extends
-      import("@effect-view-server/column-live-view-engine").DecodableTopicDefinitions,
-  >(
+  function* <const Topics extends TopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
     mutations: ViewServerRuntimeCoreInternalMutations<Topics>,
     onHealthChange: Effect.Effect<void> = Effect.void,
@@ -1870,6 +1952,14 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               readonly status: SourceStatus<unknown, unknown>;
             }
           >();
+          const aggregateSourceDefinitions: ReadonlyArray<AggregateSourceDefinition> =
+            Object.freeze(
+              Array.from(entries.values(), (entry) => ({
+                lifecycle: entry.definition.lifecycle,
+                topic: entry.topic,
+              })),
+            );
+          const sourceHealthSnapshots = new Map<string, AggregateSourceHealthSnapshot>();
           let closed = false;
           let leaseSequence = 0n;
 
@@ -1877,21 +1967,44 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
             if (entry.definition.lifecycle !== "materialized") {
               continue;
             }
+            const sourceKey = `materialized:${entry.topic}`;
             const runtime = yield* makeLogicalRuntime({
               entry,
               target: { _tag: "Materialized" },
               mutations: sourceMutations,
               context,
               ownerScope: managerScope,
+              onHealth: (health) =>
+                Effect.sync(() => {
+                  sourceHealthSnapshots.set(sourceKey, {
+                    key: sourceKey,
+                    lifecycle: "materialized",
+                    topic: entry.topic,
+                    health,
+                  });
+                }),
               onStatus: (status) =>
                 Effect.sync(() => {
-                  sourceStatuses.set(`materialized:${entry.topic}`, {
+                  sourceStatuses.set(sourceKey, {
                     topic: entry.topic,
                     status,
                   });
                 }).pipe(Effect.andThen(onHealthChange)),
             });
             materialized.set(entry.topic, runtime);
+          }
+          for (const definition of aggregateSourceDefinitions) {
+            if (
+              definition.lifecycle === "materialized" &&
+              !sourceHealthSnapshots.has(`materialized:${definition.topic}`)
+            ) {
+              return yield* Effect.fail(
+                runtimeError(
+                  definition.topic,
+                  `Source Adapter for Materialized Topic ${definition.topic} did not publish valid initial Source Health.`,
+                ),
+              );
+            }
           }
 
           const cleanupLease = Effect.fn("ViewServerRuntimeCore.source.lease.cleanup")(
@@ -1919,6 +2032,7 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                     : SubscriptionRef.set(diagnostics.state, undefined),
                   Effect.sync(() => {
                     sourceStatuses.delete(lease.feedKey);
+                    sourceHealthSnapshots.delete(lease.feedKey);
                   }),
                   onHealthChange,
                 ]);
@@ -2012,6 +2126,15 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                 feedKey,
                                 feedRouteReference: `leased-feed-${leaseSequence}`,
                                 ownedStorageKeys,
+                                onHealth: (health) =>
+                                  Effect.sync(() => {
+                                    sourceHealthSnapshots.set(feedKey, {
+                                      key: feedKey,
+                                      lifecycle: "leased",
+                                      topic: entry.topic,
+                                      health,
+                                    });
+                                  }),
                                 onStatus: (status) =>
                                   Effect.sync(() => {
                                     sourceStatuses.set(feedKey, {
@@ -2021,6 +2144,14 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
                                   }).pipe(Effect.andThen(onHealthChange)),
                               });
                               acquiredLease.runtime = runtime;
+                              if (!sourceHealthSnapshots.has(feedKey)) {
+                                return yield* Effect.fail(
+                                  runtimeError(
+                                    entry.topic,
+                                    `Source Adapter for Leased Topic ${entry.topic} did not publish valid initial Source Health.`,
+                                  ),
+                                );
+                              }
                               yield* constructionOptions.leaseHandoff?.beforeReturn ?? Effect.void;
                               const diagnostics = leasedDiagnostics.get(feedKey);
                               if (diagnostics !== undefined) {
@@ -2255,19 +2386,13 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
               );
             }
             const route = Schema.Struct(routeFields);
-            const health = sourceHealthSchema({
+            return sourceHealthContractSchemas({
               adapterFailure: entry.definition.adapter.failureSchema,
               route,
               adapterMetrics: entry.declaration.metrics,
               rejectionLocation: entry.declaration.rejectionLocation,
               lifecycle: entry.definition.lifecycle,
-            });
-            return entry.definition.lifecycle === "materialized"
-              ? health
-              : Schema.Union([
-                  Schema.TaggedStruct("Inactive", { route }),
-                  Schema.TaggedStruct("Active", { route, health }),
-                ]);
+            }).result;
           };
           const isExactSourceHealthResult = <Topic extends ViewServerSourceOwnedTopic<Topics>>(
             topic: Topic,
@@ -2293,10 +2418,20 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
             return value;
           });
           const subscribeSourceHealth: RuntimeCoreSourceManager<Topics>["subscribeSourceHealth"] = (
-            ...arguments_
+            input,
           ) => {
-            const [topic, route] = arguments_;
-            return subscribeProtocolSourceHealth(topic, route === undefined ? [] : [route]).pipe(
+            const captured = captureSourceHealthInput<ViewServerSourceOwnedTopic<Topics>>(input);
+            if (Result.isFailure(captured)) {
+              return Effect.fail(
+                runtimeError(
+                  "<invalid>",
+                  "Source Health input must be one exact { topic, routeBy? } object.",
+                  "InvalidQuery",
+                ),
+              );
+            }
+            const { topic, route } = captured.success;
+            return subscribeProtocolSourceHealth(topic, route).pipe(
               Effect.map((subscription) => ({
                 events: subscription.events.pipe(
                   Stream.mapEffect((value) => validateExactSourceHealth(topic, value)),
@@ -2307,7 +2442,12 @@ export const makeRuntimeCoreSourceManager = Effect.fn("ViewServerRuntimeCore.sou
           };
 
           const overlayHealth: RuntimeCoreSourceManager<Topics>["overlayHealth"] = (health) =>
-            overlaySourceHealth(health, sourceStatuses.values());
+            overlaySourceHealth(
+              health,
+              sourceStatuses.values(),
+              aggregateSourceDefinitions,
+              sourceHealthSnapshots.values(),
+            );
 
           const close = (yield* Effect.cached(
             leaseLock

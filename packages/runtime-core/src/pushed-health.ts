@@ -4,6 +4,7 @@ import type {
   ViewServerLiveSubscription,
 } from "@effect-view-server/client";
 import type {
+  TopicDefinitions,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
@@ -15,7 +16,6 @@ import {
   viewServerHealthSummaryRowFromHealth,
   viewServerHealthTopicRowsFromHealth,
 } from "@effect-view-server/config";
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import {
   ignoreLoggedTypedFailuresPreserveNonTypedFailures,
   runAllFinalizers,
@@ -52,7 +52,7 @@ const runtimeHealthBackpressureStatus = <Topic extends string>(
     message: `Runtime health subscription closed because its event queue exceeded capacity with ${queuedEvents} queued event(s).`,
   }) satisfies ViewServerLiveEvent<never, Topic, never>;
 
-export type RuntimeCorePushedHealthHub<Topics extends DecodableTopicDefinitions> = Pick<
+export type RuntimeCorePushedHealthHub<Topics extends TopicDefinitions> = Pick<
   ViewServerLiveClient<Topics>,
   "health" | "subscribeHealth" | "subscribeHealthSummary"
 > & {
@@ -87,7 +87,7 @@ type HealthSnapshotOfferResult =
       readonly queuedEvents: number;
     };
 
-type RuntimeCoreHealthSummarySnapshot<Topics extends DecodableTopicDefinitions> = Extract<
+type RuntimeCoreHealthSummarySnapshot<Topics extends TopicDefinitions> = Extract<
   ViewServerLiveEvent<
     ViewServerHealthSummaryRow<Topics>,
     typeof VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
@@ -96,7 +96,7 @@ type RuntimeCoreHealthSummarySnapshot<Topics extends DecodableTopicDefinitions> 
   { readonly type: "snapshot" }
 >;
 
-type RuntimeCoreHealthDetailSnapshot<Topics extends DecodableTopicDefinitions> = Extract<
+type RuntimeCoreHealthDetailSnapshot<Topics extends TopicDefinitions> = Extract<
   ViewServerLiveEvent<
     ViewServerHealthTopicRow<Extract<keyof Topics, string>>,
     typeof VIEW_SERVER_HEALTH_TOPIC,
@@ -105,12 +105,12 @@ type RuntimeCoreHealthDetailSnapshot<Topics extends DecodableTopicDefinitions> =
   { readonly type: "snapshot" }
 >;
 
-type RuntimeCoreHealthSnapshots<Topics extends DecodableTopicDefinitions> = {
+type RuntimeCoreHealthSnapshots<Topics extends TopicDefinitions> = {
   readonly detail: RuntimeCoreHealthDetailSnapshot<Topics>;
   readonly summary: RuntimeCoreHealthSummarySnapshot<Topics>;
 };
 
-const healthSnapshotsFromHealth = <Topics extends DecodableTopicDefinitions>(
+const healthSnapshotsFromHealth = <Topics extends TopicDefinitions>(
   health: ViewServerHealth<Topics>,
   updatedAtNanos: bigint,
 ): RuntimeCoreHealthSnapshots<Topics> => {
@@ -138,7 +138,7 @@ const healthSnapshotsFromHealth = <Topics extends DecodableTopicDefinitions>(
 };
 
 export const makeRuntimeCorePushedHealthHub = Effect.fn("ViewServerRuntimeCore.pushedHealth.make")(
-  function* <const Topics extends DecodableTopicDefinitions>(
+  function* <const Topics extends TopicDefinitions>(
     initialHealth: ViewServerHealth<Topics>,
     readHealth: Effect.Effect<ViewServerHealth<Topics>>,
     cadence?: Duration.Input,

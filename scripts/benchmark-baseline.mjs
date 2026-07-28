@@ -81,14 +81,6 @@ const summaryArtifactKind = (value, path) => {
   return artifactKind;
 };
 
-const nonNegativeSafeInteger = (value, path) => {
-  const number = nonNegativeInteger(value, path);
-  if (!Number.isSafeInteger(number)) {
-    throw new Error(`Benchmark artifact field ${path} must be a safe non-negative integer.`);
-  }
-  return number;
-};
-
 const grpcBenchmarkParametersValue = (value, path, benchmarkScope) => {
   if (benchmarkScope === "runtime-grpc-leased") {
     return decodeGrpcLeasedBenchmarkParameters(value, path);
@@ -383,21 +375,10 @@ const comparableKafkaIngestLaneValue = (value, path) => {
   };
 };
 
-const nonNegativeIntegerStringOrNumber = (value, path) => {
-  if (typeof value === "number") {
-    return String(nonNegativeSafeInteger(value, path));
-  }
-  return nonNegativeIntegerString(value, path);
-};
-
-const optionalNonNegativeIntegerStringOrNumber = (value, path) =>
-  value === null ? null : nonNegativeIntegerStringOrNumber(value, path);
-
 const runtimeMetricsValue = (value, path) => {
   const metrics = objectValue(value, path);
   const eventLoopDelay = objectValue(metrics.eventLoopDelay, `${path}.eventLoopDelay`);
   const healthPolling = objectValue(metrics.healthPolling, `${path}.healthPolling`);
-  const kafkaLag = objectValue(metrics.kafkaLag, `${path}.kafkaLag`);
   const normalized = {
     eventLoopDelay: {
       maxMs: nonNegativeFiniteNumber(eventLoopDelay.maxMs, `${path}.eventLoopDelay.maxMs`),
@@ -408,20 +389,6 @@ const runtimeMetricsValue = (value, path) => {
       count: nonNegativeInteger(healthPolling.count, `${path}.healthPolling.count`),
       maxMs: nonNegativeFiniteNumber(healthPolling.maxMs, `${path}.healthPolling.maxMs`),
       totalMs: nonNegativeFiniteNumber(healthPolling.totalMs, `${path}.healthPolling.totalMs`),
-    },
-    kafkaLag: {
-      maxConsumerLagMessages: optionalNonNegativeIntegerStringOrNumber(
-        kafkaLag.maxConsumerLagMessages,
-        `${path}.kafkaLag.maxConsumerLagMessages`,
-      ),
-      sampledRegionCount: nonNegativeInteger(
-        kafkaLag.sampledRegionCount,
-        `${path}.kafkaLag.sampledRegionCount`,
-      ),
-      totalConsumerLagMessages: nonNegativeIntegerStringOrNumber(
-        kafkaLag.totalConsumerLagMessages,
-        `${path}.kafkaLag.totalConsumerLagMessages`,
-      ),
     },
   };
   if (normalized.eventLoopDelay.p99Ms > normalized.eventLoopDelay.maxMs) {

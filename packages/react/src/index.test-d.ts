@@ -1,28 +1,32 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { ViewServerLiveClient } from "@effect-view-server/client";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import {
+  ViewServerId,
   defineViewServerConfig,
-  grpc,
-  type GrpcRuntimeClients,
   type LiveQueryResult,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { createViewServerReact as createViewServerReactFromPackage } from "@effect-view-server/react";
 import {
   createInMemoryViewServerReact as createInMemoryViewServerReactFromPackageTesting,
+  makeInMemoryViewServerReact as makeInMemoryViewServerReactFromPackageTesting,
   type ViewServerInMemoryOptions as ViewServerInMemoryOptionsFromPackageTesting,
 } from "@effect-view-server/react/testing";
-import type { Effect } from "effect";
-import type { Stream } from "effect";
-import { Schema } from "effect";
+import { Context, type Effect, Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
+import type * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import type { ReactNode } from "react";
 import { createViewServerReact } from "./index";
 import { ViewServerReactClientProvider } from "./internal";
-import { createInMemoryViewServerReact, type ViewServerInMemoryOptions } from "./testing";
+import {
+  createInMemoryViewServerReact,
+  makeInMemoryViewServerReact,
+  type ViewServerInMemoryOptions,
+} from "./testing";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -31,53 +35,58 @@ const Order = Schema.Struct({
 });
 
 const Position = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.Number,
 });
 
-declare const grpcRuntimeClients: GrpcRuntimeClients;
-declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
+const ReactSourceFailure = Schema.TaggedStruct("ReactSourceFailure", {
+  code: Schema.Literals(["Disconnected", "Decode"]),
+});
+const ReactSourceRejectionLocation = Schema.Struct({
+  partition: Schema.String,
+  offset: Schema.BigInt,
+});
 
-const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
+const sourceAdapter = SourceAdapter.make({
+  identity: { name: "react-type-source" },
+  failure: ReactSourceFailure,
+  materialized: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: ReactSourceRejectionLocation,
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: ReactSourceRejectionLocation,
+    definitionOptions: SourceAdapter.definitionOptions<undefined>(),
+  },
+});
 
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
 
 const heterogeneousViewServer = defineViewServerConfig({
   topics: {
-    orders: { schema: Order, key: "id" },
-    positions: { schema: Position, key: "id" },
+    orders: { schema: Order },
+    positions: { schema: Position },
   },
 });
 
 const leasedViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
   topics: {
-    orders: grpcTopicSources.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["region", "status"],
-      request: (route) => route,
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({
-        id: "order-1",
-        customerId: "customer-1",
-        status: route.status,
-        price: 0,
-        region: route.region,
-        updatedAt: 0,
-      }),
-    }),
+      source: sourceAdapter.leasedSource(["region", "status"], undefined),
+    },
+    allOrders: {
+      schema: Order,
+      source: sourceAdapter.materializedSource(undefined),
+    },
   },
 });
 
@@ -293,7 +302,7 @@ describe("React type contracts", () => {
     useLiveQuery("orders", numericStringFilterQuery);
   });
 
-  it("requires exact leased gRPC route values in React hooks", () => {
+  it("requires exact leased Source route values in React hooks", () => {
     const routedRows = leasedReact.useLiveQuery("orders", {
       where: [
         { field: "region", type: "equals", filter: "usa" },
@@ -339,11 +348,106 @@ describe("React type contracts", () => {
       readonly select: readonly ["id"];
     };
 
-    // @ts-expect-error leased gRPC queries require every routeBy field.
+    // @ts-expect-error leased Source queries require every routeBy field.
     leasedReact.useLiveQuery("orders", missingRouteQuery);
 
-    // @ts-expect-error leased gRPC routeBy must contain every configured route field.
+    // @ts-expect-error leased Source routeBy must contain every configured route field.
     leasedReact.useLiveQuery("orders", partialRouteQuery);
+  });
+
+  it("preserves exact Materialized and Leased Source Health diagnostics", () => {
+    const materialized = leasedReact.useSourceHealth({ topic: "allOrders" });
+    const leased = leasedReact.useSourceHealth({
+      topic: "orders",
+      routeBy: { region: "usa", status: "open" },
+    });
+    type MaterializedHealth = AsyncResult.AsyncResult.Success<typeof materialized>;
+    type LeasedHealth = AsyncResult.AsyncResult.Success<typeof leased>;
+    type MaterializedDegraded = Extract<
+      MaterializedHealth["status"],
+      { readonly _tag: "Degraded" }
+    >;
+    type LeasedActive = Extract<LeasedHealth, { readonly _tag: "Active" }>;
+    type LeasedDegraded = Extract<LeasedActive["health"]["status"], { readonly _tag: "Degraded" }>;
+
+    expectTypeOf<MaterializedHealth["metrics"]["adapter"]["observed"]>().toEqualTypeOf<bigint>();
+    expectTypeOf<
+      Extract<
+        MaterializedDegraded["latestRejection"]["failure"],
+        { readonly _tag: "AdapterFailure" }
+      >["failure"]
+    >().toEqualTypeOf<typeof ReactSourceFailure.Type>();
+    expectTypeOf<MaterializedDegraded["latestRejection"]["location"]>().toEqualTypeOf<
+      typeof ReactSourceRejectionLocation.Type
+    >();
+    expectTypeOf<MaterializedHealth["status"]["_tag"]>().toEqualTypeOf<
+      | "Starting"
+      | "Ready"
+      | "Degraded"
+      | "WaitingToRetry"
+      | "Reacquiring"
+      | "Exhausted"
+      | "Stopping"
+    >();
+    expectTypeOf<LeasedHealth["_tag"]>().toEqualTypeOf<"Inactive" | "Active">();
+    expectTypeOf<LeasedHealth["route"]>().toEqualTypeOf<{
+      readonly region: string;
+      readonly status: "open" | "closed" | "cancelled";
+    }>();
+    expectTypeOf<
+      Extract<
+        LeasedDegraded["latestRejection"]["failure"],
+        { readonly _tag: "AdapterFailure" }
+      >["failure"]
+    >().toEqualTypeOf<typeof ReactSourceFailure.Type>();
+    expectTypeOf<LeasedDegraded["latestRejection"]["location"]>().toEqualTypeOf<
+      typeof ReactSourceRejectionLocation.Type
+    >();
+
+    // @ts-expect-error source-free Topics do not expose Source Health.
+    react.useSourceHealth({ topic: "orders" });
+    // @ts-expect-error Leased Source diagnostics require routeBy.
+    leasedReact.useSourceHealth({ topic: "orders" });
+    const materializedWithRoute: {
+      readonly topic: "allOrders";
+      readonly routeBy: {
+        readonly region: string;
+        readonly status: "open";
+      };
+    } = {
+      topic: "allOrders",
+      routeBy: { region: "usa", status: "open" },
+    };
+    // @ts-expect-error Materialized Source diagnostics reject routeBy.
+    leasedReact.useSourceHealth(materializedWithRoute);
+    leasedReact.useSourceHealth({
+      topic: "orders",
+      // @ts-expect-error Leased Source diagnostics require every route field.
+      routeBy: { region: "usa" },
+    });
+    leasedReact.useSourceHealth({
+      topic: "orders",
+      routeBy: {
+        region: "usa",
+        status: "open",
+        // @ts-expect-error Leased Source diagnostics reject extra route fields.
+        extra: true,
+      },
+    });
+    leasedReact.useSourceHealth({
+      topic: "orders",
+      // @ts-expect-error Leased Source diagnostics preserve route scalar types.
+      routeBy: {
+        region: "usa",
+        status: "unknown",
+      },
+    });
+    leasedReact.useSourceHealth({
+      topic: "orders",
+      routeBy: { region: "usa", status: "open" },
+      // @ts-expect-error Source Health diagnostics reject extra input fields.
+      adapter: "react-type-source",
+    });
   });
 
   it("keeps health and in-memory client keyed by configured topics", () => {
@@ -367,7 +471,7 @@ describe("React type contracts", () => {
     expectTypeOf(healthSummary.status).toEqualTypeOf<
       "ready" | "degraded" | "starting" | "stopping" | "connecting" | "disconnected"
     >();
-    expectTypeOf(healthSummary.maxKafkaLag).toEqualTypeOf<bigint | null>();
+    expectTypeOf(healthSummary).not.toHaveProperty("maxKafkaLag");
     expectTypeOf(provider).toEqualTypeOf<ReactNode>();
     expectTypeOf(clientProvider).toEqualTypeOf<ReactNode>();
     expectTypeOf<Parameters<Client["publish"]>>().toEqualTypeOf<
@@ -388,6 +492,8 @@ describe("React type contracts", () => {
   it("requires testing helpers to reuse React bindings", () => {
     // @ts-expect-error testing helpers need the app binding, not just the config.
     createInMemoryViewServerReact(viewServer);
+    // @ts-expect-error synchronous testing helpers cannot provide Source Adapter services.
+    createInMemoryViewServerReact(leasedReact);
   });
 
   it("preserves grouped query result types for React and in-memory clients", () => {
@@ -527,5 +633,20 @@ describe("React type contracts", () => {
       updateddAt: 1,
     });
     expectTypeOf(invalidPublish).not.toBeAny();
+  });
+
+  it("preserves source Layer requirements through React testing helpers", () => {
+    const localEffect = makeInMemoryViewServerReact(leasedReact);
+    const packageEffect = makeInMemoryViewServerReactFromPackageTesting(leasedReact);
+
+    expectTypeOf<Effect.Services<typeof localEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof packageEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Success<typeof localEffect>>().toEqualTypeOf<
+      Effect.Success<typeof packageEffect>
+    >();
   });
 });

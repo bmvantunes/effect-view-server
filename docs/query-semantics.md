@@ -148,4 +148,4 @@ Snapshots and deltas always include `totalRows`. Empty result sets report
 `totalRows: 0`.
 
 Rows are ordered deterministically. When user-provided sort fields tie, the
-configured topic key is used as the final stable tie-breaker.
+Topic's canonical `id` is used as the final stable tie-breaker.

@@ -168,7 +168,7 @@ describe("Invalid grouped row wire inputs", () => {
         }),
       );
 
-      expect(invalidGroupedField.message).toBe("Invalid field id: Expected string, got 10");
+      expect(invalidGroupedField.message).toBe("Invalid field id: Expected ViewServerId, got 10");
 
       const missingDecodedGroupedField = yield* Effect.flip(
         viewServerDecodeLiveEvent(viewServer, "orders", groupedQuery, {

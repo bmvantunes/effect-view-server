@@ -8,50 +8,60 @@
       "benchmarks": [
         {
           "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
-          "maxMs": 12.561290999999983,
-          "meanMs": 10.154349799999977,
-          "minMs": 9.231291000000056,
-          "name": "maps 32 decoded response messages into ordered Upserts",
-          "p99Ms": 12.561290999999983,
-          "sampleCount": 5
+          "maxMs": 4653.955458000004,
+          "meanMs": 2174.9429880000016,
+          "minMs": 399.75454199999876,
+          "name": "maps 1000 decoded response messages into ordered Upserts",
+          "p99Ms": 4653.955458000004,
+          "sampleCount": 7
         },
         {
           "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
-          "maxMs": 1.7816249999999627,
-          "meanMs": 1.1466251999999713,
-          "minMs": 0.9238749999999527,
+          "maxMs": 8.92687499999738,
+          "meanMs": 7.377172714286384,
+          "minMs": 5.649042000004556,
           "name": "records one Mapping rejection and continues with a valid response",
-          "p99Ms": 1.7816249999999627,
-          "sampleCount": 5
+          "p99Ms": 8.92687499999738,
+          "sampleCount": 7
         },
         {
           "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
-          "maxMs": 17.451584000000025,
-          "meanMs": 15.66450020000002,
-          "minMs": 13.331833000000074,
-          "name": "publishes one-second health samples for 32 active Leased Feeds",
-          "p99Ms": 17.451584000000025,
-          "sampleCount": 5
+          "maxMs": 38.927167000001646,
+          "meanMs": 29.195714142856428,
+          "minMs": 23.935124999996333,
+          "name": "publishes one-second health samples for 50 active Leased Feeds",
+          "p99Ms": 38.927167000001646,
+          "sampleCount": 7
+        },
+        {
+          "groupName": "src/grpc.bench.ts > gRPC Source Adapter focused overhead",
+          "maxMs": 1158.4282079999975,
+          "meanMs": 1043.738833142856,
+          "minMs": 948.2695420000018,
+          "name": "applies 1000 rows across 50 Leased Feeds with 50000 retained",
+          "p99Ms": 1158.4282079999975,
+          "sampleCount": 7
         }
       ],
       "benchmarkCases": [
-        "maps 32 decoded response messages into ordered Upserts",
+        "maps 1000 decoded response messages into ordered Upserts",
         "records one Mapping rejection and continues with a valid response",
-        "publishes one-second health samples for 32 active Leased Feeds"
+        "publishes one-second health samples for 50 active Leased Feeds",
+        "applies 1000 rows across 50 Leased Feeds with 50000 retained"
       ],
       "benchmarkName": "gRPC Source Adapter focused overhead benchmark",
       "benchmarkScope": "runtime-grpc-source-adapter",
       "cleanupLeakCount": 0,
       "latencySource": "vitest-output-json",
-      "memoryRssTotalDeltaBytes": 77152256,
-      "minimumSampleCount": 5,
-      "mutationCount": 165,
-      "outputJsonPath": "packages/grpc/.artifacts/grpc-source-adapter-32batch-32routes.json",
+      "memoryRssTotalDeltaBytes": 539590656,
+      "minimumSampleCount": 7,
+      "mutationCount": 64007,
+      "outputJsonPath": "packages/grpc/.artifacts/grpc-source-adapter-1000batch-50routes-50000retained.json",
       "queuedEventCount": 0,
-      "rowCount": 32,
-      "subscriberCount": 33,
-      "summaryPath": "packages/grpc/.artifacts/grpc-source-adapter-32batch-32routes.summary.json",
-      "taskLabel": "gRPC Source Adapter 32 response batch 32 leased routes",
+      "rowCount": 1000,
+      "subscriberCount": 51,
+      "summaryPath": "packages/grpc/.artifacts/grpc-source-adapter-1000batch-50routes-50000retained.summary.json",
+      "taskLabel": "gRPC Source Adapter 1000 response batch 50 leased routes 50000 retained rows",
       "topics": ["rows"]
     }
   ],

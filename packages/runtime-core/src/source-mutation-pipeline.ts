@@ -1,10 +1,8 @@
-import type {
-  ColumnLiveViewEngineError,
-  DecodableTopicDefinitions,
-} from "@effect-view-server/column-live-view-engine";
+import type { ColumnLiveViewEngineError } from "@effect-view-server/column-live-view-engine";
 import type { ColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
   ExactPatch,
+  TopicDefinitions,
   TopicRow,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
@@ -21,7 +19,7 @@ import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 type AssertNever<Value extends never> = Value;
 
-type UnhandledDecodedMutationTag<Topics extends DecodableTopicDefinitions> = AssertNever<
+type UnhandledDecodedMutationTag<Topics extends TopicDefinitions> = AssertNever<
   Exclude<
     ViewServerRuntimeDecodedMutation<Topics>["_tag"],
     "CheckMutationAllowed" | "DeleteDecodedRow" | "PatchDecodedFields" | "PublishDecodedRows"
@@ -33,7 +31,7 @@ export type RuntimeCoreDecodedRowWithStorageKey = {
   readonly row: object;
 };
 
-export type ViewServerRuntimeCoreInternalMutations<Topics extends DecodableTopicDefinitions> = Pick<
+export type ViewServerRuntimeCoreInternalMutations<Topics extends TopicDefinitions> = Pick<
   ViewServerRuntimeClient<Topics>,
   "delete" | "patch" | "publish" | "publishMany" | "reset"
 > & {
@@ -66,12 +64,12 @@ export type ViewServerRuntimeCoreInternalMutations<Topics extends DecodableTopic
   ) => Effect.Effect<void, ViewServerRuntimeError>;
 };
 
-export type ViewServerRuntimeCoreCheckedMutations<Topics extends DecodableTopicDefinitions> = Pick<
+export type ViewServerRuntimeCoreCheckedMutations<Topics extends TopicDefinitions> = Pick<
   ViewServerRuntimeClient<Topics>,
   "delete" | "patch" | "publish" | "publishMany" | "reset"
 >;
 
-export type RuntimeCoreMutationPipeline<Topics extends DecodableTopicDefinitions> = {
+export type RuntimeCoreMutationPipeline<Topics extends TopicDefinitions> = {
   readonly internalMutations: ViewServerRuntimeCoreInternalMutations<Topics>;
   readonly checkedMutations: ViewServerRuntimeCoreCheckedMutations<Topics>;
   readonly decodedMutationClient: ViewServerRuntimeDecodedMutationClient<Topics>;
@@ -86,7 +84,7 @@ const applyEngineMutation = Effect.fn("ViewServerRuntimeCore.sourceMutation.appl
   );
 });
 
-export const makeRuntimeCoreMutationPipeline = <const Topics extends DecodableTopicDefinitions>(
+export const makeRuntimeCoreMutationPipeline = <const Topics extends TopicDefinitions>(
   config: ViewServerTopicConfig<Topics>,
   engine: ColumnLiveViewEngineInternal<Topics>,
   requestHealthRefresh: Effect.Effect<void>,

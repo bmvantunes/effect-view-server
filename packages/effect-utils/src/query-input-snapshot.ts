@@ -1,4 +1,5 @@
 import { make as makeBigDecimal } from "effect/BigDecimal";
+import { Result } from "effect";
 import {
   hasPlainRecordPrototype,
   inspectArrayData,
@@ -184,3 +185,41 @@ export const ownViewServerQuerySnapshot = <Query extends QueryRecord>(query: Que
   ownedQuerySnapshots.add(query);
   return query;
 };
+
+export type CapturedSourceHealthInput<Topic extends string = string> = {
+  readonly topic: Topic;
+  readonly route: ReadonlyArray<Readonly<Record<string, unknown>>>;
+};
+
+export function captureSourceHealthInput<const Topic extends string>(
+  input: unknown,
+): Result.Result<CapturedSourceHealthInput<Topic>, unknown>;
+export function captureSourceHealthInput(
+  input: unknown,
+): Result.Result<CapturedSourceHealthInput<string>, unknown>;
+export function captureSourceHealthInput(
+  input: unknown,
+): Result.Result<CapturedSourceHealthInput<string>, unknown> {
+  return Result.try(() => {
+    const captured = snapshotViewServerQuery(input);
+    const keys = Reflect.ownKeys(captured);
+    const hasRoute = Object.hasOwn(captured, "routeBy");
+    const expectedKeys = hasRoute ? ["topic", "routeBy"] : ["topic"];
+    const route = captured["routeBy"];
+    const topic = captured["topic"];
+    if (
+      keys.length !== expectedKeys.length ||
+      keys.some((key) => !expectedKeys.some((expected) => expected === key)) ||
+      typeof topic !== "string" ||
+      (hasRoute && !isPlainRecord(route))
+    ) {
+      throw new TypeError(
+        "Source Health input must contain topic and leased routeBy only when required.",
+      );
+    }
+    return {
+      topic,
+      route: isPlainRecord(route) ? [route] : [],
+    };
+  });
+}

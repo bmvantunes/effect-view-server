@@ -562,6 +562,7 @@ describe("Source Adapter public type contracts", () => {
     expectTypeOf<
       SourceDefinitionRetryServices<typeof delegatedDefinition>
     >().toEqualTypeOf<RetryOnlyDependency>();
+    expectTypeOf<SourceDefinitionRetryServices<typeof materialized>>().toEqualTypeOf<never>();
     expectTypeOf<SourceDefinitionLifecycle<typeof materialized>>().toEqualTypeOf<"materialized">();
     expectTypeOf<SourceDefinitionLifecycle<typeof leased>>().toEqualTypeOf<"leased">();
     expectTypeOf<SourceDefinitionRouteFields<typeof leased>>().toEqualTypeOf<

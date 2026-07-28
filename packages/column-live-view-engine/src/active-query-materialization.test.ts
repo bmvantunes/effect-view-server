@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Option, Result, Schema } from "effect";
 import {
@@ -45,7 +46,7 @@ describe("column-live-view-engine Active Query materialization", () => {
       const store = new TopicStore(
         "projection-bind-frequency",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           score: Schema.Number,
         }),
         "id",
@@ -87,7 +88,7 @@ describe("column-live-view-engine Active Query materialization", () => {
       const target = new TopicStore(
         "projection-ownership-target",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           score: Schema.Number,
         }),
         "id",
@@ -96,7 +97,7 @@ describe("column-live-view-engine Active Query materialization", () => {
       const incompatible = new TopicStore(
         "projection-ownership-incompatible",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
           score: Schema.String,
         }),
         "id",
@@ -160,7 +161,7 @@ describe("column-live-view-engine Active Query materialization", () => {
       const store = new TopicStore(
         "materialized-registry-isolation",
         Schema.Struct({
-          id: Schema.String,
+          id: ViewServerId,
         }),
         "id",
         () => {},

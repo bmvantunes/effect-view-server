@@ -1,8 +1,8 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import {
+  ViewServerId,
   defineViewServerConfig,
-  grpc,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
   VIEW_SERVER_HEALTH_TOPIC,
 } from "@effect-view-server/config";
@@ -11,7 +11,6 @@ import type {
   ExactLiveQuery,
   ExactRawQuery,
   FilterExpression,
-  GrpcRuntimeClients,
   ViewServerHealth,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
@@ -26,12 +25,12 @@ import { stableQueryKeyForRowSchema } from "./index";
 import type { ViewServerLiveClient, ViewServerLiveSubscription } from "./index";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 
 const Position = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.Number,
 });
 
@@ -52,7 +51,7 @@ const sourceAdapter = SourceAdapter.make({
   leased: SourceDeclaration,
 });
 const SourceRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   shard: Schema.BigInt,
 });
@@ -91,16 +90,10 @@ type InvalidRawOrValidGroupedClientQuery =
       readonly aggregates: { readonly rowCount: { readonly aggFunc: "count" } };
     };
 
-declare const grpcRuntimeClients: GrpcRuntimeClients;
-declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
-
-const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
-
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
@@ -117,7 +110,6 @@ const sourceViewServer = defineViewServerConfig({
     },
     manual: {
       schema: SourceRow,
-      key: "id",
     },
   },
 });
@@ -126,114 +118,57 @@ const heterogeneousViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     positions: {
       schema: Position,
-      key: "id",
     },
   },
 });
 
 const leasedViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
   topics: {
-    orders: grpcTopicSources.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["id"],
-      request: ({ id }) => ({ id }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({
-        id: route.id,
-        price: 0,
-      }),
-    }),
+      source: sourceAdapter.leasedSource(["id"], { stream: "orders" }),
+    },
   },
 });
 
 const mixedSourceViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
   topics: {
-    orders: grpcTopicSources.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["id"],
-      request: ({ id }) => ({ id }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({
-        id: route.id,
-        price: 0,
-      }),
-    }),
+      source: sourceAdapter.leasedSource(["id"], { stream: "orders" }),
+    },
     positions: {
       schema: Order,
-      key: "id",
     },
   },
 });
 
 const mismatchedLeasedViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
   topics: {
-    orders: grpcTopicSources.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["id"],
-      request: ({ id }) => ({ id }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({ id: route.id, price: 0 }),
-    }),
-    positions: grpcTopicSources.leased({
+      source: sourceAdapter.leasedSource(["id"], { stream: "orders" }),
+    },
+    positions: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["price"],
-      request: ({ price }) => ({ price }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({ id: "position", price: route.price }),
-    }),
+      source: sourceAdapter.leasedSource(["price"], { stream: "positions" }),
+    },
   },
 });
 
 const identicalLeasedViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
   topics: {
-    orders: grpcTopicSources.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["id"],
-      request: ({ id }) => ({ id }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({ id: route.id, price: 0 }),
-    }),
-    positions: grpcTopicSources.leased({
+      source: sourceAdapter.leasedSource(["id"], { stream: "orders" }),
+    },
+    positions: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["id"],
-      request: ({ id }) => ({ id }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({ id: route.id, price: 0 }),
-    }),
+      source: sourceAdapter.leasedSource(["id"], { stream: "positions" }),
+    },
   },
 });
 
@@ -253,51 +188,98 @@ declare const identicalLeasedTopic: "orders" | "positions";
 
 describe("client type contracts", () => {
   it("types exact Materialized and Leased Source Health diagnostics", () => {
-    const materialized = sourceClient.subscribeSourceHealth("all");
-    const leased = sourceClient.subscribeSourceHealth("routed", {
-      region: "eu",
-      shard: 7n,
+    const materialized = sourceClient.subscribeSourceHealth({ topic: "all" });
+    const leased = sourceClient.subscribeSourceHealth({
+      topic: "routed",
+      routeBy: {
+        region: "eu",
+        shard: 7n,
+      },
     });
     type MaterializedResult = Stream.Success<Effect.Success<typeof materialized>["events"]>;
     type LeasedResult = Stream.Success<Effect.Success<typeof leased>["events"]>;
+    type MaterializedDegraded = Extract<
+      MaterializedResult["status"],
+      { readonly _tag: "Degraded" }
+    >;
+    type MaterializedAdapterFailure = Extract<
+      MaterializedDegraded["latestRejection"]["failure"],
+      { readonly _tag: "AdapterFailure" }
+    >;
+    type LeasedActive = Extract<LeasedResult, { readonly _tag: "Active" }>;
+    type LeasedDegraded = Extract<LeasedActive["health"]["status"], { readonly _tag: "Degraded" }>;
+    type LeasedAdapterFailure = Extract<
+      LeasedDegraded["latestRejection"]["failure"],
+      { readonly _tag: "AdapterFailure" }
+    >;
     expectTypeOf<MaterializedResult["metrics"]["adapter"]["observed"]>().toEqualTypeOf<bigint>();
+    expectTypeOf<
+      MaterializedAdapterFailure["failure"]["_tag"]
+    >().toEqualTypeOf<"ClientTypeSourceFailure">();
+    expectTypeOf<MaterializedAdapterFailure["failure"]["message"]>().toEqualTypeOf<string>();
+    expectTypeOf<MaterializedDegraded["latestRejection"]["location"]>().toEqualTypeOf<{
+      readonly offset: bigint;
+    }>();
     expectTypeOf<LeasedResult["_tag"]>().toEqualTypeOf<"Inactive" | "Active">();
     expectTypeOf<LeasedResult["route"]>().toEqualTypeOf<{
       readonly region: string;
       readonly shard: bigint;
     }>();
+    expectTypeOf<
+      LeasedAdapterFailure["failure"]["_tag"]
+    >().toEqualTypeOf<"ClientTypeSourceFailure">();
+    expectTypeOf<LeasedAdapterFailure["failure"]["message"]>().toEqualTypeOf<string>();
+    expectTypeOf<LeasedDegraded["latestRejection"]["location"]>().toEqualTypeOf<{
+      readonly offset: bigint;
+    }>();
 
     // @ts-expect-error Source-free topics do not expose Source Health.
-    const invalidSourceFree = sourceClient.subscribeSourceHealth("manual");
+    const invalidSourceFree = sourceClient.subscribeSourceHealth({ topic: "manual" });
     // @ts-expect-error Leased diagnostics require one exact route.
-    const invalidMissingRoute = sourceClient.subscribeSourceHealth("routed");
-    const invalidPartialRoute = sourceClient.subscribeSourceHealth(
-      "routed",
+    const invalidMissingRoute = sourceClient.subscribeSourceHealth({ topic: "routed" });
+    const invalidPartialRoute = sourceClient.subscribeSourceHealth({
+      topic: "routed",
       // @ts-expect-error Leased diagnostics require every configured route field.
-      { region: "eu" },
-    );
-    const invalidMaterializedRoute = sourceClient.subscribeSourceHealth(
-      "all",
+      routeBy: { region: "eu" },
+    });
+    const invalidMaterializedRoute = sourceClient.subscribeSourceHealth({
       // @ts-expect-error Materialized diagnostics do not accept a route.
-      { region: "eu", shard: 7n },
-    );
-    const invalidExtraRoute = sourceClient.subscribeSourceHealth(
-      "routed",
-      // @ts-expect-error Leased routes reject extra fields.
-      { region: "eu", shard: 7n, extra: true },
-    );
-    const invalidRouteType = sourceClient.subscribeSourceHealth(
-      "routed",
-      // @ts-expect-error Leased routes preserve configured scalar types.
-      { region: "eu", shard: 7 },
-    );
-    const mixedLifecycleCalls = (mixedLifecycleTopic: "all" | "routed") => {
-      // @ts-expect-error a mixed-lifecycle Topic union must be narrowed before diagnostics.
-      const invalidMixedMissingRoute = sourceClient.subscribeSourceHealth(mixedLifecycleTopic);
-      // @ts-expect-error a mixed-lifecycle Topic union cannot select one route contract safely.
-      const invalidMixedRoute = sourceClient.subscribeSourceHealth(mixedLifecycleTopic, {
+      topic: "all",
+      // @ts-expect-error Materialized diagnostics do not accept a route.
+      routeBy: { region: "eu", shard: 7n },
+    });
+    const invalidExtraRoute = sourceClient.subscribeSourceHealth({
+      topic: "routed",
+      routeBy: {
         region: "eu",
         shard: 7n,
+        // @ts-expect-error Leased routes reject extra fields.
+        extra: true,
+      },
+    });
+    const invalidRouteType = sourceClient.subscribeSourceHealth({
+      topic: "routed",
+      // @ts-expect-error Leased routes preserve configured scalar types.
+      routeBy: { region: "eu", shard: 7 },
+    });
+    const invalidExtraInput = sourceClient.subscribeSourceHealth({
+      topic: "routed",
+      routeBy: { region: "eu", shard: 7n },
+      // @ts-expect-error Source Health input rejects extra top-level fields.
+      extra: true,
+    });
+    const mixedLifecycleCalls = (mixedLifecycleTopic: "all" | "routed") => {
+      // @ts-expect-error a mixed-lifecycle Topic union must be narrowed before diagnostics.
+      const invalidMixedMissingRoute = sourceClient.subscribeSourceHealth({
+        topic: mixedLifecycleTopic,
+      });
+      // @ts-expect-error a mixed-lifecycle Topic union cannot select one route contract safely.
+      const invalidMixedRoute = sourceClient.subscribeSourceHealth({
+        topic: mixedLifecycleTopic,
+        routeBy: {
+          region: "eu",
+          shard: 7n,
+        },
       });
       void invalidMixedMissingRoute;
       void invalidMixedRoute;
@@ -308,6 +290,7 @@ describe("client type contracts", () => {
     void invalidMaterializedRoute;
     void invalidExtraRoute;
     void invalidRouteType;
+    void invalidExtraInput;
     void mixedLifecycleCalls;
   });
 
@@ -566,7 +549,7 @@ describe("client type contracts", () => {
     >["operations"][number];
     expectTypeOf<SummarySnapshot["keys"]>().toEqualTypeOf<readonly ["summary"]>();
     expectTypeOf<SummarySnapshot["rows"][0]["id"]>().toEqualTypeOf<"summary">();
-    expectTypeOf<SummarySnapshot["rows"][0]["maxKafkaLag"]>().toEqualTypeOf<bigint | null>();
+    expectTypeOf<SummarySnapshot["rows"][0]>().not.toHaveProperty("maxKafkaLag");
     expectTypeOf<SummarySnapshot["totalRows"]>().toEqualTypeOf<1>();
     expectTypeOf<
       Extract<SummaryDeltaOperation, { readonly type: "insert" }>
@@ -583,7 +566,7 @@ describe("client type contracts", () => {
     >["operations"][number];
     expectTypeOf<DetailSnapshot["keys"][number]>().toEqualTypeOf<"orders">();
     expectTypeOf<DetailSnapshot["rows"][number]["id"]>().toEqualTypeOf<"orders">();
-    expectTypeOf<DetailSnapshot["rows"][number]["kafkaLag"]>().toEqualTypeOf<bigint | null>();
+    expectTypeOf<DetailSnapshot["rows"][number]>().not.toHaveProperty("kafkaLag");
     expectTypeOf<
       Extract<DetailDeltaOperation, { readonly type: "insert" }>
     >().toEqualTypeOf<never>();

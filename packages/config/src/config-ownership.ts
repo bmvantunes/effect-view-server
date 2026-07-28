@@ -5,17 +5,11 @@ type TopicRegistry = Record<
   string,
   {
     readonly schema: RowSchema;
-    readonly key?: string;
-    readonly kafkaSource?: object | undefined;
-    readonly grpcSource?: object | undefined;
     readonly source?: object | undefined;
-  }
+  } & Readonly<Record<string, unknown>>
 >;
 
-type GrpcClientRegistry = Record<string, object>;
-
 const schemaSnapshots = new WeakMap<RowSchema, RowSchema>();
-const sourceDefinitionsWithAuthoredKeys = new WeakSet<object>();
 
 export function snapshotViewServerRowSchema<const S extends RowSchema>(schema: S): S;
 export function snapshotViewServerRowSchema(schema: RowSchema): RowSchema {
@@ -45,9 +39,6 @@ export function snapshotViewServerRowSchema(schema: RowSchema): RowSchema {
   schemaSnapshots.set(snapshot, snapshot);
   return snapshot;
 }
-
-export const viewServerRowSchemasShareOrigin = (left: RowSchema, right: RowSchema): boolean =>
-  snapshotViewServerRowSchema(left) === snapshotViewServerRowSchema(right);
 
 const rowSchemaObjectsAst = (schema: RowSchema): SchemaAST.Objects | undefined => {
   if (SchemaAST.isObjects(schema.ast)) {
@@ -98,61 +89,14 @@ const snapshotOwnProperties = (value: object): { [key: PropertyKey]: unknown } =
   return copied;
 };
 
-export function snapshotViewServerGrpcClients<const Clients extends GrpcClientRegistry>(
-  clients: Clients,
-): Clients;
-export function snapshotViewServerGrpcClients(clients: GrpcClientRegistry): GrpcClientRegistry {
-  const snapshot: GrpcClientRegistry = {};
-  for (const clientName of Object.keys(clients)) {
-    Object.defineProperty(snapshot, clientName, {
-      configurable: false,
-      enumerable: true,
-      value: Object.freeze(snapshotOwnProperties(clients[clientName]!)),
-      writable: false,
-    });
-  }
-  return Object.freeze(snapshot);
-}
-
-const snapshotSource = (source: unknown): unknown => {
-  if (typeof source !== "object" || source === null) {
-    return source;
-  }
-  const copied = snapshotOwnProperties(source);
-  const routeBy = Object.hasOwn(copied, "routeBy") ? Reflect.get(copied, "routeBy") : undefined;
-  const regions = Object.hasOwn(copied, "regions") ? Reflect.get(copied, "regions") : undefined;
-  return Object.freeze({
-    ...copied,
-    ...(Array.isArray(routeBy) ? { routeBy: Object.freeze([...routeBy]) } : {}),
-    ...(Array.isArray(regions) ? { regions: Object.freeze([...regions]) } : {}),
-  });
-};
-
 const snapshotTopicDefinition = (definition: TopicRegistry[string]) => {
   const copied = snapshotOwnProperties(definition);
   const schema = copied["schema"];
-  const kafkaSource = copied["kafkaSource"];
-  const grpcSource = copied["grpcSource"];
-  const source = copied["source"];
-  const snapshot = Object.freeze({
+  return Object.freeze({
     ...copied,
-    ...(source === undefined ? {} : { key: "id", source }),
     ...(isViewServerRowSchema(schema) ? { schema: snapshotViewServerRowSchema(schema) } : {}),
-    ...(!Object.hasOwn(copied, "kafkaSource") || kafkaSource === undefined
-      ? {}
-      : { kafkaSource: snapshotSource(kafkaSource) }),
-    ...(!Object.hasOwn(copied, "grpcSource") || grpcSource === undefined
-      ? {}
-      : { grpcSource: snapshotSource(grpcSource) }),
   });
-  if (source !== undefined && Object.hasOwn(copied, "key")) {
-    sourceDefinitionsWithAuthoredKeys.add(snapshot);
-  }
-  return snapshot;
 };
-
-export const viewServerSourceDefinitionHadAuthoredKey = (definition: object): boolean =>
-  sourceDefinitionsWithAuthoredKeys.has(definition);
 
 export function snapshotViewServerTopics<const Topics extends TopicRegistry>(
   topics: Topics,

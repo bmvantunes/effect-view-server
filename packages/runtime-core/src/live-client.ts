@@ -1,7 +1,6 @@
 import type {
   ColumnLiveViewEngineError,
   ColumnLiveViewSubscription,
-  DecodableTopicDefinitions,
 } from "@effect-view-server/column-live-view-engine";
 import type {
   ColumnLiveViewEngineInternal,
@@ -12,6 +11,7 @@ import type {
   ViewServerSourceHealthSubscriber,
 } from "@effect-view-server/client";
 import type {
+  TopicDefinitions,
   ViewServerTopicConfig,
   ViewServerRuntimeError,
   ViewServerTransportError,
@@ -69,7 +69,7 @@ export const acquireRuntimeCoreLiveSubscription = Effect.fn(
 );
 
 export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.liveClient.make")(
-  <const Topics extends DecodableTopicDefinitions>(
+  <const Topics extends TopicDefinitions>(
     config: ViewServerTopicConfig<Topics>,
     engine: ColumnLiveViewEngineInternal<Topics>,
     pushedHealth: RuntimeCorePushedHealthHub<Topics>,
@@ -83,9 +83,10 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
       const subscribeMissingSourceHealth: ViewServerSourceHealthSubscriber<
         Topics,
         ViewServerRuntimeError
-      > = (...arguments_) => {
-        const [topic] = arguments_;
-        return Effect.fail(invalidRuntimeQueryError(topic, `Topic ${topic} has no Source.`));
+      > = (input) => {
+        return Effect.fail(
+          invalidRuntimeQueryError(input.topic, `Topic ${input.topic} has no Source.`),
+        );
       };
       const sources: Pick<
         RuntimeCoreSourceManager<Topics>,
@@ -298,7 +299,7 @@ export const makeRuntimeCoreLiveClientModule = Effect.fn("ViewServerRuntimeCore.
         subscribeProtocolQuery: subscribeRuntimeQuery,
       };
       const subscribeSourceHealth: ViewServerRuntimeCoreLiveClientModule<Topics>["liveClient"]["subscribeSourceHealth"] =
-        (...arguments_) => sources.subscribeSourceHealth(...arguments_);
+        sources.subscribeSourceHealth;
       const liveClient = {
         subscribe,
         subscribeRuntime,

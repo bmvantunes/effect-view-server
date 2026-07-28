@@ -4,15 +4,8 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const runtimePackage = new URL("../packages/runtime/", import.meta.url);
 const runtimeDirectory = fileURLToPath(runtimePackage);
-const kafkaBootstrapServers =
-  process.env.VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS ?? "localhost:9092";
-const londonKafkaBootstrapServers =
-  process.env.VIEW_SERVER_KAFKA_LONDON_BOOTSTRAP_SERVERS ?? "localhost:9094";
 const testArguments = process.argv.slice(2);
 const vitestArguments = testArguments.filter((argument) => argument !== "--");
-const testFilters = vitestArguments.filter(
-  (argument) => argument !== "--" && !argument.startsWith("-") && argument.includes(".test"),
-);
 const hasCoverageFlag = testArguments.some(
   (argument) =>
     argument === "--coverage" ||
@@ -20,12 +13,17 @@ const hasCoverageFlag = testArguments.some(
     argument === "--no-coverage",
 );
 const shouldCollectCoverage = vitestArguments.length === 0 && !hasCoverageFlag;
-const shouldStartKafka =
-  testFilters.length === 0 ||
-  testFilters.some(
-    (argument) =>
-      argument.includes("kafka-ingress.test") && !argument.includes("kafka-ingress.internal.test"),
-  );
+const buildDirectories = [
+  new URL("../packages/effect-utils/", import.meta.url),
+  new URL("../packages/source-adapter/", import.meta.url),
+  new URL("../packages/config/", import.meta.url),
+  new URL("../packages/source-adapter-testing/", import.meta.url),
+  new URL("../packages/protocol/", import.meta.url),
+  new URL("../packages/column-live-view-engine/", import.meta.url),
+  new URL("../packages/client/", import.meta.url),
+  new URL("../packages/runtime-core/", import.meta.url),
+  new URL("../packages/server/", import.meta.url),
+];
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
@@ -37,56 +35,13 @@ const run = (command, args, options = {}) => {
   return result.status ?? 1;
 };
 
-const vpTransitiveBuild = (packageTask) =>
-  run("vp", ["run", "--concurrency-limit", "1", "-t", packageTask], {
-    cwd: runtimeDirectory,
-  });
+let exitCode = 0;
 
-let didCleanup = false;
-const cleanup = () => {
-  if (!shouldStartKafka || didCleanup) {
-    return 0;
+for (const directory of buildDirectories) {
+  exitCode = run("vp", ["pack"], { cwd: fileURLToPath(directory) });
+  if (exitCode !== 0) {
+    break;
   }
-  didCleanup = true;
-  return run("docker", ["compose", "-f", "compose.yaml", "down"]);
-};
-
-process.once("SIGINT", () => {
-  cleanup();
-  process.exit(130);
-});
-process.once("SIGTERM", () => {
-  cleanup();
-  process.exit(143);
-});
-
-let exitCode = shouldStartKafka
-  ? run("docker", [
-      "compose",
-      "-f",
-      "compose.yaml",
-      "up",
-      "-d",
-      "--wait",
-      "kafka",
-      "kafka-london",
-    ])
-  : 0;
-
-if (exitCode === 0) {
-  exitCode = vpTransitiveBuild("@effect-view-server/config#build");
-}
-
-if (exitCode === 0) {
-  exitCode = vpTransitiveBuild("@effect-view-server/effect-utils#build");
-}
-
-if (exitCode === 0) {
-  exitCode = vpTransitiveBuild("@effect-view-server/runtime-core#build");
-}
-
-if (exitCode === 0) {
-  exitCode = vpTransitiveBuild("@effect-view-server/server#build");
 }
 
 if (exitCode === 0) {
@@ -101,14 +56,8 @@ if (exitCode === 0) {
     ],
     {
       cwd: runtimeDirectory,
-      env: {
-        ...process.env,
-        VIEW_SERVER_KAFKA_BOOTSTRAP_SERVERS: kafkaBootstrapServers,
-        VIEW_SERVER_KAFKA_LONDON_BOOTSTRAP_SERVERS: londonKafkaBootstrapServers,
-      },
     },
   );
 }
 
-const cleanupExitCode = cleanup();
-process.exit(exitCode === 0 ? cleanupExitCode : exitCode);
+process.exit(exitCode);

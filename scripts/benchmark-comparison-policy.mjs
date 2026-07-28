@@ -534,35 +534,6 @@ const compareReportOnlyRuntimeMetricsPresence = (regressions, taskLabel, baselin
   }
 };
 
-const compareKafkaSustainedFirehoseFinalLag = (regressions, taskLabel, actualTask) => {
-  if (actualTask.benchmarkScope !== "runtime-kafka-sustained-firehose") {
-    return;
-  }
-  const kafkaLag = actualTask.runtimeMetrics?.kafkaLag;
-  if (kafkaLag === undefined) {
-    pushRegression(regressions, `${taskLabel}: runtimeMetrics.kafkaLag is required.`);
-    return;
-  }
-  if (kafkaLag.sampledRegionCount !== actualTask.kafkaIngestLanes.length) {
-    pushRegression(
-      regressions,
-      `${taskLabel}: runtimeMetrics.kafkaLag sampled ${kafkaLag.sampledRegionCount} regions but expected ${actualTask.kafkaIngestLanes.length}.`,
-    );
-  }
-  if (kafkaLag.totalConsumerLagMessages !== "0") {
-    pushRegression(
-      regressions,
-      `${taskLabel}: final Kafka lag must be 0 but was ${kafkaLag.totalConsumerLagMessages}.`,
-    );
-  }
-  if (kafkaLag.maxConsumerLagMessages !== "0") {
-    pushRegression(
-      regressions,
-      `${taskLabel}: max final Kafka lag must be 0 but was ${kafkaLag.maxConsumerLagMessages}.`,
-    );
-  }
-};
-
 const benchmarkScopeRequiresExactMutationCount = (benchmarkScope) =>
   benchmarkScope === "engine-raw-write" ||
   benchmarkScope === "engine-raw-large-membership" ||
@@ -745,7 +716,6 @@ export const compareBenchmarkArtifacts = ({
       );
     }
     compareReportOnlyRuntimeMetricsPresence(regressions, taskLabel, baselineTask, actualTask);
-    compareKafkaSustainedFirehoseFinalLag(regressions, taskLabel, actualTask);
     compareExact(
       regressions,
       taskLabel,

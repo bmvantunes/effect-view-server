@@ -1,22 +1,57 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ViewServerId,
   defineViewServerConfig,
-  kafka,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Effect, Schema } from "effect";
-import {
-  collectSourceOwnershipConflicts,
-  makeSourceOwnershipPolicy,
-} from "./source-ownership-policy";
+import { makeSourceOwnershipPolicy } from "./source-ownership-policy";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
-  status: Schema.String,
+});
+
+const Failure = Schema.TaggedStruct("OwnershipSourceFailure", {
+  message: Schema.String,
+});
+const Metrics = Schema.Struct({
+  observed: Schema.BigInt,
+});
+const Location = Schema.Struct({
+  offset: Schema.BigInt,
+});
+const adapter = SourceAdapter.make({
+  identity: { name: "ownership-source" },
+  failure: Failure,
+  materialized: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: {
+    metrics: Metrics,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+});
+
+const viewServer = defineViewServerConfig({
+  topics: {
+    externalOrders: {
+      schema: Row,
+    },
+    leasedOrders: {
+      schema: Row,
+      source: adapter.leasedSource(["region"], undefined),
+    },
+    materializedOrders: {
+      schema: Row,
+      source: adapter.materializedSource(undefined),
+    },
+  },
 });
 
 const sourceOwnedMutationError = (topic: string): ViewServerRuntimeError => ({
@@ -34,29 +69,6 @@ const sourceOwnedResetError: ViewServerRuntimeError = {
     "Source-owned topics do not support direct runtime reset; close the runtime or reset source-free topics through their owner.",
 };
 
-const runtimeCoreLeasedAccessError = (topic: string): ViewServerRuntimeError => ({
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  topic,
-  message:
-    "Leased gRPC topics do not support direct runtime mutations, one-shot snapshots, or runtime-core subscriptions; use the runtime gRPC lease manager so it owns lease lifecycle.",
-});
-
-const managedRuntimeLeasedAccessError = (topic: string): ViewServerRuntimeError => ({
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  topic,
-  message:
-    "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
-});
-
-const managedRuntimeLeasedResetError: ViewServerRuntimeError = {
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  message:
-    "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
-};
-
 const sourceLeasedReadError = (topic: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
   code: "UnsupportedQuery",
@@ -65,92 +77,14 @@ const sourceLeasedReadError = (topic: string): ViewServerRuntimeError => ({
     "Leased Source topics do not support one-shot snapshots; use a live subscription so Runtime Core owns the source lease lifecycle.",
 });
 
-const sourceFreeViewServer = defineViewServerConfig({
-  topics: {
-    externalOrders: {
-      schema: Row,
-      key: "id",
-    },
-  },
-});
-
-const sourceOwnedViewServer = defineViewServerConfig({
-  kafka: {
-    usa: "localhost:9092",
-  },
-  topics: {
-    externalOrders: {
-      schema: Row,
-      key: "id",
-    },
-    kafkaOrders: {
-      schema: Row,
-      key: "id",
-      kafkaSource: kafka.source({
-        topic: "orders-source",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Row)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
-        map: ({ value }) => ({
-          price: value.price,
-          region: value.region,
-          status: value.status,
-        }),
-      }),
-    },
-    leasedOrders: {
-      schema: Row,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region"],
-      }),
-    },
-    materializedOrders: {
-      schema: Row,
-      key: "id",
-      grpcSource: grpcSourceMarkers.materialized(),
-    },
-  },
-});
-
-const SourceFailure = Schema.TaggedStruct("OwnershipSourceFailure", {
-  message: Schema.String,
-});
-const SourceMetrics = Schema.Struct({
-  observed: Schema.BigInt,
-});
-const SourceLocation = Schema.Struct({
-  offset: Schema.BigInt,
-});
-const sourceAdapter = SourceAdapter.make({
-  identity: { name: "ownership-source" },
-  failure: SourceFailure,
-  materialized: undefined,
-  leased: {
-    metrics: SourceMetrics,
-    rejectionLocation: SourceLocation,
-    definitionOptions: SourceAdapter.definitionOptions<void>(),
-  },
-});
-const canonicalSourceViewServer = defineViewServerConfig({
-  topics: {
-    leasedOrders: {
-      schema: Row,
-      source: sourceAdapter.leasedSource(["region"], undefined),
-    },
-  },
-});
-
 describe("SourceOwnershipPolicy", () => {
-  it("classifies source-owned and leased topics behind one Interface", () => {
-    const policy = makeSourceOwnershipPolicy(sourceOwnedViewServer);
+  it("classifies canonical source-owned and leased topics behind one Interface", () => {
+    const policy = makeSourceOwnershipPolicy(viewServer);
 
     expect([...policy.topics]).toStrictEqual([
       [
         "externalOrders",
         {
-          grpcLeased: false,
           owners: [],
           sourceLeased: false,
           sourceOwned: false,
@@ -158,21 +92,10 @@ describe("SourceOwnershipPolicy", () => {
         },
       ],
       [
-        "kafkaOrders",
-        {
-          grpcLeased: false,
-          owners: [{ _tag: "kafka" }],
-          sourceLeased: false,
-          sourceOwned: true,
-          topic: "kafkaOrders",
-        },
-      ],
-      [
         "leasedOrders",
         {
-          grpcLeased: true,
-          owners: [{ _tag: "grpc", lifecycle: "leased" }],
-          sourceLeased: false,
+          owners: [{ _tag: "source", lifecycle: "leased" }],
+          sourceLeased: true,
           sourceOwned: true,
           topic: "leasedOrders",
         },
@@ -180,327 +103,84 @@ describe("SourceOwnershipPolicy", () => {
       [
         "materializedOrders",
         {
-          grpcLeased: false,
-          owners: [{ _tag: "grpc", lifecycle: "materialized" }],
+          owners: [{ _tag: "source", lifecycle: "materialized" }],
           sourceLeased: false,
           sourceOwned: true,
           topic: "materializedOrders",
         },
       ],
     ]);
-    expect([...policy.sourceOwnedTopics]).toStrictEqual([
-      "kafkaOrders",
-      "leasedOrders",
-      "materializedOrders",
-    ]);
-    expect([...policy.grpcLeasedTopics]).toStrictEqual(["leasedOrders"]);
-    expect(policy.hasSourceOwnedTopics).toStrictEqual(true);
-    expect(policy.isSourceOwnedTopic("externalOrders")).toStrictEqual(false);
-    expect(policy.isSourceOwnedTopic("kafkaOrders")).toStrictEqual(true);
-    expect(policy.isSourceOwnedTopic("materializedOrders")).toStrictEqual(true);
-    expect(policy.isGrpcLeasedTopic("leasedOrders")).toStrictEqual(true);
-    expect(policy.isGrpcLeasedTopic("kafkaOrders")).toStrictEqual(false);
-    expect(policy.isLeasedTopic("leasedOrders")).toStrictEqual(true);
-    expect(policy.isLeasedTopic("materializedOrders")).toStrictEqual(false);
+    expect([...policy.leasedTopics]).toStrictEqual(["leasedOrders"]);
+    expect([...policy.sourceOwnedTopics]).toStrictEqual(["leasedOrders", "materializedOrders"]);
+    expect(policy.isLeasedTopic("leasedOrders")).toBe(true);
+    expect(policy.isLeasedTopic("materializedOrders")).toBe(false);
+    expect(policy.isSourceOwnedTopic("materializedOrders")).toBe(true);
+    expect(policy.isSourceOwnedTopic("externalOrders")).toBe(false);
+    expect(policy.hasSourceOwnedTopics).toBe(true);
   });
 
-  it.effect("allows direct public mutations, reads, and reset for source-free topics", () =>
+  it.effect("allows every operation for source-free topics", () =>
     Effect.gen(function* () {
-      const policy = makeSourceOwnershipPolicy(sourceFreeViewServer);
+      const sourceFree = defineViewServerConfig({
+        topics: {
+          externalOrders: {
+            schema: Row,
+          },
+        },
+      });
+      const policy = makeSourceOwnershipPolicy(sourceFree);
 
       yield* policy.requirePublicMutationAllowed("externalOrders", "runtimeCore");
       yield* policy.requirePublicReadAllowed("externalOrders", "runtimeCore");
       yield* policy.requirePublicSubscriptionAllowed("externalOrders", "runtimeCore");
       yield* policy.requirePublicResetAllowed("runtimeCore");
 
-      expect([...policy.sourceOwnedTopics]).toStrictEqual([]);
-      expect([...policy.grpcLeasedTopics]).toStrictEqual([]);
-      expect(policy.hasSourceOwnedTopics).toStrictEqual(false);
+      expect(policy.hasSourceOwnedTopics).toBe(false);
+      expect(policy.publicMutationDecision("externalOrders", "managedRuntime")).toStrictEqual({
+        _tag: "allowed",
+      });
+      expect(policy.publicReadDecision("externalOrders", "managedRuntime")).toStrictEqual({
+        _tag: "allowed",
+      });
+      expect(policy.publicResetDecision("managedRuntime")).toStrictEqual({
+        _tag: "allowed",
+      });
     }),
   );
 
-  it.effect(
-    "rejects source-owned runtime-core mutations and reset while keeping reads allowed",
-    () =>
-      Effect.gen(function* () {
-        const policy = makeSourceOwnershipPolicy(sourceOwnedViewServer);
-
-        yield* policy.requirePublicReadAllowed("kafkaOrders", "runtimeCore");
-        yield* policy.requirePublicReadAllowed("materializedOrders", "runtimeCore");
-
-        const kafkaMutationError = yield* policy
-          .requirePublicMutationAllowed("kafkaOrders", "runtimeCore")
-          .pipe(Effect.flip);
-        const materializedMutationError = yield* policy
-          .requirePublicMutationAllowed("materializedOrders", "runtimeCore")
-          .pipe(Effect.flip);
-        const leasedMutationError = yield* policy
-          .requirePublicMutationAllowed("leasedOrders", "runtimeCore")
-          .pipe(Effect.flip);
-        const resetError = yield* policy.requirePublicResetAllowed("runtimeCore").pipe(Effect.flip);
-
-        expect(kafkaMutationError).toStrictEqual(sourceOwnedMutationError("kafkaOrders"));
-        expect(materializedMutationError).toStrictEqual(
-          sourceOwnedMutationError("materializedOrders"),
-        );
-        expect(leasedMutationError).toStrictEqual(sourceOwnedMutationError("leasedOrders"));
-        expect(resetError).toStrictEqual(sourceOwnedResetError);
-        expect(policy.publicMutationDecision("kafkaOrders", "runtimeCore")).toStrictEqual({
-          _tag: "rejected",
-          error: sourceOwnedMutationError("kafkaOrders"),
-        });
-        expect(policy.publicReadDecision("kafkaOrders", "runtimeCore")).toStrictEqual({
-          _tag: "allowed",
-        });
-        expect(policy.publicResetDecision("runtimeCore")).toStrictEqual({
-          _tag: "rejected",
-          error: sourceOwnedResetError,
-        });
-      }),
-  );
-
-  it.effect("rejects leased reads and managed-runtime mutations with leased lifecycle errors", () =>
+  it.effect("rejects direct source mutations, leased reads, and source-owned reset", () =>
     Effect.gen(function* () {
-      const policy = makeSourceOwnershipPolicy(sourceOwnedViewServer);
+      const policy = makeSourceOwnershipPolicy(viewServer);
 
-      const runtimeCoreReadError = yield* policy
-        .requirePublicReadAllowed("leasedOrders", "runtimeCore")
+      yield* policy.requirePublicReadAllowed("materializedOrders", "runtimeCore");
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "runtimeCore");
+      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
+      const mutationError = yield* policy
+        .requirePublicMutationAllowed("materializedOrders", "managedRuntime")
         .pipe(Effect.flip);
-      const managedReadError = yield* policy
+      const readError = yield* policy
         .requirePublicReadAllowed("leasedOrders", "managedRuntime")
         .pipe(Effect.flip);
-      const managedMutationError = yield* policy
-        .requirePublicMutationAllowed("leasedOrders", "managedRuntime")
-        .pipe(Effect.flip);
-      const managedResetError = yield* policy
-        .requirePublicResetAllowed("managedRuntime")
-        .pipe(Effect.flip);
+      const resetError = yield* policy.requirePublicResetAllowed("runtimeCore").pipe(Effect.flip);
 
-      expect(runtimeCoreReadError).toStrictEqual(runtimeCoreLeasedAccessError("leasedOrders"));
-      expect(managedReadError).toStrictEqual(managedRuntimeLeasedAccessError("leasedOrders"));
-      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
-      expect(managedMutationError).toStrictEqual(managedRuntimeLeasedAccessError("leasedOrders"));
-      expect(managedResetError).toStrictEqual(managedRuntimeLeasedResetError);
-      expect(policy.publicReadDecision("leasedOrders", "managedRuntime")).toStrictEqual({
+      expect(mutationError).toStrictEqual(sourceOwnedMutationError("materializedOrders"));
+      expect(readError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
+      expect(resetError).toStrictEqual(sourceOwnedResetError);
+      expect(policy.publicMutationDecision("leasedOrders", "runtimeCore")).toStrictEqual({
         _tag: "rejected",
-        error: managedRuntimeLeasedAccessError("leasedOrders"),
+        error: sourceOwnedMutationError("leasedOrders"),
+      });
+      expect(policy.publicReadDecision("leasedOrders", "runtimeCore")).toStrictEqual({
+        _tag: "rejected",
+        error: sourceLeasedReadError("leasedOrders"),
       });
       expect(policy.publicSubscriptionDecision("leasedOrders", "runtimeCore")).toStrictEqual({
-        _tag: "rejected",
-        error: runtimeCoreLeasedAccessError("leasedOrders"),
-      });
-      expect(policy.publicSubscriptionDecision("leasedOrders", "managedRuntime")).toStrictEqual({
         _tag: "allowed",
-      });
-      expect(policy.publicMutationDecision("leasedOrders", "managedRuntime")).toStrictEqual({
-        _tag: "rejected",
-        error: managedRuntimeLeasedAccessError("leasedOrders"),
       });
       expect(policy.publicResetDecision("managedRuntime")).toStrictEqual({
         _tag: "rejected",
-        error: managedRuntimeLeasedResetError,
+        error: sourceOwnedResetError,
       });
     }),
   );
-
-  it.effect("allows Runtime Core to manage canonical Source Adapter leased subscriptions", () =>
-    Effect.gen(function* () {
-      const policy = makeSourceOwnershipPolicy(canonicalSourceViewServer);
-
-      const directReadError = yield* policy
-        .requirePublicReadAllowed("leasedOrders", "runtimeCore")
-        .pipe(Effect.flip);
-      const managedReadError = yield* policy
-        .requirePublicReadAllowed("leasedOrders", "managedRuntime")
-        .pipe(Effect.flip);
-      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "runtimeCore");
-      yield* policy.requirePublicSubscriptionAllowed("leasedOrders", "managedRuntime");
-
-      expect(directReadError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
-      expect(managedReadError).toStrictEqual(sourceLeasedReadError("leasedOrders"));
-      expect(policy.publicSubscriptionDecision("leasedOrders", "runtimeCore")).toStrictEqual({
-        _tag: "allowed",
-      });
-      expect(policy.publicSubscriptionDecision("leasedOrders", "managedRuntime")).toStrictEqual({
-        _tag: "allowed",
-      });
-    }),
-  );
-
-  it.effect("preserves leased runtime protection for invalid declared leased metadata", () =>
-    Effect.gen(function* () {
-      const malformedLeasedOrders: {
-        schema: typeof Row;
-        key: "id";
-      } = {
-        schema: Row,
-        key: "id",
-      };
-      Object.defineProperty(malformedLeasedOrders, "grpcSource", {
-        value: {
-          _tag: "GrpcLeasedTopicSource",
-          kind: "grpc",
-          lifecycle: "leased",
-          routeBy: [],
-        },
-      });
-      // Config admission rejects empty leased routing, while the policy still defends its
-      // structural seam for callers that construct an internal view server directly.
-      const malformedLeasedViewServer = {
-        topics: {
-          malformedLeasedOrders,
-        },
-      };
-      const policy = makeSourceOwnershipPolicy(malformedLeasedViewServer);
-
-      const runtimeCoreReadError = yield* policy
-        .requirePublicReadAllowed("malformedLeasedOrders", "runtimeCore")
-        .pipe(Effect.flip);
-
-      expect([...policy.grpcLeasedTopics]).toStrictEqual(["malformedLeasedOrders"]);
-      expect([...policy.topics]).toStrictEqual([
-        [
-          "malformedLeasedOrders",
-          {
-            grpcLeased: true,
-            owners: [{ _tag: "grpc", lifecycle: "leased" }],
-            sourceLeased: false,
-            sourceOwned: true,
-            topic: "malformedLeasedOrders",
-          },
-        ],
-      ]);
-      expect(runtimeCoreReadError).toStrictEqual(
-        runtimeCoreLeasedAccessError("malformedLeasedOrders"),
-      );
-    }),
-  );
-
-  it("classifies malformed and conflicting source declarations without caller reflection", () => {
-    const topicDefinition = (): {
-      schema: typeof Row;
-      key: "id";
-    } => ({
-      schema: Row,
-      key: "id",
-    });
-    const malformedGrpcOrders = topicDefinition();
-    const primitiveGrpcOrders = topicDefinition();
-    const multiOwnedOrders = {
-      ...topicDefinition(),
-      kafkaSource: kafka.source({
-        topic: "multi-owned-orders-source",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Row)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
-        map: ({ value }) => ({
-          price: value.price,
-          region: value.region,
-          status: value.status,
-        }),
-      }),
-    };
-    Object.defineProperty(malformedGrpcOrders, "grpcSource", {
-      value: { kind: "grpc", lifecycle: "wat" },
-    });
-    Object.defineProperty(primitiveGrpcOrders, "grpcSource", {
-      value: "not-a-grpc-source",
-    });
-    Object.defineProperty(multiOwnedOrders, "grpcSource", {
-      value: grpcSourceMarkers.materialized(),
-    });
-    const malformedViewServer = defineViewServerConfig({
-      kafka: {
-        usa: "localhost:9092",
-      },
-      topics: {
-        malformedGrpcOrders,
-        primitiveGrpcOrders,
-      },
-    });
-    // Config admission rejects dual owners, while the policy still defends its structural seam.
-    const policy = makeSourceOwnershipPolicy({
-      topics: {
-        ...malformedViewServer.topics,
-        multiOwnedOrders,
-      },
-    });
-
-    expect([...policy.topics]).toStrictEqual([
-      [
-        "malformedGrpcOrders",
-        {
-          grpcLeased: false,
-          owners: [{ _tag: "grpc", lifecycle: "unknown" }],
-          sourceLeased: false,
-          sourceOwned: true,
-          topic: "malformedGrpcOrders",
-        },
-      ],
-      [
-        "multiOwnedOrders",
-        {
-          grpcLeased: false,
-          owners: [{ _tag: "kafka" }, { _tag: "grpc", lifecycle: "materialized" }],
-          sourceLeased: false,
-          sourceOwned: true,
-          topic: "multiOwnedOrders",
-        },
-      ],
-      [
-        "primitiveGrpcOrders",
-        {
-          grpcLeased: false,
-          owners: [{ _tag: "grpc", lifecycle: "unknown" }],
-          sourceLeased: false,
-          sourceOwned: true,
-          topic: "primitiveGrpcOrders",
-        },
-      ],
-    ]);
-  });
-
-  it("collects resolved source owner conflicts without runtime-specific errors", () => {
-    expect(
-      collectSourceOwnershipConflicts(
-        {
-          topics: {
-            "orders-source": {
-              viewServerTopic: "orders",
-            },
-            "positions-source": {
-              viewServerTopic: "positions",
-            },
-            "trades-source": {
-              viewServerTopic: "trades",
-            },
-          },
-        },
-        {
-          feeds: {
-            ordersFeed: {
-              topic: "orders",
-            },
-            positionsFeed: {
-              topic: "positions",
-            },
-          },
-        },
-      ),
-    ).toStrictEqual([
-      {
-        grpcFeed: "ordersFeed",
-        kafkaSource: "orders-source",
-        topic: "orders",
-      },
-      {
-        grpcFeed: "positionsFeed",
-        kafkaSource: "positions-source",
-        topic: "positions",
-      },
-    ]);
-    expect(collectSourceOwnershipConflicts(undefined, { feeds: {} })).toStrictEqual([]);
-    expect(collectSourceOwnershipConflicts({ topics: {} }, undefined)).toStrictEqual([]);
-  });
 });

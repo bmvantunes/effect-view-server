@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type ViewServerHealth,
   type ViewServerRuntimeError,
@@ -15,7 +16,6 @@ import { makeViewServerWebSocketServer } from "./index";
 import { makeViewServerRpcHandlers } from "./rpc-handlers";
 import {
   createServerTestRuntime,
-  kafkaStartFromHealth,
   makeRawRpcClient,
   serverHealthWithOrdersRowCount,
   viewServer,
@@ -49,7 +49,7 @@ const sourceViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         price: Schema.Number,
       }),
       source: sourceAdapter.leasedSource(["price"], { stream: "orders-by-price" }),
@@ -245,15 +245,12 @@ describe("Real View Server RPC health", () => {
           health: () =>
             Effect.succeed({
               ...baseHealth,
-              kafka: {
-                startFrom: kafkaStartFromHealth,
-                regions: {},
+              engine: {
+                ...baseHealth.engine,
                 topics: {
-                  source_orders: {
-                    status: "ready",
-                    sourceTopic: "source_orders",
-                    viewServerTopic: "missing",
-                    regions: {},
+                  ...baseHealth.engine.topics,
+                  missing: {
+                    ...baseHealth.engine.topics.orders,
                   },
                 },
               },

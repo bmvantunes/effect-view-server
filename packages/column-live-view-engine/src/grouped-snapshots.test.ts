@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type GroupedQuery } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type GroupedQuery,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { fromStringUnsafe } from "effect/BigDecimal";
 import { createColumnLiveViewEngine, InvalidQueryError, InvalidRowError } from "./index";
@@ -239,7 +243,7 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
   it.effect("evaluates grouped BigDecimal aggregate states", () =>
     Effect.gen(function* () {
       const Mixed = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         group: Schema.String,
         amount: Schema.BigDecimal,
         optionalQuantity: Schema.Union([Schema.BigInt, Schema.Undefined]),
@@ -248,7 +252,6 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
         topics: {
           mixed: {
             schema: Mixed,
-            key: "id",
           },
         },
       });
@@ -295,14 +298,13 @@ describe("ColumnLiveViewEngine grouped snapshots", () => {
   it.effect("rejects non-JSON grouped keys and groups plain records by value", () =>
     Effect.gen(function* () {
       const Payload = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         payload: Schema.ObjectKeyword,
       });
       const payloadViewServer = defineViewServerConfig({
         topics: {
           payloads: {
             schema: Payload,
-            key: "id",
           },
         },
       });

@@ -1,13 +1,22 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema, SchemaAST } from "effect";
-import { defineViewServerConfig, kafka, viewSchema, viewServerSchemaFieldMetadata } from "./index";
-import { snapshotViewServerTopics, viewServerRowSchemaFieldsMatchAst } from "./config-ownership";
-import { isKafkaTopicSourceDefinition, makeKafkaSourceTopicsForConfig } from "./internal";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  viewSchema,
+  viewServerSchemaFieldMetadata,
+} from "./index";
+import { viewServerRowSchemaFieldsMatchAst } from "./config-ownership";
 
 import { viewServer } from "../test-harness/live-query";
-import { Order, StructuredProfile } from "../test-harness/schemas";
+import { StructuredProfile } from "../test-harness/schemas";
 
 describe("Topic schema configuration", () => {
+  it("keeps canonical Topic Row IDs as plain strings at runtime", () => {
+    expect(Schema.decodeUnknownSync(ViewServerId)("order-1")).toBe("order-1");
+    expect(Schema.encodeSync(ViewServerId)("order-1")).toBe("order-1");
+  });
+
   it("derives schema field metadata for query validation", () => {
     expect(viewServerSchemaFieldMetadata(Schema.Number)).toStrictEqual({
       isNumeric: true,
@@ -147,8 +156,8 @@ describe("Topic schema configuration", () => {
     expect(
       viewServerSchemaFieldMetadata(
         Schema.Union([
-          Schema.Struct({ id: Schema.String }),
-          Schema.Struct({ id: Schema.String, name: Schema.String }),
+          Schema.Struct({ id: ViewServerId }),
+          Schema.Struct({ id: ViewServerId, name: Schema.String }),
         ]),
       ),
     ).toStrictEqual({
@@ -158,7 +167,7 @@ describe("Topic schema configuration", () => {
       isStructured: true,
       isStructuredObject: true,
     });
-    expect(viewServerSchemaFieldMetadata(Schema.Struct({ id: Schema.String }))).toStrictEqual({
+    expect(viewServerSchemaFieldMetadata(Schema.Struct({ id: ViewServerId }))).toStrictEqual({
       isNumeric: false,
       isPureBigInt: false,
       isString: false,
@@ -183,17 +192,15 @@ describe("Topic schema configuration", () => {
 
   it("snapshots caller-owned config state while preserving Class construction", () => {
     class OwnedProfile extends Schema.Class<OwnedProfile>("OwnedProfile")({
-      id: Schema.String,
+      id: ViewServerId,
       code: Schema.String,
     }) {}
     viewSchema.admitClass(OwnedProfile);
 
     const topic: {
       schema: typeof OwnedProfile;
-      key: "id" | "code";
     } = {
       schema: OwnedProfile,
-      key: "id",
     };
     const topics = { profiles: topic };
     const input = { topics };
@@ -218,36 +225,14 @@ describe("Topic schema configuration", () => {
     expect(Object.isFrozen(OwnedProfile)).toBe(false);
     expect(Object.isFrozen(originalFields)).toBe(false);
 
-    const regions = ["usa"];
-    const routeBy = ["id"];
-    const sourceTopics = {
-      profiles: {
-        schema: OwnedProfile,
-        key: "id",
-        kafkaSource: { regions },
-        grpcSource: { routeBy },
-      },
-    };
-    const sourceSnapshot = snapshotViewServerTopics(sourceTopics);
-
-    expect(Object.isFrozen(sourceSnapshot.profiles.kafkaSource)).toBe(true);
-    expect(Object.isFrozen(sourceSnapshot.profiles.kafkaSource.regions)).toBe(true);
-    expect(Object.isFrozen(sourceSnapshot.profiles.grpcSource)).toBe(true);
-    expect(Object.isFrozen(sourceSnapshot.profiles.grpcSource.routeBy)).toBe(true);
-    expect(Object.isFrozen(sourceTopics.profiles.kafkaSource)).toBe(false);
-    expect(Object.isFrozen(sourceTopics.profiles.grpcSource)).toBe(false);
-    expect(Object.isFrozen(regions)).toBe(false);
-    expect(Object.isFrozen(routeBy)).toBe(false);
-
-    topic.key = "code";
     Object.defineProperty(topics, "secondary", {
       configurable: true,
       enumerable: true,
-      value: { schema: OwnedProfile, key: "id" },
+      value: { schema: OwnedProfile },
     });
     Object.defineProperty(OwnedProfile, "ast", {
       configurable: true,
-      value: Schema.Struct({ id: Schema.String, code: Schema.Number }).ast,
+      value: Schema.Struct({ id: ViewServerId, code: Schema.Number }).ast,
     });
     Object.defineProperty(originalFields, "code", {
       configurable: true,
@@ -255,15 +240,10 @@ describe("Topic schema configuration", () => {
       value: Schema.Number,
       writable: true,
     });
-    regions.push("london");
-    routeBy.push("code");
 
-    expect(config.topics.profiles.key).toBe("id");
     expect(Object.keys(config.topics)).toStrictEqual(["profiles"]);
     expect(config.topics.profiles.schema.ast).toBe(originalAst);
     expect(config.topics.profiles.schema.fields.code).toBe(Schema.String);
-    expect(sourceSnapshot.profiles.kafkaSource.regions).toStrictEqual(["usa"]);
-    expect(sourceSnapshot.profiles.grpcSource.routeBy).toStrictEqual(["id"]);
     expect(Reflect.set(config.topics.profiles.schema, "extra", true)).toBe(false);
     expect(Reflect.defineProperty(config.topics.profiles.schema, "extra", { value: true })).toBe(
       false,
@@ -287,7 +267,7 @@ describe("Topic schema configuration", () => {
     const duplicateAst = new SchemaAST.Objects(duplicateProperties, []);
     duplicateProperties.push(new SchemaAST.PropertySignature("id", Schema.String.ast));
     class Profile extends Schema.Class<Profile>("MalformedProfile")({
-      id: Schema.String,
+      id: ViewServerId,
     }) {}
     viewSchema.admitClass(Profile);
     const missingTypeParameter = new Proxy(Profile.ast, {
@@ -295,7 +275,7 @@ describe("Topic schema configuration", () => {
         return property === "typeParameters" ? [undefined] : Reflect.get(target, property, target);
       },
     });
-    const missingField = Schema.Struct({ id: Schema.String });
+    const missingField = Schema.Struct({ id: ViewServerId });
     expect(Reflect.deleteProperty(missingField.fields, "id")).toBe(true);
 
     expect([
@@ -306,101 +286,15 @@ describe("Topic schema configuration", () => {
       // @ts-expect-error hostile callers can supply symbol field metadata.
       viewServerRowSchemaFieldsMatchAst({ ast: symbolAst, fields: {} }),
       // @ts-expect-error hostile callers can supply duplicate AST fields.
-      viewServerRowSchemaFieldsMatchAst({ ast: duplicateAst, fields: { id: Schema.String } }),
+      viewServerRowSchemaFieldsMatchAst({ ast: duplicateAst, fields: { id: ViewServerId } }),
       // @ts-expect-error hostile callers can supply malformed declarations.
       viewServerRowSchemaFieldsMatchAst({ ast: missingTypeParameter, fields: {} }),
       viewServerRowSchemaFieldsMatchAst(missingField),
     ]).toStrictEqual([false, false, false, false, false, false]);
   });
 
-  it("does not expose executable React or runtime placeholders from config", () => {
-    expect(Object.keys(viewServer)).toStrictEqual(["topics", "defineRuntimeOptions"]);
-    expect(makeKafkaSourceTopicsForConfig(viewServer)).toStrictEqual([]);
-    expect(isKafkaTopicSourceDefinition({})).toBe(false);
-    expect(
-      isKafkaTopicSourceDefinition({
-        topic: "orders",
-        regions: [],
-        value: kafka.json(() => Schema.toCodecJson(Order)),
-        rowKey: () => "order-1",
-        map: () => ({
-          id: "order-1",
-          customerId: "customer-1",
-          status: "open",
-          price: 1,
-          region: "usa",
-          updatedAt: 1,
-        }),
-      }),
-    ).toBe(false);
-    expect(
-      isKafkaTopicSourceDefinition({
-        topic: "orders",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Order)),
-        map: () => ({
-          id: "order-1",
-          customerId: "customer-1",
-          status: "open",
-          price: 1,
-          region: "usa",
-          updatedAt: 1,
-        }),
-      }),
-    ).toBe(false);
-    expect(
-      isKafkaTopicSourceDefinition({
-        topic: "orders",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Order)),
-        key: undefined,
-        rowKey: () => "order-1",
-        map: () => ({
-          id: "order-1",
-          customerId: "customer-1",
-          status: "open",
-          price: 1,
-          region: "usa",
-          updatedAt: 1,
-        }),
-      }),
-    ).toBe(false);
-    const extraKeySource = kafka.source({
-      topic: "orders",
-      regions: ["usa"],
-      value: kafka.json(() => Schema.toCodecJson(Order)),
-      rowKey: ({ key }) => key,
-      map: () => ({
-        id: "order-1",
-        customerId: "customer-1",
-        status: "open",
-        price: 1,
-        region: "usa",
-        updatedAt: 1,
-      }),
-    });
-    Object.defineProperty(extraKeySource, "extra", {
-      value: true,
-    });
-    expect(isKafkaTopicSourceDefinition(extraKeySource)).toBe(false);
-
-    const inheritedKeySource = Object.create({
-      key: kafka.bytes(),
-    });
-    Object.assign(inheritedKeySource, {
-      topic: "orders",
-      regions: ["usa"],
-      value: kafka.json(() => Schema.toCodecJson(Order)),
-      rowKey: () => "order-1",
-      map: () => ({
-        id: "order-1",
-        customerId: "customer-1",
-        status: "open",
-        price: 1,
-        region: "usa",
-        updatedAt: 1,
-      }),
-    });
-    expect(isKafkaTopicSourceDefinition(inheritedKeySource)).toBe(false);
+  it("exposes only the canonical authored Topic tree", () => {
+    expect(Object.keys(viewServer)).toStrictEqual(["topics"]);
+    expect(Object.keys(viewServer.topics.orders)).toStrictEqual(["schema"]);
   });
 });

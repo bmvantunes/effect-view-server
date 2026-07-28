@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import {
   Deferred,
@@ -30,7 +30,7 @@ import {
 } from "./server";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -393,7 +393,7 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const starting = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Starting"),
@@ -518,7 +518,7 @@ describe("Kafka Source Adapter Server", () => {
           usCommits: [1n, 2n],
         });
 
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         const health = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
         );
@@ -777,7 +777,7 @@ describe("Kafka Source Adapter Server", () => {
       );
       yield* eu.awaitAcquisitions(1);
       const latestRejection = Effect.fn("KafkaSourceAdapter.test.namedRejection")(function* () {
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         const health = Option.getOrThrow(
           yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
         );
@@ -1273,7 +1273,9 @@ describe("Kafka Source Adapter Server", () => {
         yield* eu.awaitAcquisitions(1);
         const currentRejection = Effect.fn("KafkaSourceAdapter.test.rejection.current")(
           function* () {
-            const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+            const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+              topic: "orders",
+            });
             const health = Option.getOrThrow(
               yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
             );
@@ -1651,7 +1653,7 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       yield* eu.awaitAcquisitions(1);
       yield* eu.offer({
         key: "key-die",
@@ -1713,7 +1715,7 @@ describe("Kafka Source Adapter Server", () => {
             }),
           ),
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         const exhausted = Option.getOrThrow(
           yield* diagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1776,8 +1778,9 @@ describe("Kafka Source Adapter Server", () => {
             }),
           ),
         );
-        const fallbackDiagnostics =
-          yield* fallbackRuntime.liveClient.subscribeSourceHealth("orders");
+        const fallbackDiagnostics = yield* fallbackRuntime.liveClient.subscribeSourceHealth({
+          topic: "orders",
+        });
         const fallbackExhausted = Option.getOrThrow(
           yield* fallbackDiagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -1925,7 +1928,7 @@ describe("Kafka Source Adapter Server", () => {
             }),
           ),
         );
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
         const exhausted = Option.getOrThrow(
           yield* diagnostics.events.pipe(
             Stream.filter((health) => health.status._tag === "Exhausted"),
@@ -2423,7 +2426,7 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       yield* TestClock.adjust("1 second");
       const health = Option.getOrThrow(
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -2454,7 +2457,9 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       );
-      const fallbackDiagnostics = yield* fallbackRuntime.liveClient.subscribeSourceHealth("orders");
+      const fallbackDiagnostics = yield* fallbackRuntime.liveClient.subscribeSourceHealth({
+        topic: "orders",
+      });
       yield* TestClock.adjust("1 second");
       const fallbackHealth = Option.getOrThrow(
         yield* fallbackDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
@@ -2518,7 +2523,7 @@ describe("Kafka Source Adapter Server", () => {
           }),
         ),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("orders");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "orders" });
       const exhausted = Option.getOrThrow(
         yield* diagnostics.events.pipe(
           Stream.filter((health) => health.status._tag === "Exhausted"),

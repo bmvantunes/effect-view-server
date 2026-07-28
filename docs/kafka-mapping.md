@@ -1,163 +1,85 @@
 # Kafka Mapping
 
-Kafka source topics are configured from the typed View Server config. The
-`rowKey` function receives typed decoded Kafka key metadata and defines the
-View Server row identity. The mapping function receives typed decoded Kafka
-key/value data plus that row key and must return the target View Server topic
-row without the configured key field. The runtime injects the configured key
-field from `rowKey`, so Kafka tombstones can delete the same source-owned row
-without decoding a value.
+Kafka is an ordinary Materialized Source Adapter.
 
 ```ts
-import { Config, Schema } from "effect";
-import { NodeRuntime } from "@effect/platform-node";
-import { defineViewServerConfig, kafka } from "effect-view-server/config";
-import { runViewServerRuntime } from "effect-view-server/runtime";
-import { KafkaTrade, Order, Trade } from "./schemas";
-import { OrderValueSchema } from "./generated/orders";
+import { Schema } from "effect";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
+import { kafka } from "effect-view-server/kafka/contract";
 
-const kafkaRegions = {
-  usa: Config.string("KAFKA_USA_BOOTSTRAP"),
-  london: Config.string("KAFKA_LONDON_BOOTSTRAP"),
-};
+const IncomingTrade = Schema.Struct({
+  symbol: Schema.String,
+  quantity: Schema.Number,
+});
+const Trade = Schema.Struct({
+  id: ViewServerId,
+  symbol: Schema.String,
+  quantity: Schema.Number,
+  region: Schema.String,
+});
 
 export const viewServer = defineViewServerConfig({
-  kafka: kafkaRegions,
   topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      kafkaSource: kafka.source({
-        topic: "sourceOrdersUsa",
-        regions: ["usa"],
-        value: kafka.protobuf(OrderValueSchema),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
-        map: ({ value, region }) => ({
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region,
-          updatedAt: value.updatedAt,
-        }),
-      }),
-    },
     trades: {
       schema: Trade,
-      key: "id",
-      kafkaSource: kafka.source({
-        topic: "sourceTradesLondon",
-        regions: ["london"],
-        value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
+      source: kafka.source({
+        topic: "trades.v1",
+        regions: ["eu", "us"],
+        key: kafka.string(),
+        value: kafka.json(() => Schema.toCodecJson(IncomingTrade)),
+        localRowKey: ({ key }) => key,
         map: ({ value, region }) => ({
           symbol: value.symbol,
-          side: value.side,
           quantity: value.quantity,
           region,
-          updatedAt: value.updatedAt,
         }),
+        startFrom: "earliest",
       }),
     },
   },
 });
-
-NodeRuntime.runMain(
-  runViewServerRuntime(viewServer, {
-    websocketPort: 8080,
-    kafka: {
-      consumerGroupId: "orders-view-server",
-    },
-  }),
-);
 ```
 
-`kafka.protobuf(...)` expects the Buf generated `DescMessage` descriptor symbol,
-not a TypeScript value type.
+The adapter derives canonical Topic Row ID as `region:localRowKey`.
+`localRowKey` receives the decoded key, exact region, and Kafka metadata but not
+the value, so tombstones can delete the same row without decoding a missing
+value. `map` returns every Topic Row field except `id`; missing, extra, or wrong
+fields fail the public type contract and the final row is Schema-validated at
+runtime.
 
-`kafka.json(...)` accepts only a lazy zero-argument factory for Effect's canonical
-JSON codec. The Adapter invokes that factory once when it is constructed, parses
-Kafka bytes as JSON, and decodes the parsed value through the canonical codec:
+## Codecs
 
-```ts
-value: kafka.json(() => Schema.toCodecJson(KafkaTrade));
-```
+- `kafka.bytes()` preserves bytes.
+- `kafka.string()` decodes UTF-8.
+- `kafka.json(() => Schema.toCodecJson(WireSchema))` uses the canonical Effect
+  Schema JSON codec.
+- `kafka.protobuf(MessageDescriptor)` uses a Buf descriptor.
+- `kafka.codec({ name, decode })` defines a typed custom codec.
 
-The returned Kafka Source Codec infers `KafkaTrade.Type`; it does not expose a
-runtime `schema` field. A versioned or non-canonical wire format belongs behind
-the typed custom Kafka Source Codec Seam:
+Custom codec input and errors are exported from
+`effect-view-server/kafka/contract`.
 
-```ts
-import type { KafkaCodecDecodeInput } from "effect-view-server/config";
-import type { Effect } from "effect";
+## Start positions
 
-type TradeJsonV1Error = {
-  readonly _tag: "TradeJsonV1Error";
-  readonly message: string;
-};
+`startFrom` is part of each Source Definition:
 
-declare const decodeTradeJsonV1: (
-  input: KafkaCodecDecodeInput,
-) => Effect.Effect<typeof KafkaTrade.Type, TradeJsonV1Error>;
+- `"earliest"`
+- `"latest"`
+- committed group with explicit fallback
+- timestamp with explicit fallback
+- duration-ago with explicit fallback
 
-const tradeJsonV1 = kafka.codec({
-  name: "trade-json-v1",
-  decode: decodeTradeJsonV1,
-});
-```
-
-This custom Adapter keeps both its decoded value and error channel typed while
-making ownership of the non-canonical wire contract explicit.
-
-The region names in each `kafkaSource.regions` tuple are checked against
-`config.kafka`. In the example above, `["usa"]` and `["london"]` are valid, but
-`["paris"]` fails at compile time.
-
-`rowKey` is intentionally value-independent: it receives the decoded Kafka key,
-the source region, and Kafka message metadata, but not the decoded value. That
-keeps row identity stable for compacted-topic tombstones and lets the runtime
-delete by key without decoding a null value.
-
-## Contract
-
-- `regions` is type-checked against the configured Kafka region names.
-- `kafkaSource` is owned by exactly one View Server topic, so the runtime cannot
-  accidentally publish the same source into a different topic.
-- `key` is typed from the configured key codec. If no key codec is configured,
-  the key is a string.
-- `value` is typed from the configured value codec.
-- `map` output is validated against the target topic schema before publish.
+The Node Layer supplies the active `consumerGroupPrefix`; Runtime Core derives a
+Topic-specific group so bindings cannot share progress accidentally.
 
 ## Delivery
 
-Kafka messages are decoded, mapped, microbatched, and applied through Runtime
-Core. Topic-owned sources upsert with source-owned storage keys, and compacted
-topic tombstones delete by that same key. Offsets are committed only after the
-corresponding Runtime Core mutation succeeds.
+Regions are concurrent delivery lanes. Records within a lane are decoded,
+mapped, applied, and settled sequentially. Offsets commit only after Runtime
+Core settles the Delivery or Rejection. Decode, Mapping, ID, and Topic-Schema
+problems become safe item Rejections, mark Source Health Degraded, commit the
+poison record, and allow later records to continue.
 
-Kafka records without key bytes cannot derive a source-owned row key. The
-runtime records a mapping failure, commits the record, and skips it so one
-poison record cannot replay forever and stall the whole region. Tombstone
-deletes are idempotent: a tombstone for an already-missing row is a successful
-no-op after the delete mutation runs.
-
-If a message fails decode or mapping, health records a decode or mapping failure
-for the source topic and region. If publishing fails, the corresponding messages
-remain uncommitted so Kafka can replay them.
-
-## Restart Semantics
-
-Runtime Core rows live in memory. There is no durable WAL/checkpoint yet. For
-rebuild-after-restart semantics, configure Kafka replay from an authoritative
-position such as `startFrom: "earliest"` or a fresh rebuild consumer group.
-
-Committed consumer-group resume is useful for live at-least-once processing, but
-it is not durable View Server recovery by itself.
-
-`startFrom` is currently a runtime-level consumer policy. A single View Server
-runtime cannot read one Kafka source topic from `"earliest"` and another from
-`"latest"` with the same consumer group. If you need mixed start positions today,
-run separate runtime instances with separate consumer groups and configs, for
-example a replay/rebuild runtime using `startFrom: "earliest"` and a live-tail
-runtime using `startFrom: "latest"`.
+Runtime Core rows remain in memory. A committed offset is an at-least-once
+delivery checkpoint, not a durable View Server snapshot. Use an authoritative
+replay position when restart must rebuild all rows.

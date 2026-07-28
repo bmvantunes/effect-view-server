@@ -58,22 +58,6 @@ export const invalidRuntimeQueryError = (
   message,
 });
 
-export const leasedRuntimeAccessError = (topic: string): ViewServerRuntimeError => ({
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  topic,
-  message:
-    "Leased gRPC topics do not support direct runtime mutations, one-shot snapshots, or runtime-core subscriptions; use the runtime gRPC lease manager so it owns lease lifecycle.",
-});
-
-export const leasedManagedRuntimeAccessError = (topic: string): ViewServerRuntimeError => ({
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  topic,
-  message:
-    "Leased gRPC topics do not support direct runtime mutations or one-shot snapshots; use a live subscription so the runtime can own lease lifecycle.",
-});
-
 export const sourceLeasedRuntimeReadError = (topic: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",
   code: "UnsupportedQuery",
@@ -81,13 +65,6 @@ export const sourceLeasedRuntimeReadError = (topic: string): ViewServerRuntimeEr
   message:
     "Leased Source topics do not support one-shot snapshots; use a live subscription so Runtime Core owns the source lease lifecycle.",
 });
-
-export const leasedManagedRuntimeResetError: ViewServerRuntimeError = {
-  _tag: "ViewServerRuntimeError",
-  code: "UnsupportedQuery",
-  message:
-    "Leased gRPC topics do not support direct runtime reset; close the runtime or leased subscriptions so the lease manager owns cleanup.",
-};
 
 export const sourceOwnedRuntimeMutationError = (topic: string): ViewServerRuntimeError => ({
   _tag: "ViewServerRuntimeError",

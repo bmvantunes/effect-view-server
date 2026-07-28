@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { format, fromStringUnsafe, isBigDecimal } from "effect/BigDecimal";
@@ -353,7 +354,7 @@ describe("Topic Store query execution", () => {
       expect(positionEvaluation.version).toBe(3);
 
       const NullableMetric = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         note: Schema.NullOr(Schema.String),
       });
       const nullableCompiled = yield* prepareRuntimeRawQuery(
@@ -477,7 +478,7 @@ describe("Topic Store query execution", () => {
   it.effect("passes typed numeric literal range plans to the storage scan interface", () =>
     Effect.gen(function* () {
       const LiteralMetrics = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         score: Schema.Literal(1),
         bucket: Schema.Literal(1n),
       });

@@ -4,13 +4,13 @@ import {
   SourceAdapterServer,
   type SourceAdapterServerLifecycle,
   type SourceAdapterServerView,
-} from "@effect-view-server/source-adapter/server";
+} from "effect-view-server/source-adapter/server";
 import type {
   SourceExecutionFailure,
   SourceLaneEvent,
   SourceLifecycleFactoryInput,
   SourceToolkit,
-} from "@effect-view-server/source-adapter";
+} from "effect-view-server/source-adapter";
 import {
   Cause,
   Chunk,

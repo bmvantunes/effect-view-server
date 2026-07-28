@@ -11,10 +11,10 @@ vp run @effect-view-server/example-grpc-leased-react#dev
 
 This example demonstrates:
 
-- `grpc.topicSources(grpcClients).leased({ schema, key, routeBy, client, method, ... })`
-  source ownership.
-- A topic-owned binding from the View Server topic to the generated gRPC client
-  method.
+- `grpc.topicSources({ orders: ordersService }).leased({ client, method,
+routeBy, request, map })` on the Topic's canonical `source` property.
+- Browser-safe generated service descriptors in config, with concrete clients
+  and base URLs owned by `grpcNode.layer(...)`.
 - A type-enforced exact `routeBy` object in `useLiveQuery`, passed to gRPC
   without case, accent, or text normalization.
 - Shared upstream route acquisition for subscribers using the same route.

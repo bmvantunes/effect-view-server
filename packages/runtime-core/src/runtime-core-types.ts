@@ -1,9 +1,7 @@
-import type {
-  DecodableTopicDefinitions,
-  GroupedIncrementalAdmissionLimits,
-} from "@effect-view-server/column-live-view-engine";
+import type { GroupedIncrementalAdmissionLimits } from "@effect-view-server/column-live-view-engine";
 import type { ViewServerRuntimeLiveClient } from "@effect-view-server/client";
 import type {
+  TopicDefinitions,
   ViewServerHealth,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
@@ -20,7 +18,7 @@ import type {
 } from "./public-client";
 import type { ViewServerRuntimeCoreInternalClient } from "./runtime-client";
 
-export type ViewServerRuntimeCoreInstance<Topics extends DecodableTopicDefinitions> = {
+export type ViewServerRuntimeCoreInstance<Topics extends TopicDefinitions> = {
   readonly client: ViewServerRuntimeCorePublicClient<Topics>;
   readonly liveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
   readonly serverLiveClient: ViewServerRuntimeCoreServerLiveClient<Topics>;
@@ -32,12 +30,12 @@ export type ViewServerRuntimeCoreInstance<Topics extends DecodableTopicDefinitio
 export type ViewServerRuntimeCoreOptions = {
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
-  readonly transportHealth?: RuntimeCoreTransportHealth<DecodableTopicDefinitions>;
-  readonly healthOverlay?: RuntimeCoreHealthOverlay<DecodableTopicDefinitions>;
+  readonly transportHealth?: RuntimeCoreTransportHealth<TopicDefinitions>;
+  readonly healthOverlay?: RuntimeCoreHealthOverlay<TopicDefinitions>;
   readonly healthRefreshCadence?: Duration.Input;
 };
 
-export type ViewServerRuntimeCoreOptionsFor<Topics extends DecodableTopicDefinitions> = {
+export type ViewServerRuntimeCoreOptionsFor<Topics extends TopicDefinitions> = {
   readonly groupedIncrementalAdmissionLimits?: Partial<GroupedIncrementalAdmissionLimits>;
   readonly subscriptionQueueCapacity?: number;
   readonly transportHealth?: RuntimeCoreTransportHealth<Topics>;
@@ -45,7 +43,7 @@ export type ViewServerRuntimeCoreOptionsFor<Topics extends DecodableTopicDefinit
   readonly healthRefreshCadence?: Duration.Input;
 };
 
-export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicDefinitions> = Omit<
+export type ViewServerRuntimeCoreInternalInstance<Topics extends TopicDefinitions> = Omit<
   ViewServerRuntimeCoreInstance<Topics>,
   "client" | "liveClient"
 > & {
@@ -60,5 +58,5 @@ export type ViewServerRuntimeCoreInternalInstance<Topics extends DecodableTopicD
   readonly publicLiveClient: ViewServerRuntimeCorePublicLiveClient<Topics>;
 };
 
-export type ViewServerRuntimeCoreInternalOptionsFor<Topics extends DecodableTopicDefinitions> =
+export type ViewServerRuntimeCoreInternalOptionsFor<Topics extends TopicDefinitions> =
   ViewServerRuntimeCoreOptionsFor<Topics>;

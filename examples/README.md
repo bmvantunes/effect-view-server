@@ -74,6 +74,7 @@ Kafka examples assume Apache Kafka is reachable at `127.0.0.1:9092` and
 `127.0.0.1:9094`, matching the repository Docker Compose defaults for the
 primary and London clusters.
 
-Kafka `startFrom` is a runtime-level policy. The examples use one policy per
-runtime instance. To run one topic from `"earliest"` and another from `"latest"`
-today, run two runtime instances with different configs and consumer groups.
+Kafka `startFrom` belongs to each canonical Topic `source`. Kafka examples
+provide broker clients and one deployment-specific `consumerGroupPrefix`
+through `kafkaNode.layer(...)`; gRPC examples provide logical clients through
+`grpcNode.layer(...)`. Generic runtime options contain only server concerns.

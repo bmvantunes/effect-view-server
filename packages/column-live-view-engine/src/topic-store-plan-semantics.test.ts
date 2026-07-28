@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Equivalence, Schema } from "effect";
 import { evaluateRawQuery } from "./active-query";
@@ -42,7 +43,7 @@ describe("Topic Store plan semantics", () => {
         ),
       );
       const CaseInsensitiveRows = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         label: CaseInsensitiveString,
         suspendedLabel: Schema.suspend(() => Schema.String),
       });

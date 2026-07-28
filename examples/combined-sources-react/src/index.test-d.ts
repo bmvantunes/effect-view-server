@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { LiveQueryResult } from "effect-view-server/config";
-import { grpcClients, useLiveQuery, viewServer } from "./view-server.config";
+import { grpcSources, useLiveQuery, useSourceHealth, viewServer } from "./view-server.config";
 
 describe("combined sources example type contracts", () => {
   it("types Kafka, leased gRPC, and materialized gRPC topics independently", () => {
@@ -45,12 +45,27 @@ describe("combined sources example type contracts", () => {
   });
 
   it("keeps Kafka ownership separate from gRPC source topics", () => {
-    expectTypeOf(
-      viewServer.topics.trades.kafkaSource.topic,
-    ).toEqualTypeOf<"view-server-example-trades">();
-    expectTypeOf(viewServer.topics.trades.kafkaSource.regions).toEqualTypeOf<
+    expectTypeOf(viewServer.topics.trades.source.options.topic).toEqualTypeOf<string>();
+    expectTypeOf(viewServer.topics.trades.source.options.regions).toEqualTypeOf<
       readonly ["usa", "london"]
     >();
-    expectTypeOf<keyof typeof grpcClients>().toEqualTypeOf<"orders" | "strategies">();
+    expectTypeOf(grpcSources.materialized).not.toBeAny();
+    expectTypeOf(grpcSources.leased).not.toBeAny();
+  });
+
+  it("types materialized and leased Source Health by Topic", () => {
+    const trades = useSourceHealth({ topic: "trades" });
+    const orders = useSourceHealth({
+      topic: "orders",
+      routeBy: { strategyId: "strategy-alpha", region: "usa" },
+    });
+
+    expectTypeOf(trades).not.toBeAny();
+    expectTypeOf(orders).not.toBeAny();
+
+    // @ts-expect-error leased Source Health requires the exact route.
+    useSourceHealth({ topic: "orders" });
+    // @ts-expect-error materialized Source Health rejects routes.
+    useSourceHealth({ topic: "trades", routeBy: { region: "usa" } });
   });
 });

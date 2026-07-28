@@ -1,10 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { makeViewServerRuntimeCoreInternal } from "./internal";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -16,7 +16,6 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });

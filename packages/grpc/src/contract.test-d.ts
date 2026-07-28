@@ -13,7 +13,7 @@ import {
   StructSchema,
   type StringValue,
 } from "@bufbuild/protobuf/wkt";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import {
   makeViewServerRuntimeCore,
   type ViewServerSourceRequirements,
@@ -22,7 +22,7 @@ import type {
   SourceDefinitionRetryServices,
   SourceDefinitionRow,
   SourceDefinitionRouteFields,
-} from "@effect-view-server/source-adapter";
+} from "effect-view-server/source-adapter";
 import { expectTypeOf } from "@effect/vitest";
 import { Config, Context, Effect, Option, Schema } from "effect";
 import {
@@ -500,7 +500,7 @@ const materializedStrategies = sources.materialized({
 });
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -525,7 +525,6 @@ const mixedViewServer = defineViewServerConfig({
     },
     sourceFreeOrders: {
       schema: Row,
-      key: "id",
     },
   },
 });
@@ -1695,7 +1694,6 @@ const sourceFreeViewServer = defineViewServerConfig({
   topics: {
     sourceFreeOrders: {
       schema: Row,
-      key: "id",
     },
   },
 });

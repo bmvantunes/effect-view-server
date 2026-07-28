@@ -1,6 +1,6 @@
-import { type DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import { createColumnLiveViewEngineInternal } from "@effect-view-server/column-live-view-engine/internal";
 import type {
+  TopicDefinitions,
   ViewServerHealth,
   ViewServerTopicConfig,
   ViewServerRuntimeError,
@@ -35,7 +35,7 @@ export type RuntimeCoreConstructionOptions = {
 };
 
 export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
-  const Topics extends DecodableTopicDefinitions,
+  const Topics extends TopicDefinitions,
 >(
   config: ViewServerTopicConfig<Topics>,
   input: ViewServerRuntimeCoreInternalOptionsFor<Topics>,
@@ -45,7 +45,7 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
   ViewServerRuntimeError,
   ViewServerSourceRequirements<Topics>
 > = Effect.fn("ViewServerRuntimeCore.internal.make")(function* <
-  const Topics extends DecodableTopicDefinitions,
+  const Topics extends TopicDefinitions,
 >(
   config: ViewServerTopicConfig<Topics>,
   input: ViewServerRuntimeCoreInternalOptionsFor<Topics>,
@@ -80,11 +80,37 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
           const runtimeStartedAtMillis = yield* restore(Clock.currentTimeMillis);
           const runtimeStartedAtNanos = yield* restore(Clock.currentTimeNanos);
           let sourceManager: RuntimeCoreSourceManager<Topics> | undefined;
-          const overlaySourceHealth = (
-            health: ViewServerHealth<Topics>,
-          ): ViewServerHealth<Topics> =>
-            sourceManager === undefined ? health : sourceManager.overlayHealth(health);
-          const initialHealth: ViewServerHealth<Topics> = overlaySourceHealth(
+          let pushedHealthRefresh: Effect.Effect<void> = Effect.void;
+          const requestPushedHealthRefresh = Effect.suspend(() => pushedHealthRefresh);
+          let installedRuntimeHealthRead: Effect.Effect<ViewServerHealth<Topics>> = Effect.never;
+          const readRuntimeHealth = Effect.suspend(() => installedRuntimeHealthRead);
+          const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
+            config,
+            engine,
+            readRuntimeHealth,
+            requestPushedHealthRefresh,
+          );
+          sourceManager = yield* restore(
+            makeRuntimeCoreSourceManager(
+              config,
+              runtimeClient.internalClient,
+              requestPushedHealthRefresh,
+            ),
+          );
+          installedRuntimeHealthRead = readHealthSnapshot(engine, {
+            runtimeStartedAtNanos,
+            transportHealth,
+            healthOverlay,
+          }).pipe(
+            Effect.map(sourceManager.overlayHealth),
+            Effect.tap(() => constructionOptions.afterRuntimeHealthRead ?? Effect.void),
+          );
+          const sourceClose = sourceManager.close;
+          const partialSourceConstructionClose = runAllFinalizers([sourceClose, engineClose]).pipe(
+            Effect.uninterruptible,
+          );
+          yield* markAcquired(partialSourceConstructionClose);
+          const initialHealth: ViewServerHealth<Topics> = sourceManager.overlayHealth(
             healthFromEngine(engineHealth, {
               transportHealth,
               ...(healthOverlay === undefined ? {} : { healthOverlay }),
@@ -95,48 +121,23 @@ export const makeViewServerRuntimeCoreInternalWithConstructionOptions: <
               },
             }),
           );
-          const readRuntimeHealth = readHealthSnapshot(engine, {
-            runtimeStartedAtNanos,
-            transportHealth,
-            healthOverlay,
-          }).pipe(
-            Effect.map(overlaySourceHealth),
-            Effect.tap(() => constructionOptions.afterRuntimeHealthRead ?? Effect.void),
-          );
           const pushedHealth = yield* makeRuntimeCorePushedHealthHub(
             initialHealth,
             readRuntimeHealth,
             input.healthRefreshCadence,
           );
+          pushedHealthRefresh = pushedHealth.requestRefresh;
           const pushedHealthClose =
             constructionOptions.afterPushedHealthClose === undefined
               ? pushedHealth.close
               : pushedHealth.close.pipe(
                   Effect.ensuring(constructionOptions.afterPushedHealthClose),
                 );
-          const partialConstructionClose = runAllFinalizers([engineClose, pushedHealthClose]).pipe(
-            Effect.uninterruptible,
-          );
-          yield* markAcquired(partialConstructionClose);
-          const runtimeClient = yield* makeRuntimeCoreClient<Topics>(
-            config,
-            engine,
-            readRuntimeHealth,
-            pushedHealth.requestRefresh,
-          );
           const finalizePushedHealth = runAllFinalizers([
             runtimeClient.requestHealthRefresh,
             pushedHealth.refresh.pipe(Effect.asVoid),
             pushedHealthClose,
           ]);
-          sourceManager = yield* restore(
-            makeRuntimeCoreSourceManager(
-              config,
-              runtimeClient.internalClient,
-              pushedHealth.requestRefresh,
-            ),
-          );
-          const sourceClose = sourceManager.close;
           const sourceConstructionClose = runAllFinalizers([
             sourceClose,
             engineClose,

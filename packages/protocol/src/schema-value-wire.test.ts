@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, viewSchema } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "@effect-view-server/config";
 import * as BigDecimal from "effect/BigDecimal";
 import * as HashMap from "effect/HashMap";
 import * as Option from "effect/Option";
@@ -21,7 +21,7 @@ class Venue extends Schema.Class<Venue>("Venue")({
 viewSchema.admitClass(Venue);
 
 const SemanticRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   venue: Venue,
   optionalQuantity: viewSchema.Option(Schema.BigInt),
   tags: viewSchema.Chunk(Schema.String),
@@ -34,7 +34,6 @@ const semanticViewServer = defineViewServerConfig({
   topics: {
     semantic: {
       schema: SemanticRow,
-      key: "id",
     },
   },
 });

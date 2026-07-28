@@ -11,6 +11,7 @@ import {
 } from "@effect-view-server/client";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type LiveQueryResult,
   type ViewServerRuntimeError,
@@ -120,7 +121,7 @@ const OrdersService = serviceDesc<{
 }>(descriptorFile, 0);
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
   region: Schema.String,
 });
@@ -510,10 +511,12 @@ describe("gRPC Source Adapter real ConnectRPC integration", () => {
           });
           yield* Effect.gen(function* () {
             const runtime = yield* makeViewServerRuntimeCore(config, {});
-            const completedDiagnostics =
-              yield* runtime.liveClient.subscribeSourceHealth("completedOrders");
-            const failedDiagnostics =
-              yield* runtime.liveClient.subscribeSourceHealth("failedOrders");
+            const completedDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+              topic: "completedOrders",
+            });
+            const failedDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+              topic: "failedOrders",
+            });
             const completedHealth = Option.getOrThrow(
               yield* completedDiagnostics.events.pipe(
                 Stream.filter((health) => health.status._tag === "Exhausted"),

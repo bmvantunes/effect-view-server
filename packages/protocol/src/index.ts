@@ -63,6 +63,7 @@ export {
   viewServerDecodeHealthSummaryEvent,
   viewServerEncodeHealthTopicEvent,
   viewServerDecodeHealthTopicEvent,
+  viewServerEncodeHealth,
   viewServerDecodeHealth,
 } from "./protocol-health-codec";
 

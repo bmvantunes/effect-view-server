@@ -11,6 +11,10 @@ import {
   stableQueryKeyForRowSchema,
   type ViewServerLiveClient,
   type ViewServerLiveSubscription,
+  type ViewServerSourceHealthInputForTopic,
+  type ViewServerSourceHealthResultForTopic,
+  type ViewServerSourceHealthSubscription,
+  type ViewServerSourceOwnedTopic,
 } from "@effect-view-server/client";
 import {
   makeViewServerClient,
@@ -18,12 +22,10 @@ import {
 } from "@effect-view-server/client/remote";
 import type {
   ExactLiveQueryInputForTopic,
-  GrpcRuntimeClients,
   GroupedQuery,
   LiveQueryResult,
   LiveQueryRow,
   RawQuery,
-  RuntimeRegions,
   TopicDefinitions,
   TopicRow,
   ViewServerConfig,
@@ -32,8 +34,10 @@ import type {
   ViewServerHealthSummary,
   ViewServerHealthSummaryRow,
   ViewServerHealthTopicRow,
+  ViewServerRuntimeError,
+  ViewServerTransportError,
 } from "@effect-view-server/config";
-import { Effect, Result, Stream } from "effect";
+import { Cause, Effect, Result, Stream } from "effect";
 import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { createContext, useContext, useInsertionEffect, useMemo, type ReactNode } from "react";
@@ -58,17 +62,14 @@ export type {
   UseLiveQueryViewportResult,
 } from "./live-query-viewport";
 
-export type ViewServerReactBindings<
-  Topics extends TopicDefinitions,
-  Regions extends RuntimeRegions = RuntimeRegions,
-  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-> = {
-  readonly [ViewServerReactConfig]: ViewServerConfig<Topics, Regions, GrpcClients>;
+export type ViewServerReactBindings<Topics extends TopicDefinitions> = {
+  readonly [ViewServerReactConfig]: ViewServerConfig<Topics>;
   readonly [ViewServerReactClientProvider]: (
     props: ViewServerClientProviderProps<Topics>,
   ) => ReactNode;
   readonly useLiveQuery: UseLiveQueryHook<Topics>;
   readonly useLiveQueryViewport: UseLiveQueryViewportHook<Topics>;
+  readonly useSourceHealth: UseSourceHealthHook<Topics>;
   readonly useViewServerHealth: () => ViewServerHealthDetails<Extract<keyof Topics, string>>;
   readonly useViewServerHealthSummary: () => ViewServerHealthSummary<Topics>;
   readonly ViewServerProvider: (props: ViewServerProviderProps) => ReactNode;
@@ -97,13 +98,22 @@ export type UseLiveQueryHook<Topics extends TopicDefinitions> = <
   query: ExactLiveQueryInputForTopic<Topics, NoInfer<Topic>, Query>,
 ) => LiveQueryResult<LiveQueryRow<TopicRow<Topics, Topic>, Query>>;
 
-export const createViewServerReact = <
-  const Topics extends TopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
+export type UseSourceHealthResult<Health> = AsyncResult.AsyncResult<
+  Health,
+  ViewServerRuntimeError | ViewServerTransportError | Cause.NoSuchElementError
+>;
+
+export type UseSourceHealthHook<Topics extends TopicDefinitions> = <
+  const Input extends {
+    readonly topic: ViewServerSourceOwnedTopic<Topics>;
+  },
 >(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-): ViewServerReactBindings<Topics, Regions, GrpcClients> => {
+  input: ViewServerSourceHealthInputForTopic<Topics, Input["topic"], Input>,
+) => UseSourceHealthResult<ViewServerSourceHealthResultForTopic<Topics, Input["topic"]>>;
+
+export const createViewServerReact = <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
+): ViewServerReactBindings<Topics> => {
   const ClientContext = createContext<ViewServerLiveClient<Topics> | null>(null);
   const RemoteClientAtom = AtomReact.make((options: ViewServerClientOptions) =>
     Atom.make((get) =>
@@ -117,6 +127,73 @@ export const createViewServerReact = <
       }),
     ),
   );
+  type SourceHealthResult = {
+    readonly [Topic in ViewServerSourceOwnedTopic<Topics>]: ViewServerSourceHealthResultForTopic<
+      Topics,
+      Topic
+    >;
+  }[ViewServerSourceOwnedTopic<Topics>];
+  type SourceHealthAtomEntry<Health extends SourceHealthResult = SourceHealthResult> = {
+    readonly atom: Atom.Atom<UseSourceHealthResult<Health>>;
+  };
+  const sourceHealthEntries = new WeakMap<
+    object,
+    WeakMap<ViewServerLiveClient<Topics>, Map<string, SourceHealthAtomEntry>>
+  >();
+
+  function sourceHealthEntry<Health extends SourceHealthResult>(
+    registry: object,
+    client: ViewServerLiveClient<Topics>,
+    key: string,
+    subscribe: () => Effect.Effect<
+      ViewServerSourceHealthSubscription<Health>,
+      ViewServerRuntimeError | ViewServerTransportError
+    >,
+  ): SourceHealthAtomEntry<Health>;
+  function sourceHealthEntry(
+    registry: object,
+    client: ViewServerLiveClient<Topics>,
+    key: string,
+    subscribe: () => Effect.Effect<
+      ViewServerSourceHealthSubscription<SourceHealthResult>,
+      ViewServerRuntimeError | ViewServerTransportError
+    >,
+  ): SourceHealthAtomEntry {
+    let clientEntries = sourceHealthEntries.get(registry);
+    if (clientEntries === undefined) {
+      clientEntries = new WeakMap();
+      sourceHealthEntries.set(registry, clientEntries);
+    }
+    let entries = clientEntries.get(client);
+    if (entries === undefined) {
+      entries = new Map();
+      clientEntries.set(client, entries);
+    }
+    const existing = entries.get(key);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const evict = () => {
+      entries.delete(key);
+    };
+    const entry = {
+      atom: Atom.make((get) => {
+        get.addFinalizer(evict);
+        return Stream.scoped(
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const subscription = yield* subscribe();
+              return subscription.events.pipe(
+                Stream.ensuring(subscription.close().pipe(ignoreSubscriptionCloseFailure)),
+              );
+            }),
+          ),
+        );
+      }),
+    };
+    entries.set(key, entry);
+    return entry;
+  }
 
   const useClient = (): ViewServerLiveClient<Topics> => {
     const client = useContext(ClientContext);
@@ -216,6 +293,29 @@ export const createViewServerReact = <
     );
   }
 
+  function useSourceHealth<
+    const Input extends {
+      readonly topic: ViewServerSourceOwnedTopic<Topics>;
+    },
+  >(
+    input: ViewServerSourceHealthInputForTopic<Topics, Input["topic"], Input>,
+  ): UseSourceHealthResult<ViewServerSourceHealthResultForTopic<Topics, Input["topic"]>> {
+    const client = useClient();
+    const registry = useContext(AtomReact.RegistryContext);
+    const inputIdentity = useMemo(() => {
+      const capturedInput = snapshotViewServerQuery(input);
+      const key = stableQueryKey(capturedInput);
+      return { input: capturedInput, key };
+    }, [input]);
+    const entry = sourceHealthEntry(
+      registry,
+      client,
+      `${inputIdentity.input.topic}:${inputIdentity.key}`,
+      () => client.subscribeSourceHealth(inputIdentity.input),
+    );
+    return AtomReact.useAtomValue(entry.atom);
+  }
+
   function useLiveQueryViewport<Topic extends Extract<keyof Topics, string>>(
     topic: Topic,
   ): UseLiveQueryViewportResult<Topics, Topic> {
@@ -273,7 +373,6 @@ export const createViewServerReact = <
     connectionStatus,
     unhealthyTopics: [],
     updatedAtNanos: 0n,
-    maxKafkaLag: null,
   });
 
   const summaryFromRow = (
@@ -285,7 +384,6 @@ export const createViewServerReact = <
     connectionStatus,
     unhealthyTopics: row.unhealthyTopics,
     updatedAtNanos: row.updatedAtNanos,
-    maxKafkaLag: row.maxKafkaLag,
   });
 
   const useViewServerHealthSummary = (): ViewServerHealthSummary<Topics> => {
@@ -330,6 +428,7 @@ export const createViewServerReact = <
     [ViewServerReactClientProvider]: ViewServerClientProvider,
     useLiveQuery,
     useLiveQueryViewport,
+    useSourceHealth,
     useViewServerHealth,
     useViewServerHealthSummary,
     ViewServerProvider,

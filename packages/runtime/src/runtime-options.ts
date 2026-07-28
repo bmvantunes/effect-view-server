@@ -1,14 +1,13 @@
-import type { GrpcRuntimeClients, RuntimeRegions } from "@effect-view-server/config";
+import type { ViewServerRuntimeError } from "@effect-view-server/config";
 import type { ViewServerRuntimeCoreOptionsFor } from "@effect-view-server/runtime-core";
 import type { ViewServerWebSocketServerOptions } from "@effect-view-server/server";
+import { Effect } from "effect";
 import type { ViewServerRuntimeOptions, ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export type ResolvedViewServerRuntimeBaseOptions<
   Topics extends ViewServerRuntimeTopicDefinitions = ViewServerRuntimeTopicDefinitions,
-  Regions extends RuntimeRegions = RuntimeRegions,
-  GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
 > = {
-  readonly auth?: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>["auth"];
+  readonly auth?: ViewServerRuntimeOptions<Topics>["auth"];
   readonly runtimeCoreOptions: ViewServerRuntimeCoreOptionsFor<Topics>;
   readonly serverOptions: ViewServerWebSocketServerOptions;
   readonly tcpPublishOptions?: {
@@ -18,13 +17,128 @@ export type ResolvedViewServerRuntimeBaseOptions<
   };
 };
 
+const runtimeOptionKeys = new Set<PropertyKey>([
+  "auth",
+  "groupedIncrementalAdmissionLimits",
+  "healthPath",
+  "host",
+  "metricsPath",
+  "rpcPath",
+  "subscriptionQueueCapacity",
+  "tcpPublishHost",
+  "tcpPublishMaxConnections",
+  "tcpPublishPort",
+  "websocketPort",
+]);
+
+const groupedIncrementalAdmissionLimitKeys = new Set<PropertyKey>([
+  "maxGroups",
+  "maxMembers",
+  "maxMembersPerGroup",
+  "maxRetainedValueEntries",
+]);
+
+const runtimeOptionsError = (message: string): ViewServerRuntimeError => ({
+  _tag: "ViewServerRuntimeError",
+  code: "RuntimeUnavailable",
+  message,
+});
+
+const unsupportedOwnProperty = (
+  value: object,
+  allowedKeys: ReadonlySet<PropertyKey>,
+): PropertyKey | undefined => Reflect.ownKeys(value).find((key) => !allowedKeys.has(key));
+
+export const validateViewServerRuntimeOptions = Effect.fn("ViewServerRuntime.options.validate")(
+  function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
+    options: ViewServerRuntimeOptions<Topics>,
+  ) {
+    return yield* Effect.try({
+      try: () => {
+        const unsupportedRuntimeOption = unsupportedOwnProperty(options, runtimeOptionKeys);
+        if (unsupportedRuntimeOption !== undefined) {
+          throw new TypeError(
+            `View Server runtime options contain unsupported property: ${String(unsupportedRuntimeOption)}.`,
+          );
+        }
+        const groupedLimits = options.groupedIncrementalAdmissionLimits;
+        if (
+          groupedLimits !== undefined &&
+          (typeof groupedLimits !== "object" ||
+            groupedLimits === null ||
+            Array.isArray(groupedLimits))
+        ) {
+          throw new TypeError(
+            "View Server runtime option groupedIncrementalAdmissionLimits must be an object.",
+          );
+        }
+        if (groupedLimits !== undefined) {
+          const unsupportedGroupedLimit = unsupportedOwnProperty(
+            groupedLimits,
+            groupedIncrementalAdmissionLimitKeys,
+          );
+          if (unsupportedGroupedLimit !== undefined) {
+            throw new TypeError(
+              `View Server runtime option groupedIncrementalAdmissionLimits contains unsupported property: ${String(unsupportedGroupedLimit)}.`,
+            );
+          }
+        }
+        const capturedGroupedLimits =
+          groupedLimits === undefined
+            ? undefined
+            : {
+                ...(groupedLimits.maxGroups === undefined
+                  ? {}
+                  : { maxGroups: groupedLimits.maxGroups }),
+                ...(groupedLimits.maxMembers === undefined
+                  ? {}
+                  : { maxMembers: groupedLimits.maxMembers }),
+                ...(groupedLimits.maxMembersPerGroup === undefined
+                  ? {}
+                  : { maxMembersPerGroup: groupedLimits.maxMembersPerGroup }),
+                ...(groupedLimits.maxRetainedValueEntries === undefined
+                  ? {}
+                  : { maxRetainedValueEntries: groupedLimits.maxRetainedValueEntries }),
+              };
+        return {
+          ...(options.auth === undefined ? {} : { auth: options.auth }),
+          ...(capturedGroupedLimits === undefined
+            ? {}
+            : { groupedIncrementalAdmissionLimits: capturedGroupedLimits }),
+          ...(options.healthPath === undefined ? {} : { healthPath: options.healthPath }),
+          ...(options.host === undefined ? {} : { host: options.host }),
+          ...(options.metricsPath === undefined ? {} : { metricsPath: options.metricsPath }),
+          ...(options.rpcPath === undefined ? {} : { rpcPath: options.rpcPath }),
+          ...(options.subscriptionQueueCapacity === undefined
+            ? {}
+            : { subscriptionQueueCapacity: options.subscriptionQueueCapacity }),
+          ...(options.tcpPublishHost === undefined
+            ? {}
+            : { tcpPublishHost: options.tcpPublishHost }),
+          ...(options.tcpPublishMaxConnections === undefined
+            ? {}
+            : { tcpPublishMaxConnections: options.tcpPublishMaxConnections }),
+          ...(options.tcpPublishPort === undefined
+            ? {}
+            : { tcpPublishPort: options.tcpPublishPort }),
+          ...(options.websocketPort === undefined ? {} : { websocketPort: options.websocketPort }),
+        } satisfies ViewServerRuntimeOptions<Topics>;
+      },
+      catch: (error) =>
+        runtimeOptionsError(
+          error instanceof Error
+            ? error.message
+            : "View Server runtime options could not be inspected.",
+        ),
+    });
+  },
+);
+
 export const resolveViewServerRuntimeBaseOptions = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
 >(
-  options: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-): ResolvedViewServerRuntimeBaseOptions<Topics, Regions, GrpcClients> => ({
+  options: ViewServerRuntimeOptions<Topics>,
+): ResolvedViewServerRuntimeBaseOptions<Topics> => ({
   ...(options.auth === undefined ? {} : { auth: options.auth }),
   runtimeCoreOptions: {
     ...(options.groupedIncrementalAdmissionLimits === undefined

@@ -10,9 +10,9 @@ import { viewServerReact } from "./view-server.config";
 export const createInMemoryExampleViewServer = () => createInMemoryViewServerReact(viewServerReact);
 ```
 
-The testing helper returns a provider plus a typed client. The provider uses the
-same hook binding object as production, but transport is in-memory instead of
-Effect RPC WebSocket.
+The testing helper returns a provider plus a typed client for a source-free
+config. The provider uses the same hook binding object as production, but
+transport is in-memory instead of Effect RPC WebSocket.
 
 ```tsx
 import { Effect } from "effect";
@@ -47,11 +47,16 @@ it("renders pushed orders", async () => {
 ## Rules
 
 - Do not change application components for tests. Swap only the provider.
-- Do not seed providers. Publish through the returned client like any other
+- For source-free Topics, publish through the returned client like any other
   ingress path.
+- Do not use the in-memory client to seed Source-Owned Topics. Their ownership
+  policy rejects direct mutation. Test a source-owned component with a remote
+  fixture, the adapter's controllable server fixture, or a mocked hook boundary
+  when the test covers presentation only.
 - Do not use Testing Library, `act`, `flushSync`, or `data-testid`.
 - Use Vitest Browser Mode locators from `vitest-browser-react`.
 - Runtime-level tests should use Effect-based tests where possible.
 
 The in-memory provider exercises the same Runtime Core and engine code as the
-remote runtime. Only external ingress and transport are replaced.
+remote runtime. Only external ingress and transport are replaced. It does not
+silently provide Kafka, gRPC, or custom Source Adapter Layers.

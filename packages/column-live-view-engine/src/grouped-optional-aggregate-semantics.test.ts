@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, type GroupedQuery } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type GroupedQuery,
+} from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { createColumnLiveViewEngine } from "./index";
 import {
@@ -11,7 +15,7 @@ import {
 } from "../test-harness/events";
 
 const OptionalAggregateRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   team: Schema.String,
   desk: Schema.optionalKey(Schema.String),
 });
@@ -22,7 +26,6 @@ const optionalAggregateViewServer = defineViewServerConfig({
   topics: {
     optionalAggregateRows: {
       schema: OptionalAggregateRow,
-      key: "id",
     },
   },
 });

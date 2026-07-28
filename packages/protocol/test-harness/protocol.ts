@@ -1,10 +1,10 @@
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Schema } from "effect";
 import * as BigDecimal from "effect/BigDecimal";
 import { SchemaGetter } from "effect";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   status: Schema.Literals(["open", "closed"]),
   price: Schema.Number,
   quantity: Schema.BigInt,
@@ -26,18 +26,16 @@ export const BadJsonField = Schema.String.pipe(
 );
 
 export const BadJsonRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
 });
 
 export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     badjson: {
       schema: BadJsonRow,
-      key: "id",
     },
   },
 });
@@ -84,12 +82,6 @@ export const topicHealth = {
   compactionPending: false,
 } as const;
 
-export const kafkaStartFromHealth = {
-  consumerGroupId: "view-server-test",
-  fallbackMode: "latest",
-  mode: "latest",
-} as const;
-
 export const wireHealth = {
   status: "ready",
   version: 1,
@@ -100,6 +92,7 @@ export const wireHealth = {
       badjson: { ...topicHealth, rowCount: 0, liveRowCount: 0 },
     },
   },
+  sources: {},
   transport: {
     activeClients: 1,
     activeStreams: 1,
@@ -113,22 +106,4 @@ export const wireHealth = {
     reconnects: 0,
     lastError: null,
   },
-} as const;
-
-export const grpcFeedHealth = {
-  status: "ready",
-  lifecycle: "materialized",
-  feedName: "ordersFeed",
-  feedKey: "orders/ordersFeed/materialized",
-  topic: "orders",
-  subscriberCount: 0,
-  rowCount: 10,
-  messagesPerSecond: 2,
-  rowsPerSecond: 2,
-  decodeFailuresPerSecond: 0,
-  mappingFailuresPerSecond: 0,
-  publishFailuresPerSecond: 0,
-  reconnects: 0,
-  lastMessageAt: 123,
-  lastError: null,
 } as const;

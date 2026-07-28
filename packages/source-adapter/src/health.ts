@@ -306,3 +306,28 @@ export const sourceHealthSchema = <
     }),
     sampledAtNanos: NonNegativeBigInt,
   });
+
+export const sourceHealthContractSchemas = <
+  AdapterFailure,
+  Route extends Readonly<Record<string, unknown>>,
+  AdapterMetrics,
+  RejectionLocation,
+>(input: {
+  readonly adapterFailure: Schema.Codec<AdapterFailure, unknown, never, never>;
+  readonly route: Schema.Codec<Route, unknown, never, never>;
+  readonly adapterMetrics: Schema.Codec<AdapterMetrics, unknown, never, never>;
+  readonly rejectionLocation: Schema.Codec<RejectionLocation, unknown, never, never>;
+  readonly lifecycle: SourceLifecycle;
+}) => {
+  const health = sourceHealthSchema(input);
+  return {
+    health,
+    result:
+      input.lifecycle === "materialized"
+        ? health
+        : Schema.Union([
+            Schema.TaggedStruct("Inactive", { route: input.route }),
+            Schema.TaggedStruct("Active", { route: input.route, health }),
+          ]),
+  };
+};

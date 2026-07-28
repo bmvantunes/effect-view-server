@@ -2,6 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import {
+  ViewServerId,
   defineViewServerConfig,
   type RawQuery,
   VIEW_SERVER_HEALTH_SUMMARY_TOPIC,
@@ -31,6 +32,7 @@ import {
   ViewServerTrustedWireEventSchema,
   ViewServerWireRowSchema,
   viewServerDecodeHealth,
+  viewServerEncodeHealth,
   viewServerEncodeSourceHealth,
   type ViewServerRpcError,
   type ViewServerTrustedWireEvent,
@@ -46,7 +48,7 @@ import {
 import { makeRemoteHealthState } from "./remote-health";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 
@@ -58,14 +60,13 @@ const BadJsonField = Schema.String.pipe(
 );
 
 const BadJsonRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
 });
 
 const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
@@ -121,7 +122,6 @@ const safeEdgeViewServer = defineViewServerConfig({
   topics: {
     badjson: {
       schema: BadJsonRow,
-      key: "id",
     },
   },
 });
@@ -183,6 +183,7 @@ const health = (rowCount: number, activeSubscriptions: number): ViewServerWireHe
       orders: topicHealth(rowCount, activeSubscriptions),
     },
   },
+  sources: {},
   transport: {
     activeClients: 1,
     activeStreams: activeSubscriptions,
@@ -271,49 +272,6 @@ const materializedSourceHealth = (sampledAtNanos: bigint) =>
     sampledAtNanos,
   }) as const;
 
-const kafkaHealth = (): NonNullable<ViewServerWireHealth["kafka"]> => ({
-  startFrom: {
-    consumerGroupId: "view-server-test",
-    fallbackMode: "earliest",
-    mode: "committed",
-  },
-  regions: {
-    usa: {
-      status: "connected",
-      brokers: "localhost:9092",
-      lastConnectedAt: 10,
-      lastError: null,
-    },
-  },
-  topics: {
-    sourceOrders: {
-      status: "degraded",
-      sourceTopic: "orders-source",
-      viewServerTopic: "orders",
-      regions: {
-        usa: {
-          connected: true,
-          assignedPartitions: 3,
-          messagesPerSecond: 23,
-          bytesPerSecond: 33,
-          decodedMessagesPerSecond: 20,
-          decodeFailuresPerSecond: 1,
-          mappingFailuresPerSecond: 0,
-          publishFailuresPerSecond: 1,
-          commitFailuresPerSecond: 1,
-          processingFailuresPerSecond: 2,
-          lastMessageAt: 60,
-          lastCommitAt: 50,
-          consumerLagMessages: 9n,
-          lagSampledAt: 70,
-          committedOffset: "91",
-          lastError: "commit failed",
-        },
-      },
-    },
-  },
-});
-
 const healthSummaryWireRow = (): typeof ViewServerWireRowSchema.Type => ({
   id: "summary",
   status: "ready",
@@ -321,7 +279,6 @@ const healthSummaryWireRow = (): typeof ViewServerWireRowSchema.Type => ({
   connectionStatus: "connected",
   unhealthyTopics: [],
   updatedAtNanos: "1",
-  maxKafkaLag: "0",
 });
 
 const healthTopicWireRow = (): typeof ViewServerWireRowSchema.Type => ({
@@ -347,7 +304,6 @@ const healthTopicWireRow = (): typeof ViewServerWireRowSchema.Type => ({
   memoryBytes: 0,
   tombstoneCount: 0,
   compactionPending: false,
-  kafkaLag: "0",
   updatedAtNanos: "1",
 });
 
@@ -410,6 +366,7 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
   const activeSourceHealthSubscriptions = yield* SubscriptionRef.make(0);
   let healthRequests = 0;
   let sourceHealthEnabled = false;
+  let sourceHealthMode: "leased" | "materialized" = "leased";
   let sourceHealthError: ViewServerRpcError | undefined = undefined;
   let sourceHealthRequests = 0;
   let healthOverride: ViewServerWireHealth | undefined = undefined;
@@ -429,7 +386,39 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
             healthRequests += 1;
             yield* Effect.sleep(healthDelay);
             const activeSubscriptionCount = yield* SubscriptionRef.get(activeSubscriptions);
-            return healthOverride ?? health(rows.length, activeSubscriptionCount);
+            if (healthOverride !== undefined) {
+              return healthOverride;
+            }
+            const base = health(rows.length, activeSubscriptionCount);
+            if (!sourceHealthEnabled) {
+              return base;
+            }
+            if (sourceHealthMode === "materialized") {
+              return yield* viewServerEncodeHealth(materializedSourceViewServer, {
+                ...base,
+                status: "ready",
+                engine: {
+                  topics: {
+                    orders: topicHealth(rows.length, activeSubscriptionCount),
+                  },
+                },
+                sources: {
+                  orders: materializedSourceHealth(1n),
+                },
+              });
+            }
+            return yield* viewServerEncodeHealth(sourceViewServer, {
+              ...base,
+              status: "ready",
+              engine: {
+                topics: {
+                  orders: topicHealth(rows.length, activeSubscriptionCount),
+                },
+              },
+              sources: {
+                orders: [],
+              },
+            });
           }),
         "ViewServer.Subscribe": (
           payload,
@@ -640,8 +629,9 @@ const makeTestRpcServer = Effect.fn("ViewServerClient.remote.testServer.make")(f
         yield* Queue.offer(events, event);
       }),
     healthRequests: () => healthRequests,
-    enableSourceHealth: () => {
+    enableSourceHealth: (mode: "leased" | "materialized" = "leased") => {
       sourceHealthEnabled = true;
+      sourceHealthMode = mode;
     },
     failSourceHealth: (error: ViewServerRpcError) => {
       sourceHealthError = error;
@@ -685,16 +675,72 @@ describe("remote ViewServer client", () => {
   it.live("decodes Materialized Source Health directly over the WebSocket transport", () =>
     Effect.gen(function* () {
       const server = yield* makeTestRpcServer();
-      server.enableSourceHealth();
+      server.enableSourceHealth("materialized");
       const client = yield* makeViewServerClient(materializedSourceViewServer, {
         url: server.url,
       });
-      const subscription = yield* client.subscribeSourceHealth("orders");
+      const subscription = yield* client.subscribeSourceHealth({ topic: "orders" });
       const first = yield* subscription.events.pipe(Stream.take(1), Stream.runHead);
 
       expect(Option.getOrThrow(first)).toStrictEqual(materializedSourceHealth(1n));
 
       yield* subscription.close();
+      yield* client.close;
+      yield* server.close;
+    }),
+  );
+
+  it.live("rejects hostile Source Health input envelopes before opening an RPC", () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestRpcServer();
+      server.enableSourceHealth();
+      const client = yield* makeViewServerClient(sourceViewServer, {
+        url: server.url,
+      });
+      // @ts-expect-error runtime validation rejects non-object input.
+      const nullInput = client.subscribeSourceHealth(null);
+      // @ts-expect-error runtime validation rejects a missing topic.
+      const missingTopic = client.subscribeSourceHealth({ routeBy: { price: 10 } });
+      // @ts-expect-error runtime validation rejects a non-string topic.
+      const numericTopic = client.subscribeSourceHealth({ topic: 1, routeBy: { price: 10 } });
+      // @ts-expect-error runtime validation rejects primitive routeBy.
+      const primitiveRoute = client.subscribeSourceHealth({ topic: "orders", routeBy: 10 });
+      // @ts-expect-error runtime validation rejects null routeBy.
+      const nullRoute = client.subscribeSourceHealth({ topic: "orders", routeBy: null });
+      // @ts-expect-error runtime validation rejects array routeBy.
+      const arrayRoute = client.subscribeSourceHealth({ topic: "orders", routeBy: [10] });
+      const extraInput = client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 10 },
+        // @ts-expect-error runtime validation rejects unknown top-level fields.
+        extra: true,
+      });
+      const errors = yield* Effect.all([
+        Effect.flip(nullInput),
+        Effect.flip(missingTopic),
+        Effect.flip(numericTopic),
+        Effect.flip(primitiveRoute),
+        Effect.flip(nullRoute),
+        Effect.flip(arrayRoute),
+        Effect.flip(extraInput),
+      ]);
+      const invalidInput = {
+        _tag: "ViewServerRuntimeError",
+        code: "InvalidQuery",
+        message: "Source Health input must be one exact { topic, routeBy? } object.",
+        topic: "<invalid>",
+      };
+
+      expect(errors).toStrictEqual([
+        invalidInput,
+        invalidInput,
+        invalidInput,
+        invalidInput,
+        invalidInput,
+        invalidInput,
+        invalidInput,
+      ]);
+      expect(server.sourceHealthRequests()).toBe(0);
       yield* client.close;
       yield* server.close;
     }),
@@ -707,8 +753,14 @@ describe("remote ViewServer client", () => {
       const client = yield* makeViewServerClient(sourceViewServer, {
         url: server.url,
       });
-      const first = yield* client.subscribeSourceHealth("orders", { price: 10 });
-      const second = yield* client.subscribeSourceHealth("orders", { price: 10 });
+      const first = yield* client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 10 },
+      });
+      const second = yield* client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 10 },
+      });
       const firstSeen = yield* Deferred.make<void>();
       const secondSeen = yield* Deferred.make<void>();
       const firstFiber = yield* first.events.pipe(
@@ -763,8 +815,14 @@ describe("remote ViewServer client", () => {
         const client = yield* makeViewServerClient(sourceViewServer, {
           url: server.url,
         });
-        const first = yield* client.subscribeSourceHealth("orders", { price: 10 });
-        const second = yield* client.subscribeSourceHealth("orders", { price: 20 });
+        const first = yield* client.subscribeSourceHealth({
+          topic: "orders",
+          routeBy: { price: 10 },
+        });
+        const second = yield* client.subscribeSourceHealth({
+          topic: "orders",
+          routeBy: { price: 20 },
+        });
         const firstFiber = yield* first.events.pipe(
           Stream.take(2),
           Stream.runCollect,
@@ -795,7 +853,10 @@ describe("remote ViewServer client", () => {
       const client = yield* makeViewServerClient(sourceViewServer, {
         url: server.url,
       });
-      const subscription = yield* client.subscribeSourceHealth("orders", { price: 25 });
+      const subscription = yield* client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 25 },
+      });
       const consumer = yield* subscription.events.pipe(Stream.runDrain, Effect.forkChild);
 
       yield* server.awaitSourceHealthSubscriptionCount(1);
@@ -832,13 +893,16 @@ describe("remote ViewServer client", () => {
         },
       );
       const interruptedSubscription = yield* client
-        .subscribeSourceHealth("orders", { price: 25 })
+        .subscribeSourceHealth({ topic: "orders", routeBy: { price: 25 } })
         .pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(handoffStarted);
       yield* Fiber.interrupt(interruptedSubscription);
 
       blockHandoff = false;
-      const subscription = yield* client.subscribeSourceHealth("orders", { price: 25 });
+      const subscription = yield* client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 25 },
+      });
       const consumer = yield* subscription.events.pipe(Stream.runDrain, Effect.forkChild);
       yield* server.awaitSourceHealthSubscriptionCount(1);
       yield* subscription.close();
@@ -870,7 +934,10 @@ describe("remote ViewServer client", () => {
       const client = yield* makeViewServerClient(sourceViewServer, {
         url: server.url,
       });
-      const subscription = yield* client.subscribeSourceHealth("orders", { price: 30 });
+      const subscription = yield* client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 30 },
+      });
       const failure = yield* subscription.events.pipe(Stream.runDrain, Effect.flip);
 
       expect(failure).toStrictEqual({
@@ -898,7 +965,10 @@ describe("remote ViewServer client", () => {
       const client = yield* makeViewServerClient(sourceViewServer, {
         url: server.url,
       });
-      const subscription = yield* client.subscribeSourceHealth("orders", { price: 35 });
+      const subscription = yield* client.subscribeSourceHealth({
+        topic: "orders",
+        routeBy: { price: 35 },
+      });
       const failure = yield* subscription.events.pipe(Stream.runDrain, Effect.flip);
 
       expect(failure).toStrictEqual({
@@ -933,7 +1003,6 @@ describe("remote ViewServer client", () => {
             connectionStatus: "connected",
             unhealthyTopics: [],
             updatedAtNanos: 1n,
-            maxKafkaLag: 0n,
           },
         ],
         totalRows: 1,
@@ -1205,7 +1274,6 @@ describe("remote ViewServer client", () => {
             connectionStatus: "connected",
             unhealthyTopics: [],
             updatedAtNanos: 1n,
-            maxKafkaLag: 0n,
           },
         ],
         totalRows: 1,
@@ -1254,7 +1322,6 @@ describe("remote ViewServer client", () => {
             memoryBytes: 0,
             tombstoneCount: 0,
             compactionPending: false,
-            kafkaLag: 0n,
             updatedAtNanos: 1n,
           },
         ],
@@ -1293,53 +1360,10 @@ describe("remote ViewServer client", () => {
       expect(client.health.value.status).toBe("degraded");
       expect(server.healthRequests()).toBe(1);
       const refreshedHealth = health(0, 0);
-      const ignoredKafka = {
-        startFrom: {
-          consumerGroupId: "view-server-test",
-          fallbackMode: "earliest",
-          mode: "committed",
-        },
-        regions: {
-          usa: {
-            status: "connected",
-            brokers: "localhost:9092",
-            lastConnectedAt: 10,
-            lastError: null,
-          },
-        },
-        topics: {
-          sourceOrders: {
-            status: "ready",
-            sourceTopic: "orders-source",
-            viewServerTopic: "orders",
-            regions: {
-              usa: {
-                connected: true,
-                assignedPartitions: 3,
-                messagesPerSecond: 21,
-                bytesPerSecond: 33,
-                decodedMessagesPerSecond: 20,
-                decodeFailuresPerSecond: 1,
-                mappingFailuresPerSecond: 0,
-                publishFailuresPerSecond: 0,
-                commitFailuresPerSecond: 0,
-                processingFailuresPerSecond: 0,
-                lastMessageAt: 60,
-                lastCommitAt: 50,
-                consumerLagMessages: 9n,
-                lagSampledAt: 70,
-                committedOffset: "91",
-                lastError: null,
-              },
-            },
-          },
-        },
-      } satisfies NonNullable<ViewServerWireHealth["kafka"]>;
       server.setHealth({
         ...refreshedHealth,
         version: 42,
         uptimeMs: 1234,
-        kafka: ignoredKafka,
         transport: {
           ...refreshedHealth.transport,
           activeClients: 3,
@@ -1377,7 +1401,6 @@ describe("remote ViewServer client", () => {
       expect(client.health.value.transport.activeClients).toBe(1);
       expect(client.health.value.transport.messagesPerSecond).toBe(0);
       expect(client.health.value.transport.lastError).toBe(null);
-      expect(client.health.value.kafka).toBe(undefined);
       expect(server.healthRequests()).toBe(1);
       yield* summarySubscription.close();
 
@@ -1418,64 +1441,6 @@ describe("remote ViewServer client", () => {
       yield* server.awaitSubscriptionCount(0);
       expect(client.health.value.engine.topics.orders.rowCount).toBe(25);
       yield* healthSubscription.close();
-
-      yield* client.close;
-      yield* server.close;
-    }),
-  );
-
-  it.live("decodes Kafka health counters from initial remote health", () =>
-    Effect.gen(function* () {
-      const server = yield* makeTestRpcServer();
-      server.setHealth({
-        ...health(0, 0),
-        kafka: kafkaHealth(),
-      });
-
-      const client = yield* makeViewServerClient(viewServer, { url: server.url });
-
-      expect(client.health.value.kafka).toStrictEqual({
-        startFrom: {
-          consumerGroupId: "view-server-test",
-          fallbackMode: "earliest",
-          mode: "committed",
-        },
-        regions: {
-          usa: {
-            status: "connected",
-            brokers: "localhost:9092",
-            lastConnectedAt: 10,
-            lastError: null,
-          },
-        },
-        topics: {
-          sourceOrders: {
-            status: "degraded",
-            sourceTopic: "orders-source",
-            viewServerTopic: "orders",
-            regions: {
-              usa: {
-                connected: true,
-                assignedPartitions: 3,
-                messagesPerSecond: 23,
-                bytesPerSecond: 33,
-                decodedMessagesPerSecond: 20,
-                decodeFailuresPerSecond: 1,
-                mappingFailuresPerSecond: 0,
-                publishFailuresPerSecond: 1,
-                commitFailuresPerSecond: 1,
-                processingFailuresPerSecond: 2,
-                lastMessageAt: 60,
-                lastCommitAt: 50,
-                consumerLagMessages: 9n,
-                lagSampledAt: 70,
-                committedOffset: "91",
-                lastError: "commit failed",
-              },
-            },
-          },
-        },
-      });
 
       yield* client.close;
       yield* server.close;

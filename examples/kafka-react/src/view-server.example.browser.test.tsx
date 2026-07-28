@@ -1,19 +1,90 @@
 import { describe, expect, it } from "@effect/vitest";
-import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
-import { Effect } from "effect";
+import { KafkaSourceAdapter, type KafkaRegionMetrics } from "effect-view-server/kafka/contract";
+import { makeInMemoryViewServerReact } from "effect-view-server/react/testing";
+import { SourceAdapterServer } from "effect-view-server/source-adapter/server";
+import { Chunk, Effect, Schedule, Stream } from "effect";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { render } from "vitest-browser-react";
-import { KafkaExampleApp } from "./view-server.example";
 import { viewServerReact } from "./view-server.config";
+import { KafkaExampleApp, sourceHealthStatusLabel } from "./view-server.example";
+
+const emptyRegionMetrics = (region: string): KafkaRegionMetrics => ({
+  region,
+  assignments: [],
+  commits: 0n,
+  commitFailures: 0n,
+  decoded: 0n,
+  decodeFailures: 0n,
+  mapped: 0n,
+  mappingFailures: 0n,
+  rejections: 0n,
+  reconnects: 0n,
+  rebalances: 0n,
+  closes: 0n,
+  closeFailures: 0n,
+});
+
+const KafkaBrowserTest = SourceAdapterServer.make(KafkaSourceAdapter, {
+  materialized: {
+    initialLaneIds: (input) => [input.definition.regions[0]],
+    acquire: (input) =>
+      Effect.gen(function* () {
+        const row =
+          input.toolkit.topic === "orders"
+            ? {
+                id: "usa:order-kafka-browser",
+                customerId: "customer-kafka-browser",
+                status: "open",
+                price: 42,
+                region: "usa",
+                updatedAt: 1,
+              }
+            : {
+                id: "london:trade-kafka-browser",
+                symbol: "EVS",
+                side: "buy",
+                quantity: 1,
+                region: "london",
+                updatedAt: 1,
+              };
+        const mutation = yield* input.toolkit.decodeUpsert(row);
+        const delivery = yield* input.toolkit.delivery(Chunk.of(mutation));
+        const firstRegion = input.definition.regions[0];
+        return SourceAdapterServer.attempt([
+          SourceAdapterServer.lane({
+            id: firstRegion,
+            events: Stream.concat(Stream.make(delivery), Stream.never),
+          }),
+        ]);
+      }),
+    metrics: (input) => {
+      const [firstRegion, ...remainingRegions] = input.definition.regions;
+      return Effect.succeed({
+        activeGroupId: "view-server-example-browser",
+        start: { _tag: "Pending" },
+        regions: [emptyRegionMetrics(firstRegion), ...remainingRegions.map(emptyRegionMetrics)],
+      });
+    },
+    retry: Schedule.recurs(0),
+  },
+});
 
 describe("Kafka React example", () => {
-  it("renders the production component with an in-memory provider", async () => {
-    const inMemoryExample = createInMemoryViewServerReact(viewServerReact);
-    await Effect.runPromise(inMemoryExample.client.reset());
-
+  it("renders real in-memory Source Health and Source-delivered rows", async () => {
+    expect(
+      sourceHealthStatusLabel(
+        AsyncResult.initial<{
+          readonly status: { readonly _tag: "Ready" };
+        }>(),
+      ),
+    ).toBe("loading");
+    const inMemory = await Effect.runPromise(
+      makeInMemoryViewServerReact(viewServerReact).pipe(Effect.provide(KafkaBrowserTest)),
+    );
     const screen = await render(
-      <inMemoryExample.ViewServerInMemoryProvider>
+      <inMemory.ViewServerInMemoryProvider>
         <KafkaExampleApp />
-      </inMemoryExample.ViewServerInMemoryProvider>,
+      </inMemory.ViewServerInMemoryProvider>,
     );
 
     await expect
@@ -24,24 +95,15 @@ describe("Kafka React example", () => {
         }),
       )
       .toBeVisible();
-    await expect.element(screen.getByText("Max Kafka lag: n/a", { exact: true })).toBeVisible();
-    await Effect.runPromise(
-      inMemoryExample.client.publish("orders", {
-        id: "order-kafka-browser",
-        customerId: "customer-kafka-browser",
-        status: "open",
-        price: 42,
-        region: "usa",
-        updatedAt: 1,
-      }),
-    );
+    await expect.element(screen.getByText("Orders source: Ready", { exact: true })).toBeVisible();
     await expect
-      .element(screen.getByRole("cell", { name: "order-kafka-browser", exact: true }))
+      .element(screen.getByRole("cell", { name: "usa:order-kafka-browser", exact: true }))
       .toBeVisible();
     await expect
       .element(screen.getByRole("cell", { name: "customer-kafka-browser", exact: true }))
       .toBeVisible();
+
     await screen.unmount();
-    await Effect.runPromise(inMemoryExample.close);
+    await Effect.runPromise(inMemory.close);
   });
 });

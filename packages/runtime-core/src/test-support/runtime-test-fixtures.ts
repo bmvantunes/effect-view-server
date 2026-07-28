@@ -1,14 +1,15 @@
 import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import {
+  ViewServerId,
   defineViewServerConfig,
-  kafka,
+  type ViewServerHealth,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
-import { grpcSourceMarkers } from "@effect-view-server/config/internal";
 import { Option, Schema, Tracer } from "effect";
+import { healthFromEngine } from "../health";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -20,55 +21,6 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
-    },
-  },
-});
-
-export const leasedViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      grpcSource: grpcSourceMarkers.leased({
-        routeBy: ["region", "status"],
-      }),
-    },
-  },
-});
-
-export const materializedGrpcSourceViewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      grpcSource: grpcSourceMarkers.materialized(),
-    },
-  },
-});
-
-export const kafkaOwnedViewServer = defineViewServerConfig({
-  kafka: {
-    usa: "localhost:9092",
-  },
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      kafkaSource: kafka.source({
-        topic: "orders-source",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Order)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
-        map: ({ value }) => ({
-          customerId: value.customerId,
-          status: value.status,
-          price: value.price,
-          region: value.region,
-          updatedAt: value.updatedAt,
-        }),
-      }),
     },
   },
 });
@@ -99,7 +51,7 @@ export const publicLeasedRuntimeAccessError = {
   code: "UnsupportedQuery",
   topic: "orders",
   message:
-    "Leased gRPC topics do not support direct runtime mutations, one-shot snapshots, or runtime-core subscriptions; use the runtime gRPC lease manager so it owns lease lifecycle.",
+    "Leased Source topics do not support one-shot snapshots; use a live subscription so Runtime Core owns the source lease lifecycle.",
 } satisfies ViewServerRuntimeError;
 
 export const publicSourceOwnedRuntimeMutationError = {
@@ -226,4 +178,11 @@ export const engineHealth = (
   queuedEvents: 0,
   maxQueueDepth: 0,
   backpressureEvents: 0,
+});
+
+export const sourceFreeViewServerHealth = (
+  health: ColumnLiveViewEngineHealth<Topics>,
+): ViewServerHealth<Topics> => ({
+  ...healthFromEngine(health),
+  sources: {},
 });

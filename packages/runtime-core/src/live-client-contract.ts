@@ -1,4 +1,3 @@
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import type {
   ColumnLiveViewEngineQueryPartition,
   ColumnLiveViewTerminalObserver,
@@ -13,6 +12,7 @@ import type {
   GroupedQuery,
   LiveQueryRow,
   RawQuery,
+  TopicDefinitions,
   TopicRow,
   ViewServerRuntimeError,
   ViewServerTransportError,
@@ -21,7 +21,7 @@ import type { Effect } from "effect";
 import type { ViewServerRuntimeCoreProtocolQuerySubscriber } from "./protocol-query-subscriber";
 
 export type ViewServerRuntimeCoreEngineQueryInput<
-  Topics extends DecodableTopicDefinitions,
+  Topics extends TopicDefinitions,
   Topic extends Extract<keyof Topics, string>,
   Query,
 > = ExactLiveQueryInput<TopicRow<Topics, Topic>, Query>;
@@ -29,7 +29,7 @@ export type ViewServerRuntimeCoreEngineQueryInput<
 export type ViewServerRuntimeCoreTerminalObserver = ColumnLiveViewTerminalObserver;
 export type ViewServerRuntimeCoreQueryPartition = ColumnLiveViewEngineQueryPartition;
 
-type ViewServerObservedQuerySubscriber<Topics extends DecodableTopicDefinitions> = <
+type ViewServerObservedQuerySubscriber<Topics extends TopicDefinitions> = <
   Topic extends Extract<keyof Topics, string>,
   const Query extends
     | RawQuery<TopicRow<Topics, NoInfer<Topic>>>
@@ -44,7 +44,7 @@ type ViewServerObservedQuerySubscriber<Topics extends DecodableTopicDefinitions>
   ViewServerRuntimeError | ViewServerTransportError
 >;
 
-export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopicDefinitions> = {
+export type ViewServerRuntimeCoreInternalLiveClient<Topics extends TopicDefinitions> = {
   readonly subscribeInternal: ViewServerRuntimeLiveClient<Topics>["subscribe"];
   readonly subscribeObservedInternal: ViewServerObservedQuerySubscriber<Topics>;
   readonly subscribeRuntimeInternal: (
@@ -72,7 +72,7 @@ export type ViewServerRuntimeCoreInternalLiveClient<Topics extends DecodableTopi
   >;
 };
 
-export type ViewServerRuntimeCoreLiveClientModule<Topics extends DecodableTopicDefinitions> = {
+export type ViewServerRuntimeCoreLiveClientModule<Topics extends TopicDefinitions> = {
   readonly liveClient: Omit<ViewServerRuntimeLiveClient<Topics>, "close"> &
     ViewServerRuntimeCoreInternalLiveClient<Topics>;
   readonly protocolQuerySubscriber: ViewServerRuntimeCoreProtocolQuerySubscriber<Topics>;

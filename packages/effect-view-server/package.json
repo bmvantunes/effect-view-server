@@ -44,17 +44,9 @@
       "types": "./dist/config.d.ts",
       "import": "./dist/config.js"
     },
-    "./config/grpc": {
-      "types": "./dist/config-grpc.d.ts",
-      "import": "./dist/config-grpc.js"
-    },
     "./config/health": {
       "types": "./dist/config-health.d.ts",
       "import": "./dist/config-health.js"
-    },
-    "./config/kafka": {
-      "types": "./dist/config-kafka.d.ts",
-      "import": "./dist/config-kafka.js"
     },
     "./config/live-protocol": {
       "types": "./dist/config-live-protocol.d.ts",

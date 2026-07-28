@@ -3,7 +3,7 @@ import type {
   ViewServerHealth,
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
-import { viewServerDecodeHealth } from "@effect-view-server/protocol";
+import { viewServerEncodeHealth } from "@effect-view-server/protocol";
 import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { validateViewServerHttpRequest, viewServerAuthErrorResponse } from "./auth";
@@ -28,12 +28,6 @@ const metricLine = (
   labels: Readonly<Record<string, string>> = {},
 ): string => `${name}${labelsText(labels)} ${value.toString()}`;
 
-const nullableNumberMetricLine = (
-  name: string,
-  value: number | bigint | null,
-  labels: Readonly<Record<string, string>>,
-): string | undefined => (value === null ? undefined : metricLine(name, value, labels));
-
 const booleanMetric = (value: boolean): number => (value ? 1 : 0);
 
 const statusMetric = (status: string, expected: string): number =>
@@ -42,72 +36,209 @@ const statusMetric = (status: string, expected: string): number =>
 const compactLines = (lines: ReadonlyArray<string | undefined>): string =>
   `${lines.filter((line) => line !== undefined).join("\n")}\n`;
 
-type GrpcFeedMetricTotals = {
-  readonly rowCount: number;
-  readonly subscriberCount: number;
-  readonly messagesPerSecond: number;
-  readonly rowsPerSecond: number;
-  readonly decodeFailuresPerSecond: number;
-  readonly mappingFailuresPerSecond: number;
-  readonly publishFailuresPerSecond: number;
-  readonly reconnects: number;
-};
-
-const emptyGrpcFeedMetricTotals = (): GrpcFeedMetricTotals => ({
-  rowCount: 0,
-  subscriberCount: 0,
-  messagesPerSecond: 0,
-  rowsPerSecond: 0,
-  decodeFailuresPerSecond: 0,
-  mappingFailuresPerSecond: 0,
-  publishFailuresPerSecond: 0,
-  reconnects: 0,
-});
-
-const addGrpcFeedMetricTotals = (
-  current: GrpcFeedMetricTotals,
-  feed: GrpcFeedMetricTotals,
-): GrpcFeedMetricTotals => ({
-  rowCount: current.rowCount + feed.rowCount,
-  subscriberCount: current.subscriberCount + feed.subscriberCount,
-  messagesPerSecond: current.messagesPerSecond + feed.messagesPerSecond,
-  rowsPerSecond: current.rowsPerSecond + feed.rowsPerSecond,
-  decodeFailuresPerSecond: current.decodeFailuresPerSecond + feed.decodeFailuresPerSecond,
-  mappingFailuresPerSecond: current.mappingFailuresPerSecond + feed.mappingFailuresPerSecond,
-  publishFailuresPerSecond: current.publishFailuresPerSecond + feed.publishFailuresPerSecond,
-  reconnects: current.reconnects + feed.reconnects,
-});
-
-const pushGrpcFeedMetrics = (
-  lines: Array<string | undefined>,
+const nullableMetricLine = (
+  name: string,
+  value: bigint | null,
   labels: Readonly<Record<string, string>>,
-  feed: GrpcFeedMetricTotals,
-): void => {
-  lines.push(
-    metricLine("view_server_grpc_feed_rows", feed.rowCount, labels),
-    metricLine("view_server_grpc_feed_subscribers", feed.subscriberCount, labels),
-    metricLine("view_server_grpc_feed_messages_per_second", feed.messagesPerSecond, labels),
-    metricLine("view_server_grpc_feed_rows_per_second", feed.rowsPerSecond, labels),
-    metricLine(
-      "view_server_grpc_feed_decode_failures_per_second",
-      feed.decodeFailuresPerSecond,
-      labels,
-    ),
-    metricLine(
-      "view_server_grpc_feed_mapping_failures_per_second",
-      feed.mappingFailuresPerSecond,
-      labels,
-    ),
-    metricLine(
-      "view_server_grpc_feed_publish_failures_per_second",
-      feed.publishFailuresPerSecond,
-      labels,
-    ),
-    metricLine("view_server_grpc_feed_reconnects", feed.reconnects, labels),
-  );
+): string | undefined => (value === null ? undefined : metricLine(name, value, labels));
+
+type SourceMetricStatus =
+  | "Starting"
+  | "Ready"
+  | "Degraded"
+  | "WaitingToRetry"
+  | "Reacquiring"
+  | "Exhausted"
+  | "Stopping";
+
+type SourceMetricLane = {
+  readonly buffer:
+    | {
+        readonly _tag: "Unbuffered";
+      }
+    | {
+        readonly _tag: "Bounded";
+        readonly capacity: number;
+        readonly depth: number;
+        readonly highWaterMark: number;
+        readonly overflowCount: bigint;
+      };
 };
 
-const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
+type SourceMetricHealth = {
+  readonly status: {
+    readonly _tag: SourceMetricStatus;
+  };
+  readonly metrics: {
+    readonly runtime: {
+      readonly startedAtNanos: bigint;
+      readonly lastAttemptStartedAtNanos: bigint;
+      readonly lastDeliveryAtNanos: bigint | null;
+      readonly lastRejectionAtNanos: bigint | null;
+      readonly lastAppliedMutationAtNanos: bigint | null;
+      readonly lastTerminationAtNanos: bigint | null;
+      readonly currentAttempt: bigint;
+      readonly retryCount: bigint;
+      readonly receivedDeliveryCount: bigint;
+      readonly rejectedItemCount: bigint;
+      readonly attemptedMutationCount: bigint;
+      readonly appliedUpsertCount: bigint;
+      readonly appliedDeleteCount: bigint;
+      readonly failedMutationCount: bigint;
+      readonly completedSettlementCount: bigint;
+      readonly failedSettlementCount: bigint;
+      readonly retainedRowCount: number;
+      readonly lanes: ReadonlyArray<SourceMetricLane>;
+    };
+  };
+};
+
+function validatedSourceMetricHealth(candidate: unknown): SourceMetricHealth;
+function validatedSourceMetricHealth(candidate: unknown): unknown {
+  // The aggregate health codec validates the configured Source Health schema
+  // immediately before metrics projection. This restores only the fixed SDK
+  // metrics shared by every adapter; adapter-owned metrics remain opaque.
+  return candidate;
+}
+
+type SourceMetricTotals = {
+  readonly statuses: Record<SourceMetricStatus, number>;
+  activeInstances: number;
+  startedAtNanos: bigint | null;
+  lastAttemptStartedAtNanos: bigint | null;
+  lastDeliveryAtNanos: bigint | null;
+  lastRejectionAtNanos: bigint | null;
+  lastAppliedMutationAtNanos: bigint | null;
+  lastTerminationAtNanos: bigint | null;
+  currentAttempt: bigint;
+  retryCount: bigint;
+  receivedDeliveryCount: bigint;
+  rejectedItemCount: bigint;
+  attemptedMutationCount: bigint;
+  appliedUpsertCount: bigint;
+  appliedDeleteCount: bigint;
+  failedMutationCount: bigint;
+  completedSettlementCount: bigint;
+  failedSettlementCount: bigint;
+  retainedRowCount: number;
+  laneCount: number;
+  boundedLaneCount: number;
+  bufferCapacity: number;
+  bufferDepth: number;
+  bufferHighWaterMark: number;
+  bufferOverflowCount: bigint;
+};
+
+const emptySourceMetricTotals = (): SourceMetricTotals => ({
+  statuses: {
+    Starting: 0,
+    Ready: 0,
+    Degraded: 0,
+    WaitingToRetry: 0,
+    Reacquiring: 0,
+    Exhausted: 0,
+    Stopping: 0,
+  },
+  activeInstances: 0,
+  startedAtNanos: null,
+  lastAttemptStartedAtNanos: null,
+  lastDeliveryAtNanos: null,
+  lastRejectionAtNanos: null,
+  lastAppliedMutationAtNanos: null,
+  lastTerminationAtNanos: null,
+  currentAttempt: 0n,
+  retryCount: 0n,
+  receivedDeliveryCount: 0n,
+  rejectedItemCount: 0n,
+  attemptedMutationCount: 0n,
+  appliedUpsertCount: 0n,
+  appliedDeleteCount: 0n,
+  failedMutationCount: 0n,
+  completedSettlementCount: 0n,
+  failedSettlementCount: 0n,
+  retainedRowCount: 0,
+  laneCount: 0,
+  boundedLaneCount: 0,
+  bufferCapacity: 0,
+  bufferDepth: 0,
+  bufferHighWaterMark: 0,
+  bufferOverflowCount: 0n,
+});
+
+const maxNullableBigInt = (current: bigint | null, next: bigint | null): bigint | null =>
+  next === null ? current : current === null || next > current ? next : current;
+
+const addSourceMetricHealth = (totals: SourceMetricTotals, health: SourceMetricHealth): void => {
+  const runtime = health.metrics.runtime;
+  totals.activeInstances += 1;
+  totals.statuses[health.status._tag] += 1;
+  totals.startedAtNanos = maxNullableBigInt(totals.startedAtNanos, runtime.startedAtNanos);
+  totals.lastAttemptStartedAtNanos = maxNullableBigInt(
+    totals.lastAttemptStartedAtNanos,
+    runtime.lastAttemptStartedAtNanos,
+  );
+  totals.lastDeliveryAtNanos = maxNullableBigInt(
+    totals.lastDeliveryAtNanos,
+    runtime.lastDeliveryAtNanos,
+  );
+  totals.lastRejectionAtNanos = maxNullableBigInt(
+    totals.lastRejectionAtNanos,
+    runtime.lastRejectionAtNanos,
+  );
+  totals.lastAppliedMutationAtNanos = maxNullableBigInt(
+    totals.lastAppliedMutationAtNanos,
+    runtime.lastAppliedMutationAtNanos,
+  );
+  totals.lastTerminationAtNanos = maxNullableBigInt(
+    totals.lastTerminationAtNanos,
+    runtime.lastTerminationAtNanos,
+  );
+  totals.currentAttempt =
+    runtime.currentAttempt > totals.currentAttempt ? runtime.currentAttempt : totals.currentAttempt;
+  totals.retryCount += runtime.retryCount;
+  totals.receivedDeliveryCount += runtime.receivedDeliveryCount;
+  totals.rejectedItemCount += runtime.rejectedItemCount;
+  totals.attemptedMutationCount += runtime.attemptedMutationCount;
+  totals.appliedUpsertCount += runtime.appliedUpsertCount;
+  totals.appliedDeleteCount += runtime.appliedDeleteCount;
+  totals.failedMutationCount += runtime.failedMutationCount;
+  totals.completedSettlementCount += runtime.completedSettlementCount;
+  totals.failedSettlementCount += runtime.failedSettlementCount;
+  totals.retainedRowCount += runtime.retainedRowCount;
+  totals.laneCount += runtime.lanes.length;
+  for (const lane of runtime.lanes) {
+    if (lane.buffer._tag === "Bounded") {
+      totals.boundedLaneCount += 1;
+      totals.bufferCapacity += lane.buffer.capacity;
+      totals.bufferDepth += lane.buffer.depth;
+      totals.bufferHighWaterMark += lane.buffer.highWaterMark;
+      totals.bufferOverflowCount += lane.buffer.overflowCount;
+    }
+  }
+};
+
+const sourceMetricStatusLabels: Readonly<Record<SourceMetricStatus, string>> = {
+  Starting: "starting",
+  Ready: "ready",
+  Degraded: "degraded",
+  WaitingToRetry: "waiting_to_retry",
+  Reacquiring: "reacquiring",
+  Exhausted: "exhausted",
+  Stopping: "stopping",
+};
+
+const sourceMetricStatuses: ReadonlyArray<SourceMetricStatus> = [
+  "Starting",
+  "Ready",
+  "Degraded",
+  "WaitingToRetry",
+  "Reacquiring",
+  "Exhausted",
+  "Stopping",
+];
+
+export const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
+  config: ViewServerTopicConfig<Topics>,
   health: ViewServerHealth<Topics>,
 ): string => {
   const lines: Array<string | undefined> = [
@@ -191,46 +322,56 @@ const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
     "# TYPE view_server_engine_topic_mutations_per_second gauge",
     "# HELP view_server_engine_topic_rows_per_second Rows per second by topic.",
     "# TYPE view_server_engine_topic_rows_per_second gauge",
-    "# HELP view_server_kafka_region_connected Kafka region connection state.",
-    "# TYPE view_server_kafka_region_connected gauge",
-    "# HELP view_server_kafka_messages_per_second Kafka messages per second.",
-    "# TYPE view_server_kafka_messages_per_second gauge",
-    "# HELP view_server_kafka_bytes_per_second Kafka bytes per second.",
-    "# TYPE view_server_kafka_bytes_per_second gauge",
-    "# HELP view_server_kafka_decoded_messages_per_second Kafka decoded messages per second.",
-    "# TYPE view_server_kafka_decoded_messages_per_second gauge",
-    "# HELP view_server_kafka_decode_failures_per_second Kafka decode failures per second.",
-    "# TYPE view_server_kafka_decode_failures_per_second gauge",
-    "# HELP view_server_kafka_mapping_failures_per_second Kafka mapping failures per second.",
-    "# TYPE view_server_kafka_mapping_failures_per_second gauge",
-    "# HELP view_server_kafka_publish_failures_per_second Kafka publish failures per second.",
-    "# TYPE view_server_kafka_publish_failures_per_second gauge",
-    "# HELP view_server_kafka_commit_failures_per_second Kafka commit failures per second.",
-    "# TYPE view_server_kafka_commit_failures_per_second gauge",
-    "# HELP view_server_kafka_processing_failures_per_second Kafka processing failures per second.",
-    "# TYPE view_server_kafka_processing_failures_per_second gauge",
-    "# HELP view_server_kafka_consumer_lag_messages Kafka consumer lag messages.",
-    "# TYPE view_server_kafka_consumer_lag_messages gauge",
-    "# HELP view_server_grpc_client_connected gRPC client connection state.",
-    "# TYPE view_server_grpc_client_connected gauge",
-    "# HELP view_server_grpc_client_active_feeds gRPC client active feed count.",
-    "# TYPE view_server_grpc_client_active_feeds gauge",
-    "# HELP view_server_grpc_feed_rows gRPC feed retained rows.",
-    "# TYPE view_server_grpc_feed_rows gauge",
-    "# HELP view_server_grpc_feed_subscribers gRPC feed subscribers.",
-    "# TYPE view_server_grpc_feed_subscribers gauge",
-    "# HELP view_server_grpc_feed_messages_per_second gRPC feed messages per second.",
-    "# TYPE view_server_grpc_feed_messages_per_second gauge",
-    "# HELP view_server_grpc_feed_rows_per_second gRPC feed rows per second.",
-    "# TYPE view_server_grpc_feed_rows_per_second gauge",
-    "# HELP view_server_grpc_feed_decode_failures_per_second gRPC feed decode failures per second.",
-    "# TYPE view_server_grpc_feed_decode_failures_per_second gauge",
-    "# HELP view_server_grpc_feed_mapping_failures_per_second gRPC feed mapping failures per second.",
-    "# TYPE view_server_grpc_feed_mapping_failures_per_second gauge",
-    "# HELP view_server_grpc_feed_publish_failures_per_second gRPC feed publish failures per second.",
-    "# TYPE view_server_grpc_feed_publish_failures_per_second gauge",
-    "# HELP view_server_grpc_feed_reconnects gRPC feed reconnects.",
-    "# TYPE view_server_grpc_feed_reconnects gauge",
+    "# HELP view_server_source_active_instances Active logical source instances by topic.",
+    "# TYPE view_server_source_active_instances gauge",
+    "# HELP view_server_source_status Active logical source instances by lifecycle status.",
+    "# TYPE view_server_source_status gauge",
+    "# HELP view_server_source_started_at_nanos Latest logical source start time in epoch nanoseconds.",
+    "# TYPE view_server_source_started_at_nanos gauge",
+    "# HELP view_server_source_last_attempt_started_at_nanos Latest attempt start time in epoch nanoseconds.",
+    "# TYPE view_server_source_last_attempt_started_at_nanos gauge",
+    "# HELP view_server_source_last_delivery_at_nanos Latest delivery time in epoch nanoseconds.",
+    "# TYPE view_server_source_last_delivery_at_nanos gauge",
+    "# HELP view_server_source_last_rejection_at_nanos Latest item rejection time in epoch nanoseconds.",
+    "# TYPE view_server_source_last_rejection_at_nanos gauge",
+    "# HELP view_server_source_last_applied_mutation_at_nanos Latest applied mutation time in epoch nanoseconds.",
+    "# TYPE view_server_source_last_applied_mutation_at_nanos gauge",
+    "# HELP view_server_source_last_termination_at_nanos Latest attempt termination time in epoch nanoseconds.",
+    "# TYPE view_server_source_last_termination_at_nanos gauge",
+    "# HELP view_server_source_current_attempt Highest current attempt number.",
+    "# TYPE view_server_source_current_attempt gauge",
+    "# HELP view_server_source_retries_total Source retries across active logical source instances.",
+    "# TYPE view_server_source_retries_total counter",
+    "# HELP view_server_source_received_deliveries_total Received deliveries across active logical source instances.",
+    "# TYPE view_server_source_received_deliveries_total counter",
+    "# HELP view_server_source_rejected_items_total Rejected source items across active logical source instances.",
+    "# TYPE view_server_source_rejected_items_total counter",
+    "# HELP view_server_source_attempted_mutations_total Attempted source mutations across active logical source instances.",
+    "# TYPE view_server_source_attempted_mutations_total counter",
+    "# HELP view_server_source_applied_upserts_total Applied source upserts across active logical source instances.",
+    "# TYPE view_server_source_applied_upserts_total counter",
+    "# HELP view_server_source_applied_deletes_total Applied source deletes across active logical source instances.",
+    "# TYPE view_server_source_applied_deletes_total counter",
+    "# HELP view_server_source_failed_mutations_total Failed source mutations across active logical source instances.",
+    "# TYPE view_server_source_failed_mutations_total counter",
+    "# HELP view_server_source_completed_settlements_total Completed source settlements across active logical source instances.",
+    "# TYPE view_server_source_completed_settlements_total counter",
+    "# HELP view_server_source_failed_settlements_total Failed source settlements across active logical source instances.",
+    "# TYPE view_server_source_failed_settlements_total counter",
+    "# HELP view_server_source_retained_rows Retained source-owned rows across active logical source instances.",
+    "# TYPE view_server_source_retained_rows gauge",
+    "# HELP view_server_source_delivery_lanes Active source delivery lanes.",
+    "# TYPE view_server_source_delivery_lanes gauge",
+    "# HELP view_server_source_bounded_buffer_lanes Active bounded source buffer lanes.",
+    "# TYPE view_server_source_bounded_buffer_lanes gauge",
+    "# HELP view_server_source_buffer_capacity Total bounded source buffer capacity.",
+    "# TYPE view_server_source_buffer_capacity gauge",
+    "# HELP view_server_source_buffer_depth Total bounded source buffer depth.",
+    "# TYPE view_server_source_buffer_depth gauge",
+    "# HELP view_server_source_buffer_high_water_mark Total bounded source buffer high-water mark.",
+    "# TYPE view_server_source_buffer_high_water_mark gauge",
+    "# HELP view_server_source_buffer_overflows_total Source buffer overflows across active logical source instances.",
+    "# TYPE view_server_source_buffer_overflows_total counter",
   ];
 
   for (const [topicName, topic] of Object.entries(health.engine.topics)) {
@@ -303,98 +444,92 @@ const viewServerHealthMetrics = <const Topics extends TopicDefinitions>(
     );
   }
 
-  const kafka = health.kafka;
-  if (kafka !== undefined) {
-    for (const sourceTopic of Object.values(kafka.topics)) {
-      for (const [regionName, region] of Object.entries(sourceTopic.regions)) {
-        const labels = {
-          region: regionName,
-          sourceTopic: sourceTopic.sourceTopic,
-          viewServerTopic: sourceTopic.viewServerTopic,
-        };
-        lines.push(
-          metricLine("view_server_kafka_region_connected", booleanMetric(region.connected), labels),
-          metricLine("view_server_kafka_messages_per_second", region.messagesPerSecond, labels),
-          metricLine("view_server_kafka_bytes_per_second", region.bytesPerSecond, labels),
-          metricLine(
-            "view_server_kafka_decoded_messages_per_second",
-            region.decodedMessagesPerSecond,
-            labels,
-          ),
-          metricLine(
-            "view_server_kafka_decode_failures_per_second",
-            region.decodeFailuresPerSecond,
-            labels,
-          ),
-          metricLine(
-            "view_server_kafka_mapping_failures_per_second",
-            region.mappingFailuresPerSecond,
-            labels,
-          ),
-          metricLine(
-            "view_server_kafka_publish_failures_per_second",
-            region.publishFailuresPerSecond,
-            labels,
-          ),
-          metricLine(
-            "view_server_kafka_commit_failures_per_second",
-            region.commitFailuresPerSecond,
-            labels,
-          ),
-          metricLine(
-            "view_server_kafka_processing_failures_per_second",
-            region.processingFailuresPerSecond,
-            labels,
-          ),
-          nullableNumberMetricLine(
-            "view_server_kafka_consumer_lag_messages",
-            region.consumerLagMessages,
-            labels,
-          ),
-        );
-      }
+  for (const [topicName, definition] of Object.entries(config.topics)) {
+    const source = definition.source;
+    if (source === undefined) {
+      continue;
     }
-  }
-
-  const grpc = health.grpc;
-  if (grpc !== undefined) {
-    for (const [clientName, client] of Object.entries(grpc.clients)) {
-      const labels = {
-        client: clientName,
-        baseUrl: client.baseUrl,
-      };
-      lines.push(
-        metricLine(
-          "view_server_grpc_client_connected",
-          booleanMetric(client.status === "connected"),
-          labels,
-        ),
-        metricLine("view_server_grpc_client_active_feeds", client.activeFeeds, labels),
-      );
+    const candidate: unknown = Reflect.get(health.sources, topicName);
+    const active = (Array.isArray(candidate) ? candidate : [candidate]).map(
+      validatedSourceMetricHealth,
+    );
+    const totals = emptySourceMetricTotals();
+    for (const sourceHealth of active) {
+      addSourceMetricHealth(totals, sourceHealth);
     }
-    for (const [topicName, topicFeeds] of Object.entries(grpc.feeds)) {
-      for (const [feedName, feed] of Object.entries(topicFeeds.materialized)) {
-        const labels = {
-          lifecycle: "materialized",
-          topic: topicName,
-          feed: feedName,
-        };
-        pushGrpcFeedMetrics(lines, labels, feed);
-      }
-      const leasedFeedTotals = new Map<string, GrpcFeedMetricTotals>();
-      for (const feed of Object.values(topicFeeds.leased)) {
-        const current = leasedFeedTotals.get(feed.feedName) ?? emptyGrpcFeedMetricTotals();
-        leasedFeedTotals.set(feed.feedName, addGrpcFeedMetricTotals(current, feed));
-      }
-      for (const [feedName, feed] of leasedFeedTotals) {
-        const labels = {
-          lifecycle: "leased",
-          topic: topicName,
-          feed: feedName,
-        };
-        pushGrpcFeedMetrics(lines, labels, feed);
-      }
-    }
+    const labels = {
+      topic: topicName,
+      adapter: source.identity.name,
+      lifecycle: source.lifecycle,
+    };
+    lines.push(
+      metricLine("view_server_source_active_instances", totals.activeInstances, labels),
+      ...sourceMetricStatuses.map((status) =>
+        metricLine("view_server_source_status", totals.statuses[status], {
+          ...labels,
+          status: sourceMetricStatusLabels[status],
+        }),
+      ),
+      nullableMetricLine("view_server_source_started_at_nanos", totals.startedAtNanos, labels),
+      nullableMetricLine(
+        "view_server_source_last_attempt_started_at_nanos",
+        totals.lastAttemptStartedAtNanos,
+        labels,
+      ),
+      nullableMetricLine(
+        "view_server_source_last_delivery_at_nanos",
+        totals.lastDeliveryAtNanos,
+        labels,
+      ),
+      nullableMetricLine(
+        "view_server_source_last_rejection_at_nanos",
+        totals.lastRejectionAtNanos,
+        labels,
+      ),
+      nullableMetricLine(
+        "view_server_source_last_applied_mutation_at_nanos",
+        totals.lastAppliedMutationAtNanos,
+        labels,
+      ),
+      nullableMetricLine(
+        "view_server_source_last_termination_at_nanos",
+        totals.lastTerminationAtNanos,
+        labels,
+      ),
+      metricLine("view_server_source_current_attempt", totals.currentAttempt, labels),
+      metricLine("view_server_source_retries_total", totals.retryCount, labels),
+      metricLine(
+        "view_server_source_received_deliveries_total",
+        totals.receivedDeliveryCount,
+        labels,
+      ),
+      metricLine("view_server_source_rejected_items_total", totals.rejectedItemCount, labels),
+      metricLine(
+        "view_server_source_attempted_mutations_total",
+        totals.attemptedMutationCount,
+        labels,
+      ),
+      metricLine("view_server_source_applied_upserts_total", totals.appliedUpsertCount, labels),
+      metricLine("view_server_source_applied_deletes_total", totals.appliedDeleteCount, labels),
+      metricLine("view_server_source_failed_mutations_total", totals.failedMutationCount, labels),
+      metricLine(
+        "view_server_source_completed_settlements_total",
+        totals.completedSettlementCount,
+        labels,
+      ),
+      metricLine(
+        "view_server_source_failed_settlements_total",
+        totals.failedSettlementCount,
+        labels,
+      ),
+      metricLine("view_server_source_retained_rows", totals.retainedRowCount, labels),
+      metricLine("view_server_source_delivery_lanes", totals.laneCount, labels),
+      metricLine("view_server_source_bounded_buffer_lanes", totals.boundedLaneCount, labels),
+      metricLine("view_server_source_buffer_capacity", totals.bufferCapacity, labels),
+      metricLine("view_server_source_buffer_depth", totals.bufferDepth, labels),
+      metricLine("view_server_source_buffer_high_water_mark", totals.bufferHighWaterMark, labels),
+      metricLine("view_server_source_buffer_overflows_total", totals.bufferOverflowCount, labels),
+    );
   }
 
   return compactLines(lines);
@@ -422,9 +557,10 @@ export const makeViewServerMetricsRoute = <const Topics extends TopicDefinitions
           onSuccess: () =>
             Effect.gen(function* () {
               const health = yield* input.runtime.health();
-              return yield* viewServerDecodeHealth(config, health);
+              yield* viewServerEncodeHealth(config, health);
+              return health;
             }).pipe(
-              Effect.map((health) => metricsResponse(200, viewServerHealthMetrics(health))),
+              Effect.map((health) => metricsResponse(200, viewServerHealthMetrics(config, health))),
               Effect.catchCause(() =>
                 Effect.succeed(
                   metricsResponse(200, compactLines([metricLine("view_server_metrics_error", 1)])),

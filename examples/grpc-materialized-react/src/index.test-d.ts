@@ -1,6 +1,7 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { LiveQueryResult } from "effect-view-server/config";
-import { grpcClients, useLiveQuery } from "./view-server.config";
+import { strategiesService } from "./grpc-descriptors";
+import { useLiveQuery, viewServer } from "./view-server.config";
 
 describe("materialized gRPC example type contracts", () => {
   it("preserves selected strategy row types", () => {
@@ -19,9 +20,11 @@ describe("materialized gRPC example type contracts", () => {
     >();
   });
 
-  it("keeps the generated gRPC client descriptor typed", () => {
+  it("keeps the generated descriptor and canonical source typed", () => {
     expectTypeOf(
-      grpcClients.strategies.service.method.streamStrategies.methodKind,
+      strategiesService.method.streamStrategies.methodKind,
     ).toEqualTypeOf<"server_streaming">();
+    expectTypeOf(viewServer.topics.strategies.source.lifecycle).toEqualTypeOf<"materialized">();
+    expectTypeOf(viewServer.topics.strategies.source.options.client).toEqualTypeOf<string>();
   });
 });

@@ -17,4 +17,5 @@ This example demonstrates:
 - Kafka source rows mapped into a View Server topic.
 - React subscriptions using canonical typed `where` arrays over the normal
   WebSocket provider.
-- Health summary and detailed health rows for lag/message-rate visibility.
+- Aggregate health plus exact Topic-bound Source Health for adapter metrics and
+  lifecycle visibility.

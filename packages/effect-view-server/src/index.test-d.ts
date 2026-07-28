@@ -1,18 +1,13 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
-import {
-  defineViewServerConfig,
-  kafka as kafkaFromConfig,
-  viewSchema,
-} from "effect-view-server/config";
-import { decodeKafkaCodec as decodeKafkaCodecFromConfig } from "effect-view-server/config";
-import { decodeKafkaCodec, kafka } from "effect-view-server/config/kafka";
-import type { KafkaCodecType, LiveQueryResult, RowFromSchema } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "effect-view-server/config";
+import type { LiveQueryResult, RowFromSchema } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import { createInMemoryViewServerReact } from "effect-view-server/react/testing";
 import { runViewServerRuntime } from "effect-view-server/runtime";
 import { createViewServerWebSocketServer } from "effect-view-server/server";
 import { createInMemoryViewServer } from "effect-view-server/in-memory";
 import {
+  decodeKafkaCodec,
   kafka as kafkaSourceAdapter,
   type KafkaCodecValue as KafkaSourceCodecValue,
 } from "effect-view-server/kafka/contract";
@@ -29,7 +24,7 @@ import {
 } from "effect-view-server/source-adapter/testing";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed"]),
   price: Schema.Number,
@@ -40,14 +35,12 @@ const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
   },
 });
 
 const react = createViewServerReact(viewServer);
-const kafkaOrderCodec = kafka.json(() => Schema.toCodecJson(Order));
-const kafkaOrderCodecFromConfig = kafkaFromConfig.json(() => Schema.toCodecJson(Order));
+const kafkaOrderCodec = kafkaSourceAdapter.json(() => Schema.toCodecJson(Order));
 const IncomingKafkaOrder = Schema.Struct({
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed"]),
@@ -78,7 +71,7 @@ const kafkaSourceViewServer = defineViewServerConfig({
 });
 
 class PublicProfile extends Schema.Class<PublicProfile>("PublicProfile")({
-  id: Schema.String,
+  id: ViewServerId,
   score: Schema.NumberFromString,
   backup: viewSchema.Option(Schema.String),
   nickname: Schema.optionalKey(Schema.String),
@@ -93,7 +86,6 @@ const publicProfileViewServer = defineViewServerConfig({
   topics: {
     profiles: {
       schema: PublicProfile,
-      key: "id",
     },
   },
 });
@@ -114,7 +106,6 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(createViewServerWebSocketServer).not.toBeAny();
     expectTypeOf(createInMemoryViewServer).not.toBeAny();
     expectTypeOf(decodeKafkaCodec).not.toBeAny();
-    expectTypeOf(decodeKafkaCodecFromConfig).not.toBeAny();
     expectTypeOf(viewSchema).not.toBeAny();
     expectTypeOf<typeof PublicProfile.Type>().toEqualTypeOf<PublicProfile>();
     expectTypeOf<typeof PublicProfile.Encoded>().toEqualTypeOf<{
@@ -132,8 +123,7 @@ describe("public effect-view-server subpath type contracts", () => {
     expectTypeOf(publicProfileViewServer.topics.profiles.schema).toEqualTypeOf<
       typeof PublicProfile
     >();
-    expectTypeOf<KafkaCodecType<typeof kafkaOrderCodec>>().toEqualTypeOf<typeof Order.Type>();
-    expectTypeOf<KafkaCodecType<typeof kafkaOrderCodecFromConfig>>().toEqualTypeOf<
+    expectTypeOf<KafkaSourceCodecValue<typeof kafkaOrderCodec>>().toEqualTypeOf<
       typeof Order.Type
     >();
     expectTypeOf<KafkaSourceCodecValue<typeof kafkaSourceValue>>().toEqualTypeOf<
@@ -246,30 +236,28 @@ describe("public effect-view-server subpath type contracts", () => {
     // @ts-expect-error string fields do not accept range predicates.
     react.useLiveQuery("orders", stringRangeFilterQuery);
 
-    // @ts-expect-error topic keys must reference fields on the topic schema.
+    // @ts-expect-error configurable Topic keys were removed; exact id is implicit.
     defineViewServerConfig({
       topics: {
         invalidOrders: {
           schema: Order,
-          key: "missing",
+          key: "id",
         },
       },
     });
 
-    // @ts-expect-error Schema.Class methods are not Topic Row key fields.
+    // @ts-expect-error configurable Topic keys were removed for Schema.Class Topics too.
     defineViewServerConfig({
       topics: {
         invalidProfiles: {
           schema: PublicProfile,
-          key: "upperId",
+          key: "id",
         },
       },
     });
 
-    // @ts-expect-error public config/kafka rejects raw Row Schemas
-    kafka.json(Order);
-    // @ts-expect-error public config rejects direct canonical codecs
-    kafkaFromConfig.json(Schema.toCodecJson(Order));
+    // @ts-expect-error Kafka JSON codecs require a zero-argument Schema JSON codec factory.
+    kafkaSourceAdapter.json(Order);
 
     // @ts-expect-error migrated Kafka Mapping must return every Topic Row field except id.
     defineViewServerConfig({

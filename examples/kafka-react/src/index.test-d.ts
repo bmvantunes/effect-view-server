@@ -37,13 +37,11 @@ describe("kafka example type contracts", () => {
   });
 
   it("keeps the Kafka mapping typed", () => {
-    expectTypeOf(
-      viewServer.topics.orders.kafkaSource.topic,
-    ).toEqualTypeOf<"view-server-example-orders-usa">();
-    expectTypeOf(viewServer.topics.orders.kafkaSource.regions).toEqualTypeOf<readonly ["usa"]>();
-    expectTypeOf(
-      viewServer.topics.trades.kafkaSource.topic,
-    ).toEqualTypeOf<"view-server-example-trades-london">();
-    expectTypeOf(viewServer.topics.trades.kafkaSource.regions).toEqualTypeOf<readonly ["london"]>();
+    expectTypeOf(viewServer.topics.orders.source.options.topic).toEqualTypeOf<string>();
+    expectTypeOf(viewServer.topics.orders.source.options.regions).toEqualTypeOf<readonly ["usa"]>();
+    expectTypeOf(viewServer.topics.trades.source.options.topic).toEqualTypeOf<string>();
+    expectTypeOf(viewServer.topics.trades.source.options.regions).toEqualTypeOf<
+      readonly ["london"]
+    >();
   });
 });

@@ -1,40 +1,28 @@
 import type { ViewServerLiveClient, ViewServerRuntimeLiveClient } from "@effect-view-server/client";
-import type {
-  GrpcRuntimeClients,
-  RuntimeRegions,
-  ViewServerConfig,
-  ViewServerHealth,
-  ViewServerRuntimeError,
-} from "@effect-view-server/config";
+import type { ViewServerConfig, ViewServerRuntimeError } from "@effect-view-server/config";
 import { ignoreLoggedTypedFailuresPreserveNonTypedFailures } from "@effect-view-server/effect-utils";
 import type {
   ViewServerRuntimeCoreOptionsFor,
   ViewServerSourceRequirements,
 } from "@effect-view-server/runtime-core";
-import { Config, Effect, Exit, Layer, Scope } from "effect";
+import { Effect, Exit, Layer, Scope } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
 import {
   makeDefaultRuntimeDependencies,
   type ViewServerRuntimeDependencyConfig,
   type ViewServerRuntimeDependencies,
 } from "./runtime-dependencies";
-import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 import {
   resolveViewServerRuntimeBaseOptions,
   type ResolvedViewServerRuntimeBaseOptions,
+  validateViewServerRuntimeOptions,
 } from "./runtime-options";
-import type { ViewServerRuntimeSourceError } from "./runtime-source-adapters";
-import {
-  validateRuntimeSourceOwnership,
-  type ViewServerRuntimePreparedSource,
-  type ViewServerRuntimeSourceModule,
-} from "./runtime-source";
+import type { ViewServerTcpPublishIngressError } from "./tcp-publish-ingress";
 import type {
   ViewServerRuntime,
-  ViewServerRuntimeOptionsInput,
   ViewServerRuntimeOptions,
   ViewServerRuntimeOptionsArgs,
-  ViewServerGrpcRuntimeOptions,
+  ViewServerRuntimeOptionsInput,
   ViewServerRuntimeTopicDefinitions,
 } from "./runtime-types";
 import { makeViewServerRuntimeTransportHealth } from "./transport-health";
@@ -43,10 +31,9 @@ export { makeDefaultRuntimeDependencies };
 export type {
   ViewServerRuntime,
   ViewServerRuntimeDependencies,
-  ViewServerRuntimeOptionsInput,
   ViewServerRuntimeOptions,
   ViewServerRuntimeOptionsArgs,
-  ViewServerGrpcRuntimeOptions,
+  ViewServerRuntimeOptionsInput,
   ViewServerRuntimeTopicDefinitions,
 };
 
@@ -94,24 +81,17 @@ type RuntimeCoreOptionsBuilder<Topics extends ViewServerRuntimeTopicDefinitions>
     ViewServerRuntimeCoreOptionsFor<Topics>["subscriptionQueueCapacity"]
   >;
   transportHealth: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["transportHealth"]>;
-  healthOverlay?: NonNullable<ViewServerRuntimeCoreOptionsFor<Topics>["healthOverlay"]>;
 };
 
 type ViewServerRuntimeFactoryError =
   | HttpServerError.ServeError
-  | Config.ConfigError
   | ViewServerRuntimeError
-  | ViewServerRuntimeSourceError
   | ViewServerTcpPublishIngressError;
 
 type MakeViewServerRuntimeWithDependencies = {
-  <
-    const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Regions extends RuntimeRegions = RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-  >(
+  <const Topics extends ViewServerRuntimeTopicDefinitions>(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
+    config: ViewServerConfig<Topics>,
   ): Effect.Effect<
     ViewServerRuntime<Topics>,
     ViewServerRuntimeFactoryError,
@@ -119,15 +99,13 @@ type MakeViewServerRuntimeWithDependencies = {
   >;
   <
     const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Regions extends RuntimeRegions = RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-    const Options extends object = ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+    const Options extends object = ViewServerRuntimeOptions<Topics>,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    options: Options,
+    config: ViewServerConfig<Topics>,
+    options: ViewServerRuntimeOptionsInput<Topics, Options>,
   ): Effect.Effect<
-    ViewServerRuntime<Topics, Options>,
+    ViewServerRuntime<Topics>,
     ViewServerRuntimeFactoryError,
     ViewServerSourceRequirements<Topics>
   >;
@@ -136,55 +114,30 @@ type MakeViewServerRuntimeWithDependencies = {
 export const makeViewServerRuntimeWithDependencies: MakeViewServerRuntimeWithDependencies =
   Effect.fn("ViewServerRuntime.makeWithDependencies")(function* <
     const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Regions extends RuntimeRegions = RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-    const Options extends object = ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+    const Options extends object = ViewServerRuntimeOptions<Topics>,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    options?: Options,
+    config: ViewServerConfig<Topics>,
+    options?: ViewServerRuntimeOptionsInput<Topics, Options>,
   ) {
-    if (options === undefined) {
-      const runtimeOptions: ViewServerRuntimeOptions<Topics, Regions, GrpcClients> = {};
-      return yield* makeViewServerRuntimeFromResolvedOptions(
-        dependencies,
-        config,
-        runtimeOptions,
-        resolveViewServerRuntimeBaseOptions(runtimeOptions),
-      );
-    }
+    const runtimeOptions = yield* validateViewServerRuntimeOptions<Topics>(options ?? {});
     return yield* makeViewServerRuntimeFromResolvedOptions(
       dependencies,
       config,
-      options,
-      resolveViewServerRuntimeBaseOptions(options),
+      resolveViewServerRuntimeBaseOptions(runtimeOptions),
     );
   });
 
 const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
   "ViewServerRuntime.makeFromResolvedOptions",
-)(function* <
-  const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
+)(function* <const Topics extends ViewServerRuntimeTopicDefinitions>(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  runtimeOptions: ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
-  resolvedOptions: ResolvedViewServerRuntimeBaseOptions<Topics, Regions, GrpcClients>,
+  config: ViewServerConfig<Topics>,
+  resolvedOptions: ResolvedViewServerRuntimeBaseOptions<Topics>,
 ) {
   const dependencyConfig: ViewServerRuntimeDependencyConfig<Topics> = {
     topics: config.topics,
   };
-  const sourceModules: Array<ViewServerRuntimeSourceModule<Topics, ViewServerRuntimeSourceError>> =
-    [];
-  for (const sourceAdapter of dependencies.sourceAdapters) {
-    const sourceModule = yield* sourceAdapter.make(config, runtimeOptions);
-    if (sourceModule !== undefined) {
-      sourceModules.push(sourceModule);
-    }
-  }
-  yield* validateRuntimeSourceOwnership(sourceModules);
   const transportHealth = makeViewServerRuntimeTransportHealth<Topics>();
   const runtimeCoreInput: RuntimeCoreOptionsBuilder<Topics> = {
     transportHealth: transportHealth.transportHealth,
@@ -197,18 +150,6 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     runtimeCoreInput.subscriptionQueueCapacity =
       resolvedOptions.runtimeCoreOptions.subscriptionQueueCapacity;
   }
-  if (sourceModules.length > 0) {
-    runtimeCoreInput.healthOverlay = (
-      health: ViewServerHealth<Topics>,
-      nowMillis: number,
-    ): ViewServerHealth<Topics> => {
-      let overlayed = health;
-      for (const sourceModule of sourceModules) {
-        overlayed = sourceModule.healthOverlay(overlayed, nowMillis);
-      }
-      return overlayed;
-    };
-  }
   const runtimeScope = yield* Scope.make("sequential");
   const startup = Effect.gen(function* () {
     const runtimeCore = yield* acquireRuntimeResource(
@@ -217,29 +158,6 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       (resource) => resource.close,
     );
     const refreshRuntimeHealth = ignoreRuntimeHealthRefreshFailure(runtimeCore.refreshHealth);
-    const preparedSources: Array<
-      ViewServerRuntimePreparedSource<Topics, ViewServerRuntimeSourceError>
-    > = [];
-    let runtimeLiveClient: ViewServerRuntimeLiveClient<Topics> = runtimeCore.liveClient;
-    let runtimeProtocolQuerySubscriber = runtimeCore.protocolQuerySubscriber;
-    let runtimeClient = runtimeCore.client;
-    for (const sourceModule of sourceModules) {
-      const preparedSource = yield* sourceModule
-        .prepare({
-          client: runtimeClient,
-          internalClient: runtimeCore.internalClient,
-          internalLiveClient: runtimeCore.internalLiveClient,
-          liveClient: runtimeLiveClient,
-          protocolQuerySubscriber: runtimeProtocolQuerySubscriber,
-          refreshHealth: refreshRuntimeHealth,
-          requestHealthRefresh: runtimeCore.requestHealthRefresh,
-        })
-        .pipe(Scope.provide(runtimeScope));
-      preparedSources.push(preparedSource);
-      runtimeClient = preparedSource.client;
-      runtimeLiveClient = preparedSource.liveClient;
-      runtimeProtocolQuerySubscriber = preparedSource.protocolQuerySubscriber;
-    }
     const server = yield* acquireRuntimeResource(
       runtimeScope,
       dependencies.makeServer(
@@ -247,13 +165,13 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
         {
           ...(resolvedOptions.auth === undefined ? {} : { auth: resolvedOptions.auth }),
           liveClient: {
-            subscribeHealth: runtimeLiveClient.subscribeHealth,
-            subscribeHealthSummary: runtimeLiveClient.subscribeHealthSummary,
+            subscribeHealth: runtimeCore.liveClient.subscribeHealth,
+            subscribeHealthSummary: runtimeCore.liveClient.subscribeHealthSummary,
             subscribeProtocolSourceHealth:
               runtimeCore.serverLiveClient.subscribeProtocolSourceHealth,
-            subscribeProtocolQuery: runtimeProtocolQuerySubscriber.subscribeProtocolQuery,
+            subscribeProtocolQuery: runtimeCore.protocolQuerySubscriber.subscribeProtocolQuery,
           },
-          runtime: runtimeClient,
+          runtime: runtimeCore.client,
           transport: {
             clientOpened: transportHealth.clientOpened.pipe(Effect.andThen(refreshRuntimeHealth)),
             clientClosed: transportHealth.clientClosed.pipe(Effect.andThen(refreshRuntimeHealth)),
@@ -265,9 +183,6 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
       ),
       (resource) => resource.close,
     );
-    for (const preparedSource of preparedSources) {
-      yield* preparedSource.start.pipe(Scope.provide(runtimeScope));
-    }
     const tcpPublishIngress =
       resolvedOptions.tcpPublishOptions === undefined
         ? undefined
@@ -286,15 +201,15 @@ const makeViewServerRuntimeFromResolvedOptions = Effect.fn(
     const close: Effect.Effect<void> = (yield* Effect.cached(
       Scope.close(runtimeScope, Exit.void),
     )).pipe(Effect.uninterruptible);
-    const publicLiveClient = toPublicLiveClient(runtimeLiveClient, close);
+    const publicLiveClient = toPublicLiveClient(runtimeCore.liveClient, close);
     return {
       url: server.url,
       healthUrl: server.healthUrl,
       metricsUrl: server.metricsUrl,
       ...(tcpPublishIngress === undefined ? {} : { tcpPublishUrl: tcpPublishIngress.url }),
-      client: runtimeClient,
+      client: runtimeCore.client,
       liveClient: publicLiveClient,
-      health: runtimeClient.health,
+      health: runtimeCore.client.health,
       close,
     };
   });
@@ -320,13 +235,11 @@ const logRuntimeStarted = Effect.fn("ViewServerRuntime.logStarted")(function* <
 
 const makeViewServerRuntimeLaunchLayer = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
   const Options extends object,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
+  config: ViewServerConfig<Topics>,
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) =>
   Layer.effectDiscard(
     Effect.acquireRelease(
@@ -340,23 +253,19 @@ const makeViewServerRuntimeLaunchLayer = <
 
 export const runViewServerRuntimeWithDependencies: <
   const Topics extends ViewServerRuntimeTopicDefinitions,
-  const Regions extends RuntimeRegions = RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients = GrpcRuntimeClients,
-  const Options extends object = ViewServerRuntimeOptions<Topics, Regions, GrpcClients>,
+  const Options extends object = ViewServerRuntimeOptions<Topics>,
 >(
   dependencies: ViewServerRuntimeDependencies<Topics>,
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
-  options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
+  config: ViewServerConfig<Topics>,
+  options?: ViewServerRuntimeOptionsInput<Topics, Options>,
 ) => Effect.Effect<never, ViewServerRuntimeFactoryError, ViewServerSourceRequirements<Topics>> =
   Effect.fn("ViewServerRuntime.runWithDependencies")(function* <
     const Topics extends ViewServerRuntimeTopicDefinitions,
-    const Regions extends RuntimeRegions,
-    const GrpcClients extends GrpcRuntimeClients,
     const Options extends object,
   >(
     dependencies: ViewServerRuntimeDependencies<Topics>,
-    config: ViewServerConfig<Topics, Regions, GrpcClients>,
-    options?: ViewServerRuntimeOptionsInput<Topics, Regions, GrpcClients, Options>,
+    config: ViewServerConfig<Topics>,
+    options?: ViewServerRuntimeOptionsInput<Topics, Options>,
   ) {
     return yield* makeViewServerRuntimeLaunchLayer(dependencies, config, options).pipe(
       Layer.launch,

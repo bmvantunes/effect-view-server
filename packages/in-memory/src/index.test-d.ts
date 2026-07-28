@@ -1,35 +1,18 @@
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import type { ViewServerLiveSubscription } from "@effect-view-server/client";
 import {
+  ViewServerId,
   defineViewServerConfig,
-  grpc,
-  kafka,
-  type GrpcRuntimeClients,
   type ViewServerRuntimeError,
 } from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
-import type { Stream } from "effect";
 import { Context, Effect, Layer, Schedule, Schema } from "effect";
 import { createInMemoryViewServer, makeInMemoryViewServer } from "./index";
 import { createInMemoryViewServerTesting, makeInMemoryViewServerTesting } from "./testing";
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
-});
-
-declare const grpcRuntimeClients: GrpcRuntimeClients;
-declare const grpcRuntimeStream: Stream.Stream<unknown, unknown, never>;
-
-const grpcTopicSources = grpc.topicSources(grpcRuntimeClients);
-
-const viewServer = defineViewServerConfig({
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-    },
-  },
 });
 
 const SourceFailure = Schema.TaggedStruct("InMemorySourceFailure", {
@@ -43,13 +26,27 @@ const sourceAdapter = SourceAdapter.make({
     rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
     definitionOptions: SourceAdapter.definitionOptions<void>(),
   },
-  leased: undefined,
+  leased: {
+    metrics: Schema.Struct({ observed: Schema.BigInt }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
 });
+
 class RetryDependency extends Context.Service<
   RetryDependency,
   { readonly delayEnabled: boolean }
 >()("@effect-view-server/in-memory/type-test/RetryDependency") {}
-const canonicalSourceViewServer = defineViewServerConfig({
+
+const viewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+    },
+  },
+});
+
+const materializedSourceViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
@@ -57,7 +54,17 @@ const canonicalSourceViewServer = defineViewServerConfig({
     },
   },
 });
-const canonicalRetrySourceViewServer = defineViewServerConfig({
+
+const leasedSourceViewServer = defineViewServerConfig({
+  topics: {
+    orders: {
+      schema: Order,
+      source: sourceAdapter.leasedSource(["id"], undefined),
+    },
+  },
+});
+
+const retrySourceViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
@@ -70,112 +77,50 @@ const canonicalRetrySourceViewServer = defineViewServerConfig({
 });
 
 const inMemory = createInMemoryViewServer(viewServer);
-const canonicalSourceInMemoryEffect = makeInMemoryViewServer(canonicalSourceViewServer, {});
-const canonicalSourceTestingEffect = makeInMemoryViewServerTesting(canonicalSourceViewServer, {});
-const canonicalRetrySourceInMemoryEffect = makeInMemoryViewServer(
-  canonicalRetrySourceViewServer,
+const materializedSourceInMemoryEffect = makeInMemoryViewServer(materializedSourceViewServer, {});
+const materializedSourceTestingEffect = makeInMemoryViewServerTesting(
+  materializedSourceViewServer,
   {},
 );
-const canonicalRetrySourceTestingEffect = makeInMemoryViewServerTesting(
-  canonicalRetrySourceViewServer,
-  {},
-);
+const leasedSourceInMemoryEffect = makeInMemoryViewServer(leasedSourceViewServer, {});
+const leasedSourceTestingEffect = makeInMemoryViewServerTesting(leasedSourceViewServer, {});
+const retrySourceInMemoryEffect = makeInMemoryViewServer(retrySourceViewServer, {});
+const retrySourceTestingEffect = makeInMemoryViewServerTesting(retrySourceViewServer, {});
+
+declare const materializedSourceInMemory: Effect.Success<typeof materializedSourceInMemoryEffect>;
+declare const materializedSourceTesting: Effect.Success<typeof materializedSourceTestingEffect>;
+declare const leasedSourceInMemory: Effect.Success<typeof leasedSourceInMemoryEffect>;
+declare const leasedSourceTesting: Effect.Success<typeof leasedSourceTestingEffect>;
 declare const sourceAdapterLayer: Layer.Layer<
   Context.Service.Identifier<typeof sourceAdapter.runtimeService>
 >;
 const retryDependencyLayer = Layer.succeed(RetryDependency)({
   delayEnabled: true,
 });
-const canonicalRetryAppLayer = Layer.merge(sourceAdapterLayer, retryDependencyLayer);
-const canonicalRetrySourceInMemoryReady = canonicalRetrySourceInMemoryEffect.pipe(
-  Effect.provide(canonicalRetryAppLayer),
-);
-const canonicalRetrySourceTestingReady = canonicalRetrySourceTestingEffect.pipe(
-  Effect.provide(canonicalRetryAppLayer),
-);
+const retryAppLayer = Layer.merge(sourceAdapterLayer, retryDependencyLayer);
+const retrySourceInMemoryReady = retrySourceInMemoryEffect.pipe(Effect.provide(retryAppLayer));
+const retrySourceTestingReady = retrySourceTestingEffect.pipe(Effect.provide(retryAppLayer));
+
 // @effect-diagnostics missingEffectContext:off
 // @ts-expect-error the in-memory runtime still requires the retry Schedule service.
 const invalidRetrySourceInMemoryReady: Effect.Effect<
-  Effect.Success<typeof canonicalRetrySourceInMemoryEffect>,
-  Effect.Error<typeof canonicalRetrySourceInMemoryEffect>
-> = canonicalRetrySourceInMemoryEffect.pipe(Effect.provide(sourceAdapterLayer));
+  Effect.Success<typeof retrySourceInMemoryEffect>,
+  Effect.Error<typeof retrySourceInMemoryEffect>
+> = retrySourceInMemoryEffect.pipe(Effect.provide(sourceAdapterLayer));
 // @effect-diagnostics missingEffectContext:on
+
 // @ts-expect-error synchronous in-memory construction cannot provide a Source Adapter service.
-const invalidCanonicalSourceInMemory = createInMemoryViewServer(canonicalSourceViewServer);
-// @ts-expect-error synchronous in-memory testing construction cannot provide a Source Adapter service.
-const invalidCanonicalSourceTesting = createInMemoryViewServerTesting(canonicalSourceViewServer);
+const invalidSynchronousSourceInMemory = createInMemoryViewServer(materializedSourceViewServer);
+const invalidSynchronousSourceTesting = createInMemoryViewServerTesting(
+  // @ts-expect-error synchronous testing construction cannot provide a Source Adapter service.
+  materializedSourceViewServer,
+);
+
 const inMemoryWithGroupedAdmissionLimits = createInMemoryViewServer(viewServer, {
   groupedIncrementalAdmissionLimits: {
     maxGroups: 1,
   },
 });
-const leasedViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
-  topics: {
-    orders: grpcTopicSources.leased({
-      schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["id"],
-      request: ({ id }) => ({ id }),
-      acquire: () => grpcRuntimeStream,
-      map: ({ route }) => ({
-        id: route.id,
-        price: 0,
-      }),
-    }),
-  },
-});
-const leasedInMemory = createInMemoryViewServer(leasedViewServer);
-const leasedTestingInMemory = createInMemoryViewServerTesting(leasedViewServer);
-const materializedGrpcSourceViewServer = defineViewServerConfig({
-  grpc: {
-    clients: grpcRuntimeClients,
-  },
-  topics: {
-    orders: grpcTopicSources.materialized({
-      schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      request: () => ({}),
-      acquire: () => grpcRuntimeStream,
-      map: () => ({
-        id: "order-1",
-        price: 0,
-      }),
-    }),
-  },
-});
-const materializedGrpcSourceInMemory = createInMemoryViewServer(materializedGrpcSourceViewServer);
-const materializedGrpcSourceTestingInMemory = createInMemoryViewServerTesting(
-  materializedGrpcSourceViewServer,
-);
-const kafkaOwnedViewServer = defineViewServerConfig({
-  kafka: {
-    usa: "localhost:9092",
-  },
-  topics: {
-    orders: {
-      schema: Order,
-      key: "id",
-      kafkaSource: kafka.source({
-        topic: "orders-source",
-        regions: ["usa"],
-        value: kafka.json(() => Schema.toCodecJson(Order)),
-        rowKey: ({ key }) => key,
-        map: ({ value }) => ({
-          price: value.price,
-        }),
-      }),
-    },
-  },
-});
-const kafkaOwnedInMemory = createInMemoryViewServer(kafkaOwnedViewServer);
-const kafkaOwnedTestingInMemory = createInMemoryViewServerTesting(kafkaOwnedViewServer);
 const invalidTransportHealthOption = createInMemoryViewServer(viewServer, {
   // @ts-expect-error in-memory does not expose Runtime Core transport adapter hooks.
   transportHealth: () => ({
@@ -206,7 +151,7 @@ const invalidGroupedAdmissionLimitValue = createInMemoryViewServer(viewServer, {
 });
 
 describe("in-memory type contracts", () => {
-  it("preserves runtime and live client topic types", () => {
+  it("preserves runtime, source requirements, and public client topic types", () => {
     const publish = inMemory.client.publish("orders", {
       id: "order-1",
       price: 42,
@@ -214,11 +159,13 @@ describe("in-memory type contracts", () => {
     const subscription = inMemory.liveClient.subscribe("orders", {
       select: ["id"],
     });
-    const kafkaSnapshot = kafkaOwnedInMemory.client.snapshot("orders", {
+    const materializedSnapshot = materializedSourceInMemory.client.snapshot("orders", {
       select: ["id"],
     });
-    const materializedGrpcSnapshot = materializedGrpcSourceInMemory.client.snapshot("orders", {
+    const leasedSubscribe = leasedSourceInMemory.liveClient.subscribe("orders", {
+      routeBy: { id: "order-1" },
       select: ["id"],
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
     });
     const invalidPatch = inMemory.client.patch("orders", "order-1", {
       price: 10,
@@ -227,46 +174,55 @@ describe("in-memory type contracts", () => {
     });
 
     expectTypeOf<Effect.Error<typeof publish>>().toEqualTypeOf<ViewServerRuntimeError>();
-    expectTypeOf<Effect.Services<typeof canonicalSourceInMemoryEffect>>().toEqualTypeOf<
+    expectTypeOf<Effect.Services<typeof materializedSourceInMemoryEffect>>().toEqualTypeOf<
       Context.Service.Identifier<typeof sourceAdapter.runtimeService>
     >();
-    expectTypeOf<Effect.Services<typeof canonicalSourceTestingEffect>>().toEqualTypeOf<
+    expectTypeOf<Effect.Services<typeof materializedSourceTestingEffect>>().toEqualTypeOf<
       Context.Service.Identifier<typeof sourceAdapter.runtimeService>
     >();
-    expectTypeOf<Effect.Services<typeof canonicalRetrySourceInMemoryEffect>>().toEqualTypeOf<
+    expectTypeOf<Effect.Services<typeof leasedSourceInMemoryEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof leasedSourceTestingEffect>>().toEqualTypeOf<
+      Context.Service.Identifier<typeof sourceAdapter.runtimeService>
+    >();
+    expectTypeOf<Effect.Services<typeof retrySourceInMemoryEffect>>().toEqualTypeOf<
       Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
     >();
-    expectTypeOf<Effect.Services<typeof canonicalRetrySourceTestingEffect>>().toEqualTypeOf<
+    expectTypeOf<Effect.Services<typeof retrySourceTestingEffect>>().toEqualTypeOf<
       Context.Service.Identifier<typeof sourceAdapter.runtimeService> | RetryDependency
     >();
-    expectTypeOf<
-      Effect.Services<typeof canonicalRetrySourceInMemoryReady>
-    >().toEqualTypeOf<never>();
-    expectTypeOf<Effect.Services<typeof canonicalRetrySourceTestingReady>>().toEqualTypeOf<never>();
+    expectTypeOf<Effect.Services<typeof retrySourceInMemoryReady>>().toEqualTypeOf<never>();
+    expectTypeOf<Effect.Services<typeof retrySourceTestingReady>>().toEqualTypeOf<never>();
     expectTypeOf<Effect.Success<typeof subscription>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;
       }>
     >();
-    expectTypeOf(kafkaSnapshot).not.toBeAny();
-    expectTypeOf(materializedGrpcSnapshot).not.toBeAny();
+    expectTypeOf<Effect.Success<typeof leasedSubscribe>>().toEqualTypeOf<
+      Effect.Success<typeof subscription>
+    >();
+    expectTypeOf(materializedSnapshot).not.toBeAny();
     expectTypeOf(inMemory.liveClient).not.toHaveProperty("subscribeRuntime");
-    expectTypeOf(leasedTestingInMemory.serverLiveClient).toHaveProperty("subscribeProtocolQuery");
+    expectTypeOf(leasedSourceTesting.serverLiveClient).toHaveProperty("subscribeProtocolQuery");
     expectTypeOf(inMemoryWithGroupedAdmissionLimits.client).toEqualTypeOf<typeof inMemory.client>();
     expectTypeOf(invalidPatch).not.toBeAny();
     expectTypeOf(invalidTransportHealthOption).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitKey).not.toBeAny();
     expectTypeOf(invalidGroupedAdmissionLimitValue).not.toBeAny();
-    expectTypeOf(invalidCanonicalSourceInMemory).not.toBeAny();
-    expectTypeOf(invalidCanonicalSourceTesting).not.toBeAny();
+    expectTypeOf(invalidSynchronousSourceInMemory).not.toBeAny();
+    expectTypeOf(invalidSynchronousSourceTesting).not.toBeAny();
     expectTypeOf(invalidRetrySourceInMemoryReady).not.toBeAny();
   });
 
-  it("rejects leased gRPC topics from public in-memory clients", () => {
+  it("rejects public source-owned mutations and leased snapshots", () => {
     const leasedQuery = {
-      where: [{ field: "id", type: "equals", filter: "order-1" }],
+      routeBy: { id: "order-1" },
       select: ["id"],
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
     } satisfies {
+      readonly routeBy: { readonly id: "order-1" };
+      readonly select: readonly ["id"];
       readonly where: readonly [
         {
           readonly field: "id";
@@ -274,82 +230,44 @@ describe("in-memory type contracts", () => {
           readonly filter: "order-1";
         },
       ];
-      readonly select: readonly ["id"];
     };
-    // @ts-expect-error public in-memory clients reject direct leased gRPC snapshots.
-    const invalidLeasedSnapshot = leasedInMemory.client.snapshot("orders", leasedQuery);
-    // @ts-expect-error public in-memory clients reject direct leased gRPC publishes.
-    const invalidLeasedPublish = leasedInMemory.client.publish("orders", {
+
+    // @ts-expect-error public in-memory clients reject leased Source snapshots.
+    const invalidLeasedSnapshot = leasedSourceInMemory.client.snapshot("orders", leasedQuery);
+    // @ts-expect-error source-owned topics reject direct in-memory publishes.
+    const invalidLeasedPublish = leasedSourceInMemory.client.publish("orders", {
       id: "order-1",
       price: 42,
     });
-    // @ts-expect-error public in-memory clients reject direct leased gRPC batch publishes.
-    const invalidLeasedPublishMany = leasedInMemory.client.publishMany("orders", [
-      {
-        id: "order-1",
-        price: 42,
-      },
+    // @ts-expect-error source-owned topics reject direct in-memory batch publishes.
+    const invalidLeasedPublishMany = leasedSourceInMemory.client.publishMany("orders", [
+      { id: "order-1", price: 42 },
     ]);
-    // @ts-expect-error public in-memory clients reject direct leased gRPC patches.
-    const invalidLeasedPatch = leasedInMemory.client.patch("orders", "order-1", {
+    // @ts-expect-error source-owned topics reject direct in-memory patches.
+    const invalidLeasedPatch = leasedSourceInMemory.client.patch("orders", "order-1", {
       price: 10,
     });
-    // @ts-expect-error public in-memory clients reject direct leased gRPC deletes.
-    const invalidLeasedDelete = leasedInMemory.client.delete("orders", "order-1");
-    // @ts-expect-error public in-memory clients reject direct leased gRPC reset.
-    const invalidLeasedReset = leasedInMemory.client.reset();
-    // @ts-expect-error public in-memory live clients reject direct leased gRPC subscriptions.
-    const _invalidLeasedSubscribe = leasedInMemory.liveClient.subscribe("orders", leasedQuery);
-    // @ts-expect-error source-owned Kafka topics reject direct in-memory publishes.
-    const invalidKafkaOwnedPublish = kafkaOwnedInMemory.client.publish("orders", {
+    // @ts-expect-error source-owned topics reject direct in-memory deletes.
+    const invalidLeasedDelete = leasedSourceInMemory.client.delete("orders", "order-1");
+    // @ts-expect-error source-owned in-memory clients reject direct reset.
+    const invalidLeasedReset = leasedSourceInMemory.client.reset();
+    // @ts-expect-error source-owned topics reject direct in-memory publishes.
+    const invalidMaterializedPublish = materializedSourceInMemory.client.publish("orders", {
       id: "order-1",
       price: 42,
     });
-    // @ts-expect-error source-owned Kafka topics reject direct in-memory publishMany.
-    const invalidKafkaOwnedPublishMany = kafkaOwnedInMemory.client.publishMany("orders", [
-      {
-        id: "order-1",
-        price: 42,
-      },
+    // @ts-expect-error source-owned topics reject direct in-memory batch publishes.
+    const invalidMaterializedPublishMany = materializedSourceInMemory.client.publishMany("orders", [
+      { id: "order-1", price: 42 },
     ]);
-    // @ts-expect-error source-owned Kafka topics reject direct in-memory patches.
-    const invalidKafkaOwnedPatch = kafkaOwnedInMemory.client.patch("orders", "order-1", {
+    // @ts-expect-error source-owned topics reject direct in-memory patches.
+    const invalidMaterializedPatch = materializedSourceInMemory.client.patch("orders", "order-1", {
       price: 10,
     });
-    // @ts-expect-error source-owned Kafka topics reject direct in-memory deletes.
-    const invalidKafkaOwnedDelete = kafkaOwnedInMemory.client.delete("orders", "order-1");
-    // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory publishes.
-    const invalidMaterializedGrpcPublish = materializedGrpcSourceInMemory.client.publish("orders", {
-      id: "order-1",
-      price: 42,
-    });
-    const invalidMaterializedGrpcPublishMany = materializedGrpcSourceInMemory.client.publishMany(
-      // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory publishMany.
-      "orders",
-      [
-        {
-          id: "order-1",
-          price: 42,
-        },
-      ],
-    );
-    const invalidMaterializedGrpcPatch = materializedGrpcSourceInMemory.client.patch(
-      // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory patches.
-      "orders",
-      "order-1",
-      {
-        price: 10,
-      },
-    );
-    const invalidMaterializedGrpcDelete = materializedGrpcSourceInMemory.client.delete(
-      // @ts-expect-error source-owned materialized gRPC topics reject direct in-memory deletes.
-      "orders",
-      "order-1",
-    );
+    // @ts-expect-error source-owned topics reject direct in-memory deletes.
+    const invalidMaterializedDelete = materializedSourceInMemory.client.delete("orders", "order-1");
     // @ts-expect-error source-owned in-memory clients reject direct reset.
-    const invalidKafkaOwnedReset = kafkaOwnedInMemory.client.reset();
-    // @ts-expect-error source-owned in-memory clients reject direct reset.
-    const invalidMaterializedGrpcReset = materializedGrpcSourceInMemory.client.reset();
+    const invalidMaterializedReset = materializedSourceInMemory.client.reset();
 
     expectTypeOf(invalidLeasedSnapshot).not.toBeAny();
     expectTypeOf(invalidLeasedPublish).not.toBeAny();
@@ -357,61 +275,34 @@ describe("in-memory type contracts", () => {
     expectTypeOf(invalidLeasedPatch).not.toBeAny();
     expectTypeOf(invalidLeasedDelete).not.toBeAny();
     expectTypeOf(invalidLeasedReset).not.toBeAny();
-    expectTypeOf(invalidKafkaOwnedPublish).not.toBeAny();
-    expectTypeOf(invalidKafkaOwnedPublishMany).not.toBeAny();
-    expectTypeOf(invalidKafkaOwnedPatch).not.toBeAny();
-    expectTypeOf(invalidKafkaOwnedDelete).not.toBeAny();
-    expectTypeOf(invalidMaterializedGrpcPublish).not.toBeAny();
-    expectTypeOf(invalidMaterializedGrpcPublishMany).not.toBeAny();
-    expectTypeOf(invalidMaterializedGrpcPatch).not.toBeAny();
-    expectTypeOf(invalidMaterializedGrpcDelete).not.toBeAny();
-    expectTypeOf(invalidKafkaOwnedReset).not.toBeAny();
-    expectTypeOf(invalidMaterializedGrpcReset).not.toBeAny();
+    expectTypeOf(invalidMaterializedPublish).not.toBeAny();
+    expectTypeOf(invalidMaterializedPublishMany).not.toBeAny();
+    expectTypeOf(invalidMaterializedPatch).not.toBeAny();
+    expectTypeOf(invalidMaterializedDelete).not.toBeAny();
+    expectTypeOf(invalidMaterializedReset).not.toBeAny();
   });
 
-  it("allows leased gRPC topics from testing in-memory clients", () => {
-    const leasedQuery = {
-      where: [{ field: "id", type: "equals", filter: "order-1" }],
+  it("allows testing instances to drive Source-owned topics", () => {
+    const leasedSubscribe = leasedSourceTesting.liveClient.subscribe("orders", {
       routeBy: { id: "order-1" },
       select: ["id"],
-    } satisfies {
-      readonly where: readonly [
-        {
-          readonly field: "id";
-          readonly type: "equals";
-          readonly filter: "order-1";
-        },
-      ];
-      readonly routeBy: { readonly id: "order-1" };
-      readonly select: readonly ["id"];
-    };
-    const testingLeasedSubscribe = leasedTestingInMemory.liveClient.subscribe(
-      "orders",
-      leasedQuery,
-    );
-    const testingLeasedPublish = leasedTestingInMemory.client.publish("orders", {
+      where: [{ field: "id", type: "equals", filter: "order-1" }],
+    });
+    const leasedPublish = leasedSourceTesting.client.publish("orders", {
       id: "order-1",
       price: 42,
     });
-    const testingKafkaOwnedPublish = kafkaOwnedTestingInMemory.client.publish("orders", {
+    const materializedPublish = materializedSourceTesting.client.publish("orders", {
       id: "order-1",
       price: 42,
     });
-    const testingMaterializedGrpcPublish = materializedGrpcSourceTestingInMemory.client.publish(
-      "orders",
-      {
-        id: "order-1",
-        price: 42,
-      },
-    );
 
-    expectTypeOf<Effect.Success<typeof testingLeasedSubscribe>>().toEqualTypeOf<
+    expectTypeOf<Effect.Success<typeof leasedSubscribe>>().toEqualTypeOf<
       ViewServerLiveSubscription<{
         readonly id: string;
       }>
     >();
-    expectTypeOf<Effect.Success<typeof testingLeasedPublish>>().toEqualTypeOf<void>();
-    expectTypeOf<Effect.Success<typeof testingKafkaOwnedPublish>>().toEqualTypeOf<void>();
-    expectTypeOf<Effect.Success<typeof testingMaterializedGrpcPublish>>().toEqualTypeOf<void>();
+    expectTypeOf<Effect.Success<typeof leasedPublish>>().toEqualTypeOf<void>();
+    expectTypeOf<Effect.Success<typeof materializedPublish>>().toEqualTypeOf<void>();
   });
 });

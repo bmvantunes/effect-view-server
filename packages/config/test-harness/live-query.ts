@@ -11,9 +11,9 @@ import { Order, Position, Trade } from "./schemas";
 
 export const viewServer = defineViewServerConfig({
   topics: {
-    orders: { schema: Order, key: "id" },
-    trades: { schema: Trade, key: "id" },
-    positions: { schema: Position, key: "id" },
+    orders: { schema: Order },
+    trades: { schema: Trade },
+    positions: { schema: Position },
   },
 });
 

@@ -1,10 +1,12 @@
-import { defineViewServerConfig, grpc, kafka } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
+import { grpc } from "effect-view-server/grpc/contract";
+import { kafka } from "effect-view-server/kafka/contract";
 import { createViewServerReact } from "effect-view-server/react";
-import { Schema, Stream } from "effect";
+import { Schema } from "effect";
 import { combinedService } from "./grpc-descriptors";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -14,7 +16,7 @@ export const Order = Schema.Struct({
 });
 
 export const Strategy = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   strategyId: Schema.String,
   region: Schema.String,
   status: Schema.Literals(["active", "paused"]),
@@ -23,7 +25,7 @@ export const Strategy = Schema.Struct({
 });
 
 export const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
   side: Schema.Literals(["buy", "sell"]),
   quantity: Schema.Number,
@@ -38,100 +40,75 @@ export const KafkaTrade = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
-export const kafkaRegions = {
-  usa: "127.0.0.1:9092",
-  london: "127.0.0.1:9094",
-};
-
-export const grpcClients = {
-  orders: grpc.connectClient({
-    service: combinedService,
-    baseUrl: "http://127.0.0.1:4319",
-  }),
-  strategies: grpc.connectClient({
-    service: combinedService,
-    baseUrl: "http://127.0.0.1:4320",
-  }),
-};
-
-const grpcTopics = grpc.topicSources(grpcClients);
+export const grpcSources = grpc.topicSources({
+  orders: combinedService,
+  strategies: combinedService,
+});
 
 export const viewServer = defineViewServerConfig({
-  kafka: kafkaRegions,
-  grpc: {
-    clients: grpcClients,
-  },
   topics: {
-    orders: grpcTopics.leased({
+    orders: {
       schema: Order,
-      key: "id",
-      client: "orders",
-      method: "streamOrders",
-      routeBy: ["strategyId", "region"],
-      request: ({ strategyId, region }) => ({ strategyId, region }),
-      acquire: ({ route }) =>
-        Stream.make({
-          $typeName: "viewserver.combined.OrderValue",
-          customerId: `customer-${route.strategyId}`,
-          status: "open",
-          price: 15,
-          updatedAt: 1,
-        }).pipe(Stream.concat(Stream.never)),
-      map: ({ value, route }) => ({
-        id: `${route.strategyId}:${route.region}:${value.customerId}`,
-        customerId: value.customerId,
-        status: value.status,
-        price: value.price,
-        region: route.region,
-        strategyId: route.strategyId,
-        updatedAt: value.updatedAt,
+      source: grpcSources.leased({
+        client: "orders",
+        method: "streamOrders",
+        routeBy: ["strategyId", "region"],
+        request: ({ strategyId, region }) => ({ strategyId, region }),
+        map: ({ value, route }): typeof Order.Type => {
+          return {
+            id: `${String(route.strategyId)}:${String(route.region)}:${value.customerId}`,
+            customerId: value.customerId,
+            status: value.status,
+            price: value.price,
+            region: String(route.region),
+            strategyId: String(route.strategyId),
+            updatedAt: value.updatedAt,
+          };
+        },
       }),
-    }),
-    strategies: grpcTopics.materialized({
+    },
+    strategies: {
       schema: Strategy,
-      key: "id",
-      client: "strategies",
-      method: "streamStrategies",
-      request: () => ({ universe: "global" }),
-      acquire: () =>
-        Stream.make({
-          $typeName: "viewserver.combined.StrategyValue",
-          strategyId: "strategy-alpha",
-          region: "usa",
-          status: "active",
-          notional: 100,
-          updatedAt: 1,
-        }).pipe(Stream.concat(Stream.never)),
-      map: ({ value }) => ({
-        id: `${value.strategyId}:${value.region}`,
-        strategyId: value.strategyId,
-        region: value.region,
-        status: value.status,
-        notional: value.notional,
-        updatedAt: value.updatedAt,
+      source: grpcSources.materialized({
+        client: "strategies",
+        method: "streamStrategies",
+        request: () => ({ universe: "global" }),
+        map: ({ value }) => ({
+          id: String(`${value.strategyId}:${value.region}`),
+          strategyId: value.strategyId,
+          region: value.region,
+          status: value.status,
+          notional: value.notional,
+          updatedAt: value.updatedAt,
+        }),
       }),
-    }),
+    },
     trades: {
       schema: Trade,
-      key: "id",
-      kafkaSource: kafka.source({
+      source: kafka.source({
         topic: "view-server-example-trades",
         regions: ["usa", "london"],
         value: kafka.json(() => Schema.toCodecJson(KafkaTrade)),
-        key: kafka.stringKey(),
-        rowKey: ({ key }) => key,
+        key: kafka.string(),
+        localRowKey: ({ key }) => key,
         map: ({ value, region }) => ({
           symbol: value.symbol,
           side: value.side,
           quantity: value.quantity,
-          region,
+          region: String(region),
           updatedAt: value.updatedAt,
         }),
+        startFrom: "latest",
       }),
     },
   },
 });
 
 export const viewServerReact = createViewServerReact(viewServer);
-export const { ViewServerProvider, useLiveQuery, useViewServerHealth, useViewServerHealthSummary } =
-  viewServerReact;
+export const {
+  ViewServerProvider,
+  useLiveQuery,
+  useSourceHealth,
+  useViewServerHealth,
+  useViewServerHealthSummary,
+} = viewServerReact;

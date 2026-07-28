@@ -1,7 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { ViewServerRuntimeError } from "@effect-view-server/config";
-import { Effect } from "effect";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerHealth,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
+import { Effect, Schema } from "effect";
 import { makeViewServerWebSocketServer } from "./index";
+import { viewServerHealthMetrics } from "./metrics-route";
 import {
   bearerAuth,
   createServerTestRuntime,
@@ -12,6 +19,181 @@ import {
   order,
   viewServer,
 } from "../test-harness/server";
+
+const SourceFailure = Schema.TaggedStruct("MetricsSourceFailure", {
+  message: Schema.String,
+});
+const SourceAdapterMetrics = Schema.Struct({
+  opaqueSequence: Schema.BigInt,
+});
+const SourceRejectionLocation = Schema.Struct({
+  offset: Schema.BigInt,
+});
+const sourceAdapter = SourceAdapter.make({
+  identity: {
+    name: 'source"adapter\\name',
+    version: "1",
+  },
+  failure: SourceFailure,
+  materialized: {
+    metrics: SourceAdapterMetrics,
+    rejectionLocation: SourceRejectionLocation,
+    definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+  },
+  leased: {
+    metrics: SourceAdapterMetrics,
+    rejectionLocation: SourceRejectionLocation,
+    definitionOptions: SourceAdapter.definitionOptions<{ readonly label: string }>(),
+  },
+});
+const sourceMetricsConfig = defineViewServerConfig({
+  topics: {
+    manual: {
+      schema: Schema.Struct({ id: ViewServerId, price: Schema.Number }),
+    },
+    materialized: {
+      schema: Schema.Struct({ id: ViewServerId, price: Schema.Number }),
+      source: sourceAdapter.materializedSource({ label: "materialized" }),
+    },
+    leased: {
+      schema: Schema.Struct({ id: ViewServerId, price: Schema.Number }),
+      source: sourceAdapter.leasedSource(["id"], { label: "leased" }),
+    },
+  },
+});
+
+const materializedSourceHealth = {
+  adapter: sourceAdapter.identity,
+  target: {
+    _tag: "Materialized",
+  },
+  status: {
+    _tag: "Ready",
+    attempt: 1n,
+    readyAtNanos: 2n,
+  },
+  metrics: {
+    runtime: {
+      startedAtNanos: 3n,
+      lastAttemptStartedAtNanos: 4n,
+      lastDeliveryAtNanos: null,
+      lastRejectionAtNanos: null,
+      lastAppliedMutationAtNanos: null,
+      lastTerminationAtNanos: null,
+      currentAttempt: 1n,
+      retryCount: 1n,
+      receivedDeliveryCount: 2n,
+      rejectedItemCount: 3n,
+      attemptedMutationCount: 4n,
+      appliedUpsertCount: 5n,
+      appliedDeleteCount: 6n,
+      failedMutationCount: 7n,
+      completedSettlementCount: 8n,
+      failedSettlementCount: 9n,
+      retainedRowCount: 10,
+      lanes: [
+        {
+          id: "materialized",
+          buffer: {
+            _tag: "Bounded",
+            capacity: 16,
+            depth: 2,
+            highWaterMark: 4,
+            overflowCount: 11n,
+          },
+        },
+      ],
+    },
+    adapter: {
+      opaqueSequence: 999n,
+    },
+  },
+  sampledAtNanos: 12n,
+} as const;
+
+const firstLeasedSourceHealth = {
+  adapter: sourceAdapter.identity,
+  target: {
+    _tag: "Leased",
+    route: {
+      id: "first",
+    },
+  },
+  status: {
+    _tag: "Ready",
+    attempt: 2n,
+    readyAtNanos: 20n,
+  },
+  metrics: {
+    runtime: {
+      ...materializedSourceHealth.metrics.runtime,
+      startedAtNanos: 20n,
+      lastAttemptStartedAtNanos: 10n,
+      lastDeliveryAtNanos: 10n,
+      lastRejectionAtNanos: 10n,
+      lastAppliedMutationAtNanos: 10n,
+      lastTerminationAtNanos: 10n,
+      currentAttempt: 2n,
+      retainedRowCount: 20,
+      lanes: [
+        {
+          id: "first",
+          buffer: {
+            _tag: "Unbuffered",
+          },
+        },
+      ],
+    },
+    adapter: {
+      opaqueSequence: 1_000n,
+    },
+  },
+  sampledAtNanos: 21n,
+} as const;
+
+const secondLeasedSourceHealth = {
+  adapter: sourceAdapter.identity,
+  target: {
+    _tag: "Leased",
+    route: {
+      id: "second",
+    },
+  },
+  status: {
+    _tag: "Ready",
+    attempt: 1n,
+    readyAtNanos: 22n,
+  },
+  metrics: {
+    runtime: {
+      ...materializedSourceHealth.metrics.runtime,
+      startedAtNanos: 10n,
+      lastAttemptStartedAtNanos: 20n,
+      lastDeliveryAtNanos: null,
+      lastRejectionAtNanos: 9n,
+      lastAppliedMutationAtNanos: 11n,
+      lastTerminationAtNanos: 10n,
+      currentAttempt: 1n,
+      retainedRowCount: 30,
+      lanes: [
+        {
+          id: "second",
+          buffer: {
+            _tag: "Bounded",
+            capacity: 32,
+            depth: 3,
+            highWaterMark: 5,
+            overflowCount: 12n,
+          },
+        },
+      ],
+    },
+    adapter: {
+      opaqueSequence: 1_001n,
+    },
+  },
+  sampledAtNanos: 23n,
+} as const;
 
 describe("Real View Server metrics route", () => {
   it.live("serves GET /metrics beside the websocket RPC endpoint", () =>
@@ -38,7 +220,6 @@ describe("Real View Server metrics route", () => {
       expect(lines).toContain("# TYPE view_server_transport_backpressure_events gauge");
       expect(lines).toContain("# TYPE view_server_engine_topic_grouped_evaluations gauge");
       expect(lines).toContain("# TYPE view_server_engine_topic_backpressure_events gauge");
-      expect(lines).toContain("# TYPE view_server_grpc_feed_reconnects gauge");
       expect(lines).toContain('view_server_runtime_status{status="ready"} 1');
       expect(lines).toContain('view_server_engine_topic_rows{topic="orders",state="total"} 1');
       expect(lines).toContain('view_server_engine_topic_rows{topic="orders",state="live"} 1');
@@ -76,7 +257,7 @@ describe("Real View Server metrics route", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("renders degraded Kafka and gRPC health metrics", () =>
+  it.live("renders degraded canonical runtime and engine health metrics", () =>
     Effect.gen(function* () {
       const inMemory = createServerTestRuntime(viewServer);
       yield* Effect.addFinalizer(() => inMemory.close);
@@ -94,68 +275,81 @@ describe("Real View Server metrics route", () => {
       const lines = metrics.text.trimEnd().split("\n");
 
       expect(metrics.response.status).toBe(200);
-      expect(lines).toContain(
-        'view_server_kafka_region_connected{region="usa",sourceTopic="source_orders",viewServerTopic="orders"} 1',
-      );
-      expect(lines).toContain(
-        'view_server_kafka_bytes_per_second{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 70',
-      );
-      expect(lines).toContain(
-        'view_server_kafka_processing_failures_per_second{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 5',
-      );
-      expect(lines).toContain(
-        'view_server_kafka_consumer_lag_messages{region="usa",sourceTopic="source_orders",viewServerTopic="orders"} 42',
-      );
-      expect(lines).toContain(
-        'view_server_kafka_region_connected{region="london",sourceTopic="source_orders",viewServerTopic="orders"} 0',
-      );
-      expect(
-        lines.filter((line) =>
-          line.startsWith(
-            'view_server_kafka_consumer_lag_messages{region="london",sourceTopic="source_orders",viewServerTopic="orders"}',
-          ),
-        ),
-      ).toStrictEqual([]);
-      expect(lines).toContain(
-        'view_server_grpc_feed_rows{lifecycle="materialized",topic="orders",feed="ordersFeed"} 5',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_client_active_feeds{client="ordersClient",baseUrl="http://127.0.0.1:8080"} 3',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_feed_subscribers{lifecycle="leased",topic="orders",feed="ordersLease"} 3',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_feed_messages_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_feed_rows_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 8',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_feed_mapping_failures_per_second{lifecycle="leased",topic="orders",feed="ordersLease"} 2',
-      );
-      expect(lines).toContain(
-        'view_server_grpc_feed_reconnects{lifecycle="leased",topic="orders",feed="ordersLease"} 4',
-      );
-      expect(
-        lines.filter((line) =>
-          line.startsWith('view_server_grpc_feed_rows{lifecycle="leased",topic="orders"'),
-        ),
-      ).toStrictEqual([
-        'view_server_grpc_feed_rows{lifecycle="leased",topic="orders",feed="ordersLease"} 10',
-      ]);
-      expect(
-        lines.filter((line) =>
-          /^view_server_grpc_feed_[a-z_]+\{[^}]*feed="ordersLease:strategy=[^"]+"[^}]*\} -?\d+(?:\.\d+)?$/.test(
-            line,
-          ),
-        ),
-      ).toStrictEqual([]);
+      expect(lines).toContain('view_server_runtime_status{status="degraded"} 1');
+      expect(lines).toContain('view_server_engine_topic_rows{topic="orders",state="total"} 0');
+      expect(lines.some((line) => line.startsWith("view_server_kafka_"))).toBe(false);
+      expect(lines.some((line) => line.startsWith("view_server_grpc_"))).toBe(false);
 
       yield* server.close;
+      yield* inMemory.close;
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("projects fixed low-cardinality Source metrics and aggregates leased instances", () =>
+    Effect.gen(function* () {
+      const inMemory = createServerTestRuntime(viewServer);
+      yield* Effect.addFinalizer(() => inMemory.close);
+      const baseHealth = yield* inMemory.client.health();
+      const topic = baseHealth.engine.topics.orders;
+      const health: ViewServerHealth<typeof sourceMetricsConfig.topics> = {
+        ...baseHealth,
+        engine: {
+          topics: {
+            manual: topic,
+            materialized: topic,
+            leased: topic,
+          },
+        },
+        sources: {
+          materialized: materializedSourceHealth,
+          leased: [firstLeasedSourceHealth, secondLeasedSourceHealth],
+        },
+      };
+
+      const lines = viewServerHealthMetrics(sourceMetricsConfig, health).trimEnd().split("\n");
+
+      expect(lines).toContain(
+        'view_server_source_active_instances{topic="materialized",adapter="source\\"adapter\\\\name",lifecycle="materialized"} 1',
+      );
+      expect(lines).toContain(
+        'view_server_source_active_instances{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
+      );
+      expect(lines).toContain(
+        'view_server_source_status{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased",status="ready"} 2',
+      );
+      expect(lines).toContain(
+        'view_server_source_started_at_nanos{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 20',
+      );
+      expect(lines).toContain(
+        'view_server_source_last_attempt_started_at_nanos{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 20',
+      );
+      expect(lines).toContain(
+        'view_server_source_last_delivery_at_nanos{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 10',
+      );
+      expect(lines).toContain(
+        'view_server_source_last_rejection_at_nanos{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 10',
+      );
+      expect(lines).toContain(
+        'view_server_source_last_applied_mutation_at_nanos{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 11',
+      );
+      expect(lines).toContain(
+        'view_server_source_current_attempt{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
+      );
+      expect(lines).toContain(
+        'view_server_source_retained_rows{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 50',
+      );
+      expect(lines).toContain(
+        'view_server_source_delivery_lanes{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 2',
+      );
+      expect(lines).toContain(
+        'view_server_source_bounded_buffer_lanes{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 1',
+      );
+      expect(lines).toContain(
+        'view_server_source_buffer_overflows_total{topic="leased",adapter="source\\"adapter\\\\name",lifecycle="leased"} 12',
+      );
+      expect(lines.some((line) => line.includes("opaqueSequence"))).toBe(false);
+      expect(lines.some((line) => line.includes('id="first"'))).toBe(false);
+
       yield* inMemory.close;
     }).pipe(Effect.scoped),
   );

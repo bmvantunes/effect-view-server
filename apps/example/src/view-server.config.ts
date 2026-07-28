@@ -1,9 +1,9 @@
-import { defineViewServerConfig } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
 import { createViewServerReact } from "effect-view-server/react";
 import { Schema } from "effect";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   status: Schema.Literals(["open", "closed", "cancelled"]),
   price: Schema.Number,
@@ -12,7 +12,7 @@ export const Order = Schema.Struct({
 });
 
 export const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   symbol: Schema.String,
   quantity: Schema.BigInt,
   price: Schema.Number,
@@ -23,11 +23,9 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     trades: {
       schema: Trade,
-      key: "id",
     },
   },
 });

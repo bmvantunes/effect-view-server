@@ -2614,6 +2614,13 @@ describe("benchmark baseline artifacts", () => {
       mutationCount: runtimeThroughputMutationCount,
     };
     const baseline = buildBenchmarkBaseline("kafka-ingest", [kafkaObservation]);
+    const missingKafkaLanesBaseline = buildBenchmarkBaseline("kafka-ingest", [
+      {
+        ...kafkaObservation,
+        kafkaIngestLanes: undefined,
+        throughputCases: comparableRuntimeThroughputCases,
+      },
+    ]);
     const completeBaseline = buildBenchmarkBaseline("kafka-ingest", [
       {
         ...kafkaObservation,
@@ -2656,6 +2663,9 @@ describe("benchmark baseline artifacts", () => {
     expect(() => validateBenchmarkBaseline(baseline)).toThrow(
       "Benchmark artifact field baseline.tasks[0].throughputCases is required for runtime-kafka-ingest.",
     );
+    expect(() => validateBenchmarkBaseline(missingKafkaLanesBaseline)).toThrow(
+      "Benchmark artifact field baseline.tasks[0].kafkaIngestLanes is required for runtime-kafka-ingest.",
+    );
     expect(() => validateBenchmarkBaseline(emptyThroughputBaseline)).toThrow(
       "Benchmark artifact field baseline.tasks[0].throughputCases must be a non-empty array.",
     );
@@ -2683,7 +2693,7 @@ describe("benchmark baseline artifacts", () => {
     );
   });
 
-  it("preserves Kafka lag precision in runtime metrics", () => {
+  it("preserves generic runtime metrics", () => {
     const baseline = buildBenchmarkBaseline("smoke", [
       {
         ...observation,
@@ -2694,31 +2704,6 @@ describe("benchmark baseline artifacts", () => {
     expect(validateBenchmarkBaseline(baseline).tasks[0].runtimeMetrics).toStrictEqual(
       runtimeMetrics,
     );
-  });
-
-  it("normalizes safe numeric Kafka lag runtime metrics", () => {
-    const safeNumericLagBaseline = buildBenchmarkBaseline("smoke", [
-      {
-        ...observation,
-        runtimeMetrics: {
-          ...runtimeMetrics,
-          kafkaLag: {
-            maxConsumerLagMessages: 5,
-            sampledRegionCount: 1,
-            totalConsumerLagMessages: 5,
-          },
-        },
-      },
-    ]);
-
-    expect(validateBenchmarkBaseline(safeNumericLagBaseline).tasks[0].runtimeMetrics).toStrictEqual({
-      ...runtimeMetrics,
-      kafkaLag: {
-        maxConsumerLagMessages: "5",
-        sampledRegionCount: 1,
-        totalConsumerLagMessages: "5",
-      },
-    });
   });
 
   it("rejects impossible runtime metric durations", () => {
@@ -2841,26 +2826,6 @@ describe("benchmark baseline artifacts", () => {
     );
     expect(() => validateBenchmarkBaseline(impossibleCommitMeanBaseline)).toThrow(
       "Benchmark artifact field baseline.tasks[0].throughputCases[0].meanCommitObservedMs must be less than or equal to meanTotalMs.",
-    );
-  });
-
-  it("rejects unsafe numeric Kafka lag runtime metrics", () => {
-    const unsafeNumericLagBaseline = buildBenchmarkBaseline("smoke", [
-      {
-        ...observation,
-        runtimeMetrics: {
-          ...runtimeMetrics,
-          kafkaLag: {
-            maxConsumerLagMessages: 9_007_199_254_740_992,
-            sampledRegionCount: 1,
-            totalConsumerLagMessages: "0",
-          },
-        },
-      },
-    ]);
-
-    expect(() => validateBenchmarkBaseline(unsafeNumericLagBaseline)).toThrow(
-      "Benchmark artifact field baseline.tasks[0].runtimeMetrics.kafkaLag.maxConsumerLagMessages must be a safe non-negative integer.",
     );
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ViewServerId,
   defineViewServerConfig,
   viewSchema,
   viewServerUnsupportedRuntimeFieldDomain,
@@ -21,7 +22,7 @@ const makeStoreConstructionProbe = () => {
     },
   });
   const schema = Schema.Struct({
-    id: Schema.String,
+    id: ViewServerId,
     observed: observedField,
   });
   astReads = 0;
@@ -38,7 +39,7 @@ const makeStoreConstructionProbe = () => {
 };
 
 class OwnedOrder extends Schema.Class<OwnedOrder>("OwnedOrder")({
-  id: Schema.String,
+  id: ViewServerId,
   status: Schema.String,
 }) {}
 viewSchema.admitClass(OwnedOrder);
@@ -49,8 +50,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
       const config = defineViewServerConfig({
         topics: {
           orders: {
-            schema: Schema.Struct({ id: Schema.String, status: Schema.String }),
-            key: "id",
+            schema: Schema.Struct({ id: ViewServerId, status: Schema.String }),
           },
         },
       });
@@ -74,7 +74,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
   it.effect("rejects a raw structural config with an unregistered declaration", () =>
     Effect.gen(function* () {
       const schema = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: UnregisteredString,
       });
 
@@ -83,7 +83,6 @@ describe("ColumnLiveViewEngine config ownership", () => {
           topics: {
             unsafe: {
               schema,
-              key: "id",
             },
           },
         }),
@@ -102,7 +101,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
   it.effect("rejects malformed exposed fields during construction", () =>
     Effect.gen(function* () {
       const schema = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.String,
       });
       expect(Reflect.set(schema.fields, "value", "not-an-effect-schema")).toBe(true);
@@ -112,7 +111,6 @@ describe("ColumnLiveViewEngine config ownership", () => {
           topics: {
             malformed: {
               schema,
-              key: "id",
             },
           },
         }),
@@ -130,7 +128,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
   it.effect("rejects safe exposed fields that diverge from the row schema AST", () =>
     Effect.gen(function* () {
       const schema = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.String,
       });
       expect(Reflect.set(schema.fields, "value", Schema.Number)).toBe(true);
@@ -140,7 +138,6 @@ describe("ColumnLiveViewEngine config ownership", () => {
           topics: {
             divergent: {
               schema,
-              key: "id",
             },
           },
         }),
@@ -160,8 +157,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
       const config = defineViewServerConfig({
         topics: {
           orders: {
-            schema: Schema.Struct({ id: Schema.String }),
-            key: "id",
+            schema: Schema.Struct({ id: ViewServerId }),
           },
         },
       });
@@ -186,7 +182,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
     Effect.gen(function* () {
       const probe = makeStoreConstructionProbe();
       const rootUnsafeSchema = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: UnregisteredString,
       });
       expect(Reflect.set(rootUnsafeSchema.fields, "value", Schema.String)).toBe(true);
@@ -196,11 +192,9 @@ describe("ColumnLiveViewEngine config ownership", () => {
           topics: {
             observed: {
               schema: probe.schema,
-              key: "id",
             },
             unsafe: {
               schema: rootUnsafeSchema,
-              key: "id",
             },
           },
         }),
@@ -221,7 +215,7 @@ describe("ColumnLiveViewEngine config ownership", () => {
     Effect.gen(function* () {
       const probe = makeStoreConstructionProbe();
       const fieldUnsafeSchema = Schema.Struct({
-        id: Schema.String,
+        id: ViewServerId,
         value: Schema.String,
       });
       expect(Reflect.set(fieldUnsafeSchema.fields, "value", UnregisteredString)).toBe(true);
@@ -231,11 +225,9 @@ describe("ColumnLiveViewEngine config ownership", () => {
           topics: {
             observed: {
               schema: probe.schema,
-              key: "id",
             },
             unsafe: {
               schema: fieldUnsafeSchema,
-              key: "id",
             },
           },
         }),
@@ -258,7 +250,6 @@ describe("ColumnLiveViewEngine config ownership", () => {
         topics: {
           orders: {
             schema: OwnedOrder,
-            key: "id",
           },
         },
       });

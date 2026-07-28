@@ -1,9 +1,12 @@
 # View Server gRPC Ingress Plan
 
-> Status: superseded by PRD #383, issue #386, ADRs 0005–0010, and the current
+> Status: fully superseded by PRD #383, issues #386 and #387, ADRs 0005–0010, and the current
 > [gRPC Source Adapter guide](../docs/grpc-source-adapter.md). This file records
-> the earlier transport-specific plan and is not an implementation target; do
-> not extend it with new public or runtime seams.
+> the earlier transport-specific plan and is not an implementation target. No
+> config, runtime, health, package, or benchmark shape below is active. Current
+> code uses canonical Topic `source`, exact `id: ViewServerId`, aggregate
+> `grpcNode` Layers, canonical Source Health, and the
+> `bench:baseline:grpc-source-adapter` gate. Do not extend this historical plan.
 
 This plan defines the gRPC ingress model for View Server.
 

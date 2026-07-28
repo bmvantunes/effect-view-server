@@ -39,8 +39,6 @@ type TcpConfiguredTopic<
   Topic extends Extract<keyof Topics, string> = Extract<keyof Topics, string>,
 > = {
   readonly fieldSchemas: ReadonlyMap<string, TcpFieldSchema>;
-  readonly keyField: string;
-  readonly keySchema: TcpFieldSchema;
   readonly schema: Topics[Topic]["schema"];
   readonly topic: Topic;
 };
@@ -87,15 +85,8 @@ const hasConfiguredTopic = <const Topics extends ViewServerRuntimeTopicDefinitio
   topic: string,
 ): topic is Extract<keyof Topics, string> => Object.hasOwn(topics, topic);
 
-const isTopicDefinitionWithSchema = (
-  value: unknown,
-): value is { readonly key: string; readonly schema: RowSchema } =>
-  typeof value === "object" &&
-  value !== null &&
-  "key" in value &&
-  typeof value.key === "string" &&
-  "schema" in value &&
-  Schema.isSchema(value.schema);
+const isTopicDefinitionWithSchema = (value: unknown): value is { readonly schema: RowSchema } =>
+  typeof value === "object" && value !== null && "schema" in value && Schema.isSchema(value.schema);
 
 const tcpDecodeError = (line: string, cause: unknown): ViewServerTcpPublishIngressError =>
   new ViewServerTcpPublishIngressError({
@@ -167,12 +158,12 @@ const topicSchema = <const Topics extends ViewServerRuntimeTopicDefinitions>(
       (entry): entry is [string, TcpFieldSchema] => entry[1] !== undefined,
     ),
   );
-  const keySchema = fieldSchemas.get(topicDefinition.key);
+  const keySchema = fieldSchemas.get("id");
   if (keySchema === undefined) {
     return Effect.fail(
       new ViewServerTcpPublishIngressError({
-        message: `TCP publish cannot find key field ${topicDefinition.key} for View Server topic ${topic}.`,
-        cause: { key: topicDefinition.key, topic },
+        message: `TCP publish cannot find canonical id field for View Server topic ${topic}.`,
+        cause: { key: "id", topic },
         phase: "decode",
         topic,
       }),
@@ -180,8 +171,6 @@ const topicSchema = <const Topics extends ViewServerRuntimeTopicDefinitions>(
   }
   return Effect.succeed({
     fieldSchemas,
-    keyField: topicDefinition.key,
-    keySchema,
     schema: topicDefinition.schema,
     topic,
   });
@@ -220,14 +209,14 @@ const setDecodedField = (record: Record<string, unknown>, field: string, value: 
   });
 };
 
-const decodeTcpFieldForRuntimeInternal: (
-  schema: TcpFieldSchema,
+const decodeTcpFieldForRuntimeInternal = Effect.fn(
+  "ViewServerRuntime.tcpPublish.field.decode.internal",
+)(function* <A>(
+  schema: Schema.Codec<A, unknown, never, never>,
   topic: string,
   phase: TcpDecodePhase,
   value: unknown,
-) => Effect.Effect<unknown, ViewServerTcpPublishIngressError> = Effect.fn(
-  "ViewServerRuntime.tcpPublish.field.decode.internal",
-)(function* (schema, topic, phase, value) {
+) {
   return yield* Result.match(
     Schema.decodeUnknownResult(Schema.toCodecJson(schema))(value, strictParseOptions),
     {
@@ -241,8 +230,10 @@ const decodeTcpFieldForRuntimeInternal: (
   );
 });
 
-const decodeTcpFieldForRuntime = Effect.fn("ViewServerRuntime.tcpPublish.field.decode")(function* (
-  schema: TcpFieldSchema,
+const decodeTcpFieldForRuntime = Effect.fn("ViewServerRuntime.tcpPublish.field.decode")(function* <
+  A,
+>(
+  schema: Schema.Codec<A, unknown, never, never>,
   topic: string,
   phase: TcpDecodePhase,
   value: unknown,
@@ -284,17 +275,11 @@ const decodeTcpKey = Effect.fn("ViewServerRuntime.tcpPublish.key.decode")(functi
   Topic extends Extract<keyof Topics, string>,
 >(topicDefinition: TcpConfiguredTopic<Topics, Topic>, key: string) {
   const decodedKey = yield* decodeTcpFieldForRuntime(
-    topicDefinition.keySchema,
+    Schema.String,
     topicDefinition.topic,
     "key",
     key,
   );
-  if (typeof decodedKey !== "string") {
-    return yield* tcpDecodeSchemaError(topicDefinition.topic, "key", {
-      key: topicDefinition.keyField,
-      value: key,
-    });
-  }
   return decodedKey;
 });
 

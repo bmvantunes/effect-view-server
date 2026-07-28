@@ -1,93 +1,77 @@
-import type { Client } from "@connectrpc/connect";
 import { describe, expect, it } from "@effect/vitest";
-import { decodeKafkaCodec, type KafkaMessageMetadata } from "effect-view-server/config";
-import { Effect, Stream } from "effect";
+import { decodeKafkaCodec, type KafkaMessageMetadata } from "effect-view-server/kafka/contract";
+import { Effect } from "effect";
 import { combinedService } from "./grpc-descriptors";
-import { Order, Strategy, viewServer } from "./view-server.config";
-
-const client = {
-  streamOrders: async function* streamOrders() {},
-  streamStrategies: async function* streamStrategies() {},
-} satisfies Client<typeof combinedService>;
+import { viewServer } from "./view-server.config";
 
 const textEncoder = new TextEncoder();
 
 describe("combined-sources React example topic-owned sources", () => {
   it.effect("maps leased, materialized, and Kafka source values", () =>
     Effect.gen(function* () {
-      const session = {
-        id: null,
-        forwardedHeaders: {},
-        systemHeaders: {},
-      };
-
-      const orderSource = viewServer.topics.orders.grpcSource;
+      const orderSource = viewServer.topics.orders.source;
       const orderRoute = {
         strategyId: "strategy-alpha",
         region: "usa",
       };
-      const orderRequest = orderSource.request(orderRoute);
-      const orderValues = yield* orderSource
-        .acquire({
-          client,
-          request: orderRequest,
-          route: orderRoute,
-          session,
-        })
-        .pipe(Stream.take(1), Stream.runCollect);
+      const orderRequest = orderSource.options.request(orderRoute);
+      const orderValues = [
+        {
+          $typeName: "viewserver.combined.OrderValue",
+          customerId: "customer-strategy-alpha",
+          status: "open",
+          price: 15,
+          updatedAt: 1,
+        },
+      ] as const;
       const orderRows = Array.from(orderValues, (value) =>
-        orderSource.map({
-          value,
-          route: orderRoute,
-          schema: Order,
-        }),
+        orderSource.options.mapValue(value, orderRoute),
       );
 
-      const strategySource = viewServer.topics.strategies.grpcSource;
-      const strategyRequest = strategySource.request();
-      const strategyValues = yield* strategySource
-        .acquire({
-          client,
-          request: strategyRequest,
-          route: undefined,
-          session,
-        })
-        .pipe(Stream.take(1), Stream.runCollect);
+      const strategySource = viewServer.topics.strategies.source;
+      const strategyRequest = strategySource.options.request();
+      const strategyValues = [
+        {
+          $typeName: "viewserver.combined.StrategyValue",
+          strategyId: "strategy-alpha",
+          region: "usa",
+          status: "active",
+          notional: 100,
+          updatedAt: 1,
+        },
+      ] as const;
       const strategyRows = Array.from(strategyValues, (value) =>
-        strategySource.map({
-          value,
-          route: undefined,
-          schema: Strategy,
-        }),
+        strategySource.options.mapValue(value),
       );
 
-      const tradeSource = viewServer.topics.trades.kafkaSource;
+      const tradeSource = viewServer.topics.trades.source;
+      const tradeOptions = tradeSource.options;
       const tradeMetadata = {
-        sourceTopic: tradeSource.topic,
+        sourceTopic: tradeOptions.topic,
         sourceRegion: "london",
         partition: 0,
-        offset: "1",
-        timestamp: null,
+        offset: 1n,
+        timestampNanos: 0n,
         headers: {},
       } satisfies KafkaMessageMetadata<"london">;
-      const tradeKey = yield* decodeKafkaCodec(tradeSource.key, {
+      const tradeKey = yield* decodeKafkaCodec(tradeOptions.key, {
         bytes: textEncoder.encode("trade-combined-config"),
         metadata: tradeMetadata,
       });
-      const tradeValue = yield* decodeKafkaCodec(tradeSource.value, {
+      const tradeValue = yield* decodeKafkaCodec(tradeOptions.value, {
         bytes: textEncoder.encode('{"symbol":"EFFECT","side":"buy","quantity":7,"updatedAt":2}'),
         metadata: tradeMetadata,
       });
-      const tradeRowKey = tradeSource.rowKey({
+      const tradeLocalRowKey = tradeOptions.localRowKey({
         key: tradeKey,
         region: "london",
         metadata: tradeMetadata,
       });
-      const tradeRow = tradeSource.map({
+      const tradeRow = tradeOptions.map({
         key: tradeKey,
         value: tradeValue,
         region: "london",
-        rowKey: tradeRowKey,
+        localRowKey: tradeLocalRowKey,
         metadata: tradeMetadata,
       });
 
@@ -113,27 +97,27 @@ describe("combined-sources React example topic-owned sources", () => {
           orders: {
             lifecycle: orderSource.lifecycle,
             routeBy: orderSource.routeBy,
-            client: orderSource.client,
-            method: orderSource.method,
+            client: orderSource.options.client,
+            method: orderSource.options.method,
             request: orderRequest,
           },
           strategies: {
             lifecycle: strategySource.lifecycle,
-            client: strategySource.client,
-            method: strategySource.method,
+            client: strategySource.options.client,
+            method: strategySource.options.method,
             request: strategyRequest,
           },
           trades: {
-            topic: tradeSource.topic,
-            regions: tradeSource.regions,
-            keyFormat: tradeSource.key.format,
-            valueFormat: tradeSource.value.format,
+            topic: tradeOptions.topic,
+            regions: tradeOptions.regions,
+            keyFormat: tradeOptions.key.format,
+            valueFormat: tradeOptions.value.format,
           },
         },
         rows: {
           orders: orderRows,
           strategies: strategyRows,
-          trades: [{ id: tradeRowKey, ...tradeRow }],
+          trades: [{ id: `london:${tradeLocalRowKey}`, ...tradeRow }],
         },
       }).toStrictEqual({
         descriptors: {
@@ -201,7 +185,7 @@ describe("combined-sources React example topic-owned sources", () => {
           ],
           trades: [
             {
-              id: "trade-combined-config",
+              id: "london:trade-combined-config",
               symbol: "EFFECT",
               side: "buy",
               quantity: 7,

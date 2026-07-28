@@ -2,10 +2,17 @@ import { describe, expectTypeOf, it } from "@effect/vitest";
 import {
   SourceAdapter,
   type SourceDefinitionOptionsFamily,
+  type SourceHealthForDefinition,
 } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
-import { defineViewServerConfig, type ExactLiveQueryInputForTopic } from "./index";
-import { grpcSourceMarkers } from "./internal";
+import {
+  defineViewServerConfig,
+  ViewServerId,
+  type ExactLiveQueryInputForTopic,
+  type TopicRow,
+  type ViewServerHealth,
+  type ViewServerSourceHealth,
+} from "./index";
 
 const Failure = Schema.TaggedStruct("ConfigTypeSourceFailure", {
   message: Schema.String,
@@ -24,7 +31,7 @@ const adapter = SourceAdapter.make({
   leased: Declaration,
 });
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   shard: Schema.BigInt,
 });
@@ -71,6 +78,24 @@ const config = defineViewServerConfig({
     },
   },
 });
+const sourceFreeConfig = defineViewServerConfig({
+  topics: {
+    manual: {
+      schema: Row,
+    },
+  },
+});
+declare const useLeasedSource: boolean;
+const mixedLifecycleConfig = defineViewServerConfig({
+  topics: {
+    mixed: {
+      schema: Row,
+      source: useLeasedSource
+        ? adapter.leasedSource(["region", "shard"], { stream: "mixed-leased" })
+        : adapter.materializedSource({ stream: "mixed-materialized" }),
+    },
+  },
+});
 const mappedConfig = defineViewServerConfig({
   topics: {
     mapped: {
@@ -84,7 +109,7 @@ const mappedConfig = defineViewServerConfig({
   },
 });
 const NestedRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   metadata: Schema.Struct({
     region: Schema.String,
     tags: Schema.Array(
@@ -108,14 +133,83 @@ const nestedMappedConfig = defineViewServerConfig({
     },
   },
 });
+type MaterializedHealth = SourceHealthForDefinition<
+  typeof config.topics.all.source,
+  TopicRow<typeof config.topics, "all">
+>;
+type LeasedHealth = SourceHealthForDefinition<
+  typeof config.topics.routed.source,
+  TopicRow<typeof config.topics, "routed">
+>;
+type MixedDefinition = typeof mixedLifecycleConfig.topics.mixed.source;
+type MixedMaterializedHealth = SourceHealthForDefinition<
+  Extract<MixedDefinition, { readonly lifecycle: "materialized" }>,
+  TopicRow<typeof mixedLifecycleConfig.topics, "mixed">
+>;
+type MixedLeasedHealth = SourceHealthForDefinition<
+  Extract<MixedDefinition, { readonly lifecycle: "leased" }>,
+  TopicRow<typeof mixedLifecycleConfig.topics, "mixed">
+>;
+declare const materializedHealth: MaterializedHealth;
+declare const leasedHealth: LeasedHealth;
+declare const sourceFreeHealth: ViewServerHealth<typeof sourceFreeConfig.topics>;
 
 describe("Source Adapter config type contracts", () => {
   it("infers canonical ids, exact routes, and source definitions without as const", () => {
-    expectTypeOf(config.topics.all.key).toEqualTypeOf<"id">();
-    expectTypeOf(config.topics.routed.key).toEqualTypeOf<"id">();
-    expectTypeOf(mappedConfig.topics.mapped.key).toEqualTypeOf<"id">();
-    expectTypeOf(nestedMappedConfig.topics.nested.key).toEqualTypeOf<"id">();
+    expectTypeOf<typeof ViewServerId.Type>().toEqualTypeOf<string>();
+    expectTypeOf<typeof ViewServerId.Encoded>().toEqualTypeOf<string>();
+    expectTypeOf(config.topics.all.schema.fields.id).toEqualTypeOf<typeof ViewServerId>();
+    expectTypeOf(sourceFreeConfig.topics.manual.schema.fields.id).toEqualTypeOf<
+      typeof ViewServerId
+    >();
+    // @ts-expect-error Topic configuration never exposes a configurable key.
+    void config.topics.all.key;
+    // @ts-expect-error Source-free Topic configuration never exposes a configurable key.
+    void sourceFreeConfig.topics.manual.key;
+    expectTypeOf(mappedConfig.topics.mapped.source).toEqualTypeOf<
+      typeof mappedConfig.topics.mapped.source
+    >();
+    expectTypeOf(nestedMappedConfig.topics.nested.source).toEqualTypeOf<
+      typeof nestedMappedConfig.topics.nested.source
+    >();
     expectTypeOf(config.topics.routed.source.routeBy).toEqualTypeOf<readonly ["region", "shard"]>();
+    expectTypeOf<
+      ViewServerHealth<typeof config.topics>["sources"]["all"]
+    >().toEqualTypeOf<MaterializedHealth>();
+    expectTypeOf<ViewServerHealth<typeof config.topics>["sources"]["routed"]>().toEqualTypeOf<
+      ReadonlyArray<LeasedHealth>
+    >();
+    expectTypeOf<
+      ViewServerHealth<typeof config.topics>["sources"]["all"]["metrics"]["adapter"]
+    >().toEqualTypeOf<{ readonly connected: boolean }>();
+    expectTypeOf<
+      ViewServerHealth<typeof mixedLifecycleConfig.topics>["sources"]["mixed"]
+    >().toEqualTypeOf<MixedMaterializedHealth | ReadonlyArray<MixedLeasedHealth>>();
+    expectTypeOf<
+      keyof ViewServerHealth<typeof sourceFreeConfig.topics>["sources"]
+    >().toEqualTypeOf<never>();
+
+    const validSourceHealth: ViewServerSourceHealth<typeof config.topics> = {
+      all: materializedHealth,
+      routed: [leasedHealth],
+    };
+    expectTypeOf(validSourceHealth.routed).toEqualTypeOf<ReadonlyArray<LeasedHealth>>();
+
+    // @ts-expect-error Materialized Source Health is mandatory and singular.
+    const missingMaterializedHealth: ViewServerSourceHealth<typeof config.topics> = {
+      routed: [leasedHealth],
+    };
+    expectTypeOf(missingMaterializedHealth.routed).toEqualTypeOf<ReadonlyArray<LeasedHealth>>();
+
+    const invalidLeasedHealth: ViewServerSourceHealth<typeof config.topics> = {
+      all: materializedHealth,
+      // @ts-expect-error Leased aggregate health is the exact active-health array.
+      routed: leasedHealth,
+    };
+    expectTypeOf(invalidLeasedHealth.all).toEqualTypeOf<MaterializedHealth>();
+
+    // @ts-expect-error Source-free Topics have no canonical aggregate Source Health key.
+    void sourceFreeHealth.sources.manual;
 
     const valid: ExactLiveQueryInputForTopic<
       typeof config.topics,
@@ -138,7 +232,7 @@ describe("Source Adapter config type contracts", () => {
   });
 
   it("rejects keys, invalid routes, and source-owner conflicts", () => {
-    // @ts-expect-error Source-owned topics cannot declare key.
+    // @ts-expect-error Every Topic rejects the removed configurable key.
     defineViewServerConfig({
       topics: {
         keyed: {
@@ -159,13 +253,24 @@ describe("Source Adapter config type contracts", () => {
       },
     });
 
+    // @ts-expect-error Legacy source owners are removed.
     defineViewServerConfig({
       topics: {
-        // @ts-expect-error Source-owned topics cannot declare legacy owners.
         conflicting: {
           schema: Row,
           source: adapter.materializedSource({ stream: "all" }),
-          grpcSource: grpcSourceMarkers.materialized(),
+          grpcSource: {},
+        },
+      },
+    });
+
+    // @ts-expect-error Legacy Kafka source owners are removed.
+    defineViewServerConfig({
+      topics: {
+        conflictingKafka: {
+          schema: Row,
+          source: adapter.materializedSource({ stream: "all" }),
+          kafkaSource: {},
         },
       },
     });
@@ -208,9 +313,19 @@ describe("Source Adapter config type contracts", () => {
       topics: {
         brandedId: {
           schema: Schema.Struct({
-            id: Schema.String.pipe(Schema.brand("SourceId")),
+            id: ViewServerId.pipe(Schema.brand("SourceId")),
             region: Schema.String,
           }),
+          source: adapter.materializedSource({ stream: "all" }),
+        },
+      },
+    });
+
+    // @ts-expect-error canonical ids must use the nominal ViewServerId schema.
+    defineViewServerConfig({
+      topics: {
+        plainStringId: {
+          schema: Schema.Struct({ id: Schema.String, region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
         },
       },
@@ -222,6 +337,25 @@ describe("Source Adapter config type contracts", () => {
         transformedId: {
           schema: Schema.Struct({ id: Schema.Trim, region: Schema.String }),
           source: adapter.materializedSource({ stream: "all" }),
+        },
+      },
+    });
+
+    // @ts-expect-error canonical Source-owned ids may not be refinements.
+    defineViewServerConfig({
+      topics: {
+        refinedId: {
+          schema: Schema.Struct({ id: Schema.NonEmptyString, region: Schema.String }),
+          source: adapter.materializedSource({ stream: "all" }),
+        },
+      },
+    });
+
+    // @ts-expect-error Source-free Topics also require the canonical id.
+    defineViewServerConfig({
+      topics: {
+        missingManualId: {
+          schema: Schema.Struct({ region: Schema.String }),
         },
       },
     });

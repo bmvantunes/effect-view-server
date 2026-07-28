@@ -16,9 +16,6 @@ import {
 } from "@effect-view-server/server";
 import type { Effect } from "effect";
 import type { HttpServerError } from "effect/unstable/http";
-import { makeDefaultRuntimeSourceAdapters } from "./runtime-source-adapters";
-import type { ViewServerRuntimeSourceError } from "./runtime-source-adapters";
-import type { ViewServerRuntimeSourceAdapter } from "./runtime-source";
 import {
   makeViewServerTcpPublishIngress,
   type ViewServerTcpPublishIngress,
@@ -28,9 +25,6 @@ import {
 import type { ViewServerRuntimeTopicDefinitions } from "./runtime-types";
 
 export type ViewServerRuntimeDependencies<Topics extends ViewServerRuntimeTopicDefinitions> = {
-  readonly sourceAdapters: ReadonlyArray<
-    ViewServerRuntimeSourceAdapter<Topics, ViewServerRuntimeSourceError>
-  >;
   readonly makeRuntimeCore: (
     config: ViewServerRuntimeDependencyConfig<Topics>,
     options: ViewServerRuntimeCoreOptionsFor<Topics>,
@@ -58,7 +52,6 @@ export type ViewServerRuntimeDependencyConfig<Topics extends ViewServerRuntimeTo
 export const makeDefaultRuntimeDependencies = <
   const Topics extends ViewServerRuntimeTopicDefinitions,
 >(): ViewServerRuntimeDependencies<Topics> => ({
-  sourceAdapters: makeDefaultRuntimeSourceAdapters<Topics>(),
   makeRuntimeCore: makeViewServerRuntimeCoreInternal,
   makeServer: makeViewServerWebSocketServer,
   makeTcpPublishIngress: makeViewServerTcpPublishIngress,

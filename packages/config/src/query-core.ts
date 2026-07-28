@@ -1,6 +1,6 @@
 import type { Schema } from "effect";
 import type * as BigDecimal from "effect/BigDecimal";
-import type { TopicSourceDefinition } from "./source-contract";
+import type { SourceDefinitionAny } from "./source-contract";
 
 export type TopicName = string;
 export type SortDirection = "asc" | "desc";
@@ -36,22 +36,16 @@ export type NumericFieldKey<Row> = Extract<
 
 export type FieldKey<Row> = Extract<keyof Row, string>;
 
-export type TopicDefinition<S extends RowSchema, Key extends string> = {
+export type TopicDefinition<S extends RowSchema> = {
   readonly schema: S;
-  readonly key: Key;
-  readonly kafkaSource?: object | undefined;
-  readonly grpcSource?: TopicSourceDefinition | undefined;
-  readonly source?: object | undefined;
+  readonly source?: SourceDefinitionAny | undefined;
 };
 
 export type TopicDefinitions = Record<
   string,
   {
     readonly schema: RowSchema;
-    readonly key: string;
-    readonly kafkaSource?: object | undefined;
-    readonly grpcSource?: TopicSourceDefinition | undefined;
-    readonly source?: object | undefined;
+    readonly source?: SourceDefinitionAny | undefined;
   }
 >;
 

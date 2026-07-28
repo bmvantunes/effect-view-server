@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import {
   SourceAdapter,
@@ -38,7 +38,7 @@ import { TestClock } from "effect/testing";
 import { makeViewServerRuntimeCore } from "./index";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   value: Schema.String,
 });
@@ -152,6 +152,54 @@ const withChangingLaneId = <Row extends object, AdapterFailure, RejectionLocatio
 };
 
 describe("Runtime Core adversarial Source runtime", () => {
+  it.effect("rejects a Leased Source without valid initial canonical health", () =>
+    Effect.gen(function* () {
+      const fixture = yield* SourceFixture.make(Row);
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: fixture.leasedSource(["region"], {
+              label: "invalid-initial-metrics",
+            }),
+          },
+        },
+      });
+      const context = yield* Layer.build(fixture.layer);
+      const service = Context.get(context, fixture.adapter.runtimeService);
+      const leased = Option.getOrThrow(Option.fromUndefinedOr(service.leased));
+      const lifecycle = new Proxy(leased, {
+        get: (target, property, receiver) =>
+          property === "metrics"
+            ? () => Effect.succeed({ observed: "invalid" })
+            : Reflect.get(target, property, receiver),
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provideService(fixture.adapter.runtimeService, {
+          ...service,
+          leased: lifecycle,
+        }),
+      );
+
+      const failure = yield* runtime.liveClient
+        .subscribe("rows", {
+          routeBy: { region: "eu" },
+          select: ["id", "region"],
+        })
+        .pipe(Effect.flip);
+
+      expect(failure).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "rows",
+        message:
+          "Source Adapter for Leased Topic rows did not publish valid initial Source Health.",
+      });
+      expect((yield* runtime.client.health()).sources).toStrictEqual({ rows: [] });
+      yield* runtime.close;
+    }),
+  );
+
   it.effect(
     "maps encode, re-decode, and post-decode freeze failures into typed metrics errors",
     () =>
@@ -241,7 +289,9 @@ describe("Runtime Core adversarial Source runtime", () => {
             },
           });
           const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-          const readyDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+          const readyDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+            topic: "rows",
+          });
           expect(
             Option.getOrThrow(
               yield* readyDiagnostics.events.pipe(
@@ -252,7 +302,7 @@ describe("Runtime Core adversarial Source runtime", () => {
             ).status._tag,
           ).toBe("Ready");
           yield* readyDiagnostics.close();
-          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+          const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
           const exhausted = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);
           yield* TestClock.adjust("1 second");
           expect((yield* Fiber.join(exhausted)).exhaustion.lastTermination).toStrictEqual({
@@ -340,14 +390,14 @@ describe("Runtime Core adversarial Source runtime", () => {
           value: decimalMetric,
         };
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-        const readyDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const readyDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
         const ready = Option.getOrThrow(
           yield* readyDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
         );
         expect(ready.metrics.adapter.value === decimalMetric).toBe(false);
         expect(Object.isFrozen(ready.metrics.adapter.value)).toBe(true);
         yield* readyDiagnostics.close();
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
         const exhausted = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);
         currentMetrics = {
           value: invalidMetrics,
@@ -417,7 +467,7 @@ describe("Runtime Core adversarial Source runtime", () => {
         },
       });
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       const health = Option.getOrThrow(
         yield* diagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -496,7 +546,7 @@ describe("Runtime Core adversarial Source runtime", () => {
           nested: {},
         };
         const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+        const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
         const exhaustedFiber = yield* awaitExhausted(diagnostics).pipe(Effect.forkChild);
         currentMetrics = {
           nested: cyclic,
@@ -559,7 +609,7 @@ describe("Runtime Core adversarial Source runtime", () => {
       yield* fixture.controls.awaitActive({ _tag: "Materialized" });
       yield* TestClock.adjust("1 second");
       yield* Deferred.await(delayedSampleStarted);
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       const rejectionSettled = yield* Deferred.make<void>();
       yield* fixture.controls.reject(
         { _tag: "Materialized" },
@@ -650,7 +700,7 @@ describe("Runtime Core adversarial Source runtime", () => {
         Effect.provide(fixture.layer),
       );
       yield* fixture.controls.awaitActive({ _tag: "Materialized" });
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
       yield* fixture.controls.fail(
         { _tag: "Materialized" },
         SourceFixture.failure("retry", "stream"),
@@ -722,7 +772,7 @@ describe("Runtime Core adversarial Source runtime", () => {
       );
       expect(
         (yield* awaitExhausted(
-          yield* forgedAttemptRuntime.liveClient.subscribeSourceHealth("rows"),
+          yield* forgedAttemptRuntime.liveClient.subscribeSourceHealth({ topic: "rows" }),
         )).exhaustion.lastTermination,
       ).toStrictEqual({
         _tag: "Failed",
@@ -753,7 +803,7 @@ describe("Runtime Core adversarial Source runtime", () => {
       );
       expect(
         (yield* awaitExhausted(
-          yield* malformedAttemptRuntime.liveClient.subscribeSourceHealth("rows"),
+          yield* malformedAttemptRuntime.liveClient.subscribeSourceHealth({ topic: "rows" }),
         )).exhaustion.lastTermination,
       ).toStrictEqual({
         _tag: "Failed",
@@ -794,8 +844,9 @@ describe("Runtime Core adversarial Source runtime", () => {
         }),
       );
       expect(
-        (yield* awaitExhausted(yield* forgedEventRuntime.liveClient.subscribeSourceHealth("rows")))
-          .exhaustion.lastTermination,
+        (yield* awaitExhausted(
+          yield* forgedEventRuntime.liveClient.subscribeSourceHealth({ topic: "rows" }),
+        )).exhaustion.lastTermination,
       ).toStrictEqual({
         _tag: "Failed",
         failure: {
@@ -863,8 +914,8 @@ describe("Runtime Core adversarial Source runtime", () => {
 
       expect(yield* Deferred.await(settlementExit)).toBe("Failure");
       expect(
-        (yield* awaitExhausted(yield* runtime.liveClient.subscribeSourceHealth("rows"))).exhaustion
-          .lastTermination,
+        (yield* awaitExhausted(yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" })))
+          .exhaustion.lastTermination,
       ).toStrictEqual({
         _tag: "Failed",
         failure: {
@@ -978,7 +1029,7 @@ describe("Runtime Core adversarial Source runtime", () => {
           }),
         );
         const exhausted = yield* awaitExhausted(
-          yield* runtime.liveClient.subscribeSourceHealth("rows"),
+          yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" }),
         );
         yield* runtime.close;
         return exhausted.exhaustion.lastTermination;
@@ -1229,7 +1280,7 @@ describe("Runtime Core adversarial Source runtime", () => {
             }),
           );
           const exhausted = yield* awaitExhausted(
-            yield* runtime.liveClient.subscribeSourceHealth("rows"),
+            yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" }),
           );
           yield* runtime.close;
           return exhausted.exhaustion.lastTermination;
@@ -1280,7 +1331,7 @@ describe("Runtime Core adversarial Source runtime", () => {
         }),
       );
       const runtimeFailureHealth = yield* runtimeFailureRuntime.liveClient
-        .subscribeSourceHealth("rows")
+        .subscribeSourceHealth({ topic: "rows" })
         .pipe(
           Effect.flatMap((diagnostics) =>
             diagnostics.events.pipe(
@@ -1356,8 +1407,8 @@ describe("Runtime Core adversarial Source runtime", () => {
       );
 
       expect(
-        (yield* awaitExhausted(yield* runtime.liveClient.subscribeSourceHealth("rows"))).exhaustion
-          .lastTermination,
+        (yield* awaitExhausted(yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" })))
+          .exhaustion.lastTermination,
       ).toStrictEqual({
         _tag: "Failed",
         failure: {
@@ -1601,7 +1652,7 @@ describe("Runtime Core adversarial Source runtime", () => {
           }),
         );
         const exhausted = yield* awaitExhausted(
-          yield* runtime.liveClient.subscribeSourceHealth("rows"),
+          yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" }),
         );
         expect(exhausted.exhaustion.lastTermination).toStrictEqual({
           _tag: "Failed",
@@ -1720,7 +1771,7 @@ describe("Runtime Core adversarial Source runtime", () => {
           materialized: lifecycle,
         }),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
 
       yield* TestClock.adjust("1 second");
       expect((yield* awaitExhausted(diagnostics)).exhaustion.lastTermination).toStrictEqual({
@@ -1786,7 +1837,7 @@ describe("Runtime Core adversarial Source runtime", () => {
           materialized: lifecycle,
         }),
       );
-      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth("rows");
+      const diagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "rows" });
 
       expect((yield* awaitExhausted(diagnostics)).exhaustion.lastTermination).toStrictEqual({
         _tag: "Failed",

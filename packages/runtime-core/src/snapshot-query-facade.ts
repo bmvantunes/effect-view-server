@@ -1,10 +1,10 @@
-import type { DecodableTopicDefinitions } from "@effect-view-server/column-live-view-engine";
 import type {
   ExactLiveQueryInputForTopic,
   GroupedQuery,
   LiveQueryResult,
   LiveQueryRow,
   RawQuery,
+  TopicDefinitions,
   TopicRow,
   ViewServerRuntimeClient,
   ViewServerRuntimeError,
@@ -13,7 +13,7 @@ import { Effect } from "effect";
 
 type RuntimeSnapshot = Effect.Effect<LiveQueryResult<object>, ViewServerRuntimeError>;
 
-export type RuntimeCoreSnapshotQuerySubstrate<Topics extends DecodableTopicDefinitions> = {
+export type RuntimeCoreSnapshotQuerySubstrate<Topics extends TopicDefinitions> = {
   readonly snapshotQuery: (
     topic: Extract<keyof Topics, string>,
     query: Readonly<Record<string, unknown>>,
@@ -23,12 +23,12 @@ export type RuntimeCoreSnapshotQuerySubstrate<Topics extends DecodableTopicDefin
   ) => Effect.Effect<void, ViewServerRuntimeError>;
 };
 
-export type RuntimeCoreSnapshotQueryFacade<Topics extends DecodableTopicDefinitions> = {
+export type RuntimeCoreSnapshotQueryFacade<Topics extends TopicDefinitions> = {
   readonly snapshotInternal: ViewServerRuntimeClient<Topics>["snapshot"];
   readonly snapshot: ViewServerRuntimeClient<Topics>["snapshot"];
 };
 
-export const makeRuntimeCoreSnapshotQueryFacade = <Topics extends DecodableTopicDefinitions>(
+export const makeRuntimeCoreSnapshotQueryFacade = <Topics extends TopicDefinitions>(
   substrate: RuntimeCoreSnapshotQuerySubstrate<Topics>,
 ): RuntimeCoreSnapshotQueryFacade<Topics> => {
   function snapshotInternal<

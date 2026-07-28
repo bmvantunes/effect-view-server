@@ -1,7 +1,8 @@
 // Import Vitest directly so the Effect test-runtime graph does not distort
 // Kafka Source Lane hot-path measurements.
 import { afterAll, beforeAll, bench, describe } from "vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCore } from "@effect-view-server/runtime-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -9,6 +10,7 @@ import { Deferred, Effect, Exit, Queue, Schema, Scope, Stream } from "effect";
 import { kafka, type KafkaMessageMetadata } from "./contract";
 import { kafkaNodeInternals } from "./node-internal";
 import { makeKafkaServerLayer, type KafkaServerRecord, type KafkaServerRegion } from "./server";
+import { OrderValueSchema } from "./test-fixtures/orders_pb";
 
 const benchmarkInteger = (name: string, fallback: number): number => {
   const configured = process.env[name];
@@ -39,7 +41,10 @@ if (laneBatchSize === 0 || metricsPartitionCount === 0 || laneBatchSize % multiR
 const multiRegionBatchSize = laneBatchSize / multiRegionCount;
 const encoder = new TextEncoder();
 const benchmarkCaseNames = [
-  `single Region Lane (${laneBatchSize} accepted records across ${metricsPartitionCount} partitions)`,
+  `JSON single Region Lane (${laneBatchSize} accepted records across ${metricsPartitionCount} partitions)`,
+  `protobuf single Region Lane (${laneBatchSize} accepted records across ${metricsPartitionCount} partitions)`,
+  `${laneBatchSize}-record mixed JSON/protobuf burst`,
+  `sustained JSON/protobuf ingestion (${laneBatchSize} records per wave)`,
   `poison Rejection plus valid continuation (${laneBatchSize} records across ${metricsPartitionCount} partitions)`,
   `four concurrent Region Lanes (${laneBatchSize} accepted records across ${metricsPartitionCount} partitions)`,
   `${metricsPartitionCount}-partition assignment, commit, lag, and snapshot metrics`,
@@ -89,7 +94,7 @@ const memoryBefore = memorySnapshot();
 let memoryAfterSetup = memoryBefore;
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.Number,
   region: Schema.String,
 });
@@ -99,7 +104,7 @@ const WireRow = Schema.Struct({
 
 type BenchmarkRecord = {
   readonly key: string;
-  readonly value: string;
+  readonly value: string | Uint8Array;
 };
 
 type BenchmarkRegion = {
@@ -117,6 +122,7 @@ type BenchmarkState = {
   readonly retainedRowIds: Effect.Effect<
     {
       readonly accepted: ReadonlyArray<string>;
+      readonly protobuf: ReadonlyArray<string>;
       readonly poisoned: ReadonlyArray<string>;
       readonly multiRegion: ReadonlyArray<string>;
     },
@@ -127,8 +133,12 @@ type BenchmarkState = {
 let state: BenchmarkState | undefined;
 let benchmarkScope: Scope.Closeable | undefined;
 let acceptedRevision = 0;
+let protobufRevision = 0;
+let mixedRevision = 0;
+let sustainedRevision = 0;
 let poisonedRevision = 0;
 let multiRegionRevision = 0;
+let successfulMutationCount = 0;
 
 const requireState = (): BenchmarkState => {
   if (state === undefined) {
@@ -236,7 +246,7 @@ const makeBenchmarkRegion = (region: string): BenchmarkRegion => {
           (record, index) =>
             Queue.offer(queue, {
               key: encoder.encode(record.key),
-              value: encoder.encode(record.value),
+              value: typeof record.value === "string" ? encoder.encode(record.value) : record.value,
               metadata: metadata(sourceTopic, region, index % metricsPartitionCount, BigInt(index)),
               settlement: (applicationExit) =>
                 Exit.isSuccess(applicationExit)
@@ -266,6 +276,23 @@ const makeSource = (sourceTopic: string, regions: readonly [string, ...ReadonlyA
     startFrom: "earliest",
   });
 
+const makeProtobufSource = (
+  sourceTopic: string,
+  regions: readonly [string, ...ReadonlyArray<string>],
+) =>
+  kafka.source({
+    topic: sourceTopic,
+    regions,
+    key: kafka.string(),
+    value: kafka.protobuf(OrderValueSchema),
+    localRowKey: ({ key }) => key,
+    map: ({ value, region }) => ({
+      value: value.price,
+      region,
+    }),
+    startFrom: "earliest",
+  });
+
 beforeAll(async () => {
   const scope = Effect.runSync(Scope.make("sequential"));
   benchmarkScope = scope;
@@ -288,6 +315,10 @@ beforeAll(async () => {
           accepted: {
             schema: Row,
             source: makeSource("accepted-source", ["single"]),
+          },
+          protobuf: {
+            schema: Row,
+            source: makeProtobufSource("protobuf-source", ["single"]),
           },
           poisoned: {
             schema: Row,
@@ -314,7 +345,7 @@ beforeAll(async () => {
       );
       yield* Effect.all(
         [
-          single.awaitBindings(["accepted", "poisoned"]),
+          single.awaitBindings(["accepted", "protobuf", "poisoned"]),
           region1.awaitBindings(["multiRegion"]),
           region2.awaitBindings(["multiRegion"]),
           region3.awaitBindings(["multiRegion"]),
@@ -329,6 +360,10 @@ beforeAll(async () => {
             select: ["id"],
             orderBy: [{ field: "id", direction: "asc" }],
           });
+          const protobuf = yield* runtime.client.snapshot("protobuf", {
+            select: ["id"],
+            orderBy: [{ field: "id", direction: "asc" }],
+          });
           const poisoned = yield* runtime.client.snapshot("poisoned", {
             select: ["id"],
             orderBy: [{ field: "id", direction: "asc" }],
@@ -339,6 +374,7 @@ beforeAll(async () => {
           });
           return {
             accepted: accepted.rows.map((row) => row.id),
+            protobuf: protobuf.rows.map((row) => row.id),
             poisoned: poisoned.rows.map((row) => row.id),
             multiRegion: multiRegion.rows.map((row) => row.id),
           };
@@ -363,6 +399,9 @@ afterAll(async () => {
   benchmarkScope = undefined;
   const expectedRetainedRowIds = {
     accepted: Array.from({ length: laneBatchSize }, (_, index) => `single:accepted-${index}`).sort(
+      (left, right) => left.localeCompare(right),
+    ),
+    protobuf: Array.from({ length: laneBatchSize }, (_, index) => `single:protobuf-${index}`).sort(
       (left, right) => left.localeCompare(right),
     ),
     poisoned: Array.from(
@@ -401,21 +440,24 @@ afterAll(async () => {
       setupDelta: memoryDelta(memoryBefore, memoryAfterSetup),
       totalDelta: memoryDelta(memoryBefore, memoryAfterBenchmark),
     },
-    mutationCount: laneBatchSize,
+    mutationCount: successfulMutationCount,
     notes: [
       "Source Lane cases exercise the production materialized Kafka Source Adapter processor.",
-      "Every Lane batch spans 64 synthetic partitions so partition-sensitive hot paths stay visible.",
-      "The metrics case exercises assignment, commit, lag, and sampling bookkeeping across 64 partitions.",
+      "The canonical profile configures 2,000-row JSON/protobuf batches and a mixed 2,000-record burst.",
+      "Sustained ingestion applies eight consecutive mixed-codec waves per measured sample.",
+      "Every Lane batch spans the configured synthetic partitions so partition-sensitive hot paths stay visible.",
+      "The metrics case exercises assignment, commit, lag, and sampling bookkeeping across the configured partitions.",
     ],
     queuedEventCount: 0,
     retainedRowsByTopic: {
       accepted: retainedRowIds.accepted.length,
+      protobuf: retainedRowIds.protobuf.length,
       poisoned: retainedRowIds.poisoned.length,
       multiRegion: retainedRowIds.multiRegion.length,
     },
     rowCount: retainedRowIds.accepted.length,
     subscriberCount: 0,
-    topics: ["accepted", "poisoned", "multiRegion"],
+    topics: ["accepted", "protobuf", "poisoned", "multiRegion"],
   });
 });
 
@@ -427,6 +469,22 @@ const validBatch = (
   Array.from({ length: count }, (_, index) => ({
     key: `${label}-${index}`,
     value: JSON.stringify({ value: revision * laneBatchSize + index }),
+  }));
+
+const protobufBatch = (
+  label: string,
+  revision: number,
+  count: number,
+): ReadonlyArray<BenchmarkRecord> =>
+  Array.from({ length: count }, (_, index) => ({
+    key: `${label}-${index}`,
+    value: toBinary(
+      OrderValueSchema,
+      create(OrderValueSchema, {
+        customerId: label,
+        price: revision * laneBatchSize + index,
+      }),
+    ),
   }));
 
 describe("Kafka Source Adapter lanes", () => {
@@ -442,12 +500,88 @@ describe("Kafka Source Adapter lanes", () => {
           validBatch("accepted", acceptedRevision, laneBatchSize),
         ),
       );
+      successfulMutationCount += laneBatchSize;
     },
     benchmarkOptions,
   );
 
   bench(
     benchmarkCaseNames[1],
+    async () => {
+      const current = requireState();
+      protobufRevision += 1;
+      await Effect.runPromise(
+        requireRegion(current, "single").offerBatch(
+          "protobuf",
+          "protobuf-source",
+          protobufBatch("protobuf", protobufRevision, laneBatchSize),
+        ),
+      );
+      successfulMutationCount += laneBatchSize;
+    },
+    benchmarkOptions,
+  );
+
+  bench(
+    benchmarkCaseNames[2],
+    async () => {
+      const current = requireState();
+      mixedRevision += 1;
+      const half = laneBatchSize / 2;
+      await Effect.runPromise(
+        Effect.all(
+          [
+            requireRegion(current, "single").offerBatch(
+              "accepted",
+              "accepted-source",
+              validBatch("accepted", mixedRevision, half),
+            ),
+            requireRegion(current, "single").offerBatch(
+              "protobuf",
+              "protobuf-source",
+              protobufBatch("protobuf", mixedRevision, laneBatchSize - half),
+            ),
+          ],
+          { concurrency: "unbounded", discard: true },
+        ),
+      );
+      successfulMutationCount += laneBatchSize;
+    },
+    benchmarkOptions,
+  );
+
+  bench(
+    benchmarkCaseNames[3],
+    async () => {
+      const current = requireState();
+      for (let wave = 0; wave < 8; wave += 1) {
+        sustainedRevision += 1;
+        const half = laneBatchSize / 2;
+        await Effect.runPromise(
+          Effect.all(
+            [
+              requireRegion(current, "single").offerBatch(
+                "accepted",
+                "accepted-source",
+                validBatch("accepted", sustainedRevision, half),
+              ),
+              requireRegion(current, "single").offerBatch(
+                "protobuf",
+                "protobuf-source",
+                protobufBatch("protobuf", sustainedRevision, laneBatchSize - half),
+              ),
+            ],
+            { concurrency: "unbounded", discard: true },
+          ),
+        );
+      }
+      successfulMutationCount += laneBatchSize * 8;
+    },
+    benchmarkOptions,
+  );
+
+  bench(
+    benchmarkCaseNames[4],
     async () => {
       const current = requireState();
       poisonedRevision += 1;
@@ -461,12 +595,13 @@ describe("Kafka Source Adapter lanes", () => {
           ...valid,
         ]),
       );
+      successfulMutationCount += laneBatchSize - 1;
     },
     benchmarkOptions,
   );
 
   bench(
-    benchmarkCaseNames[2],
+    benchmarkCaseNames[5],
     async () => {
       const current = requireState();
       multiRegionRevision += 1;
@@ -482,6 +617,7 @@ describe("Kafka Source Adapter lanes", () => {
           { concurrency: "unbounded", discard: true },
         ),
       );
+      successfulMutationCount += laneBatchSize;
     },
     benchmarkOptions,
   );
@@ -510,7 +646,7 @@ describe("Kafka Source Adapter lanes", () => {
   ]);
 
   bench(
-    benchmarkCaseNames[3],
+    benchmarkCaseNames[6],
     () => {
       kafkaNodeInternals.resetAttemptAssignments(metrics, offsets, latestOffsets);
       for (const partition of partitions) {

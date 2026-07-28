@@ -12,7 +12,7 @@ import type {
 import {
   compileViewServerRuntimeLiveEventEncoder,
   ViewServerRpcs,
-  viewServerDecodeHealth,
+  viewServerEncodeHealth,
   viewServerDecodeHealthQuery,
   viewServerDecodeLiveQuery,
   viewServerDecodeTopic,
@@ -169,7 +169,7 @@ export const makeViewServerRpcHandlers = <const Topics extends TopicDefinitions>
     "ViewServer.Health": () =>
       Effect.gen(function* () {
         const health = yield* readHealth();
-        return yield* viewServerDecodeHealth(config, health);
+        return yield* viewServerEncodeHealth(config, health);
       }),
     "ViewServer.Subscribe": (payload) =>
       withTransportLifecycle(

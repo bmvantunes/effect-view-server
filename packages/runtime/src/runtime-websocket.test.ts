@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { ColumnLiveViewEngineHealth } from "@effect-view-server/column-live-view-engine";
 import { makeViewServerClient } from "@effect-view-server/client/remote";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { makeViewServerRuntimeCoreInternal } from "@effect-view-server/runtime-core/internal";
 import {
   SourceFixture,
@@ -45,7 +45,7 @@ const sourceTarget: SourceFixtureTarget = {
   _tag: "Materialized",
 };
 const SourceRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.String,
 });
 
@@ -466,6 +466,9 @@ describe("Runtime WebSocket and operational endpoints", () => {
         auth: bearerAuth,
         groupedIncrementalAdmissionLimits: {
           maxGroups: 1,
+          maxMembers: 2,
+          maxMembersPerGroup: 3,
+          maxRetainedValueEntries: 4,
         },
         host: "0.0.0.0",
         websocketPort: 1234,
@@ -505,6 +508,9 @@ describe("Runtime WebSocket and operational endpoints", () => {
           subscriptionQueueCapacity: 7,
           groupedIncrementalAdmissionLimits: {
             maxGroups: 1,
+            maxMembers: 2,
+            maxMembersPerGroup: 3,
+            maxRetainedValueEntries: 4,
           },
           transportHealthType: "function",
         },
@@ -532,7 +538,142 @@ describe("Runtime WebSocket and operational endpoints", () => {
         tcpPublishUrl: "tcp://127.0.0.1:1235",
       });
       yield* runtime.close;
+      const emptyGroupedLimitsRuntime = yield* makeViewServerRuntimeWithDependencies(
+        dependencies,
+        viewServer,
+        {
+          groupedIncrementalAdmissionLimits: {},
+        },
+      );
+      yield* emptyGroupedLimitsRuntime.close;
     }),
+  );
+
+  it.effect(
+    "rejects hostile transport bags and malformed nested runtime options before acquisition",
+    () =>
+      Effect.gen(function* () {
+        let runtimeCoreAcquisitions = 0;
+        const defaults = makeDefaultRuntimeDependencies<typeof viewServer.topics>();
+        const dependencies: ViewServerRuntimeDependencies<typeof viewServer.topics> = {
+          ...defaults,
+          makeRuntimeCore: (config, options) => {
+            runtimeCoreAcquisitions += 1;
+            return defaults.makeRuntimeCore(config, options);
+          },
+        };
+        const invalidOptionsEffect = (options: object): Effect.Effect<unknown, unknown> =>
+          Reflect.apply(makeViewServerRuntimeWithDependencies, undefined, [
+            dependencies,
+            viewServer,
+            options,
+          ]);
+        const symbolOption = Symbol("transport");
+        const symbolOptions = Object.defineProperty({}, symbolOption, {
+          enumerable: false,
+          value: true,
+        });
+        const kafkaError = yield* Effect.flip(invalidOptionsEffect({ kafka: {} }));
+        const grpcError = yield* Effect.flip(invalidOptionsEffect({ grpc: {} }));
+        const symbolError = yield* Effect.flip(invalidOptionsEffect(symbolOptions));
+        const numberLimitsError = yield* Effect.flip(
+          invalidOptionsEffect({ groupedIncrementalAdmissionLimits: 1 }),
+        );
+        const nullLimitsError = yield* Effect.flip(
+          invalidOptionsEffect({ groupedIncrementalAdmissionLimits: null }),
+        );
+        const arrayLimitsError = yield* Effect.flip(
+          invalidOptionsEffect({ groupedIncrementalAdmissionLimits: [] }),
+        );
+        const unknownLimitError = yield* Effect.flip(
+          invalidOptionsEffect({
+            groupedIncrementalAdmissionLimits: {
+              maxGroupz: 1,
+            },
+          }),
+        );
+        const ownKeysError = yield* Effect.flip(
+          invalidOptionsEffect(
+            new Proxy(
+              {},
+              {
+                ownKeys: () => {
+                  throw new Error("hostile ownKeys");
+                },
+              },
+            ),
+          ),
+        );
+        const getterError = yield* Effect.flip(
+          invalidOptionsEffect(
+            Object.defineProperty({}, "host", {
+              enumerable: true,
+              get: () => {
+                throw new Error("hostile host getter");
+              },
+            }),
+          ),
+        );
+        const primitiveTrapError = yield* Effect.flip(
+          invalidOptionsEffect(
+            new Proxy(
+              {},
+              {
+                ownKeys: () => {
+                  throw "hostile primitive";
+                },
+              },
+            ),
+          ),
+        );
+
+        expect(kafkaError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "View Server runtime options contain unsupported property: kafka.",
+        });
+        expect(grpcError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "View Server runtime options contain unsupported property: grpc.",
+        });
+        expect(symbolError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "View Server runtime options contain unsupported property: Symbol(transport).",
+        });
+        const invalidLimitsError = {
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message:
+            "View Server runtime option groupedIncrementalAdmissionLimits must be an object.",
+        };
+        expect(numberLimitsError).toStrictEqual(invalidLimitsError);
+        expect(nullLimitsError).toStrictEqual(invalidLimitsError);
+        expect(arrayLimitsError).toStrictEqual(invalidLimitsError);
+        expect(unknownLimitError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message:
+            "View Server runtime option groupedIncrementalAdmissionLimits contains unsupported property: maxGroupz.",
+        });
+        expect(ownKeysError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "hostile ownKeys",
+        });
+        expect(getterError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "hostile host getter",
+        });
+        expect(primitiveTrapError).toStrictEqual({
+          _tag: "ViewServerRuntimeError",
+          code: "RuntimeUnavailable",
+          message: "View Server runtime options could not be inspected.",
+        });
+        expect(runtimeCoreAcquisitions).toBe(0);
+      }),
   );
 
   it.live("forwards runtime auth validation to operational HTTP endpoints", () =>

@@ -1,5 +1,7 @@
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   useLiveQuery,
+  useSourceHealth,
   useViewServerHealth,
   useViewServerHealthSummary,
   ViewServerProvider,
@@ -7,9 +9,46 @@ import {
 
 export { ViewServerProvider };
 
+export const materializedSourceHealthLabel = <
+  Health extends {
+    readonly adapter: { readonly name: string };
+    readonly status: { readonly _tag: string };
+  },
+>(
+  sourceHealth: AsyncResult.AsyncResult<Health, unknown>,
+): string =>
+  AsyncResult.isSuccess(sourceHealth)
+    ? `${sourceHealth.value.adapter.name} / ${sourceHealth.value.status._tag}`
+    : "loading";
+
+export const leasedSourceHealthLabel = <
+  Health extends
+    | {
+        readonly _tag: "Active";
+        readonly health: {
+          readonly adapter: { readonly name: string };
+          readonly status: { readonly _tag: string };
+        };
+      }
+    | { readonly _tag: "Inactive" },
+>(
+  sourceHealth: AsyncResult.AsyncResult<Health, unknown>,
+): string =>
+  AsyncResult.isSuccess(sourceHealth)
+    ? sourceHealth.value._tag === "Active"
+      ? `${sourceHealth.value.health.adapter.name} / ${sourceHealth.value.health.status._tag}`
+      : "grpc / Inactive"
+    : "loading";
+
 export function CombinedSourcesExampleApp() {
   const summary = useViewServerHealthSummary();
   const health = useViewServerHealth();
+  const ordersSourceHealth = useSourceHealth({
+    topic: "orders",
+    routeBy: { strategyId: "strategy-alpha", region: "usa" },
+  });
+  const strategiesSourceHealth = useSourceHealth({ topic: "strategies" });
+  const tradesSourceHealth = useSourceHealth({ topic: "trades" });
   const orders = useLiveQuery("orders", {
     select: ["id", "customerId", "strategyId", "region", "price"],
     where: [
@@ -43,6 +82,11 @@ export function CombinedSourcesExampleApp() {
         <h2>Health</h2>
         <p role="status">Runtime status: {summary.status}</p>
         <p>Detailed health rows: {health.totalRows}</p>
+        <p>Leased orders source: {leasedSourceHealthLabel(ordersSourceHealth)}</p>
+        <p>
+          Materialized strategies source: {materializedSourceHealthLabel(strategiesSourceHealth)}
+        </p>
+        <p>Kafka trades source: {materializedSourceHealthLabel(tradesSourceHealth)}</p>
       </section>
       <section className="panel-grid">
         <SourcePanel

@@ -1,3 +1,4 @@
+import { ViewServerId } from "@effect-view-server/config";
 // Import Vitest directly so @effect/vitest's eager test-runtime module graph does not
 // distort the heap, JIT, and GC behavior this benchmark is measuring.
 import { afterAll, beforeAll, bench, describe, expect } from "vitest";
@@ -26,7 +27,7 @@ declare const process: {
 };
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   region: Schema.String,
 });

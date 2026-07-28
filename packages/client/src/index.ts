@@ -3,6 +3,7 @@ export type {
   ViewServerLiveEvent,
   ViewServerLiveSubscription,
   ViewServerSourceHealthForTopic,
+  ViewServerSourceHealthInputForTopic,
   ViewServerSourceHealthResultForTopic,
   ViewServerSourceHealthSubscriber,
   ViewServerSourceHealthSubscription,

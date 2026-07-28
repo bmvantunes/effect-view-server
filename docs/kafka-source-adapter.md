@@ -11,7 +11,7 @@ split by platform:
   implementation and Layer composition API.
 
 Applications declare Kafka on the Topic's canonical `source` property. The
-Topic row must contain the canonical `id: Schema.String`; the adapter derives
+Topic row must contain the canonical `id: ViewServerId`; the adapter derives
 that ID from the source region and `localRowKey`.
 
 ## Define and run a source
@@ -19,7 +19,7 @@ that ID from the source region and `localRowKey`.
 ```ts
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
-import { defineViewServerConfig } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
 import { kafka } from "effect-view-server/kafka/contract";
 import { kafkaNode } from "effect-view-server/kafka/node";
 import { runViewServerRuntime } from "effect-view-server/runtime";
@@ -30,7 +30,7 @@ const IncomingOrder = Schema.Struct({
 });
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   customerId: Schema.String,
   price: Schema.Number,
   region: Schema.String,

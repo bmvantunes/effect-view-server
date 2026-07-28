@@ -27,14 +27,6 @@
       "types": "./dist/live-protocol.d.ts",
       "import": "./dist/live-protocol.js"
     },
-    "./kafka": {
-      "types": "./dist/kafka.d.ts",
-      "import": "./dist/kafka.js"
-    },
-    "./grpc": {
-      "types": "./dist/grpc.d.ts",
-      "import": "./dist/grpc.js"
-    },
     "./internal": {
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.js"
@@ -45,8 +37,6 @@
     "test": "vp test run --coverage && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.12.0",
-    "@connectrpc/connect": "catalog:",
     "@effect-view-server/source-adapter": "workspace:*",
     "effect": "catalog:"
   },

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
-import { defineViewServerConfig, type ViewServerRuntimeError } from "@effect-view-server/config";
+import {
+  ViewServerId,
+  defineViewServerConfig,
+  type ViewServerRuntimeError,
+} from "@effect-view-server/config";
 import { Effect, Exit, Option, Schema, SchemaGetter } from "effect";
 import { make as makeBigDecimal } from "effect/BigDecimal";
 import {
@@ -42,7 +46,7 @@ const adapter = SourceAdapter.make({
 });
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   shard: Schema.BigInt,
   amount: Schema.BigDecimal,
@@ -203,7 +207,6 @@ const configWithMaterializedDefinition = (source: typeof materializedDefinition)
   topics: {
     materialized: {
       schema: Row,
-      key: "id",
       source,
     },
   },
@@ -332,7 +335,6 @@ describe("Source Health wire contract", () => {
         topics: {
           manual: {
             schema: Row,
-            key: "id",
           },
         },
       });
@@ -340,7 +342,6 @@ describe("Source Health wire contract", () => {
         topics: {
           mismatched: {
             schema: Row,
-            key: "id",
             source: adapter.leasedSource(["missing"], {
               label: "mismatched-route",
             }),

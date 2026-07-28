@@ -1,12 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceFixture } from "@effect-view-server/source-adapter-testing";
 import { Context, Effect, Exit, Layer, Schema } from "effect";
 import { makeViewServerRuntimeCore } from "./index";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   value: Schema.String,
 });
 
@@ -157,7 +157,7 @@ describe("Runtime Core Source composition validation", () => {
     }),
   );
 
-  it.effect("supervises invalid initial metrics without failing runtime composition", () =>
+  it.effect("rejects composition without valid initial canonical Source Health", () =>
     Effect.gen(function* () {
       const fixture = yield* SourceFixture.make(Row);
       const invalidMetrics = new Proxy(
@@ -178,17 +178,23 @@ describe("Runtime Core Source composition validation", () => {
           },
         },
       });
-      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+      const failure = yield* makeViewServerRuntimeCore(config, {}).pipe(
         Effect.provide(fixture.layer),
+        Effect.flip,
       );
 
-      yield* Effect.yieldNow;
+      expect(failure).toStrictEqual({
+        _tag: "ViewServerRuntimeError",
+        code: "RuntimeUnavailable",
+        topic: "rows",
+        message:
+          "Source Adapter for Materialized Topic rows did not publish valid initial Source Health.",
+      });
       expect(fixture.controls.metricReads()).toBe(1n);
       expect(fixture.controls.counts({ _tag: "Materialized" })).toStrictEqual({
         acquisitions: 0n,
         finalizations: 0n,
       });
-      yield* runtime.close;
     }),
   );
 });

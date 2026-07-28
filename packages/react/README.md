@@ -16,3 +16,14 @@ hook contexts cannot drift apart.
 implicit-`AND` array of typed Field Conditions or nested `AND`, `OR`, and `NOT`
 expressions. The React Module must not introduce field-keyed filter shorthands or
 transport-specific filter models.
+
+`useSourceHealth(...)` is the exact Topic-bound Source Diagnostics hook. It
+uses the framework-neutral scoped client subscription and Effect reactivity;
+React does not poll, add adapter-specific hooks, or put health refreshes on the
+Live Query event path. Materialized Topics accept only `topic`; Leased Topics
+require the exact `routeBy` object. Source-free Topics are rejected.
+
+The in-memory testing provider creates no Source Adapter Layer. It may publish
+to source-free Topics, but source-owned component tests must use a remote or
+controllable adapter fixture, or mock the hook boundary for presentation-only
+coverage.

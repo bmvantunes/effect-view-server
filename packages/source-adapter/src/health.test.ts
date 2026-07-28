@@ -4,6 +4,7 @@ import {
   SourceBufferMetricsSchema,
   SourceLaneRuntimeMetricsSchema,
   SourceRuntimeMetricsSchema,
+  sourceHealthContractSchemas,
   sourceHealthSchema,
   sourceRejectionDiagnosticSchema,
   sourceStatusSchema,
@@ -199,6 +200,66 @@ describe("Source Health schemas", () => {
         }),
       );
       expect(Exit.isFailure(invalid)).toBe(true);
+    }),
+  );
+
+  it.effect("derives exact materialized and leased Source Health result schemas", () =>
+    Effect.gen(function* () {
+      const input = {
+        adapterFailure: Failure,
+        route: Route,
+        adapterMetrics: Metrics,
+        rejectionLocation: Location,
+      };
+      const materialized = sourceHealthContractSchemas({
+        ...input,
+        lifecycle: "materialized",
+      });
+      const leased = sourceHealthContractSchemas({
+        ...input,
+        lifecycle: "leased",
+      });
+      const health = {
+        adapter: { name: "health-fixture", version: "1" },
+        target: { _tag: "Materialized" },
+        status: { _tag: "Ready", attempt: 1n, readyAtNanos: 2n },
+        metrics: {
+          runtime: {
+            startedAtNanos: 1n,
+            lastAttemptStartedAtNanos: 1n,
+            lastDeliveryAtNanos: null,
+            lastRejectionAtNanos: null,
+            lastAppliedMutationAtNanos: null,
+            lastTerminationAtNanos: null,
+            currentAttempt: 1n,
+            retryCount: 0n,
+            receivedDeliveryCount: 0n,
+            rejectedItemCount: 0n,
+            attemptedMutationCount: 0n,
+            appliedUpsertCount: 0n,
+            appliedDeleteCount: 0n,
+            failedMutationCount: 0n,
+            completedSettlementCount: 0n,
+            failedSettlementCount: 0n,
+            retainedRowCount: 0,
+            lanes: [{ id: "events", buffer: { _tag: "Unbuffered" } }],
+          },
+          adapter: { connected: true },
+        },
+        sampledAtNanos: 2n,
+      };
+
+      expect(yield* Schema.decodeUnknownEffect(materialized.health)(health)).toStrictEqual(health);
+      expect(yield* Schema.decodeUnknownEffect(materialized.result)(health)).toStrictEqual(health);
+      expect(
+        yield* Schema.decodeUnknownEffect(leased.result)({
+          _tag: "Inactive",
+          route: { region: "eu" },
+        }),
+      ).toStrictEqual({
+        _tag: "Inactive",
+        route: { region: "eu" },
+      });
     }),
   );
 

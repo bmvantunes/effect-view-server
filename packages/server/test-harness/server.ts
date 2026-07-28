@@ -1,8 +1,7 @@
 import { NodeSocket } from "@effect/platform-node";
 import {
+  ViewServerId,
   defineViewServerConfig,
-  type GrpcRuntimeClients,
-  type RuntimeRegions,
   type TopicDefinitions,
   type ViewServerConfig,
   type ViewServerHealth,
@@ -30,17 +29,17 @@ import {
 } from "../src/index";
 
 export const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.Number,
 });
 
 export const Trade = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.BigInt,
 });
 
 export const Quote = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   price: Schema.BigDecimal,
 });
 
@@ -95,7 +94,7 @@ export const BadJsonField = Schema.String.pipe(
 );
 
 export const BadJsonRow = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
 });
 
 export const BadJsonRowEdge = Schema.Struct({
@@ -106,15 +105,12 @@ export const viewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: Order,
-      key: "id",
     },
     trades: {
       schema: Trade,
-      key: "id",
     },
     quotes: {
       schema: Quote,
-      key: "id",
     },
   },
 });
@@ -123,7 +119,6 @@ export const safeEdgeViewServer = defineViewServerConfig({
   topics: {
     badjson: {
       schema: BadJsonRow,
-      key: "id",
     },
   },
 });
@@ -137,12 +132,8 @@ export const edgeViewServer = {
   },
 };
 
-export const createServerTestRuntime = <
-  const Topics extends TopicDefinitions,
-  const Regions extends RuntimeRegions,
-  const GrpcClients extends GrpcRuntimeClients,
->(
-  config: ViewServerConfig<Topics, Regions, GrpcClients>,
+export const createServerTestRuntime = <const Topics extends TopicDefinitions>(
+  config: ViewServerConfig<Topics>,
   options: Parameters<typeof makeViewServerRuntimeCoreInternal<Topics>>[1] = {},
 ) => {
   const runtimeCore = Effect.runSync(makeViewServerRuntimeCoreInternal(config, options));
@@ -170,12 +161,6 @@ export const serverTestLiveClientWithSubscribe = <const Topics extends TopicDefi
     }),
   subscribeProtocolQuery: subscribe,
 });
-
-export const kafkaStartFromHealth = {
-  consumerGroupId: "view-server-test",
-  fallbackMode: "latest",
-  mode: "latest",
-} as const;
 
 export const bearerAuth: ViewServerAuth = {
   validateRequest: (request) =>
@@ -236,122 +221,13 @@ export const degradedServerHealth = (
 ): ViewServerHealth<typeof viewServer.topics> => ({
   ...baseHealth,
   status: "degraded",
-  kafka: {
-    startFrom: kafkaStartFromHealth,
-    regions: {},
+  engine: {
+    ...baseHealth.engine,
     topics: {
-      source_orders: {
-        status: "degraded",
-        sourceTopic: "source_orders",
-        viewServerTopic: "orders",
-        regions: {
-          usa: {
-            connected: true,
-            assignedPartitions: 1,
-            messagesPerSecond: 0,
-            bytesPerSecond: 0,
-            decodedMessagesPerSecond: 0,
-            decodeFailuresPerSecond: 0,
-            mappingFailuresPerSecond: 0,
-            publishFailuresPerSecond: 0,
-            commitFailuresPerSecond: 0,
-            processingFailuresPerSecond: 0,
-            lastMessageAt: null,
-            lastCommitAt: null,
-            consumerLagMessages: 42n,
-            lagSampledAt: null,
-            committedOffset: null,
-            lastError: null,
-          },
-          london: {
-            connected: false,
-            assignedPartitions: 0,
-            messagesPerSecond: 7,
-            bytesPerSecond: 70,
-            decodedMessagesPerSecond: 6,
-            decodeFailuresPerSecond: 1,
-            mappingFailuresPerSecond: 2,
-            publishFailuresPerSecond: 3,
-            commitFailuresPerSecond: 4,
-            processingFailuresPerSecond: 5,
-            lastMessageAt: null,
-            lastCommitAt: null,
-            consumerLagMessages: null,
-            lagSampledAt: null,
-            committedOffset: "11",
-            lastError: "disconnected",
-          },
-        },
-      },
-    },
-  },
-  grpc: {
-    clients: {
-      ordersClient: {
-        status: "connected",
-        baseUrl: "http://127.0.0.1:8080",
-        activeFeeds: 3,
-        lastConnectedAt: null,
-        lastError: null,
-      },
-    },
-    feeds: {
+      ...baseHealth.engine.topics,
       orders: {
-        materialized: {
-          ordersFeed: {
-            status: "ready",
-            lifecycle: "materialized",
-            feedName: "ordersFeed",
-            feedKey: "ordersFeed",
-            topic: "orders",
-            subscriberCount: 2,
-            rowCount: 5,
-            messagesPerSecond: 9,
-            rowsPerSecond: 8,
-            decodeFailuresPerSecond: 0,
-            mappingFailuresPerSecond: 0,
-            publishFailuresPerSecond: 0,
-            reconnects: 0,
-            lastMessageAt: null,
-            lastError: null,
-          },
-        },
-        leased: {
-          "ordersLease:strategy=strat-1": {
-            status: "ready",
-            lifecycle: "leased",
-            feedName: "ordersLease",
-            feedKey: "ordersLease:strategy=strat-1",
-            topic: "orders",
-            subscriberCount: 1,
-            rowCount: 3,
-            messagesPerSecond: 4,
-            rowsPerSecond: 3,
-            decodeFailuresPerSecond: 0,
-            mappingFailuresPerSecond: 0,
-            publishFailuresPerSecond: 0,
-            reconnects: 0,
-            lastMessageAt: null,
-            lastError: null,
-          },
-          "ordersLease:strategy=strat-2": {
-            status: "ready",
-            lifecycle: "leased",
-            feedName: "ordersLease",
-            feedKey: "ordersLease:strategy=strat-2",
-            topic: "orders",
-            subscriberCount: 2,
-            rowCount: 7,
-            messagesPerSecond: 6,
-            rowsPerSecond: 5,
-            decodeFailuresPerSecond: 1,
-            mappingFailuresPerSecond: 2,
-            publishFailuresPerSecond: 3,
-            reconnects: 4,
-            lastMessageAt: null,
-            lastError: null,
-          },
-        },
+        ...baseHealth.engine.topics.orders,
+        status: "degraded",
       },
     },
   },

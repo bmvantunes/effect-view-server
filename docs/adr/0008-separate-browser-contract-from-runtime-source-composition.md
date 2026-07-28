@@ -2,11 +2,10 @@
 
 ## Status
 
-Accepted. Issue #384 implements the shared-config Source Definition, nominal
-Layer-provided runtime, browser-safe SDK facade, server facade, testing facade,
-and package-boundary verification. Issues #385 and #386 implement the
-first-party Kafka and gRPC aggregate Layers, followed by the final migration in
-issue #387.
+Accepted and implemented. Issues #384–#387 deliver the shared-config Source
+Definition, nominal Layer-provided runtime, browser-safe SDK facade, server
+facade, testing facade, package-boundary verification, first-party Kafka and
+gRPC aggregate Layers, and the final canonical-only migration.
 
 ## Context
 
@@ -18,7 +17,7 @@ Effect v4 distinguishes immutable descriptions from capabilities supplied throug
 
 ## Decision
 
-Applications author exactly one frozen View Server Config through `defineViewServerConfig(...)`. It owns Topic names, Topic Schemas with canonical `id: Schema.String`, query metadata, and each Topic's zero-or-one canonical Source Definition. React, the Remote Browser Client, In-Memory View Server, and the real runtime all receive that same value. There is no `defineViewServerContract(...)`, `defineViewServerRuntime(...)`, mirrored server topic tree, per-topic implementation list, or generated compatibility alias.
+Applications author exactly one frozen View Server Config through `defineViewServerConfig(...)`. It owns Topic names, Topic Schemas with canonical `id: ViewServerId`, query metadata, and each Topic's zero-or-one canonical Source Definition. React, the Remote Browser Client, In-Memory View Server, and the real runtime all receive that same value. There is no `defineViewServerContract(...)`, `defineViewServerRuntime(...)`, mirrored server topic tree, per-topic implementation list, or generated compatibility alias.
 
 This simplicity has an explicit v1 bundle tradeoff. Runtime values captured by browser-safe Source Definitions—Mapping functions, generated service descriptors, platform-neutral codecs, failure Schemas, rejection-location Schemas, and metrics Schemas—may enter the browser bundle even though React never executes ingestion. TypeScript types cannot replace the runtime Schemas needed to decode exact Source Diagnostics, and ordinary tree shaking cannot reliably remove nested object members. V1 accepts that cost rather than adding mirrored authoring, code generation, a custom build transform, or automatic contract projection. Every adapter's conformance suite builds a real browser fixture and enforces a documented bundle-size budget. Concrete transports, clients, credentials, Node modules, sockets, and platform Layers remain forbidden from the contract graph regardless of tree shaking.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import {
   viewServerDecodeGroupedQuery,
@@ -424,7 +424,6 @@ describe("Invalid query wire inputs", () => {
                 id: { ast: "not-a-schema-ast" },
               },
             },
-            key: "id",
           },
         },
       };
@@ -449,7 +448,6 @@ describe("Invalid query wire inputs", () => {
                 id: "not-a-schema",
               },
             },
-            key: "id",
           },
         },
       };
@@ -597,9 +595,9 @@ describe("Invalid query wire inputs", () => {
         topics: {
           trimmed: {
             schema: Schema.Struct({
-              id: Schema.Trim,
+              id: ViewServerId,
+              value: Schema.Trim,
             }),
-            key: "id",
           },
         },
       });
@@ -608,28 +606,28 @@ describe("Invalid query wire inputs", () => {
         trimmedViewServer,
         "trimmed",
         {
-          select: ["id"],
-          where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
+          select: ["id", "value"],
+          where: [{ field: "value", type: "startsWith", filter: "  abc  " }],
         },
       );
 
       expect(encodedTrimmedStartsWith).toStrictEqual({
-        select: ["id"],
-        where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
+        select: ["id", "value"],
+        where: [{ field: "value", type: "startsWith", filter: "  abc  " }],
       });
 
       const decodedTrimmedStartsWith = yield* viewServerDecodeRawQuery(
         trimmedViewServer,
         "trimmed",
         {
-          select: ["id"],
-          where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
+          select: ["id", "value"],
+          where: [{ field: "value", type: "startsWith", filter: "  abc  " }],
         },
       );
 
       expect(decodedTrimmedStartsWith).toStrictEqual({
-        select: ["id"],
-        where: [{ field: "id", type: "startsWith", filter: "  abc  " }],
+        select: ["id", "value"],
+        where: [{ field: "value", type: "startsWith", filter: "  abc  " }],
       });
     }),
   );
@@ -653,9 +651,9 @@ describe("Invalid query wire inputs", () => {
         topics: {
           refined: {
             schema: Schema.Struct({
-              id: Schema.String.check(Schema.isMinLength(2)),
+              id: ViewServerId,
+              value: Schema.String.check(Schema.isMinLength(2)),
             }),
-            key: "id",
           },
         },
       });
@@ -664,28 +662,28 @@ describe("Invalid query wire inputs", () => {
         refinedStringViewServer,
         "refined",
         {
-          select: ["id"],
-          where: [{ field: "id", type: "startsWith", filter: "x" }],
+          select: ["id", "value"],
+          where: [{ field: "value", type: "startsWith", filter: "x" }],
         },
       );
 
       expect(encodedRefinedStartsWith).toStrictEqual({
-        select: ["id"],
-        where: [{ field: "id", type: "startsWith", filter: "x" }],
+        select: ["id", "value"],
+        where: [{ field: "value", type: "startsWith", filter: "x" }],
       });
 
       const decodedRefinedStartsWith = yield* viewServerDecodeRawQuery(
         refinedStringViewServer,
         "refined",
         {
-          select: ["id"],
-          where: [{ field: "id", type: "startsWith", filter: "x" }],
+          select: ["id", "value"],
+          where: [{ field: "value", type: "startsWith", filter: "x" }],
         },
       );
 
       expect(decodedRefinedStartsWith).toStrictEqual({
-        select: ["id"],
-        where: [{ field: "id", type: "startsWith", filter: "x" }],
+        select: ["id", "value"],
+        where: [{ field: "value", type: "startsWith", filter: "x" }],
       });
     }),
   );
@@ -795,12 +793,11 @@ describe("Invalid query wire inputs", () => {
 
       expect(invalidRangeOperator.message).toBe("Filter id does not support range operators");
 
-      const hostileFilterSchema = Schema.Struct({ id: Schema.String });
+      const hostileFilterSchema = Schema.Struct({ id: ViewServerId });
       const hostileFilterViewServer = defineViewServerConfig({
         topics: {
           badjson: {
             schema: hostileFilterSchema,
-            key: "id",
           },
         },
       });

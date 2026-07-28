@@ -1,30 +1,38 @@
 # Operations
 
-## Runtime Topology
+## Runtime topology
 
-The current supported production topology is one active View Server runtime per
-logical deployment. Configure a unique Kafka consumer group id for that runtime.
-Do not run multiple active replicas in the same logical consumer group unless a
-future rebalance/revoke handoff contract is added.
+One authored View Server config is shared by React, remote clients, in-memory
+tests, and the server runtime. The config contains browser-safe Source
+Definitions only. Each deployment provides the required Kafka, gRPC, or custom
+Source Adapter Layers at the process edge.
 
-Use Kubernetes rolling updates carefully: the replacement pod should become
-ready only after its sources are connected and runtime health is ready.
+Adapter Layer options own brokers, endpoints, credentials, TLS, pools, and
+replica identity. For example, each Kafka-consuming deployment supplies a
+stable `consumerGroupPrefix`; the Kafka Layer derives an exact group for every
+View Server Topic. Do not copy those concerns into generic runtime options.
 
-## Prometheus Metrics
+Use Kubernetes rolling updates carefully. A replacement pod should become ready
+only after its required sources are available and aggregate runtime health is
+ready.
 
-Scrape `GET /metrics` on the same HTTP server as WebSocket RPC. Metrics use
-low-cardinality labels and are derived from a fresh runtime health read for each
-scrape. Overlapping concurrent health reads are coalesced. This on-demand path
-is separate from cadence-controlled cached health pushed to UI clients.
+## Health and metrics
 
-Useful alert/query examples:
+Scrape `GET /metrics` on the same HTTP server as WebSocket RPC. Read
+`GET /health` for the current aggregate and detailed Topic health. These routes
+perform fresh reads of cadence-cached runtime/source state; they do not call
+Kafka, gRPC, or custom upstreams per request.
+
+Source-specific failures, targets, runtime metrics, adapter metrics, and sampled
+timestamps live in canonical Topic-bound Source Health. React and
+framework-neutral clients subscribe to exact diagnostics with
+`useSourceHealth(...)` and `subscribeSourceHealth(...)`. Do not expect
+transport-specific optional trees or flattened aggregate fields.
+
+Useful stable aggregate alerts start with runtime and transport pressure:
 
 ```promql
 view_server_runtime_status{status!="ready"} == 1
-```
-
-```promql
-max(view_server_kafka_consumer_lag_messages)
 ```
 
 ```promql
@@ -39,29 +47,18 @@ increase(view_server_engine_topic_backpressure_events[5m]) > 0
 max(view_server_transport_active_subscriptions)
 ```
 
-```promql
-max_over_time(view_server_grpc_feed_decode_failures_per_second[5m]) > 0
-```
+Prometheus exposes fixed, low-cardinality SDK source-runtime metrics. Inspect
+exact Kafka, gRPC, or custom-adapter metrics through `/health` or Source
+Diagnostics instead of expecting arbitrary adapter fields to become
+Prometheus series.
 
-```promql
-max_over_time(view_server_grpc_feed_mapping_failures_per_second[5m]) > 0
-```
-
-```promql
-max_over_time(view_server_grpc_feed_publish_failures_per_second[5m]) > 0
-```
-
-Metric names can grow as the health contract grows. Treat these examples as
-starting points and validate names against the current `/metrics` output.
-
-## Kubernetes Probes
+## Kubernetes probes
 
 Use `GET /health` for readiness and startup checks. It returns `200` when the
-runtime is ready or degraded, and returns a non-`200` status while the runtime
-is starting or stopping. Each request reads fresh runtime health; overlapping
-concurrent reads share the same coalesced read. A required source whose retries
-are exhausted contributes `starting` aggregate health until it can recover, so
-the probe does not route new traffic to a runtime serving only retained rows.
+runtime is ready or degraded, and a non-`200` status while the runtime is
+starting or stopping. A required source whose retries are exhausted contributes
+starting aggregate health until it recovers, so the probe does not route new
+traffic to a runtime serving only retained rows.
 
 ```yaml
 readinessProbe:
@@ -77,54 +74,52 @@ livenessProbe:
   failureThreshold: 6
 ```
 
-Degraded Source health remains live and ready because retained rows and queries
+Degraded Source Health remains live and ready because retained rows and queries
 remain available. Prefer a process-level or TCP liveness check until a separate
 liveness endpoint exists.
 
-If runtime auth is configured, either allow readiness probe requests in
-`auth.validateRequest` or configure readiness probes to send accepted
-credentials.
+If runtime auth is configured, either allow readiness-probe requests through
+the authentication Adapter or send accepted credentials.
 
-## Resource Sizing
+## Resource sizing
 
-Do not size View Server from row count alone. Capacity depends on:
+Capacity depends on:
 
-- total rows per topic
-- number of active topics
-- number of active raw and grouped queries
-- active browser clients
-- subscriptions per client
-- Kafka input rate
-- gRPC leased route count
-- WebSocket fanout shape
-- selected fields and grouped aggregate width
+- rows and row width per Topic;
+- active raw and grouped queries;
+- browser clients and subscriptions;
+- Source Adapter input rate and active leased routes;
+- WebSocket fanout and queue shape;
+- selected fields and grouped aggregate width.
 
-Start with conservative memory limits and run:
+Run the serial release-candidate gate, then a production-shaped soak:
 
 ```sh
 vp run -w release-candidate:capacity
 ```
 
-Then run a production-like soak using your real topic shapes. Watch RSS, heap,
-event loop delay, Kafka lag, gRPC reconnects, WebSocket queue depth, and
-backpressure metrics.
+Watch RSS, heap, event-loop delay, exact Source Health, WebSocket queue depth,
+and backpressure. Use the Kafka and gRPC Source Adapter benchmarks to isolate
+adapter overhead from runtime and query-engine capacity.
 
-## TCP Publish
+## TCP publisher
 
-TCP publish is a private mutation ingress. Bind it to `127.0.0.1` or a private
-network interface unless external network controls protect it. TCP publish is
-schema-safe, but it is still a write path.
+TCP publish is a private mutation Adapter. Bind it to `127.0.0.1` or a protected
+private interface. It is schema-safe but remains a write path.
 
-Do not use TCP publish for Kafka-owned or gRPC-owned topics. One View Server
-topic must have one source of truth.
+Use TCP publish only for source-free Topics. Source-Owned Topics reject direct
+publish, patch, delete, and reset operations according to the same ownership
+policy used by Runtime Client and in-memory paths.
 
-## Failure Triage
+## Failure triage
 
-- Runtime not ready: inspect `/health` first.
-- Kafka lag increasing: inspect Kafka region health and broker/topic health.
-- Backpressure increasing: reduce subscription fanout, inspect slow clients, or
-  raise queue limits only after measuring memory.
-- gRPC leased routes retained longer than expected: inspect active
-  subscriptions and leased feed health.
-- Metrics scrape returns `view_server_metrics_error 1`: inspect `/health`
+- Runtime not ready: inspect `/health`, then exact Source Health for unhealthy
+  Topics.
+- Adapter progress or reconnect issue: inspect that Topic's canonical adapter
+  metrics and the upstream service.
+- Backpressure increasing: inspect slow clients and source delivery, reduce
+  fanout, or raise queue limits only after measuring memory.
+- Leased route retained longer than expected: inspect active subscriptions and
+  that exact Feed Route's Source Health.
+- Metrics scrape returns `view_server_metrics_error 1`: inspect health
   encoding/decoding errors.

@@ -5,7 +5,7 @@ import type {
   ViewServerTopicConfig,
 } from "@effect-view-server/config";
 import {
-  sourceHealthSchema,
+  sourceHealthContractSchemas,
   type SourceHealthResultForDefinition,
 } from "@effect-view-server/source-adapter";
 import { isSourceDefinition } from "@effect-view-server/source-adapter/internal";
@@ -31,7 +31,12 @@ const invalidSourceHealth = (topic: string, message: string): ViewServerRuntimeE
   topic,
 });
 
-type CompiledSourceHealthContract = {
+export type CompiledSourceHealthContract = {
+  readonly adapterIdentity: {
+    readonly name: string;
+    readonly version?: string | undefined;
+  };
+  readonly health: Schema.Codec<unknown, unknown, never, never>;
   readonly lifecycle: "materialized" | "leased";
   readonly result: Schema.Codec<unknown, unknown, never, never>;
   readonly route: Schema.Codec<Readonly<Record<string, unknown>>, unknown, never, never>;
@@ -48,58 +53,58 @@ export type ViewServerDecodedSourceHealth<
   Topic extends Extract<keyof Topics, string>,
 > = SourceHealthResultForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
 
-const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.compile")(function* <
-  Topics extends ViewServerConfigTopicShape,
->(
-  config: ViewServerTopicConfig<Topics>,
-  topic: string,
-): Effect.fn.Return<CompiledSourceHealthContract, ViewServerRuntimeError> {
-  const definition = config.topics[topic];
-  if (definition === undefined) {
-    return yield* Effect.fail(invalidSourceHealth(topic, `Topic ${topic} is not configured.`));
-  }
-  const source = Reflect.get(definition, "source");
-  if (!isSourceDefinition(source)) {
-    return yield* Effect.fail(
-      invalidSourceHealth(topic, `Topic ${topic} has no canonical Source Definition.`),
-    );
-  }
-  const lifecycle = source.lifecycle;
-  const adapter = source.adapter;
-  const adapterFailure = adapter.failureSchema;
-  const declaration = Option.getOrThrow(
-    Option.fromUndefinedOr(lifecycle === "materialized" ? adapter.materialized : adapter.leased),
-  );
-  const adapterMetrics = Reflect.get(declaration, "metrics");
-  const rejectionLocation = Reflect.get(declaration, "rejectionLocation");
-  const routeBy = source.routeBy;
-  const routeFields: Record<string, Schema.Codec<unknown, unknown, never, never>> = {};
-  for (const field of routeBy) {
-    const fieldSchema = definition.schema.fields[field];
-    if (fieldSchema === undefined) {
+export const compileSourceHealthContract = Effect.fn("ViewServerProtocol.sourceHealth.compile")(
+  function* <Topics extends ViewServerConfigTopicShape>(
+    config: ViewServerTopicConfig<Topics>,
+    topic: string,
+  ): Effect.fn.Return<CompiledSourceHealthContract, ViewServerRuntimeError> {
+    const definition = config.topics[topic];
+    if (definition === undefined) {
+      return yield* Effect.fail(invalidSourceHealth(topic, `Topic ${topic} is not configured.`));
+    }
+    const source = Reflect.get(definition, "source");
+    if (!isSourceDefinition(source)) {
       return yield* Effect.fail(
-        invalidSourceHealth(topic, `Topic ${topic} Source route field ${field} is missing.`),
+        invalidSourceHealth(topic, `Topic ${topic} has no canonical Source Definition.`),
       );
     }
-    routeFields[field] = fieldSchema;
-  }
-  const route = Schema.Struct(routeFields);
-  const health = sourceHealthSchema({
-    adapterFailure,
-    route,
-    adapterMetrics,
-    rejectionLocation,
-    lifecycle,
-  });
-  const result =
-    lifecycle === "materialized"
-      ? health
-      : Schema.Union([
-          Schema.TaggedStruct("Inactive", { route }),
-          Schema.TaggedStruct("Active", { route, health }),
-        ]);
-  return { lifecycle, result, route, routeFields };
-});
+    const lifecycle = source.lifecycle;
+    const adapter = source.adapter;
+    const adapterFailure = adapter.failureSchema;
+    const declaration = Option.getOrThrow(
+      Option.fromUndefinedOr(lifecycle === "materialized" ? adapter.materialized : adapter.leased),
+    );
+    const adapterMetrics = Reflect.get(declaration, "metrics");
+    const rejectionLocation = Reflect.get(declaration, "rejectionLocation");
+    const routeBy = source.routeBy;
+    const routeFields: Record<string, Schema.Codec<unknown, unknown, never, never>> = {};
+    for (const field of routeBy) {
+      const fieldSchema = definition.schema.fields[field];
+      if (fieldSchema === undefined) {
+        return yield* Effect.fail(
+          invalidSourceHealth(topic, `Topic ${topic} Source route field ${field} is missing.`),
+        );
+      }
+      routeFields[field] = fieldSchema;
+    }
+    const route = Schema.Struct(routeFields);
+    const healthContract = sourceHealthContractSchemas({
+      adapterFailure,
+      route,
+      adapterMetrics,
+      rejectionLocation,
+      lifecycle,
+    });
+    return {
+      adapterIdentity: source.identity,
+      health: healthContract.health,
+      lifecycle,
+      result: healthContract.result,
+      route,
+      routeFields,
+    };
+  },
+);
 
 const codecErrors = (topic: string) => ({
   invalid: (message: string) =>
@@ -147,6 +152,47 @@ const readProperty = (candidate: unknown, key: string): unknown => {
   return Result.isSuccess(property) ? property.success : undefined;
 };
 
+const exactAdapterIdentity = (
+  expected: CompiledSourceHealthContract["adapterIdentity"],
+  candidate: unknown,
+): boolean => {
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+    return false;
+  }
+  const expectedKeys = expected.version === undefined ? ["name"] : ["name", "version"];
+  const keys = Result.try(() => Reflect.ownKeys(candidate));
+  return (
+    Result.isSuccess(keys) &&
+    keys.success.length === expectedKeys.length &&
+    keys.success.every((key) => typeof key === "string" && expectedKeys.includes(key)) &&
+    readProperty(candidate, "name") === expected.name &&
+    readProperty(candidate, "version") === expected.version
+  );
+};
+
+export const requireExactSourceHealth = Effect.fn("ViewServerProtocol.sourceHealth.exact")(
+  function* (topic: string, contract: CompiledSourceHealthContract, candidate: unknown) {
+    if (!exactAdapterIdentity(contract.adapterIdentity, readProperty(candidate, "adapter"))) {
+      return yield* Effect.fail(
+        invalidSourceHealth(
+          topic,
+          `Source Health adapter identity must match ${contract.adapterIdentity.name}.`,
+        ),
+      );
+    }
+    if (
+      contract.lifecycle === "leased" &&
+      readProperty(readProperty(candidate, "target"), "_tag") === "Leased"
+    ) {
+      yield* requireExactRoute(
+        topic,
+        contract.routeFields,
+        readProperty(readProperty(candidate, "target"), "route"),
+      );
+    }
+  },
+);
+
 const equalRouteValue = (left: unknown, right: unknown): boolean => {
   if (BigDecimal.isBigDecimal(left)) {
     return (
@@ -160,11 +206,8 @@ const equalRouteValue = (left: unknown, right: unknown): boolean => {
 
 const requireExactLeasedHealthRoutes = Effect.fn(
   "ViewServerProtocol.sourceHealth.leasedRoutes.exact",
-)(function* (
-  topic: string,
-  routeFields: Readonly<Record<string, Schema.Codec<unknown, unknown, never, never>>>,
-  candidate: unknown,
-) {
+)(function* (topic: string, contract: CompiledSourceHealthContract, candidate: unknown) {
+  const routeFields = contract.routeFields;
   const tag = readProperty(candidate, "_tag");
   if (tag === "Inactive") {
     yield* requireExactRoute(topic, routeFields, readProperty(candidate, "route"));
@@ -190,6 +233,7 @@ const requireExactLeasedHealthRoutes = Effect.fn(
         ),
       );
     }
+    yield* requireExactSourceHealth(topic, contract, health);
   }
 });
 
@@ -270,7 +314,9 @@ export const viewServerEncodeSourceHealth = Effect.fn("ViewServerProtocol.source
   ) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
-      yield* requireExactLeasedHealthRoutes(topic, contract.routeFields, value);
+      yield* requireExactLeasedHealthRoutes(topic, contract, value);
+    } else {
+      yield* requireExactSourceHealth(topic, contract, value);
     }
     return yield* encodeJsonFieldValue(contract.result, value, codecErrors(topic));
   },
@@ -290,7 +336,9 @@ export const viewServerDecodeSourceHealth: <
   >(config: ViewServerTopicConfig<Topics>, topic: Topic, value: unknown) {
     const contract = yield* compileSourceHealthContract(config, topic);
     if (contract.lifecycle === "leased") {
-      yield* requireExactLeasedHealthRoutes(topic, contract.routeFields, value);
+      yield* requireExactLeasedHealthRoutes(topic, contract, value);
+    } else {
+      yield* requireExactSourceHealth(topic, contract, value);
     }
     const decoded = yield* decodeJsonFieldValue(contract.result, value, codecErrors(topic));
     if (!isDecodedSourceHealth(contract.result, decoded)) {

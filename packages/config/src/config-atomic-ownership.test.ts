@@ -1,34 +1,45 @@
 import { describe, expect, it } from "@effect/vitest";
+import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { Schema } from "effect";
 import { snapshotViewServerTopics } from "./config-ownership";
-import { defineViewServerConfig, grpc } from "./index";
-import { ordersService } from "../test-harness/protobuf";
+import { ViewServerId, defineViewServerConfig } from "./index";
+
+const Failure = Schema.TaggedStruct("ConfigOwnershipFailure", {
+  message: Schema.String,
+});
+const adapter = SourceAdapter.make({
+  identity: { name: "config-ownership" },
+  failure: Failure,
+  materialized: {
+    metrics: Schema.Struct({ connected: Schema.Boolean }),
+    rejectionLocation: Schema.Struct({ offset: Schema.BigInt }),
+    definitionOptions: SourceAdapter.definitionOptions<{
+      readonly stream: string;
+    }>(),
+  },
+  leased: undefined,
+});
 
 describe("View Server config atomic ownership", () => {
-  it("snapshots changing topic definitions once before validating the owned graph", () => {
-    const SafeRow = Schema.Struct({ id: Schema.String, value: Schema.String });
-    const UnsupportedRow = Schema.Struct({ id: Schema.String, value: Schema.Date });
+  it("snapshots changing Topic definitions once before validating the owned graph", () => {
+    const SafeRow = Schema.Struct({ id: ViewServerId, value: Schema.String });
+    const UnsupportedRow = Schema.Struct({ id: ViewServerId, value: Schema.Date });
+    const safeSource = adapter.materializedSource({ stream: "safe" });
+    const unsafeSource = adapter.materializedSource({ stream: "unsafe" });
     const reads = {
       topic: 0,
       schema: 0,
-      key: 0,
+      source: 0,
     };
     const definition = {
       get schema() {
         reads.schema += 1;
         return reads.schema === 1 ? SafeRow : UnsupportedRow;
       },
-      get key(): "id" {
-        reads.key += 1;
-        if (reads.key > 1) {
-          throw new Error("topic key was read after ownership capture");
-        }
-        return "id";
+      get source() {
+        reads.source += 1;
+        return reads.source === 1 ? safeSource : unsafeSource;
       },
-    };
-    const unsafeDefinition = {
-      schema: UnsupportedRow,
-      key: "id" as const,
     };
     const topics = new Proxy(
       { orders: definition },
@@ -38,7 +49,12 @@ describe("View Server config atomic ownership", () => {
             return Reflect.get(target, property, receiver);
           }
           reads.topic += 1;
-          return reads.topic === 1 ? definition : unsafeDefinition;
+          return reads.topic === 1
+            ? definition
+            : {
+                schema: UnsupportedRow,
+                source: unsafeSource,
+              };
         },
       },
     );
@@ -48,122 +64,44 @@ describe("View Server config atomic ownership", () => {
     expect(reads).toStrictEqual({
       topic: 1,
       schema: 1,
-      key: 1,
+      source: 1,
     });
     expect({
-      key: config.topics.orders.key,
       schemaField: config.topics.orders.schema.fields.value,
+      source: config.topics.orders.source,
+      configFrozen: Object.isFrozen(config),
+      topicsFrozen: Object.isFrozen(config.topics),
+      definitionFrozen: Object.isFrozen(config.topics.orders),
     }).toStrictEqual({
-      key: "id",
       schemaField: Schema.String,
+      source: safeSource,
+      configFrozen: true,
+      topicsFrozen: true,
+      definitionFrozen: true,
     });
   });
 
-  it("captures source definitions and nested ownership arrays exactly once", () => {
-    const Row = Schema.Struct({ id: Schema.String });
-    let sourceReads = 0;
-    let regionsReads = 0;
-    const safeSource = {
-      topic: "safe-source",
-      get regions() {
-        regionsReads += 1;
-        return regionsReads === 1 ? ["usa"] : ["london"];
-      },
-    };
-    const unsafeSource = { topic: "unsafe-source", regions: ["london"] };
+  it("preserves hostile non-enumerable properties so exact runtime validation rejects them", () => {
     const definition = {
-      schema: Row,
-      key: "id",
-      get kafkaSource() {
-        sourceReads += 1;
-        return sourceReads === 1 ? safeSource : unsafeSource;
-      },
+      schema: Schema.Struct({ id: ViewServerId }),
     };
+    Object.defineProperty(definition, "grpcSource", {
+      value: "removed",
+    });
 
-    const topics = snapshotViewServerTopics({ orders: definition });
+    const topics = snapshotViewServerTopics({ rows: definition });
 
     expect({
-      sourceReads,
-      regionsReads,
-      topic: topics.orders.kafkaSource?.topic,
-      regions: topics.orders.kafkaSource?.regions,
-      sourceFrozen: Object.isFrozen(topics.orders.kafkaSource),
-      regionsFrozen: Object.isFrozen(topics.orders.kafkaSource?.regions),
+      value: Reflect.get(topics.rows, "grpcSource"),
+      own: Object.hasOwn(topics.rows, "grpcSource"),
     }).toStrictEqual({
-      sourceReads: 1,
-      regionsReads: 1,
-      topic: "safe-source",
-      regions: ["usa"],
-      sourceFrozen: true,
-      regionsFrozen: true,
+      value: "removed",
+      own: true,
     });
-  });
-
-  it("captures and freezes each gRPC client definition", () => {
-    const client = grpc.connectClient({
-      service: ordersService,
-      baseUrl: "https://captured.example.test",
-    });
-    const clients = { orders: client };
-    const config = defineViewServerConfig({ grpc: { clients }, topics: {} });
-
-    expect(Reflect.set(client, "baseUrl", "https://mutated.example.test")).toBe(true);
-    expect(
-      Reflect.set(
-        clients,
-        "orders",
-        grpc.connectClient({
-          service: ordersService,
-          baseUrl: "https://replaced.example.test",
-        }),
-      ),
-    ).toBe(true);
-
-    expect({
-      baseUrl: config.grpc?.clients.orders.baseUrl,
-      clientCaptured: config.grpc?.clients.orders === client,
-      clientFrozen: Object.isFrozen(config.grpc?.clients.orders),
-      clientsFrozen: Object.isFrozen(config.grpc?.clients),
-    }).toStrictEqual({
-      baseUrl: "https://captured.example.test",
-      clientCaptured: false,
-      clientFrozen: true,
-      clientsFrozen: true,
-    });
-  });
-
-  it("preserves non-enumerable and primitive source declarations for structural consumers", () => {
-    const Row = Schema.Struct({ id: Schema.String });
-    const malformedGrpcSource = { kind: "grpc", lifecycle: "wat" };
-    const malformedOrders = {
-      schema: Row,
-      key: "id" as const,
-    };
-    const primitiveOrders = {
-      schema: Row,
-      key: "id" as const,
-    };
-    Object.defineProperty(malformedOrders, "grpcSource", {
-      value: malformedGrpcSource,
-    });
-    Object.defineProperty(primitiveOrders, "grpcSource", {
-      value: "not-a-source",
-    });
-
-    const topics = snapshotViewServerTopics({ malformedOrders, primitiveOrders });
-
-    expect({
-      malformed: Reflect.get(topics.malformedOrders, "grpcSource"),
-      malformedFrozen: Object.isFrozen(Reflect.get(topics.malformedOrders, "grpcSource")),
-      malformedOwn: Object.hasOwn(topics.malformedOrders, "grpcSource"),
-      primitive: Reflect.get(topics.primitiveOrders, "grpcSource"),
-      primitiveOwn: Object.hasOwn(topics.primitiveOrders, "grpcSource"),
-    }).toStrictEqual({
-      malformed: malformedGrpcSource,
-      malformedFrozen: true,
-      malformedOwn: true,
-      primitive: "not-a-source",
-      primitiveOwn: true,
-    });
+    expect(() =>
+      defineViewServerConfig({
+        topics,
+      }),
+    ).toThrow("View Server topic rows contains unsupported property: grpcSource.");
   });
 });

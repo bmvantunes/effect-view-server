@@ -1,12 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "@effect-view-server/config";
 import { SourceAdapter } from "@effect-view-server/source-adapter";
 import { SourceAdapterServer } from "@effect-view-server/source-adapter/server";
 import { Effect, Option, Schedule, Schema, Stream } from "effect";
 import { makeViewServerRuntimeCore } from "./index";
 
 const Row = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
 });
 
@@ -76,7 +76,54 @@ const layer = SourceAdapterServer.make(adapter, {
   },
 });
 
+const primitiveMetricsAdapter = SourceAdapter.make({
+  identity: { name: "primitive-metrics" },
+  failure: Failure,
+  materialized: {
+    metrics: Schema.BigInt,
+    rejectionLocation: Location,
+    definitionOptions: SourceAdapter.definitionOptions<void>(),
+  },
+  leased: undefined,
+});
+
+const primitiveMetricsLayer = SourceAdapterServer.make(primitiveMetricsAdapter, {
+  materialized: {
+    acquire: () =>
+      Effect.succeed(
+        SourceAdapterServer.attempt([
+          SourceAdapterServer.lane({
+            id: "materialized",
+            events: Stream.never,
+          }),
+        ]),
+      ),
+    metrics: () => Effect.succeed(7n),
+    retry: Schedule.recurs(0),
+  },
+});
+
 describe("Runtime Core Source metrics locality", () => {
+  it.effect("retains exact primitive Adapter metrics in canonical health", () =>
+    Effect.gen(function* () {
+      const config = defineViewServerConfig({
+        topics: {
+          rows: {
+            schema: Row,
+            source: primitiveMetricsAdapter.materializedSource(undefined),
+          },
+        },
+      });
+      const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(
+        Effect.provide(primitiveMetricsLayer),
+      );
+
+      expect((yield* runtime.client.health()).sources.rows.metrics.adapter).toBe(7n);
+
+      yield* runtime.close;
+    }),
+  );
+
   it.effect("samples metrics for each Topic binding and Leased route", () =>
     Effect.gen(function* () {
       const config = defineViewServerConfig({
@@ -96,8 +143,10 @@ describe("Runtime Core Source metrics locality", () => {
         },
       });
       const runtime = yield* makeViewServerRuntimeCore(config, {}).pipe(Effect.provide(layer));
-      const firstDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("first");
-      const secondDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("second");
+      const firstDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({ topic: "first" });
+      const secondDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "second",
+      });
       const firstHealth = Option.getOrThrow(
         yield* firstDiagnostics.events.pipe(Stream.take(1), Stream.runHead),
       );
@@ -112,20 +161,28 @@ describe("Runtime Core Source metrics locality", () => {
         first: "materialized:first:shared",
         second: "materialized:second:shared",
       });
-
-      const euSubscription = yield* runtime.liveClient.subscribe("routed", {
-        routeBy: { region: "eu" },
-        select: ["id", "region"],
+      const materializedAggregate = yield* runtime.client.health();
+      expect(materializedAggregate.sources).toStrictEqual({
+        first: firstHealth,
+        second: secondHealth,
+        routed: [],
       });
+
       const usSubscription = yield* runtime.liveClient.subscribe("routed", {
         routeBy: { region: "us" },
         select: ["id", "region"],
       });
-      const euDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("routed", {
-        region: "eu",
+      const euSubscription = yield* runtime.liveClient.subscribe("routed", {
+        routeBy: { region: "eu" },
+        select: ["id", "region"],
       });
-      const usDiagnostics = yield* runtime.liveClient.subscribeSourceHealth("routed", {
-        region: "us",
+      const euDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "routed",
+        routeBy: { region: "eu" },
+      });
+      const usDiagnostics = yield* runtime.liveClient.subscribeSourceHealth({
+        topic: "routed",
+        routeBy: { region: "us" },
       });
       const euHealth = Option.getOrThrow(
         yield* euDiagnostics.events.pipe(
@@ -151,13 +208,23 @@ describe("Runtime Core Source metrics locality", () => {
         eu: "leased:routed:shared:eu",
         us: "leased:routed:shared:us",
       });
+      const leasedAggregate = yield* runtime.client.health();
+      expect(leasedAggregate.sources).toStrictEqual({
+        first: firstHealth,
+        second: secondHealth,
+        routed: [euHealth, usHealth],
+      });
 
       yield* firstDiagnostics.close();
       yield* secondDiagnostics.close();
       yield* euDiagnostics.close();
       yield* usDiagnostics.close();
       yield* euSubscription.close();
+      const afterEuRelease = yield* runtime.client.health();
+      expect(afterEuRelease.sources.routed).toStrictEqual([usHealth]);
       yield* usSubscription.close();
+      const afterAllLeasesRelease = yield* runtime.client.health();
+      expect(afterAllLeasesRelease.sources.routed).toStrictEqual([]);
       yield* runtime.close;
     }),
   );

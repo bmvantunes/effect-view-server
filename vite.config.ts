@@ -283,9 +283,11 @@ export default defineConfig({
         command: "node scripts/run-kafka-source-broker-bench.mjs",
         dependsOn: [declarationTaskName("runtime-core")],
       },
-      "bench:runtime-kafka-ingest": {
-        command: "node scripts/run-runtime-kafka-ingest-bench.mjs",
-        dependsOn: [declarationTaskName("runtime")],
+      "bench:grpc-source-adapter": {
+        command:
+          'sh -c \'output=${VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON:-.artifacts/grpc-source-adapter-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_BATCH_SIZE:-32}batch-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_ROUTE_COUNT:-32}routes-${VIEW_SERVER_RUNTIME_BENCH_GRPC_SOURCE_ADAPTER_RETAINED_ROWS:-50000}retained.json}; mkdir -p .artifacts; VIEW_SERVER_RUNTIME_BENCH_OUTPUT_JSON="$output" vp test bench src/grpc.bench.ts --run --testTimeout 0 --outputJson "$output"\'',
+        cwd: "packages/grpc",
+        dependsOn: [declarationTaskName("runtime-core")],
       },
       "examples:check:effect": {
         command: 'node --eval ""',

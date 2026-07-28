@@ -17,7 +17,9 @@ export {
   wireSafeBigDecimalSemanticKey,
 } from "./wire-safe-big-decimal";
 export {
+  captureSourceHealthInput,
   snapshotViewServerQuery,
+  type CapturedSourceHealthInput,
   viewServerQuerySnapshotErrorMessage,
 } from "./query-input-snapshot";
 export { ownViewServerQuerySnapshot } from "./query-input-snapshot";

@@ -1,95 +1,44 @@
 # Remaining Roadmap Audit
 
-This audit maps the still-relevant `plans/*.md` requirements to current implementation
-status. It is intentionally evidence-based: code and validation gates are the source of
-truth, not plan text that predates later implementation work.
+## Production milestone
 
-## Status Legend
+PRD #383 is delivered by its four ordered vertical slices:
 
-- `Implemented`: covered by current code, tests, gates, and documentation.
-- `Production-ready next`: should be implemented before calling the roadmap closed.
-- `Deferred intentionally`: known future/optional work, not required for the current
-  production milestone.
-- `Remove or rewrite`: plan text is stale or no longer describes desired behavior.
+1. #384 — portable Source Adapter SDK, Runtime Core integration, diagnostics,
+   and conformance.
+2. #385 — first-party Kafka Source Adapter contract/server/Node Layers.
+3. #386 — first-party gRPC Source Adapter contract/server/Node Layers.
+4. #387 — canonical-only public migration, React Source Diagnostics,
+   transport-neutral runtime composition, package hardening, examples, docs,
+   and release intent.
 
-## gRPC Plan
+The production surface now has one authored Topic tree, exact
+`id: ViewServerId`, zero or one canonical `source`, adapter-owned aggregate
+Layers, canonical Source Health, and explicit public package seams. The
+transport-specific gRPC plan and obsolete source-integration sections of the
+umbrella engine plan are historical records, not active contracts.
 
-`plans/grpc.md` records the implemented transport-specific scope but is
-superseded for future work by PRD #383. Issue #384 implements the
-transport-neutral Source Adapter foundation, and issues #385 and #386 implement
-its first-party Kafka and gRPC adapters. The separate final migration tracked by
-issue #387 remains explicitly out of scope and must not be started by this
-audit or the #385 slice.
+## Current validation
 
-| Area                                            | Status                 | Evidence                                                                                                                                                     |
-| ----------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Source contracts and type gates                 | Implemented            | `packages/config/src/grpc-contract.ts`, `packages/config/src/grpc-source-contract.test-d.ts`, `packages/runtime/src/runtime-grpc-options-contract.test-d.ts` |
-| Runtime ownership validation                    | Implemented            | Runtime validation tests reject Kafka/gRPC and multi-feed ownership conflicts.                                                                               |
-| Materialized gRPC runtime                       | Implemented            | `packages/grpc/src/server.ts`, Source Adapter conformance, runtime tests, and real ConnectRPC tests.                                                         |
-| Leased gRPC runtime                             | Implemented            | `packages/grpc/src/server.ts`, exact-route sharing/release tests, and real ConnectRPC tests.                                                                 |
-| gRPC health/lifecycle                           | Implemented            | Schema-backed adapter metrics/rejections in `packages/grpc`, Source Diagnostics tests, and `vp run -w grpc:gate`.                                            |
-| gRPC benchmark gates                            | Implemented            | `benchmarks/baselines/grpc-materialized.json`, `grpc-leased.json`, `grpc-leased-retained.json`, `vp run -w grpc:gate`.                                       |
-| Topic-owned source constructors                 | Implemented            | ADR 0001, `kafka.source(...)`, `grpc.topicSources(...).materialized(...)`, and `.leased(...)` in current examples.                                           |
-| Session-scoped leased feeds and auth forwarding | Deferred intentionally | Runtime auth validates edge requests; gRPC feeds still use system-scoped shared feed identity.                                                               |
-| Generic non-gRPC stream-source API              | Deferred intentionally | Plan explicitly keeps ConnectRPC-specific public API.                                                                                                        |
-| Multi-source topics                             | Deferred intentionally | Requires a separate ordering/dedupe/restart contract.                                                                                                        |
-| Custom live-event transport                     | Deferred intentionally | Browser transport remains Effect RPC WebSocket + NDJSON.                                                                                                     |
-| WAL/checkpointing for gRPC materialized feeds   | Deferred intentionally | Same recovery policy as the in-memory runtime.                                                                                                               |
+- `vp run -w ready`
+- `vp run -w pre-grpc:gate`
+- `vp run -w grpc:gate`
+- `vp run -w release-candidate:capacity`
 
-## Column Live View Engine Plan
+Kafka and gRPC performance are covered by their canonical Source Adapter
+profiles. Generic engine, raw read/write, query-sharing, grouped, React, and
+WebSocket profiles remain independent of adapter implementation.
 
-`plans/v2-column-live-view-engine-plan.md` is the umbrella product roadmap. The
-current production slice is largely implemented, but the whole file is not complete
-because it includes explicit future scope.
+## Intentionally deferred
 
-### Implemented Current Slice
+- durable WAL/checkpoints
+- multi-source Topics
+- finite one-shot sources
+- runtime plugin discovery or hot loading
+- new browser transport
+- session/header forwarding upstream
+- automatic browser config projection
+- query `having`
+- native/Rust/SIMD acceleration without benchmark justification
 
-| Area                                                          | Status      | Evidence                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Own in-memory live engine, no external analytical DB hot path | Implemented | `packages/column-live-view-engine`, `packages/runtime-core`; no chDB/Perspective runtime dependency.                                                                                                                                                  |
-| Explicit package seams                                        | Implemented | `packages/config`, `column-live-view-engine`, `runtime-core`, `client`, `protocol`, `in-memory`, `server`, `runtime`, `react`; `vp run -w check:package-exports`; `vp run -w check:internal-seams`.                                                   |
-| Typed public config/query API                                 | Implemented | Config type tests cover topic schemas, query select/where/order/group/aggregates, Kafka, and gRPC.                                                                                                                                                    |
-| Runtime URL in provider, not config                           | Implemented | React provider accepts runtime URL/client at provider boundary; browser bundles do not import runtime config.                                                                                                                                         |
-| In-memory browser/test provider                               | Implemented | Public `effect-view-server/react/testing` and `effect-view-server/in-memory`; browser tests and in-memory benchmarks use real runtime-core/engine.                                                                                                    |
-| Effect RPC WebSocket production transport                     | Implemented | `packages/server`, `packages/client/remote.ts`, protocol package, WebSocket/runtime tests.                                                                                                                                                            |
-| Health hook, `/health`, and `/metrics` endpoints              | Implemented | `useViewServerHealth`, runtime/server health tests, health codecs, metrics route/runtime tests, root/runtime README docs.                                                                                                                             |
-| Kafka runtime ingress                                         | Implemented | `@platformatic/kafka`, JSON/protobuf/custom codecs, source mapping, Docker Apache Kafka e2e, restart/startFrom policy.                                                                                                                                |
-| gRPC runtime ingress                                          | Implemented | First-party Source Adapter contract/server/node modules under `packages/grpc`, documented in `docs/grpc-source-adapter.md`.                                                                                                                           |
-| Runtime auth/session validation seam                          | Implemented | Optional `auth.validateRequest` on server/runtime validates WebSocket upgrades, `/health`, and `/metrics`; default remains anonymous.                                                                                                                 |
-| Snapshot/delta convergence                                    | Implemented | Engine/runtime/client tests cover raw, grouped, retained deltas, cleanup, and convergence.                                                                                                                                                            |
-| Grouped queries and aggregates                                | Implemented | Grouped query tests, grouped aggregate/write benchmarks and gates.                                                                                                                                                                                    |
-| Backpressure at subscription/transport boundary               | Implemented | `BackpressureExceeded` typed status, queue-capacity tests, remote/client/protocol tests.                                                                                                                                                              |
-| Benchmark baseline automation                                 | Implemented | Smoke, raw read/write, active sharing, grouped, WebSocket, Kafka Source Adapter (transport-neutral and broker-backed), Kafka ingress, and gRPC baseline scripts.                                                                                      |
-| Pre-gRPC readiness gate                                       | Implemented | `vp run -w pre-grpc:gate`.                                                                                                                                                                                                                            |
-| TCP publish API/runtime ingress                               | Implemented | `packages/runtime/src/tcp-publish-ingress.ts`, runtime TCP tests for publish/patch/delete/publishMany, schema decode errors, bounded line/queue backpressure, source-owned topic rejection, startup failure, and shutdown cleanup.                    |
-| Runtime-core span/observability assertions                    | Implemented | Runtime-core tracing test captures client publish -> engine publish -> topic-store mutation/fanout -> live-subscription spans with real span-id parent links and topic/query attributes.                                                              |
-| Minimal example app                                           | Implemented | `apps/example` defines typed config, production provider URL boundary, in-memory testing provider path, browser e2e test, type tests, and workspace build/check.                                                                                      |
-| Public package and source examples in active plans            | Implemented | Active plans use public `effect-view-server/*` imports, topic-owned `kafkaSource` / `grpcSource` declarations, required raw `select`, and required grouped `aggregates`.                                                                              |
-| Production guide set                                          | Implemented | `docs/README.md`, `docs/public-api.md`, `docs/runtime-config.md`, `docs/kafka-mapping.md`, `docs/in-memory-browser-testing.md`, `docs/health-and-metrics.md`, `docs/query-semantics.md`, `docs/benchmarks-and-capacity.md`, and `docs/deployment.md`. |
-
-### Production-Ready Next Items
-
-Complete the remaining dependency-ordered Source Adapter migration issue from
-PRD #383. The core SDK/runtime/conformance slice is issue #384, first-party
-Kafka and gRPC are implemented by issues #385 and #386, and the final public hard
-cut remains issue #387.
-
-### Intentionally Deferred
-
-These are in the plan, but should remain future work unless explicitly promoted.
-
-| Item                                                     | Status                 | Reason                                                                                                                |
-| -------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| WAL/checkpoints                                          | Deferred intentionally | Current recovery contract is Kafka replay/startFrom based; WAL is allowed later but not required for first milestone. |
-| Multi-consumer Kafka rebalance/revoke/checkpoint handoff | Deferred intentionally | Runtime documents single-consumer-per-group assumption.                                                               |
-| Custom live-event WebSocket protocol                     | Deferred intentionally | Effect RPC WebSocket + NDJSON remains current production transport.                                                   |
-| Rust/native/SIMD engine                                  | Deferred intentionally | TypeScript engine remains primary; native acceleration only if future benchmarks justify it.                          |
-| User-defined indexes                                     | Deferred intentionally | Product principle remains automatic optimization from schemas and controlled query DSL.                               |
-| Session-scoped gRPC leased feeds                         | Deferred intentionally | Edge auth exists, but leased feeds still need a separate session partitioning/forwarding contract.                    |
-
-## Recommended Implementation Order
-
-1. Run `vp run -w ready`, `vp run -w pre-grpc:gate`, and `vp run -w grpc:gate` to prove the documented current scope still passes.
-2. Follow the dependency order in PRD #383; do not extend the superseded transport-specific gRPC plan.
-
-After that, next work should come from a new explicit product decision or from promoting one intentionally deferred item.
+Any next work requires a new explicit product decision or a promoted issue.

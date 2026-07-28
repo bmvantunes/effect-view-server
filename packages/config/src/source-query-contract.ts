@@ -8,11 +8,7 @@ import type { TopicDefinitions, TopicRow } from "./query-core";
 import type { RejectExtraKeys } from "./query-exact";
 import type { RouteFieldKey, RouteFieldValue } from "./query-filter";
 import type { ExactLiveQuery, ValidateLiveQuery } from "./query-result-contract";
-import type {
-  NonEmptyRouteBy,
-  TopicLeasedSourceDefinition,
-  TopicSourceDefinition,
-} from "./source-contract";
+import type { NonEmptyRouteBy } from "./source-contract";
 
 type RouteShape<Row, RouteBy extends string> = {
   readonly [Field in Extract<RouteBy, RouteFieldKey<Row>>]-?: RouteFieldValue<Row, Field>;
@@ -35,11 +31,7 @@ export type TopicRouteBy<Topics, Topic extends keyof Topics> = Topics[Topic] ext
   ? SourceDefinitionLifecycle<Source> extends "leased"
     ? Extract<SourceDefinitionRouteFields<Source>[number], string>
     : never
-  : Topics[Topic] extends {
-        readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
-      }
-    ? Extract<RouteBy[number], string>
-    : never;
+  : never;
 
 export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic] extends {
   readonly source: infer Source;
@@ -49,13 +41,7 @@ export type TopicRouteByTuple<Topics, Topic extends keyof Topics> = Topics[Topic
       ? SourceDefinitionRouteFields<Source>
       : never
     : never
-  : Topics[Topic] extends {
-        readonly grpcSource: TopicLeasedSourceDefinition<infer RouteBy>;
-      }
-    ? RouteBy extends NonEmptyRouteBy
-      ? RouteBy
-      : never
-    : never;
+  : never;
 
 export type ExactLeasedRouteQuery<Row, RouteBy extends string, Query> = [RouteBy] extends [never]
   ? { readonly routeBy?: never }
@@ -275,13 +261,7 @@ const validateLiveQuerySourceRouteUnsafe = <Topics extends TopicDefinitions>(
   if (topicDefinition === undefined) {
     return undefined;
   }
-  const sourceAwareTopic: {
-    readonly grpcSource?: TopicSourceDefinition | undefined;
-    readonly source?: object | undefined;
-  } = topicDefinition;
-  const configuredRouteBy = sourceLeasedRouteBy(
-    sourceAwareTopic.source ?? sourceAwareTopic.grpcSource,
-  );
+  const configuredRouteBy = sourceLeasedRouteBy(topicDefinition.source);
   if (configuredRouteBy === undefined) {
     if (isRecord(query) && Object.hasOwn(query, "routeBy")) {
       return `Topic ${topic} does not accept routeBy.`;

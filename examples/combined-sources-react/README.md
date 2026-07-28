@@ -17,8 +17,10 @@ This example demonstrates:
 - Kafka-owned `trades`.
 - Leased gRPC-owned `orders`.
 - Materialized gRPC-owned `strategies`.
-- Topic-owned gRPC bindings that connect those topics to concrete generated
-  client methods.
+- Topic-owned gRPC bindings derived from browser-safe generated service
+  descriptors, with concrete clients supplied by the Node Layer.
+- One Kafka aggregate Layer and one gRPC aggregate Layer composed at the
+  runtime edge.
 - Canonical typed `where` arrays for local filtering, with exact `routeBy`
   objects on leased-topic queries.
-- Summary and detailed health in the same UI.
+- Aggregate health plus exact Topic-bound Source Health in the same UI.

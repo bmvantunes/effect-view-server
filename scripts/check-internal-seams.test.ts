@@ -151,6 +151,19 @@ describe("internal Seam checker", () => {
     ]);
     expect(
       runtimeSourceSeamViolationsForFile({
+        contents: [
+          'import { makeRedisLeaseManager } from "./redis-lease-manager";',
+          'import { makeRedisRuntimeSource } from "./redis-runtime-source";',
+          'import type { RedisContract } from "./redis-contract";',
+        ].join("\n"),
+        path: join(process.cwd(), "packages/runtime/src/redis-runtime-option-contract.ts"),
+      }),
+    ).toStrictEqual([
+      "packages/runtime/src/redis-runtime-option-contract.ts imports its source Adapter Implementation through ./redis-lease-manager.",
+      "packages/runtime/src/redis-runtime-option-contract.ts imports its source Adapter Implementation through ./redis-runtime-source.",
+    ]);
+    expect(
+      runtimeSourceSeamViolationsForFile({
         contents: 'import { resolveBase } from "./runtime-options";',
         path: join(process.cwd(), "packages/runtime/src/redis-ingress.ts"),
       }),
@@ -668,7 +681,7 @@ describe("internal Seam checker", () => {
     mkdirSync(join(root, "packages", "config", "src"), { recursive: true });
     writeFileSync(join(root, "packages", "client", "src", "index.ts"), "");
     for (const sourceEntrypoint of configSurface.packEntrypoints.filter(
-      (entrypoint) => entrypoint !== "src/grpc-contract.ts",
+      (entrypoint) => entrypoint !== "src/internal.ts",
     )) {
       writeFileSync(join(root, "packages", "config", sourceEntrypoint), "");
     }
@@ -677,7 +690,7 @@ describe("internal Seam checker", () => {
       "packages/client/src/remote.ts is missing.",
     ]);
     expect(packageSourceViolationsFor({ repositoryRoot: root, surface: configSurface })).toStrictEqual([
-      "packages/config/src/grpc-contract.ts is missing.",
+      "packages/config/src/internal.ts is missing.",
     ]);
     rmSync(root, { recursive: true });
   });
@@ -706,7 +719,7 @@ describe("internal Seam checker", () => {
       "packages/client/src/remote.ts is missing.",
     );
     expect(collectPackageSurfaceViolations(emptyRoot)).toContain(
-      "packages/config/src/grpc-contract.ts is missing.",
+      "packages/config/src/internal.ts is missing.",
     );
     rmSync(root, { recursive: true });
     rmSync(emptyRoot, { recursive: true });
@@ -714,7 +727,7 @@ describe("internal Seam checker", () => {
 
   it("requires facade files to be exact reexport-only projections", () => {
     const clientProjection = facadeProjectionFor("effect-view-server/client");
-    const kafkaProjection = facadeProjectionFor("effect-view-server/config/kafka");
+    const kafkaProjection = facadeProjectionFor("effect-view-server/kafka/contract");
     const sourceAdapterTestingProjection = facadeProjectionFor(
       "effect-view-server/source-adapter/testing",
     );
@@ -738,15 +751,15 @@ describe("internal Seam checker", () => {
     expect(
       facadeProjectionViolationsForSource({
         contents: [
-          'export { decodeKafkaCodec as decode } from "@effect-view-server/config/kafka";',
+          'export { decodeKafkaCodec as decode } from "@effect-view-server/kafka/contract";',
           'export * from "@effect-view-server/config";',
         ].join("\n"),
-        fileName: "packages/effect-view-server/src/config-kafka.ts",
+        fileName: "packages/effect-view-server/src/kafka-contract.ts",
         projection: kafkaProjection,
-        relativePath: "packages/effect-view-server/src/config-kafka.ts",
+        relativePath: "packages/effect-view-server/src/kafka-contract.ts",
       }),
     ).toStrictEqual([
-      "packages/effect-view-server/src/config-kafka.ts must exactly re-export the curated runtime and type symbols from @effect-view-server/config/kafka.",
+      "packages/effect-view-server/src/kafka-contract.ts must exclusively re-export all of @effect-view-server/kafka/contract.",
     ]);
     expect(
       facadeProjectionViolationsForSource({

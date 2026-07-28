@@ -1,5 +1,7 @@
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   useLiveQuery,
+  useSourceHealth,
   useViewServerHealth,
   useViewServerHealthSummary,
   ViewServerProvider,
@@ -7,9 +9,16 @@ import {
 
 export { ViewServerProvider };
 
+export const sourceHealthStatusLabel = <
+  Health extends { readonly status: { readonly _tag: string } },
+>(
+  sourceHealth: AsyncResult.AsyncResult<Health, unknown>,
+): string => (AsyncResult.isSuccess(sourceHealth) ? sourceHealth.value.status._tag : "loading");
+
 export function KafkaExampleApp() {
   const summary = useViewServerHealthSummary();
   const health = useViewServerHealth();
+  const sourceHealth = useSourceHealth({ topic: "orders" });
   const orders = useLiveQuery("orders", {
     select: ["id", "customerId", "status", "price", "region"],
     where: [{ field: "status", type: "equals", filter: "open" }],
@@ -31,7 +40,7 @@ export function KafkaExampleApp() {
         <h2>Health</h2>
         <p role="status">Runtime status: {summary.status}</p>
         <p>Detailed rows: {health.totalRows}</p>
-        <p>Max Kafka lag: {String(summary.maxKafkaLag ?? "n/a")}</p>
+        <p>Orders source: {sourceHealthStatusLabel(sourceHealth)}</p>
       </section>
       <section className="panel" aria-label="kafka orders">
         <h2>Open orders</h2>

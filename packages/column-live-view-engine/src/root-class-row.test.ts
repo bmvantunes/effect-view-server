@@ -1,11 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { defineViewServerConfig, viewSchema } from "@effect-view-server/config";
+import { ViewServerId, defineViewServerConfig, viewSchema } from "@effect-view-server/config";
 import { Effect, Schema } from "effect";
 import { createColumnLiveViewEngine } from "./index";
 import { createColumnLiveViewEngineInternal } from "./internal";
 
 class RootClassOrder extends Schema.Class<RootClassOrder>("RootClassOrder")({
-  id: Schema.String,
+  id: ViewServerId,
   quantity: Schema.BigInt,
   status: Schema.String,
 }) {}
@@ -15,7 +15,6 @@ const rootClassViewServer = defineViewServerConfig({
   topics: {
     orders: {
       schema: RootClassOrder,
-      key: "id",
     },
   },
 });

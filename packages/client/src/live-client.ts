@@ -137,6 +137,31 @@ type SourceRoute<
   Topic extends ViewServerSourceOwnedTopic<Topics>,
 > = SourceRouteForDefinition<TopicSourceDefinition<Topics, Topic>, TopicRow<Topics, Topic>>;
 
+type RejectExtraKeys<Candidate, Shape> = {
+  readonly [Key in Exclude<keyof Candidate, keyof Shape>]: never;
+};
+
+type ExactSourceRoute<Route, Candidate> = Candidate extends Route
+  ? Candidate & RejectExtraKeys<Candidate, Route>
+  : never;
+
+type SourceHealthInputShape<
+  Topics extends TopicDefinitions,
+  Topic extends ViewServerSourceOwnedTopic<Topics>,
+  Candidate,
+> =
+  SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>> extends "leased"
+    ? {
+        readonly topic: Topic;
+        readonly routeBy: Candidate extends { readonly routeBy: infer Route }
+          ? ExactSourceRoute<SourceRoute<Topics, Topic>, Route>
+          : SourceRoute<Topics, Topic>;
+      }
+    : {
+        readonly topic: Topic;
+        readonly routeBy?: never;
+      };
+
 export type ViewServerSourceHealthForTopic<
   Topics extends TopicDefinitions,
   Topic extends ViewServerSourceOwnedTopic<Topics>,
@@ -158,23 +183,30 @@ type IsUnion<Value, Whole = Value> = Value extends Whole
     : true
   : never;
 
-export type ViewServerSourceHealthArguments<
+export type ViewServerSourceHealthInputForTopic<
   Topics extends TopicDefinitions,
   Topic extends ViewServerSourceOwnedTopic<Topics>,
+  Candidate,
 > =
   IsUnion<Topic> extends true
     ? never
-    : SourceDefinitionLifecycle<TopicSourceDefinition<Topics, Topic>> extends "leased"
-      ? readonly [topic: Topic, routeBy: SourceRoute<Topics, Topic>]
-      : readonly [topic: Topic];
+    : Candidate &
+        NoInfer<
+          SourceHealthInputShape<Topics, Topic, Candidate> &
+            RejectExtraKeys<Candidate, SourceHealthInputShape<Topics, Topic, Candidate>>
+        >;
 
 export type ViewServerSourceHealthSubscriber<
   Topics extends TopicDefinitions,
   Error = ViewServerRuntimeError | ViewServerTransportError,
-> = <Topic extends ViewServerSourceOwnedTopic<Topics>>(
-  ...arguments_: ViewServerSourceHealthArguments<Topics, Topic>
+> = <
+  const Input extends {
+    readonly topic: ViewServerSourceOwnedTopic<Topics>;
+  },
+>(
+  input: ViewServerSourceHealthInputForTopic<Topics, Input["topic"], Input>,
 ) => Effect.Effect<
-  ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Topic>>,
+  ViewServerSourceHealthSubscription<ViewServerSourceHealthResultForTopic<Topics, Input["topic"]>>,
   Error
 >;
 

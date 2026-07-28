@@ -1,12 +1,12 @@
-import type { LiveQueryResult } from "./topic-contract";
+import type {
+  SourceDefinitionAny,
+  SourceDefinitionLifecycle,
+  SourceHealthForDefinition,
+} from "@effect-view-server/source-adapter";
+import type { LiveQueryResult, TopicRow } from "./topic-contract";
 
 export type RuntimeStatus = "ready" | "degraded" | "starting" | "stopping";
 export type TopicHealthStatus = "ready" | "degraded" | "starting";
-export type KafkaRegionStatus = "connected" | "disconnected" | "degraded" | "starting";
-export type KafkaTopicStatus = "ready" | "degraded" | "starting" | "stalled";
-export type GrpcClientStatus = "connected" | "disconnected" | "degraded" | "starting";
-export type GrpcFeedStatus = "starting" | "ready" | "degraded" | "stopping";
-export type GrpcFeedLifecycle = "materialized" | "leased";
 export type ViewServerHealthConnectionStatus = "connecting" | "connected" | "disconnected";
 export type ViewServerHealthStatus =
   | RuntimeStatus
@@ -51,94 +51,6 @@ export type TopicRuntimeHealth = {
   readonly compactionPending: boolean;
 };
 
-export type KafkaRegionHealth = {
-  readonly status: KafkaRegionStatus;
-  readonly brokers: string;
-  readonly lastConnectedAt: number | null;
-  readonly lastError: string | null;
-};
-
-export type KafkaTopicRegionHealth = {
-  readonly connected: boolean;
-  readonly assignedPartitions: number;
-  readonly messagesPerSecond: number;
-  readonly bytesPerSecond: number;
-  readonly decodedMessagesPerSecond: number;
-  readonly decodeFailuresPerSecond: number;
-  readonly mappingFailuresPerSecond: number;
-  readonly publishFailuresPerSecond: number;
-  readonly commitFailuresPerSecond: number;
-  readonly processingFailuresPerSecond: number;
-  readonly lastMessageAt: number | null;
-  readonly lastCommitAt: number | null;
-  readonly consumerLagMessages: bigint | null;
-  readonly lagSampledAt: number | null;
-  readonly committedOffset: string | null;
-  readonly lastError: string | null;
-};
-
-export type KafkaTopicHealth = {
-  readonly status: KafkaTopicStatus;
-  readonly sourceTopic: string;
-  readonly viewServerTopic: string;
-  readonly regions: Record<string, KafkaTopicRegionHealth>;
-};
-
-export type KafkaStartFromHealth =
-  | {
-      readonly consumerGroupId: string;
-      readonly mode: "earliest";
-      readonly fallbackMode: "earliest";
-    }
-  | {
-      readonly consumerGroupId: string;
-      readonly mode: "latest";
-      readonly fallbackMode: "latest";
-    }
-  | {
-      readonly consumerGroupId: string;
-      readonly mode: "committed";
-      readonly fallbackMode: "earliest" | "latest" | "fail";
-    };
-
-export type GrpcClientHealth = {
-  readonly status: GrpcClientStatus;
-  readonly baseUrl: string;
-  readonly activeFeeds: number;
-  readonly lastConnectedAt: number | null;
-  readonly lastError: string | null;
-};
-
-export type GrpcFeedHealth<Topic extends string = string> = {
-  readonly status: GrpcFeedStatus;
-  readonly lifecycle: GrpcFeedLifecycle;
-  readonly feedName: string;
-  readonly feedKey: string;
-  readonly topic: Topic;
-  readonly subscriberCount: number;
-  readonly rowCount: number;
-  readonly messagesPerSecond: number;
-  readonly rowsPerSecond: number;
-  readonly decodeFailuresPerSecond: number;
-  readonly mappingFailuresPerSecond: number;
-  readonly publishFailuresPerSecond: number;
-  readonly reconnects: number;
-  readonly lastMessageAt: number | null;
-  readonly lastError: string | null;
-};
-
-export type GrpcTopicFeedsHealth<Topic extends string = string> = {
-  readonly materialized: Record<string, GrpcFeedHealth<Topic>>;
-  readonly leased: Record<string, GrpcFeedHealth<Topic>>;
-};
-
-export type GrpcRuntimeHealth<Topics extends object = Record<string, object>> = {
-  readonly clients: Record<string, GrpcClientHealth>;
-  readonly feeds: {
-    readonly [Topic in Extract<keyof Topics, string>]?: GrpcTopicFeedsHealth<Topic>;
-  } & Record<string, GrpcTopicFeedsHealth<string>>;
-};
-
 export type TransportHealth = {
   readonly activeClients: number;
   readonly activeStreams: number;
@@ -153,6 +65,35 @@ export type TransportHealth = {
   readonly lastError: string | null;
 };
 
+type TopicSourceDefinition<
+  Topics extends object,
+  Topic extends keyof Topics,
+> = Topics[Topic] extends {
+  readonly source: infer Definition extends SourceDefinitionAny;
+}
+  ? Definition
+  : never;
+
+type TopicSourceHealthValue<
+  Definition extends SourceDefinitionAny,
+  Row extends object,
+> = Definition extends SourceDefinitionAny
+  ? SourceDefinitionLifecycle<Definition> extends "leased"
+    ? ReadonlyArray<SourceHealthForDefinition<Definition, Row>>
+    : SourceHealthForDefinition<Definition, Row>
+  : never;
+
+export type ViewServerSourceHealth<Topics extends object = Record<string, object>> = {
+  readonly [Topic in keyof Topics as Topics[Topic] extends {
+    readonly source: SourceDefinitionAny;
+  }
+    ? Topic
+    : never]: TopicSourceHealthValue<
+    TopicSourceDefinition<Topics, Topic>,
+    Extract<TopicRow<Topics, Topic>, object>
+  >;
+};
+
 export type ViewServerHealth<Topics extends object = Record<string, object>> = {
   readonly status: RuntimeStatus;
   readonly version: number;
@@ -162,12 +103,7 @@ export type ViewServerHealth<Topics extends object = Record<string, object>> = {
       readonly [Topic in Extract<keyof Topics, string>]: TopicRuntimeHealth;
     };
   };
-  readonly kafka?: {
-    readonly startFrom: KafkaStartFromHealth;
-    readonly regions: Record<string, KafkaRegionHealth>;
-    readonly topics: Record<string, KafkaTopicHealth>;
-  };
-  readonly grpc?: GrpcRuntimeHealth<Topics>;
+  readonly sources: ViewServerSourceHealth<Topics>;
   readonly transport: TransportHealth;
 };
 
@@ -177,7 +113,6 @@ export type ViewServerHealthSummary<Topics extends object = Record<string, objec
   readonly connectionStatus: ViewServerHealthConnectionStatus;
   readonly unhealthyTopics: ReadonlyArray<Extract<keyof Topics, string>>;
   readonly updatedAtNanos: bigint;
-  readonly maxKafkaLag: bigint | null;
 };
 
 export type ViewServerHealthSummaryRow<Topics extends object = Record<string, object>> =
@@ -208,7 +143,6 @@ export type ViewServerHealthTopicRow<Topic extends string = string> = {
   readonly memoryBytes: number;
   readonly tombstoneCount: number;
   readonly compactionPending: boolean;
-  readonly kafkaLag: bigint | null;
   readonly updatedAtNanos: bigint;
 };
 
@@ -239,180 +173,13 @@ function typedHealthTopicRows(
 
 const topicIsUnhealthy = (topic: TopicRuntimeHealth): boolean => topic.status !== "ready";
 
-const kafkaTopicStatusToTopicStatus = (status: KafkaTopicStatus): TopicHealthStatus => {
-  if (status === "ready") {
-    return "ready";
-  }
-  if (status === "starting") {
-    return "starting";
-  }
-  return "degraded";
-};
-
-const mergeTopicHealthStatus = (
-  engineStatus: TopicHealthStatus,
-  kafkaStatus: TopicHealthStatus | undefined,
-): TopicHealthStatus => {
-  if (engineStatus === "degraded" || kafkaStatus === "degraded") {
-    return "degraded";
-  }
-  if (engineStatus === "starting" || kafkaStatus === "starting") {
-    return "starting";
-  }
-  return "ready";
-};
-
-const kafkaTopicStatusForViewTopic = (
-  health: Pick<ViewServerHealth, "kafka">,
-  viewServerTopic: string,
-): TopicHealthStatus | undefined => {
-  let status: TopicHealthStatus | undefined = undefined;
-  for (const kafkaTopic of Object.values(health.kafka?.topics ?? {})) {
-    if (kafkaTopic.viewServerTopic === viewServerTopic) {
-      status = mergeTopicHealthStatus(
-        status ?? "ready",
-        kafkaTopicStatusToTopicStatus(kafkaTopic.status),
-      );
-    }
-  }
-  return status;
-};
-
-const grpcFeedStatusToTopicStatus = (status: GrpcFeedStatus): TopicHealthStatus => {
-  if (status === "ready") {
-    return "ready";
-  }
-  if (status === "starting") {
-    return "starting";
-  }
-  return "degraded";
-};
-
-const grpcTopicStatusForViewTopic = <Topics extends object>(
-  health: Pick<ViewServerHealth<Topics>, "grpc">,
-  viewServerTopic: string,
-): TopicHealthStatus | undefined => {
-  const feeds = health.grpc?.feeds[viewServerTopic];
-  if (feeds === undefined) {
-    return undefined;
-  }
-  let status: TopicHealthStatus = "ready";
-  for (const feed of Object.values(feeds.materialized)) {
-    status = mergeTopicHealthStatus(status, grpcFeedStatusToTopicStatus(feed.status));
-  }
-  for (const feed of Object.values(feeds.leased)) {
-    status = mergeTopicHealthStatus(status, grpcFeedStatusToTopicStatus(feed.status));
-  }
-  return status;
-};
-
-const grpcTopicIsUnhealthy = <Topics extends object>(
-  health: Pick<ViewServerHealth<Topics>, "grpc">,
-  viewServerTopic: string,
-): boolean => {
-  const status = grpcTopicStatusForViewTopic(health, viewServerTopic);
-  return status !== undefined && status !== "ready";
-};
-
-const kafkaTopicIsUnhealthy = (
-  health: Pick<ViewServerHealth, "kafka">,
-  viewServerTopic: string,
-): boolean => {
-  const status = kafkaTopicStatusForViewTopic(health, viewServerTopic);
-  return status !== undefined && status !== "ready";
-};
-
-const kafkaRegionLag = (region: KafkaTopicRegionHealth): bigint | null =>
-  region.consumerLagMessages;
-
-type KafkaLagState = {
-  readonly hasKafkaSource: boolean;
-  readonly hasUnknownLag: boolean;
-  readonly maxLag: bigint | null;
-};
-
-const emptyKafkaLagState = (): KafkaLagState => ({
-  hasKafkaSource: false,
-  hasUnknownLag: false,
-  maxLag: null,
-});
-
-const addKafkaRegionLag = (state: KafkaLagState, region: KafkaTopicRegionHealth): KafkaLagState => {
-  const lag = kafkaRegionLag(region);
-  if (lag === null) {
-    return {
-      hasKafkaSource: true,
-      hasUnknownLag: true,
-      maxLag: state.maxLag,
-    };
-  }
-  return {
-    hasKafkaSource: true,
-    hasUnknownLag: state.hasUnknownLag,
-    maxLag: state.maxLag === null || lag > state.maxLag ? lag : state.maxLag,
-  };
-};
-
-const mergeKafkaLagState = (left: KafkaLagState, right: KafkaLagState): KafkaLagState => ({
-  hasKafkaSource: left.hasKafkaSource || right.hasKafkaSource,
-  hasUnknownLag: left.hasUnknownLag || right.hasUnknownLag,
-  maxLag:
-    left.maxLag === null
-      ? right.maxLag
-      : right.maxLag === null || left.maxLag > right.maxLag
-        ? left.maxLag
-        : right.maxLag,
-});
-
-const kafkaLagStateToPublicLag = (state: KafkaLagState): bigint | null => {
-  if (!state.hasKafkaSource || state.hasUnknownLag) {
-    return null;
-  }
-  return state.maxLag;
-};
-
-const kafkaLagStateForViewTopic = (
-  health: Pick<ViewServerHealth, "kafka">,
-  viewServerTopic: string,
-): KafkaLagState => {
-  let state = emptyKafkaLagState();
-  for (const kafkaTopic of Object.values(health.kafka?.topics ?? {})) {
-    if (kafkaTopic.viewServerTopic === viewServerTopic) {
-      for (const region of Object.values(kafkaTopic.regions)) {
-        state = addKafkaRegionLag(state, region);
-      }
-    }
-  }
-  return state;
-};
-
-const maxKafkaLagForViewTopic = (
-  health: Pick<ViewServerHealth, "kafka">,
-  viewServerTopic: string,
-): bigint | null => kafkaLagStateToPublicLag(kafkaLagStateForViewTopic(health, viewServerTopic));
-
-const maxKafkaLagForHealth = (
-  health: Pick<ViewServerHealth, "engine" | "kafka">,
-): bigint | null => {
-  let state = emptyKafkaLagState();
-  for (const topic of Object.keys(health.engine.topics)) {
-    state = mergeKafkaLagState(state, kafkaLagStateForViewTopic(health, topic));
-  }
-  return kafkaLagStateToPublicLag(state);
-};
-
 export const viewServerHealthSummaryFromHealth = <Topics extends object>(
   health: ViewServerHealth<Topics>,
   updatedAtNanos: bigint,
 ): ViewServerHealthSummary<Topics> => {
   const topicHealthByName: Readonly<Record<string, TopicRuntimeHealth>> = health.engine.topics;
   const unhealthyTopics = Object.entries(topicHealthByName)
-    .filter(
-      ([topicName, topic]) =>
-        topicIsUnhealthy(topic) ||
-        kafkaTopicIsUnhealthy(health, topicName) ||
-        grpcTopicIsUnhealthy(health, topicName),
-    )
+    .filter(([, topic]) => topicIsUnhealthy(topic))
     .map(([topic]) => topic);
   return {
     status: health.status,
@@ -420,7 +187,6 @@ export const viewServerHealthSummaryFromHealth = <Topics extends object>(
     connectionStatus: "connected",
     unhealthyTopics: typedTopicNames<Topics>(unhealthyTopics),
     updatedAtNanos,
-    maxKafkaLag: maxKafkaLagForHealth(health),
   };
 };
 
@@ -439,12 +205,8 @@ export const viewServerHealthTopicRowsFromHealth = <Topics extends object>(
   const topicHealthByName: Readonly<Record<string, TopicRuntimeHealth>> = health.engine.topics;
   const rows: Array<ViewServerHealthTopicRow<string>> = [];
   for (const [id, topic] of Object.entries(topicHealthByName)) {
-    const effectiveStatus = mergeTopicHealthStatus(
-      mergeTopicHealthStatus(topic.status, kafkaTopicStatusForViewTopic(health, id)),
-      grpcTopicStatusForViewTopic(health, id),
-    );
     const status: TopicHealthStatus | "stopping" =
-      health.status === "stopping" ? "stopping" : effectiveStatus;
+      health.status === "stopping" ? "stopping" : topic.status;
     rows.push({
       id,
       status,
@@ -468,7 +230,6 @@ export const viewServerHealthTopicRowsFromHealth = <Topics extends object>(
       memoryBytes: topic.memoryBytes,
       tombstoneCount: topic.tombstoneCount,
       compactionPending: topic.compactionPending,
-      kafkaLag: maxKafkaLagForViewTopic(health, id),
       updatedAtNanos,
     });
   }

@@ -12,7 +12,7 @@ ConnectRPC clients in the shared config module.
 
 ```ts
 import { Schema } from "effect";
-import { defineViewServerConfig } from "effect-view-server/config";
+import { ViewServerId, defineViewServerConfig } from "effect-view-server/config";
 import { grpc } from "effect-view-server/grpc/contract";
 import { OrdersService } from "./generated/orders_pb";
 
@@ -21,7 +21,7 @@ const grpcSources = grpc.topicSources({
 });
 
 const Order = Schema.Struct({
-  id: Schema.String,
+  id: ViewServerId,
   region: Schema.String,
   total: Schema.Number,
 });
